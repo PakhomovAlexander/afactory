@@ -137,7 +137,7 @@ fn input_epoch_handoff_retains_failed_attempts_and_the_same_round_scope() {
         compiled.compilation.graph.token_scopes,
         old_execution.graph.token_scopes
     );
-    let next_plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &next_plan);
+    let next_plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &next_plan);
     let handoff = review_core::task::review_handoff::TaskReviewHandoffV1 {
         task_id: lease.task_id().into(),
         predecessor_revision_id: old_state.revision_id.clone(),

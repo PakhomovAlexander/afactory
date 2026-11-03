@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use review_config::lock::package_digest_from_files;
 use review_config::task::catalog::{AdmittedWorkerSettings, TaskPackagePin, TaskPlanCompiler};
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
-use review_core::task::plan::{ExecutionPlanV2, IndependencePolicyV1, WorkerExecutionV2};
-use review_core::task::{EXECUTION_PLAN_V2, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
+use review_core::task::plan::{ExecutionPlanV3, IndependencePolicyV1, WorkerExecutionV3};
+use review_core::task::{EXECUTION_PLAN_V3, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompiledNode, CompiledTask};
 use review_pipeline::task::host::{CapturedTaskAuthority, TaskDomain};
 use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
@@ -205,7 +205,7 @@ pub fn build_then<T>(
             .bind_worker(
                 name,
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV2::Command {},
+                    execution: WorkerExecutionV3::Command {},
                     invocation_policy_id: fixtures::POLICY_ID.into(),
                 },
             )
@@ -235,7 +235,7 @@ pub fn build_then<T>(
         .map_err(fixture)?;
     let (plan_id, _) = cas
         .put_artifact(
-            EXECUTION_PLAN_V2,
+            EXECUTION_PLAN_V3,
             fixtures::producer(),
             vec![revision_id.clone()],
             None,
@@ -335,7 +335,7 @@ pub fn restore_then<T>(
     let plan_id = state
         .plan_id
         .ok_or_else(|| fixture("the seed Task has no plan".into()))?;
-    let plan: ExecutionPlanV2 = serde_json::from_value(
+    let plan: ExecutionPlanV3 = serde_json::from_value(
         cas.get_artifact(&plan_id)
             .map_err(|e| fixture(e.to_string()))?
             .payload,
@@ -373,7 +373,7 @@ pub fn restore_then<T>(
             .bind_worker(
                 name,
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV2::Command {},
+                    execution: WorkerExecutionV3::Command {},
                     invocation_policy_id: fixtures::POLICY_ID.into(),
                 },
             )
@@ -429,7 +429,7 @@ pub struct Region<'a> {
     cas: &'a Cas,
     compiler: &'a TaskPlanCompiler,
     task: &'a TaskRevisionV1,
-    plan: &'a ExecutionPlanV2,
+    plan: &'a ExecutionPlanV3,
     graph: &'a CompiledTask,
 }
 
@@ -491,7 +491,7 @@ fn captured<T>(
     cas: &Cas,
     compiler: &TaskPlanCompiler,
     task: &TaskRevisionV1,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     graph: CompiledTask,
     operation: impl FnOnce(&CapturedTaskAuthority<'_>, &dyn TaskOperatorHost) -> T,
 ) -> Result<T, String> {
@@ -533,7 +533,7 @@ impl AuthorityFixture {
 pub fn semantic_projection(
     cas: &Cas,
     state: &TaskProjection,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     graph: &CompiledTask,
 ) -> Result<Value, String> {
     let mut packages = serde_json::Map::new();
@@ -608,7 +608,7 @@ impl TaskDomain for ProbeDomain {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _: &CompiledNode,

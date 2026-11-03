@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:provider-registry:2",
+  "$id": "urn:af:schema:provider-registry:3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -8,7 +8,7 @@
   ],
   "properties": {
     "version": {
-      "const": 2
+      "const": 3
     },
     "providers": {
       "type": "array",
@@ -63,7 +63,10 @@
                 "pattern": "^/"
               },
               "backend": {
-                "const": "openai-codex"
+                "enum": [
+                  "openai-codex",
+                  "kimi-coding"
+                ]
               },
               "sdk_entrypoint": {
                 "type": "string",

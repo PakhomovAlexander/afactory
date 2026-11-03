@@ -786,7 +786,7 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
         press(&mut app, &mut host, b"\r");
         assert_eq!(app.main_rows()[0].text(), format!("ARTIFACT  {plan_id}"));
         let json: Vec<String> = app.main_rows().iter().map(Row::text).collect();
-        let typed = "  \"type\": \"af/ExecutionPlan@2\"".to_owned();
+        let typed = "  \"type\": \"af/ExecutionPlan@3\"".to_owned();
         assert!(json.contains(&typed), "{json:#?}");
         assert_eq!(app.main.cursor, 0);
         let status = status_line(&mut app);

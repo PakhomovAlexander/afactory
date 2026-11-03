@@ -2494,7 +2494,7 @@ fn add_to_registry_with_pi(
         }
         None => {
             let mut document = DocumentMut::new();
-            document["version"] = value(2);
+            document["version"] = value(3);
             document
         }
     };
@@ -2590,9 +2590,9 @@ fn remove_from_registry_locked(
     let mut document = existing
         .parse::<DocumentMut>()
         .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
-    if document.get("version").and_then(Item::as_integer) != Some(2) {
+    if document.get("version").and_then(Item::as_integer) != Some(3) {
         return Err(format!(
-            "provider registry {} must declare version = 2",
+            "provider registry {} must declare version = 3",
             path.display()
         ));
     }
@@ -3813,7 +3813,7 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
                 Err(_) => (
                     Vec::new(),
                     Some(format!(
-                        "provider registry {} is invalid; expected version 2 and [[providers]] entries with id, kind, and auth_dir",
+                        "provider registry {} is invalid; expected version 3 and [[providers]] entries with id, kind, and auth_dir",
                         path.display()
                     )),
                 ),
@@ -4110,9 +4110,9 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
         &["version", "providers"],
         "registry",
     )?;
-    if root.get("version").and_then(toml::Value::as_integer) != Some(2) {
+    if root.get("version").and_then(toml::Value::as_integer) != Some(3) {
         return Err(format!(
-            "provider registry {} must declare version = 2",
+            "provider registry {} must declare version = 3",
             path.display()
         ));
     }
@@ -6227,13 +6227,19 @@ mod tests {
             "backend = \"openai-codex\"\n",
         ] {
             let text = format!(
-                "version = 2\n[[providers]]\nid = \"pi-personal\"\nkind = \"pi\"\nauth_dir = \"/nonexistent-pi-profile\"\n{backend}"
+                "version = 3\n[[providers]]\nid = \"pi-personal\"\nkind = \"pi\"\nauth_dir = \"/nonexistent-pi-profile\"\n{backend}"
             );
             assert!(parse_registry(&text, Path::new("providers.toml")).is_err());
         }
-        assert!(
-            parse_registry("version = 1\nproviders = []\n", Path::new("providers.toml")).is_err()
-        );
+        for version in [1, 2] {
+            assert!(
+                parse_registry(
+                    &format!("version = {version}\nproviders = []\n"),
+                    Path::new("providers.toml")
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
@@ -6282,8 +6288,8 @@ mod tests {
     fn conditional_registry_replace_preserves_a_noncooperating_replacement() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let external = "version = 2\n# external change\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let external = "version = 3\n# external change\nproviders = []\n";
         fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
@@ -6315,7 +6321,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "version = 2\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 3\nproviders = []\n").unwrap();
 
         ensure_no_registry_transaction(&path).unwrap();
         let tentative = read_registry_unchecked(&path).unwrap();
@@ -6333,7 +6339,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&path, "version = 2\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 3\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
         fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
 
@@ -6353,8 +6359,8 @@ mod tests {
         let first = root.path().join("providers-first.toml");
         let second = root.path().join("providers-second.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&first, "version = 2\n# first\nproviders = []\n").unwrap();
-        fs::write(&second, "version = 2\n# second\nproviders = []\n").unwrap();
+        fs::write(&first, "version = 3\n# first\nproviders = []\n").unwrap();
+        fs::write(&second, "version = 3\n# second\nproviders = []\n").unwrap();
         symlink(&first, &alias).unwrap();
         let second_transaction = registry_transaction_path(&second);
         fs::write(&second_transaction, "version = 1\n").unwrap();
@@ -6385,8 +6391,8 @@ mod tests {
         let path = root.path().join("providers.toml");
         let stage = root.path().join("stage");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "version = 2\n# original\nproviders = []\n").unwrap();
-        fs::write(&stage, "version = 2\n# candidate\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 3\n# original\nproviders = []\n").unwrap();
+        fs::write(&stage, "version = 3\n# candidate\nproviders = []\n").unwrap();
 
         let result = read_registry_with_hooks(
             &path,
@@ -6444,8 +6450,8 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut displaced = OpenOptions::new()
             .read(true)
@@ -6461,7 +6467,7 @@ mod tests {
                 .unwrap();
 
         renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
-        let external = "version = 2\n# second replacement\nproviders = []\n";
+        let external = "version = 3\n# second replacement\nproviders = []\n";
         let second = root.path().join("second");
         fs::write(&second, external).unwrap();
         fs::rename(&second, &stage_path).unwrap();
@@ -6478,8 +6484,8 @@ mod tests {
     fn successful_replace_records_and_preserves_recovery_versions() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
 
         let preserved = write_registry(&path, candidate.as_bytes(), Some(original))
@@ -6503,8 +6509,8 @@ mod tests {
     fn recovery_archives_only_a_hash_validated_precommit_marker() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6538,8 +6544,8 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6563,8 +6569,8 @@ mod tests {
     fn recovery_revalidates_held_files_immediately_before_archival() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6594,8 +6600,8 @@ mod tests {
     fn recovery_revalidates_marker_bytes_immediately_before_archival() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6627,8 +6633,8 @@ mod tests {
         let displaced_parent = root.path().join("registry-held");
         fs::create_dir(&parent).unwrap();
         let path = parent.join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&parent).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6657,8 +6663,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         symlink(&path, &alias).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
@@ -6691,8 +6697,8 @@ mod tests {
         symlink(&directory, &alias_directory).unwrap();
         let path = directory.join("providers.toml");
         let alias = alias_directory.join("providers.toml");
-        let original = "version = 2\nproviders = []\n";
-        let candidate = "version = 2\n# candidate\nproviders = []\n";
+        let original = "version = 3\nproviders = []\n";
+        let candidate = "version = 3\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&directory).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6748,7 +6754,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&path, "version = 2\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 3\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
         fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
         fs::write(registry_transaction_path(&alias), "version = 1\n").unwrap();
@@ -6766,8 +6772,8 @@ mod tests {
         for tamper in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("providers.toml");
-            let original = "version = 2\nproviders = []\n";
-            let candidate = "version = 2\n# candidate\nproviders = []\n";
+            let original = "version = 3\nproviders = []\n";
+            let candidate = "version = 3\n# candidate\nproviders = []\n";
             fs::write(&path, original).unwrap();
             let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
             stage.write_all(candidate.as_bytes()).unwrap();
@@ -6787,7 +6793,7 @@ mod tests {
             drop(marker_file);
             renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
             if tamper {
-                fs::write(&path, "version = 2\n# unknown\nproviders = []\n").unwrap();
+                fs::write(&path, "version = 3\n# unknown\nproviders = []\n").unwrap();
                 let error = recover_registry(&path).unwrap_err();
                 assert!(
                     error.contains("matches neither transaction hash"),
@@ -6837,7 +6843,7 @@ mod tests {
     fn first_registry_publication_never_clobbers_an_external_file() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let external = "version = 2\n# external creation\nproviders = []\n";
+        let external = "version = 3\n# external creation\nproviders = []\n";
         fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", None).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
@@ -6960,7 +6966,7 @@ mod tests {
 
     #[test]
     fn registry_allows_multiple_accounts_of_one_kind() {
-        let registry = r#"version = 2
+        let registry = r#"version = 3
 [[providers]]
 id = "claude-work"
 kind = "claude"
@@ -6992,7 +6998,7 @@ auth_dir = "/profiles/claude-personal"
         let root = tempfile::tempdir().unwrap();
         for (id, kind) in [("claude-ambient", "claude"), ("codex-ambient", "codex")] {
             let registry = format!(
-                "version = 2\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
+                "version = 3\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
                 root.path().to_str().unwrap()
             );
             let error = match parse_registry(&registry, Path::new("/registry.toml")) {
@@ -7013,7 +7019,7 @@ auth_dir = "/profiles/claude-personal"
         fs::create_dir(&target).unwrap();
         symlink(&target, &linked).unwrap();
         let registry = format!(
-            "version = 2\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            "version = 3\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             linked.to_str().unwrap()
         );
 
@@ -7026,7 +7032,7 @@ auth_dir = "/profiles/claude-personal"
 
     #[test]
     fn registry_rejects_duplicate_ids_and_contexts() {
-        let duplicate_id = r#"version = 2
+        let duplicate_id = r#"version = 3
 [[providers]]
 id = "work"
 kind = "claude"
@@ -7041,7 +7047,7 @@ auth_dir = "/profiles/two"
         let shared = root.path().join("shared");
         fs::create_dir_all(&shared).unwrap();
         let duplicate_context = format!(
-            r#"version = 2
+            r#"version = 3
 [[providers]]
 id = "one"
 kind = "codex"

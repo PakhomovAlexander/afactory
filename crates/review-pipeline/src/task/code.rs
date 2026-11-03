@@ -17,7 +17,7 @@ use review_core::task::measurement::{
     MeasureObjectiveV1, MeasurementV1, compare_measurements,
 };
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::remote_check::{
     PUBLISH_GATE_EFFECT, REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1, RemoteCheckReasonV1,
     github_of_destination,
@@ -1144,7 +1144,7 @@ impl CodeTaskDomain {
         plan_id: &str,
         snapshot: &review_source_git::task::TaskSnapshot,
     ) -> Result<GithubPrTarget, String> {
-        let plan: ExecutionPlanV2 =
+        let plan: ExecutionPlanV3 =
             serde_json::from_value(envelope(cas, plan_id)?.payload).map_err(|e| e.to_string())?;
         let recorded: Vec<&str> = plan
             .authority
@@ -1275,7 +1275,7 @@ impl CodeTaskDomain {
                     // The plan recorded where its remote checks publish, and its developer
                     // confirmed that destination: evidence gathered at any other repository
                     // is not this plan's, whatever it says about the Snapshot.
-                    let plan: ExecutionPlanV2 =
+                    let plan: ExecutionPlanV3 =
                         serde_json::from_value(envelope(cas, &receipt.plan_id)?.payload)
                             .map_err(|e| e.to_string())?;
                     let destinations: Vec<&str> = plan
@@ -2585,10 +2585,10 @@ AF_TOOLCHAIN_SNAPSHOT ",
         receipt: &VerificationResultV1,
     ) -> Result<(), String> {
         let plan_envelope = envelope(cas, &receipt.plan_id)?;
-        if plan_envelope.artifact_type != EXECUTION_PLAN_V2 {
+        if plan_envelope.artifact_type != EXECUTION_PLAN_V3 {
             return Err("Verification result has no exact ExecutionPlan".into());
         }
-        let plan: ExecutionPlanV2 =
+        let plan: ExecutionPlanV3 =
             serde_json::from_value(plan_envelope.payload).map_err(|e| e.to_string())?;
         if plan.task_revision_id != result.task_revision_id
             || plan.authority != task.authority
@@ -2989,7 +2989,7 @@ impl TaskDomain for CodeTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,

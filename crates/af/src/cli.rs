@@ -1473,7 +1473,8 @@ stdout and stderr, because the OAuth URL and authorization code that login print
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
 --auth-dir names an existing directory; only --login creates a missing one, because a login \
 needs a home.\n\n\
-Pi requires --backend openai-codex, an existing stored OAuth login with accountId, Node >=22.19 \
+Pi requires --backend openai-codex or kimi-coding and stored OAuth. OpenAI requires accountId; \
+Kimi account identity is unavailable and distinct_principals policy refuses it. Use Node >=22.19 \
 and the official Pi SDK 1.4.0 outside a repository. Pass --sdk-entrypoint to its dist/index.js \
 when its installed launcher cannot resolve it. Pi uses an embedded AF SDK host and confined file \
 tools, no shell or ambient resources. Pi setup never starts login; --login is unavailable.\n\n\
@@ -1493,7 +1494,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Provider CLI family
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
-        /// Pi upstream backend (openai-codex); required for --kind pi
+        /// Pi upstream backend (openai-codex or kimi-coding); required for --kind pi
         #[arg(long)]
         backend: Option<String>,
         /// Absolute installed Pi 1.4.0 SDK dist/index.js (never a repository module)
@@ -1505,7 +1506,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@2`)
+        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@3`)
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },

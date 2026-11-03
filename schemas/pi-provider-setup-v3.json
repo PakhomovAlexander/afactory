@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:pi-provider-setup:2",
+  "$id": "urn:af:schema:pi-provider-setup:3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/pi-provider-setup@2"
+      "const": "af/pi-provider-setup@3"
     },
     "id": {
       "type": [
@@ -35,6 +35,7 @@
     "backend": {
       "enum": [
         "openai-codex",
+        "kimi-coding",
         null
       ]
     },
@@ -51,7 +52,7 @@
       "minLength": 1
     }
   },
-  "title": "Pi Provider setup @2",
+  "title": "Pi Provider setup @3",
   "allOf": [
     {
       "if": {

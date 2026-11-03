@@ -218,9 +218,9 @@ impl ReviewTaskDomain {
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 receipt.validate()?;
                 let plan_artifact = envelope(cas, &receipt.invocation.plan_id)?;
-                let plan: ExecutionPlanV2 =
+                let plan: ExecutionPlanV3 =
                     serde_json::from_value(plan_artifact.payload).map_err(|e| e.to_string())?;
-                if plan_artifact.artifact_type != EXECUTION_PLAN_V2
+                if plan_artifact.artifact_type != EXECUTION_PLAN_V3
                     || plan.task_revision_id != result.task_revision_id
                     || plan.authority != task.authority
                     || !origins.iter().any(|a| a.node == receipt.invocation.node)

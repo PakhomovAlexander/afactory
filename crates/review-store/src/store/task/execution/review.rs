@@ -17,7 +17,7 @@ pub(in crate::store) struct WritePermit {
 impl WritePermit {
     pub(in crate::store::task) fn for_checked_recording(
         state: &TaskProjection,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         review_run_id: &str,
         review_sequence: u64,
         event: NewEvent,
@@ -36,7 +36,7 @@ impl WritePermit {
 
     pub(in crate::store::task) fn for_checked_selection(
         state: &TaskProjection,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         review_run_id: &str,
         review_sequence: u64,
         event: NewEvent,
@@ -107,7 +107,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV2), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
         let state = self
             .task_projection(cas, lease.task_id())?
             .ok_or_else(|| conflict("Unknown Review Task"))?;
@@ -573,7 +573,7 @@ fn validate_report_gate_failures(
             continue;
         };
         if !plans.contains_key(&attempt.plan_id) {
-            let plan: ExecutionPlanV2 = payload(cas, &attempt.plan_id, task::EXECUTION_PLAN_V2)?;
+            let plan: ExecutionPlanV3 = payload(cas, &attempt.plan_id, task::EXECUTION_PLAN_V3)?;
             let Some(input) = plan
                 .inputs
                 .values()

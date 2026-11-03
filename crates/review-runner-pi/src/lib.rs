@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use review_core::task::plan::PiAuthorityV1;
+use review_core::task::plan::{PiAuthorityV2, PiIdentityModeV1};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_process::{ExitPolicy, SupervisedError};
 use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub const HOST: &str = include_str!("host.mjs");
-pub const PROTOCOL: &str = "af.pi-host/2";
+pub const PROTOCOL: &str = "af.pi-host/3";
 pub const SDK_VERSION: &str = "1.4.0";
 const MAX_RECORD: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
@@ -30,8 +30,8 @@ pub struct PiConfig {
 
 impl PiConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.backend != "openai-codex" {
-            return Err("Pi supports only the openai-codex backend with stored OAuth".into());
+        if !matches!(self.backend.as_str(), "openai-codex" | "kimi-coding") {
+            return Err("Pi supports openai-codex and kimi-coding with stored OAuth".into());
         }
         if !self.sdk_entrypoint.is_absolute() {
             return Err("Pi SDK entrypoint must be an absolute installed dist/index.js".into());
@@ -53,7 +53,8 @@ pub struct Model {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ready {
-    pub principal: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub principal: Option<String>,
     pub auth_method: String,
     pub backend: String,
     pub version: String,
@@ -61,9 +62,23 @@ pub struct Ready {
 }
 impl Ready {
     fn validate(&self) -> Result<(), String> {
-        if !review_core::is_digest(&self.principal)
-            || self.auth_method != "oauth"
-            || self.backend != "openai-codex"
+        if !match self.backend.as_str() {
+            "openai-codex" => self
+                .principal
+                .as_deref()
+                .is_some_and(review_core::is_digest),
+            "kimi-coding" => {
+                self.principal.is_none()
+                    && self.models.iter().all(|model| {
+                        model.id == "k3"
+                            && model
+                                .efforts
+                                .iter()
+                                .all(|level| ["low", "high", "max"].contains(&level.as_str()))
+                    })
+            }
+            _ => false,
+        } || self.auth_method != "oauth"
             || self.version != SDK_VERSION
             || self.models.is_empty()
             || self.models.len() > 64
@@ -145,6 +160,7 @@ fn command(node: &Path, staging: &Path) -> Result<std::process::Command, String>
 fn init(
     config: &PiConfig,
     auth: &Path,
+    auth_context_id: &str,
     cwd: &Path,
     home: &Path,
     principal: Option<&str>,
@@ -153,7 +169,7 @@ fn init(
     readable: &[PathBuf],
 ) -> Value {
     json!({"schema":PROTOCOL,"type":"init","sdk":config.sdk_entrypoint,"backend":config.backend,
-        "auth_dir":auth,"principal":principal,"cwd":cwd,"home":home,"readable":readable,
+        "auth_dir":auth,"auth_context_id":auth_context_id,"principal":principal,"cwd":cwd,"home":home,"readable":readable,
         "writable":if writable { vec![cwd] } else { vec![] },"probe":probe})
 }
 fn write_record(writer: &mut dyn Write, record: &Value) -> std::io::Result<()> {
@@ -172,11 +188,15 @@ pub fn probe(
 ) -> Result<Ready, String> {
     let started = Instant::now();
     config.validate()?;
+    let auth = std::fs::canonicalize(auth).map_err(|_| "Cannot resolve Pi auth context")?;
+    auth.to_str().ok_or("Pi auth context must be UTF-8")?;
+    let auth_context = digest(auth.as_os_str().as_encoded_bytes());
     let staging = tempfile::tempdir().map_err(|_| "Cannot create Pi probe runtime")?;
     let mut command = command(node, staging.path())?;
     let request = init(
         config,
-        auth,
+        &auth,
+        &auth_context,
         staging.path(),
         &staging.path().join("home"),
         None,
@@ -206,18 +226,35 @@ pub fn probe(
         || capture.truncation.is_truncated()
         || capture.stderr_held
     {
-        return Err(state.error.unwrap_or_else(|| "Pi host could not establish compatibility/authentication; requires Node >=22.19, installed Pi SDK 1.4.0 and stored openai-codex OAuth".into()));
+        return Err(state.error.unwrap_or_else(|| "Pi host could not establish compatibility/authentication; requires Node >=22.19, installed Pi SDK 1.4.0 and supported stored OAuth".into()));
     }
     if state.error.is_some() || !capture.stdout.ends_with(b"\n") {
         return Err(state.error.unwrap_or_else(|| "Pi host probe failed".into()));
     }
-    state
+    let ready = state
         .ready
-        .ok_or_else(|| "Pi host did not establish identity/catalog".into())
+        .ok_or("Pi host did not establish identity/catalog")?;
+    if ready.backend != config.backend {
+        return Err("Pi host backend differs from registered authority".into());
+    }
+    Ok(ready)
 }
 
-pub fn authority(node: &Path, config: &PiConfig, auth: &Path, model: &Model) -> PiAuthorityV1 {
-    PiAuthorityV1 {
+pub fn authority(
+    node: &Path,
+    config: &PiConfig,
+    auth: &Path,
+    model: &Model,
+) -> Result<PiAuthorityV2, String> {
+    config.validate()?;
+    let auth = std::fs::canonicalize(auth).map_err(|_| "Cannot resolve Pi auth context")?;
+    auth.to_str().ok_or("Pi auth context must be UTF-8")?;
+    Ok(PiAuthorityV2 {
+        identity_mode: if config.backend == "kimi-coding" {
+            PiIdentityModeV1::Unavailable
+        } else {
+            PiIdentityModeV1::Account
+        },
         backend: config.backend.clone(),
         auth_method: "oauth".into(),
         sdk_version: SDK_VERSION.into(),
@@ -226,7 +263,7 @@ pub fn authority(node: &Path, config: &PiConfig, auth: &Path, model: &Model) -> 
         auth_context_id: digest(auth.as_os_str().as_encoded_bytes()),
         model_config_id: model.identity.clone(),
         adapter_policy_id: policy_id(),
-    }
+    })
 }
 
 #[derive(Default)]
@@ -354,6 +391,16 @@ impl State {
                     .zip(usage.cache_read)
                     .is_some_and(|(input, read)| read > input)
                     || usage
+                        .input
+                        .zip(usage.cache_write)
+                        .is_some_and(|(input, write)| write > input)
+                    || usage
+                        .input
+                        .zip(usage.cache_read.zip(usage.cache_write))
+                        .is_some_and(|(input, (read, write))| {
+                            u128::from(read) + u128::from(write) > u128::from(input)
+                        })
+                    || usage
                         .output
                         .zip(usage.reasoning)
                         .is_some_and(|(output, reasoning)| reasoning > output)
@@ -396,14 +443,14 @@ impl State {
                     }
                     "inference_failed" => "Pi inference failed before successful settlement",
                     "unsupported_auth" => {
-                        "Pi requires stored openai-codex OAuth with a stable accountId; API keys and missing identity are unsupported"
+                        "Pi requires supported stored OAuth; OpenAI requires stable accountId; Kimi account identity is unavailable"
                     }
                     "identity_changed" => {
                         "Pi account differs from the captured principal; replan with the intended login"
                     }
                     "sdk_version" => "Pi requires the official SDK exactly 1.4.0",
                     "node_version" => "Pi requires Node >=22.19",
-                    "unsupported_backend" => "Pi supports only backend openai-codex",
+                    "unsupported_backend" => "Pi supports only backend openai-codex or kimi-coding",
                     "model_changed" => "Pi exact model or endpoint configuration changed",
                     "settings_changed" => {
                         "Pi effective model, thinking or tool policy differs from captured authority"
@@ -478,10 +525,10 @@ pub struct PiTaskAdapter {
     pub node: PathBuf,
     pub config: PiConfig,
     pub auth_dir: PathBuf,
-    pub principal: String,
+    pub principal: Option<String>,
     pub model: String,
     pub effort: String,
-    pub captured: PiAuthorityV1,
+    pub captured: PiAuthorityV2,
 }
 impl WorkerModelAdapter for PiTaskAdapter {
     fn provider_kind(&self) -> &'static str {
@@ -524,9 +571,10 @@ impl WorkerModelAdapter for PiTaskAdapter {
             let request = init(
                 &self.config,
                 &self.auth_dir,
+                &self.captured.auth_context_id,
                 workdir,
                 &staging.path().join("home"),
-                Some(&self.principal),
+                self.principal.as_deref(),
                 matches!(
                     access,
                     WorkerAccess::WriteSource | WorkerAccess::WriteSourceWithShell
@@ -616,10 +664,11 @@ impl WorkerModelAdapter for PiTaskAdapter {
                     if let Some(ready) = &state.ready
                         && state.prepared.is_none()
                     {
-                        let valid = ready.principal == self.principal
+                        let valid = ready.backend == self.config.backend
+                            && ready.principal == self.principal
                             && ready.model(&self.model, &self.effort).is_ok_and(|model| {
                                 authority(&self.node, &self.config, &self.auth_dir, model)
-                                    == self.captured
+                                    .is_ok_and(|authority| authority == self.captured)
                             });
                         if !valid {
                             state.error =

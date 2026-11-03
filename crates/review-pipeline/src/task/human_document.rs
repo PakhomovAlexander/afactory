@@ -23,10 +23,10 @@ use review_core::PortCardinality;
 use review_core::task::document::*;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::pipeline::ReceiptOutcomeV1;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::report_task::*;
 use review_core::task::{
-    ArtifactInputV1, EXECUTION_PLAN_V2, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
+    ArtifactInputV1, EXECUTION_PLAN_V3, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
     TaskRevisionV1,
 };
 use review_core::{ArtifactEnvelope, Producer, is_digest};
@@ -240,10 +240,10 @@ impl<'a> Lineage<'a> {
         inputs: &BTreeMap<String, ArtifactInputV1>,
     ) -> Result<bool, String> {
         let plan = envelope(cas, &invocation.plan_id)?;
-        if plan.artifact_type != EXECUTION_PLAN_V2 {
+        if plan.artifact_type != EXECUTION_PLAN_V3 {
             return Ok(false);
         }
-        let plan: ExecutionPlanV2 = payload(&plan)?;
+        let plan: ExecutionPlanV3 = payload(&plan)?;
         if plan.task_revision_id != self.result.task_revision_id
             || plan.authority != self.task.authority
             || plan.inputs != self.task.inputs

@@ -1,10 +1,10 @@
-// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/2.
+// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/3.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
-export const PROTOCOL = 'af.pi-host/2';
+export const PROTOCOL = 'af.pi-host/3';
 export const VERSION = '1.4.0';
 const MAX_LINE = 4 * 1024 * 1024;
 const FILE_LIMIT = 1024 * 1024;
@@ -14,7 +14,13 @@ class HostError extends Error {
 }
 const fail = (code) => { throw new HostError(code); };
 const hash = (text) => 'sha256:' + createHash('sha256').update(text).digest('hex');
-export function principal(credential) {
+function kimiIdentity(credential) {
+  if (credential?.type !== 'oauth' || typeof credential.access !== 'string' || !credential.access ||
+      typeof credential.refresh !== 'string' || !credential.refresh || !Number.isFinite(credential.expires) ||
+      Object.keys(credential).some((key) => !['type','access','refresh','expires'].includes(key))) fail('unsupported_auth');
+  return null;
+}
+function openaiIdentity(credential) {
   if (credential?.type !== 'oauth' || typeof credential.accountId !== 'string' ||
       !credential.accountId.trim() || /[\x00-\x1f\x7f]/.test(credential.accountId) || credential.accountId.length > 512 ||
       typeof credential.access !== 'string' || !credential.access || typeof credential.refresh !== 'string' || !credential.refresh ||
@@ -31,26 +37,59 @@ export function principal(credential) {
   if (routedAccount !== credential.accountId) fail('identity_changed');
   return hash('af.pi.account/openai-codex\0' + credential.accountId);
 }
-// Every read and every refresh transaction checks the same source inference uses. Token
-// rotation is allowed; a changed account is rejected before a refreshed credential can escape.
+// Each admitted backend supplies credential identity, native model routing and raw usage
+// accessors. Session orchestration, confinement, lifecycle and normalization stay common.
+const BACKENDS = Object.freeze({
+  'openai-codex': Object.freeze({
+    identity: 'account', credentialIdentity: openaiIdentity,
+    api: 'openai-codex-responses', endpoint: 'https://chatgpt.com/backend-api',
+    usageSources: (event) => [event.response?.usage],
+    usageFields: (u) => ({ input: u.input_tokens, output: u.output_tokens,
+      cached: [u.input_tokens_details?.cached_tokens],
+      cache_write: u.input_tokens_details?.cache_write_tokens,
+      reasoning: u.output_tokens_details?.reasoning_tokens }),
+  }),
+  'kimi-coding': Object.freeze({
+    identity: 'unavailable', credentialIdentity: kimiIdentity,
+    api: 'openai-completions', endpoint: 'https://api.kimi.com/coding/v1', model: 'k3',
+    usageSources: (event) => [event.usage, ...(event.choices ?? []).map((choice) => choice.usage)],
+    usageFields: (u) => ({ input: u.prompt_tokens, output: u.completion_tokens,
+      cached: [u.prompt_tokens_details?.cached_tokens, u.prompt_cache_hit_tokens, u.cached_tokens],
+      cache_write: u.prompt_tokens_details?.cache_write_tokens,
+      reasoning: u.completion_tokens_details?.reasoning_tokens }),
+  }),
+});
+export function backendAdapter(backend) {
+  if (!Object.hasOwn(BACKENDS, backend)) fail('unsupported_backend');
+  return BACKENDS[backend];
+}
+export function principal(credential, backend = 'openai-codex') {
+  return backendAdapter(backend).credentialIdentity(credential);
+}
+// Every read and refresh validates the same source inference uses. OpenAI account drift
+// refuses; Kimi has no account identity to compare. Context and OAuth mode remain guarded.
 // AuthStorage.read resolves API-key helpers before returning. Inspect the raw credential
 // through its supported locked modify callback, returning undefined (no write) instead.
-export async function storedOAuth(storage, options) {
-  return storage.modify('openai-codex', async (current) => { principal(current); return undefined; }, options);
+export async function storedOAuth(storage, options, backend = 'openai-codex') {
+  backendAdapter(backend);
+  return storage.modify(backend, async (current) => { principal(current, backend); return undefined; }, options);
 }
-export function guardedCredentials(storage, expected) {
+export function guardedCredentials(storage, expected, backend = 'openai-codex', checkContext = () => {}) {
   const check = (value) => {
-    if (principal(value) !== expected) fail('identity_changed');
+    checkContext();
+    if (principal(value, backend) !== expected) fail('identity_changed');
     return value;
   };
   return {
     async read(id, options) {
-      if (id !== 'openai-codex') return undefined;
-      return check(await storedOAuth(storage, options));
+      if (id !== backend) return undefined;
+      checkContext();
+      return check(await storedOAuth(storage, options, backend));
     },
-    async list(options) { check(await storedOAuth(storage, options)); return [{ providerId: 'openai-codex', type: 'oauth' }]; },
+    async list(options) { checkContext(); check(await storedOAuth(storage, options, backend)); return [{ providerId: backend, type: 'oauth' }]; },
     async modify(id, fn, options) {
-      if (id !== 'openai-codex') fail('unsupported_backend');
+      if (id !== backend) fail('unsupported_backend');
+      checkContext();
       return check(await storage.modify(id, async (value) => {
         const next = await fn(check(value));
         if (next !== undefined) check(next);
@@ -59,6 +98,35 @@ export function guardedCredentials(storage, expected) {
     },
     async delete() { fail('unsupported_auth'); },
   };
+}
+// Only raw transport usage is evidence. SDK AssistantMessage counters start at zero.
+// A backend's cumulative observations replace counters for the same inference in Rust.
+export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')) {
+  let invalid = false;
+  const adapter = backendAdapter(backend);
+  const sources = adapter.usageSources(event);
+  let result;
+  const counter = (value) => {
+    if (value === undefined || value === null) return null;
+    if (!Number.isSafeInteger(value) || value < 0) { invalid = true; return null; }
+    return value;
+  };
+  for (const u of sources) {
+    if (u === undefined || u === null) continue;
+    if (typeof u !== 'object' || Array.isArray(u)) fail('invalid_usage');
+    const raw = adapter.usageFields(u);
+    const observedCached = raw.cached.map(counter).filter((value) => value !== null);
+    if (new Set(observedCached).size > 1) fail('invalid_usage');
+    const next = { input: counter(raw.input),
+      output: counter(raw.output),
+      cache_read: observedCached[0] ?? null,
+      cache_write: counter(raw.cache_write),
+      reasoning: counter(raw.reasoning) };
+    if (result && JSON.stringify(result) !== JSON.stringify(next)) fail('invalid_usage');
+    result = next;
+  }
+  if (invalid) onInvalid();
+  return result;
 }
 export function emptyResources(sdk) {
   const extensions = { extensions: [], errors: [], runtime: sdk.createExtensionRuntime() };
@@ -213,8 +281,9 @@ export async function createRuntime(sdk, credentials) {
   return sdk.ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
 }
 const levels = ['off','minimal','low','medium','high','xhigh','max','ultra'];
-function modelIdentity(model) {
-  if (model.provider !== 'openai-codex' || model.api !== 'openai-codex-responses' || model.baseUrl !== 'https://chatgpt.com/backend-api') fail('model_changed');
+export function modelIdentity(model) {
+  const adapter = backendAdapter(model.provider);
+  if (model.api !== adapter.api || model.baseUrl !== adapter.endpoint || (adapter.model && model.id !== adapter.model)) fail('model_changed');
   return hash('af.pi.model/1\0' + JSON.stringify(model));
 }
 export async function createSession(sdk, runtime, model, effort, cwd, readable, writable, agentDir) {
@@ -254,12 +323,18 @@ export async function main() {
       const request = JSON.parse(line.toString('utf8'));
       if (request.schema !== PROTOCOL) fail('protocol');
       if (!initialized && request.type === 'init') {
-        if (request.backend !== 'openai-codex') fail('unsupported_backend');
+        backendAdapter(request.backend);
         const sdk = await loadSdk(request.sdk);
+        const authContext = fs.realpathSync(request.auth_dir);
+        const checkContext = () => {
+          if (hash(fs.realpathSync(request.auth_dir)) !== request.auth_context_id ||
+              fs.realpathSync(request.auth_dir) !== authContext || fs.lstatSync(request.auth_dir).isSymbolicLink()) fail('identity_changed');
+        };
+        checkContext();
         const storage = sdk.AuthStorage.create(path.join(request.auth_dir, 'auth.json'));
-        const account = principal(await storedOAuth(storage));
-        if (request.principal && request.principal !== account) fail('identity_changed');
-        const credentials = guardedCredentials(storage, account);
+        const account = principal(await storedOAuth(storage, undefined, request.backend), request.backend);
+        if (request.principal !== null && request.principal !== account) fail('identity_changed');
+        const credentials = guardedCredentials(storage, account, request.backend, checkContext);
         const runtime = await createRuntime(sdk, credentials);
         // Restrict authentication even if SDK defaults change: no API-key or env override.
         const stream = runtime.streamSimple.bind(runtime);
@@ -268,21 +343,21 @@ export async function main() {
           return stream(model, context, { ...options, env: {}, maxRetries: 0,
             onProviderStreamEvent: (event, effective) => initialized.observe(inference, event, effective) });
         };
-        const models = runtime.getModels('openai-codex').map((model) => ({ id: model.id, efforts: sdk.getSupportedThinkingLevels(model), identity: modelIdentity(model) }));
+        const models = runtime.getModels(request.backend).filter((model) => !backendAdapter(request.backend).model || model.id === backendAdapter(request.backend).model).map((model) => ({ id: model.id, efforts: sdk.getSupportedThinkingLevels(model), identity: modelIdentity(model) }));
         initialized = { sdk, runtime, credentials, account, request };
-        emit('ready', { principal: account, auth_method: 'oauth', backend: 'openai-codex', version: VERSION, models });
+        emit('ready', { principal: account, auth_method: 'oauth', backend: request.backend, version: VERSION, models });
         if (request.probe) return;
       } else if (initialized && !running && request.type === 'prepare') {
         const state = initialized;
-        const model = state.runtime.getModel('openai-codex', request.model);
-        if (!model || modelIdentity(model) !== request.model_identity || !levels.includes(request.effort)) fail('model_changed');
-        await state.credentials.read('openai-codex');
+        const model = state.runtime.getModel(state.request.backend, request.model);
+        if (!model || modelIdentity(model) !== request.model_identity || !levels.includes(request.effort) || !state.sdk.getSupportedThinkingLevels(model).includes(request.effort)) fail('model_changed');
+        await state.credentials.read(state.request.backend);
         const result = await createSession(state.sdk, state.runtime, model, request.effort,
           state.request.cwd, state.request.readable, state.request.writable, state.request.home);
         session = result.session;
         let inference = 0; let active; let failed = false; let settled = false; let finalText;
         initialized.beginInference = (effective) => {
-          if ((active && !active.finished) || effective.provider !== 'openai-codex' || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
+          if ((active && !active.finished) || effective.provider !== state.request.backend || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
             failed = true; fail('model_changed');
           }
           active = { id: ++inference, finished: false, observed: { input: null, output: null, cache_read: null, cache_write: null, reasoning: null } };
@@ -291,30 +366,22 @@ export async function main() {
           return active;
         };
         initialized.observe = (current, event, effective) => {
-          const u = event.response?.usage;
-          let invalid = false;
-          const counter = (value) => {
-            if (value === undefined || value === null) return null;
-            if (Number.isSafeInteger(value) && value >= 0) return value;
-            invalid = true; return null;
-          };
-          if (u) {
-            const next = { input: counter(u.input_tokens), output: counter(u.output_tokens),
-              cache_read: counter(u.input_tokens_details?.cached_tokens),
-              cache_write: counter(u.input_tokens_details?.cache_write_tokens),
-              reasoning: counter(u.output_tokens_details?.reasoning_tokens) };
+          let next; let invalid = false;
+          try { next = rawUsage(state.request.backend, event, () => { invalid = true; }); }
+          catch { failed = true; fail('invalid_usage'); }
+          if (next) {
             for (const key of Object.keys(next)) if (next[key] !== null) current.observed[key] = next[key];
             emit('usage', { inference: current.id, complete: false, ...current.observed });
           }
           if (invalid) { failed = true; fail('invalid_usage'); }
-          if (current.finished || effective.provider !== 'openai-codex' || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
+          if (current.finished || effective.provider !== state.request.backend || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
             failed = true; fail('model_changed');
           }
         };
         session.subscribe((event) => {
           if (['message_update','message_end'].includes(event.type) && event.message.role === 'assistant') {
             const msg = event.message;
-            if (msg.provider !== 'openai-codex' || msg.model !== request.model) failed = true;
+            if (msg.provider !== state.request.backend || msg.model !== request.model) failed = true;
             if (event.type === 'message_end') {
               if (!active || active.finished) { failed = true; return; }
               active.finished = true;
@@ -332,7 +399,7 @@ export async function main() {
           if (event.type === 'agent_settled') { settled = true; failed ||= event.aborted; }
         });
         initialized.run = async (text, promptNonce) => {
-          await initialized.credentials.read('openai-codex');
+          await initialized.credentials.read(state.request.backend);
           emit('accepted', { prompt_nonce: promptNonce });
           try { await session.prompt(text, { expandPromptTemplates: false, source: 'rpc' }); } catch { failed = true; }
           if (!settled || failed || inference === 0 || finalText === undefined) emit('error', { code: 'inference_failed' });

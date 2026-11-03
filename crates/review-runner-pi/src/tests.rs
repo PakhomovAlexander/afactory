@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 
 fn ready() -> Ready {
     Ready {
-        principal: digest(b"account"),
+        principal: Some(digest(b"account")),
         auth_method: "oauth".into(),
         backend: "openai-codex".into(),
         version: SDK_VERSION.into(),
@@ -126,6 +126,11 @@ fn invalid_counters_versions_and_lifecycle_fail_closed() {
         .is_err()
     );
     assert!(record(&mut accepted(), "error", json!({"code":"raw secret"})).is_err());
+    for write in [8, 11] {
+        let mut impossible = usage(1, true, json!(10), json!(2));
+        impossible["cache_write"] = json!(write);
+        assert!(record(&mut accepted(), "usage", impossible).is_err());
+    }
     let mut missing = usage(1, true, json!(10), json!(2));
     missing.as_object_mut().unwrap().remove("input");
     assert!(record(&mut accepted(), "usage", missing).is_err());
@@ -154,7 +159,7 @@ mode=MODE
 open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
 def emit(v):
- v['schema']='af.pi-host/2'
+ v['schema']='af.pi-host/3'
  data=(json.dumps(v,ensure_ascii=False)+'\n').encode()
  # Split inside a UTF-8 sequence too: LF is the only record separator.
  for at in range(0,len(data),len(data) if mode=='immediate' else 7): os.write(1,data[at:at+7] if mode!='immediate' else data)
@@ -219,12 +224,12 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             backend: "openai-codex".into(),
             sdk_entrypoint: root.join("sdk/dist/index.js"),
         };
-        let captured = authority(&node, &config, root, &ready().models[0]);
+        let captured = authority(&node, &config, root, &ready().models[0]).unwrap();
         PiTaskAdapter {
             node,
             config,
             auth_dir: root.into(),
-            principal: digest(b"account"),
+            principal: Some(digest(b"account")),
             model: "o3".into(),
             effort: "high".into(),
             captured,
@@ -461,10 +466,21 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
     }
 
     #[test]
-    fn identity_backend_model_effort_and_version_drift_refuse_before_private_input() {
-        for mode in ["identity", "backend", "model", "effort", "version"] {
+    fn identity_auth_context_backend_model_effort_and_version_drift_refuse_before_private_input() {
+        for mode in [
+            "identity",
+            "auth-context",
+            "backend",
+            "model",
+            "effort",
+            "version",
+        ] {
             let root = tempfile::tempdir().unwrap();
-            let adapter = fixture(mode, root.path(), None);
+            let mut adapter = fixture(mode, root.path(), None);
+            if mode == "auth-context" {
+                adapter.auth_dir = root.path().join("different-auth-context");
+                std::fs::create_dir(&adapter.auth_dir).unwrap();
+            }
             let cas = Cas::open(root.path().join("cas")).unwrap();
             let returned = adapter.invoke(
                 &cas,
@@ -618,4 +634,29 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             assert!(cancel_fixture(mode).is_err(), "{mode}");
         }
     }
+}
+
+#[test]
+fn kimi_catalog_requires_unavailable_identity_k3_and_exact_supported_efforts() {
+    let mut kimi = ready();
+    kimi.backend = "kimi-coding".into();
+    kimi.principal = None;
+    kimi.models[0].id = "k3".into();
+    kimi.models[0].efforts = vec!["low".into(), "high".into(), "max".into()];
+    kimi.validate().unwrap();
+    assert!(kimi.model("k3", "medium").is_err());
+    for effort in ["off", "minimal", "medium", "xhigh"] {
+        let mut bad = kimi.clone();
+        bad.models[0].efforts.push(effort.into());
+        assert!(bad.validate().is_err());
+    }
+    let mut invented = kimi.clone();
+    invented.principal = Some(digest(b"profile-name"));
+    assert!(invented.validate().is_err());
+    let mut bad_model = kimi.clone();
+    bad_model.models[0].id = "k3-256k".into();
+    assert!(bad_model.validate().is_err());
+    let mut openai = ready();
+    openai.principal = None;
+    assert!(openai.validate().is_err());
 }

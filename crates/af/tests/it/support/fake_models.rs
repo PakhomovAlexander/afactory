@@ -135,7 +135,7 @@ pub(crate) fn install_pi(
     let state = root.join("pi-fixture.json");
     std::fs::write(
         &state,
-        serde_json::to_vec(&serde_json::json!({"mode":mode,"auth":auth.join("auth.json")}))
+        serde_json::to_vec(&serde_json::json!({"mode":mode.strip_prefix("kimi-").unwrap_or(mode),"backend":if mode.starts_with("kimi-") { "kimi-coding" } else { "openai-codex" },"auth":auth.join("auth.json")}))
             .unwrap(),
     )
     .unwrap();
@@ -175,6 +175,9 @@ pub(crate) fn install_pi(
     std::fs::create_dir_all(auth).unwrap();
     std::fs::set_permissions(auth, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(auth.join("auth.json"),r#"{"openai-codex":{"type":"oauth","accountId":"synthetic-account","access":"e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJzeW50aGV0aWMtYWNjb3VudCJ9fQ.synthetic","refresh":"SYNTHETIC_REFRESH","expires":9999999999999}}"#).unwrap();
+    if mode.starts_with("kimi-") {
+        std::fs::write(auth.join("auth.json"), r#"{"kimi-coding":{"type":"oauth","access":"SYNTHETIC_KIMI_ACCESS","refresh":"SYNTHETIC_KIMI_REFRESH","expires":9999999999999}}"#).unwrap();
+    }
     let bin = root.join("pi-bin");
     std::fs::create_dir(&bin).unwrap();
     for name in ["node", "git", "python3"] {

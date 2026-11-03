@@ -269,6 +269,36 @@ version = "1.0.0"
 digest = "sha256:570f34947f12d22a32c64a1d4ec53218747cc33f99be924fddcad0506e07a10f"
 path = ".af/task-packages/default-light/verification"
 
+[packages."pi-light/implementer"]
+version = "1.0.0"
+digest = "sha256:55b983606e94c28b0969d3ef9a1324531dc7991e78762724e56abacf48cb22c1"
+path = ".af/task-packages/pi-light/implementer"
+
+[packages."pi-light/correctness"]
+version = "1.0.0"
+digest = "sha256:f43a23acac0876018d3e6f9b61b190cfc53d7e7e8a8f7c849b526f8787d0efb8"
+path = ".af/task-packages/pi-light/correctness"
+
+[packages."pi-light/evaluator"]
+version = "1.0.0"
+digest = "sha256:e87647bda666ec70f62a3b20d759ec0303f6bd0d00b190bb860e17f95e0c79fa"
+path = ".af/task-packages/pi-light/evaluator"
+
+[packages."pi-light/review"]
+version = "1.0.0"
+digest = "sha256:b77b3de3e310ab71940413fe8074815c9e092c229809aeb9b8d3eb3c94b9d570"
+path = ".af/task-packages/pi-light/review"
+
+[packages."pi-light/implementation"]
+version = "1.0.0"
+digest = "sha256:f4bb4b908e90a5f64071ec340aaedd23b3e68d225e9e3cd899ee4836a77eaf2f"
+path = ".af/task-packages/pi-light/implementation"
+
+[packages."pi-light/verification"]
+version = "1.0.0"
+digest = "sha256:6decd3d7ca89b89925a4d43a38b95ef63e48739bba80a3a3eb1252bccc5323d5"
+path = ".af/task-packages/pi-light/verification"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = false
@@ -296,6 +326,10 @@ distinct_models = true
 "default-light/implementer" = "claude-main"
 "default-light/correctness" = "codex-main"
 "default-light/evaluator" = "codex-main"
+
+"pi-light/implementer" = "pi-kimi"
+"pi-light/correctness" = "codex-main"
+"pi-light/evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768

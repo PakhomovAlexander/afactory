@@ -31,10 +31,10 @@ use review_core::{
 use serde_json::{Value, json};
 
 const SCHEMAS: [&str; 240] = [
-    "pi-host-v2.json",
+    "pi-host-v3.json",
     "pi-validation-claim-v1.json",
-    "pi-provider-setup-v2.json",
-    "provider-registry-v2.json",
+    "pi-provider-setup-v3.json",
+    "provider-registry-v3.json",
     "error-v2.json",
     "findings-sarif-v1.json",
     "task-attempt-wall-end-v1.json",
@@ -117,7 +117,7 @@ const SCHEMAS: [&str; 240] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v15.json",
+    "task-inspection-v16.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -133,14 +133,14 @@ const SCHEMAS: [&str; 240] = [
     "optimization-verification-v1.json",
     "optimization-package-repin-v1.json",
     "harness-materialization-v1.json",
-    "provider-doctor-v3.json",
+    "provider-doctor-v4.json",
     "review-outcome-v3.json",
     "review-report-v5.json",
     "task-context-v1.json",
     "task-builtin-context-v1.json",
-    "task-provider-context-v1.json",
+    "task-provider-context-v2.json",
     "document-context-v1.json",
-    "task-plan-inspection-v1.json",
+    "task-plan-inspection-v2.json",
     "task-file-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
@@ -175,7 +175,7 @@ const SCHEMAS: [&str; 240] = [
     "task-planner-settings-v1.json",
     "task-operator-signature-v1.json",
     "pipeline-proposal-v1.json",
-    "task-provider-admission-v2.json",
+    "task-provider-admission-v3.json",
     "task-review-subject-v2.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -184,7 +184,7 @@ const SCHEMAS: [&str; 240] = [
     "task-review-gate-facts-v1.json",
     "legacy-review-round-v1.json",
     "legacy-review-dependency-v1.json",
-    "legacy-review-invocation-policy-v2.json",
+    "legacy-review-invocation-policy-v3.json",
     "legacy-review-gate-outcome-v1.json",
     "task-review-result-selected-v1.json",
     "task-check-receipt-v2.json",
@@ -215,7 +215,7 @@ const SCHEMAS: [&str; 240] = [
     "task-provider-event-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
-    "legacy-review-task-policy-v5.json",
+    "legacy-review-task-policy-v6.json",
     "task-review-handoff-v2.json",
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
@@ -229,7 +229,7 @@ const SCHEMAS: [&str; 240] = [
     "pipeline-definition-v1.json",
     "pipeline-definition-v2.json",
     "pipeline-definition-v3.json",
-    "execution-plan-v2.json",
+    "execution-plan-v3.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
     "verification-continuation-v1.json",
@@ -641,12 +641,12 @@ fn review_continuation_keeps_repair_evidence_distinct_from_closed_rounds() {
 
 #[test]
 fn provider_admission_contract_requires_exact_model_capability() {
-    use review_core::task::provider::TaskProviderAdmissionV2;
+    use review_core::task::provider::TaskProviderAdmissionV3;
     let id = format!("sha256:{}", "b".repeat(64));
     let value = json!({"plan_id":id,"invocation_policy_id":id,"outcome":"passed","bindings":["root.slots.reviewer"],
         "execution":{"kind":"model","provider":"personal","provider_kind":"claude","principal_id":id,"model":"claude-fixture-1","effort":"high"}});
-    assert_valid("task-provider-admission-v2.json", &value);
-    serde_json::from_value::<TaskProviderAdmissionV2>(value.clone())
+    assert_valid("task-provider-admission-v3.json", &value);
+    serde_json::from_value::<TaskProviderAdmissionV3>(value.clone())
         .unwrap()
         .validate()
         .unwrap();
@@ -658,12 +658,12 @@ fn provider_admission_contract_requires_exact_model_capability() {
         let mut changed = value.clone();
         changed[field] = replacement;
         assert_invalid(
-            "task-provider-admission-v2.json",
+            "task-provider-admission-v3.json",
             &changed,
             "invalid capability proof",
         );
         assert!(
-            serde_json::from_value::<TaskProviderAdmissionV2>(changed)
+            serde_json::from_value::<TaskProviderAdmissionV3>(changed)
                 .unwrap()
                 .validate()
                 .is_err()

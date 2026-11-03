@@ -1,6 +1,6 @@
 use super::*;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
-use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
+use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
 use review_core::task::{TaskResultV1, TaskRevisionV1};
 use review_graph::task::OperatorAttemptCost;
 #[path = "plan/integration.rs"]
@@ -51,7 +51,7 @@ impl TaskDomain for RefuseExecution {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -70,7 +70,7 @@ pub(super) fn settings() -> ReviewPlanSettings {
             uncapped_attempt_tokens: 1,
         },
         outputs: capture::outputs(),
-        executions: BTreeMap::from([("reviewer".into(), WorkerExecutionV2::Command {})]),
+        executions: BTreeMap::from([("reviewer".into(), WorkerExecutionV3::Command {})]),
         provider_admission: OperatorAttemptCost {
             tokens: 1,
             wall_ms: 1000,
@@ -103,7 +103,7 @@ fn assert_cached_authority_is_fresh(
     root: &std::path::Path,
     compiler: &CampaignReviewPlanCompiler,
     task: &TaskRevisionV1,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
 ) {
     let manifest_id = &compiler.round().binding().campaign_manifest_id;
     let manifest: review_core::CampaignManifestV1 =
@@ -240,7 +240,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
             compiler.round().binding().campaign_manifest_id
         );
     }
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &plan);
+    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &RefuseExecution, &NoTaskDeveloper);
     let lease = store
@@ -350,10 +350,10 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
     let mut selected = settings();
     selected.executions.insert(
         "reviewer".into(),
-        WorkerExecutionV2::Model {
+        WorkerExecutionV3::Model {
             provider: "claude-personal".into(),
             provider_kind: "claude".into(),
-            principal_id: "fixture-principal".into(),
+            principal_id: Some("fixture-principal".into()),
             model: "claude-fixture".into(),
             pi: None,
             effort: "high".into(),
@@ -389,13 +389,13 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
     );
     compiler.validate_plan(&cas, &task, &plan).unwrap();
     let mut changed = plan.clone();
-    if let WorkerExecutionV2::Model { provider, .. } =
+    if let WorkerExecutionV3::Model { provider, .. } =
         &mut changed.bindings.values_mut().next().unwrap().execution
     {
         *provider = "ambient-work".into();
     }
     assert!(compiler.validate_plan(&cas, &task, &changed).is_err());
-    if let WorkerExecutionV2::Model { effort, .. } =
+    if let WorkerExecutionV3::Model { effort, .. } =
         selected.executions.get_mut("reviewer").unwrap()
     {
         *effort = "low".into();
@@ -404,7 +404,7 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
     assert_eq!(store.len("review").unwrap(), 2);
 }
 
-fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &ExecutionPlanV2) {
+fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &ExecutionPlanV3) {
     use std::sync::OnceLock;
     static VALIDATORS: OnceLock<BTreeMap<&'static str, jsonschema::Validator>> = OnceLock::new();
     let validators = VALIDATORS.get_or_init(|| {
@@ -417,8 +417,8 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
         .unwrap();
         [
             (
-                "af/LegacyReviewTaskPolicy@5",
-                "legacy-review-task-policy-v5.json",
+                "af/LegacyReviewTaskPolicy@6",
+                "legacy-review-task-policy-v6.json",
             ),
             ("af/CompiledTask@1", "compiled-task-v1.json"),
             (
@@ -426,8 +426,8 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
                 "legacy-review-dependency-v1.json",
             ),
             (
-                "af/LegacyReviewInvocationPolicy@2",
-                "legacy-review-invocation-policy-v2.json",
+                "af/LegacyReviewInvocationPolicy@3",
+                "legacy-review-invocation-policy-v3.json",
             ),
         ]
         .into_iter()
@@ -478,4 +478,43 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
         empty.as_object_mut().unwrap().clear();
         assert!(!validator.is_valid(&empty));
     }
+}
+
+#[test]
+fn installed_review_without_context_only_policy_refuses_unavailable_account_identity() {
+    use review_core::task::plan::{PiAuthorityV2, PiIdentityModeV1};
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let round = capture::open_round(&cas, &mut store);
+    let engine = cas.put(b"fixture installed engine").unwrap();
+    let mut policy = settings();
+    policy.executions.insert(
+        "reviewer".into(),
+        WorkerExecutionV3::Model {
+            provider: "kimi-profile".into(),
+            provider_kind: "pi".into(),
+            principal_id: None,
+            model: "k3".into(),
+            effort: "high".into(),
+            pi: Some(Box::new(PiAuthorityV2 {
+                identity_mode: PiIdentityModeV1::Unavailable,
+                backend: "kimi-coding".into(),
+                auth_method: "oauth".into(),
+                sdk_version: "1.4.0".into(),
+                sdk_entrypoint: "/installed/sdk/dist/index.js".into(),
+                node_program: "/installed/node".into(),
+                auth_context_id: engine.clone(),
+                model_config_id: engine.clone(),
+                adapter_policy_id: engine.clone(),
+            })),
+        },
+    );
+    let result = CampaignReviewPlanCompiler::capture(
+        &cas,
+        CapturedCampaignReviewRound::load(&cas, &store, "review", &round).unwrap(),
+        engine,
+        policy,
+    );
+    assert!(matches!(result, Err(reason) if reason.contains("requires known account principals")));
 }

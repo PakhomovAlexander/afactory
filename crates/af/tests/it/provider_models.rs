@@ -23,7 +23,7 @@ impl Machine {
         };
         fake_models::install("claude", &machine.bin(), &machine.auth("claude"));
         fake_models::install("codex", &machine.bin(), &machine.auth("codex"));
-        let registry = serde_json::json!({"version": 2, "providers": [
+        let registry = serde_json::json!({"version": 3, "providers": [
             {"id": "claude-work", "kind": "claude", "auth_dir": machine.auth("claude")},
             {"id": "codex-main", "kind": "codex", "auth_dir": machine.auth("codex")},
         ]});

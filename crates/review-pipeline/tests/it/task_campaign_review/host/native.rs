@@ -1,6 +1,6 @@
 use super::super::capture::captured_fixture;
 use super::*;
-use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
+use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
 use review_pipeline::task::host::TaskModelBinding;
 use review_runner::task::provider::PROBE_INPUT;
 use review_runner::task::reply_schema::ReplyContract;
@@ -121,7 +121,7 @@ fn admitted_plan(
 ) -> (
     CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
-    ExecutionPlanV2,
+    ExecutionPlanV3,
 ) {
     admitted_plan_with_provider(cas, store, mode, "claude", None)
 }
@@ -143,7 +143,7 @@ fn admitted_plan_with_provider(
 ) -> (
     CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
-    ExecutionPlanV2,
+    ExecutionPlanV3,
 ) {
     let definition = PIPELINE
         .replace("version = 2", "version = 4\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"")
@@ -167,10 +167,10 @@ fn admitted_plan_with_provider(
     settings.provider_admission.tokens = 64;
     settings.executions.insert(
         "reviewer".into(),
-        WorkerExecutionV2::Model {
+        WorkerExecutionV3::Model {
             provider: format!("{provider_kind}-personal"),
             provider_kind: provider_kind.into(),
-            principal_id: "fixture-personal-account".into(),
+            principal_id: Some("fixture-personal-account".into()),
             model: format!("{provider_kind}-fixture"),
             pi: None,
             effort: "high".into(),
@@ -190,7 +190,7 @@ fn admitted_plan_with_provider(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -676,7 +676,7 @@ impl WorkerModelAdapter for Substituted<'_> {
 }
 
 fn model_bindings<'a>(
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     adapter: &'a dyn WorkerModelAdapter,
 ) -> BTreeMap<String, TaskModelBinding<'a>> {
     plan.bindings
@@ -702,7 +702,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let (compiler, lease, compiled) = admitted_plan(&cas, &mut store, "trusted_unsafe");
-    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
     let graph: CompiledTask = serde_json::from_value(
         cas.get_artifact(&compiled.compiled_graph_id)
             .unwrap()
@@ -738,7 +738,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
     .unwrap();
     let context_id = host.unreserved_context(&input, &[]).unwrap();
     let envelope = cas.get_artifact(&context_id).unwrap();
-    assert_eq!(envelope.artifact_type, "af/TaskProviderContext@1");
+    assert_eq!(envelope.artifact_type, "af/TaskProviderContext@2");
     let binding = compiled.bindings.values().next().unwrap();
     let context = &envelope.payload;
     assert_eq!(context["invocation"], serde_json::to_value(&input).unwrap());
@@ -799,7 +799,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
             0 => binding.package_artifact_id = context_id.clone(),
             1 => binding.invocation_policy_id = context_id.clone(),
             _ => {
-                let WorkerExecutionV2::Model {
+                let WorkerExecutionV3::Model {
                     provider,
                     provider_kind,
                     principal_id,
@@ -813,7 +813,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
                 match mutation {
                     2 => *provider = "other-alias".into(),
                     3 => *provider_kind = "other-kind".into(),
-                    4 => *principal_id = "other-account".into(),
+                    4 => *principal_id = Some("other-account".into()),
                     5 => *model = "other-model".into(),
                     6 => *effort = "low".into(),
                     _ => unreachable!(),
@@ -845,8 +845,8 @@ fn captured_review_refuses_credential_mode_and_account_substitution_before_dispa
             .map(|(slot, binding)| {
                 let mut binding = binding.clone();
                 if mode == "trusted_unsafe" {
-                    if let WorkerExecutionV2::Model { principal_id, .. } = &mut binding.execution {
-                        *principal_id = "different-account".into();
+                    if let WorkerExecutionV3::Model { principal_id, .. } = &mut binding.execution {
+                        *principal_id = Some("different-account".into());
                     }
                 }
                 (

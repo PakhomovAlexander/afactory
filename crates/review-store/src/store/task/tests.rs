@@ -71,7 +71,7 @@ impl TaskAuthority for Authority {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &review_core::task::execution::TaskInvocationV1,
         previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -97,7 +97,7 @@ impl TaskAuthority for Authority {
         _: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
     ) -> Result<(), String> {
         if previous.inputs != next.inputs {
             return Err("Fixture has no root input constructors".into());
@@ -108,7 +108,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &crate::store::task::execution::ReservedTaskAttempt,
         _: &str,
@@ -119,7 +119,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         Ok(self.generated.clone())
     }
@@ -152,7 +152,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
         _: &review_graph::task::CompiledNode,
@@ -183,7 +183,7 @@ struct Fixture {
     store: EventStore,
     revision: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV2,
+    plan: ExecutionPlanV3,
     plan_id: String,
     authority: Authority,
 }
@@ -247,7 +247,7 @@ impl Fixture {
                 read("pipeline-definition.json"),
             )
             .unwrap();
-        let mut plan: ExecutionPlanV2 =
+        let mut plan: ExecutionPlanV3 =
             serde_json::from_value(read("execution-plan.json")).unwrap();
         plan.task_revision_id = revision_id.clone();
         plan.authority = revision.authority.clone();
@@ -276,7 +276,7 @@ impl Fixture {
         };
         let plan_id = cas
             .put_artifact(
-                task::EXECUTION_PLAN_V2,
+                task::EXECUTION_PLAN_V3,
                 producer(),
                 vec![revision_id.clone()],
                 None,
@@ -408,7 +408,7 @@ impl Fixture {
         self.plan_id = self
             .cas
             .put_artifact(
-                task::EXECUTION_PLAN_V2,
+                task::EXECUTION_PLAN_V3,
                 producer(),
                 vec![self.revision_id.clone()],
                 None,
@@ -619,7 +619,7 @@ fn stripping_generated_origin_is_rejected_against_trusted_dependency_provenance(
     let forged = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V2,
+            task::EXECUTION_PLAN_V3,
             producer(),
             vec![],
             None,
@@ -1912,19 +1912,21 @@ fn short_attempt_fixture_paths_refuse_expired_dispatch_without_spend() {
 fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
     let fixture = Fixture::new(false);
     let value = serde_json::to_value(&fixture.plan).unwrap();
-    let current: ExecutionPlanV2 =
-        payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V2).unwrap();
+    let current: ExecutionPlanV3 =
+        payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V3).unwrap();
     assert_eq!(serde_json::to_value(current).unwrap(), value);
-    let old = fixture
-        .cas
-        .put_artifact("af/ExecutionPlan@1", producer(), vec![], None, value)
-        .unwrap()
-        .0;
-    let error =
-        payload::<ExecutionPlanV2>(&fixture.cas, &old, task::EXECUTION_PLAN_V2).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Expected exact af/ExecutionPlan@2")
-    );
+    for old_type in ["af/ExecutionPlan@1", "af/ExecutionPlan@2"] {
+        let old = fixture
+            .cas
+            .put_artifact(old_type, producer(), vec![], None, value.clone())
+            .unwrap()
+            .0;
+        let error =
+            payload::<ExecutionPlanV3>(&fixture.cas, &old, task::EXECUTION_PLAN_V3).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Expected exact af/ExecutionPlan@3")
+        );
+    }
 }

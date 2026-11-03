@@ -724,3 +724,197 @@ fn the_experiment_starter_measures_compares_and_verifies() {
         "{text}"
     );
 }
+
+#[test]
+fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = setup(root.path(), None);
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let home = root.path().join("private-home");
+    let (sdk, path, pi_state) = crate::fake_models::install_pi(root.path(), &home, "kimi-document");
+    let bin = PathBuf::from(&path);
+    let codex_auth = home.join("codex");
+    crate::fake_models::install("codex", &bin, &codex_auth);
+    // The real kernel check is launched through env. Planning must resolve it even though
+    // this fixture never executes a check, a paid admission, or a Worker.
+    for (name, source) in [("env", "/usr/bin/env"), ("bash", "/bin/bash")] {
+        std::os::unix::fs::symlink(source, bin.join(name)).unwrap();
+    }
+    std::fs::write(bin.join("npx"), "#!/bin/sh\nexit 99\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join("npx"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":3,"providers":[
+        {"id":"pi-kimi","kind":"pi","backend":"kimi-coding","auth_dir":home,"sdk_entrypoint":sdk},
+        {"id":"codex-main","kind":"codex","auth_dir":codex_auth}
+    ]})).unwrap()).unwrap();
+    crate::task_cli::copy_tree(
+        &workspace.join(".af/task-packages/pi-light"),
+        &repo.join(".af/task-packages/pi-light"),
+    );
+    std::fs::copy(
+        workspace.join(".af/code-policy.toml"),
+        repo.join(".af/code-policy.toml"),
+    )
+    .unwrap();
+    let source_catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(workspace.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for name in [
+        "implementer",
+        "correctness",
+        "evaluator",
+        "implementation",
+        "verification",
+        "review",
+    ] {
+        let key = format!("pi-light/{name}");
+        catalog["packages"]
+            .as_table_mut()
+            .unwrap()
+            .insert(key.clone(), source_catalog["packages"][&key].clone());
+    }
+    for name in ["implementer", "correctness", "evaluator"] {
+        let key = format!("pi-light/{name}");
+        catalog["providers"]
+            .as_table_mut()
+            .unwrap()
+            .insert(key.clone(), source_catalog["providers"][&key].clone());
+    }
+    catalog["provider_admission"] = source_catalog["provider_admission"].clone();
+    catalog["independence"] = source_catalog["independence"].clone();
+    catalog["review"] = source_catalog["review"].clone();
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    let template: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("implementation-reviewed.json")).unwrap())
+            .unwrap();
+    for kind in ["implementation", "verification"] {
+        let mut file = template.clone();
+        file["task_id"] = json!(format!("pi-light-{kind}"));
+        file["kind"] = json!(if kind == "implementation" {
+            "implement"
+        } else {
+            "verification"
+        });
+        file["pipeline"] = json!({"name":format!("pi-light/{kind}"),"fallback":"refuse"});
+        file["facts"]["standard"] = json!(true);
+        file["limits"] = json!({"tokens":3000000,"max_attempts":16,"wall_ms":43200000,
+            "verification":{"tokens":1500000,"attempts":8,"wall_ms":21600000}});
+        std::fs::write(
+            repo.join(format!("pi-light-{kind}.json")),
+            serde_json::to_vec(&file).unwrap(),
+        )
+        .unwrap();
+    }
+    commit(&repo);
+    for kind in ["implementation", "verification"] {
+        let output = crate::common::af()
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", home.join("providers.toml"))
+            .args([
+                "task",
+                "plan",
+                "--file",
+                &format!("pi-light-{kind}.json"),
+                "--json",
+                "--state",
+            ])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let envelope = cas.get_json(result["plan_id"].as_str().unwrap()).unwrap();
+        assert_eq!(envelope["type"], "af/ExecutionPlan@3");
+        let plan: review_core::task::plan::ExecutionPlanV3 =
+            serde_json::from_value(envelope["payload"].clone()).unwrap();
+        plan.validate().unwrap();
+        let bindings = &envelope["payload"]["bindings"];
+        let expected = if kind == "implementation" { 3 } else { 2 };
+        assert_eq!(bindings.as_object().unwrap().len(), expected);
+        for (slot, model, effort) in [
+            ("correctness", "gpt-6-sol", "high"),
+            ("evaluator", "gpt-6-astra", "medium"),
+        ] {
+            let execution = &bindings[format!("root.slots.{slot}")]["execution"];
+            assert_eq!(execution["provider_kind"], "codex");
+            assert_eq!(execution["model"], model);
+            assert_eq!(execution["effort"], effort);
+        }
+        if kind == "implementation" {
+            let execution = &bindings["root.slots.implementer"]["execution"];
+            assert_eq!(execution["model"], "k3");
+            assert_eq!(execution["effort"], "high");
+            assert_eq!(execution["pi"]["backend"], "kimi-coding");
+            assert_eq!(execution["pi"]["identity_mode"], "unavailable");
+            assert!(execution["principal_id"].is_null());
+        }
+        let graph = cas.get_json(&plan.compiled_graph_id).unwrap();
+        let graph_text = graph.to_string();
+        assert!(graph_text.contains("af/TaskCheckReceipt@2"));
+        assert!(!graph_text.contains("af/TaskCheckReceipt@1"));
+        assert!(graph_text.contains("markdownlint") && graph_text.contains("kernel"));
+        assert!(!graph_text.contains("publish-gate"));
+    }
+    // The trusted policy, rather than a profile alias or backend difference, controls
+    // whether unavailable identity can be admitted. No paid probe is run to discover this.
+    catalog["independence"]["distinct_principals"] = toml::Value::Boolean(true);
+    std::fs::write(
+        repo.join(".af/task-catalog.toml"),
+        toml::to_string(&catalog).unwrap(),
+    )
+    .unwrap();
+    let mut strict_file: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("pi-light-implementation.json")).unwrap())
+            .unwrap();
+    strict_file["task_id"] = json!("pi-strict-principals");
+    std::fs::write(
+        repo.join("pi-strict.json"),
+        serde_json::to_vec(&strict_file).unwrap(),
+    )
+    .unwrap();
+    commit(&repo);
+    let refused = crate::common::af()
+        .current_dir(&repo)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("PATH", &path)
+        .env("AF_PROVIDERS_FILE", home.join("providers.toml"))
+        .args([
+            "task",
+            "plan",
+            "--file",
+            "pi-strict.json",
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&refused.stdout),
+            String::from_utf8_lossy(&refused.stderr)
+        )
+        .contains("known account identities")
+    );
+    assert!(!pi_state.with_extension("json.calls").exists());
+    assert!(crate::fake_models::turns(&codex_auth).is_empty());
+}

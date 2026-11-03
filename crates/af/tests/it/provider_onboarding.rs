@@ -530,129 +530,155 @@ exit 64
 
 #[test]
 fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
-    let root = tempfile::tempdir().unwrap();
-    let work = root.path().join("work");
-    std::fs::create_dir(&work).unwrap();
-    let auth = root.path().join("auth");
-    let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
-    let invoke = |args: &[&str]| {
-        crate::common::af()
-            .args(args)
-            .current_dir(&work)
-            .env("HOME", root.path())
-            .env("XDG_CONFIG_HOME", root.path().join("config"))
-            .env("PATH", &path)
-            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
-            .env("NODE_OPTIONS", "--import=/DO_NOT_LOAD")
-            .env("OPENAI_API_KEY", "DO_NOT_USE_AMBIENT")
-            .output()
-            .unwrap()
-    };
-    let setup = invoke(&[
-        "provider",
-        "setup",
-        "pi-personal",
-        "--kind",
-        "pi",
-        "--backend",
-        "openai-codex",
-        "--auth-dir",
-        auth.to_str().unwrap(),
-        "--sdk-entrypoint",
-        sdk.to_str().unwrap(),
-        "--json",
-    ]);
-    assert!(
-        setup.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&setup.stdout),
-        String::from_utf8_lossy(&setup.stderr)
-    );
-    let value: Value = serde_json::from_slice(&setup.stdout).unwrap();
-    valid("pi-provider-setup-v2.json", &value);
-    for (args, schema) in [
-        (
-            vec!["provider", "status", "--json"],
-            "provider-status-v5.json",
-        ),
-        (
-            vec!["provider", "models", "pi-personal", "--json"],
-            "provider-models-v2.json",
-        ),
-        (
-            vec![
-                "provider",
-                "models",
-                "pi-personal",
-                "--resolve",
-                "o3/high",
-                "--json",
-            ],
-            "provider-models-v2.json",
-        ),
-    ] {
-        let out = invoke(&args);
-        assert!(
-            out.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+    for backend in ["openai-codex", "kimi-coding"] {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let auth = root.path().join("auth");
+        let (sdk, path, state) = crate::fake_models::install_pi(
+            root.path(),
+            &auth,
+            if backend == "kimi-coding" {
+                "kimi-review"
+            } else {
+                "review"
+            },
         );
-        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-        valid(schema, &value);
-        if schema == "provider-status-v5.json" {
-            assert_eq!(value["schema"], "af/provider-status@5");
-            assert_eq!(value["providers"][0]["kind"], "pi");
-            assert_eq!(value["providers"][0]["auth"], "authenticated");
-        }
-        let text = String::from_utf8(out.stdout).unwrap();
-        for secret in [
-            "synthetic-account",
-            "SYNTHETIC_ACCESS",
-            "SYNTHETIC_REFRESH",
-            "DO_NOT_USE_AMBIENT",
+        let invoke = |args: &[&str]| {
+            crate::common::af()
+                .args(args)
+                .current_dir(&work)
+                .env("HOME", root.path())
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("PATH", &path)
+                .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+                .env("NODE_OPTIONS", "--import=/DO_NOT_LOAD")
+                .env("OPENAI_API_KEY", "DO_NOT_USE_AMBIENT")
+                .env("KIMI_API_KEY", "DO_NOT_USE_AMBIENT")
+                .env("KIMI_CODE_OAUTH_HOST", "https://ambient.invalid")
+                .output()
+                .unwrap()
+        };
+        let setup = invoke(&[
+            "provider",
+            "setup",
+            "pi-personal",
+            "--kind",
+            "pi",
+            "--backend",
+            backend,
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--sdk-entrypoint",
+            sdk.to_str().unwrap(),
+            "--json",
+        ]);
+        assert!(
+            setup.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&setup.stdout),
+            String::from_utf8_lossy(&setup.stderr)
+        );
+        let value: Value = serde_json::from_slice(&setup.stdout).unwrap();
+        valid("pi-provider-setup-v3.json", &value);
+        for (args, schema) in [
+            (
+                vec!["provider", "status", "--json"],
+                "provider-status-v5.json",
+            ),
+            (
+                vec!["provider", "models", "pi-personal", "--json"],
+                "provider-models-v2.json",
+            ),
+            (
+                vec![
+                    "provider",
+                    "models",
+                    "pi-personal",
+                    "--resolve",
+                    if backend == "kimi-coding" {
+                        "k3/high"
+                    } else {
+                        "o3/high"
+                    },
+                    "--json",
+                ],
+                "provider-models-v2.json",
+            ),
         ] {
-            assert!(!text.contains(secret));
+            let out = invoke(&args);
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+            valid(schema, &value);
+            if schema == "provider-status-v5.json" {
+                assert_eq!(value["schema"], "af/provider-status@5");
+                assert_eq!(value["providers"][0]["kind"], "pi");
+                assert_eq!(value["providers"][0]["auth"], "authenticated");
+                if backend == "kimi-coding" {
+                    assert!(value.to_string().contains("account identity unavailable"));
+                    assert!(
+                        value
+                            .to_string()
+                            .contains("account substitution cannot be detected")
+                    );
+                }
+            }
+            let text = String::from_utf8(out.stdout).unwrap();
+            for secret in [
+                "synthetic-account",
+                "SYNTHETIC_ACCESS",
+                "SYNTHETIC_REFRESH",
+                "SYNTHETIC_KIMI_ACCESS",
+                "SYNTHETIC_KIMI_REFRESH",
+                "DO_NOT_USE_AMBIENT",
+            ] {
+                assert!(!text.contains(secret));
+            }
         }
-    }
-    assert!(
-        !state.with_extension("json.calls").exists(),
-        "token-free command started inference"
-    );
-    let unsupported = invoke(&[
-        "provider",
-        "setup",
-        "pi-other",
-        "--kind",
-        "pi",
-        "--backend",
-        "anthropic",
-        "--auth-dir",
-        auth.to_str().unwrap(),
-        "--sdk-entrypoint",
-        sdk.to_str().unwrap(),
-        "--json",
-    ]);
-    assert!(!unsupported.status.success());
-    valid("pi-provider-setup-v2.json", &document(&unsupported));
-    assert!(err(&unsupported).starts_with("af provider setup: "));
+        assert!(
+            !state.with_extension("json.calls").exists(),
+            "token-free command started inference"
+        );
+        let unsupported = invoke(&[
+            "provider",
+            "setup",
+            "pi-other",
+            "--kind",
+            "pi",
+            "--backend",
+            "anthropic",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--sdk-entrypoint",
+            sdk.to_str().unwrap(),
+            "--json",
+        ]);
+        assert!(!unsupported.status.success());
+        valid("pi-provider-setup-v3.json", &document(&unsupported));
+        assert!(err(&unsupported).starts_with("af provider setup: "));
 
-    // Losing one optional SDK installation leaves the registry readable and removable.
-    std::fs::remove_file(&sdk).unwrap();
-    let status = invoke(&["provider", "status", "--json"]);
-    let value: Value = serde_json::from_slice(&status.stdout).unwrap();
-    valid("provider-status-v5.json", &value);
-    assert!(value["registry"]["warning"].is_null());
-    assert_ne!(value["providers"][0]["auth"], "authenticated");
-    assert!(!String::from_utf8_lossy(&status.stderr).contains("registry"));
-    let text = invoke(&["provider", "status"]);
-    assert!(String::from_utf8_lossy(&text.stdout).contains("Pi installation is missing"));
-    let removed = invoke(&["provider", "remove", "pi-personal"]);
-    assert!(
-        removed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&removed.stderr)
-    );
+        // Losing one optional SDK installation leaves the registry readable and removable.
+        std::fs::remove_file(&sdk).unwrap();
+        let status = invoke(&["provider", "status", "--json"]);
+        let value: Value = serde_json::from_slice(&status.stdout).unwrap();
+        valid("provider-status-v5.json", &value);
+        assert!(value["registry"]["warning"].is_null());
+        assert_ne!(value["providers"][0]["auth"], "authenticated");
+        assert!(!String::from_utf8_lossy(&status.stderr).contains("registry"));
+        let text = invoke(&["provider", "status"]);
+        assert!(String::from_utf8_lossy(&text.stdout).contains("Pi installation is missing"));
+        let removed = invoke(&["provider", "remove", "pi-personal"]);
+        assert!(
+            removed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&removed.stderr)
+        );
+    }
 }
 
 #[test]
@@ -718,7 +744,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             let value = document(&output);
             if args[1] == "setup" {
                 assert_eq!(code(&output), 3, "{}", err(&output));
-                valid("pi-provider-setup-v2.json", &value);
+                valid("pi-provider-setup-v3.json", &value);
                 assert!(
                     value["detail"]
                         .as_str()
@@ -789,7 +815,7 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
     let refused = |output: Output| {
         assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
         let value = document(&output);
-        valid("pi-provider-setup-v2.json", &value);
+        valid("pi-provider-setup-v3.json", &value);
         assert_eq!(value["outcome"], "human_action_required");
         assert!(err(&output).starts_with("af provider setup: "));
         assert!(err(&output).contains(value["detail"].as_str().unwrap()));
@@ -817,7 +843,7 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
     std::fs::rename(&saved, &sdk).unwrap();
     let output = setup();
     assert_eq!(code(&output), 0, "{} {}", out(&output), err(&output));
-    valid("pi-provider-setup-v2.json", &document(&output));
+    valid("pi-provider-setup-v3.json", &document(&output));
     assert_eq!(document(&output)["outcome"], "registered");
     assert!(err(&output).is_empty());
     let registry = std::fs::read_to_string(root.path().join("providers.toml")).unwrap();
@@ -879,7 +905,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
         );
         if json {
             let value = document(output);
-            valid("pi-provider-setup-v2.json", &value);
+            valid("pi-provider-setup-v3.json", &value);
             assert_eq!(value["outcome"], outcome);
             assert!(err(output).contains(value["detail"].as_str().unwrap()));
         } else {
@@ -907,7 +933,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
     assert_eq!(code(&setup("pi-one", true)), 0);
     let repeated = setup("pi-one", true);
     assert_eq!(code(&repeated), 0);
-    valid("pi-provider-setup-v2.json", &document(&repeated));
+    valid("pi-provider-setup-v3.json", &document(&repeated));
     assert_eq!(document(&repeated)["outcome"], "already_registered");
     assert!(err(&repeated).is_empty());
     for json in [true, false] {
@@ -993,7 +1019,7 @@ fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invent
             .unwrap();
         assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
         let value = document(&output);
-        valid("pi-provider-setup-v2.json", &value);
+        valid("pi-provider-setup-v3.json", &value);
         assert_eq!(!value["id"].is_null(), valid_id);
         assert_eq!(!value["backend"].is_null(), valid_backend);
         assert_eq!(value["outcome"], "human_action_required");

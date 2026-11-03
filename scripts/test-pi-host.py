@@ -413,8 +413,10 @@ class HostTests(unittest.TestCase):
                 sdk = str(package / 'dist/index.js')
             auth = root / 'auth'
             auth.mkdir()
-            request = {'schema': 'af.pi-host/2', 'type': 'init', 'backend': 'openai-codex',
-                       'sdk': sdk, 'auth_dir': str(auth), 'principal': None,
+            request = {'schema': 'af.pi-host/3', 'type': 'init', 'backend': 'openai-codex',
+                       'sdk': sdk, 'auth_dir': str(auth),
+                       'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
+                       'principal': None,
                        'cwd': directory, 'home': directory, 'readable': [],
                        'writable': [], 'probe': True}
             claims = json.dumps({'https://api.openai.com/auth': {'chatgpt_account_id': 'SYNTHETIC_ACCOUNT'}}).encode()
@@ -496,10 +498,10 @@ if (process.argv[3]==='official') assert.equal(calls,2);
             selected = next(model for model in ready['models'] if 'high' in model['efforts'])
             invocation = {**request, 'probe': False, 'principal': ready['principal'],
                           'readable': [directory], 'writable': [directory]}
-            prepare = {'schema': 'af.pi-host/2', 'type': 'prepare',
+            prepare = {'schema': 'af.pi-host/3', 'type': 'prepare',
                        'model': selected['id'], 'effort': 'high',
                        'model_identity': selected['identity']}
-            prompt = {'schema': 'af.pi-host/2', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
+            prompt = {'schema': 'af.pi-host/3', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
                       'text': 'Read inside, write turn-created/nested/file, then return the typed reply.'}
             result = subprocess.run([node, '--no-addons', str(wrapper), str(HOST),
                                      'official' if official else 'fixture'],
@@ -541,7 +543,7 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(refused.returncode, 1, refused.stderr)
                 refused_records = [json.loads(line) for line in refused.stdout.splitlines()]
-                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/2',
+                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/3',
                                                        'type': 'error', 'code': 'host_refused'})
                 self.assertFalse(any(r['type'] in ['accepted', 'usage', 'message', 'settled']
                                      for r in refused_records))
@@ -562,7 +564,7 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(invalid.returncode, 0, invalid.stderr)
                 records = [json.loads(line) for line in invalid.stdout.splitlines()]
-                self.assertEqual(records[-1], {'schema': 'af.pi-host/2', 'type': 'error',
+                self.assertEqual(records[-1], {'schema': 'af.pi-host/3', 'type': 'error',
                                                'code': 'inference_failed'})
                 self.assertFalse(any(record['type'] == 'settled' for record in records))
                 observed = [record for record in records if record['type'] == 'usage']
@@ -571,6 +573,159 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                 self.assertFalse(observed[-1]['complete'])
                 for secret in [access, 'PRIVATE_REFRESH', 'SYNTHETIC_ACCOUNT']:
                     self.assertNotIn(secret, invalid.stdout + invalid.stderr)
+
+    def test_kimi_oauth_identity_model_and_raw_usage_contract(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'contract.mjs'
+            script.write_text(r'''
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const host = await import(pathToFileURL(process.argv[2]).href);
+const credential = {type:'oauth',access:'PRIVATE_ACCESS',refresh:'PRIVATE_REFRESH',expires:9999999999999};
+assert.equal(host.principal(credential,'kimi-coding'),null);
+for (const bad of [{...credential,type:'api_key'}, {...credential,access:''},
+                   {...credential,accountId:'invented'}, {...credential,key:'!helper'},
+                   {...credential,expires:'later'}]) assert.throws(()=>host.principal(bad,'kimi-coding'));
+let current = credential;
+const storage = {async modify(id,fn) { assert.equal(id,'kimi-coding'); const next=await fn(current); if(next!==undefined)current=next;return current; }};
+let sameContext = true;
+const guarded = host.guardedCredentials(storage,null,'kimi-coding',()=>{if(!sameContext)throw Error('context_changed');});
+await guarded.read('kimi-coding');
+await guarded.modify('kimi-coding',async c=>({...c,access:'rotated'}));
+assert.equal((await guarded.read('kimi-coding')).access,'rotated');
+sameContext=false;await assert.rejects(guarded.read('kimi-coding'));
+await assert.rejects(guarded.modify('kimi-coding',async c=>c));sameContext=true;
+await assert.rejects(guarded.modify('kimi-coding',async c=>{sameContext=false;return c;}));sameContext=true;
+await assert.rejects(guarded.modify('kimi-coding',async c=>({...c,type:'api_key'})));
+current={...credential,type:'api_key'};
+await assert.rejects(guarded.read('kimi-coding'));
+const model={provider:'kimi-coding',id:'k3',api:'openai-completions',baseUrl:'https://api.kimi.com/coding/v1'};
+assert.match(host.modelIdentity(model),/^sha256:/);
+for(const bad of [{...model,id:'kimi-for-coding'}, {...model,baseUrl:'http://api.kimi.com/coding/v1'},
+                  {...model,baseUrl:'https://other.invalid'}, {...model,api:'anthropic-messages'},
+                  {...model,provider:'other'}]) assert.throws(()=>host.modelIdentity(bad));
+const usage={prompt_tokens:12,completion_tokens:5,cached_tokens:3,completion_tokens_details:{reasoning_tokens:2}};
+const expected={input:12,output:5,cache_read:3,cache_write:null,reasoning:2};
+assert.deepEqual(host.rawUsage('kimi-coding',{usage}),expected);
+assert.deepEqual(host.rawUsage('kimi-coding',{choices:[{usage}]}),expected);
+assert.deepEqual(host.rawUsage('kimi-coding',{usage,choices:[{usage}]}),expected);
+for(const cache of [{prompt_tokens_details:{cached_tokens:3}},{prompt_cache_hit_tokens:3}]) {
+ const u={...usage,...cache};delete u.cached_tokens;
+ assert.deepEqual(host.rawUsage('kimi-coding',{usage:u}),expected);
+}
+assert.equal(host.rawUsage('kimi-coding',{usage:null,choices:[{}]}),undefined);
+assert.deepEqual(host.rawUsage('kimi-coding',{usage:{}}),{input:null,output:null,cache_read:null,cache_write:null,reasoning:null});
+for(const value of [-1,1.2,'12',NaN,Infinity,Number.MAX_SAFE_INTEGER+1]) {
+ assert.throws(()=>host.rawUsage('kimi-coding',{usage:{...usage,prompt_tokens:value}}));
+}
+assert.throws(()=>host.rawUsage('kimi-coding',{usage:{...usage,prompt_cache_hit_tokens:2}}));
+assert.throws(()=>host.rawUsage('kimi-coding',{usage,choices:[{usage:{...usage,completion_tokens:6}}]}));
+assert.deepEqual(host.rawUsage('kimi-coding',{usage:{prompt_tokens:0,completion_tokens:0,cached_tokens:0}}),
+ {input:0,output:0,cache_read:0,cache_write:null,reasoning:null});
+console.log('Kimi contract passed (synthetic credentials only)');
+''')
+            result = subprocess.run([node, str(script), str(HOST)], capture_output=True,
+                                    text=True, env={'HOME': directory}, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for secret in ['PRIVATE_ACCESS', 'PRIVATE_REFRESH']:
+                self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_kimi_host_observed_usage_tools_and_exact_thinking_with_mock_transport(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = installed_sdk()
+            official = bool(sdk)
+            if not sdk:
+                package = root / 'installed/node_modules/@earendil-works/pi-coding-agent'
+                (package / 'dist/core').mkdir(parents=True)
+                state = root / 'state.json'
+                state.write_text(json.dumps({'mode': 'kimi-tool', 'backend': 'kimi-coding'}))
+                (package / 'dist/index.js').write_text(
+                    (ROOT / 'fixtures/pi-sdk/index.mjs').read_text().replace(
+                        'AF_FIXTURE_STATE', json.dumps(str(state))))
+                shutil.copyfile(ROOT / 'fixtures/pi-sdk/auth-storage.mjs', package / 'dist/core/auth-storage.js')
+                for name in ['pi-coding-agent', 'pi-ai', 'pi-agent-core']:
+                    target = package.parent / name
+                    target.mkdir(exist_ok=True)
+                    (target / 'package.json').write_text(json.dumps({
+                        'name': '@earendil-works/' + name, 'version': '1.4.0', 'type': 'module'}))
+                (package.parent / 'pi-ai/dist').mkdir()
+                (package.parent / 'pi-ai/dist/models.js').write_text(
+                    "export const getSupportedThinkingLevels=()=>['low','high','max'];")
+                sdk = str(package / 'dist/index.js')
+            auth = root / 'auth'
+            auth.mkdir()
+            credential = {'type': 'oauth', 'access': 'KIMI_PRIVATE_ACCESS',
+                          'refresh': 'KIMI_PRIVATE_REFRESH', 'expires': 9999999999999}
+            (auth / 'auth.json').write_text(json.dumps({'kimi-coding': credential}))
+            init = {'schema': 'af.pi-host/3', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
+                    'auth_dir': str(auth),
+                    'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
+                    'principal': None, 'cwd': directory, 'home': directory,
+                    'readable': [directory], 'writable': [directory], 'probe': True}
+            def invoke(records, wrapper=None):
+                return subprocess.run([node, '--no-addons', str(wrapper or HOST)],
+                                      input=''.join(json.dumps(r) + '\n' for r in records),
+                                      capture_output=True, text=True, cwd=root, timeout=30,
+                                      env={'HOME': directory, 'PI_OFFLINE': '1', 'PI_TELEMETRY': 'off'},
+                                      check=False)
+            refused_context = invoke([{**init, 'auth_context_id': 'sha256:' + '0' * 64}])
+            self.assertEqual(refused_context.returncode, 1)
+            self.assertEqual(json.loads(refused_context.stdout)['code'], 'identity_changed')
+            result = invoke([init])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            ready = json.loads(result.stdout)
+            self.assertIsNone(ready['principal'])
+            self.assertEqual(ready['models'][0]['id'], 'k3')
+            self.assertEqual(ready['models'][0]['efforts'], ['low', 'high', 'max'])
+            prepare = {'schema': 'af.pi-host/3', 'type': 'prepare', 'model': 'k3',
+                       'effort': 'high', 'model_identity': ready['models'][0]['identity']}
+            for effort in ['off', 'medium', 'xhigh']:
+                refused = invoke([{**init, 'probe': False}, {**prepare, 'effort': effort}])
+                self.assertEqual(refused.returncode, 1)
+                self.assertNotIn('accepted', refused.stdout)
+            wrapper = root / 'invoke.mjs'
+            wrapper.write_text(r'''
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {pathToFileURL} from 'node:url';
+let calls=0;
+globalThis.WebSocket=class{constructor(){throw Error('WebSocket forbidden');}};
+globalThis.fetch=async(url,options)=>{
+ assert.equal(String(url),'https://api.kimi.com/coding/v1/chat/completions');
+ assert.equal(new Headers(options.headers).get('authorization'),'Bearer KIMI_PRIVATE_ACCESS');
+ const body=JSON.parse(String(options.body));assert.equal(body.model,'k3');assert.equal(body.reasoning_effort,'high');
+ assert(++calls<=2,'hidden inference or retry');
+ if(calls===2){assert(body.messages.some(m=>m.role==='tool'));assert.equal(fs.readFileSync('kimi-edited','utf8'),'confined Kimi edit');}
+ const delta=calls===1 ? {role:'assistant',tool_calls:[{index:0,id:'tool-1',type:'function',function:{name:'write',arguments:'{"path":"kimi-edited","content":"confined Kimi edit"}'}}]}
+ : {role:'assistant',content:'KIMI_FIXTURE_RESULT'};
+ const chunk={id:'chat-'+calls,object:'chat.completion.chunk',created:1,model:'k3',choices:[{index:0,delta,finish_reason:null}]};
+ const usage={prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
+ const final={...chunk,choices:[{index:0,delta:{},finish_reason:calls===1?'tool_calls':'stop',...(calls===2?{usage}:{})}],...(calls===1?{usage}:{})};
+ return new Response([chunk,final].map(c=>'data: '+JSON.stringify(c)+'\n\n').join('')+'data: [DONE]\n\n',
+ {headers:{'content-type':'text/event-stream'}});
+};
+const host=await import(pathToFileURL(HOST_PATH).href);await host.main();
+'''.replace('HOST_PATH', json.dumps(str(HOST))))
+            prompt = {'schema': 'af.pi-host/3', 'type': 'prompt', 'text': 'Use the confined write tool.',
+                      'prompt_nonce': 'sha256:' + 'e' * 64}
+            result = invoke([{**init, 'probe': False}, prepare, prompt], wrapper)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            records = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(records[-1]['type'], 'settled', records)
+            finalized = [r for r in records if r['type'] == 'usage' and r['complete']]
+            self.assertEqual(len(finalized), 2 if official else 1)
+            self.assertTrue(all((r['input'], r['output'], r['cache_read'], r['reasoning']) ==
+                                (12, 3, 2, 1) for r in finalized))
+            self.assertEqual((root / 'kimi-edited').read_text(), 'confined Kimi edit')
+            for secret in credential['access'], credential['refresh']:
+                self.assertNotIn(secret, result.stdout + result.stderr)
+            print('Kimi SDK tools and raw usage: passed (' +
+                  ('official SDK, mocked HTTP; no live call)' if official else 'hermetic SDK fixture)'))
 
     def test_confined_tools_identity_rotation_and_resource_contract(self):
         node = shutil.which('node')

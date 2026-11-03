@@ -1,6 +1,6 @@
 # Pi coding agent Provider
 
-Status: implemented SDK host architecture, 2026-11-01. See proposed
+Status: implemented SDK host architecture and Kimi backend, 2026-11-03. See proposed
 [Pi SDK host decision](../adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
 
 AF supports **Node >=22.19** and the installed official
@@ -16,6 +16,7 @@ No npm install, SDK update, model refresh or paid probe runs during registration
 | Backend | Authentication | Support |
 |---|---|---|
 | `openai-codex` | Stored Pi OAuth with canonical nonempty `accountId` | Supported SDK host path; paid live smoke not run |
+| `kimi-coding` | Stored Pi OAuth; no account principal | K3 low/high/max; context-only identity; paid live smoke not run |
 | `openai`, `anthropic`, any other backend | Any | Refused |
 | Any | API key, environment/cloud auth, executable helper | Refused |
 | Any | Custom endpoint, `models.json`, extensions, MCP, warm session | Refused |
@@ -47,12 +48,12 @@ cloud and API-key environment variables are absent from the host. `--login` and
 `af provider auth` are unavailable for Pi; login stays human-driven in Pi's own terminal.
 `provider detect` scans the existing Codex/Claude contexts; Pi uses explicit setup.
 
-The machine-local registry is version **2**, retaining the auth-directory uniqueness rule.
-Pi entries require `kind = "pi"`, `backend = "openai-codex"`, `auth_dir` and
-`sdk_entrypoint`. Version 1 is refused; recreate registrations with this release rather
+The machine-local registry is version **3**, retaining the auth-directory uniqueness rule.
+Pi entries require `kind = "pi"`, `backend = "openai-codex"` or `"kimi-coding"`, `auth_dir` and
+`sdk_entrypoint`. Versions 1 and 2 are refused; recreate registrations with this release rather
 than migrating an older registry (ADR-0145). Existing Codex and Claude entries use the
-same fields in version 2, and their adapters and default assignments are unchanged.
-A Pi setup result is `af/pi-provider-setup@2`; status is `af/provider-status@5` and
+same fields in version 3, and their adapters and default assignments are unchanged.
+A Pi setup result is `af/pi-provider-setup@3`; status is `af/provider-status@5` and
 model discovery is `af/provider-models@2`. Setup emits that Pi report for every internal
 refusal after Pi setup is invoked, including discovery, invalid configuration, installation,
 authentication and registry failures. In setup reports, `id` is null for an invalid/reserved
@@ -60,14 +61,14 @@ requested ID and `backend` is null for an absent/unsupported requested backend; 
 invents a supported identity or echoes invalid raw request values. Registered/conflict outcomes
 require both validated values. Failures print the same safe AF-authored detail and outcome on
 stderr, including with `--json`; early refusals exit 3 and registry conflicts exit 5.
-CLI parser errors before invocation remain ordinary usage errors. Setup report v1 and host
-protocol v1 fail closed under ADR-0145. Status proves authentication, never paid
+CLI parser errors before invocation remain ordinary usage errors. Earlier setup reports and host
+protocols fail closed under ADR-0145. Status proves authentication, never paid
 usability. Subscription quota probing is unsupported.
 
 ## Account, model and captured authority
 
 The host alone opens Pi `AuthStorage` for the explicit profile's `auth.json`. It accepts
-only a canonical stored OAuth credential and hashes **only** its non-secret `accountId`,
+only supported stored OAuth credentials. For OpenAI it hashes **only** non-secret `accountId`,
 with domain `af.pi.account/openai-codex\0`. Access and refresh tokens never leave that
 process or become artifacts, diagnostics or a principal hash. Registrations for the same
 account produce the same opaque principal, so aliases cannot establish independence.
@@ -79,24 +80,37 @@ the expected account on **every** read and inside **every** refresh transaction,
 after the SDK's update callback. The host also compares `accountId` to the non-secret routing
 account claim inside the access token, which Pi's inference adapter uses, so a stale field cannot conceal token replacement.
 Only that account identifier is hashed; the token and other claims stay inside the host. Token
-rotation for that account remains supported. Missing identity, an API key, or account
+rotation for that account remains supported. OpenAI missing identity, an API key, or account
 replacement fails closed. The same guarded store is supplied to `ModelRuntime`; no
 environment or helper can supply another inference credential.
+
+Kimi's SDK credential exposes only `type/access/refresh/expires`; no stable account identity
+is available. Its principal is `null`, with typed Pi `identity_mode = "unavailable"`.
+The canonical auth-context digest stays separate. No profile, alias, label or credential hash
+is an account. Trusted `distinct_principals` policy refuses unavailable identities, even
+across different backends and profiles. Before private invocation and refresh the host checks
+context and credential mode; **account substitution within that context cannot be detected**.
+Catalog Task pipelines explicitly select this policy. Installed native Review has no context-only
+policy and continues to require known account principals; Kimi Review uses a catalog Task pipeline.
+This narrow exception is recorded in the
+[Kimi identity decision](../adr/2026-11-03-admit-pi-kimi-with-explicit-unavailable-account-identity.md).
 
 Workers keep `--provider NODE=ID`. Their `provider_kind` is `pi`; their `model` is the
 exact SDK backend model ID, and `effort` is a supported Pi thinking level. Pi accepts
 `off minimal low medium high xhigh max`, narrowed by the selected model's catalog.
 The SDK's model-specific clamping is checked after session construction: AF refuses a
 changed effective setting. Pi does not apply the Codex/Claude hyphen-and-digit heuristic;
-unknown IDs and unsupported efforts refuse before private prompt delivery.
+unknown IDs and unsupported efforts refuse before private prompt delivery. Kimi is restricted
+to `k3`, `openai-completions`, official HTTPS `https://api.kimi.com/coding/v1` and precisely
+`low`, `high`, `max`; `medium` and `off` are unsupported.
 
-`WorkerExecutionV2::Model.pi` captures backend, OAuth method, exact SDK version, SDK and
+`WorkerExecutionV3::Model.pi` captures backend, OAuth method, exact SDK version, SDK and
 Node paths, auth-context identity, static model-configuration digest (including endpoint)
-and embedded host-policy digest. The opaque principal, model and effort remain separate
+and embedded host-policy digest. The optional account principal, typed identity mode, model and effort remain separate
 fields. Changed configuration requires normal plan revision/admission. Changed contracts
-are `af/ExecutionPlan@2`, `af/TaskProviderAdmission@2`,
-`af/LegacyReviewTaskPolicy@5`, `af/LegacyReviewInvocationPolicy@2` and
-`af/provider-doctor@3` and `af/task-inspection@15`, with closed schemas and parity tests. Unsupported prior types
+are `af/ExecutionPlan@3`, `af/TaskProviderAdmission@3`,
+`af/TaskProviderContext@2`, `af/LegacyReviewTaskPolicy@6`, `af/LegacyReviewInvocationPolicy@3` and
+`af/provider-doctor@4`, `af/task-plan-inspection@2` and `af/task-inspection@16`, with closed schemas and parity tests. Unsupported prior types
 are not readers or fallback paths.
 
 ## SDK construction and exposed tools
@@ -127,10 +141,12 @@ remote gate or `auto_apply` authority is granted.
 
 ## Protocol, lifecycle and accounting
 
-`af.pi-host/2` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v2.json`:
+`af.pi-host/3` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v3.json`:
 
 1. Rust sends `init`, containing no private Worker prompt. The host returns `ready` with
-   safe opaque identity and a bounded static catalog. A token-free probe ends here.
+   safe opaque identity and a bounded static catalog. The host compares the canonical auth
+   directory against the captured `auth_context_id` before opening credential storage, including
+   on the first invocation check. A token-free probe ends here.
 2. Rust compares captured identity/configuration, then sends `prepare` with exact model,
    effort and model digest. Only after `prepared` matches does Rust send `prompt`.
 3. Rust generates a fresh 256-bit random `prompt_nonce` challenge in the prompt writer and
@@ -149,6 +165,14 @@ remote gate or `auto_apply` authority is granted.
    unknown even in a complete snapshot; lifecycle completion does not invent usage values.
 5. The host requires actual `agent_settled`, successful final assistant text and the return
    of `session.prompt`. `agent_end`, EOF and exit zero cannot establish success.
+
+Kimi's callback receives the actual ChatCompletions chunk, with `chunk.usage` or
+`chunk.choices[].usage`. AF reads `prompt_tokens`, `completion_tokens`, cache reads from
+`prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens` or `cached_tokens`, and
+optional cache-write/reasoning details. Conflicting alternatives or malformed counters refuse.
+Initialized SDK counters are never observations. Required input/output/cache-read counters
+must be observed for complete charge accounting; no missing counter is guessed as zero.
+Reasoning is included in completion tokens, and repeated cumulative/final records count once.
 
 LF alone frames records; CRLF is accepted and U+2028/U+2029 remain string content. Partial
 records, incompatible versions, invalid state transitions, changed identities/settings,
@@ -224,3 +248,30 @@ observation and historical measurement runs with their historical file bindings.
 reproducible source-content projection separately binds the fresh manual measurement and current
 checks without including the validation record itself. No historical execution is reconstructed
 or attributed to this candidate.
+
+## Optional pi-light trial family
+
+The repository pins only `pi-light/implementer`, `correctness`, `evaluator`, `review`,
+`implementation` and `verification`. The implementer is Pi `kimi-coding` K3 **high**, using
+only confined file tools. Correctness is Codex `gpt-6-sol` **high**; evaluation is Codex
+`gpt-6-astra` **medium**. There is no extra reviewer. Verification is read-only with no
+implementer. Kernel and markdownlint remain mandatory local checks; existing light-family
+budgets, Attempt allowances and acceptance remain. No remote check is selected.
+
+Register `pi-kimi`; the two Codex roles use the existing `codex-main` registration. Trusted
+policy must allow context-only identity (`distinct_principals = false`); distinct-model policy
+still applies. Existing families and default selections are not migrated. In a Task file set
+`pipeline.name` to `pi-light/implementation`, with `pipeline.fallback = "refuse"` and the usual
+implementation requirements, standard facts and resource limits. Execute explicitly:
+
+```sh
+af task start --file ../pi-trial.json --execute --json
+```
+
+For a subsequent verification Task use `kind = "verification"` and
+`pipeline.name = "pi-light/verification"` on the implementation Task's recorded candidate.
+The regression `pi_light_family_compiles_current_receipts_exact_roles_and_local_checks`
+compiles both paths with private HOME, fake Provider executables and `env` present in fake
+PATH. It proves current check receipt contracts and the exact role map without inference.
+Issue537 optimization is intentionally left for the later actual Pi trial. These fixtures and
+mocked HTTP streams do not establish live Kimi success.
