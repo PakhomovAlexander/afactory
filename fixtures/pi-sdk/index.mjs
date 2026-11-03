@@ -17,7 +17,7 @@ export class ModelRuntime {
         if (Object.keys(options.env).length || options.maxRetries !== 0) throw Error('ambient auth/retry');
         await options.credentials?.read?.(backend());
         if (backend() === 'kimi-coding') {
-          const usage = {prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
+          const usage = state().usage ?? {prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
           for (const event of [{choices:[],usage}, {choices:[{usage}]}]) await options.onProviderStreamEvent(event, selected);
           return;
         }

@@ -106,7 +106,7 @@ to `k3`, `openai-completions`, official HTTPS `https://api.kimi.com/coding/v1` a
 
 `WorkerExecutionV3::Model.pi` captures backend, OAuth method, exact SDK version, SDK and
 Node paths, auth-context identity, static model-configuration digest (including endpoint)
-and embedded host-policy digest. The optional account principal, typed identity mode, model and effort remain separate
+and adapter-policy digest binding the embedded host and versioned backend accounting map. The optional account principal, typed identity mode, model and effort remain separate
 fields. Changed configuration requires normal plan revision/admission. Changed contracts
 are `af/ExecutionPlan@3`, `af/TaskProviderAdmission@3`,
 `af/TaskProviderContext@2`, `af/LegacyReviewTaskPolicy@6`, `af/LegacyReviewInvocationPolicy@3` and
@@ -170,9 +170,21 @@ Kimi's callback receives the actual ChatCompletions chunk, with `chunk.usage` or
 `chunk.choices[].usage`. AF reads `prompt_tokens`, `completion_tokens`, cache reads from
 `prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens` or `cached_tokens`, and
 optional cache-write/reasoning details. Conflicting alternatives or malformed counters refuse.
-Initialized SDK counters are never observations. Required input/output/cache-read counters
-must be observed for complete charge accounting; no missing counter is guessed as zero.
-Reasoning is included in completion tokens, and repeated cumulative/final records count once.
+Initialized SDK counters are never observations. Kimi's captured AF token-budget convention
+`af.pi-budget/kimi-total-input-plus-output@1` charges total `prompt_tokens + completion_tokens`,
+with no cache discount even when cache counters are present. Complete Kimi reporting requires
+valid input/output aggregates for every settled inference; absent cache/reasoning counters
+remain unknown. Cache writes and reasoning are already included, never added again.
+Repeated cumulative/final records count once. This is a conservative AF budget charge,
+not an invoice, uncached-token count or provider cost estimate. The
+[Kimi caching reference](https://platform.kimi.com/docs/guide/context-caching) documents total
+prompt input and final streaming usage; it does not establish absent cache as zero.
+
+`adapter_policy_id` uses domain `af.pi-adapter-policy@2` and binds the embedded host plus
+both backend convention identities and their map. A preceding host-only policy cannot
+silently adopt this accounting: it refuses before private input, without adding persisted
+fields. Missing, malformed, unsafe, conflicting or failed observations refuse complete
+accounting and retain preceding observed floors under ADR-0088.
 
 LF alone frames records; CRLF is accepted and U+2028/U+2029 remain string content. Partial
 records, incompatible versions, invalid state transitions, changed identities/settings,
@@ -190,7 +202,8 @@ with the first call's spend retained. The local Worker schema still validates re
 Pi is not assumed to provide native constrained JSON generation.
 
 Pi initializes its assistant counters to zero even when the server has not reported usage.
-AF instead observes native response events through `onProviderStreamEvent`:
+AF instead observes native response events through `onProviderStreamEvent`. OpenAI's
+unchanged convention `af.pi-budget/openai-input-minus-cache-read-plus-output@1` is:
 
 | AF counter | Native field | Treatment |
 |---|---|---|
@@ -201,11 +214,12 @@ AF instead observes native response events through `onProviderStreamEvent`:
 | reasoning | `output_tokens_details.reasoning_tokens` | Separate component, already in output |
 | charge | input minus cache read plus output | Each inference once |
 
-Missing counters stay unknown. A partial report retains its known billing floor; a complete
-charge requires known input, output and cache read for every inference and successful
+Missing counters stay unknown. A partial report retains its known budget floor; a complete
+OpenAI charge requires known input, output and cache read for every inference and successful
 settlement. Cache write and reasoning may remain unknown without inventing zero or double
-charging them. Monetary estimates are not invoices. The Attempt's reservation and deadline
-bound the whole invocation; AF promises no unimplemented provider-side hard token cap.
+charging them. AF budget charges are not monetary invoices or provider cost estimates. The
+Attempt's reservation and deadline bound the whole invocation; AF promises no unimplemented
+provider-side hard token cap.
 
 ## Evidence and remaining live smoke
 

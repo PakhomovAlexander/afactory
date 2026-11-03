@@ -628,6 +628,9 @@ assert.match(host.modelIdentity(model),/^sha256:/);
 for(const bad of [{...model,id:'kimi-for-coding'}, {...model,baseUrl:'http://api.kimi.com/coding/v1'},
                   {...model,baseUrl:'https://other.invalid'}, {...model,api:'anthropic-messages'},
                   {...model,provider:'other'}]) assert.throws(()=>host.modelIdentity(bad));
+const aggregate={prompt_tokens:439,completion_tokens:38,completion_tokens_details:{reasoning_tokens:24}};
+assert.deepEqual(host.rawUsage('kimi-coding',{usage:aggregate}),
+ {input:439,output:38,cache_read:null,cache_write:null,reasoning:24});
 const usage={prompt_tokens:12,completion_tokens:5,cached_tokens:3,completion_tokens_details:{reasoning_tokens:2}};
 const expected={input:12,output:5,cache_read:3,cache_write:null,reasoning:2};
 assert.deepEqual(host.rawUsage('kimi-coding',{usage}),expected);

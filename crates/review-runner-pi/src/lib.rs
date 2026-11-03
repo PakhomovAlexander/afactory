@@ -132,8 +132,44 @@ pub fn static_rules(model: &str, effort: &str) -> Result<(), String> {
 fn digest(value: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(value))
 }
+// Versioned AF token-budget conventions, not provider invoices. These identifiers spell
+// out both completeness and charging semantics; changing either must change the policy.
+#[derive(Clone, Copy)]
+enum Accounting {
+    OpenAi,
+    Kimi,
+}
+impl Accounting {
+    fn identity(self) -> &'static str {
+        match self {
+            Self::OpenAi => {
+                "af.pi-budget/openai-input-minus-cache-read-plus-output@1;required=input,output,cache_read;reasoning-and-cache-write-included"
+            }
+            Self::Kimi => {
+                "af.pi-budget/kimi-total-input-plus-output@1;required=input,output;no-cache-discount;reasoning-and-cache-write-included"
+            }
+        }
+    }
+}
+const BACKEND_ACCOUNTING: &[(&str, Accounting)] = &[
+    ("openai-codex", Accounting::OpenAi),
+    ("kimi-coding", Accounting::Kimi),
+];
+fn accounting(backend: &str) -> Option<Accounting> {
+    BACKEND_ACCOUNTING
+        .iter()
+        .find_map(|(id, convention)| (*id == backend).then_some(*convention))
+}
 pub fn policy_id() -> String {
-    digest(HOST.as_bytes())
+    let mut policy = b"af.pi-adapter-policy@2\0".to_vec();
+    for (backend, convention) in BACKEND_ACCOUNTING {
+        policy.extend_from_slice(backend.as_bytes());
+        policy.push(0);
+        policy.extend_from_slice(convention.identity().as_bytes());
+        policy.push(0);
+    }
+    policy.extend_from_slice(HOST.as_bytes());
+    digest(&policy)
 }
 
 /// No ambient module resolution: callers supply a resolved Node executable and installed SDK.
@@ -493,19 +529,35 @@ impl State {
                     .try_fold(0u128, |sum, u| Some(sum + u128::from(get(u)?)))
                     .map(Into::into)
             };
-        // The raw OpenAI input total includes cache reads/writes. Charge it once, excluding
-        // cache reads; output already includes reasoning. Missing fields stay unknown.
+        let convention = self
+            .ready
+            .as_ref()
+            .and_then(|ready| accounting(&ready.backend));
+        // Charge each inference once under its captured backend convention. Kimi charges
+        // total prompt + completion even when cache counters are present. OpenAI keeps its
+        // cache discount. Reasoning/cache writes are already included in those totals.
+        // Unknown counters remain unknown; only observed contributions form the floor.
         let charge = self.usage.values().fold(0u128, |sum, u| {
-            sum + u128::from(
-                u.input
+            sum + u128::from(match convention {
+                Some(Accounting::Kimi) => u.input.unwrap_or(0),
+                Some(Accounting::OpenAi) => u
+                    .input
                     .zip(u.cache_read)
                     .map_or(0, |(input, read)| input.saturating_sub(read)),
-            ) + u128::from(u.output.unwrap_or(0))
+                None => 0,
+            }) + u128::from(u.output.unwrap_or(0))
         });
         let complete = self.settled
             && self.error.is_none()
             && self.usage.values().all(|u| {
-                u.complete && u.input.is_some() && u.output.is_some() && u.cache_read.is_some()
+                u.complete
+                    && u.input.is_some()
+                    && u.output.is_some()
+                    && match convention {
+                        Some(Accounting::Kimi) => true,
+                        Some(Accounting::OpenAi) => u.cache_read.is_some(),
+                        None => false,
+                    }
             });
         TaskUsageObservationV1 {
             charge_complete: complete,

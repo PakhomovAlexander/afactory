@@ -48,7 +48,29 @@ Observe actual native ChatCompletions chunks through `onProviderStreamEvent`: `u
 `choices[].usage`, with the SDK-documented cached-token alternatives. Missing counters remain
 unknown; malformed counters refuse while preserving observed billing floors. Cumulative and
 identical final observations replace one inference's counters. Completion tokens already
-include reasoning; charge raw input minus cache reads plus output exactly once.
+include reasoning. Capture `af.pi-budget/kimi-total-input-plus-output@1`: the AF token-budget
+charge is total `prompt_tokens` plus `completion_tokens` for each inference exactly once,
+with no cache discount even when cache counters are supplied. Cache writes and reasoning
+are already included; never add either again. A complete Kimi charge requires valid observed
+input/output aggregates for every settled inference. Optional cache/reasoning counters stay
+observed or unknown, never synthesized zero. Missing, malformed, unsafe, conflicting or
+failed observations retain observed floors and refuse complete accounting under ADR-0088.
+OpenAI retains input minus cache read plus output and its missing-cache refusal.
+
+This is an explicit conservative AF budget convention, not an invoice, uncached-token count
+or provider cost estimate. The [Kimi context-caching reference](https://platform.kimi.com/docs/guide/context-caching)
+describes prompt tokens as total input, with cache-read/cache-write/uncached components,
+and requires `stream_options.include_usage = true` for final streaming usage. It does not
+establish absent cache as zero. The pinned SDK's ChatCompletions usage parser likewise
+separates cache components and includes reasoning in completion. The
+[Kimi Code documentation](https://www.kimi.com/code/docs/en/) establishes the coding service;
+AF still admits only the pinned SDK model and endpoint above.
+
+Domain `af.pi-adapter-policy@2` binds the embedded host and explicit versioned accounting
+convention map for both backends in `adapter_policy_id`. This captures Rust accounting
+semantics alongside the host, so a preceding host-only policy refuses before any private
+input. No persisted shape changes for this accounting correction: the existing policy digest
+field carries the changed identity; no compatibility reader or fallback is added.
 
 Changed contracts are `af/ExecutionPlan@3`, `af/TaskProviderAdmission@3`,
 `af/TaskProviderContext@2`, `af/LegacyReviewTaskPolicy@6`,

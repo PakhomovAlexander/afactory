@@ -146,11 +146,56 @@ fn invalid_counters_versions_and_lifecycle_fail_closed() {
     assert!(record(&mut state, "error", json!({"code":"host_refused"})).is_err());
 }
 
+#[test]
+fn kimi_invalid_missing_conflicting_and_unsafe_counters_keep_prior_observed_floor() {
+    for field in ["input", "output", "cache_read", "cache_write", "reasoning"] {
+        for bad in [
+            json!(-1),
+            json!(0.5),
+            json!("38"),
+            json!(true),
+            json!(9_007_199_254_740_992u64),
+            json!(u64::MAX),
+        ] {
+            let mut state = accepted();
+            let identity = state.ready.as_mut().unwrap();
+            identity.backend = "kimi-coding".into();
+            identity.principal = None;
+            identity.models[0].id = "k3".into();
+            identity.validate().unwrap();
+            let prior = json!({"inference":1,"complete":false,"input":439,"output":38,
+                "cache_read":null,"cache_write":null,"reasoning":24});
+            record(&mut state, "usage", prior.clone()).unwrap();
+            let mut next = prior.clone();
+            next[field] = bad;
+            assert!(record(&mut state, "usage", next).is_err(), "{field}");
+            let mut missing = prior;
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(record(&mut state, "usage", missing).is_err(), "{field}");
+            let observation = state.observation();
+            assert!(!observation.charge_complete);
+            let observed = observation.reported_usage.unwrap();
+            assert_eq!(observed.chargeable_tokens.get(), 477);
+            assert_eq!(observed.input_tokens.unwrap().get(), 439);
+            assert_eq!(observed.output_tokens.unwrap().get(), 38);
+            assert_eq!(observed.reasoning_tokens.unwrap().get(), 24);
+            assert!(observed.cache_read_tokens.is_none());
+            assert!(observed.cache_write_tokens.is_none());
+        }
+    }
+}
+
 mod process {
     use super::*;
     fn fixture(mode: &str, root: &Path, socket: Option<&Path>) -> PiTaskAdapter {
         let node = root.join("node");
-        let mut response = serde_json::to_value(ready()).unwrap();
+        let mut identity = ready();
+        if mode.starts_with("kimi-") {
+            identity.backend = "kimi-coding".into();
+            identity.principal = None;
+            identity.models[0].id = "k3".into();
+        }
+        let mut response = serde_json::to_value(&identity).unwrap();
         response["schema"] = json!(PROTOCOL);
         response["type"] = json!("ready");
         let body = r#"#!/usr/bin/python3 -B
@@ -187,6 +232,27 @@ if mode=='before-prompt':
 prompt=json.loads(sys.stdin.readline())
 open(MARKER,'w').write(prompt['text'])
 emit({'type':'accepted','prompt_nonce':prompt['prompt_nonce']})
+if mode.startswith('kimi-') or mode=='openai-no-cache':
+ u={'type':'usage','inference':1,'complete':True,'input':439,'output':38,'cache_read':None,'cache_write':None,'reasoning':24}
+ if mode=='kimi-cache': u.update(cache_read=200,cache_write=100)
+ if mode=='kimi-no-reasoning': u['reasoning']=None
+ if mode=='kimi-missing-input': u['input']=None
+ if mode=='kimi-missing-output': u['output']=None
+ if mode=='kimi-repeated':
+  emit(dict(u,complete=False,input=400,output=30))
+ emit(u)
+ if mode=='kimi-repeated': emit(u)
+ if mode=='kimi-multiple': emit(dict(u,inference=2))
+ if mode in ['kimi-malformed','kimi-overflow','kimi-conflict']:
+  bad=dict(u)
+  if mode=='kimi-malformed': bad['output']='38'
+  if mode=='kimi-overflow': bad['input']=2**64
+  if mode=='kimi-conflict': bad['cache_read']=440
+  emit(bad)
+ if mode=='kimi-failed':
+  emit({'type':'error','code':'inference_failed'}); sys.exit(0)
+ emit({'type':'message','text':'aggregate result'})
+ emit({'type':'settled'}); sys.exit(0)
 if mode!='no-usage':
  emit({'type':'usage','inference':1,'complete':mode not in ['incomplete','earlier-incomplete'],'input':None if mode=='unknown-usage' else 10,'output':None if mode=='unknown-usage' else 2,'cache_read':None if mode=='unknown-usage' else 3,'cache_write':None,'reasoning':None})
 if mode=='earlier-incomplete': emit({'type':'usage','inference':2,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
@@ -221,20 +287,102 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         std::fs::write(&node, body).unwrap();
         std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config = PiConfig {
-            backend: "openai-codex".into(),
+            backend: identity.backend.clone(),
             sdk_entrypoint: root.join("sdk/dist/index.js"),
         };
-        let captured = authority(&node, &config, root, &ready().models[0]).unwrap();
+        let captured = authority(&node, &config, root, &identity.models[0]).unwrap();
         PiTaskAdapter {
             node,
             config,
             auth_dir: root.into(),
-            principal: Some(digest(b"account")),
-            model: "o3".into(),
+            principal: identity.principal,
+            model: identity.models[0].id.clone(),
             effort: "high".into(),
             captured,
         }
     }
+    #[test]
+    fn kimi_adapter_aggregate_budget_preserves_unknown_cache_and_refuses_bad_observations() {
+        for (mode, complete, charge, message_ok) in [
+            ("kimi-aggregate", true, 477, true),
+            ("kimi-cache", true, 477, true),
+            ("kimi-no-reasoning", true, 477, true),
+            ("kimi-repeated", true, 477, true),
+            ("kimi-multiple", true, 954, true),
+            ("kimi-missing-input", false, 38, true),
+            ("kimi-missing-output", false, 439, true),
+            ("kimi-malformed", false, 477, false),
+            ("kimi-overflow", false, 477, false),
+            ("kimi-conflict", false, 477, false),
+            ("kimi-failed", false, 477, false),
+            ("openai-no-cache", false, 38, true),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let adapter = fixture(mode, root.path(), None);
+            let cas = Cas::open(root.path().join("cas")).unwrap();
+            let returned = adapter.invoke(
+                &cas,
+                root.path(),
+                b"private request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            assert_eq!(
+                returned.message.is_ok(),
+                message_ok,
+                "{mode}: {:?}",
+                returned.message
+            );
+            // Incomplete observations refuse Task admission even when lifecycle/text succeeded.
+            assert_eq!(returned.usage_observation.is_none(), complete, "{mode}");
+            if let Some(observation) = &returned.usage_observation {
+                assert!(!observation.charge_complete, "{mode}");
+                assert_eq!(observation.reported_usage, returned.usage, "{mode}");
+            }
+            let observed = returned.usage.unwrap();
+            assert_eq!(observed.chargeable_tokens.get(), charge, "{mode}");
+            assert_eq!(
+                observed.input_tokens.map(|v| v.get()),
+                (mode != "kimi-missing-input").then_some(if mode == "kimi-multiple" {
+                    878
+                } else {
+                    439
+                }),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.output_tokens.map(|v| v.get()),
+                (mode != "kimi-missing-output").then_some(if mode == "kimi-multiple" {
+                    76
+                } else {
+                    38
+                }),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.cache_read_tokens.map(|v| v.get()),
+                (mode == "kimi-cache").then_some(200),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.cache_write_tokens.map(|v| v.get()),
+                (mode == "kimi-cache").then_some(100),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.reasoning_tokens.map(|v| v.get()),
+                (mode != "kimi-no-reasoning").then_some(if mode == "kimi-multiple" {
+                    48
+                } else {
+                    24
+                }),
+                "{mode}"
+            );
+        }
+    }
+
     #[test]
     fn expired_or_cancelled_attempts_do_not_start_a_host() {
         for expired in [false, true] {
@@ -474,9 +622,16 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             "model",
             "effort",
             "version",
+            "prior-policy",
+            "kimi-prior-policy",
         ] {
             let root = tempfile::tempdir().unwrap();
             let mut adapter = fixture(mode, root.path(), None);
+            if mode.ends_with("prior-policy") {
+                // The preceding policy captured only HOST, omitting Rust accounting semantics.
+                adapter.captured.adapter_policy_id = digest(HOST.as_bytes());
+                assert_ne!(adapter.captured.adapter_policy_id, policy_id());
+            }
             if mode == "auth-context" {
                 adapter.auth_dir = root.path().join("different-auth-context");
                 std::fs::create_dir(&adapter.auth_dir).unwrap();
@@ -493,6 +648,9 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             );
             assert!(returned.message.is_err(), "{mode}");
             assert!(!root.path().join("prompt").exists(), "{mode}");
+            if mode.ends_with("prior-policy") {
+                assert!(!root.path().join("started").exists());
+            }
             assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
         }
     }

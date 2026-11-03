@@ -45,7 +45,15 @@ Pi owns the OAuth record and its additional SDK metadata. AF validates the requi
 mode, nonempty access/refresh strings and finite expiry, preserving opaque metadata through
 refresh without interpreting it as account identity, settings, endpoints or helpers.
 Kimi raw usage is observed from native chunks, including cached-token alternatives; missing
-counters remain unknown. No live Kimi inference was run for this implementation.
+counters remain unknown. Kimi's captured AF token-budget convention charges total
+`prompt_tokens + completion_tokens` once per inference, with no cache discount even when
+cache counters are present. Reasoning and cache writes are already included, never added
+again. Complete reporting needs valid input/output aggregates for every settled inference;
+absent optional cache/reasoning counters remain unknown. This conservative budget charge is
+not an invoice, uncached-token count or provider cost estimate. OpenAI retains input minus
+cache read plus output and refuses complete accounting without observed cache reads.
+The captured policy digest binds these versioned backend conventions and the host; preceding
+policy identities refuse before private input. No live Kimi inference was run by this Worker.
 
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without

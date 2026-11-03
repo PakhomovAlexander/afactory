@@ -615,6 +615,15 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         let (sdk, path, state) = crate::fake_models::install_pi(f._root.path(), &f.home, mode);
         f.path = path;
         let kimi = mode.starts_with("kimi-");
+        if mode == "kimi-document" {
+            // Exercise actual Task admission and Worker settlement with total native usage
+            // and unknown cache, rather than an SDK's initialized cache zero.
+            let mut fixture: Value =
+                serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+            fixture["usage"] = json!({"prompt_tokens":439,"completion_tokens":38,
+                "completion_tokens_details":{"reasoning_tokens":24}});
+            std::fs::write(&state, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        }
         let backend = if kimi { "kimi-coding" } else { "openai-codex" };
         if kimi {
             // Successful context-only admission requires explicit trusted policy. The
@@ -686,7 +695,7 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         ) {
             assert!(!out.status.success(), "{done}");
             assert_eq!(calls, "admission\n");
-            assert_eq!(done["chargeable_tokens"], if kimi { "13" } else { "5" });
+            assert_eq!(done["chargeable_tokens"], if kimi { "15" } else { "5" });
         } else {
             assert!(
                 out.status.success(),
@@ -707,7 +716,7 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
                 if mode == "retry" {
                     "15"
                 } else if kimi {
-                    "26"
+                    "954"
                 } else {
                     "10"
                 }
