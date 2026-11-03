@@ -158,6 +158,7 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
             }
         }
         let spec = ProviderSpec {
+            pi: None,
             id: "native-auth-guard".into(),
             kind,
             auth_dir: Some(auth_dir.to_path_buf()),
@@ -172,6 +173,7 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
         super::configure_private_login_environment(&mut command, &spec, &sanitized_path());
         command.env("NO_COLOR", "1").env("TERM", "dumb");
         match kind {
+            ProviderKind::Pi => return Ok(PROVIDER_CLI_MISSING),
             ProviderKind::Codex => {
                 command.args(["login", "--device-auth"]);
             }

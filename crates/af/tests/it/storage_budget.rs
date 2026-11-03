@@ -218,6 +218,213 @@ fn a_run_refused_before_any_work_still_holds_af_to_its_budget() {
 }
 
 #[test]
+fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_budget() {
+    use serde_json::json;
+    let machine = Machine::new();
+    let repo = machine.root.join("repo");
+    let owned = machine.root.join("owned");
+    for dir in [&repo, &owned] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let state = machine.root.join("scenarios");
+    let bundle_file = machine.root.join("bundle.json");
+    let policy_file = machine.root.join("policy.json");
+    let inputs_file = machine.root.join("inputs.json");
+    let ant_file = machine.root.join("ant.json");
+    let grant = json!({"adapter":"builtin","operation":"write_owned_file","destination":owned});
+    let limits = json!({"max_tokens":0,"max_wall_ms":60000,"max_dispatches":8});
+    let literal =
+        |kind: &str, data: Value| json!({"source":"literal","value":{"type":kind,"value":data}});
+    let bundle = json!({
+        "schema":"af/scenario-bundle@1","root":"main","definitions":{"main":{
+            "schema":"af/scenario@1","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
+            "steps":[{"id":"write","operation":{"kind":"action","grant":grant,
+                "requires_decision":false,"required_condition":null},
+                "inputs":{"file":{"source":"input","port":"file"},
+                    "content":literal("text",json!("action-only fixture"))},
+                "outputs":{"result":"owned_file"},"when":null,"max_attempts":1,
+                "timeout_ms":60000,"on_timeout":"fail"}],
+            "result":{"ok":literal("boolean",json!(true))},
+            "completion":[literal("boolean",json!(true))],
+            "authority":{"task_plans":[],"grants":[grant],"decision_owners":[]},"limits":limits
+        }}
+    });
+    let policy = json!({"schema":"af/scenario-policy@1","adapters":{},"task_plans":[],
+        "decision_keys":{},"file_roots":[owned]});
+    let write = |path: &Path, value: &Value| {
+        std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    };
+    write(&bundle_file, &bundle);
+    write(&policy_file, &policy);
+    std::fs::set_permissions(&policy_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let definition = [
+        "--file",
+        bundle_file.to_str().unwrap(),
+        "--authority",
+        policy_file.to_str().unwrap(),
+    ];
+    let pin = json(&machine.af(
+        &repo,
+        &[],
+        &[&["scenario", "validate"][..], &definition, &["--json"]].concat(),
+    ));
+    let due = 1_800_000_000_000_u64 / 86_400_000 * 86_400_000 + 12 * 3_600_000;
+    for (index, (id, key)) in [("start", 'a'), ("resume", 'b'), ("ant", 'c')]
+        .into_iter()
+        .enumerate()
+    {
+        write(&inputs_file, &json!({"file":{"type":"text","value":id}}));
+        let start = [
+            &["scenario", "start", id][..],
+            &definition,
+            &[
+                "--inputs",
+                inputs_file.to_str().unwrap(),
+                "--confirm-pin",
+                pin["revision"].as_str().unwrap(),
+                "--state",
+                state.to_str().unwrap(),
+                "--json",
+            ],
+        ]
+        .concat();
+        let command = match id {
+            "start" => [start, vec!["--execute"]].concat(),
+            "resume" => {
+                assert_eq!(json(&machine.af(&repo, &[], &start))["status"], "ready");
+                vec![
+                    "scenario",
+                    "resume",
+                    id,
+                    "--state",
+                    state.to_str().unwrap(),
+                    "--json",
+                ]
+            }
+            _ => {
+                write(
+                    &ant_file,
+                    &json!({"schema":"af/ant@1","id":"daily","scenario":bundle,
+                    "inputs":{"file":{"type":"text","value":id}},
+                    "schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
+                    "owner":"owner","notification":"local:owner","execution":{"overlap":"skip",
+                        "missed":"skip","lateness_ms":1000,"per_run":limits,
+                        "rolling_tokens":0,"rolling_window_ms":86400000}}),
+                );
+                let definition = [
+                    "--file",
+                    ant_file.to_str().unwrap(),
+                    "--authority",
+                    policy_file.to_str().unwrap(),
+                ];
+                let pin = json(&machine.af(
+                    &repo,
+                    &[],
+                    &[&["ant", "validate"][..], &definition, &["--json"]].concat(),
+                ));
+                json(
+                    &machine.af(
+                        &repo,
+                        &[],
+                        &[
+                            &["ant", "add"][..],
+                            &definition,
+                            &[
+                                "--confirm-pin",
+                                pin["revision"].as_str().unwrap(),
+                                "--state",
+                                state.to_str().unwrap(),
+                                "--now",
+                                &due.to_string(),
+                                "--json",
+                            ],
+                        ]
+                        .concat(),
+                    ),
+                );
+                json(&machine.af(
+                    &repo,
+                    &[],
+                    &[
+                        "ant",
+                        "enable",
+                        "daily",
+                        "--state",
+                        state.to_str().unwrap(),
+                        "--now",
+                        &due.to_string(),
+                        "--json",
+                    ],
+                ));
+                vec!["ant", "tick", "--state", state.to_str().unwrap(), "--json"]
+            }
+        };
+        let due_text = due.to_string();
+        let command = if id == "ant" {
+            [command, vec!["--now", &due_text]].concat()
+        } else {
+            command
+        };
+        // Installation is required before any effect, even though no Task is dispatched.
+        let refused = machine.af(&repo, &[("AF_STORAGE__MAX_BYTES", "invalid")], &command);
+        assert!(!refused.status.success(), "{id}: {:?}", text(&refused));
+        assert!(text(&refused).1.contains("storage budget cannot be set up"));
+        assert!(!owned.join(id).exists());
+        let idle = warm_key(&machine, key, 16 * 1024, 30 * DAY);
+        let executed = machine.af(&repo, &[("AF_STORAGE__MAX_BYTES", "1KiB")], &command);
+        let document = json(&executed);
+        if index < 2 {
+            assert_eq!(document["status"], "succeeded");
+            assert_eq!(
+                document["frames"]["root"]["steps"][0]["outputs"]["result"]["type"],
+                "owned_file"
+            );
+        } else {
+            assert_eq!(document["started"].as_array().unwrap().len(), 1);
+            assert!(
+                document["runs"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(|r| r["status"] == "succeeded")
+            );
+        }
+        assert!(owned.join(id).is_file(), "{id}: action ran");
+        assert!(
+            !idle.exists(),
+            "{id}: end-of-run budget sweep: {:?}",
+            text(&executed)
+        );
+        assert!(text(&executed).1.contains("storage: freed "));
+    }
+    let registry = std::fs::read_to_string(machine.state_home().join("af/stores.toml")).unwrap();
+    assert!(registry.contains(state.to_str().unwrap()));
+    let listed = json(&machine.af(
+        &repo,
+        &[],
+        &[
+            "scenario",
+            "list",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    ));
+    assert_eq!(
+        listed["runs"].as_object().unwrap().len(),
+        3,
+        "journal survived sweeps"
+    );
+    let inventory = json(&machine.af(&repo, &[], &["storage", "--json"]));
+    assert!(
+        inventory["total_bytes"].as_u64().unwrap()
+            >= std::fs::metadata(state.join("runs/scenarios.sqlite"))
+                .unwrap()
+                .len()
+    );
+}
+
+#[test]
 fn a_repository_storage_table_changes_nothing_and_is_reported_as_ignored() {
     let machine = Machine::new();
     let (repo, _) = task_cli::fixture_named(&machine.root, "pagination");
@@ -640,7 +847,7 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     std::fs::write(
         &registry,
-        toml::to_string(&serde_json::json!({"version": 1, "providers": [
+        toml::to_string(&serde_json::json!({"version": 2, "providers": [
             {"id": "claude-personal", "kind": "claude", "auth_dir": config}]}))
         .unwrap(),
     )
@@ -822,7 +1029,7 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     let (stdout, stderr) = text(&newer);
     assert!(newer.status.success(), "{stdout}\n{stderr}");
     let shown = json(&show("gc-newer", true));
-    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
@@ -1167,7 +1374,7 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
         machine.af(&repo, &[], &args)
     };
     let shown = json(&show(true));
-    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };

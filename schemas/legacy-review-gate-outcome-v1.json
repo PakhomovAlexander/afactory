@@ -8,7 +8,7 @@
   "properties": {
     "round_event_id": { "type": "string", "pattern": "^[a-z0-9]{26}$" },
     "review_node": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "gate_decision_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/digest" },
+    "gate_decision_id": { "$ref": "urn:af:schema:task-contracts:2#/$defs/digest" },
     "outcome": { "enum": ["passed", "failed"] }
   }
 }

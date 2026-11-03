@@ -72,8 +72,9 @@ are at any point, token-free.
 
    It finds the logins on this machine and registers them. With no login yet, run
    `af provider setup claude-main --kind claude --login` (or `codex-main --kind codex`) yourself,
-   at your own terminal, never through an agent. af keeps no credential: the registry holds an
-   ID, a kind and a directory ([docs/providers.md](docs/providers.md)).
+   at your own terminal, never through an agent. The registry keeps non-secret configuration only. The native CLI, or AF's Pi SDK host, owns
+   credentials. Explicit Pi 1.4.0 `openai-codex` OAuth setup is described in
+   [docs/providers.md](docs/providers.md).
 
 3. **Onboard a repository.** In a clean checkout you trust, preview `.af/`, write it, and commit
    it. On a first run, enter the commands one at a time and read `git diff --cached -- .af`
@@ -194,13 +195,18 @@ the guide.
   work on copies, and a Task's result goes to a new branch and worktree. af writes into a
   checkout only when you point a command at it, such as `af onboard --apply` (its `.af/`) or
   `af task materialize --into DIR`.
-- **You publish.** af does not commit, push or open a pull request. The one exception is opt-in:
+- **Publication needs separate authority.** Task delivery stays local. Two opt-in paths can
+  publish:
   a Task pipeline that runs a check as a Remote Check pushes exactly two `af-gate/<task-id>/`
   branches and opens one draft pull request between them so your CI can run that check. The
   machine's operator authorizes it by mapping the repository to a push target. The plan names
   the destination for you to confirm, but `--execute` skips that confirmation, so map a
   repository only on a machine where every Task may push its gate branches
-  ([docs/task-execution/remote-checks.md](docs/task-execution/remote-checks.md)).
+  ([docs/task-execution/remote-checks.md](docs/task-execution/remote-checks.md)). A Scenario
+  Action can invoke an installed, pinned publication adapter only for a separately authorized
+  operation and destination, with a signed human decision on the exact object and revision.
+  [Scenarios and Ants](docs/scenarios.md) coordinate these steps and existing Tasks; daily Ants
+  are driven by local `af ant tick`. No active instances or publication grants ship enabled.
 - **No stored credentials.** A Provider is the official `claude` or `codex` CLI's own login:
   af's registry holds its ID, kind and directory, and `af provider setup --login` runs only at
   an interactive terminal.

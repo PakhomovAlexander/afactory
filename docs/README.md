@@ -54,6 +54,8 @@ any af command ([design](design/tui.md)).
 | [`agents.md`](agents.md) | The loop an agent or a script drives with `af task`: plan, run or detach, read the state and findings, diff or materialize, run another round, deliver, describe the pull request (`af help agents`). |
 | [`project.md`](project.md) | What `af project` knows about a repository: its Project identity and Project Store, its Workspaces (one checkout per line of work, with its own Task Store, Task files and bindings), every `af project` command, `--workspace` on `af task`, and what is written where. |
 | [`task-execution/preflight.md`](task-execution/preflight.md) | Offline orchestration checklist for source lineage, declared budgets and evidence ordering; advisory only. |
+| [`scenarios.md`](scenarios.md) | Durable Scenarios, signed decisions, bounded adapters, owned-file cleanup and daily Ant scheduling. |
+| [`scenario-github-adapter.md`](scenario-github-adapter.md) | Optional installed GitHub Scenario adapter: private authority, exact locked-head publication, durable recovery, CI/merge observations and inert examples. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and walkthroughs for the common Task execution abstraction. |
 | [`task-execution/task-inputs.md`](task-execution/task-inputs.md) | The Task file's `inputs` table: binding a root input port to a recorded Task's output instead of exporting it to a file, what resolution records, and how a binding is shown. |
 | [`task-execution/experiments.md`](task-execution/experiments.md) | How an experiment Task measures a declared command on the source and on a candidate, compares the two under a declared objective, and gates its evaluator on the result: the `[measures]` and `[objectives]` policy tables, the report line, failure reasons and comparison rules. |
@@ -82,7 +84,7 @@ any af command ([design](design/tui.md)).
 | [`values.md`](values.md) | The eight engineering values in priority order and the three product values, each with the tests that decide whether a change honours it. Binding. |
 | [`design/`](design/README.md) | The designs still in flight: [warm layers](design/worker-warm-layers.md) with its [package plan](design/worker-warm-layers-plan.md), the [self-optimizer](design/self-optimizer.md), [research pipelines](design/research-pipelines.md), and the [continuous performance laboratory](design/continuous-performance.md). Direction, not shipped behaviour; where a note and an ADR disagree, the ADR wins. |
 | [`../brand/`](../brand/README.md) | The design system: the logo files and every asset derived from them, the colour, type and spacing tokens, and the rules for the website, the TUI and GitHub. `brand/gen.py` regenerates the assets. |
-| [`adr/`](adr/README.md) | The binding decisions, one per file, with the options that were rejected and why. The index in `adr/README.md` lists every one. |
+| [`adr/`](adr/README.md) | The binding decisions, one per file, with the options that were rejected and why. The stable guide in `adr/README.md` documents discovery with `python3 -I scripts/adr.py list`. |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | What each release changed and whether committed `.af/` policy keeps working, needs `af onboard --refresh-lock`, or needs a documented hand edit. |
 
 ## Troubleshooting
@@ -136,18 +138,16 @@ indexes one of these roots. Exclude them once:
 
 ## Reading and writing ADRs
 
-An ADR is numbered (`NNNN-kebab-case-title.md`, the next number after the highest in
-`docs/adr/`), opens with a status line that names the status and date, states the context, lists
-the considered options with the reasons each was rejected, records the decision, and ends with
-its consequences. Accepted ADRs are immutable; a change is a new ADR that says what it
-supersedes. A partially superseded ADR gains a status-line note linking the new one, and that
-status line may be restated when the new ADR spends the transition wording it carried; a fully
-superseded ADR is deleted, and git history keeps it, unless the superseding ADR keeps it with a
-superseded status line.
-Links to a deleted ADR, or to an internal record or completed design note that was deleted, are
-rewritten to point at the superseding ADR or to plain text; this is the only edit allowed in
-another accepted ADR's body (ADR-0113 clauses 6 and 8, ADR-0145 clause 8). Propose one by copying the shape of a recent ADR, adding it to the
-index in [`adr/README.md`](adr/README.md), and opening a pull request.
+Follow the stable [ADR authoring and lifecycle guide](adr/README.md). Add only the decision's
+own `YYYY-MM-DD-descriptive-topic.md` file, with a unique topic and stable date-topic identity;
+no sequence allocation or central index edit is needed. Open with status and date, state the
+context, rejected options and reasons, decision and consequences. Accepted identities and
+bodies stay immutable; supersession follows the guide's status-only and deleted-link rules.
+Legacy numbered identities and historical exceptions remain unchanged.
+
+Browse the [decision directory on GitHub](https://github.com/PakhomovAlexander/afactory/tree/main/docs/adr)
+or run `python3 -I scripts/adr.py list` from the repository root for deterministic titles,
+recorded statuses and relative file links. Output is derived on demand and never committed.
 
 ## Conventions
 

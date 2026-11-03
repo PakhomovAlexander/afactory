@@ -194,7 +194,7 @@ impl EventStore {
         lease: &TaskLease,
         output_id: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV1), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlanV2), StoreError> {
         let (state, plan) = self.checked_task_recording(cas, lease, authority)?;
         state.check_recorded_output(cas, output_id)?;
         Ok((state, plan))
@@ -208,7 +208,7 @@ impl EventStore {
         lease: &TaskLease,
         invocation_id: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV1, StoreError> {
+    ) -> Result<ExecutionPlanV2, StoreError> {
         let (state, plan) = self.checked_task_recording(cas, lease, authority)?;
         let execution = state
             .execution

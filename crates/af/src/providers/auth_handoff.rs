@@ -365,6 +365,9 @@ fn now() -> u64 {
 fn resolve(id: &str, kind: &str, auth: &Path, create: bool) -> Result<ProviderSpec, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
+    if kind == ProviderKind::Pi {
+        return Err("Pi OAuth login must be completed with Pi at a private terminal; register the existing profile with af provider setup --kind pi".into());
+    }
     let missing = if create {
         MissingAuthDir::Create
     } else {
@@ -372,6 +375,7 @@ fn resolve(id: &str, kind: &str, auth: &Path, create: bool) -> Result<ProviderSp
     };
     let auth = resolve_auth_dir(kind, Some(auth), missing)?;
     Ok(ProviderSpec {
+        pi: None,
         id: id.into(),
         kind,
         auth_dir: Some(auth),

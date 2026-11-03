@@ -1,0 +1,7 @@
+{
+  "schema": "af/github-publish-pr@1",
+  "head": "approved/change",
+  "base": "main",
+  "title": "Approved change",
+  "body": "Exact approved publication text"
+}

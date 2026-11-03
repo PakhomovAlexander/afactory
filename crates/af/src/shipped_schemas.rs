@@ -23,6 +23,11 @@ macro_rules! schema {
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
+    schema!("ant-list", 1),
+    schema!("ant-pin", 1),
+    schema!("ant-state", 1),
+    schema!("ant-tick", 1),
+    schema!("ant", 1),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
@@ -30,14 +35,27 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("issue-triage-hold", 1),
     schema!("issue-triage-merged", 1),
     schema!("issue-triage", 1),
+    schema!("pi-provider-setup", 2),
     schema!("provider-detect", 4),
-    schema!("provider-models", 1),
+    schema!("provider-models", 2),
     schema!("provider-setup", 2),
-    schema!("provider-status", 4),
+    schema!("provider-status", 5),
     schema!("review-ledger", 1),
     schema!("review-render", 2),
     schema!("review-report", 5),
     schema!("review-show", 1),
+    schema!("scenario-adapter-request", 1),
+    schema!("scenario-adapter-response", 1),
+    schema!("scenario-bundle", 1),
+    schema!("scenario-decision", 1),
+    schema!("scenario-list", 1),
+    schema!("scenario-owned-file", 1),
+    schema!("scenario-pin", 1),
+    schema!("scenario-policy", 1),
+    schema!("scenario-run", 1),
+    schema!("scenario-signed-decision", 1),
+    schema!("scenario-store", 1),
+    schema!("scenario", 1),
     schema!("task-attention", 1),
     schema!("task-cancelled", 2),
     schema!("task-checks", 3),
@@ -46,7 +64,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-diff", 1),
     schema!("task-event", 1),
     schema!("task-findings", 2),
-    schema!("task-inspection", 14),
+    schema!("task-inspection", 15),
     schema!("task-list-entry", 4),
     schema!("task-list", 4),
     schema!("task-materialized", 1),
@@ -178,6 +196,25 @@ mod tests {
     }
 
     #[test]
+    fn schema_listing_names_provider_status_v5_and_its_sdk_host_scope() {
+        let line = listing()
+            .lines()
+            .find(|line| line.starts_with("af/provider-status@5 "))
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            line.split_whitespace().collect::<Vec<_>>(),
+            ["af/provider-status@5", "Provider", "status@5"]
+        );
+        let (_, _, text) = SCHEMAS
+            .iter()
+            .find(|(id, _, _)| *id == "af/provider-status@5")
+            .unwrap();
+        let schema: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(schema["$comment"].as_str().unwrap().contains("Pi SDK host"));
+    }
+
+    #[test]
     fn an_unshipped_id_names_the_versions_that_are_shipped() {
         assert_eq!(
             refusal("af/task-status@1"),
@@ -190,6 +227,6 @@ mod tests {
         );
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/command-catalog@1  "), "{listing}");
+        assert!(listing.starts_with("af/ant-list@1  "), "{listing}");
     }
 }

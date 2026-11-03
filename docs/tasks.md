@@ -572,7 +572,7 @@ round the selected Pipeline must declare `findings` (the kernel's
 do [`default/implementation`](#the-default-pipeline) and
 [`default-light/implementation`](#the-light-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@14`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@15`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 

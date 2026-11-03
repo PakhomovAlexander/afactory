@@ -15,7 +15,7 @@ impl CampaignReviewPlanCompiler {
         loaded: &review_config::Loaded,
         graph: &mut review_graph::task::CompiledTask,
         dependencies: &mut BTreeMap<String, PlanDependencyV1>,
-        recorded: Option<&ExecutionPlanV1>,
+        recorded: Option<&ExecutionPlanV2>,
     ) -> Result<Option<String>, String> {
         let Some(policy) = loaded.integration().filter(|_| {
             self.settings().mode == "heavy"

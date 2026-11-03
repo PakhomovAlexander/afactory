@@ -526,10 +526,23 @@ fn the_base_beside_the_tree_is_read_only_unsealed_and_removed_with_the_sandbox()
     let base = Manifest::new(vec![entry("src/lib.rs", b"fn before() {}\n")]).unwrap();
     let tree = Manifest::new(vec![entry("src/lib.rs", b"fn after() {}\n")]).unwrap();
     let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
+    let ungranted = sandbox.root().parent().unwrap().join("base");
+    std::fs::create_dir(&ungranted).unwrap();
+    assert_eq!(
+        sandbox.readable_roots(),
+        vec![sandbox.root().to_path_buf()],
+        "a sibling's existence never grants native file tools access"
+    );
+    std::fs::remove_dir(&ungranted).unwrap();
     let at = sandbox
         .attach_base(&base, &cas, &[("diff-subject.json", b"{}")])
         .unwrap();
     assert_eq!(at, sandbox.root().parent().unwrap().join("base"));
+    assert_eq!(
+        sandbox.readable_roots(),
+        vec![sandbox.root().to_path_buf(), at.clone()],
+        "an explicitly attached base is readable by confined native tools"
+    );
     assert_eq!(
         std::fs::read(sandbox.root().join("../base/src/lib.rs")).unwrap(),
         b"fn before() {}\n"

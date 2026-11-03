@@ -15,22 +15,22 @@
   ],
   "properties": {
     "verification_task_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
     },
     "verification_result_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "candidate_task_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
     },
     "candidate_result_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "candidate_snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "candidate_source_snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     }
   }
 }

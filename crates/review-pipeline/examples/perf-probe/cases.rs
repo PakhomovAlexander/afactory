@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use review_core::task::plan::ExecutionPlanV1;
+use review_core::task::plan::ExecutionPlanV2;
 use review_core::{ArtifactEnvelope, Producer};
 use review_graph::task::CompiledTask;
 use review_pipeline::task::host::CapturedTaskAuthority;
@@ -1012,15 +1012,15 @@ pub fn classify(
 fn load_plan_and_graph(
     cas: &Cas,
     plan_id: &str,
-) -> Result<(ExecutionPlanV1, CompiledTask), Failure> {
-    let plan: ExecutionPlanV1 =
+) -> Result<(ExecutionPlanV2, CompiledTask), Failure> {
+    let plan: ExecutionPlanV2 =
         serde_json::from_value(cas.get_artifact(plan_id).map_err(operation_error)?.payload)
             .map_err(operation_error)?;
     let graph = compiled_graph(cas, &plan)?;
     Ok((plan, graph))
 }
 
-fn compiled_graph(cas: &Cas, plan: &ExecutionPlanV1) -> Result<CompiledTask, Failure> {
+fn compiled_graph(cas: &Cas, plan: &ExecutionPlanV2) -> Result<CompiledTask, Failure> {
     serde_json::from_value(
         cas.get_artifact(&plan.compiled_graph_id)
             .map_err(operation_error)?

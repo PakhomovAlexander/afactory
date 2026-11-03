@@ -1,7 +1,7 @@
 {
-  "schema": "af/task-inspection@14",
+  "schema": "af/task-inspection@15",
   "task_id": "chain-history",
-  "revision_id": "sha256:52538bffddd11cd63c05ff8a89a6731f95bcbd7b6d4aefa48d42a5e59321693b",
+  "revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
   "phase": {
     "kind": "ready"
   },
@@ -9,19 +9,19 @@
     "phase": "planned",
     "outcome": null,
     "cause": null,
-    "next_action": "af task run chain-history --confirm-plan sha256:ad934e744731d0053bd3675bbc94ef4ee7d1516f36173f3bce83a9f6f9170421 --state /var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/.tmpK0xEkt/state"
+    "next_action": "af task run chain-history --confirm-plan sha256:c63f2163dde39788c3144fb727251cc542704f422328fb8318a4493f01fd9b0e --state /tmp/.tmpBcblXi/state"
   },
-  "plan_id": "sha256:ad934e744731d0053bd3675bbc94ef4ee7d1516f36173f3bce83a9f6f9170421",
+  "plan_id": "sha256:c63f2163dde39788c3144fb727251cc542704f422328fb8318a4493f01fd9b0e",
   "chargeable_tokens": "0",
   "attempts": 0,
   "clock": {
-    "wall_ms": 59907,
+    "wall_ms": 59963,
     "started_unix_ms": null,
     "deadline_unix_ms": null
   },
   "selection": {
-    "artifact_id": "sha256:709170a1782cce22bfc8476afdafa209fef65e31480c876f4f360236641063b7",
-    "request_revision_id": "sha256:92a441b61455c021499960facc4d6d73ec1b2bb592e3ed39003f317c365e02a7",
+    "artifact_id": "sha256:1bc90c586535216ca5321a9e7b38483a567371680323fa91e711ddf83488b68d",
+    "request_revision_id": "sha256:8c4282ec9c36903c02001a5e07a79a7da4b9358bfa0f04d0cc280cae2740b5fc",
     "assessment": {
       "schema": "af.pipeline-selection/1",
       "requested": {
@@ -49,34 +49,34 @@
     {
       "sequence": 0,
       "transition": {
-        "writer": "cli-74663-dc9ddf57a2a34417",
+        "writer": "cli-89130-38f5894d68764bd3",
         "epoch": 1,
-        "now_unix_ms": 1793101990646,
+        "now_unix_ms": 1793551434946,
         "change": {
           "kind": "opened",
-          "revision_id": "sha256:52538bffddd11cd63c05ff8a89a6731f95bcbd7b6d4aefa48d42a5e59321693b",
-          "lease_until_unix_ms": 1793102050646
+          "revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
+          "lease_until_unix_ms": 1793551494946
         }
       }
     },
     {
       "sequence": 1,
       "transition": {
-        "writer": "cli-74663-dc9ddf57a2a34417",
+        "writer": "cli-89130-38f5894d68764bd3",
         "epoch": 1,
-        "now_unix_ms": 1793101990658,
+        "now_unix_ms": 1793551434961,
         "change": {
           "kind": "plan_proposed",
-          "plan_id": "sha256:ad934e744731d0053bd3675bbc94ef4ee7d1516f36173f3bce83a9f6f9170421"
+          "plan_id": "sha256:c63f2163dde39788c3144fb727251cc542704f422328fb8318a4493f01fd9b0e"
         }
       }
     },
     {
       "sequence": 2,
       "transition": {
-        "writer": "cli-74663-dc9ddf57a2a34417",
+        "writer": "cli-89130-38f5894d68764bd3",
         "epoch": 1,
-        "now_unix_ms": 1793101990665,
+        "now_unix_ms": 1793551434970,
         "change": {
           "kind": "lease_released"
         }
@@ -89,11 +89,11 @@
     "schema": "af.task-input-bindings/1",
     "bindings": {
       "history": {
-        "artifact_id": "sha256:cc9727dbad5a6c2b2eece94cf20a83f4bc0de95337482f3f9110f6c11034d3eb",
+        "artifact_id": "sha256:0170dccb5bfbb5b9d5012d6ed58da9fe217e665ef10583dd1f97a302b94e42cf",
         "task": {
           "task_id": "chain-base",
-          "task_revision_id": "sha256:7865f03bf1fabb57ddbecd9a764123be474b51e9f1b6ad510678e51c13910bec",
-          "result_id": "sha256:64322f6bccd5bbd6dc11727ee165047f755555af38993b8fa888f6c40d8deabd",
+          "task_revision_id": "sha256:3fdaed5cb66d18f75603f9e5717df299b052aebf475b2a76cbe35002c6fbbc52",
+          "result_id": "sha256:8550875e3aa4e5646f497590c8a3100419dfd7c20cc5d6cda1a395f649850292",
           "port": "history",
           "acceptance": "satisfied",
           "domain_conclusion": "verified"
@@ -488,7 +488,7 @@
     "inputs": {
       "history": {
         "artifact_ids": [
-          "sha256:cc9727dbad5a6c2b2eece94cf20a83f4bc0de95337482f3f9110f6c11034d3eb"
+          "sha256:0170dccb5bfbb5b9d5012d6ed58da9fe217e665ef10583dd1f97a302b94e42cf"
         ],
         "artifact_type": "af/ReviewHistory@1",
         "cardinality": "one"
@@ -502,11 +502,11 @@
       },
       "source": {
         "artifact_ids": [
-          "sha256:6104c13d07f19a83cda7057c33b68607a89add33eb4049ab7191dfb1a3ec8b9c"
+          "sha256:8ca2689e3a541b4a29fe39f29ae2ecc01ca9f318ba0bdfd01a8caa222841fb2f"
         ],
         "artifact_type": "af/SourceTree@1",
         "cardinality": "one",
-        "snapshot_id": "sha256:beae349eb548184e396c0ccd63e4f1789277af085f66642416d8ab142bdb5938"
+        "snapshot_id": "sha256:65002af2738a101e35fa7b3460bfbbfaff93009f391b9b78f99380cd9552062b"
       }
     },
     "outputs": {
@@ -609,12 +609,12 @@
     }
   },
   "plan": {
-    "task_revision_id": "sha256:52538bffddd11cd63c05ff8a89a6731f95bcbd7b6d4aefa48d42a5e59321693b",
-    "engine_id": "sha256:41251cc1646ab23237d66c3713588045729ee9030933a85a164e61107f990703",
+    "task_revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
+    "engine_id": "sha256:ec891302ddf6d7f1c5a4efbd4de25dd9694bc7ce3e2d52ca7cc533f01cba88b4",
     "pipeline_id": "sha256:fac6b2eafba2ef8c05f23cd211135066509e0a94eeb417bccd8a2d8013027a92",
-    "compiled_graph_id": "sha256:016ad42a0d0a226a048d8a0ea817aaad885503515f801f9cc7f21822721c823a",
+    "compiled_graph_id": "sha256:368b86431e1a6035b4a1f03b1cbe140b248caefb08ae48ecbef2b16a51f062a6",
     "authority": {
-      "policy_id": "sha256:bc1e826eab46857fbd5ced98db04b8e27d49522b760470b3b4349d7b152daf86",
+      "policy_id": "sha256:275aee556857a08caa87f3617ad3b8d9949f2afbcde42ef09c881d050717d2c9",
       "allowed_effects": [
         "execute-checks",
         "read-source",
@@ -625,7 +625,7 @@
     "limits": {
       "tokens": 1000,
       "max_attempts": 3,
-      "deadline_unix_ms": 1793102050553,
+      "deadline_unix_ms": 1793551494909,
       "verification": {
         "tokens": 200,
         "attempts": 2,
@@ -635,7 +635,7 @@
     "inputs": {
       "history": {
         "artifact_ids": [
-          "sha256:cc9727dbad5a6c2b2eece94cf20a83f4bc0de95337482f3f9110f6c11034d3eb"
+          "sha256:0170dccb5bfbb5b9d5012d6ed58da9fe217e665ef10583dd1f97a302b94e42cf"
         ],
         "artifact_type": "af/ReviewHistory@1",
         "cardinality": "one"
@@ -649,11 +649,11 @@
       },
       "source": {
         "artifact_ids": [
-          "sha256:6104c13d07f19a83cda7057c33b68607a89add33eb4049ab7191dfb1a3ec8b9c"
+          "sha256:8ca2689e3a541b4a29fe39f29ae2ecc01ca9f318ba0bdfd01a8caa222841fb2f"
         ],
         "artifact_type": "af/SourceTree@1",
         "cardinality": "one",
-        "snapshot_id": "sha256:beae349eb548184e396c0ccd63e4f1789277af085f66642416d8ab142bdb5938"
+        "snapshot_id": "sha256:65002af2738a101e35fa7b3460bfbbfaff93009f391b9b78f99380cd9552062b"
       }
     },
     "bindings": {

@@ -154,7 +154,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v14.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v15.json"), &done);
     done
 }
 

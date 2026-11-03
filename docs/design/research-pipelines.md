@@ -190,7 +190,7 @@ Deliverables:
    observation is a cold check, and an ineligible observation names its reason in `kind`
    (`cargo_target:busy`, `cargo_target:toolchain_unresolved`, `cargo_target:bound_exceeded`).
    `af task show` prints one line per check with elapsed time, cache kind and `warm <bytes>` or
-   `cold <reason>`, and `af/task-inspection@14` carries the observations in its existing
+   `cold <reason>`, and `af/task-inspection@15` carries the observations in its existing
    `runtime_observations` field.
 5. This repository's `.af/code-policy.toml` declares
    `[warm] build_cache = ["cargo_target", "cargo_home"]`; `scripts/verify.sh` honours a
@@ -209,7 +209,7 @@ Deliverables:
    as ADR-0108 does; pointing every check at one shared host directory without a key; a
    per-Attempt clone of the previous check's output), superseding ADR-0108's one-Round scope in
    part for Task checks only and stating the admission, validation and invalidation rules of §2,
-   linked from `docs/adr/README.md`; a `CHANGELOG.md` entry under Unreleased; a paragraph in
+   following the stable authoring guide in `docs/adr/README.md`; a `changelog.d/` note; a paragraph in
    `docs/tasks.md` on what `[warm]` grants and refuses.
 
 Acceptance:

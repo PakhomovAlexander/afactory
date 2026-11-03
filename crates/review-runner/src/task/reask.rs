@@ -236,6 +236,7 @@ pub(super) fn invoke(
     access: WorkerAccess,
     cancellation: Option<&AtomicBool>,
     reserved_tokens: u64,
+    environment: &[(String, String)],
 ) -> WorkerReturn {
     let started = Instant::now();
     let first = adapter.invoke(
@@ -245,7 +246,7 @@ pub(super) fn invoke(
         timeout,
         access,
         cancellation,
-        &[],
+        environment,
     );
     let message = match &first.message {
         Ok(message) => message.clone(),
@@ -309,7 +310,15 @@ pub(super) fn invoke(
         Err(why) => return failed(raw, first, format!("{kept}; not re-asked: {why}")),
     };
     let remaining = remaining.expect("checked above");
-    let second = adapter.invoke(cas, workdir, reask, remaining, access, cancellation, &[]);
+    let second = adapter.invoke(
+        cas,
+        workdir,
+        reask,
+        remaining,
+        access,
+        cancellation,
+        environment,
+    );
     for id in &second.raw_artifact_ids {
         if !raw.contains(id) {
             raw.push(id.clone());

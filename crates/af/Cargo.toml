@@ -21,6 +21,7 @@ review-pipeline = { path = "../review-pipeline" }
 review-process = { path = "../review-process" }
 review-runner = { path = "../review-runner" }
 review-runner-claude = { path = "../review-runner-claude" }
+review-runner-pi = { path = "../review-runner-pi" }
 review-runner-codex = { path = "../review-runner-codex" }
 review-source-git = { path = "../review-source-git" }
 review-source-task = { path = "../review-source-task" }

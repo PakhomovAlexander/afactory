@@ -495,7 +495,7 @@ impl CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         phase: &TaskReviewIntegrationPhaseV1,
         evidence: &TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {

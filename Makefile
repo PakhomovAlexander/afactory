@@ -2,7 +2,7 @@
 
 # What this machine needs before `make check`, one line per tool with the command that installs
 # a missing one (issue #161): python3, git 2.30+, the rustup toolchain rust-toolchain.toml pins,
-# cargo-nextest, cc, npx, minisign and 30 GiB free where target/ builds. It changes nothing.
+# cargo-nextest, cc, Node >=22.19, npx, minisign and 30 GiB free where target/ builds. It changes nothing.
 prereqs:
 	@python3 -I scripts/prereqs.py
 
@@ -25,7 +25,7 @@ BASE_EVIDENCE = $(if $(AF_GATE_NEXTEST_RUN),$(AF_GATE_NEXTEST_RUN)/base-evidence
 
 # Run unprivileged: preflight proves a chmod-sealed source rejects writes.
 # Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
-check: preflight-check fmt lint test perf-python-tests perf-feature-tests release-check
+check: preflight-check fmt lint test scenario-python-tests perf-python-tests perf-feature-tests release-check
 
 fmt:
 	$(CI_STEP) --stage lint fmt cargo fmt --all -- --check
@@ -110,6 +110,7 @@ release-check:
 # performance schema parity (ADR-0162), and the guarded kernel experiments' protected-harness
 # digest against the staged policy and any installed guarded measure (ADR-0185).
 preflight-check:
+	$(CI_STEP) --stage preflight adr-catalog python3 scripts/test-adr.py
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
 	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py
@@ -117,12 +118,19 @@ preflight-check:
 	$(CI_STEP) --stage preflight stress-proof python3 scripts/test-stress-proof.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
+	$(CI_STEP) --stage preflight pi-host python3 scripts/test-pi-host.py
 	$(CI_STEP) --stage preflight pr-report python3 scripts/test-check-pr-report.py
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
+
+# Credential-free installed GitHub adapter integration belongs after the Rust build/test
+# receipt. Selective gates run the same script in its audited e2e class.
+.PHONY: scenario-python-tests
+scenario-python-tests: test
+	$(CI_STEP) --stage tests scenario-github-adapter python3 scripts/test-scenario-github-adapter.py
 
 # The laboratory suite executes tests, so it belongs after the real Rust build receipt,
 # under the test deadline (ADR-0231). Depending on test also enforces this with parallel make;

@@ -276,7 +276,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v4.json", &reported);
+    valid("provider-status-v5.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -500,7 +500,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v4.json", &reported);
+    valid("provider-status-v5.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -515,7 +515,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v4.json", &reported);
+    valid("provider-status-v5.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();
@@ -526,4 +526,484 @@ exit 64
     assert!(auth.join("usage-probe-log").is_file());
     let stderr = err(&probed);
     assert!(stderr.contains("authentication is unaffected"), "{stderr}");
+}
+
+#[test]
+fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let invoke = |args: &[&str]| {
+        crate::common::af()
+            .args(args)
+            .current_dir(&work)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .env("NODE_OPTIONS", "--import=/DO_NOT_LOAD")
+            .env("OPENAI_API_KEY", "DO_NOT_USE_AMBIENT")
+            .output()
+            .unwrap()
+    };
+    let setup = invoke(&[
+        "provider",
+        "setup",
+        "pi-personal",
+        "--kind",
+        "pi",
+        "--backend",
+        "openai-codex",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--sdk-entrypoint",
+        sdk.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(
+        setup.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&setup.stdout),
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let value: Value = serde_json::from_slice(&setup.stdout).unwrap();
+    valid("pi-provider-setup-v2.json", &value);
+    for (args, schema) in [
+        (
+            vec!["provider", "status", "--json"],
+            "provider-status-v5.json",
+        ),
+        (
+            vec!["provider", "models", "pi-personal", "--json"],
+            "provider-models-v2.json",
+        ),
+        (
+            vec![
+                "provider",
+                "models",
+                "pi-personal",
+                "--resolve",
+                "o3/high",
+                "--json",
+            ],
+            "provider-models-v2.json",
+        ),
+    ] {
+        let out = invoke(&args);
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        valid(schema, &value);
+        if schema == "provider-status-v5.json" {
+            assert_eq!(value["schema"], "af/provider-status@5");
+            assert_eq!(value["providers"][0]["kind"], "pi");
+            assert_eq!(value["providers"][0]["auth"], "authenticated");
+        }
+        let text = String::from_utf8(out.stdout).unwrap();
+        for secret in [
+            "synthetic-account",
+            "SYNTHETIC_ACCESS",
+            "SYNTHETIC_REFRESH",
+            "DO_NOT_USE_AMBIENT",
+        ] {
+            assert!(!text.contains(secret));
+        }
+    }
+    assert!(
+        !state.with_extension("json.calls").exists(),
+        "token-free command started inference"
+    );
+    let unsupported = invoke(&[
+        "provider",
+        "setup",
+        "pi-other",
+        "--kind",
+        "pi",
+        "--backend",
+        "anthropic",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--sdk-entrypoint",
+        sdk.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(!unsupported.status.success());
+    valid("pi-provider-setup-v2.json", &document(&unsupported));
+    assert!(err(&unsupported).starts_with("af provider setup: "));
+
+    // Losing one optional SDK installation leaves the registry readable and removable.
+    std::fs::remove_file(&sdk).unwrap();
+    let status = invoke(&["provider", "status", "--json"]);
+    let value: Value = serde_json::from_slice(&status.stdout).unwrap();
+    valid("provider-status-v5.json", &value);
+    assert!(value["registry"]["warning"].is_null());
+    assert_ne!(value["providers"][0]["auth"], "authenticated");
+    assert!(!String::from_utf8_lossy(&status.stderr).contains("registry"));
+    let text = invoke(&["provider", "status"]);
+    assert!(String::from_utf8_lossy(&text.stdout).contains("Pi installation is missing"));
+    let removed = invoke(&["provider", "remove", "pi-personal"]);
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+}
+
+#[test]
+fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
+    for marker in ["git-directory", "git-worktree-file", "af-directory"] {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("repository/nested/cwd");
+        std::fs::create_dir_all(&work).unwrap();
+        let auth = root.path().join("auth");
+        let (sdk, external_path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
+        let invoke = |path: &std::ffi::OsStr, args: &[&str]| {
+            crate::common::af()
+                .args(args)
+                .current_dir(&work)
+                .env("HOME", root.path())
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+                .env_remove("CODEX_HOME")
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .env("PATH", path)
+                .output()
+                .unwrap()
+        };
+        let setup_args = [
+            "provider",
+            "setup",
+            "pi-safe",
+            "--kind",
+            "pi",
+            "--backend",
+            "openai-codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--sdk-entrypoint",
+            sdk.to_str().unwrap(),
+            "--json",
+        ];
+        // The same nested CWD permits a legitimate external Node installation.
+        let setup = invoke(external_path.as_ref(), &setup_args);
+        assert!(setup.status.success(), "{}", err(&setup));
+        let repository = root.path().join("repository");
+        match marker {
+            "git-directory" => std::fs::create_dir(repository.join(".git")).unwrap(),
+            "git-worktree-file" => {
+                std::fs::write(repository.join(".git"), "gitdir: /synthetic/worktree\n").unwrap()
+            }
+            _ => std::fs::create_dir(repository.join(".af")).unwrap(),
+        }
+        let bin = repository.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let trap = bin.join("node");
+        let executed = root.path().join("node-executed");
+        std::fs::write(
+            &trap,
+            format!("#!/bin/sh\n: > '{}'\nexit 99\n", executed.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&trap, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let absolute_path = bin.canonicalize().unwrap();
+        for args in [&["provider", "status", "--json"][..], &setup_args[..]] {
+            let output = invoke(absolute_path.as_os_str(), args);
+            assert!(!executed.exists(), "executed repository Node for {marker}");
+            let value = document(&output);
+            if args[1] == "setup" {
+                assert_eq!(code(&output), 3, "{}", err(&output));
+                valid("pi-provider-setup-v2.json", &value);
+                assert!(
+                    value["detail"]
+                        .as_str()
+                        .unwrap()
+                        .contains("outside repository-owned paths")
+                );
+                assert!(err(&output).starts_with("af provider setup: "));
+            } else {
+                valid("provider-status-v5.json", &value);
+                assert_ne!(value["providers"][0]["auth"], "authenticated");
+                let human = invoke(absolute_path.as_os_str(), &["provider", "status"]);
+                assert!(
+                    out(&human).contains("outside repository-owned paths"),
+                    "{}",
+                    out(&human)
+                );
+            }
+            assert!(!executed.exists(), "executed repository Node for {marker}");
+        }
+    }
+}
+
+#[test]
+fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_versions() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (_, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let agent = root.path().join("agent");
+    let install = agent.join("install");
+    let release = install.join("releases/1.4.0");
+    std::fs::create_dir_all(release.parent().unwrap()).unwrap();
+    std::fs::rename(root.path().join("installed"), &release).unwrap();
+    let launcher = agent.join("bin/pi");
+    std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    let marker = root.path().join("launcher-executed");
+    std::fs::write(
+        &launcher,
+        format!("#!/bin/sh\n: > '{}'\nexit 99\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&launcher, Path::new(&path).join("pi")).unwrap();
+    let current = install.join("current-version");
+    let setup = || {
+        crate::common::af()
+            .args([
+                "provider",
+                "setup",
+                "pi-managed",
+                "--kind",
+                "pi",
+                "--backend",
+                "openai-codex",
+                "--auth-dir",
+                auth.to_str().unwrap(),
+                "--json",
+            ])
+            .current_dir(&work)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .output()
+            .unwrap()
+    };
+    let refused = |output: Output| {
+        assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
+        let value = document(&output);
+        valid("pi-provider-setup-v2.json", &value);
+        assert_eq!(value["outcome"], "human_action_required");
+        assert!(err(&output).starts_with("af provider setup: "));
+        assert!(err(&output).contains(value["detail"].as_str().unwrap()));
+        assert!(!root.path().join("providers.toml").exists());
+        assert!(!marker.exists());
+    };
+    // The full malformed-version table runs in-process in providers::pi::tests.
+    std::fs::write(&current, "../1.4.0").unwrap();
+    refused(setup());
+    std::fs::write(&current, "1.4.0\n").unwrap();
+    let saved_version = root.path().join("saved-version");
+    std::fs::rename(&current, &saved_version).unwrap();
+    std::os::unix::fs::symlink(&saved_version, &current).unwrap();
+    refused(setup());
+    std::fs::remove_file(&current).unwrap();
+    std::fs::rename(&saved_version, &current).unwrap();
+    // The previous implementation derived agent/index.js, which does not exist.
+    assert!(!agent.join("index.js").exists());
+    let sdk = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
+    let saved = root.path().join("saved-sdk.js");
+    std::fs::rename(&sdk, &saved).unwrap();
+    std::os::unix::fs::symlink(&saved, &sdk).unwrap();
+    refused(setup());
+    std::fs::remove_file(&sdk).unwrap();
+    std::fs::rename(&saved, &sdk).unwrap();
+    let output = setup();
+    assert_eq!(code(&output), 0, "{} {}", out(&output), err(&output));
+    valid("pi-provider-setup-v2.json", &document(&output));
+    assert_eq!(document(&output)["outcome"], "registered");
+    assert!(err(&output).is_empty());
+    let registry = std::fs::read_to_string(root.path().join("providers.toml")).unwrap();
+    assert!(registry.contains(sdk.to_str().unwrap()));
+    assert!(!marker.exists(), "discovery executed the managed launcher");
+    assert!(
+        !state.with_extension("json.calls").exists(),
+        "setup started inference"
+    );
+}
+
+#[test]
+fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_conflict() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let setup = |id: &str, json: bool| {
+        let mut command = crate::common::af();
+        command.args([
+            "provider",
+            "setup",
+            id,
+            "--kind",
+            "pi",
+            "--backend",
+            "openai-codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--sdk-entrypoint",
+            sdk.to_str().unwrap(),
+        ]);
+        if json {
+            command.arg("--json");
+        }
+        command
+            .current_dir(&work)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .output()
+            .unwrap()
+    };
+    let credential = std::fs::read(auth.join("auth.json")).unwrap();
+    std::fs::write(
+        auth.join("auth.json"),
+        r#"{"openai-codex":{"type":"api_key","key":"RAW_AUTH_MUST_NOT_ESCAPE"}}"#,
+    )
+    .unwrap();
+    let check = |output: &Output, expected_code, outcome: &str, json| {
+        assert_eq!(
+            code(output),
+            expected_code,
+            "{} {}",
+            out(output),
+            err(output)
+        );
+        if json {
+            let value = document(output);
+            valid("pi-provider-setup-v2.json", &value);
+            assert_eq!(value["outcome"], outcome);
+            assert!(err(output).contains(value["detail"].as_str().unwrap()));
+        } else {
+            assert!(out(output).starts_with("provider "));
+        }
+        assert!(
+            err(output).starts_with("af provider setup: "),
+            "{}",
+            err(output)
+        );
+        assert!(err(output).contains(&format!("({outcome})")));
+        for secret in [
+            "RAW_AUTH_MUST_NOT_ESCAPE",
+            "synthetic-account",
+            "SYNTHETIC_REFRESH",
+        ] {
+            assert!(!out(output).contains(secret));
+            assert!(!err(output).contains(secret));
+        }
+    };
+    for json in [true, false] {
+        check(&setup("pi-one", json), 3, "human_action_required", json);
+    }
+    std::fs::write(auth.join("auth.json"), credential).unwrap();
+    assert_eq!(code(&setup("pi-one", true)), 0);
+    let repeated = setup("pi-one", true);
+    assert_eq!(code(&repeated), 0);
+    valid("pi-provider-setup-v2.json", &document(&repeated));
+    assert_eq!(document(&repeated)["outcome"], "already_registered");
+    assert!(err(&repeated).is_empty());
+    for json in [true, false] {
+        check(&setup("pi-two", json), 5, "registry_conflict", json);
+    }
+    let registry = root.path().join("providers.toml");
+    std::fs::write(&registry, "RAW_REGISTRY_MUST_NOT_ESCAPE invalid TOML").unwrap();
+    let refused = setup("pi-one", true);
+    check(&refused, 3, "human_action_required", true);
+    assert!(!out(&refused).contains("RAW_REGISTRY_MUST_NOT_ESCAPE"));
+    assert!(!err(&refused).contains("RAW_REGISTRY_MUST_NOT_ESCAPE"));
+    assert_eq!(
+        std::fs::read_to_string(registry).unwrap(),
+        "RAW_REGISTRY_MUST_NOT_ESCAPE invalid TOML"
+    );
+}
+
+#[test]
+fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invented_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let auth = auth.to_str().unwrap();
+    let sdk = sdk.to_str().unwrap();
+    let cases: Vec<(&str, Vec<&str>, bool, bool)> = vec![
+        ("../RAW_REQUEST_MUST_NOT_ESCAPE", vec![], false, false),
+        ("codex-ambient", vec![], false, false),
+        ("pi-one", vec![], true, false),
+        (
+            "pi-one",
+            vec!["--backend", "RAW_REQUEST_MUST_NOT_ESCAPE"],
+            true,
+            false,
+        ),
+        ("pi-one", vec!["--backend", "openai-codex"], true, true),
+        (
+            "pi-one",
+            vec!["--backend", "openai-codex", "--auth-dir", auth],
+            true,
+            true,
+        ),
+        (
+            "pi-one",
+            vec!["--backend", "openai-codex", "--auth-dir", "relative"],
+            true,
+            true,
+        ),
+        (
+            "pi-one",
+            vec![
+                "--backend",
+                "openai-codex",
+                "--auth-dir",
+                "/RAW_REQUEST_MUST_NOT_ESCAPE",
+            ],
+            true,
+            true,
+        ),
+        (
+            "pi-one",
+            vec![
+                "--backend",
+                "openai-codex",
+                "--auth-dir",
+                auth,
+                "--sdk-entrypoint",
+                "/RAW_REQUEST_MUST_NOT_ESCAPE",
+            ],
+            true,
+            true,
+        ),
+    ];
+    for (id, args, valid_id, valid_backend) in cases {
+        let output = crate::common::af()
+            .args(["provider", "setup", id, "--kind", "pi", "--json"])
+            .args(args)
+            .current_dir(&work)
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .output()
+            .unwrap();
+        assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
+        let value = document(&output);
+        valid("pi-provider-setup-v2.json", &value);
+        assert_eq!(!value["id"].is_null(), valid_id);
+        assert_eq!(!value["backend"].is_null(), valid_backend);
+        assert_eq!(value["outcome"], "human_action_required");
+        assert!(err(&output).starts_with("af provider setup: "));
+        assert!(err(&output).contains(value["detail"].as_str().unwrap()));
+        assert!(!out(&output).contains("RAW_REQUEST_MUST_NOT_ESCAPE"));
+        assert!(!err(&output).contains("RAW_REQUEST_MUST_NOT_ESCAPE"));
+        assert!(!root.path().join("providers.toml").exists());
+    }
+    // Explicit installed entrypoint remains covered by the successful setup test above.
+    assert!(Path::new(sdk).is_file());
+    assert!(!state.with_extension("json.calls").exists());
 }

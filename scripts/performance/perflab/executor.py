@@ -772,9 +772,8 @@ class Journal:
         for it and settled: a busy machine refuses the check; an unconfirmed end keeps the
         fence."""
         try:
-            if self.lock_directory is None:
-                hostlock.read_anchor(required=True)
-            lock = hostlock.MachineLock(self.lock_directory)
+            identity = hostlock.read_anchor(required=True) if self.lock_directory is None else None
+            lock = hostlock.MachineLock(self.lock_directory, expected_identity=identity)
         except hostlock.Refused as refused:
             if refused.reason == "concurrent_shard":
                 raise JournalBusy("the %s needs the machine exclusion, which another "
@@ -1095,9 +1094,8 @@ class Journal:
         lock = None
         if request["backend"] == "local":
             try:
-                if lock_directory is None:
-                    hostlock.read_anchor(required=True)
-                lock = hostlock.MachineLock(lock_directory)
+                identity = hostlock.read_anchor(required=True) if lock_directory is None else None
+                lock = hostlock.MachineLock(lock_directory, expected_identity=identity)
             except hostlock.Refused as refused:
                 if refused.reason == "concurrent_shard":
                     return "busy"

@@ -3,6 +3,9 @@
 `v1/` is the additive Task contract corpus introduced by ADR-0046. Positive payloads are
 identified by `content-ids.json` using the existing canonical JSON content digest. The IDs inside
 these shape fixtures are synthetic references; they do not claim Store admission or execution.
+The unchanged baseline `execution-plan.json` payload is checked against the current
+`af/ExecutionPlan@2` schema; Pi's additional captured authority is exercised by the Pi schema
+parity cases. The corpus directory name is provenance, not an earlier-version reader.
 
 `negative.json` records forbidden cases as compact mutation recipes: the positive contract
 fixture, JSON Pointer, add/replace/remove operation, value, classification and reason. Each

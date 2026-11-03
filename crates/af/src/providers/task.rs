@@ -8,7 +8,7 @@
 //! app-server that exits before answering it is refused as the missing protocol capability.
 use super::compatibility::protocol_incompatibility;
 use super::*;
-use review_core::task::plan::WorkerExecutionV1;
+use review_core::task::plan::WorkerExecutionV2;
 use review_core::task::provider_event::{ProbeSilenceV1, ProviderEventV1};
 use review_runner::native_failure::NativeFailureKind;
 use review_runner::task::reply_schema::ReplyContract;
@@ -19,6 +19,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct TaskProviderIdentity {
     spec: ProviderSpec,
+    pi_ready: Option<review_runner_pi::Ready>,
     program: PathBuf,
     principal_id: String,
     auth_method: String,
@@ -87,7 +88,8 @@ fn method_class(method: &str) -> &str {
     }
 }
 impl TaskProviderIdentity {
-    /// The token-free static rules of a Model binding on Provider `provider` of kind `kind`, from
+    /// Pi uses its adapter's exact-ID grammar and SDK catalog. Claude/Codex use the token-free
+    /// static rules of a Model binding on Provider `provider` of kind `kind`, from
     /// the one validation authority, `review_runner_claude::models` (ADR-0148): grammar G on the
     /// model and the effort level first (ADR-0147), so a value outside G is refused with G's words
     /// whatever else it fails; a documented alias, refused with its exact ID; a case or separator
@@ -101,6 +103,9 @@ impl TaskProviderIdentity {
         model: &str,
         effort: &str,
     ) -> Result<(), String> {
+        if kind == "pi" {
+            return review_runner_pi::static_rules(model, effort);
+        }
         let kind = rules::Kind::parse(kind)
             .ok_or("Task Model binding names an unsupported Provider kind")?;
         rules::check_static(kind, model, Some(effort)).map_err(|refusal| {
@@ -118,6 +123,23 @@ impl TaskProviderIdentity {
         let spec = configured_spec(provider)?;
         if spec.kind.name() != expected_kind || spec.auth_dir.is_none() {
             return Err("Task Provider binding differs from its configured implementation".into());
+        }
+        if spec.kind == ProviderKind::Pi {
+            let (program, ready) = super::pi::probe(&spec, &AtomicBool::new(false), PROBE_TIMEOUT)?;
+            return Ok(Self {
+                spec,
+                program,
+                principal_id: ready.principal.clone(),
+                auth_method: "oauth".into(),
+                pi_ready: Some(ready),
+                org: None,
+                cli_version: None,
+                binary: None,
+                probe_wall: None,
+                probe_path: sanitized_path(),
+                home: std::env::var_os("HOME"),
+                user: std::env::var_os("USER"),
+            });
         }
         // A CLI that cannot start, or does not accept af's invocation, is refused here, before
         // any Worker or admission Attempt runs and before its account is asked about.
@@ -144,6 +166,7 @@ impl TaskProviderIdentity {
         // once that file changes, so capture spends no process on a CLI that never updates.
         let binary = BinaryStamp::of(&program);
         Ok(Self {
+            pi_ready: None,
             spec,
             program,
             principal_id: observed.principal,
@@ -157,13 +180,30 @@ impl TaskProviderIdentity {
             user: std::env::var_os("USER"),
         })
     }
-    pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV1, String> {
+    pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV2, String> {
         Self::check_static_rules(&self.spec.id, self.spec.kind.name(), model, effort)?;
-        let execution = WorkerExecutionV1::Model {
+        let pi = self
+            .pi_ready
+            .as_ref()
+            .map(|ready| {
+                let model = ready.model(model, effort)?;
+                Ok::<_, String>(review_runner_pi::authority(
+                    &self.program,
+                    self.spec.pi.as_ref().ok_or("Pi configuration missing")?,
+                    self.spec
+                        .auth_dir
+                        .as_deref()
+                        .ok_or("Pi auth directory missing")?,
+                    model,
+                ))
+            })
+            .transpose()?;
+        let execution = WorkerExecutionV2::Model {
             provider: self.spec.id.clone(),
             provider_kind: self.spec.kind.name().into(),
             principal_id: self.principal_id.clone(),
             model: model.into(),
+            pi: pi.map(Box::new),
             effort: effort.into(),
         };
         execution.validate()?;
@@ -171,9 +211,9 @@ impl TaskProviderIdentity {
     }
     pub fn adapter(
         &self,
-        execution: &WorkerExecutionV1,
+        execution: &WorkerExecutionV2,
     ) -> Result<Box<dyn WorkerModelAdapter>, String> {
-        let WorkerExecutionV1::Model { model, effort, .. } = execution else {
+        let WorkerExecutionV2::Model { model, effort, .. } = execution else {
             return Err("A Command binding has no Model adapter".into());
         };
         if &self.execution(model, effort)? != execution {
@@ -193,6 +233,27 @@ impl TaskProviderIdentity {
         model: &str,
         effort: &str,
     ) -> Result<Box<dyn WorkerModelAdapter>, String> {
+        if self.spec.kind == ProviderKind::Pi {
+            let WorkerExecutionV2::Model {
+                pi: Some(captured), ..
+            } = self.execution(model, effort)?
+            else {
+                return Err("Pi authority missing".into());
+            };
+            return Ok(Box::new(review_runner_pi::PiTaskAdapter {
+                node: self.program.clone(),
+                config: self.spec.pi.clone().ok_or("Pi configuration missing")?,
+                auth_dir: self
+                    .spec
+                    .auth_dir
+                    .clone()
+                    .ok_or("Pi auth directory missing")?,
+                principal: self.principal_id.clone(),
+                model: model.into(),
+                effort: effort.into(),
+                captured: *captured,
+            }));
+        }
         let program = self
             .program
             .to_str()
@@ -204,6 +265,7 @@ impl TaskProviderIdentity {
             .and_then(|p| p.to_str())
             .ok_or("Provider auth directory is not absolute UTF-8")?;
         let flags = match self.spec.kind {
+            ProviderKind::Pi => unreachable!("Pi uses the SDK host"),
             ProviderKind::Claude => vec![
                 "--model".into(),
                 model.into(),
@@ -225,6 +287,7 @@ impl TaskProviderIdentity {
             flags.into_iter().map(review_core::Arg::literal).collect(),
         );
         Ok(match self.spec.kind {
+            ProviderKind::Pi => unreachable!("Pi uses the SDK host"),
             ProviderKind::Claude => Box::new(
                 review_runner_claude::task::ClaudeTaskAdapter::new(&command)?
                     .for_provider(self.spec.id.clone())
@@ -270,6 +333,7 @@ impl TaskProviderIdentity {
         let current = configured_spec(&self.spec.id).map_err(|_| Recheck::NotCurrent)?;
         if current.kind != self.spec.kind
             || current.auth_dir != self.spec.auth_dir
+            || current.pi != self.spec.pi
             || current.explicit_selector != self.spec.explicit_selector
             || !is_executable(&self.program)
             || sanitized_path() != self.probe_path
@@ -277,6 +341,18 @@ impl TaskProviderIdentity {
             || std::env::var_os("USER") != self.user
         {
             return Err(Recheck::NotCurrent);
+        }
+        if self.spec.kind == ProviderKind::Pi {
+            let (_, ready) = super::pi::probe(
+                &self.spec,
+                cancelled,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .map_err(Recheck::Unavailable)?;
+            if ready.principal != self.principal_id {
+                return Err(Recheck::NotCurrent);
+            }
+            return Ok(Rechecked::default());
         }
         self.recheck_account(deadline, cancelled)
     }
@@ -427,6 +503,7 @@ impl Recheck {
     /// is the identity's own bound on one probe, when it has one.
     fn diagnostic(&self, kind: ProviderKind, probe_wall: Option<Duration>) -> String {
         let client = match kind {
+            ProviderKind::Pi => "Pi SDK",
             ProviderKind::Claude => "Claude",
             ProviderKind::Codex => "Codex",
         };
@@ -450,6 +527,7 @@ impl Recheck {
                 let cause = causes.into_iter().collect::<Vec<_>>().join(" or ");
                 let each = probe_wall.unwrap_or_else(|| {
                     probe_timeout(match kind {
+                        ProviderKind::Pi => PROBE_TIMEOUT,
                         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
                         ProviderKind::Codex => PROBE_TIMEOUT,
                     })
@@ -600,6 +678,21 @@ fn observe_identity(
     deadline: Option<Instant>,
 ) -> Result<Observation, IdentityFailure> {
     match spec.kind {
+        ProviderKind::Pi => {
+            let (_, ready) = super::pi::probe(
+                spec,
+                cancelled,
+                deadline.map_or(PROBE_TIMEOUT, |d| {
+                    d.saturating_duration_since(Instant::now())
+                }),
+            )
+            .map_err(IdentityFailure::answered)?;
+            Ok(Observation {
+                principal: ready.principal,
+                auth_method: ready.auth_method,
+                org: None,
+            })
+        }
         ProviderKind::Claude => {
             let output = run_probe_before(program, spec, probe_path, cancelled, deadline).map_err(
                 |message| IdentityFailure {
@@ -687,6 +780,9 @@ impl CurrentTaskProviderAdapter {
         let mut current = self.current.lock().expect("Task Provider adapter");
         availability::check(&current.0.spec)?;
         if !is_executable(&current.0.program) {
+            if current.0.spec.kind == ProviderKind::Pi {
+                return Err("Captured Pi Node executable is missing; restore the installed executable or replan with the intended installation".into());
+            }
             let mut identity = current.0.clone();
             identity.program = (self.resolve)(identity.spec.kind.command()).ok_or(concat!(
                 "Captured Task Provider executable was removed and no installed client ",
@@ -967,7 +1063,9 @@ mod tests {
     #[test]
     fn execution_applies_grammar_g_before_the_other_static_rules() {
         let identity = TaskProviderIdentity {
+            pi_ready: None,
             spec: ProviderSpec {
+                pi: None,
                 id: "fixture".into(),
                 kind: ProviderKind::Claude,
                 auth_dir: Some(PathBuf::from("/nonexistent")),

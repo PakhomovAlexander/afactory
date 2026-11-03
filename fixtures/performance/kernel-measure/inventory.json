@@ -2,18 +2,18 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:44c1c63fe3cfb45b1f412f4e9405ffeabc51b0c7560e7afb5ca0f8fe02d81067",
-   "size": 62485
+   "sha256": "sha256:ae5e201d799a15a567a64f41ca3430e9b15ed55c73ae88d3ba1e62b3cdf7b141",
+   "size": 62712
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:26bfbe7b34a3193a331e1114ccc78138677e88722db4b6df073ff6d093ecf264",
-   "size": 2038
+   "sha256": "sha256:7aa7118d12541c1a067bfe143cf3e032581a5f0673bf83a23c5ca60c40a0a8f4",
+   "size": 2065
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:b7a6d8f6467b1ed04fa6f48f8e333f6036a9eb9af2e763084a5693aada532089",
-   "size": 3396
+   "sha256": "sha256:493441c2b48fc69d60019e0c943091e80a2dd3f2f49e2322e20167f9835ab244",
+   "size": 3448
   },
   {
    "path": "crates/af/build.rs",
@@ -77,12 +77,12 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:7671f7a4f764775195325cab69eeb4b0788610600fd65d578b24026c01fe7f10",
+   "sha256": "sha256:3b9bb75f90b28fd2c1b4a25b2cda98a9078ff29563447d5d22f0d47e25c803a0",
    "size": 24426
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/cases.rs",
-   "sha256": "sha256:54012b3773c863970e1a4827fd93fe4930d7601d755e18bf7c56b5d79b14180b",
+   "sha256": "sha256:3117fd44d757fbf9be5a37e48ea06d1ff6bca918a517ffc321ab54c8105cdb91",
    "size": 63191
   },
   {
@@ -124,6 +124,11 @@
    "path": "crates/review-runner-codex/Cargo.toml",
    "sha256": "sha256:4ba1dadeada92b690379967a6e93c772e838216916e7bf5fc6d973e45edea638",
    "size": 1371
+  },
+  {
+   "path": "crates/review-runner-pi/Cargo.toml",
+   "sha256": "sha256:9677e49eba4ede07c3a2d1300e5b8b7b5076eb43d737698903d127320bf3ef47",
+   "size": 640
   },
   {
    "path": "crates/review-runner/Cargo.toml",
@@ -3072,8 +3077,8 @@
   },
   {
    "path": "scripts/performance/perflab/executor.py",
-   "sha256": "sha256:77ac504bf002c8d118103b14ec983d01128daa4c4c8ba04b2fdf0594bd6e85c3",
-   "size": 106513
+   "sha256": "sha256:870cd61c8b88a8951baa4512c5a0341dd67ee81ea76b173ba9b4342be9c031f4",
+   "size": 106573
   },
   {
    "path": "scripts/performance/perflab/executorcontracts.py",
@@ -3102,8 +3107,8 @@
   },
   {
    "path": "scripts/performance/perflab/hostlock.py",
-   "sha256": "sha256:711d0007ed0dd95087557cd7f64e2af4dce591dab8541327b22c0ae75f18e393",
-   "size": 11916
+   "sha256": "sha256:781941d064f48fecbdbf239c7beb4cc322321dc92632f380deb9922450415d35",
+   "size": 12111
   },
   {
    "path": "scripts/performance/perflab/hostobserver.py",
@@ -3532,8 +3537,8 @@
   },
   {
    "path": "scripts/performance/tests/test_executor.py",
-   "sha256": "sha256:e4cfe78236105940d830045f9fe8abcc54ad6a68d1b6f295c4c43ff6b927a362",
-   "size": 136680
+   "sha256": "sha256:350a2b0712b784c24c98642371a5b6be368d20a6b7618af42b9ddfe37890ea45",
+   "size": 140838
   },
   {
    "path": "scripts/performance/tests/test_fixtures.py",
@@ -3547,8 +3552,8 @@
   },
   {
    "path": "scripts/performance/tests/test_hostlock.py",
-   "sha256": "sha256:d19774cc0ea8cefc6d6122782ba45fc2d920b884c44919d1fe6f0922f535cfa3",
-   "size": 10381
+   "sha256": "sha256:50c7b4b45e7dc7c3abcc007b268e200961062a7ad58c7614348c43bf83af1a64",
+   "size": 13304
   },
   {
    "path": "scripts/performance/tests/test_hostobserver.py",
@@ -3771,7 +3776,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:589773d3d3701141d4375408b2562351d029e402d3e3657a2e8e462083f8c907",
+ "harness_digest": "sha256:6c02e9002693abcb355390d5535b8a93cf7b26857c6178319c29014684d8153c",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

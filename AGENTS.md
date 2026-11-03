@@ -3,15 +3,19 @@
 This repository is **Afactory**: the `af` CLI, a multi-agent coding factory whose first capability
 is the deterministic Review Kernel behind `af review`, and whose Task runtime runs
 implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
-kernel integrates; humans publish, apart from the gate branches of a Remote Check that a
-pipeline chose and an operator's machine authorized
+kernel integrates; humans authorize publication. The scoped automated paths are Scenario
+publication Actions ([ADR-0274](docs/adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md))
+and the gate branches of a Remote Check that a pipeline chose and an operator's machine authorized
 ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
 
 Before changing behaviour, read [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary and
 [`docs/adr/README.md`](docs/adr/README.md) for the binding decisions; [`docs/README.md`](docs/README.md)
-maps the rest of the documentation. Use the pinned Rust toolchain (`rust-toolchain.toml`) and keep
-`make check` green. Never weaken a contract, fixture, gate, budget, or sandbox boundary to make a
-test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
+maps the rest of the documentation. New ADRs follow that stable guide: add only their own
+`YYYY-MM-DD-descriptive-topic.md` file, preserve accepted identities, and discover decisions with
+`python3 -I scripts/adr.py list`; no central index edit or sequence allocation is required.
+That guide supersedes older Task prompt wording about assigned ADR numbers or README entries.
+Use the pinned Rust toolchain (`rust-toolchain.toml`) and keep `make check` green. Never weaken a
+contract, fixture, gate, budget, or sandbox boundary to make a test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
 review corpora belong in consuming repositories, not here.
 
 - Every change to this repository is made through af Tasks: an implementation pipeline makes
@@ -141,7 +145,9 @@ review corpora belong in consuming repositories, not here.
   candidate on the other Task's committed source, recording both Tasks; `af task materialize`
   writes an unverified candidate only under `--allow-unverified`
   ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
-- Publishing is a human action, with one operator-authorized exception: for a check a Task
+- Scenario publication Actions require separate machine operation/destination authority and an
+  exact signed human decision (ADR-0274); they do not change Task delivery or Remote Checks.
+  The existing Remote Check exception remains: for a check a Task
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one
   draft gate pull request between them. It never force-pushes, writes another ref, merges, marks

@@ -98,7 +98,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
     f.plan_id = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V1,
+            task::EXECUTION_PLAN_V2,
             producer(),
             vec![f.revision_id.clone()],
             None,

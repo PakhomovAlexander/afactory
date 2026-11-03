@@ -661,13 +661,13 @@ fn one(id: &str, ty: &str, snapshot: Option<&str>) -> ArtifactInputV1 {
 /// A recorded plan of the revision `revision_id`, binding its inputs and authority; `name`
 /// tells two plans of one revision apart.
 fn plan(cas: &Cas, task: &TaskRevisionV1, revision_id: &str, name: &str) -> String {
-    let mut plan: ExecutionPlanV1 = fixture("execution-plan.json");
+    let mut plan: ExecutionPlanV2 = fixture("execution-plan.json");
     plan.task_revision_id = revision_id.into();
     plan.authority = task.authority.clone();
     plan.inputs = task.inputs.clone();
     put_by(
         cas,
-        EXECUTION_PLAN_V1,
+        EXECUTION_PLAN_V2,
         kernel(name),
         vec![revision_id.into()],
         None,

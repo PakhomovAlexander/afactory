@@ -19,22 +19,22 @@
   ],
   "properties": {
     "subject_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "campaign_manifest_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "task_invocation_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "reviewer_inputs_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "rendered_input_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "context_manifest_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "campaign_id": {
       "type": "string",

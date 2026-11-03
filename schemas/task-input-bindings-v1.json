@@ -18,7 +18,7 @@
       "minProperties": 1,
       "maxProperties": 16,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
       },
       "additionalProperties": {
         "$ref": "#/$defs/binding"
@@ -34,16 +34,16 @@
       ],
       "properties": {
         "artifact_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "resolved_artifact_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "rerooted_snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "task": {
           "$ref": "#/$defs/referencedTask"
@@ -98,10 +98,10 @@
       ],
       "properties": {
         "artifact_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "task": {
           "$ref": "#/$defs/referencedTask"
@@ -121,16 +121,16 @@
       ],
       "properties": {
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "task_revision_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "result_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "port": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "acceptance": {
           "enum": [

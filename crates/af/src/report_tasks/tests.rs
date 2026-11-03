@@ -30,7 +30,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         Ok(vec![])
     }
@@ -49,7 +49,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
         _: &TaskInvocationV1,
         _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
@@ -60,7 +60,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -78,7 +78,7 @@ fn report_validator() -> jsonschema::Validator {
         serde_json::from_str(include_str!("../../../../schemas/review-report-v5.json")).unwrap();
     let mut registry = jsonschema::Registry::new();
     for raw in [
-        include_str!("../../../../schemas/task-contracts-v1.json"),
+        include_str!("../../../../schemas/task-contracts-v2.json"),
         include_str!("../../../../schemas/task-token-usage-v3.json"),
         include_str!("../../../../schemas/task-review-accounting-v1.json"),
         include_str!("../../../../schemas/task-findings-v2.json"),
@@ -265,7 +265,7 @@ struct Fixture {
     store: EventStore,
     task: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV1,
+    plan: ExecutionPlanV2,
     plan_id: String,
     lease: TaskLease,
 }
@@ -374,7 +374,7 @@ impl Fixture {
             CompiledOperator::ProviderAdmission {
                 bindings: BTreeSet::from(["first".into(), "second".into()]),
             };
-        let mut plan: ExecutionPlanV1 = serde_json::from_str(include_str!(
+        let mut plan: ExecutionPlanV2 = serde_json::from_str(include_str!(
             "../../../../fixtures/task-contracts/v1/execution-plan.json"
         ))
         .unwrap();
@@ -395,7 +395,7 @@ impl Fixture {
                 artifact_id: pipeline_id,
             },
         )]);
-        let plan_id = put(&cas, EXECUTION_PLAN_V1, &plan);
+        let plan_id = put(&cas, EXECUTION_PLAN_V2, &plan);
         let lease = store
             .open_task(&cas, &revision_id, "fixture", 60000)
             .unwrap();
@@ -867,7 +867,7 @@ fn retired_attempt_classification_uses_its_original_plan_after_replacement() {
     plan.task_revision_id = revision_id.clone();
     plan.inputs = next.inputs;
     plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", graph);
-    let replacement = put(&f.cas, EXECUTION_PLAN_V1, plan);
+    let replacement = put(&f.cas, EXECUTION_PLAN_V2, plan);
     f.store
         .refresh_task_source(
             &f.cas,

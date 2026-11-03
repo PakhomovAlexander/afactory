@@ -62,7 +62,7 @@
       ],
       "properties": {
         "name": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
         },
         "version": {
           "type": "string",
@@ -97,7 +97,7 @@
         },
         "role": {
           "description": "The Worker slot's role (`implement`, `review`, `evaluate`, ...), or `gate` for a check node.",
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "nodes": {
           "description": "The qualified nodes of the step, in compiled order: nodes of one stage, role, Worker and check list form one step.",
@@ -116,7 +116,7 @@
           "type": "array",
           "uniqueItems": true,
           "items": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
           }
         }
       },
@@ -260,10 +260,10 @@
           "maximum": 9007199254740991
         },
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "kind": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
         },
         "pipeline": {
           "description": "The current plan's root Pipeline as `name@version`. Absent before a plan exists and for a collected Task.",
@@ -524,7 +524,7 @@
         },
         "role": {
           "description": "The Worker slot's role, or the kernel operation of a node without a Worker (`check`, `seal`, `provider_admission`, ...).",
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "worker": {
           "description": "The Worker the node's slot was bound to in the plans of this entry's Attempts. Absent for a kernel node.",
@@ -586,13 +586,13 @@
               "const": "model"
             },
             "provider_kind": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
             },
             "model": {
               "$ref": "#/$defs/model"
             },
             "effort": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
             }
           }
         }
@@ -607,7 +607,7 @@
       ],
       "properties": {
         "name": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "status": {
           "enum": [

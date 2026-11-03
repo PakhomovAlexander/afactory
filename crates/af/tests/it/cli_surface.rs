@@ -313,7 +313,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "af/review-show@1",
         "af/review-report@5",
         "af/findings-sarif@1",
-        "af/task-inspection@14",
+        "af/task-inspection@15",
         "af/task-checks@3",
         "af/task-list@4",
         "af/task-list-entry@4",
@@ -560,14 +560,15 @@ fn provider_models_help_and_man_page_describe_the_command() {
             "Usage: af provider models [OPTIONS] [ID]...",
             "--json",
             "--resolve <SPELLING[/EFFORT]>",
-            "af/provider-models@1",
+            "af/provider-models@2",
             "`list_models` control request",
             "`model/list` on a bare `codex app-server`",
+            "Pi's AF host reads the pinned SDK's static catalog without model networking.",
             "`models_cache.json`",
             "af recognises these spellings for this Provider",
             "the charged `af provider doctor`",
             "reviewer.toml [runner] args, the worker.toml [runner] block and the bindings line",
-            "Spends no model tokens and reads no credential.",
+            "Spends no model tokens. The Rust kernel reads no raw credential; Pi AuthStorage stays inside its host.",
             "Exit codes: 0 every catalog listed, 4 a Provider CLI cannot start or is incompatible, 7 a catalog is unavailable",
             "af provider models claude-work --resolve 'Fable 5.1/xhigh'",
         ] {
@@ -1510,7 +1511,8 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
             "agents",
             "self",
             "storage",
-            "telemetry"
+            "telemetry",
+            "scenarios"
         ]
     );
     for (name, about) in rows {
@@ -1534,6 +1536,9 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
         "Gate",
         "Pipeline",
         "Candidate",
+        "Scenario",
+        "Run",
+        "Ant",
     ] {
         assert!(
             concepts
