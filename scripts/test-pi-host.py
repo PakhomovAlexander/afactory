@@ -235,9 +235,10 @@ class ValidationTests(unittest.TestCase):
                                  'after': valid + '\n' + marker,
                                  'replacement': valid.replace(VALIDATION.END, marker)}[position]
                     self.record.write_text(malformed)
-                    result = self.cli()
-                    self.assertNotEqual(result.returncode, 0, result.stdout)
-                    self.assertIn('unsupported or malformed', result.stderr)
+                    # Exercise production validation in-process (scoped issue537 trial); the
+                    # hidden-summary case below keeps representative CLI stderr/exit coverage.
+                    with self.assertRaisesRegex(ValueError, 'unsupported or malformed'):
+                        VALIDATION.read_claims(self.record)
         # Marker counts alone cannot detect a marker hidden inside a consumed block.
         self.claim['summary'] += ' <!-- /af-pi-validation-claim:v2 -->'
         self.write_claim()
