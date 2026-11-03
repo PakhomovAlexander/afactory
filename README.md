@@ -204,7 +204,7 @@ the guide.
   ([docs/task-execution/remote-checks.md](docs/task-execution/remote-checks.md)). A Scenario
   Action can invoke an installed, pinned publication adapter only for a separately authorized
   operation and destination, with a signed human decision on the exact object and revision.
-  [Scenarios and Ants](docs/scenarios.md) coordinate these steps and existing Tasks; daily Ants
+  [Scenarios and Ants](docs/scenarios.md) coordinate these steps and pinned or fresh Tasks; daily Ants
   are driven by local `af ant tick`. No active instances or publication grants ship enabled.
 - **No stored credentials.** A Provider is the official `claude` or `codex` CLI's own login:
   af's registry holds its ID, kind and directory, and `af provider setup --login` runs only at

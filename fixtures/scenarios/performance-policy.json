@@ -1,0 +1,27 @@
+{
+  "schema": "af/scenario-policy@3",
+  "adapters": {
+    "lab": {
+      "executable": "/opt/af-perf/scenario-adapter",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "operations": [
+        "experiment_submit_v1",
+        "observe"
+      ],
+      "destinations": [
+        "native:claw"
+      ],
+      "max_wall_ms": 30000,
+      "max_output_bytes": 65536
+    }
+  },
+  "task_plans": [],
+  "task_templates": [
+    "sha256:095ac8db5e740ce4a2f97e79d8493d2cb77984d53bcf87ec35fb451164d27f03",
+    "sha256:b0713b98b05061c5804fea60dd467d3f8b35f80b6d05ca4b6beedc8bb8221fc6",
+    "sha256:d5df64053f6e8d41ada636949506527408942a1958a27a10e6c46a184b0d1493",
+    "sha256:f80a3b55fc371a14c3237e532a22c02acc1964fff591f91992a9cd4e88d1b00b"
+  ],
+  "decision_keys": {},
+  "file_roots": []
+}

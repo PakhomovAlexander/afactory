@@ -3194,6 +3194,150 @@
       "valid": false,
       "error": "never widened",
       "shape": false
+    },
+    {
+      "path": "scenario-experiment/valid.json",
+      "contract": "scenario-experiment",
+      "valid": true
+    },
+    {
+      "path": "scenario-experiment/invalid-version.json",
+      "contract": "scenario-experiment",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-adapter/valid.json",
+      "contract": "scenario-adapter",
+      "valid": true
+    },
+    {
+      "path": "scenario-adapter/invalid-version.json",
+      "contract": "scenario-adapter",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-intent/valid.json",
+      "contract": "scenario-intent",
+      "valid": true
+    },
+    {
+      "path": "scenario-intent/invalid-version.json",
+      "contract": "scenario-intent",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-receipt/valid.json",
+      "contract": "scenario-receipt",
+      "valid": true
+    },
+    {
+      "path": "scenario-receipt/invalid-version.json",
+      "contract": "scenario-receipt",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-verification/valid.json",
+      "contract": "scenario-verification",
+      "valid": true
+    },
+    {
+      "path": "scenario-verification/invalid-version.json",
+      "contract": "scenario-verification",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-status/valid.json",
+      "contract": "scenario-status",
+      "valid": true
+    },
+    {
+      "path": "scenario-status/invalid-version.json",
+      "contract": "scenario-status",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "evidence-index/valid.json",
+      "contract": "evidence-index",
+      "valid": true
+    },
+    {
+      "path": "evidence-index/invalid-version.json",
+      "contract": "evidence-index",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-service/valid.json",
+      "contract": "scenario-service",
+      "valid": true
+    },
+    {
+      "path": "scenario-service/invalid-version.json",
+      "contract": "scenario-service",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-launcher/valid.json",
+      "contract": "scenario-launcher",
+      "valid": true
+    },
+    {
+      "path": "scenario-launcher/invalid-version.json",
+      "contract": "scenario-launcher",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "evidence-export/valid.json",
+      "contract": "evidence-export",
+      "valid": true
+    },
+    {
+      "path": "evidence-export/invalid-version.json",
+      "contract": "evidence-export",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "evidence-packet/valid.json",
+      "contract": "evidence-packet",
+      "valid": true
+    },
+    {
+      "path": "evidence-packet/invalid-version.json",
+      "contract": "evidence-packet",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-completion/valid.json",
+      "contract": "scenario-completion",
+      "valid": true
+    },
+    {
+      "path": "scenario-completion/invalid-version.json",
+      "contract": "scenario-completion",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
     }
   ]
 }

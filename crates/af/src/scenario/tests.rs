@@ -3,9 +3,9 @@ use super::*;
 use serde_json::{Value, json};
 use std::sync::{Arc, Barrier};
 
-const DAY: u64 = 86_400_000;
-const START: u64 = 1_800_000_000_000 / DAY * DAY;
-fn limits() -> Limits {
+pub(super) const DAY: u64 = 86_400_000;
+pub(super) const START: u64 = 1_800_000_000_000 / DAY * DAY;
+pub(super) fn limits() -> Limits {
     Limits {
         max_tokens: 100,
         max_wall_ms: 10 * DAY,
@@ -17,12 +17,13 @@ fn lit(value: Datum) -> Binding {
         value: Box::new(value),
     }
 }
-fn simple() -> (Bundle, Policy) {
+pub(super) fn simple() -> (Bundle, Policy) {
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let policy = Policy {
-        schema: "af/scenario-policy@1".into(),
+        schema: "af/scenario-policy@3".into(),
         adapters: BTreeMap::new(),
         task_plans: Default::default(),
+        task_templates: Default::default(),
         decision_keys: BTreeMap::from([("owner".into(), key.pk.to_box().unwrap().into_string())]),
         file_roots: Default::default(),
     };
@@ -42,7 +43,7 @@ fn simple() -> (Bundle, Policy) {
         },
     };
     let def = Scenario {
-        schema: "af/scenario@1".into(),
+        schema: "af/scenario@3".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::from([("ok".into(), Port::Boolean)]),
         steps: vec![step],
@@ -50,14 +51,16 @@ fn simple() -> (Bundle, Policy) {
         completion: vec![lit(Datum::Boolean(true))],
         authority: Authority {
             task_plans: Default::default(),
+            task_templates: Default::default(),
             grants: Default::default(),
             decision_owners: ["owner".into()].into(),
         },
         limits: limits(),
+        admission: None,
     };
     (
         Bundle {
-            schema: "af/scenario-bundle@1".into(),
+            schema: "af/scenario-bundle@3".into(),
             root: "main".into(),
             definitions: BTreeMap::from([("main".into(), def)]),
         },
@@ -117,10 +120,10 @@ fn publication() -> (Bundle, Policy) {
     ));
     (bundle, policy)
 }
-fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
+pub(super) fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@1".into(),
+        schema: "af/ant@3".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
@@ -145,13 +148,17 @@ fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     ant.change(AntMode::Enabled, START).unwrap();
     ant
 }
-fn schema(name: &str) -> jsonschema::Validator {
+pub(super) fn schema(name: &str) -> jsonschema::Validator {
     let dir = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
-    for file in ["scenario-v1.json", "task-contracts-v1.json"] {
+    for file in [
+        "scenario-v3.json",
+        "task-contracts-v1.json",
+        "scenario-roadmap-proposal-v2.json",
+    ] {
         let value: Value = serde_json::from_slice(&std::fs::read(dir.join(file)).unwrap()).unwrap();
         let id = value["$id"].as_str().unwrap().to_owned();
         registry = registry
@@ -165,7 +172,7 @@ fn schema(name: &str) -> jsonschema::Validator {
         .build(&root)
         .unwrap()
 }
-fn valid(file: &str, value: &impl serde::Serialize) {
+pub(super) fn valid(file: &str, value: &impl serde::Serialize) {
     let value = serde_json::to_value(value).unwrap();
     let validator = schema(file);
     let errors: Vec<_> = validator
@@ -173,6 +180,43 @@ fn valid(file: &str, value: &impl serde::Serialize) {
         .map(|e| format!("{e} at {}", e.instance_path()))
         .collect();
     assert!(errors.is_empty(), "{file}: {}", errors.join("\n"));
+}
+
+#[test]
+fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_and_no_publication()
+{
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    for file in [
+        "performance-candidate.json",
+        "performance-no-worthwhile.json",
+    ] {
+        let value: Value = serde_json::from_slice(
+            &std::fs::read(root.join("fixtures/scenarios").join(file)).unwrap(),
+        )
+        .unwrap();
+        valid("scenario-bundle-v3.json", &value);
+        let bundle: Bundle = serde_json::from_value(value).unwrap();
+        bundle.validate().unwrap();
+        let definition = &bundle.definitions["performance"];
+        let sum: u64 = definition
+            .steps
+            .iter()
+            .filter_map(|s| match &s.operation {
+                Kind::FreshTask { template, .. } => {
+                    Some(template.max_tokens * u64::from(s.max_attempts))
+                }
+                _ => None,
+            })
+            .sum();
+        assert_eq!(sum, 23_000_000);
+        assert!(sum <= definition.limits.max_tokens);
+        assert!(definition.authority.grants.iter().all(|g| matches!(
+            g.operation,
+            Operation::Observe | Operation::ExperimentSubmitV1
+        )));
+    }
 }
 
 #[test]
@@ -193,27 +237,27 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let ant = ant("UTC", 12, 0);
     for (file, value) in [
         (
-            "scenario-v1.json",
+            "scenario-v3.json",
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
-        ("scenario-bundle-v1.json", json!(bundle)),
-        ("scenario-policy-v1.json", json!(policy)),
-        ("scenario-pin-v1.json", json!(pin)),
-        ("scenario-run-v1.json", json!(run)),
-        ("ant-v1.json", json!(ant.pin.definition)),
-        ("ant-pin-v1.json", json!(ant.pin)),
-        ("ant-state-v1.json", json!(ant)),
+        ("scenario-bundle-v3.json", json!(bundle)),
+        ("scenario-policy-v3.json", json!(policy)),
+        ("scenario-pin-v3.json", json!(pin)),
+        ("scenario-run-v3.json", json!(run)),
+        ("ant-v3.json", json!(ant.pin.definition)),
+        ("ant-pin-v3.json", json!(ant.pin)),
+        ("ant-state-v3.json", json!(ant)),
         (
-            "scenario-list-v1.json",
-            json!({"schema":"af/scenario-list@1","runs":{"run":run}}),
+            "scenario-list-v3.json",
+            json!({"schema":"af/scenario-list@3","runs":{"run":run}}),
         ),
         (
-            "ant-list-v1.json",
-            json!({"schema":"af/ant-list@1","ants":{"daily":ant}}),
+            "ant-list-v3.json",
+            json!({"schema":"af/ant-list@3","ants":{"daily":ant}}),
         ),
         (
-            "ant-tick-v1.json",
-            json!({"schema":"af/ant-tick@1","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v3.json",
+            json!({"schema":"af/ant-tick@3","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
@@ -231,7 +275,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     wrong["extra"] = json!(true);
     assert!(serde_json::from_value::<Bundle>(wrong).is_err());
     let request = Request {
-        schema: "af/scenario-adapter-request@1".into(),
+        schema: "af/scenario-adapter-request@2".into(),
         method: Method::Reconcile,
         intent_id: digest(b"intent"),
         input_digest: digest(b"inputs"),
@@ -247,7 +291,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         evidence: "no prior effect".into(),
         observation: None,
     };
-    valid("scenario-adapter-request-v1.json", &request);
+    valid("scenario-adapter-request-v2.json", &request);
     valid("scenario-adapter-response-v1.json", &response);
     valid(
         "scenario-owned-file-v1.json",
@@ -1061,7 +1105,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v1.json", &world);
+    valid("scenario-store-v4.json", &world);
 }
 
 #[test]

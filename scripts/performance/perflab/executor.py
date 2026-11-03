@@ -854,7 +854,7 @@ class Journal:
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
                cohort=None, member=None, parameters=None, parent=None, checked=None,
                config=None, frozen_parent=None, frozen_plan=None, partition=None,
-               bind_configuration=False, submission=None):
+               bind_configuration=False, submission=None, expected_producer=None):
         """`config` is a comparison lane's derived configuration (its diagnostic recipe);
         `frozen_parent` is (parent record, plan, verdict bytes) of a comparison's verified
         aggregate; `frozen_plan` and `partition` make a core original one partition of a
@@ -884,6 +884,8 @@ class Journal:
         submission = submission or {"kind": kind, "key": key}
         if ident in self.names() and checked is None:
             original = self.request(ident)
+            require(expected_producer is None or original["producer_digest"] == expected_producer,
+                    "original producer differs from the experiment's pinned producer")
             require(original["sources"] == sources and original["submission"] == submission
                     and original["work"] == work, "original submission key was reused for another source")
             wanted = parent if frozen_parent is None else frozen_parent[0]["request_id"]
@@ -908,6 +910,8 @@ class Journal:
         require(len(self.names()) < c["max_requests"], "original journal is full")
         require(sum(self.state(i)["state"] == "queued" for i in self.names()) < c["max_queue"], "queue is full")
         produced = producer(git, control, installed)
+        require(expected_producer is None or produced == expected_producer,
+                "installed producer differs from the experiment's pinned producer")
         env = environment(c)
         if cohort is not None:
             contracts.validate_cohort(cohort)
@@ -1646,7 +1650,7 @@ def dispatch_actions(config, request, path, transport=None):
         "detail": "Hosted dispatch accepted. Only original Actions run/attempt evidence establishes measurement."}
 
 
-def verify_original(journal, ident, installed=ROOT):
+def verify_original(journal, ident, installed=ROOT, *, evaluated=None):
     """Offline admission: local journal, retained Git objects, plan and raw evidence, no API."""
     request, state = journal.request(ident), journal.state(ident)
     require(request["backend"] == "local" and state["state"] == "complete", "not a completed local original")
@@ -1702,6 +1706,8 @@ def verify_original(journal, ident, installed=ROOT):
         require(expected == plan, "original plan is not what its retained source authority freezes")
         evaluation = compare.evaluate(os.path.join(path, "run"))
         require(evaluation.plan == plan, "measurement changed original plan")
+        if evaluated is not None:
+            evaluated[ident] = evaluation
         if result["schema"] == contracts.EXECUTOR_RESULT_SCHEMA:
             measured = contracts.read_json(read(os.path.join(path, "run", "builds.json")), "builds")
             require(result["binaries"] == built_binaries(measured),

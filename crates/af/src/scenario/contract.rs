@@ -1,4 +1,4 @@
-//! Scenario v1 wire contracts. Definitions are data; only machine policy grants effects.
+//! Current-release Scenario wire contracts. Definitions are data; only machine policy grants effects.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -124,7 +124,8 @@ impl Datum {
                 r.result.validate()?;
                 require(
                     r.result.task_revision_id == r.revision_id
-                        && r.result.acceptance == review_core::task::TaskAcceptanceV1::Satisfied,
+                        && r.result.acceptance == review_core::task::TaskAcceptanceV1::Satisfied
+                        && r.result.execution == review_core::task::TaskExecutionV1::Completed,
                     "Task receipt lacks acceptance",
                 )
             }
@@ -155,7 +156,7 @@ impl Datum {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TaskReceipt {
+pub(crate) struct TaskReceipt {
     pub task_id: String,
     pub plan_id: String,
     pub revision_id: String,
@@ -231,6 +232,7 @@ pub(super) enum Binding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Projection {
+    ActionIntent,
     TaskConclusion,
     TaskResultId,
     TaskOutputId { port: String },
@@ -241,6 +243,7 @@ pub(super) enum Projection {
 impl Projection {
     fn types(&self) -> Result<(Port, Port)> {
         Ok(match self {
+            Self::ActionIntent => (Port::Action, Port::Text),
             Self::TaskConclusion | Self::TaskResultId => (Port::Task, Port::Text),
             Self::TaskOutputId { port } | Self::TaskOutputSnapshot { port } => {
                 name(port)?;
@@ -252,6 +255,7 @@ impl Projection {
     }
     pub fn apply(&self, value: Datum) -> Result<Datum> {
         Ok(match (self, value) {
+            (Self::ActionIntent, Datum::Action(a)) => Datum::Text(a.intent_id),
             (Self::TaskConclusion, Datum::Task(t)) => Datum::Text(t.result.domain_conclusion),
             (Self::TaskResultId, Datum::Task(t)) => Datum::Text(t.result_id),
             (Self::TaskOutputId { port }, Datum::Task(t)) => {
@@ -358,6 +362,7 @@ pub(super) enum Operation {
     PublishPr,
     Followup,
     Notify,
+    ExperimentSubmitV1,
     WriteOwnedFile,
     CleanupOwnedFile,
     Observe,
@@ -375,20 +380,23 @@ pub(super) struct Authority {
     #[serde(deserialize_with = "unique")]
     pub task_plans: BTreeSet<String>,
     #[serde(deserialize_with = "unique")]
+    pub task_templates: BTreeSet<String>,
+    #[serde(deserialize_with = "unique")]
     pub grants: BTreeSet<Grant>,
     #[serde(deserialize_with = "unique")]
     pub decision_owners: BTreeSet<String>,
 }
 impl Authority {
     pub fn within(&self, parent: &Self) -> bool {
-        self.task_plans.is_subset(&parent.task_plans)
+        self.task_templates.is_subset(&parent.task_templates)
+            && self.task_plans.is_subset(&parent.task_plans)
             && self.grants.is_subset(&parent.grants)
             && self.decision_owners.is_subset(&parent.decision_owners)
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TaskTarget {
+pub(crate) struct TaskTarget {
     pub repo: PathBuf,
     pub state: PathBuf,
     pub task_id: String,
@@ -405,6 +413,10 @@ pub(super) enum Timeout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Kind {
+    FreshTask {
+        template: Box<super::template::Template>,
+        bindings: BTreeMap<String, super::template::Predecessor>,
+    },
     Task {
         target: TaskTarget,
     },
@@ -447,6 +459,8 @@ pub(super) struct Scenario {
     pub completion: Vec<Binding>,
     pub authority: Authority,
     pub limits: Limits,
+    #[serde(default)]
+    pub admission: Option<super::roadmap::Admission>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -500,7 +514,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@1"
+            self.schema == "af/scenario-bundle@3"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -518,6 +532,15 @@ impl Bundle {
             "Bundle contains unreachable definitions",
         )?;
         for (id, definition) in &self.definitions {
+            if self.definitions[&self.root].admission.is_some() {
+                require(
+                    definition
+                        .steps
+                        .iter()
+                        .all(|s| !matches!(s.operation, Kind::Task { .. })),
+                    "Roadmap loop Tasks must be fresh template invocations throughout the bundle",
+                )?;
+            }
             name(id)?;
             definition.validate(self)?;
         }
@@ -635,7 +658,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle) -> Result<()> {
         require(
-            self.schema == "af/scenario@1"
+            self.schema == "af/scenario@3"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -646,6 +669,18 @@ impl Scenario {
             "Invalid Scenario contract",
         )?;
         self.limits.validate()?;
+        if let Some(admission) = &self.admission {
+            admission.validate()?;
+        }
+        require(
+            self.authority.task_templates.len() <= 256
+                && self
+                    .authority
+                    .task_templates
+                    .iter()
+                    .all(|p| review_core::is_digest(p)),
+            "Invalid template authority",
+        )?;
         for p in self.inputs.keys().chain(self.outputs.keys()) {
             name(p)?;
         }
@@ -663,6 +698,15 @@ impl Scenario {
         }
         let mut previous = BTreeMap::new();
         for step in &self.steps {
+            if let Kind::Scenario { scenario } = &step.operation {
+                require(
+                    bundle
+                        .definitions
+                        .get(scenario)
+                        .is_some_and(|c| c.admission.is_none()),
+                    "Child Scenario cannot admit another roadmap goal",
+                )?;
+            }
             name(&step.id)?;
             require(
                 !previous.contains_key(&step.id)
@@ -694,6 +738,23 @@ impl Scenario {
             let mut expected = BTreeMap::new();
             let output;
             match &step.operation {
+                Kind::FreshTask { template, bindings } => {
+                    template.validate()?;
+                    super::template::validate_bindings(bindings)?;
+                    require(
+                        self.authority.task_templates.contains(&template.id()?),
+                        "Task template exceeds Scenario authority",
+                    )?;
+                    require(
+                        template.max_tokens <= self.limits.max_tokens,
+                        "Template exceeds Scenario budget",
+                    )?;
+                    expected = bindings.keys().map(|k| (k.clone(), Port::Task)).collect();
+                    if step.inputs.contains_key("scenario_evidence") {
+                        expected.insert("scenario_evidence".into(), Port::Observation);
+                    }
+                    output = Port::Task;
+                }
                 Kind::Task { target } => {
                     name(&target.task_id)?;
                     require(
@@ -765,6 +826,13 @@ impl Scenario {
                         "Publication requires an exact human decision",
                     )?;
                     match grant.operation {
+                        Operation::ExperimentSubmitV1 => {
+                            expected.insert("subject".into(), Port::Text);
+                            expected.insert("revision".into(), Port::Text);
+                            expected.insert("body".into(), Port::Text);
+                            expected.insert("candidate".into(), Port::Task);
+                            output = Port::Action;
+                        }
                         Operation::WriteOwnedFile => {
                             expected.insert("file".into(), Port::Text);
                             expected.insert("content".into(), Port::Text);
@@ -839,6 +907,8 @@ pub(super) struct Policy {
     pub adapters: BTreeMap<String, Adapter>,
     #[serde(deserialize_with = "unique")]
     pub task_plans: BTreeSet<String>,
+    #[serde(deserialize_with = "unique")]
+    pub task_templates: BTreeSet<String>,
     pub decision_keys: BTreeMap<String, String>,
     #[serde(deserialize_with = "unique")]
     pub file_roots: BTreeSet<PathBuf>,
@@ -846,9 +916,14 @@ pub(super) struct Policy {
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@1"
+            self.schema == "af/scenario-policy@3"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
+                && self.task_templates.len() <= 256
+                && self
+                    .task_templates
+                    .iter()
+                    .all(|p| review_core::is_digest(p))
                 && self.task_plans.len() <= 256
                 && self.file_roots.len() <= 32,
             "Invalid machine Scenario policy",
@@ -892,6 +967,10 @@ impl Policy {
     pub fn admits(&self, bundle: &Bundle) -> Result<()> {
         self.validate()?;
         for def in bundle.definitions.values() {
+            require(
+                def.authority.task_templates.is_subset(&self.task_templates),
+                "Scenario Task template authority exceeds machine policy",
+            )?;
             require(
                 def.authority.task_plans.is_subset(&self.task_plans),
                 "Scenario Task plan authority exceeds machine policy",
@@ -956,7 +1035,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@1".into(),
+            schema: "af/scenario-pin@3".into(),
             bundle,
             policy,
             revision,

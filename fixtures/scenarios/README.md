@@ -21,3 +21,20 @@ and pinned separately under the [bounded adapter contract](../../docs/scenarios.
 The executable evidence is `crates/af/tests/it/scenario.rs`: it replaces the placeholders with a
 private existing Task fixture, runs the real CLI across process boundaries and verifies receipts,
 restart recovery, cancellation, stale evidence refusal and preservation of unexpected content.
+
+`fresh-task-loop.json` is an inert current-release fresh Task example. Its repository, Store,
+commit and authority values are placeholders. Capture a real native Task with
+`af scenario template-pin`, replace the template and both template digest grants, and review the
+Scenario pin before execution. Set root `admission` from the exact roadmap identity/revision to
+claim a complete goal; the complete-loop allowance must cover every declared Task attempt.
+Performance model roles are fixed to the owner policy in the operator guide. No lab adapter,
+production instance or schedule is installed by these examples.
+
+`performance-candidate.json` and `performance-no-worthwhile.json` carry the native asynchronous
+lab loop and an evidenced no-worthwhile branch, respectively. `performance-ant.json` is its inert
+daily binding; `performance-native-roadmap.json` reserves feasible production package allowances.
+`performance-policy.json` carries placeholder installed adapter authority. Capture the four native
+Task templates and use `configure-performance.py` to render external authoring files from those
+receipts. It never runs or confirms a plan. Follow the
+[manual-first runbook](../../docs/performance-scenarios.md); a real complete Claw run precedes
+separate Ant enablement. No example grants publication.

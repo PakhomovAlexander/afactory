@@ -232,7 +232,26 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af task status", READS),
     ("af task events", READS),
     ("af task cancel", writes(&[(Store, None)])),
+    ("af scenario roadmap validate", READS),
+    (
+        "af scenario roadmap create",
+        Effects {
+            human: &[(Approval, Some("exact revision confirmation"))],
+            ..writes(&[(Store, None)])
+        },
+    ),
+    (
+        "af scenario roadmap revise",
+        Effects {
+            human: &[(Approval, Some("exact revision confirmation"))],
+            ..writes(&[(Store, None)])
+        },
+    ),
+    ("af scenario roadmap show", READS),
+    ("af scenario roadmap list", READS),
     ("af scenario validate", READS),
+    ("af scenario template-pin", writes(&[(Store, None)])),
+    ("af scenario experiment-source", writes(&[(Files, None)])),
     (
         "af scenario start",
         Effects {
