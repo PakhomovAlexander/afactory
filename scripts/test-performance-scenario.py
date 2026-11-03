@@ -6,6 +6,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -366,6 +367,22 @@ class ScenarioLab(ExecutorFixture):
 
 
 class Evidence(unittest.TestCase):
+    def test_native_reader_over_installed_byte_bound_is_refused_before_hash_or_execution(self):
+        # Sparse, private fixture: exercise the real reader's size check without
+        # allocating/reading 256 MiB or relying on this host's debug binary size.
+        with tempfile.TemporaryDirectory() as root:
+            binary = pathlib.Path(root).resolve() / "af"
+            with binary.open("xb") as stream:
+                stream.truncate(256 * 1024 * 1024 + 1)
+            binary.chmod(0o500)
+            selection = dict(task_id="prior", artifact_id=D, observed_unix_ms=30, compatibility=D)
+            with mock.patch.object(researchevidence, "sha256_bytes") as digest, \
+                    mock.patch.object(researchevidence.subprocess, "run") as run:
+                with self.assertRaisesRegex(ContractError, "executor receipt exceeds byte bound"):
+                    researchevidence.resolve(dict(af=str(binary), af_digest=D), selection)
+                digest.assert_not_called()
+                run.assert_not_called()
+
     def artifact(self, number, **changes):
         return dict(dict(kind="finding", source_id=sha256_bytes(str(number).encode()), source_digest=D,
             provenance="native_task", native_receipt=dict(task_id="prior", revision_id=BASE, artifact_id=D),

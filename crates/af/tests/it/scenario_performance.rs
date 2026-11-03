@@ -1,6 +1,82 @@
 //! The shipped production loop, with real model bindings and deterministic fake Provider IO.
 use super::*;
 use review_store::Cas;
+use std::os::unix::fs::MetadataExt;
+
+fn executable_digest(path: &Path) -> String {
+    use std::io::Read;
+    let mut source = std::fs::File::open(path).unwrap();
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = source.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    format!("sha256:{}", review_core::hex::encode(&digest.finalize()))
+}
+
+// Installed native readers are bounded at 256 MiB. Linux debug builds can exceed
+// that bound: remove only debug symbols from an owned copy, never the held binary
+// (which shares its inode with other tests). `strip -S` removes debug symbols on
+// both ELF (GNU strip) and Mach-O (Apple strip), preserving runtime symbols.
+fn installed_native_reader(root: &Path) -> (PathBuf, String) {
+    let source = crate::common::af_binary();
+    let original = std::fs::metadata(source).unwrap();
+    let original_digest = executable_digest(source);
+    let directory = root.join("installed-native-reader");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    let binary = directory.join("af");
+    let mut copy = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&binary)
+        .unwrap();
+    std::io::copy(&mut std::fs::File::open(source).unwrap(), &mut copy).unwrap();
+    drop(copy);
+    let copied = std::fs::metadata(&binary).unwrap();
+    assert_ne!(
+        (original.dev(), original.ino()),
+        (copied.dev(), copied.ino())
+    );
+    assert_eq!(executable_digest(&binary), original_digest);
+    let stripped = std::process::Command::new("/usr/bin/strip")
+        .arg("-S")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert_eq!(executable_digest(source), original_digest);
+    let unchanged = std::fs::metadata(source).unwrap();
+    assert_eq!(
+        unchanged.permissions().mode(),
+        original.permissions().mode()
+    );
+    assert_eq!(
+        (unchanged.dev(), unchanged.ino()),
+        (original.dev(), original.ino())
+    );
+    assert!(
+        stripped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stripped.stderr)
+    );
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let installed = std::fs::metadata(&binary).unwrap();
+    assert!(installed.len() <= 256 * 1024 * 1024);
+    assert_eq!(installed.permissions().mode() & 0o777, 0o500);
+    assert_eq!(
+        std::fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let digest = executable_digest(&binary);
+    (binary, digest)
+}
 
 fn copy_mutable_fixture_file(source: &Path, target: &Path) {
     std::fs::copy(source, target).unwrap();
@@ -509,11 +585,11 @@ fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_wi
         "baseline_snapshot_id":null,"candidate_snapshot_id":candidate["result"]["outputs"]["snapshot"]["snapshot_id"],
         "control_sha":p.commit,"trusted_ref":"refs/heads/main"});
     write(&source_intent.join("source-request.json"), &request);
-    let binary = crate::common::af_binary();
+    let (binary, binary_digest) = installed_native_reader(&p.f.machine);
     let source_config = p.f.machine.join("source-config.json");
     write(
         &source_config,
-        &json!({"af":binary,"af_digest":format!("sha256:{}",review_core::hex::encode(&Sha256::digest(std::fs::read(binary).unwrap()))),"task_repo":p.f.repo,"task_state":p.task_state}),
+        &json!({"af":binary,"af_digest":binary_digest,"task_repo":p.f.repo,"task_state":p.task_state}),
     );
     let capture = || {
         // Exercise the shipped Python/native bridge, including its distinct request and CAS
@@ -805,11 +881,7 @@ fn native_prior_packet(root: &Path) -> (PathBuf, PathBuf, Value, Value) {
         &sources,
         &json!([{"task_id":"second","artifact_id":id,"observed_unix_ms":100,"compatibility":compat}]),
     );
-    let binary = crate::common::af_binary();
-    let binary_digest = format!(
-        "sha256:{}",
-        review_core::hex::encode(&Sha256::digest(std::fs::read(binary).unwrap()))
-    );
+    let (binary, binary_digest) = installed_native_reader(root);
     let evidence = root.join("evidence");
     std::fs::DirBuilder::new()
         .mode(0o700)
