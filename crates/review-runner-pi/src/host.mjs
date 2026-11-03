@@ -113,19 +113,27 @@ export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')
     if (!Number.isSafeInteger(value) || value < 0) { invalid = true; return null; }
     return value;
   };
+  const keys = ['input', 'output', 'cache_read', 'cache_write', 'reasoning'];
+  const conflicted = new Set();
   for (const u of sources) {
     if (u === undefined || u === null) continue;
-    if (typeof u !== 'object' || Array.isArray(u)) fail('invalid_usage');
+    if (typeof u !== 'object' || Array.isArray(u)) { invalid = true; continue; }
     const raw = adapter.usageFields(u);
-    const observedCached = raw.cached.map(counter).filter((value) => value !== null);
-    if (new Set(observedCached).size > 1) fail('invalid_usage');
-    const next = { input: counter(raw.input),
-      output: counter(raw.output),
-      cache_read: observedCached[0] ?? null,
-      cache_write: counter(raw.cache_write),
-      reasoning: counter(raw.reasoning) };
-    if (result && JSON.stringify(result) !== JSON.stringify(next)) fail('invalid_usage');
-    result = next;
+    // A malformed or conflicting alias makes only its own component unknown. Never
+    // choose an alias, or discard independently justified aggregate counters with it.
+    const cached = raw.cached.map(counter);
+    const observedCached = cached.filter((value) => value !== null);
+    const badCache = raw.cached.some((value, i) => value != null && cached[i] === null) ||
+      new Set(observedCached).size > 1;
+    if (badCache) invalid = true;
+    const next = { input: counter(raw.input), output: counter(raw.output),
+      cache_read: badCache ? null : observedCached[0] ?? null,
+      cache_write: counter(raw.cache_write), reasoning: counter(raw.reasoning) };
+    if (!result) result = next;
+    else for (const key of keys) {
+      if (result[key] !== next[key]) { invalid = true; conflicted.add(key); }
+      if (conflicted.has(key)) result[key] = null;
+    }
   }
   if (invalid) onInvalid();
   return result;
@@ -414,13 +422,27 @@ export async function main() {
           if (next) {
             // Validate cumulative counters before allowing another inference. Preserve safe
             // observed floors even if another counter in this same event is malformed.
+            const prior = current.observed;
+            const safe = { ...prior };
             for (const key of Object.keys(next)) if (next[key] !== null) {
-              if (current.observed[key] !== null && next[key] < current.observed[key]) invalid = true;
-              else current.observed[key] = next[key];
+              if (prior[key] !== null && next[key] < prior[key]) invalid = true;
+              else safe[key] = next[key];
             }
-            const u = current.observed;
-            if ((u.input !== null && ((u.cache_read ?? 0) + (u.cache_write ?? 0) > u.input)) ||
-                (u.output !== null && (u.reasoning ?? 0) > u.output)) invalid = true;
+            // Do not send Rust an inconsistent record: it correctly rejects the entire
+            // record. Roll back optional components first, retaining prior safe evidence.
+            // If a newly known aggregate contradicts prior components, leave it unknown.
+            const cacheExceeds = () => safe.input !== null &&
+              BigInt(safe.cache_read ?? 0) + BigInt(safe.cache_write ?? 0) > BigInt(safe.input);
+            if (cacheExceeds()) {
+              invalid = true;
+              safe.cache_read = prior.cache_read; safe.cache_write = prior.cache_write;
+              if (cacheExceeds()) safe.input = prior.input;
+            }
+            if (safe.output !== null && (safe.reasoning ?? 0) > safe.output) {
+              invalid = true; safe.reasoning = prior.reasoning;
+              if ((safe.reasoning ?? 0) > safe.output) safe.output = prior.output;
+            }
+            current.observed = safe;
             current.observations++;
             emit('usage', { inference: current.id, complete: false, observations: current.observations, ...current.observed });
             if (current.observations >= 128) { budget.unsafe = true; fail('diagnostic_capacity'); }

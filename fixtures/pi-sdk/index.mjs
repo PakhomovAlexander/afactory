@@ -18,6 +18,10 @@ export class ModelRuntime {
         if (Object.keys(options.env).length || options.maxRetries !== 0) throw Error('ambient auth/retry');
         await options.credentials?.read?.(backend());
         if (backend() === 'kimi-coding') {
+          if (state().providerEvents) {
+            for (const event of state().providerEvents) await options.onProviderStreamEvent(event, selected);
+            return;
+          }
           const usage = state().usage ?? {prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
           for (let n=0;n<(state().usageEvents ?? 2);n++) await options.onProviderStreamEvent(n%2 ? {choices:[{usage}]} : {choices:[],usage}, selected);
           return;
@@ -70,7 +74,8 @@ export async function createAgentSession(options) {
       const message={role:'assistant',provider:backend(),model:model().id,stopReason:'stop',content:[{type:'text',text:answer}]};
       for (let i=0;i<(state().inferences ?? 1);i++) {
         emit({type:'message_start',message});
-        await options.modelRuntime.streamSimple(options.model,{},{});
+        try { await options.modelRuntime.streamSimple(options.model,{},{}); }
+        catch (error) { if (!state().continueAfterNativeError) throw error; }
         emit({type:'message_end',message});
         if (state().countRead) await options.customTools.find(t=>t.name==='read').execute('id',{path:'SYNTHETIC_SECRET_PATH'});
       } emit({type:'agent_end'}); emit({type:'agent_settled',aborted:false});

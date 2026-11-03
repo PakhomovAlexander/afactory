@@ -34,8 +34,13 @@ Native prompt usage is known only after the response. Therefore a **single infer
 overshoot** the remaining AF allowance, even with an output cap. AF does not assert tokenizer-exact
 preflight enforcement from byte or character estimates. Preserve the entire observed charge,
 including overshoot, and refuse the next inference. Unknown usage remains unknown, with available
-observed floors retained. Cancellation, original deadline, settlement requirements, disabled
-retries/compaction and common process supervision remain unchanged.
+observed floors retained. Malformed or conflicting optional counters do not erase independently
+valid aggregate counters from the same native observation, including the first one. Exclude
+inconsistent optional components before emitting incomplete safe evidence; retain preceding safe
+counters on decreases and leave conflicting aggregate counters unknown. Such accounting fails
+the Attempt and prevents further native inference, even when the aggregate floor is known.
+Cancellation, original deadline, settlement requirements, disabled retries/compaction and common
+process supervision remain unchanged.
 
 Kimi still charges full input plus output once per inference, without a cache discount.
 OpenAI still charges input minus cache read plus output and requires observed cache reads.

@@ -204,7 +204,10 @@ prompt input and final streaming usage; it does not establish absent cache as ze
 both backend convention identities and their map. A preceding host-only policy cannot
 silently adopt this accounting: it refuses before private input, without adding persisted
 fields. Missing, malformed, unsafe, conflicting or failed observations refuse complete
-accounting and retain preceding observed floors under ADR-0088.
+accounting and retain independently valid counters from the same native observation as well as
+preceding observed floors under ADR-0088. Inconsistent optional components are excluded from
+incomplete safe evidence; conflicting aggregate counters remain unknown. Invalid accounting
+prevents any subsequent native inference.
 
 LF alone frames records; CRLF is accepted and U+2028/U+2029 remain string content. Partial
 records, incompatible versions, invalid state transitions, changed identities/settings,

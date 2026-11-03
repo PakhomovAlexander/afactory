@@ -775,6 +775,62 @@ const host=await import(pathToFileURL(HOST_PATH).href);await host.main();
             print('Kimi SDK tools and raw usage: passed (' +
                   ('official SDK, mocked HTTP; no live call)' if official else 'hermetic SDK fixture)'))
 
+    def test_raw_usage_keeps_independent_fields_when_optional_or_aggregate_counters_conflict(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        script = r"""
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const {rawUsage} = await import(pathToFileURL(process.argv[2]).href);
+const base = {prompt_tokens:12,completion_tokens:3,cached_tokens:2,
+  prompt_tokens_details:{cache_write_tokens:1},completion_tokens_details:{reasoning_tokens:1}};
+const expected = {input:12,output:3,cache_read:2,cache_write:1,reasoning:1};
+function invalid(event, safe) {
+  let refused = 0;
+  assert.deepEqual(rawUsage('kimi-coding',event,()=>refused++),safe);
+  assert.equal(refused,1);
+  assert.throws(()=>rawUsage('kimi-coding',event));
+}
+for (const value of [-1,0.5,'12',true,9007199254740992,Infinity,NaN,{},[]]) {
+  invalid({usage:{...base,cached_tokens:value}},{...expected,cache_read:null});
+  invalid({usage:{...base,prompt_cache_hit_tokens:value}},{...expected,cache_read:null});
+  invalid({usage:{...base,prompt_tokens_details:{cache_write_tokens:value}}},
+    {...expected,cache_write:null});
+  invalid({usage:{...base,completion_tokens_details:{reasoning_tokens:value}}},
+    {...expected,reasoning:null});
+  invalid({usage:{...base,prompt_tokens:value}},{...expected,input:null});
+  invalid({usage:{...base,completion_tokens:value}},{...expected,output:null});
+}
+for (const [field, change] of [
+  ['input',{prompt_tokens:13}], ['output',{completion_tokens:4}],
+  ['cache_read',{cached_tokens:3}],
+  ['cache_write',{prompt_tokens_details:{cache_write_tokens:2}}],
+  ['reasoning',{completion_tokens_details:{reasoning_tokens:2}}],
+]) {
+  const conflicting = {...base,...change};
+  // Reordering or repeating sources cannot select a conflicting value.
+  for (const sources of [[base,conflicting,base],[conflicting,base,conflicting]]) {
+    invalid({usage:sources[0],choices:sources.slice(1).map(usage=>({usage}))},
+      {...expected,[field]:null});
+  }
+}
+invalid({usage:{...base,prompt_cache_hit_tokens:3}},{...expected,cache_read:null});
+invalid({usage:[],choices:[{usage:base}]},expected);
+invalid({usage:[]},undefined);
+// A malformed optional counter also refuses OpenAI, retaining its independent raw totals.
+let refused = false;
+assert.deepEqual(rawUsage('openai-codex',{response:{usage:{input_tokens:12,output_tokens:3,
+  input_tokens_details:{cached_tokens:2},output_tokens_details:{reasoning_tokens:-1}}}},
+  ()=>{refused=true;}),{input:12,output:3,cache_read:2,cache_write:null,reasoning:null});
+assert(refused);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            contract = Path(directory) / 'usage.mjs'
+            contract.write_text(script)
+            result = subprocess.run([node, str(contract), str(HOST)],
+                                    capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_trusted_allowance_caps_each_native_call_and_stops_unsafe_continuation(self):
         node = shutil.which('node')
         self.assertIsNotNone(node)

@@ -1040,3 +1040,228 @@ fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invent
     assert!(Path::new(sdk).is_file());
     assert!(!state.with_extension("json.calls").exists());
 }
+
+#[test]
+fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inference() {
+    use review_runner::task::{RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter};
+    use review_runner_pi::{PiConfig, PiInferenceEvidenceV1, PiTaskAdapter};
+    use serde_json::json;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "kimi-review");
+    let node = PathBuf::from(path).join("node");
+    let config = PiConfig {
+        backend: "kimi-coding".into(),
+        sdk_entrypoint: sdk,
+    };
+    let ready =
+        review_runner_pi::probe(&node, &config, &auth, Duration::from_secs(30), None).unwrap();
+    let adapter = PiTaskAdapter {
+        captured: review_runner_pi::authority(&node, &config, &auth, &ready.models[0]).unwrap(),
+        node,
+        config,
+        auth_dir: auth,
+        principal: None,
+        model: "k3".into(),
+        effort: "high".into(),
+    };
+    let cas = review_store::Cas::open(root.path().join("cas")).unwrap();
+    let event = |usage: Value| json!({"usage":usage});
+    let aggregate = json!({"prompt_tokens":12,"completion_tokens":3});
+    // Each case starts with no previous usage. Conflicts are per component, never a
+    // choice between aggregate totals. The final case separately tests cumulative floors.
+    // The SDK fixture catches native errors and tries the next inference anyway, then
+    // reports settlement: the host must independently prevent dispatch and success.
+    let cases = [
+        (
+            "first cache exceeds input 100/10/101",
+            vec![event(
+                json!({"prompt_tokens":100,"completion_tokens":10,"cached_tokens":101}),
+            )],
+            json!([100, 10, null, null, null]),
+            110,
+        ),
+        (
+            "first cache exceeds input 12/3/13",
+            vec![event(
+                json!({"prompt_tokens":12,"completion_tokens":3,"cached_tokens":13}),
+            )],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "conflicting cache aliases",
+            vec![event(
+                json!({"prompt_tokens":12,"completion_tokens":3,"cached_tokens":2,"prompt_cache_hit_tokens":1}),
+            )],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "reasoning exceeds output",
+            vec![event(
+                json!({"prompt_tokens":12,"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":4}}),
+            )],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "cache components exceed input together",
+            vec![event(
+                json!({"prompt_tokens":12,"completion_tokens":3,"cached_tokens":8,"prompt_tokens_details":{"cache_write_tokens":5}}),
+            )],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "conflicting input aggregates",
+            vec![
+                json!({"usage":aggregate,"choices":[{"usage":{"prompt_tokens":13,"completion_tokens":3}}]}),
+            ],
+            json!([null, 3, null, null, null]),
+            3,
+        ),
+        (
+            "conflicting output aggregates",
+            vec![
+                json!({"usage":aggregate,"choices":[{"usage":{"prompt_tokens":12,"completion_tokens":4}}]}),
+            ],
+            json!([12, null, null, null, null]),
+            12,
+        ),
+        (
+            "conflicting reasoning components",
+            vec![
+                json!({"usage":{"prompt_tokens":12,"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":1}},"choices":[{"usage":{"prompt_tokens":12,"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":2}}}]}),
+            ],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "unsafe cache alias alongside valid alias",
+            vec![event(
+                json!({"prompt_tokens":12,"completion_tokens":3,"cached_tokens":2,"prompt_cache_hit_tokens":9_007_199_254_740_992u64}),
+            )],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "malformed reasoning",
+            vec![event(
+                json!({"prompt_tokens":12,"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":"PRIVATE_RAW_BODY"}}),
+            )],
+            json!([12, 3, null, null, null]),
+            15,
+        ),
+        (
+            "malformed required input",
+            vec![event(json!({"prompt_tokens":-1,"completion_tokens":3}))],
+            json!([null, 3, null, null, null]),
+            3,
+        ),
+        (
+            "both aggregate counters unknown",
+            vec![event(json!({"prompt_tokens":-1,"completion_tokens":true}))],
+            json!([null, null, null, null, null]),
+            0,
+        ),
+        (
+            "decreases retain prior counters and independently increasing output",
+            vec![
+                event(
+                    json!({"prompt_tokens":12,"completion_tokens":3,"cached_tokens":2,"completion_tokens_details":{"reasoning_tokens":1}}),
+                ),
+                event(
+                    json!({"prompt_tokens":11,"completion_tokens":4,"cached_tokens":1,"completion_tokens_details":{"reasoning_tokens":0}}),
+                ),
+            ],
+            json!([12, 4, 2, null, 1]),
+            16,
+        ),
+    ];
+    for (name, events, expected, charge) in cases {
+        std::fs::write(
+            &state,
+            serde_json::to_vec(&json!({"backend":"kimi-coding","mode":"budget",
+                "inferences":2,"continueAfterNativeError":true,"providerEvents":events}))
+            .unwrap(),
+        )
+        .unwrap();
+        let returned = adapter
+            .invoke_with_allowance(
+                &cas,
+                &work,
+                b"PRIVATE_PROMPT".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+                RemainingTokenAllowance::new(1000).unwrap(),
+                review_runner::task::reply_schema::ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
+        assert!(returned.message.is_err(), "{name}");
+        let observation = returned.usage_observation.as_ref().unwrap();
+        assert!(!observation.charge_complete, "{name}");
+        if expected[0].is_null() && expected[1].is_null() {
+            assert!(returned.usage.is_none(), "{name}: unknown is not zero");
+        } else {
+            let usage = returned.usage.as_ref().unwrap_or_else(|| {
+                panic!("{name}: independently valid aggregate floor was discarded")
+            });
+            assert_eq!(usage.chargeable_tokens.get(), charge, "{name}");
+            assert_eq!(
+                usage.input_tokens.map(|v| v.get()),
+                expected[0].as_u64().map(u128::from),
+                "{name}"
+            );
+            assert_eq!(
+                usage.output_tokens.map(|v| v.get()),
+                expected[1].as_u64().map(u128::from),
+                "{name}"
+            );
+        }
+        let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
+        PiInferenceEvidenceV1::decode(&bytes).unwrap();
+        let trace: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(trace["started_inferences"], 1, "{name}");
+        assert_eq!(trace["completed_inferences"], 0, "{name}");
+        assert_eq!(trace["successful"], false, "{name}");
+        assert_eq!(trace["settled"], false, "{name}");
+        assert_eq!(trace["aggregate"]["charge_complete"], false, "{name}");
+        let u = &trace["inferences"][0];
+        assert_eq!(u["complete"], false, "{name}");
+        assert_eq!(u["observations"], events.len(), "{name}");
+        assert_eq!(
+            json!([
+                u["input"],
+                u["output"],
+                u["cache_read"],
+                u["cache_write"],
+                u["reasoning"]
+            ]),
+            expected,
+            "{name}"
+        );
+        let text = String::from_utf8(bytes).unwrap();
+        for secret in [
+            "PRIVATE_",
+            "SYNTHETIC_",
+            "prompt_tokens",
+            "completion_tokens",
+        ] {
+            assert!(!text.contains(secret), "{name}: unsafe trace");
+        }
+        let native = state.with_extension("json.native");
+        assert_eq!(
+            std::fs::read_to_string(&native).unwrap().lines().count(),
+            1,
+            "{name}"
+        );
+        std::fs::remove_file(native).unwrap();
+    }
+}
