@@ -142,6 +142,12 @@ another Snapshot is refused before it runs, and an evaluation that names another
 refused when it is admitted. A negative verdict stays negative; a missing verifier leaves the
 report `incomplete`.
 
+A verifier that exceeds its Attempt reservation exhausts the Task even when the total Task
+budget still has room and `report_accept` records a passing receipt. The Task finishes with
+`execution: exhausted`, `acceptance: inconclusive` and conclusion `incomplete`, retaining its
+exact usage, public report and verification receipt. An unchanged `af task run` returns that
+recorded result without another model call.
+
 ## Output
 
 Give a person the human presentation; keep the other two for audit:

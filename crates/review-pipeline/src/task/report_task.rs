@@ -931,7 +931,10 @@ impl ReportTaskDomain {
                 missing.insert(name.clone());
             }
         }
-        result.acceptance = if missing.is_empty() {
+        // A passing receipt still judges the report, but cannot satisfy an exhausted Task.
+        // Apply the same rule when the Store revalidates the assembled terminal result.
+        result.acceptance = if missing.is_empty() && result.execution == TaskExecutionV1::Completed
+        {
             TaskAcceptanceV1::Satisfied
         } else if failed {
             TaskAcceptanceV1::Unsatisfied
@@ -1334,14 +1337,17 @@ impl TaskDomain for ReportTaskDomain {
                 .collect(),
             missing_obligations: BTreeSet::new(),
         };
-        self.assess(cas, &state.revision, &mut result)?;
-        if report
-            .outcomes
-            .iter()
-            .any(|(_, outcome)| matches!(outcome, NodeOutcome::Failed { .. }))
+        // Pure acceptance can complete after a verifier settles above its reservation. The
+        // committed budget remains authoritative even when every graph node completed.
+        if execution.budget.breached()
+            || report
+                .outcomes
+                .iter()
+                .any(|(_, outcome)| matches!(outcome, NodeOutcome::Failed { .. }))
         {
             result.execution = TaskExecutionV1::Exhausted;
         }
+        self.assess(cas, &state.revision, &mut result)?;
         result.validate()?;
         Ok(result)
     }
