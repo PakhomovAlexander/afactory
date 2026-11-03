@@ -122,7 +122,8 @@ receipt identities must agree before the existing check can merge them.
 
 The weekly sweep calls no Task or Provider. Only an explicit completed-fix citation on captured
 main or a merged, reachable closing PR can propose `triage/maybe-fixed`; bare, negated,
-partial or future mentions go into `owner_review` in the private journal. The sweep preserves
+partial, future, reverted or withdrawn fix claims go into `owner_review` in the private journal.
+The sweep preserves
 needs-info, disputed and held states and never closes an issue. It also defers issues with
 uncertain Tasks, unresolved publication intents or conflicting owner labels, including reminders;
 a durable dry-run proposal remains unresolved after enabling `--apply`, until publication or
@@ -147,8 +148,11 @@ rewriting; do not migrate or silently reset them. Preserve the original
 state for inspection. In particular, deleting the journal loses comment authority and the spend ledger.
 The runner refuses an unjournaled existing canonical comment rather than making a second one.
 
-The inclusive updated-issue cursor advances in the same atomic fsynced journal write as event
-enqueueing. Body hashes, `/triage` and size-wrong comment ids, needs-info reply ids, owner
+The updated-issue high-water cursor advances in the same atomic fsynced journal write as event
+enqueueing. The GitHub adapter queries one second before that cursor because REST `since` is
+strict; this recovers later-visible issues updated in the cursor second. The initial scan omits
+`since`. Replayed events are deduplicated by their durable identities. Body hashes, `/triage`
+and size-wrong comment ids, needs-info reply ids, owner
 namespace label events and manual pending events are consumed once. A stale bundle or changed
 main queues a new generation; the old generation cannot publish. Consumers use
 `consume_comment` in the runner: only the journal-named comment, by the configured principal,
@@ -239,7 +243,44 @@ completion checkpoint, partial/unknown sweep DELETE/POST results, and exact obse
 reconciliation before comment intent), definite auxiliary prewrite aborts with preserved canonical
 authority and fresh-intent recovery, existing-comment adoption with journal round-trip and zero
 API writes, owner conflicts, sweep evidence and
-reminder deduplication. A fake nightly host covers the staged shared-lease adapter without running
+reminder deduplication. Captured-source sweep tests also prove zero writes for completion
+questions (including abbreviated explanations), disavowed colon claims and following sentences,
+and attributed list/status assertions, and one label/comment followed by
+zero replay writes for bare, bulleted and wrapped `Status:` completion entries. The
+[sweep syntax](design/issue-triage.md#6-the-triage-pipeline) accepts only complete explicit
+completion clauses or colon explanations after a whole-paragraph context veto, with conservative
+private owner-review fallback. Attribution remains attached across sentence, semicolon and list
+boundaries; the finite refusal vocabulary is documented with that syntax.
+For #604, the sweep expands the citation from the pinned Manifest blob to both original
+paragraph boundaries, with inclusive limits of 128 nonblank lines and 16 KiB of UTF-8 text
+including newlines. Missing boundaries within those limits or unreadable captured bytes retain
+private missing evidence and authorize no public effects. Task source assembly retains its
+ten-line citation context. Captured-source replay tests cover question/attribution context more
+than ten lines before and after a completion, both bound edges, overflows on either side,
+multibyte text, blank-line separation and unavailable captured bytes. They change the live file
+to affirmative prose to prove that only the pinned blob supplies authority.
+
+The owner explicitly deferred major vocabulary defects
+[#602](https://github.com/PakhomovAlexander/afactory/issues/602) (`wrong`/`untrue` disavowals)
+and [#603](https://github.com/PakhomovAlexander/afactory/issues/603) (`The reviewer notes:`
+attribution). These can still publish completion labels/comments; #604 repairs paragraph
+truncation only. Their severity and follow-up scope remain unchanged. This is no claim that the
+complete sweep has no known defects. Scenario/deployment #583 remains separate and unauthorized.
+
+A fake nightly host covers the staged shared-lease adapter without running
 Docker or systemd. Existing Rust `task_triage` tests cover installed package planning and real
 report-renderer bytes. These
 are distinct from an unperformed live deployment and first-week observation.
+
+The [repair execution records](issue-triage-evidence/closeout.json) retain commands, observed
+counts, exit codes, logs and source hashes for the cursor, reverted-fix and complete-clause
+repairs, the paragraph-context repair for #591 and the bounded captured-paragraph repair for
+#604. The pre-#604 closeout is retained byte-for-byte as `paragraph-prior-closeout.json`
+(earlier history remains in `context-prior-closeout.json`); fresh `paragraph-*` records bind
+commands and log hashes to the current source
+manifest. Failed tool
+startup is recorded as unavailable validation, never as a passing test or deployment evidence.
+The closeout distinguishes the supplied six-test pinned operator run on the triage-3u Snapshot
+from fresh attempts on this repair. Its unchanged-input comparison identifies the Rust, schema,
+catalog and checker bytes that the historical run covers. The kernel TaskCheckReceipt supplies
+the local-gate result; worker startup failures are historical records, not a final gate verdict.

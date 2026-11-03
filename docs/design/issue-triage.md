@@ -357,6 +357,10 @@ advances:
 | `triage/pending` applied by hand | re-triage |
 | new `main` commit that cites `#N` in shipped evidence | weekly sweep (below), not a model run |
 
+The GitHub adapter overlaps the saved high-water timestamp by one second to account for the
+REST API's strict `since` boundary. Repeated observations retain exact event deduplication;
+an incomplete paginated scan leaves the cursor and queue unchanged.
+
 ### 6.7 Schedule, admission and the weekly sweep
 
 Every 30 minutes a single-instance runner on `claw-3` takes the shared machine lease and fence
@@ -382,6 +386,51 @@ directly to that issue, such as `Fixes #N`, `Fixed issue #N`, `Shipped fix for #
 to unrelated code that cites `#N` for context supplies no completion evidence for `#N`.
 A bare mention, a "not done here" paragraph (ADR-0208 names #166 that way) or a partial fix is
 not enough; the sweep records such citations in its log for owner review instead.
+Completion must begin a sentence, clause or changelog item; a historical embedded claim such as
+`the change that fixed #N` supplies only owner-review evidence. Wrapped prose remains one clause.
+The token-free classifier uses an explicit, case-insensitive syntax, not natural-language
+understanding. The complete clause is `Fixes [issue] #N`, `Resolves [issue] #N`,
+`<completed> [issue] #N`, `<completed> [a|the] fix for [issue] #N`, or
+`#N [is|was|has been] <completed>`, where square brackets denote optional words and
+`<completed>` is `fixed`, `resolved`, `completed`, `implemented` or `shipped`.
+It must end there, optionally with a period or semicolon, or introduce an explanation with
+`:` followed by whitespace, as in `Fixed #N: correct grouping.`. Questions and arbitrary trailing prose, such as
+`Fixed #N?` or `Fixed #N was an incorrect claim.`, go to private owner review with no public
+writes. Before splitting clauses, the whole captured paragraph is the context authority:
+the sweep reads its complete bytes from the pinned Manifest blob, bounded to 128 nonblank
+lines and 16 KiB of UTF-8 text (including intervening newlines). A blank line, beginning of
+file or end of file establishes a boundary. Both boundaries must be established within those
+inclusive limits; an oversized paragraph or unavailable captured blob leaves private missing
+evidence and cannot authorize a label or comment. The Task's general source excerpts keep their
+ten surrounding lines and do not supply sweep publication authority.
+A question mark anywhere in the complete paragraph refuses it:
+this includes one after an abbreviation such as `e.g.`. Disavowal words
+(`incorrect`, `inaccurate`, `false`, `mistaken`, `erroneous`,
+`misleading`) and metalinguistic `claim`, `assertion` or `statement` wording, including plural
+forms, also refuse it. This applies inside colon explanations and in following sentences;
+`Fixed #N: correct grouping.` remains affirmative. Clauses are separated by
+sentence punctuation followed by whitespace, semicolons followed by whitespace, or Markdown
+list-item boundaries; other line wraps are folded into spaces.
+Only the neutral `Status:` prefix is accepted before a completion clause, including bare,
+bulleted and wrapped `Status: #N has been completed.` entries. Other colon prefixes, such as
+`The report says: #N has been completed.`, and quoted assertions remain owner-review evidence.
+Reverted, reversed or withdrawn fixes also supply only owner-review evidence, even when the
+paragraph contains an earlier explicit completion claim.
+Attribution is checked on that same paragraph before splitting, so a report introducing following
+list items cannot turn their `Status:` text into independent authority. The conservative markers
+are `report` (also `reports`, `reported`, `reporting`), `quote` (also `quotes`, `quoted`, `quoting`,
+`quotation`), `according to`, `say`/`says`/`said`, `state`/`states`/`stated`, `wrote`, `written`,
+`previously`, `historically` and `allegedly`; double quotation marks and Markdown blockquote
+markers also refuse the paragraph. These are finite syntax checks, not general interpretation
+of attribution. Semicolons, sentence breaks and bullet boundaries do not remove these vetoes;
+a blank line starts a separate paragraph. Independent affirmative sentences and ordinary
+changelog bullets without such context keep their existing meaning.
+Known vocabulary limitations remain owner-deferred: [#602](https://github.com/PakhomovAlexander/afactory/issues/602)
+tracks ordinary `wrong`/`untrue` disavowals, and
+[#603](https://github.com/PakhomovAlexander/afactory/issues/603) tracks attribution introduced
+by `The reviewer notes:`. Those formulations can still admit a completion claim and public
+label/comment writes. The bounded paragraph repair for #604 does not fix those major findings
+or establish a defect-free sweep; the owner explicitly kept them as separate follow-up work.
 The sweep preserves `needs-info`, `disputed` and
 `held`, deduplicates its comments by issue and evidence identity, and never closes an issue. A
 `triage/needs-info` issue with no reply for 30 days gets one reminder comment. Closing is the

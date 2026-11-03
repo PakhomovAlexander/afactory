@@ -47,6 +47,7 @@ STATE_SCHEMA = 'af.issue-triage-runner/3'
 TOKENS, DAILY, TASK_SECONDS, BATCH_SECONDS, BATCH_MAX = 150000, 2000000, 1200, 5400, 4
 ENTRY_MAX, TOTAL_MAX, FILE_MAX, ENTRY_COUNT = 256 * 1024, 512 * 1024, 640 * 1024, 256
 EXCERPT_MAX, EXCERPT_COUNT = 128 * 1024, 16
+SWEEP_PARAGRAPH_LINES, SWEEP_PARAGRAPH_BYTES = 128, 16 * 1024
 STATE_MAX, OUTPUT_MAX = 32 * 1024 * 1024, 16 * 1024 * 1024
 MANAGED = {f'{ns}/{value}' for ns, values in CHECK.NAMESPACES.items() for value in values}
 PROTECTED = {'class/decision', 'class/security', 'triage/held'}
@@ -474,6 +475,44 @@ class Manifest:
         self.citation_cache[number] = found
         return found
 
+    def sweep_citations(self, number):
+        """Expand sweep authority from captured blobs, never from the bounded Task excerpt.
+
+        Both blank-line/BOF/EOF boundaries must be reached within the paragraph
+        limits. A partial paragraph is missing evidence, never publication authority.
+        Task source assembly deliberately keeps its existing ten-line excerpts.
+        """
+        found, captured = [], {}
+        for cite in self.citations(number):
+            if 'missing_evidence' in cite:
+                found.append(cite)
+                continue
+            path, line = cite['path'], cite['line']
+            try:
+                if path not in captured:
+                    captured[path] = repo_lines(self.text(path))
+                lines = captured[path]
+                require(0 < line <= len(lines), 'sweep paragraph citation line unavailable')
+                lo, hi = line - 1, line
+                size = len(lines[lo].encode('utf-8'))
+                require(size <= SWEEP_PARAGRAPH_BYTES, 'sweep paragraph byte bound')
+                for direction in (-1, 1):
+                    while (lo > 0 if direction < 0 else hi < len(lines)):
+                        adjacent = lo - 1 if direction < 0 else hi
+                        if not lines[adjacent].strip():
+                            break
+                        require(hi - lo < SWEEP_PARAGRAPH_LINES, 'sweep paragraph line bound')
+                        size += 1 + len(lines[adjacent].encode('utf-8'))
+                        require(size <= SWEEP_PARAGRAPH_BYTES, 'sweep paragraph byte bound')
+                        if direction < 0:
+                            lo -= 1
+                        else:
+                            hi += 1
+                found.append(dict(path=path, line=line, start=lo + 1, text='\n'.join(lines[lo:hi])))
+            except Refused as error:
+                found.append(dict(path=path, line=line, missing_evidence=str(error)))
+        return found
+
 
 def cut(text, bound):
     return text.encode('utf-8')[:bound].decode('utf-8', 'ignore')
@@ -745,6 +784,11 @@ class GitHub:
         require(self.call('GET', '/user')['login'] == self.principal, 'runner principal changed')
 
     def open_issues(self, since=''):
+        # REST `since` is strict. Replay one second before the durable high-water
+        # mark so issues that become visible later in that second are not lost.
+        # discover deduplicates the replay by exact durable event identities.
+        if since:
+            since = (instant(since) - dt.timedelta(seconds=1)).isoformat().replace('+00:00', 'Z')
         suffix = '&since=' + quote(since, safe='') if since else ''
         return [i for i in self.pages(self.base + '/issues?state=open&sort=updated&direction=asc' + suffix)
                 if 'pull_request' not in i]
@@ -868,7 +912,7 @@ def request_time(issue, state, owner, principal):
 
 
 def discover(journal, issues, principal, owner):
-    """Atomically enqueue every observed event and only then advance the inclusive cursor."""
+    """Atomically enqueue unseen events and advance the high-water cursor; overlap is replayed."""
     for issue in sorted(issues, key=lambda i: (i['updated_at'], i['number'])):
         state = journal.issue(issue['number'])
         body = text_hash(issue['body'])
@@ -1550,7 +1594,7 @@ class Runner:
                 continue
             if 'triage/disputed' in issue['labels']:
                 continue
-            positives, review = sweep_evidence(manifest.citations(issue['number']), pulls, issue['number'])
+            positives, review = sweep_evidence(manifest.sweep_citations(issue['number']), pulls, issue['number'])
             for entry in review:
                 self.journal.data['owner_review'][digest(entry)] = entry
             self.journal.save()
@@ -1655,6 +1699,33 @@ class Runner:
             self.journal.save()
 
 
+def sweep_context_refused(paragraph):
+    """Conservative paragraph veto, applied before any clause/list segmentation.
+
+    This is a finite grammar, not language interpretation. Questions, quoted/reported
+    assertions and metalinguistic claims cannot grant publication authority, even if
+    another sentence or list item has the shape of a direct completion assertion.
+    """
+    if '?' in paragraph or re.search(r'["“”]|(?:^|\s)>', paragraph):
+        return True
+    if re.search(
+            r'(?i)\b(?:claims?|assertions?|statements?|incorrect|inaccurate|false|mistaken|'
+            r'erroneous|misleading|allegedly|report(?:s|ed|ing)?|quot(?:e[ds]?|ing|ation))\b|'
+            r'\b(?:according\s+to|says?|said|states?|stated|wrote|written|previously|historically)\b',
+            paragraph):
+        return True
+    return bool(re.search(
+        r"(?i)\b(not|never|no|partial(?:ly)?|remaining|remains?|todo|unfixed|unresolved|will|would|could|should|"
+        r"planned|proposed|pending|deferred|still|later|only|but|except|towards?|follow[- ]?up)\b|n't\b|"
+        r"\b(one|some|first|initial|single|subset|half)\s+(part|item|aspect|step|case|half|of)\b|"
+        r"\b(part|phase|step)\s+(one|two|[0-9]+)\b|"
+        # A historical completion inside a reversal/withdrawal paragraph is
+        # owner evidence, even when the issue is the direct object of 'fixed'.
+        r"\b(?:revert(?:s|ed|ing)?|reversion|revers(?:e[ds]?|ing|al)|withdraw(?:s|n|ing|al)?|withdrew|"
+        r"roll(?:s|ed|ing)?\s+back|rollback|back(?:s|ed|ing)?\s+out|"
+        r"rescind(?:s|ed|ing)?|undid|undo(?:es|ne|ing)?)\b", paragraph))
+
+
 def sweep_evidence(citations, pulls, number):
     positive, review = [], []
     for cite in citations:
@@ -1670,22 +1741,30 @@ def sweep_evidence(citations, pulls, number):
         while hi < len(lines) and lines[hi].strip():
             hi += 1
         paragraph = ' '.join(lines[lo:hi])
+        refused = sweep_context_refused(paragraph)
         number_ref = r'(?<!\w)#' + str(number) + r"\b(?!['’\w-])"
         completed = r'\b(?:fixed|resolved|completed|implemented|shipped)\b'
         # The issue must be the direct object of completion or the subject of an
         # explicit completed status. Nearby completion prose is only owner evidence.
-        explicit = re.search(
-            r'(?i)(?:\b(?:fixes|resolves)\b|' + completed + r')\s+(?:issue\s+)?' + number_ref +
+        # Accept a complete direct assertion, not an unrestricted completion prefix.
+        # A relative clause ('the change that fixed #N') is historical evidence,
+        # regardless of whether its surrounding prose uses a known reversal word.
+        assertion_start = r'\s*(?:[-*+]\s+|[0-9]+[.)]\s+)?(?:status:\s*)?'
+        # Fold wrapped prose, keeping only Markdown list-item boundaries.
+        assertions = re.sub(r'\n(?![ \t]*(?:[-*+]\s|[0-9]+[.)]\s))', ' ', '\n'.join(lines[lo:hi]))
+        completion = (
+            assertion_start + r'(?:' +
+            r'(?:\b(?:fixes|resolves)\b|' + completed + r')\s+(?:issue\s+)?' + number_ref +
             '|' + completed + r'\s+(?:(?:a|the)\s+)?fix\s+for\s+(?:issue\s+)?' + number_ref +
-            '|' + number_ref + r'\s+(?:(?:is|was|has been)\s+)?' + completed + r'(?=\s*(?:[.;,!?]|$))', paragraph)
-        negative = re.search(
-            r"(?i)\b(not|never|no|partial(?:ly)?|remaining|remains?|todo|unfixed|unresolved|will|would|could|should|"
-            r"planned|proposed|pending|deferred|still|later|only|but|except|towards?|follow[- ]?up)\b|n't\b|"
-            r"\b(one|some|first|initial|single|subset|half)\s+(part|item|aspect|step|case|half|of)\b|"
-            r"\b(part|phase|step)\s+(one|two|[0-9]+)\b", paragraph)
+            '|' + number_ref + r'\s+(?:(?:is|was|has been)\s+)?' + completed + r')' +
+            # Only a terminal assertion or a colon-introduced explanation is
+            # supported. Questions and arbitrary trailing prose fail closed.
+            r'(?:\s*:\s+[^?;\n]+)?[.;]?\s*')
+        clauses = re.split(r'(?<=[.!?;])\s+|\n', assertions)
+        explicit = not refused and any(re.fullmatch(completion, clause, re.IGNORECASE) for clause in clauses)
         item = dict(citation=f"{cite['path']}:{cite['line']}\n{paragraph}",
                     path=cite['path'], line=cite['line'], text_sha256=text_hash(paragraph))
-        (positive if explicit and not negative else review).append(item)
+        (positive if explicit else review).append(item)
     for pull in pulls:
         if pull['merged'] and pull['on_main'] and number in pull['closing']:
             positive.append(dict(citation='Merged closing PR #%d' % pull['number'], pull=pull['number']))

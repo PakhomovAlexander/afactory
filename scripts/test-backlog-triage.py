@@ -17,6 +17,7 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +34,96 @@ R = load('backlog_runner', ROOT / 'scripts/backlog-triage.py')
 C = R.CHECK
 HELPERS = load('check_fixtures', ROOT / 'scripts/test-backlog-check-triage.py')
 NOW = dt.datetime(2026, 11, 2, 1, tzinfo=dt.timezone.utc)
+REVERSED_FIXES = (
+    'Reverted the change that fixed #436.',
+    'The change that resolved #436 was reverted.',
+    'Withdrawn: shipped fix for #436.',
+    'The patch that implemented #436 has been withdrawn.',
+    'Withdrew the change that resolved #436.',
+    'Rolled back the release that fixed #436.',
+    'Fixed #436.\nThe fix was subsequently rolled back.',
+    'Backed out the patch that completed #436.',
+    'Rescinded the change that fixed #436.',
+    'Undid the change that resolved #436.',
+)
+
+HISTORICAL_FIXES = (
+    'The change that fixed #432 was reversed.',
+    'The change that fixed #432 needs investigation.',
+    'The release which resolved #432 introduced another failure.',
+    'An earlier patch implemented #432.',
+    'We discussed how the team fixed #432.',
+    'The report says #432 has been completed.',
+    'The change that\nfixed #432 needs investigation.',
+    'The report says\n#432 has been completed.',
+    'Reversal of the fix: Fixed #432.',
+    '- Fixed #432. The change was reversed.',
+    'Fixed #432.\nWithdrawal of the fix followed.',
+)
+
+NONASSERTED_FIXES = (
+    'Fixed #432?',
+    'Fixed #432 was an incorrect claim.',
+    'The report says: #432 has been completed.',
+    'The report says:\n#432 has been completed.',
+    'Fixed #432 according to the report.',
+    'Status: Fixed #432?',
+    'Status: #432 has been completed was an incorrect claim.',
+)
+
+# Each paragraph is captured from Git, then exercised through Runner.sweep twice.
+CONTEXT_REFUSALS = (
+    'Fixed #432: this was an incorrect claim.',
+    'Fixed #432: e.g. completed?',
+    'The report says:\n- Status: #432 has been completed.',
+    'Fixed #432: i.e. completed? Other changes.',
+    'Fixed #432. Was that accurate?',
+    'Fixed #432. This was an inaccurate assertion.',
+    'Fixed #432: a false statement.',
+    'Fixed #432. The claim was withdrawn.',
+    'Fixed #432. That statement was mistaken.',
+    'The report says. Status: #432 has been completed.',
+    'The report says; Status: #432 has been completed.',
+    'According to the report:\n* Status:\n  #432 has been completed.',
+    'Previously reported:\n1) Status: #432 has been completed.',
+    'Quoted status:\n- Status: #432 has been completed.',
+    'The summary states:\n- Status: #432 has been completed.',
+    'Earlier release notes said; Status: #432 has been completed.',
+    '> Status:\n- #432 has been completed.',
+    '"Status:\n- #432 has been completed."',
+)
+
+CONTEXT_POSITIVES = (
+    'Fixed #432: correct grouping.',
+    'Other changes. Fixed #432.',
+    'Changes; #432 has been completed.',
+    '- Other changes\n- Fixed #432.',
+)
+
+DISTANT_CONTEXT = (
+    'The report says:\n' + '- context\n' * 11 + '- Status: #432 has been completed.',
+    'Is this fixed?\n' + '- context\n' * 11 + '- Fixed #432.',
+    '- Fixed #432.\n' + '- context\n' * 11 + 'Is this fixed?',
+    '- Status: #432 has been completed.\n' + '- context\n' * 11 + 'The report says.',
+)
+
+# Literal contract edges: the tests must not shrink when the production bound changes.
+PARAGRAPH_CASES = {
+    'line-edge': ('- context\n' * 127 + '- Fixed #432.', True),
+    'line-before-over': ('- context\n' * 128 + '- Fixed #432.', False),
+    'line-after-over': ('- Fixed #432.\n' + '- context\n' * 128, False),
+    'byte-edge': ('- Fixed #432.\n- ' + 'é' * 8184, True),
+    'byte-before-over': ('- ' + 'é' * 8185 + '\n- Fixed #432.', False),
+    'byte-after-over': ('- Fixed #432.\n- ' + 'é' * 8185, False),
+    'citation-byte-over': ('Fixed #432: ' + 'é' * 8192, False),
+    'blank-boundaries': ('Is this fixed?\n\n- Fixed #432.\n \t\nThe report says.', True),
+}
+
+STATUS_FIXES = (
+    'Status: #432 has been completed.',
+    '- Status: #432 has been completed.',
+    '- Status:\n  #432 has been completed.',
+)
 
 
 def kernel_bytes(value):
@@ -214,11 +305,19 @@ class MemoryManifest:
         return self.files[path]
 
     def citations(self, number):
+        historical = R.repo_lines('\n\n'.join(HISTORICAL_FIXES))
         return copy.deepcopy({
             432: [dict(path='CHANGELOG.md', line=3, start=1,
-                       text='# Release\n\n- Fixed #432: correct task grouping.')],
+                       text='# Release\n\n- Fixed #432: correct task grouping.')] + [
+                dict(path='changelog.d/historical.md', line=i + 1, start=max(0, i - 10) + 1,
+                     text='\n'.join(historical[max(0, i - 10):i + 11]))
+                for i, line in enumerate(historical) if '432' in R.CITE.findall(line)],
             433: [dict(path='docs/adr/0001.md', line=3, start=1, text='# ADR\n\n#433 is not done here.')],
         }.get(number, []))
+
+    def sweep_citations(self, number):
+        # Coordinator-only fake: complete paragraphs; real expansion is exercised by GitFixture.
+        return self.citations(number)
 
 
 class Fixture(unittest.TestCase):
@@ -300,6 +399,17 @@ class GitFixture(Fixture):
         (cls.repo / 'src/50%-off').write_text('percent\n')
         (cls.repo / 'src/кириллица').write_text('unicode\n')
         (cls.repo / 'CHANGELOG.md').write_text('# Release\n\n- Fixed #432: correct task grouping.\n')
+        (cls.repo / 'changelog.d/reversed.md').write_text('\n\n'.join(REVERSED_FIXES) + '\n')
+        (cls.repo / 'changelog.d/historical.md').write_text('\n\n'.join(HISTORICAL_FIXES) + '\n')
+        if getattr(cls, 'completion_clauses', False):
+            (cls.repo / 'changelog.d/nonasserted.md').write_text('\n\n'.join(NONASSERTED_FIXES) + '\n')
+            (cls.repo / 'changelog.d/context-refusals.md').write_text('\n\n'.join(CONTEXT_REFUSALS) + '\n')
+            (cls.repo / 'changelog.d/context-positives.md').write_text('\n\n'.join(CONTEXT_POSITIVES) + '\n')
+            (cls.repo / 'changelog.d/status.md').write_text('\n\n'.join(STATUS_FIXES) + '\n')
+            for index, text in enumerate(DISTANT_CONTEXT):
+                (cls.repo / ('changelog.d/distant-%d.md' % index)).write_text(text)
+            for name, (text, _positive) in PARAGRAPH_CASES.items():
+                (cls.repo / ('changelog.d/paragraph-%s.md' % name)).write_text(text)
         citation_lines = ['context %d' % n for n in range(35)]
         citation_lines[17] = 'Fixed #434: the entire issue.'
         (cls.repo / 'changelog.d/citation.md').write_text('\n'.join(citation_lines))
@@ -326,7 +436,242 @@ class GitFixture(Fixture):
         self.manifest = R.Manifest(self.repo, self.main, self.processes)
 
 
+class CompleteClauses(GitFixture):
+    completion_clauses = True
+
+    def assert_captured_paragraph_replay(self, path, positive, expected_text=None, missing=None):
+        # Restrict the shared fixture's candidates without replacing Git capture or expansion.
+        # Overwrite the live file: only the pinned blob may supply either boundary.
+        live = self.repo / path
+        original = live.read_bytes()
+        live.write_text('Fixed #432.\n')
+        self.addCleanup(live.write_bytes, original)
+        candidates = [c for c in self.manifest.citations(432) if c['path'] == path]
+        self.assertEqual(len(candidates), 1)
+        for replay in (False, True):
+            if replay:
+                self.journal.close()
+                self.journal = R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow',
+                                         clock=lambda: self.clock)
+                self.addCleanup(self.journal.close)
+                self.runner.journal = self.journal
+                self.manifest = R.Manifest(self.repo, self.main, self.processes)
+            with mock.patch.object(self.manifest, 'citations', return_value=candidates):
+                cites = self.manifest.sweep_citations(432)
+                if missing:
+                    self.assertIn(missing, cites[0]['missing_evidence'])
+                    self.assertNotIn('text', cites[0])
+                else:
+                    self.assertNotIn('missing_evidence', cites[0])
+                    if expected_text:
+                        self.assertEqual(cites[0]['text'], expected_text)
+                self.runner.manifest_factory = lambda: self.manifest
+                self.runner.sweep()
+            if not replay:
+                retained = copy.deepcopy(self.journal.data['owner_review'])
+                writes = copy.deepcopy(self.api.writes)
+            self.assertEqual(self.journal.data['owner_review'], retained)
+            self.assertEqual(self.api.writes, writes)
+            self.assertEqual([w[0] for w in writes], ['labels', 'comment'] if positive else [])
+            if positive:
+                self.assertEqual(retained, {})
+                self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+                self.assertEqual(len(self.api.rows[432]['comments']), 1)
+            else:
+                self.assertEqual(len(retained), 1)
+                if expected_text and not missing:
+                    self.assertIn(' '.join(expected_text.splitlines()), next(iter(retained.values()))['citation'])
+                self.assertEqual(self.api.rows[432]['labels'], issue(432)['labels'])
+                self.assertEqual(self.api.rows[432]['comments'], [])
+            self.assertEqual(self.api.rows[432]['state'], 'open')
+            self.assertEqual(self.tasks.calls, 0)
+
+    def test_captured_distant_attribution_before_completion_is_private_on_replay(self):
+        self.assert_captured_paragraph_replay('changelog.d/distant-0.md', False, DISTANT_CONTEXT[0])
+
+    def test_captured_distant_question_before_completion_is_private_on_replay(self):
+        self.assert_captured_paragraph_replay('changelog.d/distant-1.md', False, DISTANT_CONTEXT[1])
+
+    def test_captured_distant_question_after_completion_is_private_on_replay(self):
+        self.assert_captured_paragraph_replay('changelog.d/distant-2.md', False, DISTANT_CONTEXT[2])
+
+    def test_captured_distant_attribution_after_completion_is_private_on_replay(self):
+        self.assert_captured_paragraph_replay('changelog.d/distant-3.md', False, DISTANT_CONTEXT[3])
+
+    def test_captured_paragraph_line_and_utf8_byte_bounds_on_replay(self):
+        self.assertEqual((R.SWEEP_PARAGRAPH_LINES, R.SWEEP_PARAGRAPH_BYTES), (128, 16384))
+        for name, (text, positive) in PARAGRAPH_CASES.items():
+            with self.subTest(name=name):
+                # Each subcase starts from independent public and durable issue state.
+                self.api.rows[432] = issue(432)
+                self.api.writes.clear()
+                self.journal.data['owner_review'].clear()
+                self.journal.data['issues'].clear()
+                self.journal.save()
+                self.assert_captured_paragraph_replay('changelog.d/paragraph-%s.md' % name, positive,
+                    text if name != 'blank-boundaries' else None,
+                    None if positive else 'sweep paragraph ' + ('line' if name.startswith('line') else 'byte') + ' bound')
+
+    def test_captured_paragraph_read_refusal_retains_private_evidence_on_replay(self):
+        candidates = [c for c in self.manifest.citations(432) if c['path'] == 'changelog.d/distant-0.md']
+        with mock.patch.object(R.Manifest, 'text', side_effect=R.Refused('captured blob unavailable')):
+            # The citation is known, but its complete captured context cannot be read.
+            with mock.patch.object(R.Manifest, 'citations', return_value=candidates):
+                self.assert_captured_paragraph_replay('changelog.d/distant-0.md', False,
+                                                      missing='captured blob unavailable')
+
+    def test_captured_questions_disavowals_and_reported_status_have_zero_sweep_effects(self):
+        citations = [c for c in self.manifest.citations(432)
+                     if c['path'] == 'changelog.d/nonasserted.md']
+        self.assertEqual(len(citations), len(NONASSERTED_FIXES))
+        positive, review = R.sweep_evidence(citations, [], 432)
+        self.assertEqual(positive, [])
+        self.assertEqual(len(review), len(NONASSERTED_FIXES))
+        with mock.patch.object(self.manifest, 'citations', side_effect=lambda n: citations if n == 432 else []):
+            self.runner.sweep()
+            self.runner.sweep()
+        retained = list(self.journal.data['owner_review'].values())
+        self.assertEqual(len(retained), len(NONASSERTED_FIXES))
+        for text in NONASSERTED_FIXES:
+            self.assertTrue(any(' '.join(text.splitlines()) in entry['citation'] for entry in retained))
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.api.rows[432]['comments'], [])
+        self.assertEqual(self.api.rows[432]['labels'], issue(432)['labels'])
+        self.assertEqual(self.api.rows[432]['state'], 'open')
+        self.assertEqual(self.tasks.calls, 0)
+
+    def test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay(self):
+        citations = [c for c in self.manifest.citations(432)
+                     if c['path'] == 'changelog.d/context-refusals.md']
+        self.assertEqual(len(citations), len(CONTEXT_REFUSALS))
+        for cite, text in zip(citations, CONTEXT_REFUSALS):
+            with self.subTest(text=text):
+                positive, review = R.sweep_evidence([cite], [], 432)
+                self.assertEqual(positive, [])
+                self.assertEqual(len(review), 1)
+                with mock.patch.object(self.manifest, 'citations', return_value=[cite]):
+                    self.runner.sweep()
+                    retained = copy.deepcopy(self.journal.data['owner_review'])
+                    # Round-trip durable private evidence before replay.
+                    self.journal.close()
+                    self.journal = R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow',
+                                             clock=lambda: self.clock)
+                    self.addCleanup(self.journal.close)
+                    self.runner.journal = self.journal
+                    self.runner.sweep()
+                self.assertEqual(self.journal.data['owner_review'], retained)
+                self.assertTrue(any(' '.join(text.splitlines()) in entry['citation']
+                                    for entry in retained.values()))
+                self.assertEqual(self.api.writes, [])
+                self.assertEqual(self.api.rows[432]['comments'], [])
+                self.assertEqual(self.api.rows[432]['labels'], issue(432)['labels'])
+                self.assertEqual(self.api.rows[432]['state'], 'open')
+                self.assertEqual(self.tasks.calls, 0)
+
+    def assert_captured_independent_completion_published_once(self, index):
+        citations = [c for c in self.manifest.citations(432)
+                     if c['path'] == 'changelog.d/context-positives.md']
+        self.assertEqual(len(citations), len(CONTEXT_POSITIVES))
+        cite = citations[index]
+        with mock.patch.object(self.manifest, 'citations', return_value=[cite]):
+            self.runner.sweep()
+            writes = copy.deepcopy(self.api.writes)
+            self.runner.sweep()
+        self.assertEqual([w[0] for w in writes], ['labels', 'comment'])
+        self.assertEqual(self.api.writes, writes)
+        self.assertEqual(len(self.api.rows[432]['comments']), 1)
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertIn(' '.join(CONTEXT_POSITIVES[index].splitlines()),
+                      self.api.rows[432]['comments'][0]['body'])
+        self.assertEqual(self.journal.data['owner_review'], {})
+        self.assertEqual(self.api.rows[432]['state'], 'open')
+        self.assertEqual(self.tasks.calls, 0)
+
+    def test_captured_affirmative_colon_publishes_once(self):
+        self.assert_captured_independent_completion_published_once(0)
+
+    def test_captured_independent_sentence_publishes_once(self):
+        self.assert_captured_independent_completion_published_once(1)
+
+    def test_captured_independent_semicolon_publishes_once(self):
+        self.assert_captured_independent_completion_published_once(2)
+
+    def test_captured_independent_bullet_publishes_once(self):
+        self.assert_captured_independent_completion_published_once(3)
+
+    def assert_captured_status_published_once(self, index):
+        citations = [c for c in self.manifest.citations(432) if c['path'] == 'changelog.d/status.md']
+        self.assertEqual(len(citations), len(STATUS_FIXES))
+        cite = citations[index]
+        with mock.patch.object(self.manifest, 'citations', return_value=[cite]):
+            self.runner.sweep()
+            writes = copy.deepcopy(self.api.writes)
+            self.runner.sweep()
+        self.assertEqual(self.api.writes, writes)
+        self.assertEqual([w[0] for w in writes], ['labels', 'comment'])
+        self.assertEqual(self.api.rows[432]['labels'],
+                         sorted((set(issue(432)['labels']) - {'triage/pending'}) | {'triage/maybe-fixed'}))
+        comments = self.api.rows[432]['comments']
+        self.assertEqual(len(comments), 1)
+        self.assertIn('changelog.d/status.md:%d' % cite['line'], comments[0]['body'])
+        self.assertIn(' '.join(STATUS_FIXES[index].splitlines()), comments[0]['body'])
+        self.assertIn('triage-sweep evidence=', comments[0]['body'])
+        self.assertEqual(self.journal.data['owner_review'], {})
+        self.assertEqual(self.api.rows[432]['state'], 'open')
+        self.assertEqual(self.tasks.calls, 0)
+
+    def test_captured_bare_status_completion_publishes_once(self):
+        self.assert_captured_status_published_once(0)
+
+    def test_captured_bulleted_status_completion_publishes_once(self):
+        self.assert_captured_status_published_once(1)
+
+    def test_captured_wrapped_status_completion_publishes_once(self):
+        self.assert_captured_status_published_once(2)
+
+
 class Sources(GitFixture):
+    def test_captured_reverted_or_withdrawn_fixes_are_owner_review_without_public_mutation(self):
+        self.api.rows = {436: issue(436)}
+        citations = self.manifest.citations(436)
+        self.assertEqual(len(citations), len(REVERSED_FIXES))
+        positive, review = R.sweep_evidence(citations, [], 436)
+        self.assertEqual(positive, [])
+        self.assertEqual(len(review), len(REVERSED_FIXES))
+        self.runner.sweep()
+        self.runner.sweep()
+        retained = self.journal.data['owner_review'].values()
+        self.assertEqual(len(retained), len(REVERSED_FIXES))
+        for text in REVERSED_FIXES:
+            self.assertTrue(any(' '.join(text.splitlines()) in entry['citation'] for entry in retained))
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.api.rows[436]['comments'], [])
+        self.assertEqual(self.api.rows[436]['labels'], issue(436)['labels'])
+        self.assertEqual(self.api.rows[436]['state'], 'open')
+        self.assertEqual(self.tasks.calls, 0)
+
+    def test_captured_historical_completion_assertions_have_zero_sweep_effects(self):
+        # Read real captured blobs; the separate positive CHANGELOG entry remains
+        # covered by the positive sweep controls, outside this source selection.
+        citations = [c for c in self.manifest.citations(432)
+                     if c['path'] == 'changelog.d/historical.md']
+        self.assertEqual(len(citations), len(HISTORICAL_FIXES))
+        positive, review = R.sweep_evidence(citations, [], 432)
+        self.assertEqual(positive, [])
+        self.assertEqual(len(review), len(HISTORICAL_FIXES))
+        with mock.patch.object(self.manifest, 'citations', side_effect=lambda n: citations if n == 432 else []):
+            self.runner.sweep()
+            self.runner.sweep()
+        retained = list(self.journal.data['owner_review'].values())
+        self.assertEqual(len(retained), len(HISTORICAL_FIXES))
+        for text in HISTORICAL_FIXES:
+            self.assertTrue(any(' '.join(text.splitlines()) in entry['citation'] for entry in retained))
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.api.rows[432]['comments'], [])
+        self.assertEqual(self.api.rows[432]['labels'], issue(432)['labels'])
+        self.assertEqual(self.api.rows[432]['state'], 'open')
+        self.assertEqual(self.tasks.calls, 0)
+
     def test_fixture_git_environment_and_commit_identity_are_isolated_and_deterministic(self):
         poison = dict(GIT_CONFIG_GLOBAL='/absent/host-config', GIT_CONFIG_SYSTEM='/absent/system-config',
                       GIT_CONFIG_PARAMETERS="'commit.gpgsign=true'", GIT_CONFIG_COUNT='1',
@@ -1162,6 +1507,7 @@ class EventsAndPublication(Fixture):
 class Sweep(Fixture):
     def test_contextual_completed_fix_mentions_produce_only_owner_review(self):
         for text in ('Fixed unrelated bug, see #432 for context',
+                     'Reverted the change that fixed #432.',
                      'Fixed unrelated bug, related to #432.',
                      'Fixed a bug described in #432.',
                      '#432 tracks another bug, now fixed elsewhere.',
@@ -1186,7 +1532,10 @@ class Sweep(Fixture):
     def test_explicit_completed_fixes_vs_bare_negated_partial_and_future_mentions(self):
         def cite(text):
             return dict(path='CHANGELOG.md', line=1, start=1, text=text)
-        for text in ('Fixed #432: correct grouping.', 'Implemented #432.', 'Resolved #432.',
+        for text in ('Fixed #432: correct grouping.', '- Fixed #432: correct grouping.',
+                     '* Shipped a fix for issue #432.', 'Other changes. Fixed #432.',
+                     '- Other changes\n- Fixed #432.', 'Shipped a fix\nfor issue #432.',
+                     'Changes; #432 has been completed.', 'Implemented #432.', 'Resolved #432.',
                      'Fixes #432.', 'Resolves issue #432.', 'Completed issue #432.',
                      'Shipped fix for #432.', 'Shipped a fix for issue #432.',
                      'Implemented the fix for #432.',
@@ -1205,6 +1554,35 @@ class Sweep(Fixture):
         positive, _ = R.sweep_evidence([], [dict(number=5, merged=True, on_main=True, closing=[432])], 432)
         self.assertEqual(positive[0]['pull'], 5)
         self.assertEqual(R.sweep_evidence([], [dict(number=5, merged=False, on_main=False, closing=[432])], 432)[0], [])
+
+    def test_complete_completion_clause_grammar(self):
+        cases = (
+            ('Fixed #432', True),
+            ('Fixed #432.', True),
+            ('Fixed #432; other changes.', True),
+            ('Fixed #432: correct grouping.', True),
+            ('Status: Fixed issue #432.', True),
+            ('* Status: Shipped a fix for #432.', True),
+            ('1) Status: #432 has been completed.', True),
+            ('Status:\n#432 has been completed.', True),
+            ('Fixed #432?', False),
+            ('Fixed #432 was an incorrect claim.', False),
+            ('Fixed #432 allegedly.', False),
+            ('#432 has been completed according to the report.', False),
+            ('Fixed #432: correct grouping?', False),
+            ('Fixed #432, correct grouping.', False),
+            ('The report says: #432 has been completed.', False),
+            ('The report says: Status: #432 has been completed.', False),
+            ('"Status: #432 has been completed."', False),
+            ('- The change that\nfixed #432.', False),
+        )
+        cases += tuple((text, False) for text in CONTEXT_REFUSALS)
+        for text, expected in cases:
+            with self.subTest(text=text):
+                positive, review = R.sweep_evidence(
+                    [dict(path='CHANGELOG.md', line=1, start=1, text=text)], [], 432)
+                self.assertEqual(len(positive), int(expected))
+                self.assertEqual(len(review), int(not expected))
 
     def test_shipped_fix_for_issue_sets_label_and_citation_once_without_tasks_or_closure(self):
         cite = dict(path='changelog.d/fix.md', line=1, start=1, text='Shipped fix for #432.')
@@ -1283,6 +1661,86 @@ class Sweep(Fixture):
 
 
 class RealAdapter(Fixture):
+    def test_strict_since_overlap_discovers_late_same_second_issue_once(self):
+        github = R.GitHub('owner/repo', 'fake-token', self.lease, time.monotonic() + 5400, 'runner')
+        visible, queries = [432], []
+        stamp = '2026-11-02T01:00:00Z'
+        self.api.rows[432]['updated_at'] = stamp
+        self.api.rows[433] = issue(433, updated_at=stamp)
+        def transport(method, path, **kwargs):
+            self.assertEqual(method, 'GET')
+            if path == '/user':
+                return 200, dict(login='runner')
+            query = parse_qs(urlsplit(path).query)
+            self.assertEqual(urlsplit(path).path, '/repos/owner/repo/issues')
+            self.assertEqual(query['page'], ['1'])
+            queries.append(query)
+            since = query.get('since', [''])[0]
+            return 200, [copy.deepcopy(self.api.rows[n]) for n in visible
+                         if not since or R.instant(self.api.rows[n]['updated_at']) > R.instant(since)]
+        self.runner.api = github
+        with mock.patch.object(github.rest, 'call', side_effect=transport), \
+                mock.patch.object(github, 'issue', side_effect=self.api.issue):
+            # Expired batch admission leaves discovery events queued, without starting Tasks.
+            self.runner.tick(time.monotonic())
+            self.assertNotIn('since', queries[0])
+            first = copy.deepcopy(self.journal.data['events'])
+            self.assertEqual(len(first), 1)
+            self.assertEqual(self.journal.data['cursor'], stamp)
+            visible.append(433)  # Becomes visible only after the cursor second was saved.
+            self.runner.tick(time.monotonic())
+            self.assertEqual(queries[-1]['since'], ['2026-11-02T00:59:59Z'])
+            second = [key for key, event in self.journal.data['events'].items() if event['issue'] == 433]
+            self.assertEqual(len(second), 1)
+            self.assertEqual(self.journal.data['events'][second[0]]['status'], 'queued')
+            self.journal.data['events'][second[0]]['status'] = 'claimed'
+            self.journal.save()
+            expected = copy.deepcopy(self.journal.data)
+            self.assertEqual(C.Validator(ROOT / 'schemas/issue-triage-runner-v3.json').errors(
+                expected, 'urn:af:schema:issue-triage-runner:3'), [])
+            for _ in range(2):
+                self.runner.tick(time.monotonic())
+                self.assertEqual(self.journal.data, expected)
+                self.assertEqual(R.strict_json(self.journal.path.read_bytes()), expected)
+            self.assertEqual(len(self.journal.data['events']), 2)
+            self.assertTrue(first.keys() <= self.journal.data['events'].keys())
+        self.assertEqual(self.tasks.calls, 0)
+
+    def test_cursor_overlap_normalizes_valid_timestamp_boundaries_and_omits_empty_cursor(self):
+        github = R.GitHub('owner/repo', 'fake-token', self.lease, time.monotonic() + 5400, 'runner')
+        for cursor, expected in (('', None),
+                                 ('2026-01-01T00:00:00Z', '2025-12-31T23:59:59Z'),
+                                 ('2026-01-01T03:00:00+03:00', '2025-12-31T23:59:59Z'),
+                                 ('2026-11-02T01:00:00.500000Z', '2026-11-02T00:59:59.500000Z')):
+            with self.subTest(cursor=cursor), mock.patch.object(github.rest, 'call', return_value=(200, [])) as call:
+                self.assertEqual(github.open_issues(cursor), [])
+                query = parse_qs(urlsplit(call.call_args.args[1]).query)
+                self.assertEqual(query.get('since'), [expected] if expected else None)
+
+    def test_discovery_pagination_failure_preserves_cursor_and_events_atomically(self):
+        github = R.GitHub('owner/repo', 'fake-token', self.lease, time.monotonic() + 5400, 'runner')
+        self.runner.api = github
+        self.journal.data['cursor'] = NOW.isoformat()
+        self.journal.save()
+        before = self.journal.path.read_bytes()
+        for bounded in (False, True):
+            pages = []
+            def transport(method, path, **kwargs):
+                if path == '/user':
+                    return 200, dict(login='runner')
+                page = int(parse_qs(urlsplit(path).query)['page'][0])
+                pages.append(page)
+                if not bounded and page == 2:
+                    raise R.ApiRefused('fixture read failed')
+                return 200, [dict(number=n) for n in range(100)]
+            with self.subTest(bounded=bounded), mock.patch.object(github.rest, 'call', side_effect=transport):
+                with self.assertRaisesRegex(R.Refused, 'page bound|GitHub read failed'):
+                    self.runner.tick(time.monotonic())
+            self.assertEqual(pages, list(range(1, 21)) if bounded else [1, 2])
+            self.assertEqual(self.journal.path.read_bytes(), before)
+            self.assertEqual(self.journal.data, R.strict_json(before))
+        self.assertEqual(self.tasks.calls, 0)
+
     def adapter(self):
         row = R.evidence_issue(issue(), 'runner', None)
         bundle = self.bundle(row)
