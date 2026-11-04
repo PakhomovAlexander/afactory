@@ -62,6 +62,21 @@ original lint checks, with distinct retained JUnit files. Default-off Rust build
 
 Exclusivity is orthogonal: `.config/nextest.toml` remains authoritative. Its real-time tests retain
 all threads and their original deadlines within their class job. Classes use separate runner jobs.
+Before Rust toolchain installation and cache restoration, the hosted Ubuntu Linux `base`,
+`classes` and `container-probes` jobs run `scripts/ci-disk.py`. It removes only fixed preinstalled
+Android, .NET and Haskell SDK directories, refuses symlinks and overlap with checkout, user state,
+runner temporary files or tool caches, and prints filesystem capacity before and after cleanup.
+Each of the root, workspace and runner temporary filesystems must then have at least 40 GiB free:
+30 GiB of build/test headroom plus the unchanged production 10 GiB free-disk floor. Missing SDKs
+are skipped; insufficient capacity or failed cleanup fails preparation. Docker, Rust, Python,
+git and caches are retained. The script does nothing outside GitHub-hosted Ubuntu Linux;
+local gates, macOS and self-hosted runners never clean SDKs. Linux class tests still use
+`RUNNER_TEMP` as `TMPDIR`; test selection, concurrency and resource admission are unchanged.
+The fixed SDK roots follow the runner image's
+[Android installation](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md#android),
+[.NET installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-dotnetcore-sdk.sh)
+and [Haskell installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-haskell.sh).
+
 The full union includes the former preflight Python checks, performance schemas and harness digest,
 ordinary Rust suite and feature-on perf checks. The lab runs once per selected platform on latest
 stable Python, with `AF_PERF_REQUIRE_TOMLLIB=1`; it is no longer repeated before Rust validation.

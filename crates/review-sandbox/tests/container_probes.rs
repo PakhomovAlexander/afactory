@@ -7,7 +7,7 @@
 //! sandbox), no network, and no inherited environment, so each probe fails at a boundary
 //! rather than by convention.
 //!
-//! Every test is `#[ignore]` because the ordinary test run must not depend on a container
+//! Every live probe is `#[ignore]` because the ordinary test run must not depend on a container
 //! runtime. They are *not* optional where they do run: `make review-kernel-container-probes`
 //! (locally and in CI) invokes them explicitly, and a missing daemon is then a hard failure,
 //! never a skip — an unrun probe that reports nothing is how a guarantee quietly stops being
@@ -339,6 +339,88 @@ fn sparse_worker_output_is_refused_before_any_unbounded_host_export() {
 }
 
 const STORAGE_CRASH_ROOT: &str = "AF_STORAGE_CRASH_FIXTURE_ROOT";
+const STORAGE_CRASH_IMAGE: &str = "AF_STORAGE_CRASH_FIXTURE_IMAGE";
+
+/// Worker storage deliberately uses --pull=never. Prepare the multi-architecture pin with
+/// the parent's actual Engine before starting the child or its storage-barrier deadline.
+fn prepare_storage_crash_image(engine: &Path, image: &str) {
+    let mut inspect = std::process::Command::new(engine);
+    inspect.args(["image", "inspect", image]);
+    let present = review_process::run_supervised(&mut inspect, None, EXEC_TIMEOUT).unwrap();
+    if !present.status.success() {
+        let mut pull = std::process::Command::new(engine);
+        pull.args(["pull", image]);
+        let prepared = review_process::run_supervised(&mut pull, None, EXEC_TIMEOUT).unwrap();
+        assert!(
+            prepared.status.success(),
+            "prepare crash fixture image {image}: {}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+    }
+}
+
+fn storage_crash_provider(root: &Path, runtime: &Path, image: &str) -> ContainerProvider {
+    ContainerProvider::with_runtime(root.join("runtime-wrapper"))
+        .with_image(image)
+        .with_limits(Some("134217728".into()), Some("1".into()))
+        .with_worker_layout(review_sandbox::WorkerContainerLayout {
+            package: runtime.join("package"),
+            roots: vec![],
+            source_writable: true,
+            base: None,
+            processes: 32,
+            disk_bytes: 1024 * 1024,
+            probe_shell: "/bin/sh".into(),
+        })
+}
+
+#[test]
+fn storage_crash_fixture_prepares_and_forwards_the_exact_image_without_a_cache() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let engine = root.join("engine");
+    // No real daemon or host image cache: inspect reports a miss and only pull prepares it.
+    std::fs::write(
+        &engine,
+        r#"#!/bin/sh
+cd -- "$(dirname -- "$0")" || exit 1
+printf '%s\n' "$*" >> calls
+case "$1" in
+image) test -f prepared;;
+pull) touch prepared;;
+info) exit 0;;
+*) exit 99;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::hard_link(&engine, root.join("runtime-wrapper")).unwrap();
+    // Deliberately differs from DEFAULT_IMAGE so omitting with_image cannot pass.
+    let image = format!("fixture.invalid/crash@sha256:{}", "a".repeat(64));
+    prepare_storage_crash_image(&engine, &image);
+    let provider = storage_crash_provider(root, root, &image);
+    assert!(provider.availability().usable());
+    let invocation = provider.invocation(root, "/bin/false", &[], &[], "fixture-worker");
+    assert!(invocation.iter().any(|arg| arg == "--pull=never"));
+    let image_index = invocation.iter().position(|arg| arg == &image).unwrap();
+    assert_eq!(image_index, invocation.len() - 1);
+    assert!(
+        invocation
+            .windows(2)
+            .any(|pair| pair == ["--entrypoint", "/bin/false"])
+    );
+    assert!(
+        !invocation
+            .iter()
+            .any(|arg| arg == review_sandbox::container::DEFAULT_IMAGE)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("calls")).unwrap(),
+        format!("image inspect {image}\npull {image}\ninfo\n")
+    );
+}
 
 #[test]
 fn storage_crash_fixture_child() {
@@ -354,17 +436,9 @@ fn storage_crash_fixture_child() {
     std::fs::write(runtime.path().join("source/original"), b"exact input").unwrap();
     // This test-only transport forwards real Engine operations. It pauses immediately before
     // workload dispatch, while the real seeded tmpfs and keeper already exist.
-    let provider = ContainerProvider::with_runtime(root.join("runtime-wrapper"))
-        .with_limits(Some("134217728".into()), Some("1".into()))
-        .with_worker_layout(review_sandbox::WorkerContainerLayout {
-            package: runtime.path().join("package"),
-            roots: vec![],
-            source_writable: true,
-            base: None,
-            processes: 32,
-            disk_bytes: 1024 * 1024,
-            probe_shell: "/bin/sh".into(),
-        });
+    let image =
+        std::env::var(STORAGE_CRASH_IMAGE).expect("parent prepared the crash fixture image");
+    let provider = storage_crash_provider(&root, runtime.path(), &image);
     provider
         .exec_worker_captured(
             &runtime.path().join("source"),
@@ -390,6 +464,8 @@ fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
     let Availability::Usable { runtime: engine } = provider.availability() else {
         unreachable!()
     };
+    let image = review_sandbox::container::DEFAULT_IMAGE;
+    prepare_storage_crash_image(engine, image);
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let socket = root.join("ready.sock");
@@ -413,6 +489,7 @@ fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
         Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "storage_crash_fixture_child", "--nocapture"])
             .env(STORAGE_CRASH_ROOT, root)
+            .env(STORAGE_CRASH_IMAGE, image)
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(root.join("child.stderr")).unwrap())
             .spawn()

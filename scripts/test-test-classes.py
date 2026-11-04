@@ -546,7 +546,7 @@ class SealedEvidence(unittest.TestCase):
     def test_full_gate_build_precedes_python_tests_with_real_step_receipts(self):
         # Keep the actual wrapper, Make graph and receipt writer. Only expensive payloads
         # are stand-ins; never run a nested real gate from this preflight regression.
-        preflight = ['adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
+        preflight = ['ci-disk', 'adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
                      'test-time-report', 'provider-auth-host', 'pi-host', 'pr-report', 'pr-lines',
                      'test-classes', 'test-catalog', 'performance-schemas',
                      'performance-kernel-harness']
@@ -567,7 +567,7 @@ class SealedEvidence(unittest.TestCase):
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
             # All command paths required by the full Make entry must exist in the fixture.
-            payloads = ['test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
+            payloads = ['test-ci-disk.py', 'test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
                         'test-provider-auth-host.py', 'test-scenario-github-adapter.py',

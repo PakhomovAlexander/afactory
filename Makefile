@@ -110,6 +110,7 @@ release-check:
 # performance schema parity (ADR-0162), and the guarded kernel experiments' protected-harness
 # digest against the staged policy and any installed guarded measure (ADR-0185).
 preflight-check:
+	$(CI_STEP) --stage preflight ci-disk python3 scripts/test-ci-disk.py
 	$(CI_STEP) --stage preflight adr-catalog python3 scripts/test-adr.py
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
