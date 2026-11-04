@@ -19,6 +19,243 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.14.0-rc.6] - 2026-11-04
+
+### Authority compatibility
+
+Provider registry v1 is refused: recreate registrations with this release. Existing committed .af authority must validate against current formats; refresh stale locks with af onboard --refresh-lock. Persisted Task/Review payloads from unsupported earlier schema versions are refused; start fresh Tasks under this release.
+
+### Changes
+
+- release: v0.14.0-rc.5 (#555)
+- fix: finalize report Tasks after verifier overruns (#579)
+- fix: honor review findings in verification acceptance (#592)
+- feat: keep bugfix PR watcher alive through merge (#601)
+- fix: admit RC4 and RC5 telemetry fixture contracts (#618)
+- Add issue-triage runner with durable recovery and bounded sweep evidence (#610)
+- feat(pi): support Kimi Coding and bounded Pi-light tasks (#609)
+- feat: add reusable structured Tasks and single-Astra issue triage (#611)
+- Persist performance roadmaps and orchestrate native lab Scenarios (#596)
+
+- Check original HTML comment boundaries before extracting Pi claims: comments containing the
+  literal ASCII, case-sensitive `af-pi-validation` namespace must be exact supported delimiters.
+  Refuse nested, wrapped, malformed, dangling, extra-dash and unknown markers, and unconsumed
+  delimiters. Preserve historical source and log integrity checks.
+- Explain RC4's tagged-but-unpublished QEMU package failure beside its `[YANKED]` heading,
+  retaining its history and the signed RC3 pin. Correct the consumed RC5 GitHub adapter ADR
+  link to resolve from the root changelog.
+
+- Report Tasks whose verifier exceeds its Attempt reservation now finish as exhausted, retaining
+  exact usage, report outputs and acceptance evidence. A passing report receipt cannot make the
+  exhausted Task verified; resuming it returns the recorded result without another model call.
+
+- Read-only verification Tasks honor their retained canonical Review acceptance even when the
+  independent evaluator passes. Required open blocker or major Findings prevent verified status
+  and delivery guidance; exact Findings, Review receipts and evaluator judgments remain retained.
+
+- Require successful exact-head CI checks before merge-watcher cleanup and `DONE`, including
+  PRs already merged at startup or observed merging during a poll. Missing or failed checks
+  preserve configured worktrees and branches until the checks pass.
+
+- Add a bounded background merge watcher for the manual bugfix/easy workflow: green CI keeps
+  waiting for the exact human merge, then verified clean local cleanup writes the caller's durable
+  `DONE` report. Changed heads, uncertain cleanup and unsafe worktrees fail closed; Task Stores
+  and audit evidence stay retained. Native Scenario contracts are unchanged.
+
+- Telemetry benchmarks recognize af 0.14.0-rc.4 and 0.14.0-rc.5 under the existing
+  `check-receipt@2` fixture contract, using the committed workload and package pins.
+  Unknown releases remain refused before measurement (issue #576).
+
+- Record a definite auxiliary label refusal before any mutation as `aborted` in the v3 journal,
+  retaining the intended labels and body and restoring prior canonical comment authority. A later
+  eligible sweep can proceed; partial and unknown writes remain fenced until reconciled.
+- Adopt an exact existing runner sweep or reminder comment with its body and completion checkpoint
+  saved together, without issuing API writes.
+
+- Preserve complete captured paragraph context before sweep publication, refusing oversized or
+  unreadable paragraphs to private owner review. Distant questions and recognized attribution
+  now prevent labels/comments through replay (#604). Vocabulary findings #602 and #603 remain
+  owner-deferred follow-ups; this change performs no deployment.
+
+- Read triage excerpts and changelog/ADR citations through canonical Manifest membership,
+  including filenames with colons, backslashes and internal spaces. Require sweep completion
+  assertions to name the issue directly; contextual references stay in private owner review.
+  Coordinator tests use in-memory sources, with isolated, deterministic Git fixtures retained
+  for captured-source and reachability checks. Coverage remains hermetic; no live action occurred.
+
+- The token-free issue sweep requires a complete affirmative completion clause: questions,
+  disavowed completion prefixes and historical colon claims stay in private owner review.
+  Direct `Status:` completion entries support bare, bulleted and wrapped text, with one
+  maybe-fixed label and evidence comment and no duplicate writes on replay.
+
+- Require direct completion assertions in sweep evidence; historical embedded fixes and reversed
+  changes remain private owner-review evidence without labels or comments. Retain the measured
+  pinned Rust operator receipt separately from fresh validation attempts.
+
+- Keep dry-run triage proposals unresolved through temporary private holds and changed inputs.
+  Freshness invalidation queues new work without releasing the proposal's sweep fence. Only a
+  fresh checked replacement may publish past a proposal with no unresolved effects; retire it
+  atomically with successful publication, after the final freshness check and observed writes.
+  Pointer clears, unchecked claims, rejected freshness and failed publication leave the original
+  proposal fenced. Ordinary tick recovery can publish a later fresh replacement and resume sweep.
+  Completed and explicitly aborted effects permit replacement. Label intents survive input
+  changes after the write returns and partial or unknown writes; only observed intended
+  runner-owned labels and hint removals complete them before replacement, retirement and sweep.
+  A refusal before any mutation may abort a new intent, but cannot erase an earlier unresolved
+  attempt.
+  Clarify that owner labels set effective values without resolving triager disagreement.
+
+- Version the private triage journal as `af.issue-triage-runner/3` for aborted auxiliary label
+  checkpoints, with matching reader, writer and schema. The retained v2 schema rejects `aborted`;
+  the current runner refuses v1 and v2 journals without migration or rewriting, following
+  [ADR-0145](../docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+
+- Keep sweep questions, disavowed completion claims and attributed status lists in private owner
+  review across sentence and bullet boundaries, including colon explanations and abbreviations.
+  Preserve direct affirmative completion forms and token-free replay without duplicate writes.
+
+- Preserve durable dry-run triage proposals when writes are enabled: sweep and later publication
+  wait for publication or explicit supersession. Keep author/verifier class or size disagreements
+  disputed even with owner overrides, retaining the owner's effective values. Identify fixture-cost
+  observations by their exact historical Snapshot and mark the final tree unmeasured.
+
+- Capture excerpts for bracketed and comma- or semicolon-separated canonical triage references,
+  including filenames with colons, backslashes and spaces. Unsafe paths remain refused,
+  including absolute, traversal or URL prefixes before opening brackets, even across control
+  characters, line breaks, nested brackets or extra tokens inside the brackets. Every ASCII
+  control before an opening bracket preserves the unsafe prefix and records missing evidence,
+  even when ordinary text follows the control. Unsafe authority stays across text, whitespace
+  and delimiters; only a completed canonical reference supplies a safe boundary. Completion
+  uses the reference parser's numeric suffix and trailing punctuation rules and checks the
+  entire saved path against the Manifest, so a punctuated reference followed by a quoted
+  reference captures both excerpts without a missing-evidence refusal. Completion consumes
+  only that reference and its punctuation: an attached absolute, traversal or URL prefix
+  still refuses a later quoted reference while preserving the first excerpt. Dot runs retain
+  the attached `../` prefix in full. An unsafe quoted canonical filename with numeric colons
+  produces exactly one complete refusal, even when its final filename component is absent
+  from the Manifest.
+- Restore direct completed-fix evidence such as `Shipped fix for #432`; contextual, negated and
+  partial mentions remain private owner-review evidence. Sweeps still deduplicate and never close.
+- Retain [same-host full-suite fixture-cost evidence](../docs/design/issue-triage-fixture-cost.md)
+  for the source before the in-memory split, the continuation source and this close-out candidate.
+
+- Keep reverted or withdrawn fix claims as private owner-review evidence during issue-triage
+  sweeps, without posting a maybe-fixed label or comment.
+- Overlap GitHub issue discovery by one second so a later-visible issue at the saved cursor
+  timestamp is discovered once through durable event deduplication.
+
+- Add the deterministic issue-triage runner with bounded Git-object evidence, durable generations,
+  daily token reservations, the shared anchored nightly lease, checked report-Task identities,
+  namespace-safe labels and canonical-comment recovery. Security holds stay private; dry-run
+  makes no GitHub mutations. Stage the claw-3 half-hour dry-run and weekly token-free sweep
+  schedules with an operator runbook. Coverage is hermetic; no live triage, backfill, held-issue
+  release, deployment or plugin migration was performed.
+
+- Persist each sweep label intent and its exact desired labels before clearing canonical authority
+  or writing to GitHub. Unknown and partial DELETE/POST outcomes block further sweep and canonical
+  writes until the intended labels are observed; only then may the sweep prepare its comment.
+  The private journal is now `af.issue-triage-runner/3`; versions 1 and 2 are refused without
+  rewriting or migration, following
+  [ADR-0145](../docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+
+- Run Linux CI validation classes and their subprocess sandboxes with `TMPDIR` set to the
+  disk-backed `RUNNER_TEMP`. macOS temp-root behavior and production disk admission stay unchanged.
+
+- Pi Kimi now captures a conservative AF token-budget charge of total prompt plus completion
+  tokens, without a cache discount. Absent cache counters remain unknown; reasoning and cache
+  writes are never added twice. OpenAI accounting is unchanged. The adapter policy binds both
+  backend conventions and refuses preceding policies before private input. See the
+  [Kimi decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-03-admit-pi-kimi-with-explicit-unavailable-account-identity.md).
+
+- Support pinned Pi SDK 1.4.0 Kimi Code OAuth with K3 low/high/max and observed native usage.
+  Kimi account identity is explicitly unavailable; principal-independence policy refuses it.
+  OpenAI account protections remain required. See the
+  [identity decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-03-admit-pi-kimi-with-explicit-unavailable-account-identity.md).
+- Add the optional `pi-light` implementation/review/verification family with Kimi high,
+  Sol high correctness and Astra medium evaluation, using mandatory local checks.
+  Changed plan, admission, inspection, Pi host and registry contracts refuse prior versions.
+  Merged acceptance and report tests use the current plan, inspection and Provider registry contracts.
+
+- Accept opaque Pi SDK metadata on valid Kimi OAuth records and preserve it through guarded
+  refresh, while retaining unavailable account identity and the official endpoint restrictions.
+  See the [identity decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-03-admit-pi-kimi-with-explicit-unavailable-account-identity.md).
+  Fix Pi Provider status and replay-test compilation for current auth-context contracts.
+- Validate successful Kimi registration against the setup schema; compile the pi-light
+  fixtures with current Execution Plan receipts and explicit context-only policy.
+
+- Pi retains independently valid native token counters as incomplete usage and safe
+  per-inference evidence when optional counters or recognized native containers are malformed,
+  inconsistent or conflicting, including malformed Kimi choices in the first observation.
+  Missing or malformed source components do not conflict with independently observed
+  numbers, including valid cache aliases beside malformed siblings; distinct numeric observations
+  remain conflicting even if a later source repeats one.
+  Invalid accounting still fails the Attempt and prevents further native inference; Kimi
+  keeps its full input-plus-output charge and OpenAI keeps its cache-discount convention.
+  See the [native inference allowance decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
+
+- Pi receives the trusted remaining Attempt allowance and caps each native SDK inference's
+  output. Observed exhaustion or unsafe accounting stops subsequent inference; one inference
+  can still overshoot because prompt usage is reported afterward. Bounded safe per-inference
+  evidence survives failures, and file-only Workers receive exact array-envelope/schema guidance.
+  See the [decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
+
+- Run the Pi validation malformed-marker mutation matrix in-process through production
+  `VALIDATION.read_claims` instead of launching the validation CLI per case (scoped issue537
+  trial): the marker list, positions, existing skip and diagnostic expectations are unchanged,
+  and the hidden-summary-marker case keeps representative CLI stderr/exit coverage.
+
+- Add package-defined structured Tasks with bounded external JSON inputs, normal typed model
+  dispatch and exact provenance. Completion explicitly means structural validation, without
+  independent semantic verification or code delivery. Stage single-Astra triage, a second custom
+  kind and a native Scenario example; see
+  [the decision](../docs/adr/2026-11-03-accept-package-defined-structured-tasks.md).
+
+- Keep the `verified` outcome in `af help task-states` within 100 columns while preserving
+  its declared-acceptance meaning and direction to inspect the domain conclusion.
+
+- Keep native performance Scenario test readers within the installed executable byte bound by
+  stripping only debug symbols from private copies of the current tested binary on Linux and macOS.
+  Assert shared binary immutability and reject oversized reader fixtures before hashing or execution.
+
+- Synchronize the acceptance test's disposable evaluator schema with the optional typed Diff
+  Subject input, and exercise a base-backed source while preserving required Review acceptance
+  gates ([ADR-0254](../docs/adr/0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)).
+
+- Repair performance Scenario gate fixtures: make the disposable research packet writable after
+  copying read-only source, and exercise the complete loop with read-only authority and packet
+  inputs while checking their original bytes and modes remain unchanged.
+- Align the verification acceptance fixture with the current evaluator input contract, preserving
+  required open Finding rejection, and synchronize the installed remote implementation twin and
+  native catalog pin with its staged research-report contract.
+
+- Add asynchronous native Performance Lab Scenario submission, exact accepted Snapshot handoff,
+  verified report Waits and durable complete-goal roadmap admission with restart-safe budgets.
+  Bind the native handoff to the adapter's canonical request digest, separately from CAS IDs.
+- Carry provenance-checked bounded finding substance and the accepted research Document through
+  candidate construction and final reporting; require the full exact production model team.
+- Preserve main's GitHub adapter under the current Scenario protocol, and ship inert examples
+  with a manual-first Claw runbook. No benchmark, scheduler or publication is activated.
+  See [the decision](../docs/adr/2026-11-03-native-performance-scenario-loops.md).
+
+Align all Pi-light Worker and child-slot inputs with current ReviewInput and ImplementationInput
+version 2, version and re-pin the six packages, and correct closed input schemas for optional
+review requirements and Snapshot-bearing predecessor artifacts. Add schema regressions while
+preserving the existing strict V3 Scenario admission, owner roles, provider policy and native
+Scenario loop repairs. See [the integration decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-04-align-pi-light-current-input-contracts.md).
+
+Scenario source capture now settles the common machine fence after a confirmed clean refusal,
+while timeouts, torn captures and uncertain process cleanup remain fenced. Bounded research
+Waits rederive selected Task evidence and native experiment facts through the existing readers
+and offline verifier before admitting their summaries, outcomes and receipts. Index pins alone
+cannot grant native provenance. See
+[the decision](../docs/adr/2026-11-04-authenticate-scenario-wait-evidence.md).
+
+Native Scenario source capture now distinguishes prelaunch setup failures from definitive exec refusals. Interrupted and unknown launch errors retain the Journal fence, while confirmed exec refusals without a capture still settle cleanly. Focused regressions cover EINTR, unknown launch failures, and KeyboardInterrupt through the common exclusion; success and surviving-child controls use a complete receipt validated against the shipped schema.
+
+Native Scenario source capture now settles exclusion after proven setup or process-launch refusals only when no capture exists and temporary cleanup succeeds. Every leader exit, including success with a valid receipt, checks for surviving process-group members before accepting the handoff. Interrupted launches, torn captures, timeouts and unconfirmed cleanup remain fenced; lifecycle regressions cover refusal recovery and a successful leader leaving a child.
+
+Adapt performance Scenario admission to the current V3 execution plan and Worker contracts, and update the native performance fixture to Provider registry v3. Preserve the exact codex-personal development team and native evidence and handoff contracts and extend the role regression to refuse Pi bindings.
+
 ## [0.14.0-rc.5] - 2026-11-02
 
 ### Authority compatibility
