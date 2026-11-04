@@ -787,24 +787,6 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
             .unwrap()
             .insert(key.clone(), source_catalog["providers"][&key].clone());
     }
-<<<<<<< HEAD
-    // The source catalog's verification kind is public authority too. Reuse its exact
-    // existing package rather than relying on the starter catalog to invent the mapping.
-    let verification_kind = source_catalog["kinds"]["verification"].as_str().unwrap();
-    let kind_pin = &source_catalog["packages"][verification_kind];
-    let kind_path = kind_pin["path"].as_str().unwrap();
-    crate::task_cli::copy_tree(&workspace.join(kind_path), &repo.join(kind_path));
-    catalog["packages"]
-        .as_table_mut()
-        .unwrap()
-        .insert(verification_kind.into(), kind_pin.clone());
-    // Only this source kind package is captured; unrelated source kinds are absent.
-    let mut kinds = toml::map::Map::new();
-    kinds.insert(
-        "verification".into(),
-        toml::Value::String(verification_kind.into()),
-    );
-=======
     // Every copied kind mapping must retain its exact package authority, including
     // kinds this fixture does not select. Planning validates the complete catalog.
     for kind in source_catalog["kinds"].as_table().unwrap().values() {
@@ -817,11 +799,10 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
             .unwrap()
             .insert(name.into(), kind_pin.clone());
     }
->>>>>>> origin/main
     catalog
         .as_table_mut()
         .unwrap()
-        .insert("kinds".into(), toml::Value::Table(kinds));
+        .insert("kinds".into(), source_catalog["kinds"].clone());
     for key in ["provider_admission", "independence", "review"] {
         catalog
             .as_table_mut()

@@ -101,6 +101,11 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   The native `experiment_submit_v1` Action additionally takes an accepted `candidate` Task receipt;
   its separate verified-report Wait is described in the performance runbook.
 
+A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
+of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
+uses the same pinned Task projection as every other kind, without report or evaluator nodes,
+dynamic Task creation or publication authority.
+
 A Decision receipt used for publication may authorize exactly that one decision-consuming Action
 in the pinned bundle, including uses through aliased child inputs and outputs. Admission rejects
 any second consumer that requires a Decision, including `notify`, even if it is conditional or
@@ -218,7 +223,6 @@ occurrences keep their original skipped outcomes.
 Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.
 
-<<<<<<< HEAD
 ## Goal roadmaps: planning and complete-loop admission
 
 `af scenario roadmap` retains a bounded optimization roadmap without running it. A partition is
@@ -417,9 +421,3 @@ extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous 
 `af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
 retrieves one native findings, History Capture or adoption artifact after checking its recorded
 Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.
-=======
-A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
-of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
-uses the same pinned Task projection as every other kind, without report or evaluator nodes,
-dynamic Task creation or publication authority.
->>>>>>> origin/main
