@@ -168,6 +168,15 @@ content digest, and removes only that file. Unowned and modified content is pres
 recovery content remains in a named cleanup claim. Neither operation recursively removes a user's
 workspace. Whole-workspace removal is outside the built-in cleanup scope.
 
+## Manual bugfix workflow merge watcher
+
+For a manually published bugfix/easy PR, the supported local
+[merge watcher](scenario-merge-watch.md) can return control after background launch and remain
+alive after green CI. It observes the exact human merge, verifies explicitly named local cleanup,
+and writes the caller's durable `DONE` notification only after every cleanup target is absent.
+It uses read-only GitHub inspection, retains Task Stores, and installs no scheduler. This separate
+script does not change native Wait behavior or complete a native Scenario Run.
+
 ## Daily Ant scheduling
 
 An `af/ant@3` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,

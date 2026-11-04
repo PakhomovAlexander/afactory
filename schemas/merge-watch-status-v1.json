@@ -1,0 +1,286 @@
+{
+  "$id": "urn:af:schema:merge-watch-status:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checksum": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "cleanup": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "head": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "identity": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "worktree",
+              "branch"
+            ]
+          },
+          "phase": {
+            "enum": [
+              "ready",
+              "intent",
+              "done"
+            ]
+          },
+          "target": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "target",
+          "head",
+          "identity",
+          "phase"
+        ],
+        "type": "object"
+      },
+      "maxItems": 32,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "common_dir": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "pattern": "^/.*$",
+      "type": "string"
+    },
+    "config": {
+      "additionalProperties": false,
+      "properties": {
+        "branches": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branch": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$",
+                "type": "string"
+              },
+              "head": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "head"
+            ],
+            "type": "object"
+          },
+          "maxItems": 16,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "head": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "local_repo": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^/.*$",
+          "type": "string"
+        },
+        "max_errors": {
+          "maximum": 8,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_polls": {
+          "maximum": 20000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_seconds": {
+          "maximum": 604800,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "poll_seconds": {
+          "maximum": 3600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "pr": {
+          "maximum": 2147483647,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "repository": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$",
+          "type": "string"
+        },
+        "repository_id": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "required_checks": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "schema": {
+          "const": "af/merge-watch-config@1"
+        },
+        "state_dir": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^/.*$",
+          "type": "string"
+        },
+        "worktrees": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branch": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$",
+                "type": "string"
+              },
+              "head": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^/.*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "branch",
+              "head"
+            ],
+            "type": "object"
+          },
+          "maxItems": 16,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schema",
+        "repository",
+        "repository_id",
+        "pr",
+        "head",
+        "local_repo",
+        "state_dir",
+        "required_checks",
+        "worktrees",
+        "branches",
+        "poll_seconds",
+        "max_seconds",
+        "max_polls",
+        "max_errors"
+      ],
+      "type": "object"
+    },
+    "deadline_unix": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "errors": {
+      "maximum": 8,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "merge_kind": {
+      "enum": [
+        "",
+        "ancestry",
+        "exact_tree"
+      ]
+    },
+    "merge_sha": {
+      "pattern": "^(?:[0-9a-f]{40})?$",
+      "type": "string"
+    },
+    "message": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "pid": {
+      "maximum": 2147483647,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "polls": {
+      "maximum": 20000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "schema": {
+      "const": "af/merge-watch-status@1"
+    },
+    "status": {
+      "enum": [
+        "STARTING",
+        "WAITING_FOR_GITHUB",
+        "WAITING_FOR_CI",
+        "WAITING_FOR_HUMAN_MERGE",
+        "CLEANING",
+        "DONE",
+        "FAILED"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "config",
+    "common_dir",
+    "deadline_unix",
+    "polls",
+    "errors",
+    "pid",
+    "status",
+    "message",
+    "merge_sha",
+    "merge_kind",
+    "cleanup",
+    "checksum"
+  ],
+  "type": "object"
+}
