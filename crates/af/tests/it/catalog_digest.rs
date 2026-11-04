@@ -611,3 +611,85 @@ fn staged_catalog_contract_fixtures_match_native_interfaces() {
         assert_eq!(actual, expected, "{directory}");
     }
 }
+
+/// Shipped Pi schemas must accept native predecessor envelopes and omitted optional ports,
+/// while retaining closed input objects, exact artifact types and Snapshot requirements.
+#[test]
+fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
+    use serde_json::{Value, json};
+
+    for name in ["implementer", "correctness", "evaluator"] {
+        let package = workspace().join(".af/task-packages/pi-light").join(name);
+        let worker: review_config::task::catalog::TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+        let schema: Value =
+            serde_json::from_slice(&std::fs::read(package.join("input.schema.json")).unwrap())
+                .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let ports = &worker.signature.contract.inputs;
+        let properties = schema["properties"].as_object().unwrap();
+        assert_eq!(properties.len(), ports.len(), "{name}");
+        let required = schema["required"].as_array().unwrap();
+        assert_eq!(
+            required.len(),
+            ports.values().filter(|p| !p.optional).count()
+        );
+        let mut inputs = json!({});
+        for (port, contract) in ports {
+            assert_eq!(required.contains(&json!(port)), !contract.optional);
+            assert_eq!(properties[port]["items"]["additionalProperties"], false);
+            let value = json!([{
+                "artifact_id": format!("sha256:{}", "1".repeat(64)),
+                "artifact_type": contract.artifact_type,
+                "snapshot_id": format!("sha256:{}", "2".repeat(64)),
+                "payload": {}
+            }]);
+            inputs[port] = value;
+        }
+        assert!(validator.is_valid(&inputs), "{name}: {inputs}");
+        for port in ports.keys() {
+            let mut wrong_type = inputs.clone();
+            wrong_type[port][0]["artifact_type"] = json!("af/Unexpected@1");
+            assert!(!validator.is_valid(&wrong_type), "{name}/{port}: type");
+            let mut extra = inputs.clone();
+            extra[port][0]["unexpected"] = json!(true);
+            assert!(
+                !validator.is_valid(&extra),
+                "{name}/{port}: closed envelope"
+            );
+            let mut bad_snapshot = inputs.clone();
+            bad_snapshot[port][0]["snapshot_id"] = json!("not-a-digest");
+            assert!(
+                !validator.is_valid(&bad_snapshot),
+                "{name}/{port}: Snapshot"
+            );
+        }
+        for (port, contract) in ports {
+            if contract.optional {
+                inputs.as_object_mut().unwrap().remove(port);
+            } else if contract.artifact_type != "af/SourceTree@1"
+                && matches!(
+                    contract.affinity,
+                    review_core::task::pipeline::PortAffinityV1::Unbound {}
+                )
+            {
+                inputs[port][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("snapshot_id");
+            }
+        }
+        assert!(validator.is_valid(&inputs), "{name}: optional inputs");
+        let mut missing_snapshot = inputs.clone();
+        missing_snapshot["source"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("snapshot_id");
+        assert!(
+            !validator.is_valid(&missing_snapshot),
+            "{name}: source Snapshot"
+        );
+        inputs["unexpected"] = json!([]);
+        assert!(!validator.is_valid(&inputs), "{name}: closed inputs");
+    }
+}

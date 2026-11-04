@@ -291,33 +291,33 @@ digest = "sha256:4134f24846090ace8b02493f6b2abcd814ac445bbd8cb971afc51432f54f83d
 path = ".af/task-packages/default-light/verification"
 
 [packages."pi-light/implementer"]
-version = "1.0.0"
-digest = "sha256:48349a1eaf2334043bded370dc4394c504a63faf6dd608e49a9b8f4dd29db9e2"
+version = "1.1.0"
+digest = "sha256:4fbbec8c0ad4158999428d3c3557030e1301b5a17916edba08af60bd97de01c1"
 path = ".af/task-packages/pi-light/implementer"
 
 [packages."pi-light/correctness"]
-version = "1.0.0"
-digest = "sha256:f43a23acac0876018d3e6f9b61b190cfc53d7e7e8a8f7c849b526f8787d0efb8"
+version = "1.1.0"
+digest = "sha256:1089ec45c645aa40350b4c1ddce3a8fe5005697f971654a4c1a52d9ebd63d5a9"
 path = ".af/task-packages/pi-light/correctness"
 
 [packages."pi-light/evaluator"]
-version = "1.0.0"
-digest = "sha256:e87647bda666ec70f62a3b20d759ec0303f6bd0d00b190bb860e17f95e0c79fa"
+version = "1.1.0"
+digest = "sha256:7b22f21ab815f736019bb7591635ac36c32e98ab9c7d4ee196faeb257e8b2421"
 path = ".af/task-packages/pi-light/evaluator"
 
 [packages."pi-light/review"]
-version = "1.0.0"
-digest = "sha256:b77b3de3e310ab71940413fe8074815c9e092c229809aeb9b8d3eb3c94b9d570"
+version = "1.1.0"
+digest = "sha256:0303988e40fd3db24e63b27c3fe0ee32ef73c9fc5a8f7f70fb499429d86d745c"
 path = ".af/task-packages/pi-light/review"
 
 [packages."pi-light/implementation"]
-version = "1.0.0"
-digest = "sha256:f4bb4b908e90a5f64071ec340aaedd23b3e68d225e9e3cd899ee4836a77eaf2f"
+version = "1.1.0"
+digest = "sha256:a261f29d5b5c03c8d5fa230431c7400662637616b512a71e73ee41970855b97f"
 path = ".af/task-packages/pi-light/implementation"
 
 [packages."pi-light/verification"]
-version = "1.0.0"
-digest = "sha256:6decd3d7ca89b89925a4d43a38b95ef63e48739bba80a3a3eb1252bccc5323d5"
+version = "1.1.0"
+digest = "sha256:0dc3c73618a3a8e31378cc353f8ba6bb14def9cf8a810a93e817df1095bb55fa"
 path = ".af/task-packages/pi-light/verification"
 
 [independence]
