@@ -104,3 +104,34 @@ strength of the live Gate probe, not of the provider probes; a change that stops
 through its binding, or a `container-probes` job that stops being green, reopens it here.
 A probe recorded as not applicable stays that way only while GA has no Broker and no allowed
 egress; whichever lands first reopens its half here.
+
+## Worker aggregate storage
+
+Development Workers use a separate bounded-volume dispatch path. The live
+`worker_aggregate_disk_bound_stops_writes_across_all_roots_and_protects_a_sibling` probe writes
+across source, state, scratch, build, cache, knowledge, `/tmp`, `/run` and `/dev/shm` under one
+8 MiB limit. It checks a shared filesystem identity, requires the excess write to fail with
+`ENOSPC`, and verifies a concurrent Worker's private state and an unchanged host marker. It also
+checks the non-root UID and inaccessible `/dev`, `/dev/mqueue` and Engine configuration files.
+
+`sparse_worker_output_is_refused_before_any_unbounded_host_export` creates a sparse one-GiB
+file under a one-MiB bound and requires bounded export refusal with unchanged host source and
+confirmed daemon cleanup. The final filesystem remains explicitly unavailable as evidence.
+`a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state` pauses a subprocess
+with a real seeded tmpfs volume mounted, kills exactly that owner, and runs the production sweep.
+It verifies exact volume cleanup, preservation of a live runtime and unchanged reopened CAS bytes.
+These probes run with the other live container probes, and a missing daemon remains a failure.
+The recording Task toolchain tests establish compilation, dispatch and receipt behavior separately;
+they cannot substitute for these containment probes.
+
+The local Task gate `scripts/verify.sh --profile fast` selects functional, e2e and uix.
+Its `scripts/test-classes.py execute` path checks for `e2e` in the selection and then invokes
+`make review-kernel-container-probes`. That Makefile target runs
+`cargo test --locked -p review-sandbox --test container_probes -- --ignored`, including the
+aggregate-disk probe above, followed by the timeout and live Task Gate routing probes.
+Thus `#[ignore]` excludes these tests from the ordinary nextest selection but does not exclude
+them from the fast gate's explicit live-probe dispatch. `.af/code-policy.toml` declares this
+local gate route. A top-level kernel receipt must be traced through its stdout and this executor
+path; its check name alone does not show which probes executed. The older main-run record above
+covers its recorded revision only. Each new candidate still requires its own passing gate and
+live-probe output; this dispatch description is not an execution receipt.

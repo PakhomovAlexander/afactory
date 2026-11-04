@@ -254,6 +254,11 @@ fn sweep_owned(
             report.preserved += 1;
             continue;
         }
+        if crate::container::recover_worker_storage(&path).is_err() {
+            // Keep the intent; an unconfirmed cleanup is preserved for the operator.
+            report.failed += 1;
+            continue;
+        }
         if remove_listed(root, &entry.file_name(), &metadata) {
             report.removed += 1;
         } else {

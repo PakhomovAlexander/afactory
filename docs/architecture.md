@@ -51,6 +51,27 @@ fixtures/
   task-runtime/  Task runtime scenarios (review, embedded review, bounded repair)
 ```
 
+## Worker local development
+
+A captured Task command Worker can opt into a separately versioned `development.toml` companion.
+Its existing package pin binds the requested exact machine environment. The container provider,
+CheckRuntime lifecycle and process supervisor enforce private roots and supported bounds; the
+host retains command evidence on the existing Attempt. Reviewer experiments use a second clone
+and cannot enter the candidate seal. Model adapters and unsupported quota requests fail closed.
+Declared cache policies select exact immutable layers in `WarmSet@3` before reservation;
+private clones and admitted same-slot `BuildCache@2` outputs support explicit continuation.
+Approved dependency sources remain available-only, and Worker caches have no Gate authority.
+A separate pinned `knowledge.toml` companion selects bounded manifests and on-demand source
+excerpts through typed ports on both model and command Workers. Private Notes remain same-slot
+hypotheses with source freshness checks and existing Warm Set/Head Delta evidence. Indexes are
+immutable derived records in the Task CAS; the recorded invocation pins selection across retry
+and restart. Cross-Task source facts require an explicit capability and content revalidation.
+Sessions remain unsupported. The [design](design/worker-local-development.md) and
+[knowledge example](../fixtures/worker-knowledge/README.md) explain the protocol and evidence;
+[development examples](../fixtures/worker-development/README.md) show Rust and Python using the
+same runtime. `task::development::tests` proves transport, state,
+provenance and experiment isolation; the existing live container probes own containment proof.
+
 ## Contracts
 
 | Schema | Carries |

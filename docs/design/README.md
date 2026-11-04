@@ -6,6 +6,9 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
 [`CONTEXT.md`](../../CONTEXT.md); the engineering values that order trade-offs are in
 [`../values.md`](../values.md).
 
+- [`worker-local-development.md`](worker-local-development.md) — pinned local development
+  environments, immutable cache continuation, bounded knowledge retrieval and private Notes;
+  trusted acquisition stays a separate operator action and sessions remain unsupported.
 - [`worker-warm-layers.md`](worker-warm-layers.md) — splitting a Worker Attempt into carried
   layers (Notes, Head Delta, workspace, build cache) so later Rounds do not pay the cold start
   again. Packages P1–P3 are accepted as

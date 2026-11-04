@@ -1,0 +1,77 @@
+schema = "af.worker/1"
+name = "example/knowledge"
+version = "1.0.0"
+
+[runner]
+kind = "command"
+[runner.command]
+program = "/usr/bin/python3"
+args = [{ value = "@package/harness.py", provenance = "literal" }]
+
+[signature]
+roles = ["author"]
+effects = ["read-source"]
+worker_input_type = "af/SourceTree@1"
+worker_output_type = "af/CheckedDocument@1"
+[signature.attempt]
+tokens = 0
+wall_ms = 5000
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.knowledge]
+artifact_type = "af/KnowledgeContext@1"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.inputs.knowledge.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.knowledge_query]
+artifact_type = "af/KnowledgeQuery@1"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.inputs.knowledge_query.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.notes]
+artifact_type = "af/WorkerNotes@1"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.inputs.notes.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.output]
+artifact_type = "af/CheckedDocument@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.output.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.knowledge_query]
+artifact_type = "af/KnowledgeQuery@1"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.outputs.knowledge_query.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.notes]
+artifact_type = "af/WorkerNotes@1"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.outputs.notes.affinity]
+kind = "unbound"
+
+[signature.evidence]
+[signature.retains]

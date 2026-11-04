@@ -94,8 +94,8 @@ pub enum EventType {
     ShardSetRecordedV1,
     #[serde(rename = "SemanticClosureChecked@1")]
     SemanticClosureCheckedV1,
-    #[serde(rename = "WarmSetSelected@2")]
-    WarmSetSelectedV2,
+    #[serde(rename = "WarmSetSelected@3")]
+    WarmSetSelectedV3,
     #[serde(rename = "WorkerNotesRecorded@1")]
     WorkerNotesRecordedV1,
     #[serde(rename = "BuildCacheCaptured@1")]
@@ -161,7 +161,7 @@ impl EventType {
         Self::SliceSetAcceptedV1,
         Self::ShardSetRecordedV1,
         Self::SemanticClosureCheckedV1,
-        Self::WarmSetSelectedV2,
+        Self::WarmSetSelectedV3,
         Self::WorkerNotesRecordedV1,
         Self::BuildCacheCapturedV1,
         Self::WorkspaceRebasedV1,
@@ -217,7 +217,7 @@ impl EventType {
             Self::SliceSetAcceptedV1 => "SliceSetAccepted@1",
             Self::ShardSetRecordedV1 => "ShardSetRecorded@1",
             Self::SemanticClosureCheckedV1 => "SemanticClosureChecked@1",
-            Self::WarmSetSelectedV2 => "WarmSetSelected@2",
+            Self::WarmSetSelectedV3 => "WarmSetSelected@3",
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
             Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
             Self::WorkspaceRebasedV1 => "WorkspaceRebased@1",
@@ -279,7 +279,7 @@ impl EventType {
             Self::SliceSetAcceptedV1 => ("SliceSetAccepted", 1),
             Self::ShardSetRecordedV1 => ("ShardSetRecorded", 1),
             Self::SemanticClosureCheckedV1 => ("SemanticClosureChecked", 1),
-            Self::WarmSetSelectedV2 => ("WarmSetSelected", 2),
+            Self::WarmSetSelectedV3 => ("WarmSetSelected", 3),
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
             Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
             Self::WorkspaceRebasedV1 => ("WorkspaceRebased", 1),
@@ -377,7 +377,7 @@ impl std::str::FromStr for EventType {
             "SliceSetAccepted@1" => Ok(Self::SliceSetAcceptedV1),
             "ShardSetRecorded@1" => Ok(Self::ShardSetRecordedV1),
             "SemanticClosureChecked@1" => Ok(Self::SemanticClosureCheckedV1),
-            "WarmSetSelected@2" => Ok(Self::WarmSetSelectedV2),
+            "WarmSetSelected@3" => Ok(Self::WarmSetSelectedV3),
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
             "WorkspaceRebased@1" => Ok(Self::WorkspaceRebasedV1),
@@ -906,13 +906,13 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("{event_type}: {error}"))
         }
-        EventType::WarmSetSelectedV2 => {
+        EventType::WarmSetSelectedV3 => {
             let selected =
-                serde_json::from_value::<crate::WarmSetSelectedPayloadV2>(payload.clone())
-                    .map_err(|error| format!("WarmSetSelected@2: {error}"))?;
+                serde_json::from_value::<crate::WarmSetSelectedPayloadV3>(payload.clone())
+                    .map_err(|error| format!("WarmSetSelected@3: {error}"))?;
             selected
                 .validate()
-                .map_err(|error| format!("WarmSetSelected@2: {error}"))
+                .map_err(|error| format!("WarmSetSelected@3: {error}"))
         }
         EventType::WorkerNotesRecordedV1 => {
             let recorded =

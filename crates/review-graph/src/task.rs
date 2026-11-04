@@ -2077,6 +2077,42 @@ impl Compiler<'_> {
                                 None => return Err(format!("{qualified} lacks {port_name}")),
                             }
                         }
+                        if !matches!(operator, TaskOperatorV1::Worker { .. })
+                            && signature.contract.outputs.values().any(|port| {
+                                port.artifact_type == review_core::contract::BUILD_CACHE_V2
+                            })
+                        {
+                            return Err(
+                                "Development cache persistence requires a Worker node".into()
+                            );
+                        }
+                        if bound.contains_key(review_core::task::development::DEVELOPMENT_WARM_PORT)
+                        {
+                            return Err("Development Warm Sets are selected by the kernel, never wired by a pipeline".into());
+                        }
+                        for (port_name, port) in &signature.contract.inputs {
+                            if port.artifact_type == review_core::contract::BUILD_CACHE_V2 {
+                                if let Some(source) = bound.get(port_name) {
+                                    let TaskOperatorV1::Worker { slot } = &operator else {
+                                        return Err("Only same-slot Workers consume development Build Caches".into());
+                                    };
+                                    if self.worker_slot(&source.node) != Some(slot.as_str()) {
+                                        return Err("Development cache continuation cannot cross Worker slots".into());
+                                    }
+                                }
+                            }
+                        }
+                        if bound.contains_key(review_core::task::knowledge::KNOWLEDGE_PORT)
+                            && signature
+                                .contract
+                                .inputs
+                                .get(review_core::task::knowledge::KNOWLEDGE_PORT)
+                                .is_some_and(|p| {
+                                    p.artifact_type == review_core::task::knowledge::CONTEXT_TYPE
+                                })
+                        {
+                            return Err("Knowledge contexts are selected by the kernel, never wired by a pipeline".into());
+                        }
                         // Worker Notes are a node-private warm layer: a retry or repair node
                         // may receive the notes of an earlier node on the SAME slot, and nothing
                         // else. Slots declared independent are different slots by construction.

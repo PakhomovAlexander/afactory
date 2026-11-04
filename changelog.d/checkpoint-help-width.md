@@ -1,0 +1,1 @@
+- Wrap checkpoint continuation guidance in `af help config` within 100 columns.

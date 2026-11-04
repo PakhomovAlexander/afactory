@@ -1214,3 +1214,112 @@ fn only_a_judging_worker_declares_the_diff_subject_and_no_pipeline_binds_it() {
     let error = compile(&pipelines, &signatures).unwrap_err();
     assert!(error.contains("only the kernel builds"), "{error}");
 }
+
+#[test]
+fn development_build_cache_edges_require_the_same_slot_and_warm_input_is_kernel_owned() {
+    let (mut task, mut pipelines, mut signatures) = fixture();
+    task.limits.max_attempts = 8;
+    task.limits.verification.attempts = 4;
+    task.limits.verification.wall_ms = 4000;
+    let signature = signatures
+        .get_mut("worker/builtin/document-author")
+        .unwrap();
+    let mut cache = signature.contract.inputs["input"].clone();
+    cache.artifact_type = review_core::contract::BUILD_CACHE_V2.into();
+    cache.optional = true;
+    cache.affinity = PortAffinityV1::Unbound {};
+    signature
+        .contract
+        .inputs
+        .insert("cache_in".into(), cache.clone());
+    signature
+        .contract
+        .outputs
+        .insert("cache_out".into(), cache.clone());
+    let mut warm = cache;
+    warm.artifact_type = review_core::contract::WARM_SET_V3.into();
+    signature
+        .contract
+        .inputs
+        .insert("development_warm".into(), warm);
+    let pipeline = pipelines.get_mut("builtin/document").unwrap();
+    pipeline.max_attempts = 8;
+    let mut second = pipeline.nodes[0].clone();
+    second.id = "second".into();
+    second.inputs.insert(
+        "cache_in".into(),
+        ValueRefV1::Node {
+            node: pipeline.nodes[0].id.clone(),
+            port: "cache_out".into(),
+        },
+    );
+    pipeline.nodes.push(second);
+    let compile = |pipelines: &BTreeMap<String, PipelineDefinitionV1>| {
+        compile_task(
+            &task,
+            "builtin/document",
+            &CompileContext {
+                slot_workers: BTreeMap::new(),
+                acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+                pipelines,
+                signatures: &signatures,
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )
+    };
+    assert!(
+        compile(&pipelines).is_ok(),
+        "same-slot explicit continuation is supported"
+    );
+    let mut cross = pipelines.clone();
+    let pipeline = cross.get_mut("builtin/document").unwrap();
+    pipeline
+        .slots
+        .insert("independent".into(), pipeline.slots["author"].clone());
+    pipeline.nodes[1].operator = TaskOperatorV1::Worker {
+        slot: "independent".into(),
+    };
+    assert!(
+        compile(&cross)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot cross Worker slots")
+    );
+    // A pipeline cannot bypass selection by wiring an arbitrary Warm Set, even from its own
+    // slot. The port's name, rather than a package convention, reserves kernel authority.
+    let mut forged_signatures = signatures.clone();
+    let signature = forged_signatures
+        .get_mut("worker/builtin/document-author")
+        .unwrap();
+    let warm = signature.contract.inputs["development_warm"].clone();
+    signature
+        .contract
+        .outputs
+        .insert("forged_warm".into(), warm);
+    let pipeline = pipelines.get_mut("builtin/document").unwrap();
+    pipeline.nodes[1].inputs.insert(
+        "development_warm".into(),
+        ValueRefV1::Node {
+            node: "write".into(),
+            port: "forged_warm".into(),
+        },
+    );
+    let error = compile_task(
+        &task,
+        "builtin/document",
+        &CompileContext {
+            slot_workers: BTreeMap::new(),
+            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+            pipelines: &pipelines,
+            signatures: &forged_signatures,
+            max_nodes: 64,
+            max_depth: 4,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("never wired by a pipeline"),
+        "{error}"
+    );
+}

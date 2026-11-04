@@ -15,9 +15,83 @@ struct RecoveringHost<'a> {
     fail_after_commit: bool,
     before_attempt: bool,
     calls: &'a AtomicUsize,
+    selections: &'a AtomicUsize,
+    select_warm: bool,
 }
 
 impl TaskOperatorHost for RecoveringHost<'_> {
+    fn prepare_invocation(
+        &self,
+        cas: &Cas,
+        input: &mut TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
+    ) -> Result<(), String> {
+        self.inner.prepare_invocation(cas, input, definition)?;
+        if !self.select_warm || input.node != "root.nodes.write" {
+            return Ok(());
+        }
+        {
+            let store = self.store.lock().unwrap();
+            let state = store
+                .task_projection(cas, self.lease.task_id())
+                .unwrap()
+                .unwrap();
+            let execution = state.execution.unwrap();
+            assert_eq!(execution.budget.begun_attempts(), 0);
+            assert!(execution.pending_attempts().is_empty());
+            assert!(!execution.invocations.contains_key(&input.node));
+        }
+        assert_eq!(
+            self.selections.fetch_add(1, Ordering::SeqCst),
+            0,
+            "recovery must use the recorded Warm Set"
+        );
+        let set = review_core::WarmSetV3 {
+            node: input.node.clone(),
+            round: 1,
+            source_attempt_id: None,
+            notes_artifact_id: None,
+            head_delta_artifact_id: None,
+            head_delta_dropped: None,
+            build_cache_artifact_id: None,
+            build_cache_dropped: None,
+            workspace: None,
+            workspace_id: None,
+            development: BTreeMap::from([(
+                "objects".into(),
+                review_core::task::development::DevelopmentCacheSelectionRecordV1::Omitted {
+                    reason: review_core::task::development::DevelopmentCacheMissV1::NoInput,
+                    compatibility_id: input.plan_id.clone(),
+                },
+            )]),
+        };
+        set.validate()?;
+        let id = cas
+            .put_artifact(
+                review_core::contract::WARM_SET_V3,
+                Producer::KernelOperation {
+                    run_id: review_store::store::task::task_run_id(self.lease.task_id()).unwrap(),
+                    node_id: Some(input.node.clone()),
+                    operation_id: "worker-development-warm@1".into(),
+                },
+                vec![input.plan_id.clone()],
+                None,
+                serde_json::to_value(set).unwrap(),
+            )
+            .unwrap()
+            .0;
+        input.inputs.insert(
+            review_core::task::development::DEVELOPMENT_WARM_PORT.into(),
+            ArtifactInputV1 {
+                artifact_ids: vec![id],
+                artifact_type: review_core::contract::WARM_SET_V3.into(),
+                cardinality: review_core::PortCardinality::One,
+                snapshot_id: None,
+            },
+        );
+        Ok(())
+    }
+
     fn commit_domain_invocation(
         &self,
         cas: &Cas,
@@ -152,15 +226,20 @@ impl TaskDomain for RecoveringHost<'_> {
 
 #[test]
 fn domain_publication_recovers_after_restart_without_another_paid_attempt() {
-    publication_recovers(false);
+    publication_recovers(false, false);
 }
 
 #[test]
 fn domain_invocation_publication_recovers_before_any_attempt_or_context() {
-    publication_recovers(true);
+    publication_recovers(true, false);
 }
 
-fn publication_recovers(before_attempt: bool) {
+#[test]
+fn development_selection_is_durable_before_reservation_and_never_reselected_on_recovery() {
+    publication_recovers(true, true);
+}
+
+fn publication_recovers(before_attempt: bool, select_warm: bool) {
     use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
     struct Model;
     impl WorkerModelAdapter for Model {
@@ -194,9 +273,16 @@ fn publication_recovers(before_attempt: bool) {
             }
         }
     }
-    let mut f = Fixture::with_model("unused", true);
+    let mut f = Fixture::with_selection(
+        "unused",
+        true,
+        "Return the checked document.",
+        5000,
+        select_warm,
+    );
     let proof = f._directory.path().join("domain-proof");
     let calls = AtomicUsize::new(0);
+    let selections = AtomicUsize::new(0);
     for pass in 0..3 {
         f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
         let models = f
@@ -262,6 +348,8 @@ fn publication_recovers(before_attempt: bool) {
             fail_after_commit: pass == 0,
             before_attempt,
             calls: &calls,
+            selections: &selections,
+            select_warm,
         };
         // The real Provider wrapper must preserve invocation publication and lost-ack
         // recovery even when this graph has no Provider operation of its own.
@@ -275,6 +363,9 @@ fn publication_recovers(before_attempt: bool) {
                 .unwrap();
         let report = runtime.execute().unwrap();
         assert_eq!(report.complete(), pass != 0, "{report:?}");
+        if select_warm {
+            assert_eq!(selections.load(Ordering::SeqCst), 1);
+        }
         let state = runtime.projection().unwrap();
         assert_eq!(state.run_reports.len(), pass + 1);
         let id = state.run_reports.last().unwrap();

@@ -3011,6 +3011,16 @@
    "size": 5110
   },
   {
+   "path": "fixtures/worker-development/rust/Cargo.lock",
+   "sha256": "sha256:afd92ddbc4030bcaaaefda96021c0ba9b343cc41c4f8fd0092aec80957a538ee",
+   "size": 166
+  },
+  {
+   "path": "fixtures/worker-development/rust/Cargo.toml",
+   "sha256": "sha256:079daef4e5d207d747f0f263cd46cf14ee2e692b77136ebd5ba66d2672d842c2",
+   "size": 90
+  },
+  {
    "path": "rust-toolchain.toml",
    "sha256": "sha256:980c9752cb40dca3265ce4e3e31de1c369b469c9837be059b806ea93fe76799d",
    "size": 86
@@ -3941,7 +3951,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:42c25cc7295ff1ed94ab523627fe28898071d994b87e7f6b65427790e214155f",
+ "harness_digest": "sha256:cdd8abb1c16496e1513c0dce85321ba494506664b23c07fd20df12d2a4a3e9c6",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

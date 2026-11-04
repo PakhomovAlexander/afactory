@@ -45,7 +45,9 @@ pub mod workspace;
 
 pub use build_cache::{
     CapturedBuildCache, MaterializedBuildCache, build_cache_environment, capture_build_cache,
-    materialize_build_cache, prepare_build_cache_root,
+    capture_cache_directory, capture_cache_directory_before, clone_cache_directory,
+    clone_cache_directory_before, materialize_build_cache, prepare_build_cache_root,
+    validate_cache_manifest,
 };
 pub use cache::{
     CacheEnvironment, CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheMaterialization,
@@ -53,7 +55,9 @@ pub use cache::{
     remove_materialized_caches,
 };
 pub use check_runtime::{CONTAINER_CHECK_RUNTIME, CheckRuntime};
-pub use container::{Availability, ContainerProvider};
+pub use container::{
+    Availability, ContainerProvider, WorkerContainerCapture, WorkerContainerLayout,
+};
 #[cfg(unix)]
 pub use removal::{
     AbandonedClaim, ClaimSize, Identity, PartlyRemoved, REMOVAL_MAX_DEPTH, Stated, Unmeasured,

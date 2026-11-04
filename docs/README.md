@@ -33,6 +33,8 @@ any af command ([design](design/tui.md)).
 
 - [Task runtime](task-execution.md), [Task inputs](task-execution/task-inputs.md), and
   [package-defined structured Tasks](task-execution/structured.md).
+- [Worker local development](design/worker-local-development.md) and its
+  [Rust/Python examples](../fixtures/worker-development/README.md).
 - [Experiment Tasks](task-execution/experiments.md), [self management](self-management.md),
   [storage and telemetry](telemetry.md).
 - [CLI help](../README.md) for exact commands and `schemas/` for JSON documents.

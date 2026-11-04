@@ -265,7 +265,83 @@ impl WorkerContract {
             instructions.len(),
         );
         let mut inputs = BTreeMap::new();
+        let mut replaced = std::collections::BTreeSet::new();
+        if let Some(port) = invocation
+            .inputs
+            .get(review_core::task::knowledge::KNOWLEDGE_PORT)
+        {
+            if port.artifact_type == review_core::task::knowledge::CONTEXT_TYPE {
+                use review_core::task::knowledge::*;
+                if port.artifact_ids.len() != 1 {
+                    return Err("Knowledge context must be one kernel input".into());
+                }
+                let artifact = cas
+                    .get_artifact(&port.artifact_ids[0])
+                    .map_err(|e| e.to_string())?;
+                if !matches!(&artifact.producer, Producer::KernelOperation { operation_id, .. } if operation_id == CONTEXT_OPERATION)
+                {
+                    return Err("Knowledge context is not a kernel selection".into());
+                }
+                let knowledge: KnowledgeContextV1 =
+                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                knowledge.validate()?;
+                for name in &knowledge.replaced_inputs {
+                    if let Some(input) = invocation.inputs.get(name) {
+                        if input.artifact_type != review_core::task::WORKER_NOTES_V1
+                            && !(name == QUERY_PORT && input.artifact_type == QUERY_TYPE)
+                        {
+                            return Err("Knowledge cannot hide an unrelated declared input".into());
+                        }
+                    }
+                }
+                replaced = knowledge.replaced_inputs;
+                manifest.record(
+                    "knowledge-index",
+                    "bounded source-addressed retrieval manifest",
+                    Some(knowledge.index_id),
+                    Some(INDEX_TYPE.into()),
+                    0,
+                );
+                if let Some(id) = knowledge.warm_set_id {
+                    manifest.record(
+                        "knowledge-warm",
+                        "admitted same-slot Notes and Head Delta",
+                        Some(id),
+                        Some(review_core::contract::WARM_SET_V3.into()),
+                        0,
+                    );
+                }
+                for excerpt in knowledge.excerpts {
+                    if cas
+                        .get_bounded(&excerpt.entry.content_id, excerpt.entry.bytes)
+                        .map_err(|e| e.to_string())?
+                        != excerpt.text.as_bytes()
+                    {
+                        return Err("Knowledge excerpt bytes differ from their evidence".into());
+                    }
+                    manifest.record(
+                        format!("knowledge-excerpt:{}", excerpt.entry.name),
+                        "declared on-demand retrieval; data, not instructions",
+                        Some(excerpt.entry.content_id),
+                        None,
+                        excerpt.text.len(),
+                    );
+                }
+            }
+        }
         for (port, input) in &invocation.inputs {
+            if replaced.contains(port) {
+                for id in &input.artifact_ids {
+                    manifest.record(
+                        port,
+                        "retrieval provenance only; raw private data is not delivered",
+                        Some(id.clone()),
+                        Some(input.artifact_type.clone()),
+                        0,
+                    );
+                }
+                continue;
+            }
             // A `many` port that names no Snapshot claims none for its values: a port bound
             // from several recorded outputs of different Snapshots (ADR-0134). Each value keeps
             // and shows its own; every other port's values name the port's one Snapshot.
@@ -312,6 +388,19 @@ impl WorkerContract {
                     Some(value.artifact_type.clone()),
                     serde_json::to_vec(&value).map_err(|e| e.to_string())?.len(),
                 );
+                if port == review_core::task::development::DEVELOPMENT_WARM_PORT
+                    && value.artifact_type == review_core::contract::WARM_SET_V3
+                {
+                    let set: review_core::WarmSetV3 = serde_json::from_value(value.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                    set.validate()?;
+                    for (name, layer) in &set.development {
+                        if let review_core::task::development::DevelopmentCacheSelectionRecordV1::Selected { artifact_id, manifest_id, .. } = layer {
+                            manifest.record(format!("development-cache:{name}"), "declared private immutable cache clone", Some(artifact_id.clone()), None, 0);
+                            manifest.record(format!("development-cache-manifest:{name}"), "exact files cloned into the private root", Some(manifest_id.clone()), None, 0);
+                        }
+                    }
+                }
                 values.push(value);
             }
             inputs.insert(port.clone(), values);

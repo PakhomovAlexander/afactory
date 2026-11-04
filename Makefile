@@ -74,8 +74,8 @@ STRESS_SPAWN ?= 2
 stress-proof:
 	python3 -I scripts/stress-proof.py --runs $(STRESS_RUNS) --load-workers $(STRESS_LOAD) --spawn-workers $(STRESS_SPAWN) --test-threads $(TEST_THREADS)
 
-# Live containment and the v3 Gate route. These stay outside `make check` because a missing
-# daemon is a hard failure here, never a skip disguised as success.
+# Live containment and the v3 Gate route. The test-classes executor invokes this target when
+# e2e is selected, including the local fast gate and `make check`; a missing daemon fails.
 review-kernel-container-probes:
 	cargo test --locked -p review-sandbox --test container_probes -- --ignored
 	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
@@ -110,6 +110,7 @@ release-check:
 # performance schema parity (ADR-0162), and the guarded kernel experiments' protected-harness
 # digest against the staged policy and any installed guarded measure (ADR-0185).
 preflight-check:
+	$(CI_STEP) --stage preflight ci-disk python3 scripts/test-ci-disk.py
 	$(CI_STEP) --stage preflight adr-catalog python3 scripts/test-adr.py
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py

@@ -62,6 +62,30 @@ original lint checks, with distinct retained JUnit files. Default-off Rust build
 
 Exclusivity is orthogonal: `.config/nextest.toml` remains authoritative. Its real-time tests retain
 all threads and their original deadlines within their class job. Classes use separate runner jobs.
+Before Rust toolchain installation and cache restoration, the hosted Ubuntu Linux `base`,
+`classes` and `container-probes` jobs run `scripts/ci-disk.py`. It removes only fixed preinstalled
+Android, .NET, Haskell, Swift and Java SDK directories plus unused Azure CLI and PowerShell
+payloads, refuses symlinks and overlap with checkout, user state,
+runner temporary files or tool caches, and prints filesystem capacity before and after cleanup.
+Each of the root, workspace and runner temporary filesystems must then have at least 40 GiB free:
+30 GiB of build/test headroom plus the unchanged production 10 GiB free-disk floor. Missing SDKs
+are skipped; insufficient capacity or failed cleanup fails preparation. Docker, Rust, Python,
+git and caches are retained. The script does nothing outside GitHub-hosted Ubuntu Linux;
+local gates, macOS and self-hosted runners never clean SDKs. Linux class tests still use
+`RUNNER_TEMP` as `TMPDIR`; test selection, concurrency and resource admission are unchanged.
+The fixed SDK roots follow the runner image's
+[Android installation](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md#android),
+[.NET installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-dotnetcore-sdk.sh),
+[Haskell installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-haskell.sh)
+and [Swift installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-swift.sh).
+Swift's `/usr/share/swift` payload supplies additional headroom on images where the other SDKs
+leave less than 40 GiB free. This repository's Rust/Python build and validation do not use Swift;
+only that fixed payload directory is eligible, never its shared `/usr/share` parent or tool caches.
+Smaller runner images can omit Swift. The fixed `/usr/lib/jvm`, `/opt/az` and
+`/opt/microsoft/powershell` payloads provide additional space on those images. Validation uses
+Rust and Python, not these runtimes; generating PowerShell completion text does not execute PowerShell.
+All existing hosted-runner, symlink, protected-path and capacity checks apply to these paths too.
+
 The full union includes the former preflight Python checks, performance schemas and harness digest,
 ordinary Rust suite and feature-on perf checks. The lab runs once per selected platform on latest
 stable Python, with `AF_PERF_REQUIRE_TOMLLIB=1`; it is no longer repeated before Rust validation.

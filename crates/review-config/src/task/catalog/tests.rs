@@ -1609,3 +1609,212 @@ fn the_deadline_refusal_lists_the_path_and_its_numbers_add_up() {
         15_000_000
     );
 }
+
+#[test]
+fn development_companion_compiles_for_command_workers_and_refuses_model_or_read_only_authority() {
+    use review_core::task::development::*;
+    let f = Fixture::new();
+    let mut worker = f.compiler.workers["builtin/document-author"].clone();
+    worker.signature.effects = BTreeSet::from(["read-source".into(), "execute-checks".into()]);
+    worker.signature.roles = BTreeSet::from(["review".into()]);
+    let mut source = worker
+        .signature
+        .contract
+        .inputs
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    source.artifact_type = review_source_git::task::SOURCE_TREE_V1.into();
+    source.optional = false;
+    source.affinity = PortAffinityV1::Unbound {};
+    worker.signature.contract.inputs = BTreeMap::from([("source".into(), source)]);
+    for port in worker.signature.contract.outputs.values_mut() {
+        port.affinity = PortAffinityV1::SameAs {
+            input: "source".into(),
+        };
+    }
+    worker.runner = TaskWorkerRunner::Command {
+        command: CommandSpec {
+            program: "@tool/sh".into(),
+            args: vec![],
+        },
+    };
+    let identity = format!("sha256:{}", "a".repeat(64));
+    let request = WorkerDevelopmentV3 {
+        caches: Default::default(),
+        schema: DEVELOPMENT_SCHEMA.into(),
+        harness: "sh".into(),
+        binding_identity: identity.clone(),
+        tools: BTreeMap::from([("sh".into(), identity)]),
+        environment: BTreeMap::new(),
+        writable_roots: BTreeSet::new(),
+        state: PrivateStatePolicyV1::Disabled,
+        cache: PrivateStatePolicyV1::Disabled,
+        knowledge: PrivateStatePolicyV1::Disabled,
+        dependencies: DependencyPolicyV1::AvailableOnly,
+        network: NetworkPolicyV1::Deny,
+        limits: DevelopmentLimitsV1 {
+            wall_ms: 1000,
+            output_bytes: 4096,
+            cpu_millicores: Some(1000),
+            memory_bytes: Some(67108864),
+            disk_bytes: Some(268435456),
+            processes: Some(32),
+        },
+    };
+    let package = |worker: &TaskWorkerManifest, companion: bool| {
+        let mut files = BTreeMap::from([(
+            "worker.toml".into(),
+            toml::to_string(worker).unwrap().into_bytes(),
+        )]);
+        if companion {
+            files.insert(
+                DEVELOPMENT_FILE.into(),
+                toml::to_string(&request).unwrap().into_bytes(),
+            );
+        }
+        PackageBytes {
+            schema: "af.task-package/1".into(),
+            name: worker.name.clone(),
+            version: worker.version.clone(),
+            digest: package_digest_from_files(&files),
+            files,
+        }
+    };
+    assert!(TaskPlanCompiler::parse_package(&package(&worker, true)).is_ok());
+    let mut non_worker = package(&worker, true);
+    non_worker.files.remove("worker.toml");
+    assert!(
+        TaskPlanCompiler::parse_package(&non_worker)
+            .unwrap_err()
+            .contains("only to a Worker")
+    );
+    assert!(
+        TaskPlanCompiler::parse_package(&package(&worker, false)).is_err(),
+        "a symbolic harness cannot lose its environment"
+    );
+    let mut readonly = worker.clone();
+    readonly.signature.effects.remove("execute-checks");
+    assert!(TaskPlanCompiler::parse_package(&package(&readonly, true)).is_err());
+    let mut evaluator = worker.clone();
+    evaluator.signature.roles = BTreeSet::from(["evaluate".into()]);
+    assert!(TaskPlanCompiler::parse_package(&package(&evaluator, true)).is_err());
+    worker.signature.attempt.as_mut().unwrap().tokens = 100;
+    worker.runner = TaskWorkerRunner::Model {
+        provider_kind: "codex".into(),
+        model: "fixture".into(),
+        effort: "medium".into(),
+    };
+    assert!(
+        TaskPlanCompiler::parse_package(&package(&worker, true))
+            .unwrap_err()
+            .contains("model adapters")
+    );
+}
+
+#[test]
+fn worker_cache_toml_ports_are_kernel_constructed_and_cannot_claim_acceptance_authority() {
+    let mut f = Fixture::new();
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("fixtures/worker-development/rust");
+    let identity = format!("sha256:{}", "a".repeat(64));
+    let companion = std::fs::read_to_string(root.join("development.template.toml"))
+        .unwrap()
+        .replace("@BINDING_ID@", &identity)
+        .replace("@SH_ID@", &identity)
+        .replace("@CARGO_ID@", &identity)
+        .replace("@RUSTC_ID@", &identity)
+        .replace("@CC_ID@", &identity);
+    let mut files: BTreeMap<String, Vec<u8>> = [
+        "worker.toml",
+        "input.schema.json",
+        "outputs/report.schema.json",
+        "instructions.md",
+        "harness.sh",
+    ]
+    .into_iter()
+    .map(|name| (name.into(), std::fs::read(root.join(name)).unwrap()))
+    .collect();
+    files.insert("development.toml".into(), companion.into_bytes());
+    let package = |files: &BTreeMap<String, Vec<u8>>| PackageBytes {
+        schema: "af.task-package/1".into(),
+        name: "development/rust".into(),
+        version: "1.0.0".into(),
+        digest: package_digest_from_files(files),
+        files: files.clone(),
+    };
+    assert!(TaskPlanCompiler::parse_package(&package(&files)).is_ok());
+    let pin = TaskPackagePin {
+        version: "1.0.0".into(),
+        digest: package_digest_from_files(&files),
+        path: "package".into(),
+    };
+    let project = files
+        .iter()
+        .map(|(name, bytes)| (format!("package/{name}"), bytes.clone()))
+        .collect();
+    f.compiler
+        .capture_package(&f.cas, "development/rust", &pin, &project)
+        .unwrap();
+    let schemas = f
+        .compiler
+        .worker_output_schemas("development/rust", &BTreeSet::from(["candidate".into()]))
+        .unwrap();
+    assert_eq!(
+        schemas.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["report"],
+        "neither cache nor candidate can be supplied in a Worker reply"
+    );
+    let original: TaskWorkerManifest =
+        toml::from_str(std::str::from_utf8(&files["worker.toml"]).unwrap()).unwrap();
+    for claim in ["coverage", "evidence", "retention", "branch"] {
+        let mut worker = original.clone();
+        match claim {
+            "coverage" => {
+                worker
+                    .signature
+                    .contract
+                    .outputs
+                    .get_mut("cache_out")
+                    .unwrap()
+                    .covers
+                    .insert("checked".into());
+            }
+            "evidence" => {
+                worker
+                    .signature
+                    .evidence
+                    .insert("cache_out".into(), BTreeSet::from([identity.clone()]));
+            }
+            "retention" => {
+                worker
+                    .signature
+                    .retains
+                    .insert("cache_out".into(), BTreeSet::from(["source".into()]));
+            }
+            _ => {
+                worker.signature.outcome_port = Some("cache_out".into());
+            }
+        }
+        files.insert(
+            "worker.toml".into(),
+            toml::to_string(&worker).unwrap().into_bytes(),
+        );
+        assert!(
+            TaskPlanCompiler::parse_package(&package(&files)).is_err(),
+            "{claim}"
+        );
+    }
+    files.insert(
+        "worker.toml".into(),
+        toml::to_string(&original).unwrap().into_bytes(),
+    );
+    files.remove("development.toml");
+    assert!(
+        TaskPlanCompiler::parse_package(&package(&files)).is_err(),
+        "a Worker cannot author a Build Cache without the host capture policy"
+    );
+}

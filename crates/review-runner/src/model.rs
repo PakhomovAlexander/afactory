@@ -614,7 +614,7 @@ impl ContextManifest {
                 "warm_set",
                 "the Warm Set this Attempt starts from",
                 Some(id.clone()),
-                Some(review_core::contract::WARM_SET_V2.into()),
+                Some(review_core::contract::WARM_SET_V3.into()),
                 0,
             );
         }
@@ -643,7 +643,7 @@ impl ContextManifest {
                 "warm_build_cache",
                 "explicitly unsafe Build Cache cloned into the sandbox from this Round's Gate",
                 Some(id.clone()),
-                Some(review_core::contract::BUILD_CACHE_V1.into()),
+                Some(review_core::contract::BUILD_CACHE_V2.into()),
                 0,
             );
         }
@@ -851,11 +851,11 @@ pub struct ReviewerInputs {
     pub head_delta: Option<serde_json::Value>,
     #[serde(skip)]
     pub head_delta_artifact_id: Option<String>,
-    /// The `WarmSet@2` that selected the layers above, so every manifest names the exact
+    /// The `WarmSet@3` that selected the layers above, so every manifest names the exact
     /// selection and not only its members.
     #[serde(skip)]
     pub warm_set_artifact_id: Option<String>,
-    /// The explicitly unsafe `BuildCache@1` the Warm Set carries into this Attempt's sandbox
+    /// The explicitly unsafe `BuildCache@2` the Warm Set carries into this Attempt's sandbox
     /// (package P2). Never rendered: it reaches the Worker as bytes below the reserved cache
     /// root and one environment variable, and the manifest lists it so the report can say so.
     #[serde(skip)]

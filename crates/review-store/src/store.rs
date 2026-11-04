@@ -1452,7 +1452,7 @@ fn typed_json_artifacts(
                     insert_artifact_type(
                         &mut artifacts,
                         artifact_id,
-                        review_core::contract::BUILD_CACHE_V1.into(),
+                        review_core::contract::BUILD_CACHE_V2.into(),
                     )?;
                 }
                 continue;
@@ -4223,7 +4223,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::SliceSetAcceptedV1
                 | EventType::ShardSetRecordedV1
                 | EventType::SemanticClosureCheckedV1
-                | EventType::WarmSetSelectedV2
+                | EventType::WarmSetSelectedV3
                 | EventType::WorkerNotesRecordedV1
                 | EventType::BuildCacheCapturedV1
                 | EventType::WorkspaceRebasedV1

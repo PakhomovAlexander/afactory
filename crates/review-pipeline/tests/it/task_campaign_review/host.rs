@@ -1205,7 +1205,7 @@ fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
     );
     let selected: Vec<_> = events
         .iter()
-        .filter(|event| event.event_type == EventType::WarmSetSelectedV2)
+        .filter(|event| event.event_type == EventType::WarmSetSelectedV3)
         .collect();
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].node_id.as_deref(), Some("reviewer"));

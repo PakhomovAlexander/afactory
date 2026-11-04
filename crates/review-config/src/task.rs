@@ -8,7 +8,9 @@ use crate::ConfigError;
 
 pub mod campaign_review;
 pub mod catalog;
+pub mod development;
 pub mod kind;
+pub mod knowledge;
 pub mod selection;
 pub mod shared;
 pub mod structured;

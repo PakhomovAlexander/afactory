@@ -315,6 +315,15 @@ impl ProviderTaskDomain<'_> {
 }
 
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
+    fn prepare_invocation(
+        &self,
+        cas: &Cas,
+        input: &mut TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
+    ) -> Result<(), String> {
+        self.inner.prepare_invocation(cas, input, definition)
+    }
+
     fn prepare_experiment(
         &self,
         cas: &Cas,

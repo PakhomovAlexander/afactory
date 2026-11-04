@@ -2,7 +2,7 @@
 //!
 //! The Gate has already built the head before any reviewer is dispatched. After its checks
 //! pass, a trusted-local Gate captures each declared cache directory as an explicitly unsafe
-//! `review.kernel/BuildCache@1`, records `BuildCacheCaptured@1`, and the Round's Warm Set
+//! `review.kernel/BuildCache@2`, records `BuildCacheCaptured@1`, and the Round's Warm Set
 //! selection carries the artifact to every reviewer node that declares the same kind. Each
 //! Worker sandbox receives a clone from the CAS below the reserved cache root, one environment
 //! variable points the build tool at it, and the bytes are removed before seal so they never
@@ -18,7 +18,7 @@ use review_core::task::runtime::{
 };
 use review_core::{
     BuildCacheCapturedPayloadV1, BuildCacheDropReasonV1, BuildCacheKindV1,
-    BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV1, EventType, Producer, RunEvent,
+    BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV2, EventType, Producer, RunEvent,
 };
 use review_sandbox::{CacheEnvironment, CacheErrorKind, Sandbox};
 use review_source_git::Manifest;
@@ -161,7 +161,8 @@ impl ReviewDomainState<'_> {
             let payload =
                 match review_sandbox::capture_build_cache(kind, sandbox, &limits, self.cas) {
                     Ok(captured) => {
-                        let cache = BuildCacheV1 {
+                        let cache = BuildCacheV2 {
+                            worker: None,
                             kind,
                             trust: BuildCacheTrustV1::CandidateBuilt,
                             gate_node: node_id.to_string(),
@@ -185,7 +186,7 @@ impl ReviewDomainState<'_> {
                         let (artifact_id, _) = self
                             .cas
                             .put_artifact(
-                                review_core::contract::BUILD_CACHE_V1,
+                                review_core::contract::BUILD_CACHE_V2,
                                 producer,
                                 vec![
                                     captured.manifest_id.clone(),
@@ -275,10 +276,10 @@ impl ReviewDomainState<'_> {
             .cas
             .get_artifact(artifact_id)
             .map_err(|error| error.to_string())?;
-        if envelope.artifact_type != review_core::contract::BUILD_CACHE_V1 {
-            return Err(format!("artifact {artifact_id} is not BuildCache@1"));
+        if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2 {
+            return Err(format!("artifact {artifact_id} is not BuildCache@2"));
         }
-        let cache: BuildCacheV1 =
+        let cache: BuildCacheV2 =
             serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
         cache.validate()?;
         if cache.kind != kind
@@ -498,7 +499,7 @@ pub(crate) fn published_build_cache(
 }
 
 /// The Build Cache the bound Gate handed this Round, checked against the CAS before any
-/// Attempt is reserved: the artifact must be a `BuildCache@1` of the same kind and head.
+/// Attempt is reserved: the artifact must be a `BuildCache@2` of the same kind and head.
 pub(crate) fn select_build_cache(
     cas: &Cas,
     events: &[RunEvent],
@@ -517,10 +518,10 @@ pub(crate) fn select_build_cache(
             let envelope = cas
                 .get_artifact(&artifact_id)
                 .map_err(|error| error.to_string())?;
-            if envelope.artifact_type != review_core::contract::BUILD_CACHE_V1 {
-                return Err(format!("artifact {artifact_id} is not BuildCache@1"));
+            if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2 {
+                return Err(format!("artifact {artifact_id} is not BuildCache@2"));
             }
-            let cache: BuildCacheV1 =
+            let cache: BuildCacheV2 =
                 serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
             cache.validate()?;
             if cache.kind != kind

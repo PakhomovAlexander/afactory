@@ -3,6 +3,7 @@
 
 mod encoding;
 pub mod experiment;
+mod knowledge;
 #[cfg(test)]
 mod optimization_billing_tests;
 pub mod owned;
@@ -739,14 +740,71 @@ impl TaskExecutionProjection {
     ) -> Result<(), StoreError> {
         self.check_owned_open(&input.node)?;
         let resolved = self.resolve_node(&input.node)?;
+        let node = &resolved.definition;
+        let mut graph_inputs = input.inputs.clone();
+        if let Some(warm) =
+            graph_inputs.remove(review_core::task::development::DEVELOPMENT_WARM_PORT)
+        {
+            use review_core::task::development::DEVELOPMENT_WARM_PORT;
+            if !node
+                .contract
+                .inputs
+                .get(DEVELOPMENT_WARM_PORT)
+                .is_some_and(|port| {
+                    port.optional && port.artifact_type == review_core::contract::WARM_SET_V3
+                })
+                || warm.artifact_ids.len() != 1
+                || warm.artifact_type != review_core::contract::WARM_SET_V3
+            {
+                return Err(conflict("Undeclared development Warm Set"));
+            }
+            let envelope = cas
+                .get_artifact(&warm.artifact_ids[0])
+                .map_err(|error| conflict(error.to_string()))?;
+            if envelope.artifact_type != review_core::contract::WARM_SET_V3
+                || envelope.producer
+                    != (review_core::Producer::KernelOperation {
+                        run_id: super::task_run_id(task_id)?,
+                        node_id: Some(input.node.clone()),
+                        operation_id: "worker-development-warm@1".into(),
+                    })
+            {
+                return Err(conflict(
+                    "Development Warm Set has no kernel selection authority",
+                ));
+            }
+            let set: review_core::WarmSetV3 = serde_json::from_value(envelope.payload)
+                .map_err(|error| conflict(error.to_string()))?;
+            set.validate().map_err(conflict)?;
+            if set.node != input.node
+                || warm.snapshot_id
+                    != input
+                        .inputs
+                        .get("source")
+                        .and_then(|value| value.snapshot_id.clone())
+                || envelope.subject_snapshot_id != warm.snapshot_id
+            {
+                return Err(conflict("Development Warm Set belongs to another node"));
+            }
+        }
+        if node
+            .contract
+            .inputs
+            .get(review_core::task::knowledge::KNOWLEDGE_PORT)
+            .is_some_and(|p| p.artifact_type == review_core::task::knowledge::CONTEXT_TYPE)
+        {
+            let knowledge = graph_inputs
+                .remove(review_core::task::knowledge::KNOWLEDGE_PORT)
+                .ok_or_else(|| conflict("Declared knowledge selection is missing"))?;
+            self.verify_knowledge(cas, task_id, input, node, &knowledge)?;
+        }
         if let Some(expected) = resolved.expected_inputs {
-            return if input.inputs == expected {
+            return if graph_inputs == expected {
                 Ok(())
             } else {
                 Err(conflict("Owned invocation changed its registered inputs"))
             };
         }
-        let node = &resolved.definition;
         let sources = node.inputs.clone();
         let mut expected = BTreeMap::new();
         for (name, source) in sources {
@@ -769,7 +827,6 @@ impl TaskExecutionProjection {
         // node from its source (ADR-0254). Admitted only on the port the node's contract
         // declares, as one artifact of the kernel's own operation for this node of this Task,
         // about the Snapshot the node's source names; the pipeline checks its content.
-        let mut graph_inputs = input.inputs.clone();
         if let Some(subject) = graph_inputs.remove(DIFF_SUBJECT_PORT) {
             verify_diff_subject(cas, task_id, input, node, expected.get("source"), &subject)?;
         }

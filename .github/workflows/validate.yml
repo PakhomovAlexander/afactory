@@ -73,6 +73,9 @@ jobs:
         with:
           python-version: '3.x'
           check-latest: true
+      - name: Prepare hosted Linux disk capacity
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: python3 -I scripts/ci-disk.py
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -127,6 +130,9 @@ jobs:
         with:
           python-version: '3.x'
           check-latest: true
+      - name: Prepare hosted Linux disk capacity
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: python3 -I scripts/ci-disk.py
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -191,6 +197,9 @@ jobs:
         with:
           python-version: '3.x'
           check-latest: true
+      - name: Prepare hosted Linux disk capacity
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: python3 -I scripts/ci-disk.py
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11

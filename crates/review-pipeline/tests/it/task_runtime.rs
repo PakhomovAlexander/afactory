@@ -23,6 +23,10 @@ const LOAD_SAFE_WALL: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[path = "task_runtime/control.rs"]
 mod control;
+#[path = "task_runtime/development.rs"]
+mod development;
+#[path = "task_runtime/knowledge.rs"]
+mod knowledge;
 #[path = "task_runtime/model_refused.rs"]
 mod model_refused;
 #[path = "task_runtime/output_admission.rs"]
@@ -902,6 +906,15 @@ impl Fixture {
     }
     /// A fixture whose Worker Attempt may run for `wall_ms`.
     fn with_wall(script: &str, model: bool, instructions: &str, wall_ms: u64) -> Self {
+        Self::with_selection(script, model, instructions, wall_ms, false)
+    }
+    fn with_selection(
+        script: &str,
+        model: bool,
+        instructions: &str,
+        wall_ms: u64,
+        selection: bool,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -983,6 +996,15 @@ impl Fixture {
                 wall_ms,
             }),
         };
+        let mut signature = signature;
+        if selection {
+            let mut port = signature.contract.inputs["configuration"].clone();
+            port.artifact_type = review_core::contract::WARM_SET_V3.into();
+            signature.contract.inputs.insert(
+                review_core::task::development::DEVELOPMENT_WARM_PORT.into(),
+                port,
+            );
+        }
         let worker = TaskWorkerManifest {
             schema: "af.worker/1".into(),
             name: "builtin/document-author".into(),
@@ -998,7 +1020,7 @@ impl Fixture {
                 TaskWorkerRunner::Command { command: serde_json::from_value(json!({"program":"/usr/bin/python3", "args":[{"value":"@package/worker.py", "provenance":"literal"}]})).unwrap() }
             },
         };
-        let input_schema = json!({"type":"object", "additionalProperties":false, "required":["input"], "properties":{
+        let mut input_schema = json!({"type":"object", "additionalProperties":false, "required":["input"], "properties":{
             "input":{"type":"array", "minItems":1, "maxItems":1, "items":{"type":"object", "additionalProperties":false,
                 "required":["artifact_id","artifact_type","payload"], "properties":{
                     "artifact_id":{"type":"string"}, "artifact_type":{"const":"af/Requirements@1"},
@@ -1010,6 +1032,10 @@ impl Fixture {
                     "payload":{"type":"object"}
                 }}}
         }});
+        if selection {
+            input_schema["properties"][review_core::task::development::DEVELOPMENT_WARM_PORT] =
+                json!({"type":"array","minItems":1,"maxItems":1});
+        }
         let output_schema = json!({"type":"object", "additionalProperties":false, "required":["outcome","text"],
             "properties":{"outcome":{"enum":["passed","failed","inconclusive"]},"text":{"type":"string"}}});
         let mut compiler = TaskPlanCompiler::new(

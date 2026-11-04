@@ -649,6 +649,20 @@ impl TaskPlanCompiler {
         {
             return Err("Invalid captured Task package".into());
         }
+        if bytes
+            .files
+            .contains_key(review_core::task::development::DEVELOPMENT_FILE)
+            && !bytes.files.contains_key("worker.toml")
+        {
+            return Err("A development.toml companion belongs only to a Worker package".into());
+        }
+        if bytes
+            .files
+            .contains_key(review_core::task::knowledge::KNOWLEDGE_FILE)
+            && !bytes.files.contains_key("worker.toml")
+        {
+            return Err("A knowledge.toml companion belongs only to a Worker package".into());
+        }
         match (
             bytes.files.get("pipeline.toml"),
             bytes.files.get("worker.toml"),
@@ -679,6 +693,56 @@ impl TaskPlanCompiler {
                     return Err("Worker manifest has incompatible identity or protocol".into());
                 }
                 worker.signature.contract.validate()?;
+                if let Some(development) = super::development::parse_development(&bytes.files)? {
+                    super::development::validate_ports(&development, &worker.signature)?;
+                    if !matches!(&worker.runner, TaskWorkerRunner::Command { command } if command.program == format!("@tool/{}", development.harness))
+                    {
+                        return Err("Worker development requires a Command runner naming its @tool/harness; model adapters do not support command evidence".into());
+                    }
+                    if !worker.signature.effects.contains("execute-checks")
+                        || !worker.signature.effects.contains("read-source")
+                        || !(worker.signature.effects.contains("write-source")
+                            || worker.signature.roles.contains("review"))
+                    {
+                        return Err("Worker development requires declared read-source and execute-checks effects".into());
+                    }
+                    if !worker
+                        .signature
+                        .contract
+                        .inputs
+                        .get("source")
+                        .is_some_and(|port| {
+                            port.artifact_type == review_source_git::task::SOURCE_TREE_V1
+                                && port.cardinality == review_core::PortCardinality::One
+                                && !port.optional
+                        })
+                    {
+                        return Err(
+                            "Worker development requires one required typed source input".into(),
+                        );
+                    }
+                    if development.limits.wall_ms
+                        > worker
+                            .signature
+                            .attempt
+                            .as_ref()
+                            .map_or(0, |cost| cost.wall_ms)
+                    {
+                        return Err(
+                            "Worker development exceeds its Attempt wall reservation".into()
+                        );
+                    }
+                }
+                if !bytes
+                    .files
+                    .contains_key(review_core::task::development::DEVELOPMENT_FILE)
+                    && matches!(&worker.runner, TaskWorkerRunner::Command { command } if command.program.starts_with("@tool/"))
+                {
+                    return Err(
+                        "A symbolic Worker tool requires a pinned development.toml companion"
+                            .into(),
+                    );
+                }
                 // A root default and its `brief` variant are a pipeline root port's, and the
                 // Brief port is `af.pipeline/2`'s alone (ADR-0160): `af.worker/1` keeps its shape.
                 if let Some(port) = worker
@@ -696,7 +760,25 @@ impl TaskPlanCompiler {
                         worker.name
                     ));
                 }
+                let development = super::development::parse_development(&bytes.files)?;
+                let cache_outputs: BTreeSet<_> = development
+                    .iter()
+                    .flat_map(|request| request.caches.values())
+                    .filter_map(|policy| policy.output.as_ref())
+                    .collect();
+                for (name, port) in &worker.signature.contract.outputs {
+                    if port.artifact_type == review_core::contract::WARM_SET_V3
+                        || port.artifact_type == review_core::contract::BUILD_CACHE_V2
+                            && !cache_outputs.contains(name)
+                    {
+                        return Err("Warm Sets and Build Caches are kernel-constructed, never Worker-authored".into());
+                    }
+                }
                 validate_notes_ports(&worker.signature.contract)?;
+                super::knowledge::validate_ports(
+                    super::knowledge::parse_knowledge(&bytes.files)?.as_ref(),
+                    &worker.signature,
+                )?;
                 let cost = worker
                     .signature
                     .attempt
@@ -765,6 +847,9 @@ impl TaskPlanCompiler {
             _ => return Err("Provider admission disagrees with captured Worker settings".into()),
         }
         let package = &self.packages[name];
+        if let Some(request) = super::development::parse_development(&package.bytes.files)? {
+            super::development::resolve_binding(&request)?;
+        }
         EffectiveWorkerBindingV3 {
             package_digest: package.bytes.digest.clone(),
             package_artifact_id: package.dependency.artifact_id.clone(),
@@ -880,12 +965,20 @@ impl TaskPlanCompiler {
         let worker = self
             .worker(name)
             .ok_or("Missing captured Worker manifest")?;
+        let development = super::development::parse_development(
+            self.package_files(name).ok_or("Missing package")?,
+        )?;
+        let cache_outputs: BTreeSet<_> = development
+            .iter()
+            .flat_map(|request| request.caches.values())
+            .filter_map(|policy| policy.output.clone())
+            .collect();
         worker
             .signature
             .contract
             .outputs
             .keys()
-            .filter(|port| !kernel_outputs.contains(*port))
+            .filter(|port| !kernel_outputs.contains(*port) && !cache_outputs.contains(*port))
             .map(|port| {
                 let schema = self.worker_schema(name, &format!("outputs/{port}.schema.json"))?;
                 Ok((port.clone(), schema))
