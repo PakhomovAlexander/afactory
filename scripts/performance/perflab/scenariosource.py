@@ -1,5 +1,6 @@
 """Bounded invocation of the native accepted-Snapshot capture; no source format is reimplemented."""
 from contextlib import ExitStack
+import errno
 import os
 import signal
 import subprocess
@@ -83,12 +84,21 @@ def _capture(config, path, expected_digest, into):
                    "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home}
             output = resources.enter_context(tempfile.TemporaryFile(dir=path))
             error = resources.enter_context(tempfile.TemporaryFile(dir=path))
-            process = subprocess.Popen([config["af"], "scenario", "experiment-source",
-                "--file", request_path, "--repo", config["task_repo"], "--task-state", config["task_state"],
-                "--into", into, "--json"], env=env, stdout=output, stderr=error,
-                stdin=subprocess.DEVNULL, start_new_session=True)
         except OSError as error:
             prelaunch_error = error
+        else:
+            try:
+                process = subprocess.Popen([config["af"], "scenario", "experiment-source",
+                    "--file", request_path, "--repo", config["task_repo"], "--task-state", config["task_state"],
+                    "--into", into, "--json"], env=env, stdout=output, stderr=error,
+                    stdin=subprocess.DEVNULL, start_new_session=True)
+            except OSError as error:
+                # Only definitive exec refusals prove no native process started.
+                # EINTR and unknown failures may lose a handle after fork: stay fenced.
+                if (isinstance(error, InterruptedError)
+                        or error.errno not in (errno.ENOENT, errno.EACCES, errno.ENOEXEC)):
+                    raise
+                prelaunch_error = error
         if prelaunch_error is None:
             try:
                 code = process.wait(timeout=CAPTURE_SECONDS)

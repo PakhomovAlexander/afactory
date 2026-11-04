@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic functional tests of Scenario submission/evidence, never benchmarks or models."""
 import copy
+import errno
 import json
 import os
 import pathlib
@@ -16,7 +17,7 @@ sys.dont_write_bytecode = True
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts/performance"))
 
-from perflab import contracts, executor, hostlock, researchevidence, scenarioadapter, scenariosource  # noqa: E402
+from perflab import contracts, executor, hostlock, jsonsubset, researchevidence, scenarioadapter, scenariosource  # noqa: E402
 from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes  # noqa: E402
 from tests.test_executor import ExecutorFixture, PRODUCER, receipt  # noqa: E402
 
@@ -48,18 +49,33 @@ class SourceCapture(unittest.TestCase):
     def capture(self):
         return scenariosource.capture(self.config, self.path, canonical_digest(self.request))
 
-    def test_success_without_descendants_accepts_matching_receipt(self):
+    def matching_receipt(self):
         receipt = dict(schema="af/scenario-experiment-source@1",
             request_digest=canonical_digest(self.request), baseline_snapshot_id=BASE,
-            candidate_snapshot_id=HEAD, repository=os.path.join(self.path, "source/repository.git"))
+            candidate_snapshot_id=self.request["candidate_snapshot_id"],
+            baseline_content_digest=BASE, candidate_content_digest=HEAD,
+            baseline_origin_id=BASE, candidate_origin_id=HEAD, repository_id="hermetic-native-source",
+            baseline_sha="2" * 40, candidate_sha="3" * 40,
+            repository=os.path.join(self.path, "source/repository.git"))
+        schema = json.loads((ROOT / "schemas/scenario-experiment-source-v1.json").read_text())
+        scenario = json.loads((ROOT / "schemas/scenario-v3.json").read_text())
+        # The existing subset validator accepts local refs: inline the shipped digest
+        # definition without changing any receipt assertions or requiring a new dependency.
+        schema["$defs"] = dict(digest=scenario["$defs"]["digest"])
+        for node in schema["properties"].values():
+            if "$ref" in node:
+                self.assertEqual(node["$ref"], "urn:af:schema:scenario:3#/$defs/digest")
+                node["$ref"] = "#/$defs/digest"
+        return jsonsubset.Schema(schema, "scenario-experiment-source-v1.json").validate(receipt)
+
+    def test_success_without_descendants_accepts_matching_receipt(self):
+        receipt = self.matching_receipt()
         self.program("import json; print(json.dumps(%r))" % receipt)
         self.assertEqual(self.capture(), receipt)
 
     def successful_leader_with_child(self):
         group_file = os.path.join(self.path, "group")
-        receipt = dict(schema="af/scenario-experiment-source@1",
-            request_digest=canonical_digest(self.request), baseline_snapshot_id=BASE,
-            candidate_snapshot_id=HEAD, repository=os.path.join(self.path, "source/repository.git"))
+        receipt = self.matching_receipt()
         self.program("""import json, os, time
 with open(%r, 'w') as stream:
     stream.write(str(os.getpid()))
@@ -139,6 +155,23 @@ print(json.dumps(%r))
         with mock.patch.object(scenariosource.subprocess, "Popen", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.capture()
+
+    def test_ambiguous_oserror_launch_is_not_clean(self):
+        self.program("raise AssertionError('must not execute')")
+        for failure in (InterruptedError(), InterruptedError(errno.EINTR, "interrupted exec wait"),
+                        OSError(errno.EIO, "unknown launch outcome"), OSError("unknown launch outcome")):
+            with self.subTest(failure=repr(failure)), \
+                    mock.patch.object(scenariosource.subprocess, "Popen", side_effect=failure):
+                with self.assertRaises(OSError) as caught:
+                    self.capture()
+                self.assertIs(caught.exception, failure)
+
+    def test_invalid_executable_is_clean(self):
+        self.program("raise AssertionError('must not execute')")
+        self.binary.write_text("invalid executable\n")
+        self.config["af_digest"] = sha256_bytes(self.binary.read_bytes())
+        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+            self.capture()
 
     def test_prelaunch_cleanup_failure_is_not_clean(self):
         self.program("raise AssertionError('must not execute')")
@@ -223,6 +256,29 @@ class SourceCaptureFence(ExecutorFixture):
         with executor.Journal(self.c) as journal:
             with mock.patch.object(scenariosource.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
                 self.assert_clean_refusal_and_later_work(journal, inode)
+
+    def assert_uncertain_launch_retains_fence(self, failure):
+        self.source.program("raise AssertionError('must not execute')")
+        inode = self.lock_inode()
+        with executor.Journal(self.c) as journal:
+            with mock.patch.object(scenariosource.subprocess, "Popen", side_effect=failure):
+                with self.assertRaises(type(failure)) as caught:
+                    journal.exclusive("source capture", self.handoff)
+                self.assertIs(caught.exception, failure)
+            lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+            self.assertTrue(os.path.isdir(lock + ".fence"))
+            with self.assertRaises(ContractError):
+                journal.exclusive("unrelated work", lambda: (True, None, False))
+            self.assertEqual(os.stat(lock).st_ino, inode)
+
+    def test_eintr_launch_retains_fence_and_blocks_unrelated_work(self):
+        self.assert_uncertain_launch_retains_fence(InterruptedError(errno.EINTR, "interrupted exec wait"))
+
+    def test_unknown_launch_failure_retains_fence_and_blocks_unrelated_work(self):
+        self.assert_uncertain_launch_retains_fence(OSError(errno.EIO, "unknown launch outcome"))
+
+    def test_keyboard_interrupt_launch_retains_fence_and_blocks_unrelated_work(self):
+        self.assert_uncertain_launch_retains_fence(KeyboardInterrupt())
 
     def test_successful_leader_with_child_retains_fence_and_blocks_unrelated_work(self):
         group_file = self.source.successful_leader_with_child()
