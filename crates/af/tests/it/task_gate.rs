@@ -1093,6 +1093,145 @@ fn nested_gate(root: &Path, task_id: &str, fails: bool) -> Gate {
     })
 }
 
+/// The shipping report producers fold three class runs to a single tests record. The
+/// ordinary local Task check admits that report, continues into evaluation and verifies.
+#[test]
+fn the_shipping_gate_producers_write_one_tests_record_the_task_runtime_admits() {
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = gate_edited(
+        directory.path(),
+        "pagination",
+        "folded-report",
+        true,
+        false,
+        &|repo| {
+            for name in ["ci-step.py", "nextest-gate.py", "test-classes.py"] {
+                std::fs::copy(workspace.join("scripts").join(name), repo.join(name)).unwrap();
+            }
+            std::fs::create_dir_all(repo.join(".config")).unwrap();
+            std::fs::copy(
+                workspace.join(".config/test-classes.json"),
+                repo.join(".config/test-classes.json"),
+            )
+            .unwrap();
+            std::fs::write(
+                repo.join("gate.py"),
+                r#"import importlib.util, json, os, pathlib, subprocess, sys, tempfile
+def module(name):
+    spec = importlib.util.spec_from_file_location(name, name + '.py')
+    value = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(value)
+    return value
+step, gate = module('ci-step'), module('nextest-gate')
+step.report_step('test-build', 'build', None, ['python3', 'gate.py'], 0)
+with tempfile.TemporaryDirectory() as tmp:
+    runs = str(pathlib.Path(tmp) / 'runs.jsonl')
+    os.environ['AF_GATE_TEST_REPORT'] = runs
+    # Like verify.sh, keep execution evidence outside the sealed candidate. The class
+    # runner and its suite must agree on this private store even beneath another gate.
+    os.environ['AF_GATE_NEXTEST_RUN'] = str(pathlib.Path(tmp) / 'nextest')
+    for kind in ('functional', 'e2e', 'uix'):
+        gate.report_tests(4, [], [('af::it', 'real_flaky')] if kind == 'e2e' else [],
+                          'isolated' if kind == 'e2e' else 'not_needed')
+        step.report_step('rust-' + kind, 'tests', None, ['python3', 'gate.py'], 0)
+    # Exercise run_class's actual labels and commands, including a script filename and a
+    # generated filter larger than the strict parser's per-argument bound. Only suite payloads,
+    # source audit, inventory acquisition and the unrelated class summary are test doubles.
+    classes = module('test-classes')
+    classes.ROOT = pathlib.Path.cwd()
+    classes.CATALOG = classes.ROOT / '.config/test-classes.json'
+    classes.audit_source = lambda: None
+    classes.catalog = lambda: {'scripts': {'test-sample.py': 'functional'}, 'always_on_scripts': []}
+    entries = [{'binary': 'review-core', 'test': 'functional_case_%03d' % n,
+                'class': 'functional', 'ignored': False} for n in range(100)]
+    classes.partition = lambda inventory: entries
+    classes.report = lambda *args, **kwargs: {}
+    def suite(command, label, stage='tests'):
+        if label == 'class-build':
+            classes.write(pathlib.Path(tmp) / 'nextest-list.json', {})
+        elif label == 'rust-functional':
+            arguments = gate.own_options(command[2:])[1]
+            expression = arguments[arguments.index('-E') + 1]
+            assert expression == classes.filterset(entries, ['functional'])
+            assert len(expression) > 1024
+            import xml.etree.ElementTree as ET
+            root = ET.Element('testsuites')
+            group = ET.SubElement(root, 'testsuite')
+            for entry in entries:
+                ET.SubElement(group, 'testcase', classname=entry['binary'], name=entry['test'])
+            junit = pathlib.Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'store/ci/junit.xml'
+            junit.parent.mkdir(parents=True, exist_ok=True)
+            ET.ElementTree(root).write(junit)
+            gate.report_tests(4, [], [], 'not_needed')
+        elif command[2] == 'test-sample.py':
+            assert label == 'test-sample'
+        step.report_step(label, stage, 'cargo test --locked --no-run' if stage == 'build' else None,
+                         command, 0)
+    classes.call = suite
+    classes.run_class(classes.resolve(['test:functional']), 'functional', pathlib.Path(tmp), 4)
+    subprocess.run([sys.executable, 'ci-step.py', '--finish-tests', runs], check=True)
+assert not pathlib.Path('target').exists(), 'check evidence must stay outside sealed sources'
+records = [json.loads(line) for line in pathlib.Path(os.environ['AF_CHECK_REPORT']).read_text().splitlines()]
+assert len([r for r in records if r['record'] == 'tests']) == 1, records
+import pagination
+assert pagination.paginate(list(range(7)), 2, 3) == [2, 3, 4]
+"#,
+            )
+            .unwrap();
+        },
+    );
+    let (code, stdout, stderr) = fixture.start();
+    if code != 0 {
+        let cas = fixture.cas();
+        for receipt in artifacts(&cas, &fixture.state, "af/TaskCheckReceipt@2") {
+            eprintln!("nested check receipt: {receipt:#}");
+            for (name, id) in receipt["checks"].as_object().unwrap() {
+                let check = cas.get_json(id.as_str().unwrap()).unwrap();
+                eprintln!("nested check {name}: {check:#}");
+                for field in ["stdout", "stderr"] {
+                    if let Some(id) = check[field].as_str() {
+                        let bytes = cas.get(id).unwrap();
+                        eprintln!("nested {field} {id}: {}", String::from_utf8_lossy(&bytes));
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let shown = fixture.show_json("folded-report");
+    assert_eq!(shown["result"]["acceptance"], "satisfied", "{shown:#}");
+    assert_eq!(shown["gate"]["status"], "passed", "{shown:#}");
+    let run = &shown["gate"]["check_reports"][0]["record"]["checks"]["pagination"];
+    assert_eq!(run["report"], "admitted", "{shown:#}");
+    assert_eq!(run["steps"].as_array().unwrap().len(), 8, "{run:#}");
+    let steps = run["steps"].as_array().unwrap();
+    assert!(steps.iter().any(|step| step["label"] == "test-sample"));
+    let rust = steps
+        .iter()
+        .find(|step| {
+            step["command"]
+                .as_array()
+                .is_some_and(|args| args.iter().any(|arg| arg == "--filterset-file"))
+        })
+        .unwrap_or_else(|| panic!("no retained class filter: {run:#}"));
+    assert!(
+        rust["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|arg| arg.as_str().unwrap().chars().count() <= 1024)
+    );
+    assert_eq!(
+        run["tests"],
+        json!({"test_threads": 4, "failed_count": 0, "failed": [], "rerun": "isolated",
+            "flaky": [{"name": "af::it real_flaky", "parallel": "failed", "isolated": "passed"}]}),
+        "{run:#}"
+    );
+}
+
 /// Any fixture test name the nested output printed, in `text`.
 fn fixture_name(text: &str) -> Option<&str> {
     ["gate-store-regression", "many_", "fails_when_crowded"]

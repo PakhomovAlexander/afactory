@@ -13,12 +13,11 @@ import signal
 import subprocess
 import sys
 import textwrap
-import tomllib
 from types import SimpleNamespace
 from unittest import mock
 
 from perflab import comparison, contracts, diagnostics, executor, hostobserver, overview, synthetic
-from perflab import telemetrylab
+from perflab import telemetrylab, tomlfile
 from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes
 from tests import telemetry_fixtures as fx
 from tests.support import ROOT, TempDir, read
@@ -1462,7 +1461,8 @@ class Comparison(ExecutorFixture):
             lines = textwrap.dedent(body).strip("\n").split("\n")
             self.assertTrue(lines[0].startswith("```") and lines[-1] == "```", name)
             return "\n".join(lines[1:-1]) + "\n"
-        documented = tomllib.loads(block("full-comparison-configuration"))
+        documented = tomlfile.loads(block("full-comparison-configuration").encode("utf-8"),
+                                    "full-comparison-configuration")
         self.assertEqual(sorted(documented), sorted(("root", "repository_path", "control_sha",
                                                      "trusted_ref", "journal_id", "poll_main",
                                                      "core", "telemetry")))

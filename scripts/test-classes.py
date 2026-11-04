@@ -782,6 +782,13 @@ def run_class(plan, kind, out, threads, build_scope='class'):
         shared = (Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'store/ci/junit.xml'
                   if os.getenv('AF_GATE_NEXTEST_RUN') else ROOT / 'target/nextest/ci/junit.xml')
         shared.unlink(missing_ok=True)
+        # Retain the complete selection beside the inventory; report a short reproducible
+        # command instead of an unbounded generated -E argument (the receipt caps each at 1024).
+        filter_path = out / (label + '-filterset.txt')
+        arguments = list(arguments)
+        position = arguments.index('-E')
+        filter_path.write_text(arguments[position + 1])
+        arguments[position:position + 2] = ['--filterset-file', str(filter_path)]
         try:
             call([sys.executable, 'scripts/nextest-gate.py', '--workspace', '--locked',
                   '--profile', 'ci', '--test-threads', str(threads), *arguments], label)
@@ -799,7 +806,8 @@ def run_class(plan, kind, out, threads, build_scope='class'):
     try:
         for script, primary in catalog()['scripts'].items():
             if primary == kind and script not in catalog()['always_on_scripts']:
-                call([sys.executable, 'scripts/test-class-python.py', script, str(out / (script + '.xml'))], script)
+                call([sys.executable, 'scripts/test-class-python.py', script,
+                      str(out / (script + '.xml'))], Path(script).stem)
         if kind == 'perf':
             call([sys.executable, 'scripts/performance/schemas.py'], 'performance-schemas')
             call([sys.executable, 'scripts/performance/cli.py', 'harness-digest', '--check'], 'performance-kernel-harness')

@@ -974,9 +974,13 @@ one step of the gate, its `stage` (`preflight`, `lint`, `build`, `tests` or `rel
 a `"record": "tests"` line names the test threads, the tests that failed, and those that failed
 in the parallel run and passed alone (`flaky`, with `"parallel": "failed", "isolated":
 "passed"`). This repository's `scripts/ci-step.py` and `scripts/nextest-gate.py` write them.
-A check writes one `tests` record per test run, and af folds them into one
-([ADR-0258](adr/0258-task-gate-evidence-comes-from-the-check-report.md)): this repository's gate
-runs `scripts/nextest-gate.py` once per test class and writes one per class. The folded
+A check can write one `tests` record per test run, and af folds them into one
+([ADR-0258](adr/0258-task-gate-evidence-comes-from-the-check-report.md)). This repository's
+`scripts/verify.sh` collects nextest's per-class records in its private run directory, then
+`scripts/ci-step.py --finish-tests` writes one complete `tests` record to `AF_CHECK_REPORT`,
+including when the gate fails. Step records still stream directly to that report so the build
+phase monitor sees build completion immediately. Malformed private test evidence fails the
+gate; it is never published as a passing tests record. The producer uses the same fold: the folded
 `failed` is the ordered union of the runs' names, each once, the first `MAX_NAMED_FAILED_TESTS`
 (100). The folded `failed_count` is the number of distinct failed tests: when every run names all
 of its failures (each run's `failed_count` below `MAX_NAMED_FAILED_TESTS`), it is the size of

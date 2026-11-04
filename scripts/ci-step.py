@@ -2,11 +2,13 @@
 """Run a gate unchanged and retain elapsed time, including failed invocations.
 
     ci-step.py [--stage STAGE] [--fix COMMAND] LABEL COMMAND [ARGS...]
+    ci-step.py --finish-tests PRIVATE_RUNS.jsonl
 
 `--stage` names where in the gate the step belongs (preflight, lint, build, tests, release) and
 `--fix` the one command that repairs what the step refuses. When `AF_CHECK_REPORT` names a file,
 as a Task check sets it, the step appends one `af.check-report/1` line to it, so af can say which
-step a failed gate stopped at and how to fix it."""
+step a failed gate stopped at and how to fix it. verify.sh uses --finish-tests to fold its
+private nextest run records into one tests record after the gate, preserving step streaming."""
 import datetime
 import json
 import os
@@ -14,9 +16,106 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import unicodedata
 
 STAGES = ('preflight', 'lint', 'build', 'tests', 'release')
 USAGE = 'usage: ci-step.py [--stage STAGE] [--fix COMMAND] LABEL COMMAND [ARGS...]'
+
+
+def validate_tests(record):
+    """Check the unchanged af.check-report/1 tests contract before folding private runs.
+
+    Keep these bounds and rerun rules aligned with CheckTestsV1::validate; the Rust parity
+    regression passes this producer's output through the normal Task report parser.
+    """
+    def integer(value, low, high):
+        return type(value) is int and low <= value <= high
+
+    def name(value):
+        return (isinstance(value, str) and bool(value.strip()) and len(value) <= 512
+                and not any(unicodedata.category(c) == 'Cc' for c in value))
+
+    fields = {'schema', 'record', 'test_threads', 'failed_count', 'failed', 'flaky', 'rerun'}
+    if (not isinstance(record, dict) or record.keys() != fields
+            or record['schema'] != 'af.check-report/1' or record['record'] != 'tests'
+            or not integer(record['test_threads'], 1, 65536)
+            or not integer(record['failed_count'], 0, 2 ** 32 - 1)):
+        raise ValueError('invalid tests record fields or counts')
+    failed, flaky, count = record['failed'], record['flaky'], record['failed_count']
+    if (not isinstance(failed, list) or not isinstance(flaky, list)
+            or len(failed) > min(100, count) or (count < 100 and len(failed) != count)
+            or len(flaky) > 25 or not all(name(n) for n in failed)
+            or not all(isinstance(f, dict) and f.keys() == {'name', 'parallel', 'isolated'}
+                       and name(f['name']) and f['parallel'] == 'failed'
+                       and f['isolated'] == 'passed' for f in flaky)):
+        raise ValueError('invalid failed or flaky tests')
+    valid_rerun = {'not_needed': count == 0 and not flaky,
+                  'not_run': not flaky, 'isolated': count > 0 or bool(flaky),
+                  'over_bound': count > 0}
+    if not isinstance(record['rerun'], str) or not valid_rerun.get(record['rerun'], False):
+        raise ValueError('rerun state disagrees with tests')
+
+
+def finish_tests(path):
+    """Publish one complete tests record for verify.sh, even when several classes ran.
+
+    Steps continue to stream directly to AF_CHECK_REPORT so the build phase monitor sees
+    them immediately. Only nextest's tests records use the gate's private spool. Nothing
+    changes the record schema or the Task parser, including its bounds and refusal rules.
+    """
+    if not Path(path).exists():
+        return  # A gate that stopped before nextest has no tests record.
+    with Path(path).open('rb') as stream:
+        data = stream.read(256 * 1024 + 1)
+    if len(data) > 256 * 1024:
+        raise ValueError('test runs exceed the check report byte bound')
+    lines = data.decode('utf-8').splitlines()
+    if len(lines) > 256:
+        raise ValueError('test runs exceed the check report line bound')
+    folded, earlier, flaky_names = None, set(), set()
+    capped, summed = False, 0
+    precedence = ('not_needed', 'not_run', 'isolated', 'over_bound')
+
+    def unique_fields(pairs):
+        value = {}
+        for key, entry in pairs:
+            if key in value:
+                raise ValueError(f'duplicate field {key!r}')
+            value[key] = entry
+        return value
+
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            run = json.loads(line, object_pairs_hook=unique_fields)
+            validate_tests(run)
+        except (ValueError, TypeError) as error:
+            raise ValueError(f'test run line {number}: {error}') from error
+        if folded is None:
+            folded = dict(run, failed=[], flaky=[], failed_count=0)
+        own = set(run['failed'])
+        summed += run['failed_count'] - len(earlier & own)
+        if summed > 2 ** 32 - 1:
+            raise ValueError(f'test run line {number}: failed count overflow')
+        capped |= run['failed_count'] >= 100
+        for name in run['failed']:
+            if name not in earlier:
+                folded['failed'].append(name)
+                earlier.add(name)
+        for flaky in run['flaky']:
+            if flaky['name'] not in flaky_names:
+                folded['flaky'].append(flaky)
+                flaky_names.add(flaky['name'])
+        if precedence.index(run['rerun']) > precedence.index(folded['rerun']):
+            folded['rerun'] = run['rerun']
+    if folded is not None:
+        folded['failed_count'] = summed if capped else len(earlier)
+        folded['failed'] = folded['failed'][:100]
+        folded['flaky'] = folded['flaky'][:25]
+        validate_tests(folded)
+        with Path(os.environ['AF_CHECK_REPORT']).open('a') as stream:
+            stream.write(json.dumps(folded, sort_keys=True) + '\n')
 
 
 def options(arguments):
@@ -56,6 +155,13 @@ def report_step(label, stage, fix, command, code):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--finish-tests':
+        try:
+            finish_tests(sys.argv[2])
+        except (OSError, ValueError, KeyError) as error:
+            print(f'ci-step.py: cannot finish test report: {error}', file=sys.stderr)
+            return 1
+        return 0
     stage, fix, label, command = options(sys.argv[1:])
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     clock = time.monotonic()

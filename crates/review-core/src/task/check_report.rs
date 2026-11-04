@@ -13,8 +13,9 @@
 //!   and the receipt records it. A check that wrote nothing is `absent`; one whose lines this
 //!   release does not accept is `refused`, with the reason, and its result stands.
 //!
-//! A check writes one `tests` record per test run, and af folds them into one ([`fold_tests`]):
-//! a gate that runs one nextest selection per test class writes one per class. The gate's
+//! A check can write one `tests` record per test run, and af folds them into one ([`fold_tests`]):
+//! a check may report each nextest selection separately. This repository's native gate folds
+//! its private per-class runs before publishing one complete tests record. The gate's
 //! failed and flaky tests and the step that stopped a check come from its report when the check
 //! writes one, and from the text scan of its output only for a check without one (absent or
 //! refused). The report still never decides the check's status (ADR-0258).

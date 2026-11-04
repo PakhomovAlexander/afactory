@@ -331,6 +331,11 @@ the later steps need its `nightly.json`. A measurement that failed or passed its
 still reported, its originals shown as they stand, and published. A refused compose has no
 report to publish and ends the chain; rerun it once its cause is fixed ([Recovery](#recovery)).
 
+The build and publish units explicitly include the supplementary group `af-nightly` to read
+their `root:af-nightly` 0440 signing key and publish tokens. Their primary group stays
+`af-perf-readers` for shared output; the build also includes the supplementary group `docker`
+for the Docker daemon. Secret ownership and permissions stay as listed below.
+
 The units carry the executor units' bounds (`TimeoutStartSec`, `KillMode=control-group`,
 `MemoryMax`, `TasksMax`, `LimitNOFILE`, log rate limits). The build and the measurement share
 the host's `/tmp` and mount namespace (`PrivateTmp=no`, `PrivateMounts=no`, no `ProtectSystem`
@@ -386,6 +391,11 @@ install -d -o af-perf-exec -g af-perf-readers -m 0750 /var/lib/af-nightly/report
 | `builds_root`, `/var/lib/af-nightly/builds` | `af-nightly`, `af-perf-readers`, 0750 | the nights and the Cargo cache; the measurement and the report read it |
 | `reports_root`, `/var/lib/af-nightly/reports` | `af-perf-exec`, `af-perf-readers`, 0750 | the report directories; the publish reads them |
 | `mirror` | the executor's `/var/lib/af-perf-executor/source.git`, or one of your own | main and the tags; the executor's mirror, which the source refresh keeps fetched and the group reads, can serve; a mirror of your own needs a fetch before 22:05 UTC |
+
+The build and publish units keep primary group `af-perf-readers` and explicitly add
+supplementary group `af-nightly` to read the signing key and publish tokens; the build also
+keeps supplementary group `docker`. See the [focused verification](nightly-check-verification.md)
+for the unit and RC4/RC5/RC6 contract regressions and the local check report repair.
 
 The units set `UMask=0027`, so what one step writes the next reads through the group; the
 measurement keeps the executor's `UMask=0077` for the journal. Secrets stay files: the

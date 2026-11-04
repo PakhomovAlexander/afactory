@@ -88,12 +88,13 @@ DRAIN_CLOCK = 'CLOCK_MONOTONIC'
 # refused, never assumed to accept the current tree's workload. The current contract names the
 # releases that write `@2`, this tree's own included. This is benchmark fixture production,
 # never a reader of state an earlier release wrote.
+# RC4/RC5/RC6 source and fixture-pin evidence: docs/telemetry.md, "RC4, RC5 and RC6 source evidence".
 CURRENT_CONTRACT = 'check-receipt@2'
 CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'
 FIXTURE_CONTRACTS = {
     'check-receipt@2': {'check_receipt': CHECK_RECEIPT_CURRENT,
                         'versions': ('0.14.0-rc.1', '0.14.0-rc.2', '0.14.0-rc.3',
-                                     '0.14.0-rc.4', '0.14.0-rc.5'), 'pins': None},
+                                     '0.14.0-rc.4', '0.14.0-rc.5', '0.14.0-rc.6'), 'pins': None},
     'check-receipt@1': {
         'check_receipt': 'af/TaskCheckReceipt@1',
         'versions': ('0.13.0',),
