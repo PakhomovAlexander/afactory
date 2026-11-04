@@ -23,6 +23,9 @@ UNUSED_SDKS = (
     Path('/usr/local/.ghcup'),
     Path('/opt/ghc'),
     Path('/usr/share/swift'),
+    Path('/usr/lib/jvm'),
+    Path('/opt/az'),
+    Path('/opt/microsoft/powershell'),
 )
 
 

@@ -64,7 +64,8 @@ Exclusivity is orthogonal: `.config/nextest.toml` remains authoritative. Its rea
 all threads and their original deadlines within their class job. Classes use separate runner jobs.
 Before Rust toolchain installation and cache restoration, the hosted Ubuntu Linux `base`,
 `classes` and `container-probes` jobs run `scripts/ci-disk.py`. It removes only fixed preinstalled
-Android, .NET, Haskell and Swift SDK directories, refuses symlinks and overlap with checkout, user state,
+Android, .NET, Haskell, Swift and Java SDK directories plus unused Azure CLI and PowerShell
+payloads, refuses symlinks and overlap with checkout, user state,
 runner temporary files or tool caches, and prints filesystem capacity before and after cleanup.
 Each of the root, workspace and runner temporary filesystems must then have at least 40 GiB free:
 30 GiB of build/test headroom plus the unchanged production 10 GiB free-disk floor. Missing SDKs
@@ -80,6 +81,10 @@ and [Swift installer](https://github.com/actions/runner-images/blob/main/images/
 Swift's `/usr/share/swift` payload supplies additional headroom on images where the other SDKs
 leave less than 40 GiB free. This repository's Rust/Python build and validation do not use Swift;
 only that fixed payload directory is eligible, never its shared `/usr/share` parent or tool caches.
+Smaller runner images can omit Swift. The fixed `/usr/lib/jvm`, `/opt/az` and
+`/opt/microsoft/powershell` payloads provide additional space on those images. Validation uses
+Rust and Python, not these runtimes; generating PowerShell completion text does not execute PowerShell.
+All existing hosted-runner, symlink, protected-path and capacity checks apply to these paths too.
 
 The full union includes the former preflight Python checks, performance schemas and harness digest,
 ordinary Rust suite and feature-on perf checks. The lab runs once per selected platform on latest
