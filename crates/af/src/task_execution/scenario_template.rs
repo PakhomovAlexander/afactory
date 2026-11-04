@@ -347,7 +347,7 @@ pub(crate) fn plan(
             .plan_id
             .as_deref()
             .ok_or("Template Task has no native plan")?;
-        let plan: ExecutionPlanV2 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V2)?;
+        let plan: ExecutionPlanV3 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V3)?;
         let file: TaskFile = serde_json::from_value(document.clone()).map_err(|e| e.to_string())?;
         let limits = file
             .limits
@@ -468,7 +468,7 @@ fn performance_wall(total: u64, verification: u64) -> Result<(), String> {
 }
 
 /// Production performance development requires the complete exact model team.
-fn performance_roles(plan: &ExecutionPlanV2, kind: &str) -> Result<(), String> {
+fn performance_roles(plan: &ExecutionPlanV3, kind: &str) -> Result<(), String> {
     performance_executions(
         plan.bindings
             .iter()
@@ -477,12 +477,12 @@ fn performance_roles(plan: &ExecutionPlanV2, kind: &str) -> Result<(), String> {
     )
 }
 fn performance_executions<'a>(
-    bindings: impl IntoIterator<Item = (&'a str, &'a WorkerExecutionV2)>,
+    bindings: impl IntoIterator<Item = (&'a str, &'a WorkerExecutionV3)>,
     kind: &str,
 ) -> Result<(), String> {
     let mut roles = BTreeSet::new();
     for (slot, execution) in bindings {
-        let WorkerExecutionV2::Model {
+        let WorkerExecutionV3::Model {
             provider,
             provider_kind,
             model,
@@ -578,7 +578,7 @@ mod tests {
         let changed = capture_snapshot(&cas, &changed, &bound, Some(&rerooted)).unwrap();
         assert!(experiment_source_matches(&cas, &changed, &original).is_err());
     }
-    fn team() -> BTreeMap<String, WorkerExecutionV2> {
+    fn team() -> BTreeMap<String, WorkerExecutionV3> {
         [
             ("implementer", "gpt-6.1-sol", "medium"),
             ("bugs", "gpt-6.1-terra", "high"),
@@ -589,10 +589,10 @@ mod tests {
         .map(|(role, model, effort)| {
             (
                 format!("root.slots.{role}"),
-                WorkerExecutionV2::Model {
+                WorkerExecutionV3::Model {
                     provider: "codex-personal".into(),
                     provider_kind: "codex".into(),
-                    principal_id: "fixture".into(),
+                    principal_id: Some("fixture".into()),
                     model: model.into(),
                     effort: effort.into(),
                     pi: None,
@@ -601,7 +601,7 @@ mod tests {
         })
         .collect()
     }
-    fn check(team: &BTreeMap<String, WorkerExecutionV2>, kind: &str) -> Result<(), String> {
+    fn check(team: &BTreeMap<String, WorkerExecutionV3>, kind: &str) -> Result<(), String> {
         performance_executions(
             team.iter()
                 .map(|(name, execution)| (name.as_str(), execution)),
@@ -621,13 +621,15 @@ mod tests {
             ("bugs", "effort", "medium"),
             ("evaluator", "model", "gpt-6-sol"),
             ("correctness", "provider", "default"),
+            ("implementer", "provider_kind", "pi"),
         ] {
             let mut wrong = team.clone();
             let execution = wrong.get_mut(&format!("root.slots.{slot}")).unwrap();
-            let WorkerExecutionV2::Model {
+            let WorkerExecutionV3::Model {
                 model,
                 effort,
                 provider,
+                provider_kind,
                 ..
             } = execution
             else {
@@ -636,6 +638,7 @@ mod tests {
             match field {
                 "model" => *model = value.into(),
                 "effort" => *effort = value.into(),
+                "provider_kind" => *provider_kind = value.into(),
                 _ => *provider = value.into(),
             };
             assert!(check(&wrong, "implement").is_err());
@@ -643,11 +646,11 @@ mod tests {
         assert!(check(&BTreeMap::new(), "implement").is_err());
         assert!(check(&BTreeMap::new(), "verification").is_err());
         let mut mixed = team.clone();
-        mixed.insert("root.slots.bugs".into(), WorkerExecutionV2::Command {});
+        mixed.insert("root.slots.bugs".into(), WorkerExecutionV3::Command {});
         assert!(check(&mixed, "implement").is_err());
         let command_only = team
             .keys()
-            .map(|k| (k.clone(), WorkerExecutionV2::Command {}))
+            .map(|k| (k.clone(), WorkerExecutionV3::Command {}))
             .collect();
         assert!(check(&command_only, "implement").is_err());
         assert!(check(&command_only, "verification").is_err());
