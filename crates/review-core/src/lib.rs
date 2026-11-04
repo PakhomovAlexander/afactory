@@ -53,14 +53,14 @@ pub use workspace::{
 pub use warm::{
     BuildCacheDropReasonV1, DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1,
     HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES,
-    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV2, WarmSetSelectedPayloadV2, WarmSetV2,
+    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV3, WarmSetSelectedPayloadV3, WarmSetV3,
     WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
 };
 
 pub use build_cache::{
     BUILD_CACHE_MAX_DEPTH_V1, BUILD_CACHE_MAX_PATH_BYTES_V1, BuildCacheCapturedPayloadV1,
     BuildCacheKindV1, BuildCacheLimitsV1, BuildCacheRefusalReasonV1, BuildCacheTrustV1,
-    BuildCacheV1, DEFAULT_BUILD_CACHE_BYTES_V1, DEFAULT_BUILD_CACHE_ENTRIES_V1,
+    BuildCacheV2, DEFAULT_BUILD_CACHE_BYTES_V1, DEFAULT_BUILD_CACHE_ENTRIES_V1,
     MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1, validate_build_cache_path_v1,
 };
 
@@ -175,7 +175,8 @@ pub mod contract {
     pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
     pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
     pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
-    pub const WARM_SET_V2: &str = "review.kernel/WarmSet@2";
-    /// Explicitly unsafe candidate-built output carried Gate to Worker; never a Cache Snapshot.
-    pub const BUILD_CACHE_V1: &str = "review.kernel/BuildCache@1";
+    pub const WARM_SET_V3: &str = "review.kernel/WarmSet@3";
+    /// Explicitly unsafe candidate-built output. Worker continuation never supplies Gate
+    /// authority; approved dependency Cache Snapshots remain separate.
+    pub const BUILD_CACHE_V2: &str = "review.kernel/BuildCache@2";
 }

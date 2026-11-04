@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:review-kernel:schema:build-cache:1",
-  "title": "BuildCache@1 payload",
-  "description": "A candidate-built artifact captured from a Gate's declared cache directory after its check Attempt on the head, carried Gate to Worker within one Round. EXPLICITLY UNSAFE: it was produced by candidate code under the trusted-local policy, carries no administrator approval and no credential-free guarantee, is admitted only under trusted_local and refused under the safe policy. It is never a Cache Snapshot. The closed capture layout admits regular files only through descriptor-relative no-follow traversal under entry, depth, path and byte limits, with two fixed modes and extended attributes and ACLs stripped. manifest_id names a source Manifest of file and executable entries whose bytes live in the CAS, so the cache re-materializes on a resumed Round like every other warm layer.",
+  "$id": "urn:review-kernel:schema:build-cache:2",
+  "title": "BuildCache@2 payload",
+  "description": "Bounded immutable candidate-built output. Gate caches retain trusted-local, same-Round handoff only. Worker caches carry same-Task/slot provenance and compatibility; they never become Gate evidence or approved dependency sources.",
   "x-semantic-constraints": [
     "entries is at least 1 and at most limits.max_entries",
     "bytes is at most limits.max_bytes",
@@ -24,7 +24,8 @@
   "properties": {
     "kind": {
       "enum": [
-        "cargo_target"
+        "cargo_target",
+        "worker"
       ]
     },
     "trust": {
@@ -60,6 +61,53 @@
     },
     "limits": {
       "$ref": "#/$defs/limits"
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "slot",
+        "name",
+        "role",
+        "compatibility_id",
+        "input_tree_digest",
+        "output_tree_digest"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "slot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+        },
+        "role": {
+          "enum": [
+            "build",
+            "continuation"
+          ]
+        },
+        "compatibility_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "input_tree_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "output_tree_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
     }
   },
   "$defs": {
@@ -104,5 +152,29 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "worker"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "worker",
+          "gate_attempt_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "worker"
+          ]
+        }
+      }
+    }
+  ]
 }

@@ -422,3 +422,77 @@ fn a_task_collected_after_its_binding_was_resolved_refuses_the_opening() {
     );
     assert!(f.store.task_projection(&f.cas, "binder").unwrap().is_none());
 }
+
+#[test]
+fn development_warm_layers_are_budgeted_lease_protected_and_reachable_across_interrupted_collection()
+ {
+    let mut f = Fixture::new(false);
+    let content = f.cas.put(b"immutable worker build output").unwrap();
+    let manifest = f
+        .cas
+        .put_json(&json!({"entries":[{"path":"object","content":content,"size":29}]}))
+        .unwrap();
+    let layer = f
+        .cas
+        .put_json(
+            &json!({"manifest_id":manifest,"compatibility_id":f.revision.authority.policy_id}),
+        )
+        .unwrap();
+    let set = review_core::WarmSetV3 {
+        node: "root.worker".into(),
+        round: 1,
+        source_attempt_id: None,
+        notes_artifact_id: None,
+        head_delta_artifact_id: None,
+        head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
+        workspace: None,
+        workspace_id: None,
+        development: BTreeMap::from([(
+            "objects".into(),
+            review_core::task::development::DevelopmentCacheSelectionRecordV1::Selected {
+                artifact_id: layer.clone(),
+                manifest_id: manifest.clone(),
+                compatibility_id: f.revision.authority.policy_id.clone(),
+            },
+        )]),
+    };
+    set.validate().unwrap();
+    let warm = f
+        .cas
+        .put_artifact(
+            review_core::contract::WARM_SET_V3,
+            producer(),
+            vec![],
+            None,
+            serde_json::to_value(set).unwrap(),
+        )
+        .unwrap()
+        .0;
+    finished(&mut f, "old", vec![]);
+    let current_revision = revision_for(&f, "current", vec![warm.clone()]);
+    let live = f
+        .store
+        .open_task(&f.cas, &current_revision, "cache-capture", 1_000_000)
+        .unwrap();
+    let inventory = f.store.store_inventory(&f.cas).unwrap();
+    assert!(inventory.tasks["current"].exclusive_bytes >= 29);
+    assert!(
+        f.store
+            .apply_task_collection(&f.cas, 0, 0, false)
+            .unwrap_err()
+            .to_string()
+            .contains("live writer lease")
+    );
+    f.store.release_task_lease(&f.cas, &live).unwrap();
+    let stopped = f.store.apply_task_collection(&f.cas, 0, 0, true).unwrap();
+    assert_eq!(stopped.tombstoned, ["old"]);
+    assert!(!stopped.swept);
+    f.store = EventStore::open(&f.path).unwrap();
+    let resumed = f.store.apply_task_collection(&f.cas, 0, 0, false).unwrap();
+    assert!(resumed.swept);
+    for id in [&warm, &layer, &manifest, &content] {
+        assert!(f.cas.is_filed(id), "active Task still reaches {id}");
+    }
+}

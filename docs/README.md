@@ -32,6 +32,8 @@ any af command ([design](design/tui.md)).
 ## Look up a contract
 
 - [Task runtime](task-execution.md) and [Task inputs](task-execution/task-inputs.md).
+- [Worker local development](design/worker-local-development.md) and its
+  [Rust/Python examples](../fixtures/worker-development/README.md).
 - [Experiment Tasks](task-execution/experiments.md), [self management](self-management.md),
   [storage and telemetry](telemetry.md).
 - [CLI help](../README.md) for exact commands and `schemas/` for JSON documents.

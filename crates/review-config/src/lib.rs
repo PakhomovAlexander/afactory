@@ -243,7 +243,7 @@ pub struct WarmSpec {
     #[serde(default = "default_notes_max_bytes")]
     pub notes_max_bytes: u64,
     /// Build cache kinds this node's sandboxes receive from the Round's Gate, cloned from the
-    /// explicitly unsafe `BuildCache@1` the Gate captured. Every kind must be declared by a
+    /// explicitly unsafe `BuildCache@2` the Gate captured. Every kind must be declared by a
     /// `trusted_local` Gate Execution Binding; a safe pipeline refuses the handoff at load.
     #[serde(default, skip_serializing_if = "BuildCacheKindsSpec::is_empty")]
     pub build_cache: BuildCacheKindsSpec,
@@ -1111,7 +1111,7 @@ pub struct GateExecutionSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caches: Vec<CacheKindSpec>,
     /// Build cache kinds this Gate captures after its checks pass, as explicitly unsafe
-    /// `BuildCache@1` artifacts for reviewer nodes that declare the same kind. Candidate code
+    /// `BuildCache@2` artifacts for reviewer nodes that declare the same kind. Candidate code
     /// produces these bytes, so the declaration is admitted only under `trusted_local`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub build_caches: Vec<BuildCacheKindSpec>,

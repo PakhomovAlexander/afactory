@@ -1,14 +1,16 @@
-//! Worker warm layers, package P2: `BuildCache@1`, the explicitly unsafe capture of a Gate's
-//! candidate-built output.
+//! Worker warm layers: `BuildCache@2`, immutable candidate-built output with explicit producer
+//! and source provenance. Gate carry and Worker development continuation have separate trust.
 //!
 //! A Build Cache is NOT a Cache Snapshot. A Cache Snapshot is an administrator-approved,
-//! credential-free dependency cache resolved through machine policy. A Build Cache was produced
+//! credential-free dependency cache resolved through machine policy. A Gate Build Cache was produced
 //! by candidate code running under the trusted-local policy, which can read anything the
 //! operator can. It therefore carries no administrator approval and no credential-free
 //! guarantee: it is admitted only under `trusted_local` and refused under the safe policy. Its
 //! capture layout is closed: regular files only, descriptor-relative no-follow traversal, entry,
 //! depth, path and byte limits, two fixed modes, extended attributes and ACLs stripped, and
-//! producer plus head provenance recorded.
+//! producer plus head provenance recorded. Worker development caches use their exact Execution
+//! Binding and same-Task/slot admission instead; they cannot enter Gate capture events or
+//! supply acceptance evidence. Both branches share the closed layout and immutable CAS.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,12 +38,15 @@ pub const BUILD_CACHE_MAX_PATH_BYTES_V1: u64 = 4096;
 pub enum BuildCacheKindV1 {
     /// A Cargo target directory: `CARGO_TARGET_DIR` points at the sandbox-local clone.
     CargoTarget,
+    /// Language-neutral Worker root; symbolic policy and provenance are in `worker`.
+    Worker,
 }
 
 impl BuildCacheKindV1 {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CargoTarget => "cargo_target",
+            Self::Worker => "worker",
         }
     }
 
@@ -49,6 +54,7 @@ impl BuildCacheKindV1 {
     pub const fn environment_variable(self) -> &'static str {
         match self {
             Self::CargoTarget => "CARGO_TARGET_DIR",
+            Self::Worker => "AF_WORKER_BUILD_CACHE",
         }
     }
 }
@@ -155,7 +161,7 @@ pub enum BuildCacheTrustV1 {
     CandidateBuilt,
 }
 
-/// The payload of a `review.kernel/BuildCache@1` artifact.
+/// The payload of a `review.kernel/BuildCache@2` artifact.
 ///
 /// `manifest_id` names a `Manifest` of regular files (kind `file` or `executable`, never a
 /// symlink) whose content objects live in the CAS, so the cache can be re-materialized on a
@@ -164,12 +170,12 @@ pub enum BuildCacheTrustV1 {
 /// that produced them, directories included.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BuildCacheV1 {
+pub struct BuildCacheV2 {
     pub kind: BuildCacheKindV1,
     pub trust: BuildCacheTrustV1,
-    /// The Gate node whose check Attempt built the cache.
+    /// The producing node: Gate, or Worker when `worker` provenance is present.
     pub gate_node: String,
-    /// The common Task Attempt the Gate ran under, when the Task runtime executed it.
+    /// The producing Task Attempt. Required for Worker captures; Gate captures may lack one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_attempt_id: Option<String>,
     /// The head Snapshot the Gate built.
@@ -179,28 +185,43 @@ pub struct BuildCacheV1 {
     pub entries: u64,
     pub bytes: u64,
     pub limits: BuildCacheLimitsV1,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::task::present_option"
+    )]
+    pub worker: Option<crate::task::development::DevelopmentCacheProvenanceV1>,
 }
 
-impl BuildCacheV1 {
+impl BuildCacheV2 {
     pub fn validate(&self) -> Result<(), String> {
         if self.gate_node.trim().is_empty() {
-            return Err("BuildCache@1 has an empty Gate node".into());
+            return Err("BuildCache@2 has an empty Gate node".into());
         }
         if !self.gate_attempt_id.as_deref().is_none_or(is_monotonic_id) {
-            return Err("BuildCache@1 has an invalid Gate Attempt ID".into());
+            return Err("BuildCache@2 has an invalid Gate Attempt ID".into());
         }
         if !crate::is_digest(&self.head_snapshot_id)
             || !crate::is_digest(&self.manifest_id)
             || !crate::is_digest(&self.content_digest)
         {
-            return Err("BuildCache@1 has an invalid head, manifest or content identity".into());
+            return Err("BuildCache@2 has an invalid head, manifest or content identity".into());
         }
         self.limits.validate()?;
+        if (self.kind == BuildCacheKindV1::Worker) != self.worker.is_some() {
+            return Err("Worker Build Cache requires explicit provenance".into());
+        }
+        if let Some(worker) = &self.worker {
+            if self.gate_attempt_id.is_none() {
+                return Err("Worker cache requires a producer Attempt".into());
+            }
+            worker.validate()?;
+        }
         if self.entries == 0 || self.entries > self.limits.max_entries {
-            return Err("BuildCache@1 entry count is empty or exceeds its limit".into());
+            return Err("BuildCache@2 entry count is empty or exceeds its limit".into());
         }
         if self.bytes > self.limits.max_bytes {
-            return Err("BuildCache@1 byte count exceeds its limit".into());
+            return Err("BuildCache@2 byte count exceeds its limit".into());
         }
         Ok(())
     }
@@ -242,6 +263,9 @@ pub struct BuildCacheCapturedPayloadV1 {
 
 impl BuildCacheCapturedPayloadV1 {
     pub fn validate(&self) -> Result<(), String> {
+        if self.kind == BuildCacheKindV1::Worker {
+            return Err("Worker cache cannot be a Gate capture event".into());
+        }
         if self.gate_node.trim().is_empty() {
             return Err("BuildCacheCaptured@1 has an empty Gate node".into());
         }
@@ -326,7 +350,8 @@ mod tests {
 
     #[test]
     fn a_build_cache_names_its_producer_head_and_bounds() {
-        let cache = BuildCacheV1 {
+        let cache = BuildCacheV2 {
+            worker: None,
             kind: BuildCacheKindV1::CargoTarget,
             trust: BuildCacheTrustV1::CandidateBuilt,
             gate_node: "gate".into(),
@@ -340,7 +365,7 @@ mod tests {
         };
         cache.validate().unwrap();
         assert!(
-            BuildCacheV1 {
+            BuildCacheV2 {
                 entries: 0,
                 ..cache.clone()
             }
@@ -348,7 +373,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            BuildCacheV1 {
+            BuildCacheV2 {
                 bytes: MAX_BUILD_CACHE_BYTES_V1,
                 ..cache.clone()
             }
@@ -357,7 +382,7 @@ mod tests {
             "bytes above the applied limit are refused"
         );
         assert!(
-            BuildCacheV1 {
+            BuildCacheV2 {
                 gate_attempt_id: Some("short".into()),
                 ..cache
             }

@@ -1,7 +1,7 @@
 //! Build Cache capture and clone: the explicitly unsafe carry of a Gate's candidate-built
 //! output into Worker sandboxes (Worker warm layers, package P2).
 //!
-//! This is not a second cache mechanism. A Build Cache lives below the same reserved
+//! This is not a second cache mechanism. A Gate Build Cache lives below the same reserved
 //! `.af-cache` root as an administrator-approved Cache Snapshot, is traversed with the same
 //! descriptor-relative no-follow discipline, gets the same fixed private modes and stripped
 //! extended attributes and ACLs, and is removed by the same `remove_materialized_caches` before
@@ -12,6 +12,8 @@
 //! Captured bytes are CAS objects addressed by a source `Manifest`, exactly as a Snapshot is,
 //! so a resumed Round re-materializes the same cache instead of trusting a directory that a
 //! previous process left behind.
+//! Language-neutral Worker roots share this closed capture and clone implementation. Their
+//! binding, admission and Warm Set remain Task authority, and never alter Gate trust.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -145,20 +147,45 @@ pub fn capture_build_cache(
     limits: &BuildCacheLimitsV1,
     cas: &Cas,
 ) -> Result<CapturedBuildCache, CacheError> {
+    let source = sandbox.root().join(relative_root(kind));
+    capture_cache_directory(kind, &source, limits, cas)
+}
+
+/// The same closed capture protocol for an explicitly private Worker root. Its caller must
+/// have confirmed workload cleanup; this never maps a live operator cache.
+pub fn capture_cache_directory(
+    kind: BuildCacheKindV1,
+    source: &Path,
+    limits: &BuildCacheLimitsV1,
+    cas: &Cas,
+) -> Result<CapturedBuildCache, CacheError> {
+    capture_cache_directory_before(kind, source, limits, cas, None, None)
+}
+
+/// An Attempt's absolute wall and cancellation fence also bound traversal and CAS streaming.
+pub fn capture_cache_directory_before(
+    kind: BuildCacheKindV1,
+    source: &Path,
+    limits: &BuildCacheLimitsV1,
+    cas: &Cas,
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<CapturedBuildCache, CacheError> {
     limits
         .validate()
         .map_err(|error| cache_error(CacheErrorKind::LimitExceeded, error))?;
     let started_unix_ms = unix_now_ms();
     let clock = Instant::now();
-    let source = sandbox.root().join(relative_root(kind));
-    let (files, bytes) = walk(kind, &source, limits)?;
+    let (files, bytes) = walk(kind, source, limits, deadline, cancellation)?;
     if files.is_empty() {
         return Err(cache_error(
             CacheErrorKind::SourceUnavailable,
             format!("{kind} build cache contains no files"),
         ));
     }
-    let entries = review_parallel::try_map_owned(files, |file| publish(file, cas))?;
+    let entries = review_parallel::try_map_owned(files, |file| {
+        publish_before(file, cas, deadline, cancellation)
+    })?;
     let manifest = Manifest::new(entries)
         .map_err(|error| cache_error(CacheErrorKind::UnsafeContent, error.to_string()))?;
     let manifest_id = cas
@@ -184,6 +211,8 @@ fn walk(
     kind: BuildCacheKindV1,
     source: &Path,
     limits: &BuildCacheLimitsV1,
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(Vec<PlannedFile>, u64), CacheError> {
     use nix::dir::Dir;
     use nix::fcntl::OFlag;
@@ -205,8 +234,14 @@ fn walk(
     let mut entry_count = 0_u64;
     let mut level = vec![(root, PathBuf::new(), 0_u32)];
     while let Some((mut directory, parent, depth)) = level.pop() {
+        cache_control(deadline, cancellation).map_err(|error| {
+            cache_error(CacheErrorKind::MaterializationFailed, error.to_string())
+        })?;
         let mut names = Vec::new();
         for entry in directory.iter() {
+            cache_control(deadline, cancellation).map_err(|error| {
+                cache_error(CacheErrorKind::MaterializationFailed, error.to_string())
+            })?;
             let entry = entry.map_err(|error| {
                 cache_error(
                     CacheErrorKind::SourceUnavailable,
@@ -343,7 +378,16 @@ fn walk(
 /// Every pass the CAS takes over the descriptor is bounded to one byte more than that size, so
 /// a file that grows during capture costs at most one extra byte per pass, is refused as a
 /// concurrent change, and is never filed under the size the walk admitted.
+#[cfg(test)]
 fn publish(file: PlannedFile, cas: &Cas) -> Result<Entry, CacheError> {
+    publish_before(file, cas, None, None)
+}
+fn publish_before(
+    file: PlannedFile,
+    cas: &Cas,
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Entry, CacheError> {
     let PlannedFile {
         source,
         encoded,
@@ -352,6 +396,8 @@ fn publish(file: PlannedFile, cas: &Cas) -> Result<Entry, CacheError> {
     } = file;
     let mut buffer = vec![0_u8; 64 * 1024];
     let mut bounded = BoundedSource::new(source, size.saturating_add(1));
+    bounded.deadline = deadline;
+    bounded.cancellation = cancellation;
     let (content, published) = cas
         .put_reader_with_buffer(&mut bounded, &mut buffer)
         .map_err(|error| {
@@ -360,6 +406,10 @@ fn publish(file: PlannedFile, cas: &Cas) -> Result<Entry, CacheError> {
                 format!("publishing build cache file {encoded}: {error}"),
             )
         })?;
+    // Test-only crash synchronization: object bytes have been published but the complete
+    // Manifest and producer provenance have not. Product builds contain no crash switch.
+    #[cfg(test)]
+    tests::crash::pause("capture");
     let metadata = bounded.source.metadata().map_err(|error| {
         cache_error(
             CacheErrorKind::ConcurrentChange,
@@ -386,24 +436,29 @@ fn publish(file: PlannedFile, cas: &Cas) -> Result<Entry, CacheError> {
 
 /// An opened descriptor the CAS may read and rewind, never past its admitted bound. The bound
 /// holds on every pass: hashing, publication and any re-read after a rewind.
-struct BoundedSource {
+struct BoundedSource<'a> {
     source: std::fs::File,
     limit: u64,
     position: u64,
+    deadline: Option<Instant>,
+    cancellation: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
-impl BoundedSource {
+impl BoundedSource<'_> {
     fn new(source: std::fs::File, limit: u64) -> Self {
         Self {
             source,
             limit,
             position: 0,
+            deadline: None,
+            cancellation: None,
         }
     }
 }
 
-impl std::io::Read for BoundedSource {
+impl std::io::Read for BoundedSource<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        cache_control(self.deadline, self.cancellation)?;
         let remaining = self.limit.saturating_sub(self.position);
         if remaining == 0 || buffer.is_empty() {
             return Ok(0);
@@ -416,7 +471,7 @@ impl std::io::Read for BoundedSource {
     }
 }
 
-impl std::io::Seek for BoundedSource {
+impl std::io::Seek for BoundedSource<'_> {
     fn seek(&mut self, target: std::io::SeekFrom) -> std::io::Result<u64> {
         // The CAS only rewinds between its passes; any other movement would let a caller
         // read past the bound by seeking around it.
@@ -444,64 +499,7 @@ pub fn materialize_build_cache(
     limits: &BuildCacheLimitsV1,
     cas: &Cas,
 ) -> Result<MaterializedBuildCache, CacheError> {
-    limits
-        .validate()
-        .map_err(|error| cache_error(CacheErrorKind::LimitExceeded, error))?;
-    manifest
-        .validate()
-        .map_err(|error| cache_error(CacheErrorKind::UnsafeContent, error.to_string()))?;
-    if manifest.entries.is_empty() {
-        return Err(cache_error(
-            CacheErrorKind::SourceUnavailable,
-            format!("{kind} build cache manifest names no files"),
-        ));
-    }
-    let entries = u64::try_from(manifest.entries.len())
-        .map_err(|_| cache_error(CacheErrorKind::LimitExceeded, "build cache entry overflow"))?;
-    if entries > limits.max_entries {
-        return Err(cache_error(
-            CacheErrorKind::LimitExceeded,
-            format!(
-                "{kind} build cache exceeds its {} filesystem-entry limit",
-                limits.max_entries
-            ),
-        ));
-    }
-    let mut bytes = 0_u64;
-    for entry in &manifest.entries {
-        if entry.kind == EntryKind::Symlink {
-            return Err(cache_error(
-                CacheErrorKind::UnsafeContent,
-                format!("build cache manifest names a symlink at {}", entry.path),
-            ));
-        }
-        if !review_core::is_digest(&entry.content) {
-            return Err(cache_error(
-                CacheErrorKind::UnsafeContent,
-                format!(
-                    "build cache manifest entry {} has no content identity",
-                    entry.path
-                ),
-            ));
-        }
-        validate_build_cache_path_v1(kind, &decode_path(&entry.path), limits)
-            .map_err(layout_error)?;
-        bytes = bytes.checked_add(entry.size).ok_or_else(|| {
-            cache_error(
-                CacheErrorKind::LimitExceeded,
-                "build cache byte count overflow",
-            )
-        })?;
-        if bytes > limits.max_bytes {
-            return Err(cache_error(
-                CacheErrorKind::LimitExceeded,
-                format!(
-                    "{kind} build cache exceeds its {} byte limit",
-                    limits.max_bytes
-                ),
-            ));
-        }
-    }
+    let (entries, bytes) = validate_cache_manifest(kind, manifest, limits)?;
     ensure_cache_root(sandbox)?;
     let target = sandbox.root().join(relative_root(kind));
     if std::fs::symlink_metadata(&target).is_ok() {
@@ -584,11 +582,199 @@ fn normalize_tree(target: &Path, manifest: &Manifest) -> Result<(), CacheError> 
     Ok(())
 }
 
+/// Shared manifest revalidation for dependency snapshots and Worker-built private clones.
+pub fn validate_cache_manifest(
+    kind: BuildCacheKindV1,
+    manifest: &Manifest,
+    limits: &BuildCacheLimitsV1,
+) -> Result<(u64, u64), CacheError> {
+    limits
+        .validate()
+        .map_err(|error| cache_error(CacheErrorKind::LimitExceeded, error))?;
+    manifest
+        .validate()
+        .map_err(|error| cache_error(CacheErrorKind::UnsafeContent, error.to_string()))?;
+    if manifest.entries.is_empty() {
+        return Err(cache_error(
+            CacheErrorKind::SourceUnavailable,
+            format!("{kind} build cache manifest names no files"),
+        ));
+    }
+    let entries = u64::try_from(manifest.entries.len())
+        .map_err(|_| cache_error(CacheErrorKind::LimitExceeded, "build cache entry overflow"))?;
+    if entries > limits.max_entries {
+        return Err(cache_error(
+            CacheErrorKind::LimitExceeded,
+            format!(
+                "{kind} build cache exceeds its {} filesystem-entry limit",
+                limits.max_entries
+            ),
+        ));
+    }
+    let mut bytes = 0_u64;
+    for entry in &manifest.entries {
+        if entry.kind == EntryKind::Symlink {
+            return Err(cache_error(
+                CacheErrorKind::UnsafeContent,
+                format!("build cache manifest names a symlink at {}", entry.path),
+            ));
+        }
+        if !review_core::is_digest(&entry.content) {
+            return Err(cache_error(
+                CacheErrorKind::UnsafeContent,
+                format!(
+                    "build cache manifest entry {} has no content identity",
+                    entry.path
+                ),
+            ));
+        }
+        validate_build_cache_path_v1(kind, &decode_path(&entry.path), limits)
+            .map_err(layout_error)?;
+        bytes = bytes.checked_add(entry.size).ok_or_else(|| {
+            cache_error(
+                CacheErrorKind::LimitExceeded,
+                "build cache byte count overflow",
+            )
+        })?;
+        if bytes > limits.max_bytes {
+            return Err(cache_error(
+                CacheErrorKind::LimitExceeded,
+                format!(
+                    "{kind} build cache exceeds its {} byte limit",
+                    limits.max_bytes
+                ),
+            ));
+        }
+    }
+    Ok((entries, bytes))
+}
+
+/// Clone into an absent private runtime path. Partial materializations are never published or
+/// reused; CheckRuntime owns their cleanup. Source CAS objects remain immutable.
+pub fn clone_cache_directory(
+    manifest: &Manifest,
+    target: &Path,
+    limits: &BuildCacheLimitsV1,
+    cas: &Cas,
+) -> Result<(), CacheError> {
+    clone_cache_directory_before(manifest, target, limits, cas, None, None)
+}
+
+pub fn clone_cache_directory_before(
+    manifest: &Manifest,
+    target: &Path,
+    limits: &BuildCacheLimitsV1,
+    cas: &Cas,
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), CacheError> {
+    let control = || {
+        cache_control(deadline, cancellation)
+            .map_err(|error| cache_error(CacheErrorKind::MaterializationFailed, error.to_string()))
+    };
+    control()?;
+    validate_cache_manifest(BuildCacheKindV1::Worker, manifest, limits)?;
+    if std::fs::symlink_metadata(target).is_ok() {
+        return Err(cache_error(
+            CacheErrorKind::MaterializationFailed,
+            "cache clone destination already exists",
+        ));
+    }
+    let result = materialize(manifest, cas, target)
+        .map_err(|error| cache_error(CacheErrorKind::MaterializationFailed, error.to_string()))
+        .and_then(|()| {
+            // Copying alone is not a complete clone: private metadata normalization is still
+            // required. Kill the subprocess at this boundary, with a real populated target.
+            #[cfg(test)]
+            tests::crash::pause("clone");
+            normalize_tree(target, manifest)
+        })
+        .and_then(|()| control());
+    if result.is_err() {
+        crate::restore_writable_dirs(target);
+        let _ = std::fs::remove_dir_all(target);
+    }
+    result
+}
+
+fn cache_control(
+    deadline: Option<Instant>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> std::io::Result<()> {
+    if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+        || deadline.is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "cache capture cancelled or deadline exhausted",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    pub(crate) mod crash;
     use super::*;
     use review_source_git::digest_reader_with_buffer;
     use std::io::{Read, Seek, SeekFrom};
+
+    #[test]
+    fn pre_cancelled_worker_capture_and_missing_clone_objects_publish_no_partial_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let source = directory.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("object"), b"compiled").unwrap();
+        let limits = BuildCacheLimitsV1::default();
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        assert!(
+            capture_cache_directory_before(
+                BuildCacheKindV1::Worker,
+                &source,
+                &limits,
+                &cas,
+                None,
+                Some(&cancelled)
+            )
+            .is_err()
+        );
+        assert!(
+            capture_cache_directory_before(
+                BuildCacheKindV1::Worker,
+                &source,
+                &limits,
+                &cas,
+                Some(Instant::now()),
+                None
+            )
+            .is_err()
+        );
+        let captured =
+            capture_cache_directory(BuildCacheKindV1::Worker, &source, &limits, &cas).unwrap();
+        let cancelled_clone = directory.path().join("cancelled-clone");
+        assert!(
+            clone_cache_directory_before(
+                &captured.manifest,
+                &cancelled_clone,
+                &limits,
+                &cas,
+                None,
+                Some(&cancelled)
+            )
+            .is_err()
+        );
+        assert!(!cancelled_clone.exists());
+        cas.remove_unreachable(&captured.manifest.entries[0].content)
+            .unwrap();
+        let target = directory.path().join("clone");
+        assert!(clone_cache_directory(&captured.manifest, &target, &limits, &cas).is_err());
+        assert!(
+            !target.exists(),
+            "failed clone never remains as a reusable private root"
+        );
+    }
 
     fn planned(directory: &Path, bytes: &[u8], admitted: u64) -> PlannedFile {
         let path = directory.join("debug/deps/libfixture.rlib");

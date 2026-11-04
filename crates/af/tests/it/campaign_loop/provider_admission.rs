@@ -403,7 +403,7 @@ fn a_task_captured_after_a_pre_task_restart_of_a_changed_candidate_resumes() {
 }
 
 /// A log holding a record this release does not write — here the retired `WarmSetSelected@1`,
-/// which `WarmSetSelected@2` replaced — fails closed on the replay error before preparation,
+/// which `WarmSetSelected@3` replaced — fails closed on the replay error before preparation,
 /// capture or any Provider call. No reader, migration or fallback reopens it (ADR-0145).
 #[test]
 fn a_campaign_holding_a_retired_event_type_is_refused_before_any_work() {

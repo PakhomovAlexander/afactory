@@ -770,9 +770,10 @@ _Avoid_: "passthrough" — a direct host mapping is not a Cache Snapshot and can
 isolation.
 
 **Build Cache**:
-A bounded, explicitly unsafe capture of a Gate's candidate-built output, admitted only under the
-trusted-local policy and cloned into Worker sandboxes that declare its kind within the same
-Round; removed before seal, so it never enters a candidate tree, Proposal or delivered worktree.
+A bounded, explicitly unsafe capture of candidate-built output. Gate-to-Worker carry is admitted
+only under the trusted-local policy within the same Round. Declared Worker development carry
+uses only an admitted same-Task, same-slot predecessor and records exact compatibility and source
+provenance; removed before seal, so it never enters a candidate tree, Proposal or delivered worktree.
 _Avoid_: **Cache Snapshot**; a Build Cache was produced by candidate code and carries no
 administrator approval and no credential-free guarantee.
 
@@ -799,11 +800,26 @@ the result incomplete.
 The exact, per-node set of carried layers one Round's Attempts start from: Notes and the Head
 Delta selected from the previous closed Round's admitted Attempt of the same node, the Build Cache
 carried from this Round's Gate, and the basis of the node's Warm Workspace, recorded as
-`WarmSet@2` before the first dispatch and listed in every Attempt's context manifest. A layer that
+`WarmSet@3` before the first dispatch and listed in every Attempt's context manifest. A layer that
 cannot be carried is recorded with its reason, never omitted silently. No harness session is
 carried: every Attempt is a new conversation.
 _Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
-a retry inherits the Round's Warm Set rather than its failed sibling's state.
+a retry inherits the recorded Warm Set rather than its failed sibling's state. Development
+Workers select declared immutable caches and explicit omissions before invocation reservation;
+replay reads that exact selection. Declared knowledge carries same-slot Task Notes and their
+Head Delta through the same Warm Set type, with bounded retrieval recorded in typed context.
+
+**Knowledge Index**:
+An immutable bounded manifest rebuilt from explicit captured source ranges and declared
+same-slot Worker Notes. Entries name exact content, source/path dependencies, visibility,
+freshness and supporting evidence; they carry no instruction or acceptance authority.
+_Avoid_: a shared writable memory directory or an unbounded repository/archive ingestion.
+
+**Knowledge Query**:
+A typed request for entry identities from the bounded index actually delivered to its Worker.
+A later declared invocation receives exact selected excerpts with context evidence and explicit
+omissions. Cross-Task source facts require a declared capability and content revalidation.
+_Avoid_: an ambient search or permission to import private Notes, raw sessions or conclusions.
 
 **Warm Workspace**:
 One node's stable template root within one Campaign, named by an opaque workspace identity and
@@ -814,16 +830,19 @@ _Avoid_: treating the root as the sandbox or as shared state; a Warm Workspace n
 nodes, and a host path never names it in a durable record.
 
 **Worker Notes**:
-A bounded, typed inspection map one admitted Attempt leaves for the next Attempt of the same
-node: paths inspected, a model of the change, open questions, per-path hints. Data, not a
-verdict, and never shared across nodes or slots.
+A bounded, typed inspection map one admitted Attempt leaves for the same reviewer node across
+Rounds, or a later Task Worker node on the same effective slot: paths inspected, a model of the
+change, open questions, per-path hints. Data, not a verdict, and never shared across slots.
+Declared knowledge keeps Notes as private hypotheses and checks source freshness before retrieval.
 _Avoid_: treating Notes as a disposition; every prior Finding still needs its explicit Report,
 Dispute, or Drop.
 
 **Head Delta**:
 The kernel-derived relation between two consecutive heads of one node: exact from and to
 Snapshot IDs, diff policy identity, complete path set with rename truncation, and one mark per
-path over the union of the Notes paths and both Subject views.
+path over the union of the Notes paths and both Subject views. Task private knowledge compares
+the producing Notes node's inspected head with the current invocation's source, retaining the
+Notes producer's node identity.
 _Avoid_: **Change Set**; a Head Delta names no Base, carries no Subject identity and no Report
 Scope, and exists for whole-tree Subjects too.
 

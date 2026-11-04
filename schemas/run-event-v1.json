@@ -72,7 +72,7 @@
         "SliceSetAccepted@1",
         "ShardSetRecorded@1",
         "SemanticClosureChecked@1",
-        "WarmSetSelected@2",
+        "WarmSetSelected@3",
         "WorkerNotesRecorded@1",
         "BuildCacheCaptured@1",
         "WorkspaceRebased@1",
@@ -488,7 +488,7 @@
       "if": {
         "properties": {
           "type": {
-            "const": "WarmSetSelected@2"
+            "const": "WarmSetSelected@3"
           }
         },
         "required": [
@@ -938,7 +938,7 @@
       }
     },
     "warm_set_selected": {
-      "description": "Appended before the node's first Attempt of a Round is reserved. The WarmSet@2 artifact names the exact carried layers; `layers` repeats them for operator reports.",
+      "description": "Appended before the node's first Attempt of a Round is reserved. The WarmSet@3 artifact names the exact carried layers; `layers` repeats them for operator reports.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -960,7 +960,8 @@
               "notes",
               "head_delta",
               "build_cache",
-              "workspace"
+              "workspace",
+              "development"
             ]
           }
         }
@@ -1068,7 +1069,7 @@
       ]
     },
     "build_cache_captured": {
-      "description": "Appended by a Gate after its checks passed, once per declared build cache kind: exactly one of the captured review.kernel/BuildCache@1 artifact or a refusal reason, with the head the Gate built and the limits that applied. A refusal never changes the Gate verdict; Workers that declared the kind run without it. The artifact is explicitly unsafe and never a Cache Snapshot.",
+      "description": "Appended by a Gate after its checks passed, once per declared build cache kind: exactly one of the captured review.kernel/BuildCache@2 artifact or a refusal reason, with the head the Gate built and the limits that applied. A refusal never changes the Gate verdict; Workers that declared the kind run without it. The artifact is explicitly unsafe and never a Cache Snapshot.",
       "type": "object",
       "additionalProperties": false,
       "required": [

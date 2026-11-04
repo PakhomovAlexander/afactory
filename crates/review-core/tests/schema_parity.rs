@@ -30,7 +30,17 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 240] = [
+const SCHEMAS: [&str; 250] = [
+    "worker-development-v3.json",
+    "worker-storage-v1.json",
+    "worker-knowledge-v1.json",
+    "knowledge-index-v1.json",
+    "knowledge-query-v1.json",
+    "knowledge-context-v1.json",
+    "private-knowledge-v1.json",
+    "worker-cache-capture-v1.json",
+    "worker-development-binding-v3.json",
+    "worker-command-evidence-v1.json",
     "pi-host-v2.json",
     "pi-validation-claim-v1.json",
     "pi-provider-setup-v2.json",
@@ -101,10 +111,10 @@ const SCHEMAS: [&str; 240] = [
     "provider-disables-v1.json",
     "provider-setup-v1.json",
     "provider-setup-v2.json",
-    "build-cache-v1.json",
+    "build-cache-v2.json",
     "worker-notes-v1.json",
     "head-delta-v1.json",
-    "warm-set-v2.json",
+    "warm-set-v3.json",
     "optimization-recipe-catalog-v1.json",
     "optimization-profile-v1.json",
     "optimization-writable-configuration-v1.json",
@@ -3263,8 +3273,8 @@ fn campaign_review_round_input_and_gate_outcome_have_closed_distinct_contracts()
 fn warm_layer_contracts_roundtrip_and_stay_closed() {
     use review_core::event::validate_event_payload;
     use review_core::{
-        HeadDeltaEntryV1, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, PathHintV1, WarmLayerV2,
-        WarmSetSelectedPayloadV2, WarmSetV2, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
+        HeadDeltaEntryV1, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, PathHintV1, WarmLayerV3,
+        WarmSetSelectedPayloadV3, WarmSetV3, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
         WorkerNotesV1,
     };
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
@@ -3341,7 +3351,8 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
     unmarked.marks.retain(|entry| entry.path != "src/old.rs");
     assert!(unmarked.validate().is_err(), "every changed path is marked");
 
-    let set = WarmSetV2 {
+    let set = WarmSetV3 {
+        development: Default::default(),
         node: "correctness".into(),
         round: 2,
         source_attempt_id: Some("a".repeat(26)),
@@ -3354,43 +3365,43 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
         workspace_id: None,
     };
     set.validate().unwrap();
-    let dropped = WarmSetV2 {
+    let dropped = WarmSetV3 {
         head_delta_artifact_id: None,
         head_delta_dropped: Some(review_core::HeadDeltaDropReasonV1::OverBound),
         ..set.clone()
     };
     dropped.validate().unwrap();
-    assert_valid("warm-set-v2.json", &serde_json::to_value(&dropped).unwrap());
+    assert_valid("warm-set-v3.json", &serde_json::to_value(&dropped).unwrap());
     let mut value = serde_json::to_value(&set).unwrap();
-    assert_valid("warm-set-v2.json", &value);
+    assert_valid("warm-set-v3.json", &value);
     assert_eq!(
-        serde_json::from_value::<WarmSetV2>(value.clone()).unwrap(),
+        serde_json::from_value::<WarmSetV3>(value.clone()).unwrap(),
         set
     );
     value["transcript_artifact_id"] = json!(digest('6'));
     assert_invalid(
-        "warm-set-v2.json",
+        "warm-set-v3.json",
         &value,
         "a Warm Set carries exactly the layers the vocabulary names and nothing else",
     );
-    assert!(serde_json::from_value::<WarmSetV2>(value).is_err());
+    assert!(serde_json::from_value::<WarmSetV3>(value).is_err());
     let orphan = json!({"node": "correctness", "round": 2, "notes_artifact_id": digest('4')});
     assert_invalid(
-        "warm-set-v2.json",
+        "warm-set-v3.json",
         &orphan,
         "Notes without their source Attempt",
     );
-    let orphan: WarmSetV2 = serde_json::from_value(orphan).unwrap();
+    let orphan: WarmSetV3 = serde_json::from_value(orphan).unwrap();
     assert!(orphan.validate().is_err());
 
-    let selected = WarmSetSelectedPayloadV2 {
+    let selected = WarmSetSelectedPayloadV3 {
         warm_set_artifact_id: digest('7'),
         source_attempt_id: Some("a".repeat(26)),
-        layers: vec![WarmLayerV2::Notes, WarmLayerV2::HeadDelta],
+        layers: vec![WarmLayerV3::Notes, WarmLayerV3::HeadDelta],
     };
     selected.validate().unwrap();
     validate_event_payload(
-        EventType::WarmSetSelectedV2,
+        EventType::WarmSetSelectedV3,
         &serde_json::to_value(&selected).unwrap(),
     )
     .unwrap();
@@ -3398,7 +3409,7 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
         event_id: "b".repeat(26),
         run_id: "run".into(),
         sequence: 8,
-        event_type: EventType::WarmSetSelectedV2,
+        event_type: EventType::WarmSetSelectedV3,
         occurred_at: "2026-09-17T00:00:00Z".into(),
         node_id: Some("correctness".into()),
         attempt_id: None,
@@ -3412,7 +3423,7 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
     duplicate["payload"]["layers"] = json!(["notes", "notes"]);
     assert_invalid("run-event-v1.json", &duplicate, "layers are unique");
     let payload = duplicate["payload"].clone();
-    assert!(validate_event_payload(EventType::WarmSetSelectedV2, &payload).is_err());
+    assert!(validate_event_payload(EventType::WarmSetSelectedV3, &payload).is_err());
 
     for recorded in [
         WorkerNotesRecordedPayloadV1 {
@@ -3460,11 +3471,12 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
     use review_core::event::validate_event_payload;
     use review_core::{
         BuildCacheCapturedPayloadV1, BuildCacheDropReasonV1, BuildCacheKindV1, BuildCacheLimitsV1,
-        BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV1, WarmLayerV2,
-        WarmSetSelectedPayloadV2, WarmSetV2,
+        BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV2, WarmLayerV3,
+        WarmSetSelectedPayloadV3, WarmSetV3,
     };
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-    let cache = BuildCacheV1 {
+    let cache = BuildCacheV2 {
+        worker: None,
         kind: BuildCacheKindV1::CargoTarget,
         trust: BuildCacheTrustV1::CandidateBuilt,
         gate_node: "gate".into(),
@@ -3478,40 +3490,40 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
     };
     cache.validate().unwrap();
     let mut value = serde_json::to_value(&cache).unwrap();
-    assert_valid("build-cache-v1.json", &value);
+    assert_valid("build-cache-v2.json", &value);
     assert_eq!(
         value["trust"], "candidate_built",
         "the payload itself says it was built by candidate code"
     );
     assert_eq!(
-        serde_json::from_value::<BuildCacheV1>(value.clone()).unwrap(),
+        serde_json::from_value::<BuildCacheV2>(value.clone()).unwrap(),
         cache
     );
     value["trust"] = json!("administrator_approved");
     assert_invalid(
-        "build-cache-v1.json",
+        "build-cache-v2.json",
         &value,
         "a Build Cache can never claim Cache Snapshot approval",
     );
-    assert!(serde_json::from_value::<BuildCacheV1>(value.clone()).is_err());
+    assert!(serde_json::from_value::<BuildCacheV2>(value.clone()).is_err());
     value["trust"] = json!("candidate_built");
     value["kind"] = json!("cargo");
     assert_invalid(
-        "build-cache-v1.json",
+        "build-cache-v2.json",
         &value,
         "the registry-only cargo snapshot is not a build cache kind",
     );
     value["kind"] = json!("cargo_target");
     value["source_path"] = json!("/home/operator/.cargo");
     assert_invalid(
-        "build-cache-v1.json",
+        "build-cache-v2.json",
         &value,
         "a Build Cache never records a host path",
     );
-    assert!(serde_json::from_value::<BuildCacheV1>(value).is_err());
+    assert!(serde_json::from_value::<BuildCacheV2>(value).is_err());
     let mut empty = serde_json::to_value(&cache).unwrap();
     empty["entries"] = json!(0);
-    assert_invalid("build-cache-v1.json", &empty, "an empty capture is refused");
+    assert_invalid("build-cache-v2.json", &empty, "an empty capture is refused");
 
     let captured = BuildCacheCapturedPayloadV1 {
         gate_node: "gate".into(),
@@ -3569,7 +3581,8 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
     );
     assert!(validate_event_payload(EventType::BuildCacheCapturedV1, &both).is_err());
 
-    let set = WarmSetV2 {
+    let set = WarmSetV3 {
+        development: Default::default(),
         node: "tdd".into(),
         round: 1,
         source_attempt_id: None,
@@ -3582,27 +3595,27 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
         workspace_id: None,
     };
     set.validate().unwrap();
-    assert_eq!(set.layers(), vec![WarmLayerV2::BuildCache]);
+    assert_eq!(set.layers(), vec![WarmLayerV3::BuildCache]);
     let value = serde_json::to_value(&set).unwrap();
-    assert_valid("warm-set-v2.json", &value);
-    assert_eq!(serde_json::from_value::<WarmSetV2>(value).unwrap(), set);
-    let dropped = WarmSetV2 {
+    assert_valid("warm-set-v3.json", &value);
+    assert_eq!(serde_json::from_value::<WarmSetV3>(value).unwrap(), set);
+    let dropped = WarmSetV3 {
         build_cache_artifact_id: None,
         build_cache_dropped: Some(BuildCacheDropReasonV1::Refused),
         ..set
     };
     dropped.validate().unwrap();
-    assert_valid("warm-set-v2.json", &serde_json::to_value(&dropped).unwrap());
-    let selected = WarmSetSelectedPayloadV2 {
+    assert_valid("warm-set-v3.json", &serde_json::to_value(&dropped).unwrap());
+    let selected = WarmSetSelectedPayloadV3 {
         warm_set_artifact_id: digest('7'),
         source_attempt_id: None,
-        layers: vec![WarmLayerV2::BuildCache],
+        layers: vec![WarmLayerV3::BuildCache],
     };
     selected.validate().unwrap();
     let payload = serde_json::to_value(&selected).unwrap();
-    validate_event_payload(EventType::WarmSetSelectedV2, &payload).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV3, &payload).unwrap();
     let event = RunEvent {
-        event_type: EventType::WarmSetSelectedV2,
+        event_type: EventType::WarmSetSelectedV3,
         node_id: Some("tdd".into()),
         artifact_refs: vec![digest('7')],
         payload,
@@ -3615,13 +3628,14 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
 fn warm_workspace_contracts_roundtrip_and_stay_closed() {
     use review_core::event::validate_event_payload;
     use review_core::{
-        WarmLayerV2, WarmSetSelectedPayloadV2, WarmSetV2, WorkspaceBasisV1,
+        WarmLayerV3, WarmSetSelectedPayloadV3, WarmSetV3, WorkspaceBasisV1,
         WorkspaceFallbackReasonV1, WorkspaceRebasedPayloadV1,
     };
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
     let workspace_id = "c".repeat(32);
 
-    let set = WarmSetV2 {
+    let set = WarmSetV3 {
+        development: Default::default(),
         node: "correctness".into(),
         round: 2,
         source_attempt_id: None,
@@ -3634,65 +3648,65 @@ fn warm_workspace_contracts_roundtrip_and_stay_closed() {
         workspace_id: Some(workspace_id.clone()),
     };
     set.validate().unwrap();
-    assert_eq!(set.layers(), vec![WarmLayerV2::Workspace]);
+    assert_eq!(set.layers(), vec![WarmLayerV3::Workspace]);
     let mut value = serde_json::to_value(&set).unwrap();
-    assert_valid("warm-set-v2.json", &value);
+    assert_valid("warm-set-v3.json", &value);
     assert_eq!(
-        serde_json::from_value::<WarmSetV2>(value.clone()).unwrap(),
+        serde_json::from_value::<WarmSetV3>(value.clone()).unwrap(),
         set
     );
     for basis in [WorkspaceBasisV1::Full, WorkspaceBasisV1::Reused] {
-        let other = WarmSetV2 {
+        let other = WarmSetV3 {
             workspace: Some(basis),
             ..set.clone()
         };
         other.validate().unwrap();
-        assert_valid("warm-set-v2.json", &serde_json::to_value(&other).unwrap());
+        assert_valid("warm-set-v3.json", &serde_json::to_value(&other).unwrap());
     }
     value["workspace_id"] = json!("/Users/operator/.cache/af/workspaces/c");
     assert_invalid(
-        "warm-set-v2.json",
+        "warm-set-v3.json",
         &value,
         "a workspace is named by an opaque identity, never a host path",
     );
     assert!(
-        serde_json::from_value::<WarmSetV2>(value)
+        serde_json::from_value::<WarmSetV3>(value)
             .unwrap()
             .validate()
             .is_err()
     );
     let nameless = json!({"node": "correctness", "round": 2, "workspace": "rebased"});
     assert_invalid(
-        "warm-set-v2.json",
+        "warm-set-v3.json",
         &nameless,
         "a workspace basis without its identity",
     );
     assert!(
-        serde_json::from_value::<WarmSetV2>(nameless)
+        serde_json::from_value::<WarmSetV3>(nameless)
             .unwrap()
             .validate()
             .is_err()
     );
     let baseless = json!({"node": "correctness", "round": 2, "workspace_id": &workspace_id});
     assert_invalid(
-        "warm-set-v2.json",
+        "warm-set-v3.json",
         &baseless,
         "a workspace identity without its basis",
     );
 
-    let selected = WarmSetSelectedPayloadV2 {
+    let selected = WarmSetSelectedPayloadV3 {
         warm_set_artifact_id: digest('7'),
         source_attempt_id: None,
-        layers: vec![WarmLayerV2::Workspace],
+        layers: vec![WarmLayerV3::Workspace],
     };
     selected.validate().unwrap();
     let payload = serde_json::to_value(&selected).unwrap();
-    validate_event_payload(EventType::WarmSetSelectedV2, &payload).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV3, &payload).unwrap();
     let event = RunEvent {
         event_id: "b".repeat(26),
         run_id: "run".into(),
         sequence: 10,
-        event_type: EventType::WarmSetSelectedV2,
+        event_type: EventType::WarmSetSelectedV3,
         occurred_at: "2026-09-18T00:00:00Z".into(),
         node_id: Some("correctness".into()),
         attempt_id: None,
@@ -3803,9 +3817,8 @@ fn warm_workspace_contracts_roundtrip_and_stay_closed() {
     );
 }
 
-/// `WarmSet@2` and `WarmSetSelected@2` replaced the version-1 contracts when the session
-/// layer went (ADR-0145). Version 1 is neither written nor read: its event type is unknown, its
-/// session fields and layer are refused by the version-2 schema and types, and the retired
+/// `WarmSet@3` and `WarmSetSelected@3` carry declared Worker caches. Versions 1 and 2
+/// are neither written nor read. Session fields and layers remain refused (ADR-0145), and the retired
 /// session and Cold Closeout events are no longer types at all.
 #[test]
 fn retired_warm_set_and_session_contracts_are_refused() {
@@ -3813,6 +3826,7 @@ fn retired_warm_set_and_session_contracts_are_refused() {
     let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
     for retired in [
         "WarmSetSelected@1",
+        "WarmSetSelected@2",
         "SessionSnapshotPrepared@1",
         "SessionSnapshotCleaned@1",
         "ColdCloseoutDispatched@1",
@@ -3835,21 +3849,21 @@ fn retired_warm_set_and_session_contracts_are_refused() {
         assert_invalid("run-event-v1.json", &event, retired);
     }
     assert_eq!(
-        EventType::WarmSetSelectedV2.as_str(),
-        "WarmSetSelected@2",
+        EventType::WarmSetSelectedV3.as_str(),
+        "WarmSetSelected@3",
         "the changed payload took a new version"
     );
     assert_eq!(
-        review_core::contract::WARM_SET_V2,
-        "review.kernel/WarmSet@2"
+        review_core::contract::WARM_SET_V3,
+        "review.kernel/WarmSet@3"
     );
     assert!(
-        !schema("warm-set-v2.json")["properties"]
+        !schema("warm-set-v3.json")["properties"]
             .as_object()
             .unwrap()
             .keys()
             .any(|key| key.starts_with("session")),
-        "WarmSet@2 names no session layer"
+        "WarmSet@3 names no session layer"
     );
     let version_one = json!({
         "node": "correctness",
@@ -3857,14 +3871,14 @@ fn retired_warm_set_and_session_contracts_are_refused() {
         "source_attempt_id": "a".repeat(26),
         "session_dropped": "host_unsupported",
     });
-    assert_invalid("warm-set-v2.json", &version_one, "a WarmSet@1 session drop");
-    assert!(serde_json::from_value::<review_core::WarmSetV2>(version_one).is_err());
+    assert_invalid("warm-set-v3.json", &version_one, "a WarmSet@1 session drop");
+    assert!(serde_json::from_value::<review_core::WarmSetV3>(version_one).is_err());
     let with_session = json!({
         "warm_set_artifact_id": digest('7'),
         "source_attempt_id": "a".repeat(26),
         "layers": ["notes", "session"],
     });
-    assert!(validate_event_payload(EventType::WarmSetSelectedV2, &with_session).is_err());
+    assert!(validate_event_payload(EventType::WarmSetSelectedV3, &with_session).is_err());
 }
 
 #[path = "schema_parity/check_layer.rs"]
@@ -4775,3 +4789,9 @@ mod recovery_allowance;
 
 #[path = "schema_parity/error_document.rs"]
 mod error_document;
+
+#[path = "schema_parity/worker_development.rs"]
+mod worker_development;
+
+#[path = "schema_parity/knowledge.rs"]
+mod knowledge;

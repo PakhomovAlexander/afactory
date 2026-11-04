@@ -2,7 +2,7 @@
 //! capture; package P3: the Warm Workspace each warm node's sandboxes are cloned from.
 //!
 //! Warmth is an artifact, never ambient state. A node's Warm Set is selected from the durable
-//! Campaign log, stored in the CAS, recorded as `WarmSetSelected@2` before the node's first
+//! Campaign log, stored in the CAS, recorded as `WarmSetSelected@3` before the node's first
 //! Attempt of the Round is dispatched, and delivered as declared inputs that the Attempt's
 //! context manifest lists with bytes and estimated tokens. Only the previous closed Round's
 //! admitted Attempt of the same node can be a source; fenced, quarantined, malformed and
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use review_core::{
     ArtifactEnvelope, BuildCacheKindV1, EventType, HeadDeltaInputs, HeadDeltaV1, InspectedPathV1,
     PathHintV1, PathRenameV1, Producer, RoundStartedPayloadV1, RunEvent, SourceSnapshot, TreeView,
-    WarmSetSelectedPayloadV2, WarmSetV2, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
+    WarmSetSelectedPayloadV3, WarmSetV3, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
     WorkerNotesV1, WorkspaceBasisV1, WorkspaceRebasedPayloadV1, compute_head_delta_marks,
     run_report_closes_round,
 };
@@ -36,8 +36,8 @@ use super::review_domain::ReviewDomainState;
 /// The Warm Set one node's Attempts start from in the active Round, as durably recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WarmSetRecord {
-    pub set: WarmSetV2,
-    /// The `review.kernel/WarmSet@2` artifact every Attempt's manifest names.
+    pub set: WarmSetV3,
+    /// The `review.kernel/WarmSet@3` artifact every Attempt's manifest names.
     pub artifact_id: String,
 }
 
@@ -236,7 +236,7 @@ impl ReviewDomainState<'_> {
         Ok(Some(record))
     }
 
-    fn record_warm_set(&self, set: WarmSetV2) -> Result<WarmSetRecord, String> {
+    fn record_warm_set(&self, set: WarmSetV3) -> Result<WarmSetRecord, String> {
         set.validate()?;
         let layer_ids: Vec<String> = set
             .notes_artifact_id
@@ -256,14 +256,14 @@ impl ReviewDomainState<'_> {
         let cas = self.cas;
         let (artifact_id, _) = cas
             .put_artifact(
-                review_core::contract::WARM_SET_V2,
+                review_core::contract::WARM_SET_V3,
                 producer,
                 layer_ids.clone(),
                 Some(self.authority.head_snapshot_id.clone()),
                 encode(&set)?,
             )
             .map_err(|error| error.to_string())?;
-        let selected = WarmSetSelectedPayloadV2 {
+        let selected = WarmSetSelectedPayloadV3 {
             warm_set_artifact_id: artifact_id.clone(),
             source_attempt_id: set.source_attempt_id.clone(),
             layers: set.layers(),
@@ -272,7 +272,7 @@ impl ReviewDomainState<'_> {
         let mut refs = vec![artifact_id.clone()];
         refs.extend(layer_ids);
         self.append(
-            NewEvent::new(EventType::WarmSetSelectedV2, encode(&selected)?)
+            NewEvent::new(EventType::WarmSetSelectedV3, encode(&selected)?)
                 .node(&set.node)
                 .referencing(refs),
         )?;
@@ -357,22 +357,22 @@ fn recorded_warm_set(
     node_id: &str,
 ) -> Result<Option<WarmSetRecord>, String> {
     let Some(event) = events.iter().find(|event| {
-        event.event_type == EventType::WarmSetSelectedV2
+        event.event_type == EventType::WarmSetSelectedV3
             && event.causation_id.as_deref() == Some(round_event_id)
             && event.node_id.as_deref() == Some(node_id)
     }) else {
         return Ok(None);
     };
-    let payload: WarmSetSelectedPayloadV2 = decode(event.payload.clone())?;
+    let payload: WarmSetSelectedPayloadV3 = decode(event.payload.clone())?;
     let envelope = read_envelope(cas, &payload.warm_set_artifact_id)?;
-    if envelope.artifact_type != review_core::contract::WARM_SET_V2 {
+    if envelope.artifact_type != review_core::contract::WARM_SET_V3 {
         return Err(format!(
             "recorded Warm Set artifact is `{}`, not `{}`",
             envelope.artifact_type,
-            review_core::contract::WARM_SET_V2
+            review_core::contract::WARM_SET_V3
         ));
     }
-    let set: WarmSetV2 = decode(envelope.payload)?;
+    let set: WarmSetV3 = decode(envelope.payload)?;
     set.validate()?;
     if set.node != node_id || set.layers() != payload.layers {
         return Err("recorded Warm Set contradicts its selection event".into());
@@ -482,8 +482,9 @@ fn select(
     head: &Manifest,
     node_id: &str,
     layers: RequestedLayers<'_>,
-) -> Result<WarmSetV2, String> {
-    let mut set = WarmSetV2 {
+) -> Result<WarmSetV3, String> {
+    let mut set = WarmSetV3 {
+        development: Default::default(),
         node: node_id.to_string(),
         round: authority.round,
         source_attempt_id: None,
@@ -612,7 +613,7 @@ fn compute_head_delta(
 
 /// Rename linkage, diff policy identity and truncation between two heads. An unchanged head
 /// needs no Git invocation and still records the same policy identity.
-fn head_to_head(
+pub(crate) fn head_to_head(
     cas: &Cas,
     from: &Manifest,
     head: &Manifest,
@@ -639,7 +640,7 @@ fn head_to_head(
     Ok((renames, diff.diff_policy, diff.rename_detection_truncated))
 }
 
-fn tree_view(manifest: &Manifest) -> TreeView {
+pub(crate) fn tree_view(manifest: &Manifest) -> TreeView {
     manifest
         .entries
         .iter()
@@ -842,7 +843,7 @@ mod tests {
             event_id: "e".repeat(26),
             run_id: "run".into(),
             sequence: 3,
-            event_type: EventType::WarmSetSelectedV2,
+            event_type: EventType::WarmSetSelectedV3,
             occurred_at: "2026-10-09T00:00:00Z".into(),
             node_id: Some("reviewer".into()),
             attempt_id: None,
@@ -853,12 +854,13 @@ mod tests {
         }
     }
 
-    /// A resumed Round reads back exactly the `WarmSet@2` its selection event names.
+    /// A resumed Round reads back exactly the `WarmSet@3` its selection event names.
     #[test]
-    fn a_recorded_warm_set_two_replays_as_written() {
+    fn a_recorded_warm_set_three_replays_as_written() {
         let root = tempfile::tempdir().unwrap();
         let cas = Cas::open(root.path()).unwrap();
-        let set = WarmSetV2 {
+        let set = WarmSetV3 {
+            development: Default::default(),
             node: "reviewer".into(),
             round: 2,
             source_attempt_id: Some("a".repeat(26)),
@@ -872,7 +874,7 @@ mod tests {
         };
         let (artifact_id, _) = cas
             .put_artifact(
-                review_core::contract::WARM_SET_V2,
+                review_core::contract::WARM_SET_V3,
                 producer(),
                 Vec::new(),
                 None,
@@ -917,6 +919,6 @@ mod tests {
         let event = selection(&artifact_id, serde_json::json!({"layers": []}));
         let error = recorded_warm_set(&cas, &[event], "round", "reviewer").unwrap_err();
         assert!(error.contains("review.kernel/WarmSet@1"), "{error}");
-        assert!(error.contains("review.kernel/WarmSet@2"), "{error}");
+        assert!(error.contains("review.kernel/WarmSet@3"), "{error}");
     }
 }

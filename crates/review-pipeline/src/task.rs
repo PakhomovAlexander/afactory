@@ -4,10 +4,12 @@
 pub mod campaign_review;
 pub mod code;
 pub(crate) mod control;
+mod development;
 pub mod document;
 pub mod host;
 pub mod human_document;
 mod integration;
+mod knowledge;
 pub mod lease;
 pub mod optimization;
 pub mod optimization_configuration;
@@ -75,6 +77,17 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    /// Pure bounded immutable input selection, before the invocation and any reservation.
+    /// Replay uses the recorded invocation and never asks the selector again.
+    fn prepare_invocation(
+        &self,
+        _cas: &Cas,
+        _input: &mut TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn prepare_experiment(
         &self,
         _cas: &Cas,
@@ -1541,16 +1554,39 @@ impl Dispatch for TaskRuntime<'_, '_> {
     }
 
     fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
-        let input = TaskInvocationV1 {
+        let mut input = TaskInvocationV1 {
             plan_id: self.plan_id.clone(),
             node: node.id.clone(),
             inputs: self.typed_inputs(node, inputs)?,
         };
-        let id = self.capture_invocation(&input)?;
         let state = self.projection()?.execution;
         let existing = state
             .as_ref()
             .and_then(|state| state.invocations.get(&node.id));
+        if let Some((_, prior)) = existing {
+            for port in [
+                review_core::task::development::DEVELOPMENT_WARM_PORT,
+                review_core::task::knowledge::KNOWLEDGE_PORT,
+            ] {
+                if let Some(value) = prior.inputs.get(port) {
+                    input.inputs.insert(port.into(), value.clone());
+                }
+            }
+        } else {
+            let definition = state
+                .as_ref()
+                .map(|state| state.resolve_node(&node.id))
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            let definition = definition
+                .as_ref()
+                .map(|node| &node.definition)
+                .or_else(|| self.graph.nodes.get(&node.id))
+                .ok_or("Unknown invocation node")?;
+            self.host
+                .prepare_invocation(self.cas, &mut input, definition)?;
+        }
+        let id = self.capture_invocation(&input)?;
         if let Some((recorded, prior)) = existing {
             if recorded != &id || prior != &input {
                 return Err("Invocation replay changed its exact inputs".into());

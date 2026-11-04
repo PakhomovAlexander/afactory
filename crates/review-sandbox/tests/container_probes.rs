@@ -21,7 +21,7 @@ use review_check::{Arg, CheckDefinition, CheckRunner, CheckStatus, Command};
 use review_sandbox::{Availability, ContainerProvider, Mode, Sandbox};
 use review_source_git::Capture;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod common;
 use common::fixture_repo;
@@ -89,6 +89,384 @@ fn a_host_marker_is_out_of_reach() {
         std::fs::read_to_string(&marker).unwrap(),
         "untouched",
         "and unmodified on the host"
+    );
+
+    // The Worker extension uses this same containment boundary, with distinct private state
+    // mounts. Run two slots concurrently: neither receives its sibling's host directory.
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    for root in [first.path(), second.path()] {
+        for name in ["source", "state", "package"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        std::fs::write(root.join("state/private"), "initial").unwrap();
+    }
+    std::thread::scope(|scope| {
+        let slots: Vec<_> = [(first.path(), second.path(), "first"), (second.path(), first.path(), "second")]
+            .into_iter().map(|(own, sibling, value)| {
+                let provider = provider.clone().with_limits(Some("134217728".into()), Some("1".into()))
+                    .with_output_cap(4096)
+                    .with_worker_layout(review_sandbox::WorkerContainerLayout {
+                        package: own.join("package"), roots: vec![(own.join("state"), "state".into(), true)],
+                        source_writable: true, base: None, processes: 32,
+                disk_bytes: 16 * 1024 * 1024,
+                probe_shell: "/bin/sh".into(),
+                    });
+                let marker = marker.clone();
+                scope.spawn(move || {
+                    let capture = provider.exec_worker_captured(
+                        &own.join("source"), "/bin/sh",
+                        &["-c".into(), "set -eu; read -r value; test ! -r \"$HOST_MARKER\"; test ! -r \"$SIBLING\"; printf '%s\\n' \"$value\" > /af/state/private; read -r retained < /af/state/private; test \"$value\" = \"$retained\"; printf '%s' \"$retained\"".into()],
+                        &[("HOST_MARKER".into(), marker.to_string_lossy().into()), ("SIBLING".into(), sibling.join("state/private").to_string_lossy().into())],
+                        format!("{value}\n").into_bytes(), Instant::now()+EXEC_TIMEOUT, None,
+                    ).unwrap();
+                    assert!(capture.cleanup_confirmed, "slot {value}: daemon cleanup unconfirmed");
+                    assert!(
+                        capture.capture.status.as_ref().is_ok_and(|status| status.success()),
+                        "slot {value}: status={:?}, stderr_held={}, truncation={:?}, stdout={:?}, stderr={:?}",
+                        capture.capture.status, capture.capture.stderr_held, capture.capture.truncation,
+                        String::from_utf8_lossy(&capture.capture.stdout),
+                        String::from_utf8_lossy(&capture.capture.stderr),
+                    );
+                    assert_eq!(capture.capture.stdout, value.as_bytes());
+                })
+            }).collect();
+        for slot in slots {
+            slot.join().unwrap();
+        }
+    });
+    assert_eq!(
+        std::fs::read_to_string(first.path().join("state/private")).unwrap(),
+        "first\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(second.path().join("state/private")).unwrap(),
+        "second\n"
+    );
+}
+
+/// All declared roots and auxiliary writable directories compete for the same eight MiB.
+/// Each individual write fits; only their aggregate exceeds the bound. Another Worker runs
+/// concurrently, and the host receives only a bounded export after the workload is gone.
+#[test]
+#[ignore = "needs a live container runtime; run via make review-kernel-container-probes"]
+fn worker_aggregate_disk_bound_stops_writes_across_all_roots_and_protects_a_sibling() {
+    let provider = provider();
+    let host = tempfile::tempdir().unwrap();
+    let marker = host.path().join("host-marker");
+    std::fs::write(&marker, b"untouched").unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let layout = |root: &Path| {
+        for name in [
+            "source",
+            "package",
+            "state",
+            "scratch",
+            "build",
+            "cache",
+            "knowledge",
+        ] {
+            std::fs::create_dir(root.join(name)).unwrap();
+        }
+        std::fs::write(root.join("source/original"), b"exact input").unwrap();
+        std::fs::create_dir(root.join("base")).unwrap();
+        std::fs::write(root.join("base/private"), b"immutable base").unwrap();
+        review_sandbox::WorkerContainerLayout {
+            package: root.join("package"),
+            roots: ["state", "scratch", "build", "cache", "knowledge"]
+                .into_iter()
+                .map(|name| (root.join(name), name.into(), true))
+                .collect(),
+            source_writable: true,
+            base: Some(root.join("base")),
+            processes: 32,
+            disk_bytes: 8 * 1024 * 1024,
+            probe_shell: "/bin/sh".into(),
+        }
+    };
+    let first_provider = provider
+        .clone()
+        .with_limits(Some("134217728".into()), Some("1".into()))
+        .with_worker_layout(layout(first.path()));
+    let second_provider = provider
+        .with_limits(Some("134217728".into()), Some("1".into()))
+        .with_worker_layout(layout(second.path()));
+    first_provider
+        .admit_worker_image(
+            first.path(),
+            "/bin/sh",
+            &["/bin/sh".into()],
+            Instant::now() + EXEC_TIMEOUT,
+            None,
+        )
+        .unwrap();
+    let script = r#"
+set -eu
+test "$(id -u)" != 0
+test ! -w /dev
+test ! -w /dev/mqueue
+test ! -w /etc/hosts
+test ! -e "$HOST_MARKER"
+test ! -w /base/private
+if ln /base/private /af/state/alias 2>/dev/null; then exit 93; fi
+long=$(printf '%0200d' 1)
+mkdir /af/build/"$long"
+printf 'long path preserved' > /af/build/"$long"/proof
+device=$(stat -c %d /work)
+for p in /work /af/state /af/scratch /af/build /af/cache /af/knowledge /tmp /run /dev/shm; do
+    test "$(stat -c %d "$p")" = "$device"
+done
+for p in /work /af/state /af/scratch /af/build /af/cache /af/knowledge; do
+    dd if=/dev/zero of="$p/allocated" bs=1048576 count=1 2>/dev/null
+done
+for p in /tmp /run /dev/shm; do
+    dd if=/dev/zero of="$p/allocated" bs=524288 count=1 2>/dev/null
+done
+if refusal=$(dd if=/dev/zero of=/af/build/excess bs=1048576 count=2 2>&1); then
+    echo 'unbounded write escaped aggregate quota'; exit 91
+fi
+case "$refusal" in *'No space left on device'*) ;; *) exit 92;; esac
+test "$(cat /work/original)" = 'exact input'
+printf 'aggregate quota enforced'
+"#;
+    std::thread::scope(|scope| {
+        let attacker = scope.spawn(|| {
+            first_provider
+                .exec_worker_captured(
+                    &first.path().join("source"),
+                    "/bin/sh",
+                    &["-c".into(), script.into()],
+                    &[("HOST_MARKER".into(), marker.to_string_lossy().into())],
+                    vec![],
+                    Instant::now() + EXEC_TIMEOUT,
+                    None,
+                )
+                .unwrap()
+        });
+        let sibling = scope.spawn(|| second_provider.exec_worker_captured(
+            &second.path().join("source"), "/bin/sh", &["-c".into(), "set -eu; test ! -e /af/build/allocated; printf 'independent' > /af/state/private; printf 'sibling succeeded'".into()],
+            &[], vec![], Instant::now()+EXEC_TIMEOUT, None).unwrap());
+        for (capture, expected) in [
+            (attacker.join().unwrap(), "aggregate quota enforced"),
+            (sibling.join().unwrap(), "sibling succeeded"),
+        ] {
+            assert!(capture.cleanup_confirmed);
+            assert!(
+                capture
+                    .capture
+                    .status
+                    .as_ref()
+                    .is_ok_and(|status| status.success()),
+                "{:?}: {}",
+                capture.capture.status,
+                String::from_utf8_lossy(&capture.capture.stderr)
+            );
+            assert_eq!(capture.capture.stdout, expected.as_bytes());
+        }
+    });
+    assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
+    assert_eq!(
+        std::fs::read(second.path().join("state/private")).unwrap(),
+        b"independent"
+    );
+    assert!(!second.path().join("build/allocated").exists());
+    assert_eq!(
+        std::fs::read(first.path().join("base/private")).unwrap(),
+        b"immutable base"
+    );
+    assert_eq!(
+        std::fs::read(
+            first
+                .path()
+                .join("build")
+                .join(format!("{:0200}", 1))
+                .join("proof")
+        )
+        .unwrap(),
+        b"long path preserved"
+    );
+    let mut exported = 0;
+    for name in ["source", "state", "scratch", "build", "cache", "knowledge"] {
+        for file in std::fs::read_dir(first.path().join(name)).unwrap() {
+            exported += file.unwrap().metadata().unwrap().len();
+        }
+    }
+    assert!(exported <= 8 * 1024 * 1024);
+    for root in [first.path(), second.path()] {
+        assert!(
+            !root.join("worker-storage-v1.json").exists(),
+            "confirmed cleanup removes the recovery intent"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a live container runtime; run via make review-kernel-container-probes"]
+fn sparse_worker_output_is_refused_before_any_unbounded_host_export() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["source", "package"] {
+        std::fs::create_dir(directory.path().join(name)).unwrap();
+    }
+    std::fs::write(directory.path().join("source/original"), b"unchanged").unwrap();
+    let provider = provider()
+        .with_limits(Some("134217728".into()), Some("1".into()))
+        .with_worker_layout(review_sandbox::WorkerContainerLayout {
+            package: directory.path().join("package"),
+            roots: vec![],
+            source_writable: true,
+            base: None,
+            processes: 32,
+            disk_bytes: 1024 * 1024,
+            probe_shell: "/bin/sh".into(),
+        });
+    let result = provider.exec_worker_captured(&directory.path().join("source"), "/bin/sh", &["-c".into(), "dd if=/dev/zero of=huge bs=1 count=0 seek=1073741824 2>/dev/null; printf 'worker finished'".into()], &[], vec![], Instant::now()+EXEC_TIMEOUT, None).unwrap();
+    assert!(
+        result.capture.status.is_err(),
+        "sparse logical bytes must not be exported beyond disk_bytes"
+    );
+    assert!(result.cleanup_confirmed);
+    assert!(
+        !result.filesystem_exported,
+        "unavailable final filesystem evidence cannot be admitted"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("source/original")).unwrap(),
+        b"unchanged"
+    );
+    assert!(!directory.path().join("source/huge").exists());
+    assert!(!directory.path().join("worker-storage-v1.json").exists());
+}
+
+const STORAGE_CRASH_ROOT: &str = "AF_STORAGE_CRASH_FIXTURE_ROOT";
+
+#[test]
+fn storage_crash_fixture_child() {
+    let Some(root) = std::env::var_os(STORAGE_CRASH_ROOT).map(std::path::PathBuf::from) else {
+        return;
+    };
+    review_sandbox::set_sandbox_root(root.clone()).unwrap();
+    let runtime = review_sandbox::CheckRuntime::new().unwrap();
+    for name in ["source", "package"] {
+        std::fs::create_dir(runtime.path().join(name)).unwrap();
+    }
+    std::fs::write(root.join("runtime-path"), runtime.path().to_str().unwrap()).unwrap();
+    std::fs::write(runtime.path().join("source/original"), b"exact input").unwrap();
+    // This test-only transport forwards real Engine operations. It pauses immediately before
+    // workload dispatch, while the real seeded tmpfs and keeper already exist.
+    let provider = ContainerProvider::with_runtime(root.join("runtime-wrapper"))
+        .with_limits(Some("134217728".into()), Some("1".into()))
+        .with_worker_layout(review_sandbox::WorkerContainerLayout {
+            package: runtime.path().join("package"),
+            roots: vec![],
+            source_writable: true,
+            base: None,
+            processes: 32,
+            disk_bytes: 1024 * 1024,
+            probe_shell: "/bin/sh".into(),
+        });
+    provider
+        .exec_worker_captured(
+            &runtime.path().join("source"),
+            "/bin/false",
+            &[],
+            &[],
+            vec![],
+            Instant::now() + EXEC_TIMEOUT,
+            None,
+        )
+        .unwrap();
+    panic!("the crash fixture must never resume");
+}
+
+#[test]
+#[ignore = "needs a live container runtime; run via make review-kernel-container-probes"]
+fn a_crashed_storage_owner_is_swept_without_touching_live_or_immutable_state() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    let provider = provider();
+    let Availability::Usable { runtime: engine } = provider.availability() else {
+        unreachable!()
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let socket = root.join("ready.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let wrapper = root.join("runtime-wrapper");
+    std::fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os,socket,sys\na=sys.argv[1:]\nif a[:1]==['run'] and '--name' in a and a[a.index('--name')+1].endswith('-worker'):\n s=socket.socket(socket.AF_UNIX); s.connect({}); s.sendall(b'ready'); s.recv(1); sys.exit(91)\nos.execv({},[{}]+a)\n", serde_json::to_string(socket.to_str().unwrap()).unwrap(), serde_json::to_string(engine.to_str().unwrap()).unwrap(), serde_json::to_string(engine.to_str().unwrap()).unwrap())).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let cas = review_store::Cas::open(root.join("cas")).unwrap();
+    let id = cas.put(b"reachable immutable bytes").unwrap();
+    let live = root.join(format!("af-check-{}-live", std::process::id()));
+    std::fs::create_dir(&live).unwrap();
+    std::fs::write(live.join("private"), b"active").unwrap();
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "storage_crash_fixture_child", "--nocapture"])
+            .env(STORAGE_CRASH_ROOT, root)
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(root.join("child.stderr")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let barrier = std::thread::spawn(move || {
+        sender.send(listener.accept().unwrap().0).unwrap();
+    });
+    let connection = receiver.recv_timeout(EXEC_TIMEOUT).unwrap_or_else(|error| {
+        panic!(
+            "storage barrier: {error}: {}",
+            std::fs::read_to_string(root.join("child.stderr")).unwrap()
+        )
+    });
+    barrier.join().unwrap();
+    let path =
+        std::path::PathBuf::from(std::fs::read_to_string(root.join("runtime-path")).unwrap());
+    let lease: review_core::task::development::WorkerStorageLeaseV1 =
+        serde_json::from_slice(&std::fs::read(path.join("worker-storage-v1.json")).unwrap())
+            .unwrap();
+    lease.validate().unwrap();
+    let before = review_sandbox::sweep_stale_sandboxes_in(root);
+    assert_eq!(before.live, 2, "both owners are live before the crash");
+    assert!(path.is_dir());
+    child.0.kill().unwrap();
+    assert_eq!(child.0.wait().unwrap().signal(), Some(9));
+    drop(connection); // The test transport exits on EOF; no orphan host process is left.
+    let swept = review_sandbox::sweep_stale_sandboxes_in(root);
+    assert_eq!(swept.removed, 1, "{swept:?}");
+    assert_eq!(swept.live, 1);
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(live.join("private")).unwrap(), b"active");
+    drop(cas);
+    assert_eq!(
+        review_store::Cas::open(root.join("cas"))
+            .unwrap()
+            .get(&id)
+            .unwrap(),
+        b"reachable immutable bytes"
+    );
+    let mut query = Command::new(engine);
+    query.args([
+        "volume",
+        "ls",
+        "--filter",
+        &format!("name=^{}$", lease.name),
+        "--format={{.Name}}",
+    ]);
+    let result = review_process::run_supervised(&mut query, None, EXEC_TIMEOUT).unwrap();
+    assert!(result.status.success());
+    assert!(
+        result.stdout.is_empty(),
+        "the crashed owner's exact private volume was removed"
     );
 }
 

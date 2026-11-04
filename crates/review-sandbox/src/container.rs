@@ -14,11 +14,13 @@
 //!
 //! # What the tests here do and do not prove
 //!
-//! The invocation this builds — `--network=none`, a single bind of the sandbox, no inherited
+//! The Gate invocation this builds — `--network=none`, a single bind of the sandbox, no inherited
 //! host environment, no capabilities, no privilege gain, a process ceiling and an init that
 //! reaps — is asserted exactly, using a recording stub in place of the runtime. That proves the
 //! *plumbing*: the right flags, the right mount, nothing extra. `--env-file /dev/null` keeps the
 //! host's environment out; it does not clear the `ENV` the image itself declares.
+//! Opt-in Worker development uses subpaths of one size-limited private tmpfs volume, with
+//! read-only package/Base, a read-only image, pinned entrypoint and no image acquisition.
 //!
 //! It does **not** prove containment. Only a real runtime can do that, and
 //! `tests/container_probes.rs` does exactly that — the containment probes that need isolation
@@ -33,6 +35,10 @@ use review_process::{
 };
 
 use crate::{Isolation, Mode, Sandbox, SandboxTemplate};
+
+#[path = "container_storage.rs"]
+mod storage;
+pub(crate) use storage::recover_worker_storage;
 
 /// Runtimes tried in order. Docker first only because it is the likeliest to be present.
 const RUNTIMES: [&str; 3] = ["docker", "podman", "nerdctl"];
@@ -96,6 +102,30 @@ pub struct ContainerProvider {
     cpus: Option<String>,
     /// The bytes kept of each output stream of a container command.
     output_cap: usize,
+    worker: Option<WorkerContainerLayout>,
+    image_control: bool,
+    identity_probe: bool,
+    storage_volume: Option<String>,
+}
+
+/// Kernel-owned private roots. They are never accepted from Worker TOML or argv.
+#[derive(Clone)]
+pub struct WorkerContainerLayout {
+    pub package: PathBuf,
+    pub roots: Vec<(PathBuf, String, bool)>,
+    pub source_writable: bool,
+    pub base: Option<PathBuf>,
+    pub processes: u64,
+    pub disk_bytes: u64,
+    pub probe_shell: String,
+}
+
+pub struct WorkerContainerCapture {
+    pub capture: SupervisedCapture,
+    pub cleanup_confirmed: bool,
+    /// False when a stopped workload's bounded filesystem export was unavailable. This is
+    /// separate from daemon cleanup: the original host tree is then not final evidence.
+    pub filesystem_exported: bool,
 }
 
 #[derive(Debug)]
@@ -150,6 +180,10 @@ impl ContainerProvider {
             memory: None,
             cpus: None,
             output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
+            worker: None,
+            image_control: false,
+            identity_probe: false,
+            storage_volume: None,
         }
     }
 
@@ -162,6 +196,10 @@ impl ContainerProvider {
             memory: None,
             cpus: None,
             output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
+            worker: None,
+            image_control: false,
+            identity_probe: false,
+            storage_volume: None,
         }
     }
 
@@ -176,6 +214,69 @@ impl ContainerProvider {
             memory: None,
             cpus: None,
             output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
+            worker: None,
+            image_control: false,
+            identity_probe: false,
+            storage_volume: None,
+        }
+    }
+
+    /// A Worker preparation probe consumes its Attempt's existing absolute deadline.
+    pub fn with_runtime_before(
+        path: impl AsRef<Path>,
+        deadline: Instant,
+        private_home: &Path,
+    ) -> ContainerProvider {
+        let path = path.as_ref().to_path_buf();
+        let timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(PROBE_TIMEOUT);
+        let availability = if timeout.is_zero() {
+            Availability::Absent
+        } else {
+            let mut command = std::process::Command::new(&path);
+            command.args(["info", "--format", "{{json .}}"]);
+            private_client(&mut command, private_home);
+            let captured = run_supervised_captured_bounded(
+                &mut command,
+                None,
+                timeout,
+                ExitPolicy::KillDescendants,
+                None,
+                32 * 1024,
+            );
+            let capabilities = serde_json::from_slice::<serde_json::Value>(&captured.stdout).ok();
+            let enforceable = capabilities.as_ref().is_some_and(|info| {
+                ["MemoryLimit", "SwapLimit", "CpuCfsQuota", "PidsLimit"]
+                    .into_iter()
+                    .all(|field| info.get(field).and_then(serde_json::Value::as_bool) == Some(true))
+            });
+            if captured
+                .status
+                .as_ref()
+                .is_ok_and(|status| status.success())
+                && !captured.stderr_held
+                && !captured.truncation.is_truncated()
+                && enforceable
+            {
+                Availability::Usable {
+                    runtime: path.clone(),
+                }
+            } else {
+                Availability::Unusable {runtime:path.clone(),reason:"private local runtime did not prove bounded CPU, memory, swap and process enforcement".into()}
+            }
+        };
+        ContainerProvider {
+            availability,
+            image: DEFAULT_IMAGE.to_string(),
+            check_runtime: false,
+            memory: None,
+            cpus: None,
+            output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
+            worker: None,
+            image_control: false,
+            identity_probe: false,
+            storage_volume: None,
         }
     }
 
@@ -192,8 +293,32 @@ impl ContainerProvider {
         self
     }
 
-    /// Keep at most `cap` bytes of each output stream of a container command instead of
-    /// [`review_process::MAX_CAPTURED_STREAM_BYTES`]. A command that writes more fails.
+    /// Worker execution is opt-in: Gates retain their existing mount and runtime contract.
+    pub fn with_worker_layout(mut self, layout: WorkerContainerLayout) -> Self {
+        self.worker = Some(layout);
+        self
+    }
+
+    fn without_worker_mounts(mut self) -> Self {
+        self.image_control = true;
+        self
+    }
+
+    /// Identity preflight sees an empty source and package: even an image symlink or
+    /// interpreter startup setting cannot turn the probe into execution of project bytes.
+    pub fn with_identity_probe_root(mut self, empty_root: &Path) -> Self {
+        self.identity_probe = true;
+        if let Some(worker) = &mut self.worker {
+            worker.package = empty_root.to_owned();
+            worker.roots.clear();
+            worker.base = None;
+            worker.source_writable = false;
+        }
+        self
+    }
+
+    /// Keep at most `cap` bytes of each output stream instead of the shared default.
+    /// A command that writes more fails rather than returning a partial successful output.
     pub fn with_output_cap(mut self, cap: usize) -> Self {
         self.output_cap = cap;
         self
@@ -323,7 +448,10 @@ impl ContainerProvider {
             "/dev/null".to_string(),
             // A fork bomb ends at the container's own ceiling, not the host's process table.
             "--pids-limit".to_string(),
-            DEFAULT_PIDS_LIMIT.to_string(),
+            self.worker
+                .as_ref()
+                .map_or(u64::from(DEFAULT_PIDS_LIMIT), |worker| worker.processes)
+                .to_string(),
             // A check needs no capability, and nothing it runs may gain privilege (setuid).
             "--cap-drop=ALL".to_string(),
             "--security-opt=no-new-privileges".to_string(),
@@ -341,19 +469,72 @@ impl ContainerProvider {
         if let Some(cpus) = &self.cpus {
             argv.extend(["--cpus".to_string(), cpus.clone()]);
         }
+        if let Some(worker) = &self.worker {
+            // Never acquire an image as an accidental dependency miss. Rootfs and package
+            // bytes are immutable; only the exact private roots below are writable.
+            argv.extend([
+                // Forward the host-supervised input pipe to the harness. Without this,
+                // the runtime client accepts bytes but the container sees immediate EOF.
+                // No TTY: stdout/stderr must remain separate, exact receipt bytes.
+                "--interactive".into(),
+                "--pull=never".into(),
+                "--read-only".into(),
+                "--no-healthcheck".into(),
+                "--entrypoint".into(),
+                program.into(),
+                // No daemon log file can grow outside the admitted storage ceiling.
+                "--log-driver=none".into(),
+                "--ipc=none".into(),
+            ]);
+            if !self.image_control {
+                argv.extend([
+                    "--volume".into(),
+                    format!("{}:/af/package:ro", worker.package.display()),
+                ]);
+                for (host, name, writable) in &worker.roots {
+                    if let Some(volume) = &self.storage_volume {
+                        storage::mount(&mut argv, volume, name, &format!("/af/{name}"), !writable);
+                    } else {
+                        argv.extend([
+                            "--volume".into(),
+                            format!("{}:/af/{name}:{}", host.display(), "ro"),
+                        ]);
+                    }
+                }
+                if let Some(base) = &worker.base {
+                    if let Some(volume) = &self.storage_volume {
+                        storage::mount(&mut argv, volume, "base", "/base", true);
+                    } else {
+                        argv.extend(["--volume".into(), format!("{}:/base:ro", base.display())]);
+                    }
+                }
+                if let Some(volume) = &self.storage_volume {
+                    for (name, target) in [("tmp", "/tmp"), ("run", "/run"), ("shm", "/dev/shm")] {
+                        storage::mount(&mut argv, volume, name, target, false);
+                    }
+                    // POSIX queues are not part of the filesystem quota. Hide their mount.
+                    storage::mount(&mut argv, volume, "mqueue", "/dev/mqueue", true);
+                }
+            }
+        }
         argv.extend([
             "--user".to_string(),
-            format!(
-                "{}:{}",
-                nix::unistd::getuid().as_raw(),
-                nix::unistd::getgid().as_raw()
-            ),
+            if self.worker.is_some() {
+                // Even when af itself runs as root, /dev's root-owned tmpfs is unwritable.
+                worker_user()
+            } else {
+                format!(
+                    "{}:{}",
+                    nix::unistd::getuid().as_raw(),
+                    nix::unistd::getgid().as_raw()
+                )
+            },
         ]);
         for (key, value) in environment {
             argv.push("-e".to_string());
             argv.push(format!("{key}={value}"));
         }
-        if self.check_runtime {
+        if self.check_runtime && self.worker.is_none() {
             for mount in crate::CheckRuntime::container_mounts() {
                 // Executable, because a check builds and runs test binaries in `TMPDIR`; world
                 // writable with the sticky bit, because the mount is the daemon's and the
@@ -364,14 +545,240 @@ impl ContainerProvider {
         }
         argv.extend([
             "--workdir".to_string(),
-            "/work".to_string(),
-            "--volume".to_string(),
-            format!("{}:/work:rw", sandbox_root.display()),
-            self.image.clone(),
-            program.to_string(),
+            if self.image_control {
+                "/".to_string()
+            } else {
+                "/work".to_string()
+            },
         ]);
+        if !self.image_control {
+            if let Some(volume) = &self.storage_volume {
+                storage::mount(
+                    &mut argv,
+                    volume,
+                    "source",
+                    "/work",
+                    !self.worker.as_ref().unwrap().source_writable,
+                );
+            } else {
+                argv.extend([
+                    "--volume".to_string(),
+                    format!(
+                        "{}:/work:{}",
+                        sandbox_root.display(),
+                        if self.worker.is_none() { "rw" } else { "ro" }
+                    ),
+                ]);
+            }
+        }
+        argv.push(self.image.clone());
+        if self.worker.is_none() {
+            argv.push(program.to_string());
+        }
         argv.extend(args.iter().cloned());
         argv
+    }
+
+    /// Image-declared volumes can shadow a bound source subtree with unrelated bytes.
+    /// Refuse them before a Worker: its source Manifest must describe what /work actually sees.
+    pub fn admit_worker_image(
+        &self,
+        private_home: &Path,
+        probe_shell: &str,
+        programs: &[String],
+        deadline: Instant,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        let Availability::Usable { runtime } = &self.availability else {
+            return Err("Worker development requires a usable local runtime".into());
+        };
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or("Worker development deadline expired before image admission")?;
+        let mut command = std::process::Command::new(runtime);
+        command
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{json .Config.Volumes}}",
+                &self.image,
+            ])
+            .current_dir(private_home);
+        private_client(&mut command, private_home);
+        let captured = run_supervised_captured_bounded(
+            &mut command,
+            None,
+            remaining,
+            ExitPolicy::KillDescendants,
+            cancellation,
+            16 * 1024,
+        );
+        if !captured
+            .status
+            .as_ref()
+            .is_ok_and(|status| status.success())
+            || captured.stderr_held
+            || captured.truncation.is_truncated()
+        {
+            return Err("Worker development image must already be available locally and support bounded metadata admission".into());
+        }
+        let no_volumes = match serde_json::from_slice::<serde_json::Value>(&captured.stdout) {
+            Ok(serde_json::Value::Null) => true,
+            Ok(serde_json::Value::Object(volumes)) => volumes.is_empty(),
+            _ => false,
+        };
+        if !no_volumes {
+            return Err("Worker development refuses image-declared volumes that could shadow exact source or private roots".into());
+        }
+        // The image is immutable and this invocation has no host mounts. Inspect every fixed
+        // mount component before mounting source: an image symlink must not alias two roots.
+        let script = "set -eu; for p in /work /af /af/package /af/state /af/state/home /af/state/config /af/scratch /af/build /af/cache /af/knowledge /af/dependencies /base /tmp /run /dev /dev/shm /dev/mqueue /disk /input /input/source /input/base /input/state /input/scratch /input/build /input/cache /input/knowledge; do if test -L \"$p\"; then exit 72; fi; if test -e \"$p\" && ! test -d \"$p\"; then exit 73; fi; done; for p do resolved=$(/usr/bin/readlink -f \"$p\") || exit 74; case \"$resolved\" in /work|/work/*|/base|/base/*|/af/source|/af/source/*|/af/state|/af/state/*|/af/scratch|/af/scratch/*|/af/build|/af/build/*|/af/cache|/af/cache/*|/af/knowledge|/af/knowledge/*|/af/package|/af/package/*|/input|/input/*|/disk|/disk/*|/tmp|/tmp/*|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*) exit 75;; esac; test -x \"$resolved\" || exit 76; done";
+        let mut arguments = vec![
+            "-c".into(),
+            script.into(),
+            "af-image-admission".into(),
+            probe_shell.into(),
+        ];
+        arguments.extend(
+            [
+                "/usr/bin/readlink",
+                "/usr/bin/stat",
+                "/bin/tar",
+                "/bin/cp",
+                "/bin/mkdir",
+                "/bin/chmod",
+                "/bin/chown",
+                "/bin/sleep",
+            ]
+            .map(str::to_owned),
+        );
+        arguments.extend_from_slice(programs);
+        let probe = self.clone().without_worker_mounts().exec_worker_captured(
+            Path::new("/"),
+            probe_shell,
+            &arguments,
+            &[],
+            vec![],
+            deadline,
+            cancellation,
+        )?;
+        if !probe.cleanup_confirmed
+            || !probe
+                .capture
+                .status
+                .as_ref()
+                .is_ok_and(|status| status.success())
+            || probe.capture.stderr_held
+            || probe.capture.truncation.is_truncated()
+        {
+            return Err("Worker development requires non-symlink image mount roots, immutable resolved tool paths and supported storage utilities".into());
+        }
+        Ok(())
+    }
+
+    /// The same supervisor and daemon cleanup as a Gate, preserving bounded bytes and
+    /// truncation metadata for a Worker receipt. Input goes on stdin, never in argv.
+    #[allow(clippy::too_many_arguments)]
+    pub fn exec_worker_captured(
+        &self,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        environment: &[(String, String)],
+        input: Vec<u8>,
+        deadline: Instant,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<WorkerContainerCapture, String> {
+        if self.worker.is_none() {
+            return Err("Worker container requires its private layout".into());
+        }
+        if self.check_runtime {
+            return Err(
+                "Worker storage cannot be combined with independent check tmpfs mounts".into(),
+            );
+        }
+        let Availability::Usable { runtime } = &self.availability else {
+            return Err(format!(
+                "Worker development requires a usable container runtime: {}",
+                self.availability.reason()
+            ));
+        };
+        let identity = tempfile::Builder::new()
+            .prefix("af-worker-")
+            .tempdir()
+            .map_err(|error| error.to_string())?;
+        let temporary_name = identity
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Non-UTF-8 Worker execution identity")?;
+        // The runtime client receives no host credentials or configuration. This backend
+        // supports only a local default daemon; remote/runtime-context configuration is absent.
+        let client_home = self
+            .worker
+            .as_ref()
+            .unwrap()
+            .package
+            .parent()
+            .ok_or("Worker package has no runtime parent")?
+            .join("home");
+        std::fs::create_dir_all(&client_home).map_err(|error| error.to_string())?;
+        let storage = if !self.image_control && !self.identity_probe {
+            Some(storage::Storage::create(
+                self,
+                sandbox_root,
+                &client_home,
+                deadline,
+                cancellation,
+            )?)
+        } else {
+            None
+        };
+        let name = storage
+            .as_ref()
+            .map(|storage| format!("{}-worker", storage.name))
+            .unwrap_or_else(|| temporary_name.to_owned());
+        let mut prepared = self.clone();
+        prepared.storage_volume = storage.as_ref().map(|storage| storage.name.clone());
+        let mut command = std::process::Command::new(runtime);
+        command.args(prepared.invocation(sandbox_root, program, args, environment, &name));
+        private_client(&mut command, &client_home);
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or("Worker development deadline expired before launch")?;
+        let mut capture = run_supervised_captured_bounded(
+            &mut command,
+            Some(input),
+            remaining,
+            ExitPolicy::KillDescendants,
+            cancellation,
+            self.output_cap,
+        );
+        let mut cleanup_confirmed = if capture.status.as_ref().is_ok_and(|status| status.success())
+            && !capture.stderr_held
+        {
+            true
+        } else {
+            remove_container_with_home(runtime, &name, Some(&client_home)).is_ok()
+        };
+        let mut filesystem_exported = cleanup_confirmed;
+        if let Some(storage) = storage {
+            if cleanup_confirmed
+                && let Err(error) = storage.export(self, sandbox_root, deadline, cancellation)
+            {
+                capture.status = Err(SupervisedError::Wait(std::io::Error::other(error)));
+                filesystem_exported = false;
+            }
+            cleanup_confirmed = storage.cleanup().is_ok();
+        }
+        Ok(WorkerContainerCapture {
+            capture,
+            cleanup_confirmed,
+            filesystem_exported,
+        })
     }
 
     /// Run a command in the sandbox under the caller's policy deadline, stopping early when
@@ -391,6 +798,11 @@ impl ContainerProvider {
         timeout: Duration,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<ContainerExecution, ContainerExecutionError> {
+        if self.worker.is_some() {
+            return Err(ContainerExecutionError::before_launch(
+                "Worker layouts require bounded Worker dispatch",
+            ));
+        }
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Err(ContainerExecutionError::before_launch(
                 "container execution cancelled before launch",
@@ -543,13 +955,68 @@ fn container_execution(
         })
 }
 
+fn worker_user() -> String {
+    if nix::unistd::getuid().is_root() {
+        "65534:65534".into()
+    } else {
+        format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid())
+    }
+}
+
+fn private_client(command: &mut std::process::Command, home: &Path) {
+    command
+        .env_clear()
+        .env("PATH", review_process::sanitized_path())
+        .env("HOME", home)
+        .env("DOCKER_CONFIG", home)
+        .env("XDG_CONFIG_HOME", home);
+}
+
 fn remove_container(runtime: &Path, execution_name: &str) -> Result<(), String> {
+    remove_container_with_home(runtime, execution_name, None)
+}
+
+fn remove_container_with_home(
+    runtime: &Path,
+    execution_name: &str,
+    private_home: Option<&Path>,
+) -> Result<(), String> {
+    let started = Instant::now();
     let mut command = std::process::Command::new(runtime);
     command.args(["rm", "-f", execution_name]);
+    if let Some(home) = private_home {
+        private_client(&mut command, home);
+    }
     let execution = run_bounded_evidenced(command, CLEANUP_TIMEOUT, "container cleanup")
         .map_err(|error| error.to_string())?;
     if execution.output.status.success() {
         return Ok(());
+    }
+    // A failed Worker may already have been removed by --rm. Confirm absence through the
+    // same private daemon context, within the original cleanup budget; never infer it from
+    // localized stderr or run cleanup against the operator's ambient remote context.
+    if let Some(home) = private_home {
+        let remaining = CLEANUP_TIMEOUT.saturating_sub(started.elapsed());
+        if !remaining.is_zero() {
+            let mut query = std::process::Command::new(runtime);
+            query.args([
+                "ps",
+                "--all",
+                "--filter",
+                &format!("name=^/{execution_name}$"),
+                "--format",
+                "{{.Names}}",
+            ]);
+            private_client(&mut query, home);
+            if let Ok(absence) =
+                run_bounded_evidenced(query, remaining, "Worker container absence check")
+                && absence.output.status.success()
+                && !absence.stderr_held
+                && absence.output.stdout.iter().all(u8::is_ascii_whitespace)
+            {
+                return Ok(());
+            }
+        }
     }
     Err(format!(
         "runtime exited {:?}: {}",
@@ -749,7 +1216,7 @@ mod tests {
         write_runtime_within(path, script, Duration::from_secs(5));
     }
 
-    fn write_runtime_within(path: &Path, script: &str, wall: Duration) {
+    pub(super) fn write_runtime_within(path: &Path, script: &str, wall: Duration) {
         // Linux CI observed ETXTBSY while probing a freshly written fixture. A concurrent
         // child's inherited writable descriptor is a possible cause. Keep that descriptor
         // out of this multithreaded parent; reaping this single-threaded writer establishes
@@ -1052,6 +1519,223 @@ mod tests {
             !argv
                 .iter()
                 .any(|a| a.starts_with("--memory") || a.starts_with("--cpus"))
+        );
+    }
+
+    #[test]
+    fn worker_runtime_refuses_unproven_or_unsupported_resource_enforcement() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        write_runtime(
+            &runtime,
+            "#!/bin/sh\nprintf '%s' '{\"MemoryLimit\":true,\"SwapLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":false}'\n",
+        );
+        let provider = ContainerProvider::with_runtime_before(
+            &runtime,
+            Instant::now() + LOAD_SAFE_WALL,
+            directory.path(),
+        );
+        assert!(
+            !provider.availability().usable(),
+            "an exit-zero client is not proof of required enforcement"
+        );
+        assert!(provider.availability().reason().contains("enforcement"));
+    }
+
+    #[test]
+    fn worker_image_admission_refuses_volumes_that_shadow_declared_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        write_runtime(
+            &runtime,
+            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nprintf '%s' '{\"/work/src\":{}}'\n",
+        );
+        let provider = ContainerProvider::with_runtime(&runtime);
+        assert!(
+            provider
+                .admit_worker_image(
+                    directory.path(),
+                    "/bin/sh",
+                    &[],
+                    Instant::now() + LOAD_SAFE_WALL,
+                    None
+                )
+                .unwrap_err()
+                .contains("image-declared volumes")
+        );
+    }
+
+    #[test]
+    fn worker_image_admission_refuses_unsafe_mount_layout_before_source_is_mounted() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        write_runtime(
+            &runtime,
+            "#!/bin/sh\ncase \"$1\" in info|rm) exit 0;; image) printf null; exit 0;; run) for arg in \"$@\"; do test \"$arg\" != --volume || exit 91; done; exit 72;; esac\n",
+        );
+        let provider =
+            ContainerProvider::with_runtime(&runtime).with_worker_layout(WorkerContainerLayout {
+                package: directory.path().join("package"),
+                roots: vec![],
+                source_writable: true,
+                base: None,
+                processes: 32,
+                disk_bytes: 16 * 1024 * 1024,
+                probe_shell: "/bin/sh".into(),
+            });
+        assert!(
+            provider
+                .admit_worker_image(
+                    directory.path(),
+                    "/bin/sh",
+                    &[],
+                    Instant::now() + LOAD_SAFE_WALL,
+                    None,
+                )
+                .unwrap_err()
+                .contains("non-symlink image mount roots")
+        );
+    }
+
+    #[test]
+    fn worker_container_cleanup_confirms_an_already_removed_failure_in_its_private_context() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        write_runtime(
+            &runtime,
+            "#!/bin/sh\ncase \"$1\" in info) printf '%s' '{\"MemoryLimit\":true,\"SwapLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true}'; exit 0;; rm) exit 1;; ps) test \"$HOME\" = \"$DOCKER_CONFIG\"; exit $?;; *) printf failure; exit 7;; esac\n",
+        );
+        for name in ["home", "package", "source"] {
+            std::fs::create_dir(directory.path().join(name)).unwrap();
+        }
+        let provider = ContainerProvider::with_runtime_before(
+            &runtime,
+            Instant::now() + LOAD_SAFE_WALL,
+            &directory.path().join("home"),
+        )
+        .with_worker_layout(WorkerContainerLayout {
+            package: directory.path().join("package"),
+            roots: vec![],
+            source_writable: true,
+            base: None,
+            processes: 32,
+            disk_bytes: 16 * 1024 * 1024,
+            probe_shell: "/bin/sh".into(),
+        });
+        let capture = provider
+            .with_identity_probe_root(&directory.path().join("source"))
+            .exec_worker_captured(
+                &directory.path().join("source"),
+                "/bin/false",
+                &[],
+                &[],
+                vec![],
+                Instant::now() + LOAD_SAFE_WALL,
+                None,
+            )
+            .unwrap();
+        assert_eq!(capture.capture.status.unwrap().code(), Some(7));
+        assert!(
+            capture.cleanup_confirmed,
+            "an explicit empty same-context listing proves --rm already completed"
+        );
+    }
+
+    #[test]
+    fn worker_invocation_pins_entrypoint_private_roots_read_only_image_and_no_acquisition() {
+        let provider = ContainerProvider::with_runtime("/nonexistent/runtime")
+            .with_limits(Some("67108864".into()), Some("1".into()))
+            .with_worker_layout(WorkerContainerLayout {
+                package: "/private/package".into(),
+                roots: vec![
+                    ("/private/state".into(), "state".into(), true),
+                    ("/private/knowledge".into(), "knowledge".into(), false),
+                ],
+                source_writable: false,
+                base: Some("/private/base".into()),
+                processes: 32,
+                disk_bytes: 16 * 1024 * 1024,
+                probe_shell: "/bin/sh".into(),
+            });
+        let argv = provider.invocation(
+            Path::new("/private/source"),
+            "/bin/sh",
+            &["/af/package/harness.sh".into()],
+            &[],
+            "af-worker-test",
+        );
+        for value in [
+            "--interactive",
+            "--pull=never",
+            "--read-only",
+            "--network=none",
+            "--log-driver=none",
+            "--ipc=none",
+            "/private/source:/work:ro",
+            "/private/package:/af/package:ro",
+            "/private/state:/af/state:ro",
+            "/private/knowledge:/af/knowledge:ro",
+            "/private/base:/base:ro",
+        ] {
+            assert!(argv.iter().any(|arg| arg == value), "missing {value}");
+        }
+        assert!(!argv.iter().any(|arg| arg == "--tty" || arg == "-t"));
+        assert!(!argv.iter().any(|argument| argument.ends_with(":rw")));
+        let mut prepared = provider.clone();
+        prepared.storage_volume = Some("af-storage-private".into());
+        let bounded =
+            prepared.invocation(Path::new("/private/source"), "/bin/sh", &[], &[], "worker");
+        for (root, target, readonly) in [
+            ("source", "/work", true),
+            ("state", "/af/state", false),
+            ("knowledge", "/af/knowledge", true),
+            ("base", "/base", true),
+            ("tmp", "/tmp", false),
+            ("run", "/run", false),
+            ("shm", "/dev/shm", false),
+            ("mqueue", "/dev/mqueue", true),
+        ] {
+            assert!(bounded.contains(&format!("type=volume,src=af-storage-private,dst={target},volume-subpath={root},volume-nocopy{}", if readonly { ",readonly" } else { "" })));
+        }
+        assert!(
+            !bounded
+                .iter()
+                .any(|argument| argument.ends_with(":rw") || argument == "--tmpfs")
+        );
+        let entrypoint = argv.iter().position(|arg| arg == "--entrypoint").unwrap();
+        assert_eq!(argv[entrypoint + 1], "/bin/sh");
+        let image = argv.iter().position(|arg| arg == DEFAULT_IMAGE).unwrap();
+        assert_eq!(&argv[image + 1..], &["/af/package/harness.sh"]);
+        assert_eq!(
+            argv[argv.iter().position(|arg| arg == "--pids-limit").unwrap() + 1],
+            "32"
+        );
+        let image_only = provider.clone().without_worker_mounts().invocation(
+            Path::new("/private/source"),
+            "/bin/sh",
+            &["-c".into(), "test ! -L /work".into()],
+            &[],
+            "af-worker-image-test",
+        );
+        assert!(!image_only.iter().any(|argument| argument == "--volume"));
+        assert_eq!(
+            image_only[image_only
+                .iter()
+                .position(|arg| arg == "--workdir")
+                .unwrap()
+                + 1],
+            "/"
+        );
+        let readonly = provider
+            .with_identity_probe_root(Path::new("/empty"))
+            .invocation(Path::new("/empty"), "/bin/sh", &[], &[], "af-worker-test");
+        assert!(readonly.contains(&"/empty:/work:ro".into()));
+        assert!(readonly.contains(&"/empty:/af/package:ro".into()));
+        assert!(
+            !readonly
+                .iter()
+                .any(|argument| argument.contains("/private/state")
+                    || argument.contains("/private/base"))
         );
     }
 

@@ -613,6 +613,9 @@ pub struct TaskModelBinding<'a> {
 }
 
 struct CapturedWorker<'a> {
+    slot: String,
+    development: Option<review_core::task::development::WorkerDevelopmentV3>,
+    knowledge: Option<review_core::task::knowledge::KnowledgePolicyV1>,
     package: String,
     transport: WorkerTransport<'a>,
     files: BTreeMap<String, Vec<u8>>,
@@ -696,6 +699,9 @@ impl<'a> CapturedTaskHost<'a> {
             String::from_utf8(derived_instructions.ok_or("Derived Worker lost instructions.md")?)
                 .map_err(|error| error.to_string())?;
         let worker = std::sync::Arc::new(CapturedWorker {
+            slot: original.slot.clone(),
+            development: original.development.clone(),
+            knowledge: original.knowledge.clone(),
             package: derived.name,
             transport: original.transport.clone(),
             files: derived.files,
@@ -719,9 +725,23 @@ impl<'a> CapturedTaskHost<'a> {
     ) -> Result<(), String> {
         self.environment
             .validate_outputs(cas, input, &worker.signature, output)?;
-        let kernel_outputs = self.environment.kernel_outputs(&worker.signature);
+        let mut kernel_outputs = self.environment.kernel_outputs(&worker.signature);
+        kernel_outputs.extend(super::development::cache::kernel_outputs(
+            worker.development.as_ref(),
+        ));
         let mut values = BTreeMap::new();
         for (port, value) in &output.outputs {
+            if super::development::cache::kernel_outputs(worker.development.as_ref()).contains(port)
+            {
+                super::development::cache::validate_output(
+                    cas,
+                    input,
+                    port,
+                    value,
+                    worker.development.as_ref().ok_or("Missing cache policy")?,
+                    &self.run_id,
+                )?;
+            }
             if kernel_outputs.contains(port) {
                 continue;
             }
@@ -746,6 +766,12 @@ impl<'a> CapturedTaskHost<'a> {
                         if !artifact.input_artifacts.contains(expected) {
                             return Err("Worker output lost a retained input receipt".into());
                         }
+                    }
+                }
+                if artifact.artifact_type == review_core::task::knowledge::QUERY_TYPE {
+                    let refs = super::knowledge::query_references(cas, input, &artifact.payload)?;
+                    if !refs.iter().all(|id| artifact.input_artifacts.contains(id)) {
+                        return Err("Knowledge query lost its authoritative index reference".into());
                     }
                 }
                 payloads.push(artifact.payload);
@@ -811,7 +837,15 @@ impl<'a> CapturedTaskHost<'a> {
             let instructions =
                 String::from_utf8(files.get("instructions.md").cloned().unwrap_or_default())
                     .map_err(|e| e.to_string())?;
+            let knowledge = review_config::task::knowledge::parse_knowledge(files)?;
+            let development = review_config::task::development::parse_development(files)?;
+            if let Some(request) = &development {
+                review_config::task::development::resolve_binding(request)?;
+            }
             Ok(std::sync::Arc::new(CapturedWorker {
+                slot: slot.into(),
+                development,
+                knowledge,
                 package: name.clone(),
                 transport,
                 files: files.clone(),
@@ -979,69 +1013,104 @@ impl<'a> CapturedTaskHost<'a> {
                 .checked_sub(now)
                 .filter(|ms| *ms > 0)
                 .ok_or("Worker deadline expired before process start")?;
-            let result = match &worker.transport {
-                WorkerTransport::Command(command) => {
-                    let package = tempfile::tempdir().map_err(|e| e.to_string())?;
-                    for (path, bytes) in &worker.files {
-                        let path = package.path().join(path);
-                        std::fs::create_dir_all(path.parent().ok_or("Worker file has no parent")?)
+            let (result, sandbox) = if let (Some(development), WorkerTransport::Command(command)) =
+                (&worker.development, &worker.transport)
+            {
+                if !super::source::worker_access(&worker.signature).has_shell() {
+                    return Err(
+                        "Worker development cannot widen a read-only Worker's tool authority"
+                            .into(),
+                    );
+                }
+                if !command_environment.is_empty() {
+                    return Err("Worker development cannot combine with another environment's host variables".into());
+                }
+                super::development::invoke(
+                    cas,
+                    input,
+                    attempt.id(),
+                    attempt.context_id(),
+                    (&self.run_id, &worker.slot),
+                    development,
+                    command,
+                    &worker.files,
+                    &worker.contract,
+                    sandbox,
+                    worker.signature.effects.contains("write-source"),
+                    attempt.reservation().deadline_unix_ms,
+                    cancellation,
+                )?
+            } else {
+                let result = match &worker.transport {
+                    WorkerTransport::Command(command) => {
+                        let package = tempfile::tempdir().map_err(|e| e.to_string())?;
+                        for (path, bytes) in &worker.files {
+                            let path = package.path().join(path);
+                            std::fs::create_dir_all(
+                                path.parent().ok_or("Worker file has no parent")?,
+                            )
                             .map_err(|e| e.to_string())?;
-                        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                    }
-                    let mut command = command.clone();
-                    for arg in &mut command.args {
-                        if let Some(path) = arg.value.strip_prefix("@package/") {
-                            if !worker.files.contains_key(path) {
-                                return Err(
-                                    "Worker command references an uncaptured package file".into()
-                                );
-                            }
-                            arg.value = package
-                                .path()
-                                .join(path)
-                                .to_str()
-                                .ok_or("Worker path is not UTF-8")?
-                                .into();
+                            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
                         }
+                        let mut command = command.clone();
+                        for arg in &mut command.args {
+                            if let Some(path) = arg.value.strip_prefix("@package/") {
+                                if !worker.files.contains_key(path) {
+                                    return Err(
+                                        "Worker command references an uncaptured package file"
+                                            .into(),
+                                    );
+                                }
+                                arg.value = package
+                                    .path()
+                                    .join(path)
+                                    .to_str()
+                                    .ok_or("Worker path is not UTF-8")?
+                                    .into();
+                            }
+                        }
+                        review_runner::task::invoke_command(
+                            cas,
+                            sandbox.root(),
+                            tempfile::tempdir().map_err(|e| e.to_string())?.path(),
+                            &command,
+                            &worker.contract,
+                            attempt.context_id(),
+                            Duration::from_millis(remaining),
+                            cancellation,
+                            &command_environment,
+                            // The command transport's exit policy follows the same captured effects.
+                            super::source::worker_access(&worker.signature),
+                        )
                     }
-                    review_runner::task::invoke_command(
-                        cas,
-                        sandbox.root(),
-                        tempfile::tempdir().map_err(|e| e.to_string())?.path(),
-                        &command,
-                        &worker.contract,
-                        attempt.context_id(),
-                        Duration::from_millis(remaining),
-                        cancellation,
-                        &command_environment,
-                        // The command transport's exit policy follows the same captured effects.
-                        super::source::worker_access(&worker.signature),
-                    )
-                }
-                WorkerTransport::Model(adapter) => {
-                    let environment = if adapter.provider_kind() == "pi" {
-                        sandbox
-                            .readable_roots()
-                            .into_iter()
-                            .map(|root| ("AF_PI_READ_ROOT".into(), root.to_string_lossy().into()))
-                            .collect::<Vec<_>>()
-                    } else {
-                        vec![]
-                    };
-                    review_runner::task::invoke_model_with_environment(
-                        cas,
-                        sandbox.root(),
-                        *adapter,
-                        &worker.contract,
-                        attempt.context_id(),
-                        Duration::from_millis(remaining),
-                        // The adapter's tools follow the same captured effects as the sandbox mode.
-                        super::source::worker_access(&worker.signature),
-                        cancellation,
-                        attempt.reservation().tokens,
-                        &environment,
-                    )
-                }
+                    WorkerTransport::Model(adapter) => {
+                        let environment = if adapter.provider_kind() == "pi" {
+                            sandbox
+                                .readable_roots()
+                                .into_iter()
+                                .map(|root| {
+                                    ("AF_PI_READ_ROOT".into(), root.to_string_lossy().into())
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            vec![]
+                        };
+                        review_runner::task::invoke_model_with_environment(
+                            cas,
+                            sandbox.root(),
+                            *adapter,
+                            &worker.contract,
+                            attempt.context_id(),
+                            Duration::from_millis(remaining),
+                            // The adapter's tools follow the same captured effects as the sandbox mode.
+                            super::source::worker_access(&worker.signature),
+                            cancellation,
+                            attempt.reservation().tokens,
+                            &environment,
+                        )
+                    }
+                };
+                (result, Some(sandbox))
             };
             raw_artifact_ids = result.raw_artifact_ids;
             feedback_code = result.feedback_code;
@@ -1055,6 +1124,8 @@ impl<'a> CapturedTaskHost<'a> {
             notes = result.notes;
             notes.environment |= native_failure
                 == Some(review_runner::native_failure::NativeFailureKind::Environment);
+            let sandbox = sandbox
+                .ok_or("Worker development cleanup unconfirmed; private directories preserved")?;
             let reply = match result.reply {
                 Ok(reply) => reply,
                 // The Attempt wall ended the Worker: the tree a source writer left is sealed as
@@ -1143,7 +1214,7 @@ impl<'a> CapturedTaskHost<'a> {
                     } else {
                         values
                     };
-                let retained: BTreeSet<_> = worker
+                let mut retained: BTreeSet<_> = worker
                     .signature
                     .retains
                     .get(&port)
@@ -1162,6 +1233,9 @@ impl<'a> CapturedTaskHost<'a> {
                 )?;
                 let mut ids = Vec::new();
                 for value in values {
+                    if declaration.artifact_type == review_core::task::knowledge::QUERY_TYPE {
+                        retained.extend(super::knowledge::query_references(cas, input, &value)?);
+                    }
                     ids.push(
                         cas.put_artifact(
                             &declaration.artifact_type,
@@ -1191,6 +1265,17 @@ impl<'a> CapturedTaskHost<'a> {
                 sandbox,
                 outputs,
             )?;
+            let mut outputs = outputs;
+            if let Some(request) = &worker.development {
+                super::development::cache::attach_outputs(
+                    cas,
+                    input,
+                    attempt.id(),
+                    request,
+                    &raw_artifact_ids,
+                    &mut outputs,
+                )?;
+            }
             Ok(outputs)
         })();
         let outputs = match self.environment.runtime_evidence(cas, input, attempt) {
@@ -1232,6 +1317,53 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
+    fn prepare_invocation(
+        &self,
+        cas: &Cas,
+        input: &mut TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
+    ) -> Result<(), String> {
+        if let Some(worker) = self.resolved_worker(cas, definition)? {
+            if let Some(request) = worker
+                .development
+                .as_ref()
+                .filter(|request| !request.caches.is_empty())
+            {
+                let binding = review_config::task::development::resolve_binding(request)?;
+                super::development::cache::select(
+                    cas,
+                    input,
+                    request,
+                    &binding,
+                    &self.run_id,
+                    &worker.slot,
+                )?;
+            }
+            if let Some(policy) = &worker.knowledge {
+                let nodes = self
+                    .workers
+                    .iter()
+                    .filter(|(_, w)| w.slot == worker.slot)
+                    .map(|(node, _)| node.clone())
+                    .chain(std::iter::once(input.node.clone()))
+                    .collect();
+                super::knowledge::select(
+                    cas,
+                    input,
+                    policy,
+                    super::knowledge::Scope {
+                        run: &self.run_id,
+                        slot: &worker.slot,
+                        nodes: &nodes,
+                    },
+                )?;
+            }
+            Ok(())
+        } else {
+            self.domain.prepare_invocation(cas, input, definition)
+        }
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,

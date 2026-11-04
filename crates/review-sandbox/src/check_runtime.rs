@@ -63,6 +63,13 @@ impl CheckRuntime {
         Ok(runtime)
     }
 
+    /// Keep private roots when a container may still own a writable bind. The existing
+    /// crash sweep recognizes the preserved marker and leaves cleanup to the operator.
+    pub fn preserve(self) {
+        let _ = stale::mark_preserved(&self.path);
+        std::mem::forget(self);
+    }
+
     /// The runtime directory itself. A caller may put its own private directories here (a
     /// toolchain copy, a cold target); they are removed with the runtime.
     pub fn path(&self) -> &Path {
@@ -109,6 +116,17 @@ impl CheckRuntime {
 
 impl Drop for CheckRuntime {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.identity.is_none() || self.identity != crate::Identity::of(&self.path).ok() {
+            return;
+        }
+        if self.path.join(stale::PRESERVED).exists() {
+            return;
+        }
+        if crate::container::recover_worker_storage(&self.path).is_err() {
+            let _ = stale::mark_preserved(&self.path);
+            return;
+        }
         let (Some(parent), Some(name)) = (self.path.parent(), self.path.file_name()) else {
             return;
         };
@@ -136,6 +154,17 @@ impl Drop for CheckRuntime {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_preserved_worker_runtime_keeps_its_private_roots_for_the_operator() {
+        let runtime = super::CheckRuntime::new().unwrap();
+        let path = runtime.path().to_path_buf();
+        runtime.preserve();
+        assert!(path.is_dir());
+        assert!(path.join("preserved").is_file());
+        // This fixture owns exactly this directory; no other runtime or temporary tree is swept.
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

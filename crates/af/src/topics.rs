@@ -466,6 +466,20 @@ changed paths, and an optional `[survey]` table bounds what the Surveyor measure
 (`af project refresh --help`). Worker packages live under `.af/workers/`, pinned in
 `.af/af.lock`; pipelines name them.
 
+A captured Task Command Worker may carry `development.toml` (`af.worker-development/3`)
+inside its pinned package. It requests a private, network-denied tool environment from the
+operator's `AF_WORKER_DEVELOPMENT_BINDING_FILE`; it never names host caches or credentials.
+The command names `@tool/HARNESS`. Model adapters, unavailable aggregate storage enforcement and
+missing exact machine bindings are refused. CPU, memory, aggregate disk, process, wall and output
+ceilings are required. The version 3 machine binding explicitly grants `storage = \"tmpfs_volume\"`:
+all writable roots and temporary areas share one bounded private filesystem; no writable host
+bind is exposed. Disk bounds are 4096-byte multiples through 8 GiB.
+Reviewer experiments cannot become the candidate. Optional cache policies select
+immutable layers in WarmSet@3 before reservation; retries retain that selection. Only admitted
+same-slot outputs may supply BuildCache@2 continuation. Machine-approved dependencies are
+available-only, and Worker caches never supply Gate evidence. See
+`docs/design/worker-local-development.md` and `fixtures/worker-development/README.md`.
+
   version = 1
   [project]   name = \"myrepo\"      min_af = \"0.7\"
   [defaults]  pipeline = \"review\"

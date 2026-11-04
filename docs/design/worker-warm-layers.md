@@ -1,5 +1,10 @@
 # Worker warm layers
 
+Current development cache carry uses `WarmSet@3` and `BuildCache@2` under
+[ADR-2026-11-04-carry-declared-worker-caches-in-exact-warm-sets](../adr/2026-11-04-carry-declared-worker-caches-in-exact-warm-sets.md).
+The package/version names below retain this historical design's identities; Session carry
+remains removed. The current behavior is in [Worker local development](worker-local-development.md).
+
 **Status:** design proposal, 2026-09-16, revised 2026-09-17 after its first `af review` Round
 (Campaign `worker-warm-layers`, eight Findings, all accepted). Against `main` 166eca5
 (v0.9.0-rc.2). Packages P1–P4 are accepted as
