@@ -1,4 +1,5 @@
 """Bounded invocation of the native accepted-Snapshot capture; no source format is reimplemented."""
+from contextlib import ExitStack
 import os
 import signal
 import subprocess
@@ -71,15 +72,25 @@ def _capture(config, path, expected_digest, into):
     # materializes through its existing path/Manifest/Git helpers, and verifies replay. It
     # spawns no model or benchmark. A private, synchronously waited group lets us
     # distinguish a reaped refusal from one with surviving descendants.
-    with tempfile.TemporaryDirectory(dir=path) as home:
-        env = {"PATH": os.defpath, "HOME": home, "XDG_CONFIG_HOME": home,
-               "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home}
-        with tempfile.TemporaryFile(dir=path) as output, tempfile.TemporaryFile(dir=path) as error:
+    process = None
+    prelaunch_error = None
+    # Only setup OSErrors and Popen's definitive launch refusal prove no process
+    # started. An interrupted Popen remains uncertain even without a process handle.
+    with ExitStack() as resources:
+        try:
+            home = resources.enter_context(tempfile.TemporaryDirectory(dir=path))
+            env = {"PATH": os.defpath, "HOME": home, "XDG_CONFIG_HOME": home,
+                   "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home}
+            output = resources.enter_context(tempfile.TemporaryFile(dir=path))
+            error = resources.enter_context(tempfile.TemporaryFile(dir=path))
+            process = subprocess.Popen([config["af"], "scenario", "experiment-source",
+                "--file", request_path, "--repo", config["task_repo"], "--task-state", config["task_state"],
+                "--into", into, "--json"], env=env, stdout=output, stderr=error,
+                stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as error:
+            prelaunch_error = error
+        if prelaunch_error is None:
             try:
-                process = subprocess.Popen([config["af"], "scenario", "experiment-source",
-                    "--file", request_path, "--repo", config["task_repo"], "--task-state", config["task_state"],
-                    "--into", into, "--json"], env=env, stdout=output, stderr=error,
-                    stdin=subprocess.DEVNULL, start_new_session=True)
                 code = process.wait(timeout=CAPTURE_SECONDS)
             except subprocess.TimeoutExpired as expired:
                 # Best effort termination is not proof of cleanup. Keep the fence even
@@ -91,23 +102,32 @@ def _capture(config, path, expected_digest, into):
                 process.wait()
                 raise ContractError("native source capture uncertain; retain private capture for inspection") from expired
             except BaseException:
-                if "process" in locals():
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait()
-                raise
-            if code != 0:
                 try:
-                    os.killpg(process.pid, 0)
+                    os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
-                    if code > 0 and not os.path.lexists(into):
-                        raise CleanCaptureRefusal("native source handoff refused before capture")
+                    pass
+                process.wait()
+                raise
+            # A valid receipt and zero exit prove nothing about surviving descendants.
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise ContractError("native source capture process group remains; cleanup uncertain")
+            if code != 0:
+                if code > 0 and not os.path.lexists(into):
+                    raise CleanCaptureRefusal("native source handoff refused before capture")
                 raise ContractError("native source handoff refused; capture cleanup uncertain")
             output.seek(0)
             data = output.read(65537)
             require(len(data) <= 65536, "native source receipt exceeds its bound")
+    # Settle only after all temporary resources have confirmed cleanup. A cleanup
+    # exception, existing capture or ambiguous launch never reaches this refusal.
+    if prelaunch_error is not None:
+        if not os.path.lexists(into):
+            raise CleanCaptureRefusal(str(prelaunch_error)) from prelaunch_error
+        raise prelaunch_error
     receipt = loads_strict(data, "native source receipt", 65536)
     require(receipt["schema"] == "af/scenario-experiment-source@1"
             and receipt["request_digest"] == expected_digest

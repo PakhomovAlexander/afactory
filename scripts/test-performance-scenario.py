@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,38 @@ class SourceCapture(unittest.TestCase):
     def capture(self):
         return scenariosource.capture(self.config, self.path, canonical_digest(self.request))
 
+    def test_success_without_descendants_accepts_matching_receipt(self):
+        receipt = dict(schema="af/scenario-experiment-source@1",
+            request_digest=canonical_digest(self.request), baseline_snapshot_id=BASE,
+            candidate_snapshot_id=HEAD, repository=os.path.join(self.path, "source/repository.git"))
+        self.program("import json; print(json.dumps(%r))" % receipt)
+        self.assertEqual(self.capture(), receipt)
+
+    def successful_leader_with_child(self):
+        group_file = os.path.join(self.path, "group")
+        receipt = dict(schema="af/scenario-experiment-source@1",
+            request_digest=canonical_digest(self.request), baseline_snapshot_id=BASE,
+            candidate_snapshot_id=HEAD, repository=os.path.join(self.path, "source/repository.git"))
+        self.program("""import json, os, time
+with open(%r, 'w') as stream:
+    stream.write(str(os.getpid()))
+if os.fork() == 0:
+    time.sleep(30)
+    os._exit(0)
+print(json.dumps(%r))
+""" % (group_file, receipt))
+        return group_file
+
+    def test_successful_leader_with_descendant_is_not_clean(self):
+        group_file = self.successful_leader_with_child()
+        try:
+            with self.assertRaisesRegex(ContractError, "process group remains") as caught:
+                self.capture()
+            self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        finally:
+            if os.path.exists(group_file):
+                os.killpg(int(pathlib.Path(group_file).read_text()), signal.SIGKILL)
+
     def test_reaped_refusal_without_capture_is_clean(self):
         self.program("import sys; sys.exit(1)")
         with self.assertRaises(scenariosource.CleanCaptureRefusal):
@@ -61,6 +94,69 @@ class SourceCapture(unittest.TestCase):
         with self.assertRaises(ContractError) as caught:
             self.capture()
         self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+
+    def test_setup_failure_is_clean_only_without_capture(self):
+        self.program("raise AssertionError('must not execute')")
+        for resource, failures in (("TemporaryDirectory", [OSError("home unavailable")]),
+                                   ("TemporaryFile", [OSError("output unavailable")]),
+                                   ("TemporaryFile", [None, OSError("stderr unavailable")])):
+            for existing in (False, True):
+                with self.subTest(resource=resource, failures=len(failures), existing=existing):
+                    source = os.path.join(self.path, "source")
+                    if existing:
+                        os.mkdir(source)
+                    original = getattr(scenariosource.tempfile, resource)
+                    calls = iter(failures)
+                    def setup(*args, **kwargs):
+                        failure = next(calls, None)
+                        if failure is not None:
+                            raise failure
+                        return original(*args, **kwargs)
+                    with mock.patch.object(scenariosource.tempfile, resource, side_effect=setup), \
+                            mock.patch.object(scenariosource.subprocess, "Popen") as launch:
+                        with self.assertRaises(OSError if existing else scenariosource.CleanCaptureRefusal):
+                            self.capture()
+                        launch.assert_not_called()
+                    if existing:
+                        os.rmdir(source)
+
+    def test_launch_refusal_with_existing_capture_is_not_clean(self):
+        self.program("raise AssertionError('must not execute')")
+        self.binary.chmod(0o600)
+        os.mkdir(os.path.join(self.path, "source"))
+        with self.assertRaises(OSError):
+            self.capture()
+
+    def test_missing_interpreter_is_clean(self):
+        self.program("raise AssertionError('must not execute')")
+        self.binary.write_text("#!/nonexistent-af-test-interpreter\n")
+        self.config["af_digest"] = sha256_bytes(self.binary.read_bytes())
+        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+            self.capture()
+
+    def test_interrupted_launch_is_not_clean(self):
+        self.program("raise AssertionError('must not execute')")
+        with mock.patch.object(scenariosource.subprocess, "Popen", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.capture()
+
+    def test_prelaunch_cleanup_failure_is_not_clean(self):
+        self.program("raise AssertionError('must not execute')")
+        with mock.patch.object(scenariosource.tempfile.TemporaryDirectory, "__exit__",
+                               side_effect=OSError("cleanup unconfirmed")), \
+                mock.patch.object(scenariosource.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
+            with self.assertRaisesRegex(OSError, "cleanup unconfirmed"):
+                self.capture()
+
+    def test_signal_exit_and_failed_group_probe_are_not_clean(self):
+        self.program("import os, signal; os.kill(os.getpid(), signal.SIGTERM)")
+        with self.assertRaises(ContractError) as caught:
+            self.capture()
+        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        self.program("import sys; sys.exit(1)")
+        with mock.patch.object(scenariosource.os, "killpg", side_effect=PermissionError("probe refused")):
+            with self.assertRaises(PermissionError):
+                self.capture()
 
     def test_torn_capture_refusal_is_not_clean(self):
         self.program("import os, sys; os.mkdir(sys.argv[sys.argv.index('--into')+1]); sys.exit(1)")
@@ -82,6 +178,67 @@ class SourceCapture(unittest.TestCase):
             with self.assertRaises(ContractError) as caught:
                 self.capture()
         self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+
+
+class SourceCaptureFence(ExecutorFixture):
+    """Run the real capture inside the Journal's real common exclusion."""
+    def setUp(self):
+        super().setUp()
+        self.source = SourceCapture()
+        self.source.setUp()
+        self.addCleanup(self.source.doCleanups)
+        lock_patch = mock.patch.object(executor.Journal, "lock_directory", self.locks)
+        lock_patch.start()
+        self.addCleanup(lock_patch.stop)
+
+    def handoff(self):
+        try:
+            return self.source.capture(), None, False
+        except scenariosource.CleanCaptureRefusal as error:
+            return None, str(error), False
+
+    def assert_clean_refusal_and_later_work(self, journal, inode):
+        result, refusal = journal.exclusive("source capture", self.handoff)
+        self.assertIsNone(result)
+        self.assertIsNotNone(refusal)
+        lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+        self.assertFalse(os.path.lexists(lock + ".fence"))
+        self.assertEqual(journal.exclusive("unrelated work", lambda: (True, None, False)), (True, None))
+        self.assertEqual(os.stat(lock).st_ino, inode)
+
+    def lock_inode(self):
+        with hostlock.MachineLock(self.locks):
+            return os.stat(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)).st_ino
+
+    def test_nonexecutable_pinned_file_settles_fence_and_allows_unrelated_work(self):
+        self.source.program("raise AssertionError('must not execute')")
+        self.source.binary.chmod(0o600)
+        inode = self.lock_inode()
+        with executor.Journal(self.c) as journal:
+            self.assert_clean_refusal_and_later_work(journal, inode)
+
+    def test_setup_failure_settles_fence_and_allows_unrelated_work(self):
+        self.source.program("raise AssertionError('must not execute')")
+        inode = self.lock_inode()
+        with executor.Journal(self.c) as journal:
+            with mock.patch.object(scenariosource.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
+                self.assert_clean_refusal_and_later_work(journal, inode)
+
+    def test_successful_leader_with_child_retains_fence_and_blocks_unrelated_work(self):
+        group_file = self.source.successful_leader_with_child()
+        inode = self.lock_inode()
+        try:
+            with executor.Journal(self.c) as journal:
+                with self.assertRaisesRegex(ContractError, "process group remains"):
+                    journal.exclusive("source capture", self.handoff)
+                lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+                self.assertTrue(os.path.isdir(lock + ".fence"))
+                with self.assertRaises(ContractError):
+                    journal.exclusive("unrelated work", lambda: (True, None, False))
+                self.assertEqual(os.stat(lock).st_ino, inode)
+        finally:
+            if os.path.exists(group_file):
+                os.killpg(int(pathlib.Path(group_file).read_text()), signal.SIGKILL)
 
 
 class ScenarioLab(ExecutorFixture):
