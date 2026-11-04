@@ -495,6 +495,15 @@ class Units(TempDir):
         self.assertIn("af-perf-source-refresh.service",
                       unit("af-nightly-measure.service")["Unit"]["After"][0].split())
 
+    def test_build_and_publish_read_nightly_secrets_and_build_keeps_docker_access(self):
+        for step, groups in (("build", ["af-nightly", "docker"]),
+                             ("publish", ["af-nightly"])):
+            with self.subTest(step=step):
+                service = unit("af-nightly-%s.service" % step)["Service"]
+                self.assertEqual((service["User"], service["Group"]),
+                                 (["af-nightly"], ["af-perf-readers"]))
+                self.assertEqual(service.get("SupplementaryGroups"), [" ".join(groups)])
+
     def test_build_and_measure_share_the_host_tmp_and_mounts(self):
         for step in ("build", "measure"):
             service = unit("af-nightly-%s.service" % step)["Service"]

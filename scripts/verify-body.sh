@@ -28,6 +28,12 @@ mkdir -p "$target_dir/nextest-reports"
 # the nextest store and, unless the caller chose a file, every make check step's timing.
 run_dir="$(mktemp -d "$target_dir/nextest-reports/run-XXXXXXXX")"
 export AF_CI_METRICS="${AF_CI_METRICS:-$run_dir/ci-metrics.jsonl}"
+# Keep the normal Task report to one tests record across all selected classes. Step records
+# still stream to AF_CHECK_REPORT, particularly the build receipt the phase monitor needs.
+unset AF_GATE_TEST_REPORT
+if [[ -n "${AF_CHECK_REPORT:-}" ]]; then
+  export AF_GATE_TEST_REPORT="$run_dir/test-runs.jsonl"
+fi
 # Selection is explicit caller data. No arguments keep the complete AF gate.
 check_args=(check)
 if [[ "$#" -gt 0 ]]; then
@@ -47,7 +53,14 @@ fi
 status=0
 AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" \
   AF_GATE_NEXTEST_RUN="$run_dir" make "${check_args[@]}" || status=$?
-# The gate output ends with where its test time went. The report never changes the status.
+if [[ -n "${AF_CHECK_REPORT:-}" ]]; then
+  report_status=0
+  python3 scripts/ci-step.py --finish-tests "$AF_GATE_TEST_REPORT" || report_status=$?
+  if [[ "$status" -eq 0 ]]; then
+    status="$report_status"
+  fi
+fi
+# The gate output ends with where its test time went. The timing summary never changes status.
 echo "gate step timings: $AF_CI_METRICS"
 junit="$run_dir/store/ci/junit.xml"
 if [[ -f "$junit" ]]; then

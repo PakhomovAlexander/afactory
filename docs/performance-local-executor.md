@@ -800,10 +800,12 @@ profile's timeout. Keep the historical failed report unchanged beside new eviden
 Telemetry overhead and invocation-cost runs select each side's fixture contract from the
 version its `af --version` prints: v0.13.0 measures under `check-receipt@1` (the same packages
 declaring `af/TaskCheckReceipt@1`, re-pinned to the digests the contract declares and its own
-`af catalog digest` prints), v0.14.0-rc.1 through v0.14.0-rc.3 under the committed
+`af catalog digest` prints), v0.14.0-rc.1 through v0.14.0-rc.5 under the committed
 `check-receipt@2`; a release no contract names (v0.11.9, say) is refused, never measured under
 the committed contract. The documents (`af/telemetry-overhead@2`,
 `af/telemetry-invocation-cost@2`) record the contract and every package pin.
+The [RC4/RC5 source evidence](telemetry.md#performance) records their unchanged
+receipt contract and fixture pins; RC6, stable 0.14.0 and nightly version strings remain unnamed.
 
 A submission admits the selected releases' declared workloads before anything is reserved,
 claimed or built, from the release each side's retained source declares in its Cargo.lock: a

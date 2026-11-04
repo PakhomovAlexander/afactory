@@ -11,6 +11,8 @@ After=network-online.target
 Type=oneshot
 User=af-nightly
 Group=af-perf-readers
+# Read the root:af-nightly 0440 publish tokens.
+SupplementaryGroups=af-nightly
 UMask=0027
 Environment=PYTHONDONTWRITEBYTECODE=1
 # The tokens are files the configuration names, never values here. Either keep them root-owned

@@ -120,9 +120,11 @@ commands, assertions, or the Task's own budget.
 - A gate is evidence, not a verdict to discard. A gate run reruns the tests that failed in its
   parallel run once each, alone, and fails only on those that fail twice; every local check
   records `af/TaskCheckReport@1` beside its receipt (the host's load and CPUs at its start and
-  end, its steps by stage, its test threads and its flaky tests). A check writes one `tests`
-  record per test run, and af folds them into one. The gate's failed and flaky tests and the
-  step that stopped a check come from its report when the check writes one, and from the text
+  end, its steps by stage, its test threads and its flaky tests). A check can write one `tests`
+  record per test run, and af folds them into one. This repository's native gate folds its
+  private per-class runs before publishing one complete tests record, while step records stream
+  directly to the Task report. The gate's failed and flaky tests and the step that stopped a
+  check come from its report when the check writes one, and from the text
   scan of its output only for a check without one (absent or refused)
   ([ADR-0258](adr/0258-task-gate-evidence-comes-from-the-check-report.md)). A Task that ended
   at a failed gate is reopened at that gate by `af task run ID --retry-gate`

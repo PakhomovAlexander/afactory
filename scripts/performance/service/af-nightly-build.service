@@ -18,6 +18,8 @@ OnSuccess=af-nightly-measure.service
 Type=oneshot
 User=af-nightly
 Group=af-perf-readers
+# Read the root:af-nightly 0440 signing key; keep access to the Docker daemon.
+SupplementaryGroups=af-nightly docker
 UMask=0027
 Environment=PYTHONDONTWRITEBYTECODE=1
 # A nightly key with a passphrase: hold it as the credential af-nightly-sign-password (a file

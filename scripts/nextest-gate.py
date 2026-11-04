@@ -2,7 +2,7 @@
 """Give every nextest run a private report store, outside sealed sources when verify.sh selects
 a target, and report the JUnit that run wrote.
 
-    nextest-gate.py [--repeat N] NEXTEST_RUN_ARGUMENTS...
+    nextest-gate.py [--repeat N] [--filterset-file PATH] NEXTEST_RUN_ARGUMENTS...
 
 A gate run reruns the tests that failed in its parallel run once each, alone, before it fails
 (ADR-0124): one at a time, with no other test alive. A test that passes alone is reported
@@ -10,7 +10,12 @@ A gate run reruns the tests that failed in its parallel run once each, alone, be
 before. The rerun is bounded: more than 25 failed tests, or 15 minutes of reruns, and the gate
 fails with the whole list. When `AF_CHECK_REPORT` names a file, as a Task check sets it, the run
 appends one `af.check-report/1` tests line to it: the thread count, what failed and what was
-flaky.
+flaky. Under verify.sh those lines go to AF_GATE_TEST_REPORT in the gate's private run
+directory; ci-step.py folds them into one tests record when the gate ends.
+
+`--filterset-file PATH` reads the exact nextest filter from retained class evidence, so the
+reported command stays bounded without truncating the selection. It becomes `-E` before nextest
+runs, including before isolation reruns replace the original selection.
 
 `--repeat N` runs the same selection N times in a row instead, each a whole parallel run, and
 stops at the first that fails; it never reruns anything, because its purpose is to find the
@@ -161,8 +166,7 @@ def run_nextest(command, reports, named, junit, announce):
 
 
 def own_options(arguments):
-    """(repeat, nextest arguments): this script's `--repeat N`, else None, and everything else
-    for nextest."""
+    """Return the repeat count and nextest arguments, expanding retained filter files."""
     repeat, rest, index = None, [], 0
     while index < len(arguments):
         argument = arguments[index]
@@ -171,6 +175,12 @@ def own_options(arguments):
             continue
         if argument.startswith('--repeat='):
             repeat, index = argument.split('=', 1)[1], index + 1
+            continue
+        if argument == '--filterset-file':
+            if index + 1 == len(arguments):
+                raise SystemExit('nextest-gate.py: --filterset-file needs a path')
+            rest.extend(['-E', Path(arguments[index + 1]).read_text()])
+            index += 2
             continue
         rest.append(argument)
         index += 1
@@ -296,9 +306,9 @@ def isolated_runner(arguments, run):
 
 
 def report_tests(threads, failed, flaky, rerun):
-    """Append the run's tests line to `AF_CHECK_REPORT`, when af asked for one; a report that
-    cannot be written is a warning, never a different status."""
-    path = os.environ.get('AF_CHECK_REPORT')
+    """Append the run's tests line to the gate's private spool, or directly to
+    `AF_CHECK_REPORT` outside verify.sh; a write failure warns without changing status."""
+    path = os.environ.get('AF_GATE_TEST_REPORT') or os.environ.get('AF_CHECK_REPORT')
     if not path:
         return
     record = {'schema': 'af.check-report/1', 'record': 'tests',

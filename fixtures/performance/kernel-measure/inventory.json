@@ -3312,8 +3312,8 @@
   },
   {
    "path": "scripts/performance/service/af-nightly-build.service",
-   "sha256": "sha256:16372a17d41fb166cd18428f9f1353f28bbd6d32986a23a6eb303dfbd7c6da74",
-   "size": 2047
+   "sha256": "sha256:d23d5a254c608927ea1d140801dcc2c4707eb559ce115a4ad567557ac5d42f0b",
+   "size": 2164
   },
   {
    "path": "scripts/performance/service/af-nightly-measure.service",
@@ -3322,8 +3322,8 @@
   },
   {
    "path": "scripts/performance/service/af-nightly-publish.service",
-   "sha256": "sha256:3ac81a47dcd946bd0df65bb94432a1a6a59422d1312b285d202d2cdb657247db",
-   "size": 1571
+   "sha256": "sha256:b5e8c2595475ba60cfc4d12538f820e65805395d92a94d63c8849a5a1416ec90",
+   "size": 1650
   },
   {
    "path": "scripts/performance/service/af-nightly-report.service",
@@ -3577,8 +3577,8 @@
   },
   {
    "path": "scripts/performance/tests/test_nightly_measure.py",
-   "sha256": "sha256:79c697d02c0ce16c39460944f9240d89bbdc9d08f6b5425913eec663ce046281",
-   "size": 28489
+   "sha256": "sha256:9503fc9d04dddcf6f38e1fca79914593f44f2b113de4ed59369de8acc29e6e60",
+   "size": 29051
   },
   {
    "path": "scripts/performance/tests/test_nightly_publish.py",
@@ -3667,8 +3667,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:46677a5833e752c7c2318103fdd694be7749d75b6b88e65d0420f1d8de760ce2",
-   "size": 10136
+   "sha256": "sha256:c31f9255cd04e7b2ad24bf84bcefa8e86dec2c41168ae539b8747d72f256303d",
+   "size": 12262
   },
   {
    "path": "scripts/performance/tests/test_telemetry_build_bounds.py",
@@ -3776,7 +3776,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:6c02e9002693abcb355390d5535b8a93cf7b26857c6178319c29014684d8153c",
+ "harness_digest": "sha256:2b182f6cb059e752ddc312974b9a899f65e2b01d47c1e5a4cc05e3d155a2b651",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
