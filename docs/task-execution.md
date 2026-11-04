@@ -59,7 +59,7 @@ commands, assertions, or the Task's own budget.
   ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
 - An Attempt whose writer was lost or whose run was interrupted is settled as abandoned, charged
   its reported usage and never its reservation, and counts against its node's recovery
-  allowance, one unless its `af.pipeline/3` slot declares `recovery_attempts`, instead of any
+  allowance, one unless its `af.pipeline/3` (or structured `af.pipeline/4`) slot declares `recovery_attempts`, instead of any
   Attempt limit; the writer lease is 60 s, renewed by its own heartbeat thread, and the resume
   says on its first line what it runs again or why it cannot
   ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
@@ -131,6 +131,9 @@ commands, assertions, or the Task's own budget.
   is admitted
   ([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md),
   [Retry a failed gate](tasks.md#retry-a-failed-gate)).
+- A package-defined [structured Task](task-execution/structured.md) reads bounded captured JSON
+  through typed ports and concludes `structurally_validated`. It proves its deterministic
+  contract, without independent semantic verification or code delivery.
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task
   allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`

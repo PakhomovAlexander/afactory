@@ -7,6 +7,7 @@ instead of exporting that output to a file and capturing it again. The decision 
 input the selected Pipeline declares; this page is their Task-file reference and a map of where
 they are implemented.
 
+<<<<<<< HEAD
 Scenario fresh Task templates use this same resolver after checking an exact completed accepted
 predecessor receipt in the same Task Store. Their bindings declare the native output port and
 artifact type; accepted candidate sources retain the native Snapshot and re-rooting provenance.
@@ -14,6 +15,13 @@ A missing output, wrong type, foreign repository or unaccepted Task is refused b
 planning. This narrower orchestration path does not change ordinary Task-file bindings, which
 retain their explicitly recorded acceptance and domain conclusion. See
 [Scenarios and Ants](../scenarios.md#fresh-task-templates).
+=======
+The [structured profile](structured.md) also captures ordinary external JSON through repeated
+`--input-json PORT=FILE` flags on `plan` and `start`. These files are relative to the Task file,
+bounded to 64 KiB, without symlink traversal, and validated against the captured package schema
+before Provider admission. Its required custom ports also accept the recorded-output bindings
+below, under the same schema checks.
+>>>>>>> origin/main
 
 ## The shape
 

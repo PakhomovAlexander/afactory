@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:structured-contract:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "inputs",
+    "outputs",
+    "require_container"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.structured-contract/1"
+    },
+    "inputs": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^(?!result_)[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+        "not": {
+          "enum": [
+            "requirements",
+            "source",
+            "base",
+            "history",
+            "sources",
+            "findings",
+            "acceptance",
+            "validation"
+          ]
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_type",
+          "schema"
+        ],
+        "properties": {
+          "artifact_type": {
+            "type": "string",
+            "pattern": "^custom/[A-Za-z][A-Za-z0-9]*@[1-9][0-9]*$"
+          },
+          "schema": {
+            "type": [
+              "object",
+              "boolean"
+            ]
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^(?!result_)[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+        "not": {
+          "enum": [
+            "requirements",
+            "source",
+            "base",
+            "history",
+            "sources",
+            "findings",
+            "acceptance",
+            "validation"
+          ]
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_type",
+          "schema"
+        ],
+        "properties": {
+          "artifact_type": {
+            "type": "string",
+            "pattern": "^custom/[A-Za-z][A-Za-z0-9]*@[1-9][0-9]*$"
+          },
+          "schema": {
+            "type": [
+              "object",
+              "boolean"
+            ]
+          }
+        }
+      }
+    },
+    "require_container": {
+      "type": "boolean"
+    }
+  }
+}

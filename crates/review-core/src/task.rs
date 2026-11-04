@@ -503,3 +503,5 @@ impl TaskResultV1 {
         Ok(())
     }
 }
+
+pub mod structured;

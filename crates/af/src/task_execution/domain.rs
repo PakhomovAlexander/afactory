@@ -360,7 +360,15 @@ pub(super) fn environment(
     profile: TaskKindProfile,
 ) -> Result<Box<dyn TaskEnvironment>, String> {
     authority.invocation_policy_id()?;
-    if let Some(id) = &authority.document_policy_id {
+    if let Some(contract) = super::structured::policy(cas, authority)? {
+        Ok(Box::new(DataTaskEnvironment {
+            policy: if contract.require_container {
+                review_sandbox::Policy::safe()
+            } else {
+                review_sandbox::Policy::trusted_local()
+            },
+        }))
+    } else if let Some(id) = &authority.document_policy_id {
         let policy: DocumentTaskPolicy =
             serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;

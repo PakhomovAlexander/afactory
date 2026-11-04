@@ -23,6 +23,7 @@ mod report;
 pub mod report_task;
 pub mod review;
 pub mod source;
+pub mod structured;
 pub mod warm_check;
 
 use std::collections::{BTreeMap, BTreeSet};

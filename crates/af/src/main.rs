@@ -836,6 +836,7 @@ fn campaign_labels_beneath(root: &Path) -> Vec<String> {
 
 fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::StartOptions {
     task_execution::StartOptions {
+        input_json: Vec::new(),
         file: args.task_file.expect("Task file path was checked"),
         bindings: args.bindings,
         source_bindings: None,
@@ -2236,6 +2237,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             repo,
             state,
             authority,
+            input_json,
             uncommitted,
             timeout_secs,
             json,
@@ -2247,6 +2249,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             repo,
             state,
             authority,
+            input_json,
             uncommitted,
             json,
             plan_only: !execute,
@@ -2262,6 +2265,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             repo,
             state,
             authority,
+            input_json,
             uncommitted,
             fit,
             replace,
@@ -2278,6 +2282,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
                 repo,
                 state,
                 authority,
+                input_json,
                 uncommitted,
                 json,
                 plan_only: true,

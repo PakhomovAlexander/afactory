@@ -218,6 +218,7 @@ occurrences keep their original skipped outcomes.
 Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.
 
+<<<<<<< HEAD
 ## Goal roadmaps: planning and complete-loop admission
 
 `af scenario roadmap` retains a bounded optimization roadmap without running it. A partition is
@@ -416,3 +417,9 @@ extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous 
 `af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
 retrieves one native findings, History Capture or adoption artifact after checking its recorded
 Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.
+=======
+A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
+of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
+uses the same pinned Task projection as every other kind, without report or evaluator nodes,
+dynamic Task creation or publication authority.
+>>>>>>> origin/main
