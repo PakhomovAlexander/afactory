@@ -2674,7 +2674,7 @@ mod tests {
             Applied::AlreadyRegistered
         );
         // Removed again: a logged-out row is no longer called registered.
-        fs::write(&registry, "version = 2\n").unwrap();
+        fs::write(&registry, "version = 3\n").unwrap();
         let mut rows = vec![row(scanned(), Auth::NotAuthenticated)];
         apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
         assert!(rows[0].applied.is_none());

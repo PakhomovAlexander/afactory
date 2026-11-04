@@ -2,7 +2,7 @@
 use review_core::task::{
     TaskPhaseV1, TaskResultV1, TaskRevisionV1,
     pipeline::PipelineDefinitionV1,
-    plan::{ExecutionPlanV2, PlanDecisionV1},
+    plan::{ExecutionPlanV3, PlanDecisionV1},
     review::{RepairAssessmentV1, ReviewHistoryV1, VerificationContinuationV1},
 };
 use serde_json::Value;
@@ -19,7 +19,7 @@ pub fn typed_round_trip(contract: &str, value: Value) -> Result<Value, String> {
     match contract {
         "task-revision" => check!(TaskRevisionV1),
         "pipeline-definition" => check!(PipelineDefinitionV1),
-        "execution-plan" => check!(ExecutionPlanV2),
+        "execution-plan" => check!(ExecutionPlanV3),
         "plan-decision" => check!(PlanDecisionV1),
         "task-result" => check!(TaskResultV1),
         "task-phase" => check!(TaskPhaseV1),

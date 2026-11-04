@@ -12,7 +12,7 @@ use review_core::task::document::*;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::measurement::{MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1};
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::report_task::*;
 use review_core::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
@@ -1387,7 +1387,7 @@ impl TaskDomain for ReportTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,

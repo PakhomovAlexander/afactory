@@ -267,7 +267,7 @@ fn wrapper(
         user: Some("fixture".into()),
         spec,
         program,
-        principal_id: "sha256:".to_string() + &"0".repeat(64),
+        principal_id: Some("sha256:".to_string() + &"0".repeat(64)),
         auth_method: "claude.ai".into(),
         org: None,
         cli_version: None,
@@ -378,7 +378,7 @@ fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept(
     // The account the replacement must prove is the captured one.
     assert_eq!(
         identity.principal_id,
-        "sha256:".to_string() + &"0".repeat(64)
+        Some("sha256:".to_string() + &"0".repeat(64))
     );
     assert_eq!(identity.auth_method, "claude.ai");
 }
@@ -391,7 +391,7 @@ fn identity(spec: ProviderSpec, program: PathBuf) -> TaskProviderIdentity {
         pi_ready: None,
         spec,
         program,
-        principal_id: "sha256:".to_string() + &"0".repeat(64),
+        principal_id: Some("sha256:".to_string() + &"0".repeat(64)),
         auth_method: "chatgpt".into(),
         org: None,
         cli_version: None,
@@ -520,7 +520,7 @@ fn the_identity_probe_starts_the_bare_app_server_a_cli_without_stdio_flag_serves
     .unwrap();
     assert_eq!(
         principal,
-        super::principal("codex", Some("developer@example.test")).unwrap()
+        Some(super::principal("codex", Some("developer@example.test")).unwrap())
     );
     assert_eq!(method, "chatgpt");
 }
@@ -612,11 +612,13 @@ fn claude_identity(
     probe_wall: Duration,
 ) -> TaskProviderIdentity {
     let mut identity = identity(spec, program);
-    identity.principal_id = claude_principal(&serde_json::json!({
-        "loggedIn": true, "apiProvider": "firstParty", "authMethod": "claude.ai",
-        "email": "developer@example.test"
-    }))
-    .unwrap();
+    identity.principal_id = Some(
+        claude_principal(&serde_json::json!({
+            "loggedIn": true, "apiProvider": "firstParty", "authMethod": "claude.ai",
+            "email": "developer@example.test"
+        }))
+        .unwrap(),
+    );
     identity.auth_method = "claude.ai".into();
     identity.cli_version = Some("2.1.299 (Claude Code)".into());
     identity.probe_wall = Some(probe_wall);

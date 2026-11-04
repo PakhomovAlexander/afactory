@@ -957,7 +957,7 @@ fn restore_compiler(
             compiler.bind_worker(
                 name,
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV2::Command {},
+                    execution: WorkerExecutionV3::Command {},
                     invocation_policy_id: authority.invocation_policy_id()?.into(),
                 },
             )?;
@@ -1048,7 +1048,7 @@ fn bind_named_models(
         }
         let identity = &identities[&alias];
         let execution = identity.execution(&model, &effort)?;
-        if !matches!(&execution,WorkerExecutionV2::Model {provider_kind:kind,..} if *kind==provider_kind)
+        if !matches!(&execution,WorkerExecutionV3::Model {provider_kind:kind,..} if *kind==provider_kind)
         {
             return Err("Worker and Provider implementation families differ".into());
         }
@@ -1065,13 +1065,13 @@ fn bind_named_models(
 }
 
 fn model_bindings<'a>(
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     graph: &CompiledTask,
     adapters: &'a BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>,
 ) -> Result<BTreeMap<String, TaskModelBinding<'a>>, String> {
     plan.bindings
         .iter()
-        .filter(|(_, binding)| matches!(binding.execution, WorkerExecutionV2::Model { .. }))
+        .filter(|(_, binding)| matches!(binding.execution, WorkerExecutionV3::Model { .. }))
         .map(|(slot, binding)| {
             let name = &graph
                 .slots
@@ -2423,7 +2423,7 @@ fn start_captured(
     }
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V2,
+            EXECUTION_PLAN_V3,
             producer(),
             vec![revision_id.clone()],
             None,
@@ -2665,8 +2665,8 @@ fn install_candidate_experiment(
     revision: &TaskRevisionV1,
     revision_id: &str,
     graph: &CompiledTask,
-    plan: &ExecutionPlanV2,
-) -> Result<(TaskPlanCompiler, ExecutionPlanV2, CompiledTask), String> {
+    plan: &ExecutionPlanV3,
+) -> Result<(TaskPlanCompiler, ExecutionPlanV3, CompiledTask), String> {
     use review_core::task::optimization_experiment::{
         EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentalSlotV2,
     };
@@ -2725,8 +2725,8 @@ fn install_candidate_experiment(
             .get(slot)
             .ok_or("Optimization experiment Worker has no exact binding")?;
         efforts.insert(match &binding.execution {
-            WorkerExecutionV2::Command {} => "command".into(),
-            WorkerExecutionV2::Model { effort, .. } => effort.clone(),
+            WorkerExecutionV3::Command {} => "command".into(),
+            WorkerExecutionV3::Model { effort, .. } => effort.clone(),
         });
         packages.insert(package.clone());
         package_ids.insert(binding.package_artifact_id.clone());
@@ -2815,7 +2815,7 @@ fn captured_domain(
     authority: &RunAuthority,
     profile: TaskKindProfile,
     graph: CompiledTask,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     compiler: &TaskPlanCompiler,
     state: &Path,
     repo: &Path,
@@ -3175,13 +3175,13 @@ pub(super) fn run(
     )
     .map_err(|e| e.to_string())?;
     let mut compiler = planning::restore(&cas, &projection, &authority)?;
-    let plan: ExecutionPlanV2 = artifact(
+    let plan: ExecutionPlanV3 = artifact(
         &cas,
         projection
             .plan_id
             .as_deref()
             .ok_or("Task has no captured plan")?,
-        EXECUTION_PLAN_V2,
+        EXECUTION_PLAN_V3,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     compiler = restore_experimental_slots(compiler, &graph)?;
@@ -4037,7 +4037,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V14: &str = "af/task-inspection@15";
+pub(crate) const TASK_INSPECTION_V16: &str = "af/task-inspection@16";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -5004,7 +5004,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V14,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V16,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.
@@ -5381,7 +5381,7 @@ fn inspection(
         value["undeclared_af_paths"] = serde_json::to_value(group).map_err(|e| e.to_string())?;
     }
     if explain && let Some(id) = &state.plan_id {
-        let plan: ExecutionPlanV2 = artifact(cas, id, EXECUTION_PLAN_V2)?;
+        let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V3)?;
         let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
         // Each Worker slot's binding beside its Attempt wall (ADR-0257).
         value["slots"] = preview::slots_value(cas, &plan, &graph);

@@ -22,8 +22,11 @@ Worker package; its Provider alias supplies the locally admitted account.
 
 An alias does not bypass Provider admission. A Pi Worker uses `provider_kind = "pi"`, an
 exact SDK catalog model ID and thinking level, and an explicitly registered `openai-codex`
-OAuth Provider. The common factory checks opaque account identity, backend, SDK and model
-configuration before private input. Its embedded SDK host exposes confined file tools and
+or `kimi-coding` OAuth Provider. OpenAI requires a stable opaque account identity; Kimi
+explicitly records unavailable account identity separately from its auth context and refuses
+trusted `distinct_principals` policy. The common factory checks available account identity,
+auth context, backend, SDK and model configuration before private input. Kimi account
+substitution within the same context cannot be detected. Its embedded SDK host exposes confined file tools and
 no shell. See the [Pi Provider design](../design/pi-provider.md) for setup, the exact support
 matrix and token-free fixture evidence; paid live smoke was not run.
 

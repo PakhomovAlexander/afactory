@@ -52,7 +52,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
     f.plan.preparation = Some(PlanPreparationV1::Planning {});
     f.plan.acceptance.clear();
     f.plan.compiled_graph_id = artifact(&f.cas, "af/CompiledTask@1", &bootstrap);
-    f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V2, &f.plan);
+    f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V3, &f.plan);
     let bootstrap_id = f.plan_id.clone();
     let lease = f.open();
     f.propose(&lease);
@@ -145,7 +145,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
         proposal_id: proposal.clone(),
         bootstrap_plan_id: bootstrap_id.clone(),
     }];
-    let next_plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V2, &next_plan);
+    let next_plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V3, &next_plan);
     let sequence = f.state().next_sequence;
     for changed in ["goal", "tokens", "deadline", "input", "predecessor"] {
         let mut forged = next.clone();
@@ -164,7 +164,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
         forged_plan.task_revision_id = forged_id.clone();
         forged_plan.inputs = forged.inputs.clone();
         forged_plan.limits = forged.limits.clone();
-        let forged_plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V2, &forged_plan);
+        let forged_plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V3, &forged_plan);
         assert!(
             f.store
                 .task_change(
@@ -304,7 +304,7 @@ fn dependency_fixture() -> (Fixture, String) {
             artifact_id: id,
         },
     );
-    f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V2, &f.plan);
+    f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V3, &f.plan);
     (f, input_id)
 }
 
@@ -398,7 +398,7 @@ fn plan_dependency_references_reject_missing_corrupt_and_wrong_digest() {
                     .get_mut("fixture/extra")
                     .unwrap()
                     .content_digest = f.plan.engine_id.clone();
-                f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V2, &f.plan);
+                f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V3, &f.plan);
                 "event store conflict: Plan dependency content disagrees with its lock".into()
             }
             _ => {
@@ -486,7 +486,7 @@ fn plan_dependency_references_preserve_raw_envelope_errors() {
             .get_mut("fixture/extra")
             .unwrap()
             .artifact_id = f.cas.put(&bytes).unwrap();
-        f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V2, &f.plan);
+        f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V3, &f.plan);
         assert_dependency_reference_error(&f, &expected);
     }
 }

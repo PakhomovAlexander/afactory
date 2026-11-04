@@ -1999,7 +1999,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
     std::fs::write(
         &provider_registry,
         format!(
-            "version = 2\n[[providers]]\nid = \"test-codex\"\nkind = \"codex\"\nauth_dir = \"{}\"\n",
+            "version = 3\n[[providers]]\nid = \"test-codex\"\nkind = \"codex\"\nauth_dir = \"{}\"\n",
             auth_dir.display()
         ),
     )
@@ -2279,8 +2279,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
         String::from_utf8_lossy(&doctor.stderr)
     );
     let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
-    contracts::valid("provider-doctor-v3.json", &doctor);
-    assert_eq!(doctor["schema"], "af/provider-doctor@3");
+    contracts::valid("provider-doctor-v4.json", &doctor);
+    assert_eq!(doctor["schema"], "af/provider-doctor@4");
     assert_eq!(doctor["task"]["committed_tokens"], "2");
     assert_eq!(doctor["task"]["begun_attempts"], "1");
     let doctor_task_id = doctor["task"]["task_id"].as_str().unwrap().to_string();
@@ -2400,8 +2400,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
             String::from_utf8_lossy(&output.stderr)
         );
         let failed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        contracts::valid("provider-doctor-v3.json", &failed);
-        assert_eq!(failed["schema"], "af/provider-doctor@3");
+        contracts::valid("provider-doctor-v4.json", &failed);
+        assert_eq!(failed["schema"], "af/provider-doctor@4");
         assert_eq!(failed["ready"], false);
         assert_eq!(failed["gates_run"], false);
         assert_eq!(failed["workers_dispatched"], false);

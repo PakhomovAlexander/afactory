@@ -61,7 +61,7 @@ impl TaskPlanCompiler {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<(), String> {
         let root = plan
             .dependencies
@@ -140,9 +140,9 @@ impl TaskPlanCompiler {
         let bootstrap = read_envelope(
             cas,
             proof.bootstrap_plan_id(),
-            review_core::task::EXECUTION_PLAN_V2,
+            review_core::task::EXECUTION_PLAN_V3,
         )?;
-        let bootstrap: ExecutionPlanV2 =
+        let bootstrap: ExecutionPlanV3 =
             serde_json::from_value(bootstrap.payload).map_err(|e| e.to_string())?;
         self.validate_plan(cas, &task, &bootstrap)?;
         if bootstrap.preparation.is_none() {

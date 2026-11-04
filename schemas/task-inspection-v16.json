@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:15",
-  "title": "Task inspection af/task-inspection@15",
+  "$id": "urn:af:schema:task-inspection:16",
+  "title": "Task inspection af/task-inspection@16",
   "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0212).",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@15"
+      "const": "af/task-inspection@16"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:2#/$defs/name"

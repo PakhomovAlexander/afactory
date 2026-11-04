@@ -413,7 +413,7 @@ fn verification_replay_refuses_hidden_or_overridden_review(state: &Path, inspect
         .task_projection(&cas, "pagination-cli")
         .unwrap()
         .unwrap();
-    let plan: review_core::task::plan::ExecutionPlanV2 = serde_json::from_value(
+    let plan: review_core::task::plan::ExecutionPlanV3 = serde_json::from_value(
         cas.get_artifact(projection.plan_id.as_ref().unwrap())
             .unwrap()
             .payload,

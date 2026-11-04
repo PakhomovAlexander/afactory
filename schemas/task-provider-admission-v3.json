@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-provider-admission:2",
-  "title": "TaskProviderAdmission@2",
+  "$id": "urn:af:schema:task-provider-admission:3",
+  "title": "TaskProviderAdmission@3",
   "type": "object",
   "additionalProperties": false,
   "required": [

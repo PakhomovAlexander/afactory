@@ -122,7 +122,7 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
             && let Some(plan_id) = &task.plan_id
         {
             let cas = Cas::open_existing(state.join("cas")).unwrap();
-            let plan: review_core::task::plan::ExecutionPlanV2 =
+            let plan: review_core::task::plan::ExecutionPlanV3 =
                 serde_json::from_value(cas.get_artifact(plan_id).unwrap().payload).unwrap();
             let graph: CompiledTask =
                 serde_json::from_value(cas.get_artifact(&plan.compiled_graph_id).unwrap().payload)

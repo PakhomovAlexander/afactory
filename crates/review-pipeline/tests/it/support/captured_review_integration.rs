@@ -97,7 +97,7 @@ impl TaskDomain for PlanOnly {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &review_core::task::plan::ExecutionPlanV2,
+        _: &review_core::task::plan::ExecutionPlanV3,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -210,11 +210,11 @@ pub(super) fn admit_integration_with_source(
     settings.executions = BTreeMap::from([
         (
             "scatter".into(),
-            review_core::task::plan::WorkerExecutionV2::Command {},
+            review_core::task::plan::WorkerExecutionV3::Command {},
         ),
         (
             "closeout".into(),
-            review_core::task::plan::WorkerExecutionV2::Command {},
+            review_core::task::plan::WorkerExecutionV3::Command {},
         ),
     ]);
     let compiler = CampaignReviewPlanCompiler::capture(
@@ -231,7 +231,7 @@ pub(super) fn admit_integration_with_source(
         .unwrap();
     let revision = artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (plan, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = artifact(cas, review_core::task::EXECUTION_PLAN_V2, &plan);
+    let plan_id = artifact(cas, review_core::task::EXECUTION_PLAN_V3, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &PlanOnly, &NoTaskDeveloper);
     let lease = store.open_task(cas, &revision, "developer", 60000).unwrap();
@@ -475,7 +475,7 @@ pub fn run_integration_handoff_observed(
             .contains_key("af/review-integration-checks"),
         integrates
     );
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &plan);
+    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &plan);
     let handoff = preview.prepare_handoff(&cas, &plan_id).unwrap();
     assert_eq!(handoff.successor_revision_id, revision_id);
     assert_eq!(

@@ -10,10 +10,15 @@ Claude/Codex CLI or AF's embedded Pi SDK host owns them. The machine-local regis
 plus Pi's explicit backend and installed SDK entrypoint. Bootstrap runs in the invoking
 release rather than a repository's pinned one, with atomic registry publication.
 
-Pi uses the official **1.4.0 SDK** on **Node >=22.19**, with the `openai-codex` backend and an
-existing stored OAuth login holding stable `accountId`. Other backends, API keys, ambient
-credentials and custom endpoints are unsupported. Setup/status/catalog are token-free;
-Task, Review and doctor use the same exact-account/model admission and confined tools.
+Pi uses the official **1.4.0 SDK** on **Node >=22.19** with stored OAuth for
+`openai-codex` or `kimi-coding`. OpenAI requires stable `accountId`; Kimi exposes no account
+principal. Kimi plans record `principal_id: null` and `identity_mode: "unavailable"`, separately
+from the canonical auth context. Account substitution in that context cannot be detected.
+Trusted `distinct_principals` policy refuses Kimi even across differently named profiles or
+backends. Other backends, API keys, ambient credentials and custom endpoints are unsupported.
+Setup/status/catalog are token-free; Task, Review and doctor retain bounded admission and
+confined tools. Kimi Review requires a catalog Task pipeline with explicit context-only policy;
+installed native Review continues to require known account principals.
 Install outside a repository, log in with Pi at a private terminal, then register:
 
 ```sh
@@ -21,6 +26,48 @@ af provider setup pi-personal --kind pi --backend openai-codex \
   --auth-dir /absolute/private/pi-profile \
   --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js
 ```
+
+For Kimi, use an existing Pi OAuth profile and register explicitly:
+
+```sh
+af provider setup pi-kimi --kind pi --backend kimi-coding \
+  --auth-dir /absolute/private/kimi-profile \
+  --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js
+af provider models pi-kimi --resolve k3/high --json
+```
+
+Only `k3` at the official HTTPS `https://api.kimi.com/coding/v1` endpoint is admitted.
+Supported thinking levels are exactly `low`, `high`, `max`; `medium` and `off` refuse,
+with no fallback. The human status note explicitly says account identity is unavailable and
+auth context only; status JSON retains its stable authentication/credential states. Plans and
+admission receipts capture the typed unavailable identity separately from auth context.
+Pi owns the OAuth record and its additional SDK metadata. AF validates the required OAuth
+mode, nonempty access/refresh strings and finite expiry, preserving opaque metadata through
+refresh without interpreting it as account identity, settings, endpoints or helpers.
+Kimi raw usage is observed from native chunks, including cached-token alternatives; missing
+counters remain unknown. Kimi's captured AF token-budget convention charges total
+`prompt_tokens + completion_tokens` once per inference, with no cache discount even when
+cache counters are present. Reasoning and cache writes are already included, never added
+again. Complete reporting needs valid input/output aggregates for every settled inference;
+absent optional cache/reasoning counters remain unknown. This conservative budget charge is
+not an invoice, uncached-token count or provider cost estimate. OpenAI retains input minus
+cache read plus output and refuses complete accounting without observed cache reads.
+The captured policy digest binds these versioned backend conventions and the host; preceding
+policy identities refuse before private input. No live Kimi inference was run by this Worker.
+
+The kernel passes Pi a trusted remaining token allowance, including admission and format re-asks.
+Before every SDK inference the host checks observed cumulative AF charge and requires safe,
+complete accounting for previous inferences. SDK `maxTokens` is capped by remaining allowance
+and the model's output limit. A single inference may still overshoot: native prompt usage arrives
+only afterward. Its full charge is retained; no subsequent inference is allowed after exhaustion
+or unsafe accounting. Worker payloads and environment variables cannot increase the allowance.
+Bounded `af/pi-inference-evidence@1` raw CAS evidence retains per-inference native counters,
+observation/completion counts, a fresh non-secret request nonce and declared tool-name counts,
+separately from aggregate AF charge.
+It excludes prompts, answers, reasoning text, tool arguments/results and credentials, and survives
+failure/cancellation when observed. Capacity exhaustion fails closed. File-only Pi Workers receive
+the actual output schemas and an array-envelope example; typed admission remains authoritative.
+See the [allowance decision](adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
 
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
@@ -38,14 +85,14 @@ See the [Pi design and evidence](design/pi-provider.md) for the protocol, identi
 accounting and confinement details, supported matrix and limits. The official SDK creation
 and tool test is token-free; **paid live smoke was not run**.
 
-The registry format is version 2; version 1 fails closed under ADR-0145. Recreate older
+The registry format is version 3; versions 1 and 2 fail closed under ADR-0145. Recreate older
 registrations with this release. Codex and Claude retain their registration fields and native
 adapter behavior. Pi setup emits a safe typed report for every internal refusal, including early
 validation/discovery failures. Invalid or reserved requested IDs and absent or unsupported
 backends appear as null, never as an invented supported identity or a raw invalid value.
 Failures repeat the AF-authored detail/outcome on stderr even with `--json`; early refusals
 exit 3 and registry conflicts exit 5. CLI parser errors remain usage errors before Pi setup.
-Pi setup JSON is `af/pi-provider-setup@2`; the shared status and catalog
+Pi setup JSON is `af/pi-provider-setup@3`; the shared status and catalog
 versions are `af/provider-status@5` and `af/provider-models@2`.
 
 ## In a first run
@@ -461,7 +508,7 @@ tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
-| `pi` | AF host `af.pi-host/2` identity/catalog, using the installed SDK 1.4.0 static `openai-codex` models | Pinned SDK static catalog; no network refresh |
+| `pi` | AF host `af.pi-host/4` identity/catalog, using installed SDK 1.4.0 static OpenAI and Kimi K3 models | Pinned SDK static catalog; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
 
 Each Provider gets a header with the source, the harness version and the freshness, one row per

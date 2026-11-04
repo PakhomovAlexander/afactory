@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
 use review_core::task::input_bindings::TASK_INPUT_BINDINGS_V1;
 use review_core::task::plan::{
-    ExecutionPlanV2, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
+    ExecutionPlanV3, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
 };
 use review_core::task::{
     self, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1, TaskWaitingReasonV1,
@@ -257,7 +257,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _prepared: &task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Experimental preparation is not configured".into())
@@ -275,7 +275,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
         _evidence: &review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -286,7 +286,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
         _report: &task::report::TaskRunReportV1,
         _events: &[NewEvent],
@@ -303,8 +303,8 @@ pub trait TaskAuthority: Sync {
         _cas: &Cas,
         _previous: &TaskRevisionV1,
         _next: &TaskRevisionV1,
-        _previous_plan: &ExecutionPlanV2,
-        _next_plan: &ExecutionPlanV2,
+        _previous_plan: &ExecutionPlanV3,
+        _next_plan: &ExecutionPlanV3,
         _handoff: &task::review_handoff::TaskReviewHandoffV1,
     ) -> Result<(), String> {
         Err("Captured Review continuation is not configured".into())
@@ -313,7 +313,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _parent: &task::execution::TaskInvocationV1,
         _children: &task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -325,7 +325,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _parent: &task::execution::TaskInvocationV1,
         _children: &task::owned_children::TaskOwnedChildSetV1,
         _facts: &[execution::owned::TaskOwnedChildEvidence],
@@ -339,7 +339,7 @@ pub trait TaskAuthority: Sync {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<Vec<GeneratedOriginV1>, String>;
     /// Trusted retry eligibility over durable failures of this exact invocation. Attempt
     /// count and token capacity alone do not authorize retrying every failure class.
@@ -347,7 +347,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _invocation: &review_core::task::execution::TaskInvocationV1,
         _previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -366,7 +366,7 @@ pub trait TaskAuthority: Sync {
         _cas: &Cas,
         _previous: &TaskRevisionV1,
         _next: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
     ) -> Result<(), String> {
         Err("Planning input normalization is not configured".into())
     }
@@ -376,7 +376,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _invocation: &review_core::task::execution::TaskInvocationV1,
         _attempt: &execution::ReservedTaskAttempt,
         _context_id: &str,
@@ -398,7 +398,7 @@ pub trait TaskAuthority: Sync {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _invocation: &review_core::task::execution::TaskInvocationV1,
         _output: &review_core::task::execution::TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -638,8 +638,8 @@ fn revision(cas: &Cas, id: &str) -> Result<TaskRevisionV1, StoreError> {
     Ok(revision)
 }
 
-fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlanV2, StoreError> {
-    let plan: ExecutionPlanV2 = payload(cas, id, task::EXECUTION_PLAN_V2)?;
+fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlanV3, StoreError> {
+    let plan: ExecutionPlanV3 = payload(cas, id, task::EXECUTION_PLAN_V3)?;
     plan.validate().map_err(conflict)?;
     if plan.task_revision_id != state.revision_id
         || plan.authority != state.revision.authority
@@ -1534,7 +1534,7 @@ impl TaskProjection {
 
     // Recording a conclusion still requires a current developer decision, but cannot grant
     // another execution effect by extending the plan deadline.
-    fn check_plan_decision(&self, cas: &Cas, time: u64) -> Result<ExecutionPlanV2, StoreError> {
+    fn check_plan_decision(&self, cas: &Cas, time: u64) -> Result<ExecutionPlanV3, StoreError> {
         let id = self
             .plan_id
             .as_ref()
@@ -2328,7 +2328,7 @@ impl EventStore {
         state: &TaskProjection,
         id: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV2, StoreError> {
+    ) -> Result<ExecutionPlanV3, StoreError> {
         let value = plan(cas, id, state)?;
         let expected = authority
             .validate_plan(cas, &state.revision, &value)
@@ -2601,7 +2601,7 @@ impl EventStore {
         state: &TaskProjection,
         authority: &dyn TaskAuthority,
         time: u64,
-    ) -> Result<ExecutionPlanV2, StoreError> {
+    ) -> Result<ExecutionPlanV3, StoreError> {
         let id = state
             .plan_id
             .as_ref()
@@ -2624,7 +2624,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV2, StoreError> {
+    ) -> Result<ExecutionPlanV3, StoreError> {
         self.checked_task_dispatch(cas, lease, authority)
             .map(|(_, plan)| plan)
     }
@@ -2637,7 +2637,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV2), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
         self.checked_task_current(cas, lease, authority, true)
     }
 
@@ -2648,7 +2648,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV2, StoreError> {
+    ) -> Result<ExecutionPlanV3, StoreError> {
         let _span =
             review_core::perf_trace::span(review_core::perf_trace::Phase::AuthorityPlanCheck);
         self.checked_task_recording(cas, lease, authority)
@@ -2660,7 +2660,7 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV2), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
         self.checked_task_current(cas, lease, authority, false)
     }
 
@@ -2670,7 +2670,7 @@ impl EventStore {
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
         dispatching: bool,
-    ) -> Result<(TaskProjection, ExecutionPlanV2), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
         let state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;

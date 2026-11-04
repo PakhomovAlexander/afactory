@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:legacy-review-invocation-policy:2",
-  "title": "legacy-review-invocation-policy@2",
+  "$id": "urn:af:schema:legacy-review-invocation-policy:3",
+  "title": "legacy-review-invocation-policy@3",
   "type": "object",
   "additionalProperties": false,
   "required": [
