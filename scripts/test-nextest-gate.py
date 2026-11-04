@@ -119,6 +119,28 @@ def check_rerun_bounds():
     finally:
         del os.environ['NEXTEST_REPEAT']
     assert gate.own_options(['--repeat', '20', '--profile', 'ci']) == (20, ['--profile', 'ci'])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'filter with spaces.txt'
+        expression = ' | '.join(f'test(=module::case_{n})' for n in range(300))
+        assert len(expression) > 1024
+        path.write_text(expression)
+        repeat, arguments = gate.own_options(['--repeat', '2', '--filterset-file', str(path),
+                                               '--profile', 'ci'])
+        assert repeat == 2 and arguments == ['-E', expression, '--profile', 'ci']
+        assert gate.without_selection(arguments) == ['--profile', 'ci']
+        try:
+            gate.own_options(['--filterset-file'])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError('missing filter file argument was accepted')
+        path.unlink()
+        try:
+            gate.own_options(['--filterset-file', str(path)])
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError('missing filter file fell back to an unfiltered run')
     assert gate.without_selection(['--locked', '--test-threads', '4', '-E', 'all()',
                                    '--profile=ci', '-j=2']) == ['--locked', '--profile=ci']
     print('PASS: the isolation rerun stops at its time and test bounds and fails with every '
@@ -214,10 +236,10 @@ def main():
                 lines = report_lines(report)
                 assert [(line['record'], line.get('label'), line.get('stage'))
                         for line in lines] == [('step', 'test-build', 'build'),
-                                               ('tests', None, None),
-                                               ('step', 'test', 'tests')], (label, lines)
+                                               ('step', 'test', 'tests'),
+                                               ('tests', None, None)], (label, lines)
                 assert all(line['schema'] == 'af.check-report/1' for line in lines), lines
-                tests = lines[1]
+                tests = lines[2]
                 assert tests['test_threads'] == 4, tests
                 assert tests['rerun'] == rerun, (label, tests)
                 assert tests['failed_count'] == failed_count, (label, tests)
@@ -225,7 +247,7 @@ def main():
                 assert tests['flaky'] == [{'name': name, 'parallel': 'failed',
                                            'isolated': 'passed'} for name in full(flaky)], (
                     label, tests)
-                assert lines[2]['exit_code'] == (0 if passes else 100), (label, lines)
+                assert lines[1]['exit_code'] == (0 if passes else 100), (label, lines)
                 assert manifest(repo) == before
                 assert not (repo / 'target').exists()
                 assert not list(target.rglob('store.toml'))

@@ -336,9 +336,24 @@ for scheduled/advisory measurements.
 
 Each class retains the plan, complete nextest inventory, partition, real JUnit, script JUnit when the
 script uses unittest, ci-step JSONL, report JSON and a success receipt. Scripts without unittest have
-command-level step evidence only; no invented passed testcase represents them. Default and feature
+command-level step evidence only; no invented passed testcase represents them. Script step labels
+use the filename stem (for example, `test-release-resolve`), so they satisfy the check report
+name contract. Rust selections retain their complete filter in `<label>-filterset.txt` beside
+the inventory; the reported `nextest-gate.py --filterset-file PATH` command reads that exact
+selection. This keeps generated filters out of the report's bounded printable command fields
+without truncating the selection or changing test inventory validation. Default and feature
 build variants have distinct JUnit identities for reporting. Base, container and Linux perf smoke timings are separate artifacts. The perf smoke commands
 contribute to the observed command envelope, with their cost reported separately from class shares. The gate-owner preflight is mandatory in both the base check and each selected class runner.
+
+The `task_gate::the_shipping_gate_producers_write_one_tests_record_the_task_runtime_admits`
+regression runs the shipping report producers inside a local Task check of a sealed candidate.
+Its JUnit stays in the check's private runtime through `AF_GATE_NEXTEST_RUN`, as in `verify.sh`;
+it asserts one folded tests record, bounded command arguments and admission by the strict Task
+report parser. On failure it prints the nested receipt and the check's retained stdout and stderr
+from that Task's Store. This is regression evidence before the outer candidate is sealed. The
+orchestrator must separately inspect report admission for its exact sealed candidate; passing the
+regression does not establish that outer-run admission or independent goal evaluation.
+
 `verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
 With no arguments or `--profile full` it runs full `make check`; `--profile fast` writes
 a gate-context `release:fast` plan into the private run directory, then runs `test-build` before

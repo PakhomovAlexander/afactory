@@ -1022,7 +1022,8 @@ this host and run in the outer operator's Linux validation and CI.
   `TelemetryLabVersion` and the parity suite. The Task14 `af.perf-telemetry-build/2` is
   unchanged.
 - **Pre-build workload and sample admission.** `select_contract` refuses a release no fixture
-  contract names (`check-receipt@2` names 0.14.0-rc.1 to rc.3); `Journal._submit` admits, from
+  contract names (at this recorded verification, `check-receipt@2` named 0.14.0-rc.1 to rc.3;
+  [RC4, RC5 and RC6 are now also declared](telemetry.md#performance)); `Journal._submit` admits, from
   each side's retained Cargo.lock, the telemetry contract of both sides and, for a plan with
   CLI cases, the authority's CLI registry and an adapter for both sides, before any claim or
   build. `image_admission` runs the sample image's own `/usr/bin/python3` once in a probe

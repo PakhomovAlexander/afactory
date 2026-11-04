@@ -465,6 +465,155 @@ class LabelSetup(unittest.TestCase):
 
 
 class SealedEvidence(unittest.TestCase):
+    def test_gate_test_fold_keeps_bounds_counts_outcomes_and_refuses_malformed_runs(self):
+        spec = importlib.util.spec_from_file_location('cistep', ROOT / 'scripts/ci-step.py')
+        producer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(producer)
+        spec = importlib.util.spec_from_file_location('nextestgate', ROOT / 'scripts/nextest-gate.py')
+        nextest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(nextest)
+
+        def run(failed=(), flaky=(), rerun='not_needed', count=None, threads=4):
+            return {'schema': 'af.check-report/1', 'record': 'tests',
+                    'test_threads': threads, 'failed_count': len(failed) if count is None else count,
+                    'failed': list(failed), 'flaky': [{'name': n, 'parallel': 'failed',
+                    'isolated': 'passed'} for n in flaky], 'rerun': rerun}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / 'runs.jsonl', Path(tmp) / 'report.jsonl'
+            # Standalone make test keeps its direct report; only verify.sh redirects runs.
+            with mock.patch.dict(os.environ, {'AF_CHECK_REPORT': str(target),
+                                              'AF_GATE_TEST_REPORT': ''}):
+                nextest.report_tests(4, [], [], 'not_needed')
+                self.assertEqual(json.loads(target.read_text()), run())
+                target.unlink()
+            with mock.patch.dict(os.environ, {'AF_CHECK_REPORT': str(target)}):
+                producer.finish_tests(source)  # No nextest run, no invented test evidence.
+                self.assertFalse(target.exists())
+                for runs, expected in [
+                    ([], None),
+                    ([run()], run()),
+                    ([run(), run(threads=8), run()], run()),
+                    ([run(['x', 'x'], ['f'], 'isolated'),
+                      run(['x', 'y'], ['f', 'g'], 'over_bound')],
+                     run(['x', 'y'], ['f', 'g'], 'over_bound')),
+                    ([run(['x', 'x'], rerun='over_bound', count=150),
+                      run(['x', 'y'], rerun='isolated')],
+                     run(['x', 'y'], rerun='over_bound', count=151)),
+                    ([run(rerun='not_run'), run()], run(rerun='not_run')),
+                    ([run([str(n) for n in range(70)], rerun='isolated'),
+                      run([str(n) for n in range(50, 120)], rerun='isolated')],
+                     run([str(n) for n in range(100)], rerun='isolated', count=120)),
+                    ([run(flaky=[str(n) for n in range(25)], rerun='isolated'),
+                      run(flaky=['other'], rerun='isolated')],
+                     run(flaky=[str(n) for n in range(25)], rerun='isolated')),
+                ]:
+                    with self.subTest(runs=runs):
+                        target.unlink(missing_ok=True)
+                        source.write_text(''.join(json.dumps(r) + '\n' for r in runs))
+                        producer.finish_tests(source)
+                        self.assertEqual([json.loads(line) for line in target.read_text().splitlines()]
+                                         if target.exists() else [],
+                                         [expected] if expected is not None else [])
+                invalid = [dict(run(), schema='wrong'), dict(run(), extra=True),
+                           run(threads=0), run(threads=True), run(threads=65537),
+                           run(count=1), run(['x'], rerun='not_needed'),
+                           run(['bad\nname'], rerun='isolated'),
+                           run(flaky=['f']), run(rerun='isolated'),
+                           run(rerun='over_bound'), run(rerun=[]),
+                           run(['x'], rerun='over_bound', count=2 ** 32)]
+                malformed = [json.dumps(value) + '\n' for value in invalid]
+                malformed += ['{', '{}\n', json.dumps(run()).replace(
+                              '"test_threads": 4', '"test_threads": 0, "test_threads": 4'),
+                              '\n' * 257, ' ' * (256 * 1024 + 1),
+                              json.dumps(run(['x'], rerun='over_bound', count=2 ** 32 - 1))
+                              + '\n' + json.dumps(run(['y'], rerun='isolated')) + '\n']
+                for contents in malformed:
+                    with self.subTest(contents=contents[:120]):
+                        target.write_text('keep earlier step records\n')
+                        source.write_text(contents)
+                        with self.assertRaises(ValueError):
+                            producer.finish_tests(source)
+                        self.assertEqual(target.read_text(), 'keep earlier step records\n')
+
+    def test_verify_folds_class_tests_into_one_record_and_keeps_streaming_steps(self):
+        # Actual gate wrapper and report producers, with inexpensive class payloads. The
+        # build step must already be visible before tests start; failed gates publish too.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py',
+                         'nextest-gate.py'):
+                shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+            plan = root / 'plan.json'
+            tc.write(plan, tc.resolve(['release:fast'], context='gate'))
+            (root / 'Makefile').write_text(
+                'test-build:\n\tpython3 scripts/ci-step.py --stage build test-build python3 -c pass\n'
+                'check-classes: test-build\n\tpython3 payload.py\n'
+                'check: test-build check-classes\n')
+            (root / 'payload.py').write_text(r'''
+import importlib.util, json, os, pathlib, sys
+def module(name):
+    spec = importlib.util.spec_from_file_location(name, 'scripts/' + name + '.py')
+    value = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(value)
+    return value
+step, gate = module('ci-step'), module('nextest-gate')
+report = pathlib.Path(os.environ['AF_CHECK_REPORT'])
+records = [json.loads(line) for line in report.read_text().splitlines()]
+assert [(r['record'], r['stage']) for r in records] == [('step', 'build')], records
+mode = os.environ['MODE']
+if mode == 'preflight':
+    step.report_step('stop', 'preflight', None, ['python3', 'payload.py'], 19)
+    sys.exit(19)
+for kind in ('functional', 'e2e', 'uix'):
+    failed = [('af::it', 'broken')] if mode == 'failed' and kind == 'e2e' else []
+    flaky = [('af::it', 'crowded')] if kind == 'functional' else []
+    gate.report_tests(4, failed, flaky, 'isolated' if failed or flaky else 'not_needed')
+    step.report_step('rust-' + kind, 'tests', None, ['python3', 'payload.py'],
+                     100 if failed else 0)
+    if failed:
+        sys.exit(100)
+if mode == 'malformed':
+    with open(os.environ['AF_GATE_TEST_REPORT'], 'a') as stream:
+        stream.write('{}\n')
+''')
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('AF_', 'CARGO_', 'GH_', 'GITHUB_', 'MAKE'))}
+            report = root / 'check.jsonl'
+            env.update(AF_CHECK_REPORT=str(report), AF_GATE_TARGET_DIR=str(root / 'output'))
+            for mode in ('passed', 'failed', 'preflight', 'malformed'):
+                with self.subTest(mode=mode):
+                    report.unlink(missing_ok=True)
+                    result = subprocess.run(['bash', 'scripts/verify.sh', '--test-plan', str(plan)],
+                                            cwd=root, env=dict(env, MODE=mode),
+                                            capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode,
+                                     {'passed': 0, 'failed': 2, 'preflight': 2, 'malformed': 1}[mode],
+                                     result.stdout + result.stderr)
+                    records = [json.loads(line) for line in report.read_text().splitlines()]
+                    tests = [r for r in records if r['record'] == 'tests']
+                    steps = [r for r in records if r['record'] == 'step']
+                    self.assertEqual(steps[0]['stage'], 'build')
+                    if mode in ('preflight', 'malformed'):
+                        self.assertEqual(tests, [])
+                        if mode == 'preflight':
+                            self.assertEqual(steps[-1]['exit_code'], 19)
+                        else:
+                            self.assertIn('cannot finish test report', result.stderr)
+                        continue
+                    self.assertEqual(len(tests), 1, records)
+                    self.assertEqual([r['label'] for r in steps], ['test-build',
+                                     'rust-functional', 'rust-e2e'] +
+                                     (['rust-uix'] if mode == 'passed' else []))
+                    self.assertEqual(tests[0], {
+                        'schema': 'af.check-report/1', 'record': 'tests', 'test_threads': 4,
+                        'failed_count': int(mode == 'failed'),
+                        'failed': ['af::it broken'] if mode == 'failed' else [],
+                        'flaky': [{'name': 'af::it crowded', 'parallel': 'failed',
+                                   'isolated': 'passed'}], 'rerun': 'isolated'})
+
     def test_verify_wrapper_keeps_ownership_and_forwards_explicit_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -691,6 +840,9 @@ class SealedEvidence(unittest.TestCase):
                 'af::it': {'testcases': {'cli_surface::uix_case': {'ignored': False}}},
                 'review-pipeline::perf_probe': {'testcases': {
                     'calibration_build_case': {'ignored': False}}}}}
+            # A realistic generated class filter exceeds the strict per-argument bound.
+            inventory['rust-suites']['review-core']['testcases'].update(
+                {f'functional_case_{n:03}': {'ignored': False} for n in range(100)})
             tc.write(root / 'inventory.json', inventory)
             cargo = tools / 'cargo'
             cargo.write_text(f'#!{sys.executable}\n' + r"""
@@ -710,9 +862,9 @@ if sys.argv[1:3] == ['nextest', 'list']:
 """)
             cargo.chmod(0o755)
             (scripts / 'nextest-gate.py').write_text("""
-import os, pathlib, sys, xml.etree.ElementTree as ET
+import json, os, pathlib, sys, xml.etree.ElementTree as ET
 args = sys.argv[1:]
-expression = args[args.index('-E') + 1]
+expression = pathlib.Path(args[args.index('--filterset-file') + 1]).read_text()
 if '--features' in args:
     cases = ([('review-core', 'perf_trace::perf_case')] if 'test(perf_)' in expression
              else [('review-pipeline::perf_probe', 'calibration_build_case')])
@@ -721,7 +873,9 @@ elif 'review-process' in expression:
 elif 'af::it' in expression:
     cases = [('af::it', 'cli_surface::uix_case')]
 elif 'functional' in expression:
-    cases = [('review-core', 'functional')]
+    names = json.loads(pathlib.Path('inventory.json').read_text())['rust-suites']['review-core']['testcases']
+    cases = [('review-core', name) for name in names if name.startswith('functional')]
+    assert len(expression) > 1024
 else:
     cases = [('review-core', 'perf_trace::perf_case'),
              ('review-pipeline::perf_probe', 'calibration_build_case')]
@@ -771,6 +925,14 @@ ET.ElementTree(root).write(path, encoding='unicode')
                                      result.stdout + result.stderr)
                     records = [json.loads(line) for line in report.read_text().splitlines()]
                     compiled = [json.loads(line) for line in builds.read_text().splitlines()]
+                    # Every real class runner step obeys the unchanged strict report fields.
+                    for record in records:
+                        self.assertRegex(record['label'], r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$')
+                        self.assertTrue(0 < len(record['command']) <= 64)
+                        for argument in record['command']:
+                            self.assertLessEqual(len(argument), 1024)
+                            self.assertFalse(any(ord(c) < 32 or 127 <= ord(c) <= 159
+                                                 for c in argument))
                     # At each compilation in the first class there is still no build
                     # receipt, including when compiling its last feature variant.
                     variants = required
