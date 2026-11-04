@@ -305,6 +305,7 @@ pub(crate) fn plan(
         .to_owned();
     with_bindings(template.bindings.as_ref(), |local| {
         let options = StartOptions {
+            input_json: Vec::new(),
             file: PathBuf::from("scenario-task.json"),
             bindings: local.map(Path::to_path_buf),
             source_bindings: None,
