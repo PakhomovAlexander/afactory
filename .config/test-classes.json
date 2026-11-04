@@ -367,7 +367,8 @@
     "test-test-classes.py": "functional",
     "test-test-quarantine.py": "functional",
     "test-test-time-report.py": "functional",
-    "test-worker-development.py": "e2e"
+    "test-worker-development.py": "e2e",
+    "test-scenario-merge-watch.py": "e2e"
   },
   "utilities": [
     "test-classes.py",
