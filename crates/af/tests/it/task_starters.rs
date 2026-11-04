@@ -797,10 +797,16 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
         .as_table_mut()
         .unwrap()
         .insert(verification_kind.into(), kind_pin.clone());
+    // Only this source kind package is captured; unrelated source kinds are absent.
+    let mut kinds = toml::map::Map::new();
+    kinds.insert(
+        "verification".into(),
+        toml::Value::String(verification_kind.into()),
+    );
     catalog
         .as_table_mut()
         .unwrap()
-        .insert("kinds".into(), source_catalog["kinds"].clone());
+        .insert("kinds".into(), toml::Value::Table(kinds));
     for key in ["provider_admission", "independence", "review"] {
         catalog
             .as_table_mut()

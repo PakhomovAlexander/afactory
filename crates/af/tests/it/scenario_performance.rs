@@ -169,6 +169,11 @@ impl Performance {
             .as_table_mut()
             .unwrap()
             .retain(|name, _| needed.contains(&name));
+        // Kind authority must close over the same captured package subset.
+        catalog["kinds"]
+            .as_table_mut()
+            .unwrap()
+            .retain(|_, package| needed.contains(&package.as_str().unwrap()));
         for pin in catalog["packages"].as_table().unwrap().values() {
             let path = pin["path"].as_str().unwrap();
             crate::task_cli::copy_tree(&source.join(path), &f.repo.join(path));
