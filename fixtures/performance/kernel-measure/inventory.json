@@ -3327,8 +3327,8 @@
   },
   {
    "path": "scripts/performance/perflab/researchevidence.py",
-   "sha256": "sha256:d01f526466c34ab149b8bc3fc1152ea2321b8e16ee532551a693eba2cbd159c6",
-   "size": 13496
+   "sha256": "sha256:0ff03e117e963d7f973ec717e822c02e56afc160308066e327ab6e4ec162a747",
+   "size": 15993
   },
   {
    "path": "scripts/performance/perflab/runner.py",
@@ -3337,8 +3337,8 @@
   },
   {
    "path": "scripts/performance/perflab/scenarioadapter.py",
-   "sha256": "sha256:602694dd43fc3afc478c8872cd299f5603a3a788feb29224677e4fed6846380f",
-   "size": 25814
+   "sha256": "sha256:86d9729447a5861dc671d43b96b56973657744c75f75331e0b78334e551e30ae",
+   "size": 26373
   },
   {
    "path": "scripts/performance/perflab/scenariocontracts.py",
@@ -3347,8 +3347,8 @@
   },
   {
    "path": "scripts/performance/perflab/scenariosource.py",
-   "sha256": "sha256:d2b6dcb13e06d138bdd310779bf8152e48c6243066fc831aac39138272321a94",
-   "size": 4136
+   "sha256": "sha256:9229261ab57ec37a786f8866544dfcf7e85b71593d6e36c7b7900c735756f7dc",
+   "size": 7468
   },
   {
    "path": "scripts/performance/perflab/schedule.py",
@@ -3832,8 +3832,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:46677a5833e752c7c2318103fdd694be7749d75b6b88e65d0420f1d8de760ce2",
-   "size": 10136
+   "sha256": "sha256:14d1027c491b2cbbb413c09ec302bcf3c04b6753b74b9bab8eb801cff445ab53",
+   "size": 12058
   },
   {
    "path": "scripts/performance/tests/test_telemetry_build_bounds.py",
@@ -3941,7 +3941,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:6ebfaed9cc312e15dd44e27dcf878b5c109cc46a4d7e96fb54d0d308b0a7ba3d",
+ "harness_digest": "sha256:0c6eb5f77f40644dc9f9de4e03a1d9db8dc45bdc5dd8a4bbee1c4e2b3ffe6fda",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
