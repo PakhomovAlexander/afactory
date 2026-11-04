@@ -350,7 +350,7 @@ impl CompiledTask {
 
     pub fn require_provider_admission(
         &mut self,
-        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV2>,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV3>,
         cost: &OperatorAttemptCost,
         limits: &review_core::task::TaskLimitsV1,
     ) -> Result<(), String> {
@@ -364,10 +364,10 @@ impl CompiledTask {
     /// `root.providers.admit{index}` node, in the order of that grouping key.
     pub fn install_provider_admission(
         &mut self,
-        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV2>,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV3>,
         cost: &OperatorAttemptCost,
     ) -> Result<(), String> {
-        use review_core::task::plan::WorkerExecutionV2;
+        use review_core::task::plan::WorkerExecutionV3;
         if cost.tokens == 0 || cost.wall_ms == 0 {
             return Err("Provider admission requires a bounded paid reservation".into());
         }
@@ -380,7 +380,7 @@ impl CompiledTask {
         }
         let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (slot, binding) in bindings {
-            if matches!(binding.execution, WorkerExecutionV2::Model { .. }) {
+            if matches!(binding.execution, WorkerExecutionV3::Model { .. }) {
                 let key =
                     serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
                         .map_err(|e| e.to_string())?;
@@ -433,7 +433,7 @@ impl CompiledTask {
                             "result".into(),
                             PipelinePortV1 {
                                 artifact_type:
-                                    review_core::task::provider::TASK_PROVIDER_ADMISSION_V2.into(),
+                                    review_core::task::provider::TASK_PROVIDER_ADMISSION_V3.into(),
                                 cardinality: review_core::PortCardinality::One,
                                 optional: false,
                                 affinity: PortAffinityV1::Unbound {},

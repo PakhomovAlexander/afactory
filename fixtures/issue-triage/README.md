@@ -70,7 +70,28 @@ whose Provider bindings admit `codex-main` and `claude-main`:
 af task plan --file fixtures/issue-triage/example/task.json --json
 ```
 
-The runner of step 3 writes such a sources file per issue and plans the Task the same way.
+The step 3 runner, [`scripts/backlog-triage.py`](../../scripts/backlog-triage.py), writes such a
+sources file per issue, plans with `--authority CAPTURED_MAIN`, confirms that exact plan and
+runs the installed Task. The preceding owner hand commit installed and pinned the four
+packages in this checkout; the fixture installation procedure above remains the recipe for
+another reviewed installation. The runner never changes `.af/`.
+
+## Runner and staged schedule
+
+[`docs/issue-triage-runner.md`](../../docs/issue-triage-runner.md) is the operator runbook:
+private state and credentials, the shared anchored nightly lease, recovery, the first week in
+dry-run and the later explicit transition to writes. The half-hour timer, weekly sweep timer
+and nightly build lease drop-in are staged under [`service/`](service/). They are installation
+examples, not enabled services. Installing the nightly drop-in is required before enabling
+the triage timers: the existing nightly build does not acquire the machine lease itself.
+
+`python3 -I scripts/test-backlog-triage.py` exercises temporary Git objects and fake
+Tasks/API/clock/lease/notifier. The Task adapter test starts an absolute fake af executable,
+checks the real command arguments and accepted caps, and reads synthetic CAS receipts using
+the kernel's domain-separated content/envelope identities. A pinned kernel schema envelope
+checks that the reader accepts actual kernel identity spelling rather than raw file SHA-256. The existing Rust `task_triage` test is the real catalog, planner and report-renderer
+proof. No test here uses a live Provider, GitHub account, cron or claw-3. This change performs
+no live triage, backfill, held-issue release, plugin migration or schedule deployment.
 
 ## Merge the two triages
 

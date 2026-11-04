@@ -313,7 +313,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "af/review-show@1",
         "af/review-report@5",
         "af/findings-sarif@1",
-        "af/task-inspection@15",
+        "af/task-inspection@16",
         "af/task-checks@3",
         "af/task-list@4",
         "af/task-list-entry@4",

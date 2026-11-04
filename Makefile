@@ -126,11 +126,12 @@ preflight-check:
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
 
-# Credential-free installed GitHub adapter integration belongs after the Rust build/test
+# Credential-free GitHub adapter and manual merge watcher integration belong after the Rust build/test
 # receipt. Selective gates run the same script in its audited e2e class.
 .PHONY: scenario-python-tests
 scenario-python-tests: test
 	$(CI_STEP) --stage tests scenario-github-adapter python3 scripts/test-scenario-github-adapter.py
+	$(CI_STEP) --stage tests scenario-merge-watch python3 scripts/test-scenario-merge-watch.py
 
 # The laboratory suite executes tests, so it belongs after the real Rust build receipt,
 # under the test deadline (ADR-0231). Depending on test also enforces this with parallel make;

@@ -29,6 +29,7 @@ const BROKEN: &str =
 struct Scripted {
     replies: Mutex<Vec<&'static str>>,
     requests: Mutex<Vec<Value>>,
+    allowances: Mutex<Vec<u64>>,
 }
 
 impl Scripted {
@@ -36,6 +37,7 @@ impl Scripted {
         Self {
             replies: Mutex::new(replies.iter().rev().copied().collect()),
             requests: Mutex::new(Vec::new()),
+            allowances: Mutex::new(Vec::new()),
         }
     }
 }
@@ -46,6 +48,29 @@ impl WorkerModelAdapter for Scripted {
     }
     fn model_settings(&self) -> Option<(String, String)> {
         Some(("fixture-1".into(), "high".into()))
+    }
+    fn invoke_with_allowance(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: review_runner::task::RemainingTokenAllowance,
+        _contract: review_runner::task::reply_schema::ReplyContract,
+    ) -> Result<ModelWorkerReturn, review_runner::task::Unstarted> {
+        self.allowances.lock().unwrap().push(allowance.tokens());
+        Ok(self.invoke(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+        ))
     }
     fn invoke(
         &self,
@@ -249,4 +274,23 @@ fn a_spent_reservation_is_not_reasked() {
         "{error}"
     );
     assert_eq!(model.requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn initial_and_format_reask_receive_only_the_actual_remaining_allowance() {
+    let f = fixture();
+    let model = Scripted::new(&[BROKEN, VALID]);
+    assert!(run(&f, &model, 37).reply.is_ok());
+    assert_eq!(*model.allowances.lock().unwrap(), vec![37, 27]);
+    assert!(review_runner::task::RemainingTokenAllowance::new(0).is_err());
+    assert!(review_runner::task::RemainingTokenAllowance::new(u64::MAX).is_ok());
+}
+
+#[test]
+fn object_payload_instead_of_output_array_is_still_refused() {
+    let f = fixture();
+    let wrong = r#"{"schema":"af.worker-reply/1","outputs":{"result":{"verdict":"pass"}}}"#;
+    let model = Scripted::new(&[wrong, wrong]);
+    assert!(run(&f, &model, 37).reply.is_err());
+    assert_eq!(*model.allowances.lock().unwrap(), vec![37, 27]);
 }

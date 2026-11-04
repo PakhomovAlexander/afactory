@@ -92,7 +92,8 @@ CURRENT_CONTRACT = 'check-receipt@2'
 CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'
 FIXTURE_CONTRACTS = {
     'check-receipt@2': {'check_receipt': CHECK_RECEIPT_CURRENT,
-                        'versions': ('0.14.0-rc.1', '0.14.0-rc.2', '0.14.0-rc.3'), 'pins': None},
+                        'versions': ('0.14.0-rc.1', '0.14.0-rc.2', '0.14.0-rc.3',
+                                     '0.14.0-rc.4', '0.14.0-rc.5'), 'pins': None},
     'check-receipt@1': {
         'check_receipt': 'af/TaskCheckReceipt@1',
         'versions': ('0.13.0',),

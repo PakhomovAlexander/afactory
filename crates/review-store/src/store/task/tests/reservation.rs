@@ -19,7 +19,7 @@ fn reservation_requires_exact_context_before_start_and_refuses_rebinding() {
             .unwrap()
             .wall_ms_per_attempt = 60_000;
         f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
-        f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V2, &f.plan);
+        f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V3, &f.plan);
         let lease = f.open();
         f.propose(&lease);
         f.store
@@ -266,7 +266,7 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             expected_limits.verification.wall_ms = ATTEMPT_WALL_MS;
             assert_eq!(f.plan.limits, expected_limits);
             f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
-            f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V2, &f.plan);
+            f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V3, &f.plan);
             let lease = f.open();
             f.propose(&lease);
             f.decide(&lease, PlanDecisionKindV1::Approved);

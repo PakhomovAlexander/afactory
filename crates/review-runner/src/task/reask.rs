@@ -238,16 +238,34 @@ pub(super) fn invoke(
     reserved_tokens: u64,
     environment: &[(String, String)],
 ) -> WorkerReturn {
+    let allowance = match super::RemainingTokenAllowance::new(reserved_tokens) {
+        Ok(allowance) => allowance,
+        Err(error) => {
+            return WorkerReturn {
+                reply: Err(error),
+                feedback_code: Some(TaskFeedbackCodeV1::ProviderFailure),
+                usage: Some(TaskTokenUsageV3::charge_only(0)),
+                usage_observation: None,
+                raw_artifact_ids: vec![],
+                native_failure: None,
+                notes: Default::default(),
+            };
+        }
+    };
     let started = Instant::now();
-    let first = adapter.invoke(
-        cas,
-        workdir,
-        request.clone(),
-        timeout,
-        access,
-        cancellation,
-        environment,
-    );
+    let first = adapter
+        .invoke_with_allowance(
+            cas,
+            workdir,
+            request.clone(),
+            timeout,
+            access,
+            cancellation,
+            environment,
+            allowance,
+            super::reply_schema::ReplyContract::Request,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0);
     let message = match &first.message {
         Ok(message) => message.clone(),
         Err(error) => {
@@ -310,15 +328,31 @@ pub(super) fn invoke(
         Err(why) => return failed(raw, first, format!("{kept}; not re-asked: {why}")),
     };
     let remaining = remaining.expect("checked above");
-    let second = adapter.invoke(
-        cas,
-        workdir,
-        reask,
-        remaining,
-        access,
-        cancellation,
-        environment,
-    );
+    let second = adapter
+        .invoke_with_allowance(
+            cas,
+            workdir,
+            reask,
+            remaining,
+            access,
+            cancellation,
+            environment,
+            super::RemainingTokenAllowance::new(
+                reserved_tokens
+                    - u64::try_from(
+                        first
+                            .usage
+                            .as_ref()
+                            .expect("checked usage")
+                            .chargeable_tokens
+                            .get(),
+                    )
+                    .expect("charge below reservation"),
+            )
+            .expect("positive remaining reservation"),
+            super::reply_schema::ReplyContract::Request,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0);
     for id in &second.raw_artifact_ids {
         if !raw.contains(id) {
             raw.push(id.clone());

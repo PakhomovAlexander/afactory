@@ -6,7 +6,7 @@ use review_config::task::structured::{root_contract, signature, validate_value};
 use review_core::PortCardinality;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::TaskOperatorV1;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::structured::*;
 use review_core::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
@@ -143,7 +143,7 @@ impl StructuredTaskDomain {
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
         self.output_payload(cas, &inputs, &outputs)?;
-        let plan: ExecutionPlanV2 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
+        let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
             .map_err(|e| e.to_string())?;
         let value = StructuredValidationV1 {
             schema: "af.structured-validation/1".into(),
@@ -333,7 +333,7 @@ impl TaskDomain for StructuredTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _: &review_graph::task::CompiledNode,

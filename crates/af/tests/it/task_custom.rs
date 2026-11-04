@@ -93,7 +93,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
         )
         .unwrap();
         let registry = root.path().join("providers.toml");
-        std::fs::write(registry,toml::to_string(&json!({"version":2,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":auth}]})).unwrap()).unwrap();
+        std::fs::write(registry,toml::to_string(&json!({"version":3,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":auth}]})).unwrap()).unwrap();
         let path = std::env::join_paths(
             std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )

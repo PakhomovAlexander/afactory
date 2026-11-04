@@ -1,6 +1,6 @@
 use super::*;
 use review_core::task::execution::TaskExecutionRecordV1;
-use review_core::task::plan::WorkerExecutionV2;
+use review_core::task::plan::WorkerExecutionV3;
 use review_graph::Dispatch;
 use review_pipeline::task::host::TaskDomain;
 use serde_json::json;
@@ -50,8 +50,8 @@ fn admit_owned_with_limits(
     let round = capture::open_round_with_pipeline(cas, store, &definition(fail));
     let mut settings = plan::settings();
     settings.executions = BTreeMap::from([
-        ("scatter".into(), WorkerExecutionV2::Command {}),
-        ("closeout".into(), WorkerExecutionV2::Command {}),
+        ("scatter".into(), WorkerExecutionV3::Command {}),
+        ("closeout".into(), WorkerExecutionV3::Command {}),
     ]);
     let compiler = CampaignReviewPlanCompiler::capture(
         cas,
@@ -65,7 +65,7 @@ fn admit_owned_with_limits(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(cas, &revision).unwrap().0;
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -348,8 +348,8 @@ fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
     let round = capture::open_round_with_pipeline(&cas, &mut store, &definition);
     let mut settings = plan::settings();
     settings.executions = BTreeMap::from([
-        ("scatter".into(), WorkerExecutionV2::Command {}),
-        ("closeout".into(), WorkerExecutionV2::Command {}),
+        ("scatter".into(), WorkerExecutionV3::Command {}),
+        ("closeout".into(), WorkerExecutionV3::Command {}),
     ]);
     let compiler = CampaignReviewPlanCompiler::capture(
         &cas,
@@ -363,7 +363,7 @@ fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
         .unwrap();
     let revision = plan::artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(&cas, &revision).unwrap().0;
-    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
     let admission = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -487,7 +487,7 @@ fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
 fn runtime_plan(
     cas: &Cas,
     state: &review_store::store::task::TaskProjection,
-) -> review_core::task::plan::ExecutionPlanV2 {
+) -> review_core::task::plan::ExecutionPlanV3 {
     serde_json::from_value(
         cas.get_artifact(state.plan_id.as_ref().unwrap())
             .unwrap()

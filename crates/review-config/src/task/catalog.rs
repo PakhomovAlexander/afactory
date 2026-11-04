@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use review_core::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
 use review_core::task::plan::{
-    EffectiveWorkerBindingV2, ExecutionPlanV2, GeneratedOriginV1, IndependencePolicyV1,
-    PlanDependencyV1, WorkerExecutionV2, validate_independent_bindings,
+    EffectiveWorkerBindingV3, ExecutionPlanV3, GeneratedOriginV1, IndependencePolicyV1,
+    PlanDependencyV1, WorkerExecutionV3, validate_independent_bindings,
 };
 use review_core::task::{TaskRevisionV1, is_package_name};
 use review_core::{ArtifactEnvelope, Producer};
@@ -165,7 +165,7 @@ pub trait ProjectBriefResolver: std::fmt::Debug + Send + Sync {
 /// plan declaration. The principal in Model execution must come from Provider identity proof.
 #[derive(Debug, Clone)]
 pub struct AdmittedWorkerSettings {
-    pub execution: WorkerExecutionV2,
+    pub execution: WorkerExecutionV3,
     pub invocation_policy_id: String,
 }
 
@@ -746,14 +746,14 @@ impl TaskPlanCompiler {
             .get(name)
             .ok_or("Worker package is not captured")?;
         match (&worker.runner, &settings.execution) {
-            (TaskWorkerRunner::Command { .. }, WorkerExecutionV2::Command {}) => (),
+            (TaskWorkerRunner::Command { .. }, WorkerExecutionV3::Command {}) => (),
             (
                 TaskWorkerRunner::Model {
                     provider_kind: wanted_kind,
                     model: wanted_model,
                     effort: wanted_effort,
                 },
-                WorkerExecutionV2::Model {
+                WorkerExecutionV3::Model {
                     provider_kind,
                     model,
                     effort,
@@ -765,7 +765,7 @@ impl TaskPlanCompiler {
             _ => return Err("Provider admission disagrees with captured Worker settings".into()),
         }
         let package = &self.packages[name];
-        EffectiveWorkerBindingV2 {
+        EffectiveWorkerBindingV3 {
             package_digest: package.bytes.digest.clone(),
             package_artifact_id: package.dependency.artifact_id.clone(),
             execution: settings.execution.clone(),
@@ -957,7 +957,7 @@ impl TaskPlanCompiler {
         &self,
         cas: &Cas,
         graph: &CompiledTask,
-    ) -> Result<BTreeMap<String, EffectiveWorkerBindingV2>, String> {
+    ) -> Result<BTreeMap<String, EffectiveWorkerBindingV3>, String> {
         let mut bindings = BTreeMap::new();
         for (slot, declaration) in &graph.slots {
             let package = self
@@ -972,7 +972,7 @@ impl TaskPlanCompiler {
                 .map_err(|e| e.to_string())?;
             bindings.insert(
                 slot.clone(),
-                EffectiveWorkerBindingV2 {
+                EffectiveWorkerBindingV3 {
                     package_digest: package.bytes.digest.clone(),
                     package_artifact_id: package.dependency.artifact_id.clone(),
                     execution: settings.execution.clone(),
@@ -993,6 +993,21 @@ impl TaskPlanCompiler {
         now_unix_ms: u64,
     ) -> Result<Vec<String>, String> {
         let bindings = self.effective_bindings(cas, &graph)?;
+        if self.independence.distinct_principals
+            && bindings.values().any(|binding| {
+                matches!(
+                    &binding.execution,
+                    WorkerExecutionV3::Model {
+                        principal_id: None,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(
+                "Trusted distinct_principals policy requires known account identities".into(),
+            );
+        }
         if let Some(cost) = &self.provider_admission {
             graph.install_provider_admission(&bindings, cost)?;
         }
@@ -1053,7 +1068,7 @@ impl TaskPlanCompiler {
         cas: &Cas,
         task_revision_id: &str,
         root: &str,
-    ) -> Result<(ExecutionPlanV2, CompiledTask), String> {
+    ) -> Result<(ExecutionPlanV3, CompiledTask), String> {
         self.compile_inner(cas, task_revision_id, root, None)
     }
 
@@ -1094,7 +1109,7 @@ impl TaskPlanCompiler {
         task_revision_id: &str,
         root: &str,
         recorded_graph: Option<&ArtifactEnvelope>,
-    ) -> Result<(ExecutionPlanV2, CompiledTask), String> {
+    ) -> Result<(ExecutionPlanV3, CompiledTask), String> {
         let revision = read_envelope(cas, task_revision_id, review_core::task::TASK_REVISION_V1)?;
         let task: TaskRevisionV1 =
             serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
@@ -1117,6 +1132,21 @@ impl TaskPlanCompiler {
         self.validate_structured(cas, &task, &graph)?;
         remote_check_authority(root, &task, &graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;
+        if self.independence.distinct_principals
+            && bindings.values().any(|binding| {
+                matches!(
+                    &binding.execution,
+                    WorkerExecutionV3::Model {
+                        principal_id: None,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(
+                "Trusted distinct_principals policy requires known account identities".into(),
+            );
+        }
         let mut used: BTreeSet<String> = graph
             .calls
             .values()
@@ -1234,7 +1264,7 @@ impl TaskPlanCompiler {
             .map_err(|e| e.to_string())?
             .0
         };
-        let plan = ExecutionPlanV2 {
+        let plan = ExecutionPlanV3 {
             preparation: self
                 .preparation_roots
                 .contains(root)
@@ -1265,7 +1295,7 @@ impl TaskPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         let revision = read_envelope(
             cas,

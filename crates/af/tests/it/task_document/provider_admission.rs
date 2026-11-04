@@ -72,7 +72,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
             }
         };
         std::fs::write(home.join("usage.json"), serde_json::to_vec(&usage).unwrap()).unwrap();
-        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":2,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":3,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -604,6 +604,8 @@ fn captured_task_rechecks_disable_on_fresh_run_and_enable_restores_the_same_plan
 fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() {
     for mode in [
         "document",
+        "kimi-document",
+        "kimi-replace-auth-after-admission",
         "retry",
         "replace-after-admission",
         "rotate-after-admission",
@@ -612,7 +614,24 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         let mut f = Fixture::new(true, 5, 49152);
         let (sdk, path, state) = crate::fake_models::install_pi(f._root.path(), &f.home, mode);
         f.path = path;
-        std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":2,"providers":[{"id":"pi-personal","kind":"pi","backend":"openai-codex","auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+        let kimi = mode.starts_with("kimi-");
+        if mode == "kimi-document" {
+            // Exercise actual Task admission and Worker settlement with total native usage
+            // and unknown cache, rather than an SDK's initialized cache zero.
+            let mut fixture: Value =
+                serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+            fixture["usage"] = json!({"prompt_tokens":439,"completion_tokens":38,
+                "completion_tokens_details":{"reasoning_tokens":24}});
+            std::fs::write(&state, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        }
+        let backend = if kimi { "kimi-coding" } else { "openai-codex" };
+        if kimi {
+            // Successful context-only admission requires explicit trusted policy. The
+            // pi-light compile fixture separately proves strict principal-policy refusal.
+            f.catalog["independence"] = json!({"command_workers_by_package":true,
+                "distinct_principals":false,"distinct_providers":false,"distinct_models":false});
+        }
+        std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":3,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
         f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
         let package = f.repo.join(
             f.catalog["packages"]["builtin/document-author"]["path"]
@@ -623,7 +642,7 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
             toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
         worker.runner = TaskWorkerRunner::Model {
             provider_kind: "pi".into(),
-            model: "o3".into(),
+            model: if kimi { "k3" } else { "o3" }.into(),
             effort: "high".into(),
         };
         std::fs::write(
@@ -641,13 +660,24 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         .unwrap();
         commit(&f.repo);
         let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
-        let binding = &planned["plan"]["bindings"]["root.author"];
+        let binding = &planned["plan"]["bindings"]["root.slots.author"];
         // The exact execution identity is captured even when this plan renderer changes its
         // slot labels; inspect the canonical plan rather than manufacturing a Pi authority.
         let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
         let text = envelope.to_string();
-        assert!(text.contains("openai-codex"), "{binding}\n{text}");
+        assert!(text.contains(backend), "{binding}\n{text}");
+        if kimi {
+            let execution = &envelope["payload"]["bindings"]["root.slots.author"]["execution"];
+            assert!(execution["principal_id"].is_null(), "{execution}");
+            assert_eq!(execution["pi"]["identity_mode"], "unavailable");
+            assert!(
+                execution["pi"]["auth_context_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("sha256:")
+            );
+        }
         let out = f.cli(&["task", "run", "--execute", "release-notes"]);
         let done: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
             panic!(
@@ -659,11 +689,13 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         let calls = std::fs::read_to_string(state.with_extension("json.calls")).unwrap();
         if matches!(
             mode,
-            "replace-after-admission" | "replace-endpoint-after-admission"
+            "replace-after-admission"
+                | "replace-endpoint-after-admission"
+                | "kimi-replace-auth-after-admission"
         ) {
             assert!(!out.status.success(), "{done}");
             assert_eq!(calls, "admission\n");
-            assert_eq!(done["chargeable_tokens"], "5");
+            assert_eq!(done["chargeable_tokens"], if kimi { "15" } else { "5" });
         } else {
             assert!(
                 out.status.success(),
@@ -681,7 +713,13 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
             );
             assert_eq!(
                 done["chargeable_tokens"],
-                if mode == "retry" { "15" } else { "10" }
+                if mode == "retry" {
+                    "15"
+                } else if kimi {
+                    "954"
+                } else {
+                    "10"
+                }
             );
         }
     }
