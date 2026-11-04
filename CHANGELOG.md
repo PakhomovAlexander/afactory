@@ -27,7 +27,7 @@ Existing committed .af authority without the new optional Worker development or 
 
 ### Changes
 
-- release: v0.14.0-rc.6 (#640)
+- Admit RC7 explicitly under the unchanged telemetry `check-receipt@2` fixture contract.
 - fix: stabilize nightly secret access, telemetry contracts and gate reports (#649)
 - feat: add bounded worker development and context tooling (#627)
 

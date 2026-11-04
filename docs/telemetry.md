@@ -1194,7 +1194,7 @@ committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
 `FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
 artifact type renamed and each re-pinned with the digest the contract declares, which the
 measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
-that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5 and rc.6), and a release
+that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6 and rc.7), and a release
 no contract names is refused, never measured under the committed contract. The contract is
 selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
 refused when the version selects another. It is benchmark fixture
@@ -1205,15 +1205,15 @@ production, never a reader of state an earlier release wrote.
 and
 [RC5, `88a524eb1e10cd738cc8086d9f4bf3164d180b09`](https://github.com/PakhomovAlexander/afactory/commit/88a524eb1e10cd738cc8086d9f4bf3164d180b09).
 Their `Cargo.toml` workspace versions are `0.14.0-rc.4` and `0.14.0-rc.5`, respectively.
-The following Git blob IDs record those revisions and this RC6 tree (`git hash-object PATH`);
-`Cargo.toml` names this workspace `0.14.0-rc.6`. The receipt definition still names
+The following Git blob IDs record those revisions and the RC6 tree (`git hash-object PATH`);
+`Cargo.toml` at RC6 names `0.14.0-rc.6`. The receipt definition still names
 `TASK_CHECK_RECEIPT_V2 = "af/TaskCheckReceipt@2"`, and the schema is byte-identical. Although
 the writer and catalog modules have changed, RC6 still
 constructs `TaskCheckReceiptV2` in `CodeDomain::check`, publishes it with
 `TASK_CHECK_RECEIPT_V2`, and checks captured package bytes with `package_digest_from_files` in
 `TaskPlanCompiler::capture_package`; the digest implementation and canonical serialization are unchanged.
 
-| Source path | Git blob ID in RC4 and RC5 | Git blob ID in RC6 (this tree) |
+| Source path | Git blob ID in RC4 and RC5 | Git blob ID in RC6 |
 | --- | --- | --- |
 | [`crates/review-core/src/task/verification.rs`](../crates/review-core/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
 | [`schemas/task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json) | `49e71c04c24222cc9855135785d540644a73b7dc` | `49e71c04c24222cc9855135785d540644a73b7dc` |
@@ -1224,7 +1224,7 @@ constructs `TaskCheckReceiptV2` in `CodeDomain::check`, publishes it with
 | [`crates/review-store/src/canonical.rs`](../crates/review-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
 
 All four catalogs under `fixtures/telemetry-bench/<fixture>/repo/.af/task-catalog.toml` are
-also byte-identical in RC4, RC5 and this RC6 tree:
+also byte-identical in RC4, RC5 and RC6:
 
 | Fixture | Catalog Git blob ID in RC4, RC5 and RC6 |
 | --- | --- |
@@ -1233,12 +1233,28 @@ also byte-identical in RC4, RC5 and this RC6 tree:
 | `telemetry-bench-invocation-four` | `2ce950520f0fccc55764c1b27ee73645a0e0636f` |
 | `telemetry-bench-invocation-one` | `1d7343d30e7df83ed938f18dd031bbb8a8c694b5` |
 
+**RC7 source evidence.** The RC6 tag points to commit
+`ebc7c4406592d0c635f8b70a2c15d90036ac36a4`; the RC7 version-bump revision is
+`25b15d1253e8c1c78b74ba366a5b8b392403a378`, whose workspace version is `0.14.0-rc.7`.
+Comparing these revisions leaves every source blob in the table above unchanged except
+`crates/review-config/src/task/catalog.rs`, now
+`264204a593451a0e4a096026ed4297764c3bc155`. The receipt definition, JSON schema and writer
+are byte-identical to RC6: `CodeDomain::check` still constructs `TaskCheckReceiptV2` and
+publishes `TASK_CHECK_RECEIPT_V2`. The catalog still admits `af.task-package/1`, and captures
+packages with `package_digest_from_files`; its new development/knowledge companion checks
+and reserved cache-output rules do not affect these fixtures, which have no such companions,
+symbolic `@tool/` runners or reserved cache outputs. The digest implementation and canonical
+serialization retain the blob IDs above. The entire `fixtures/telemetry-bench` tree is
+byte-identical to RC6, including all four catalogs and their package manifests and schemas.
+Thus RC7 explicitly selects the same receipt contract and committed package pins.
+
 This supports using `check-receipt@2` with `pins = None`: keep the committed package pins,
 perform no receipt-type renaming, and still require each measured binary's `af catalog digest`
 to match each committed pin. The Store fixture has no Task catalog. The focused regression
-`test_rc4_rc5_and_rc6_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
-fixture for all three versions and checks that every copied file stays byte-identical. This evidence
-admits only the named releases; RC7, stable 0.14.0 and nightly version strings remain unnamed.
+`test_rc4_through_rc7_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
+fixture for all four versions and checks that every copied file stays byte-identical. This evidence
+admits only the named releases; RC8, stable 0.14.0, nightly and unknown build-metadata
+version strings remain unnamed.
 `test_workspace_release_has_an_explicit_valid_telemetry_contract` reads the workspace version
 and requires an explicit current contract, so a version bump must declare its workload before shipping.
 
