@@ -117,7 +117,11 @@ time, and non-exact spans stay explicitly excluded.
 
 The adapter's `bounded_evidence` Wait selects the pinned index digest as `subject` and the wanted
 compatibility digest as `revision`. Its installed policy caps packets at 24 KiB, 256 items and an
-explicit age. `scenario_evidence` is an optional, typed Observation input on fresh Task steps.
+explicit age. Before satisfying the Wait, the adapter rederives every selected record through
+native Task Store artifacts or journal originals, using offline verification for completed
+experiments. All bounded facts must match the index; a pinned JSON digest alone grants no
+native provenance. Original lookup uses the journal's configured membership bound, and source
+retrieval retains the 256-artifact and 4 MiB per-artifact bounds. `scenario_evidence` is an optional, typed Observation input on fresh Task steps.
 Only satisfied `bounded_evidence` or `native_verified` observations enter that reserved field of
 the Task's immutable Requirements. Templates cannot prefill it or `scenario_goal`. Research
 receives a bounded packet; verification and reporting receive the exact native completion.

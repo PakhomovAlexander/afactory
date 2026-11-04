@@ -191,6 +191,7 @@ class Adapter:
             packet = researchevidence.packet(index, now, now, revision,
                 self.config["evidence_max_age_ms"], self.config["evidence_max_items"],
                 self.config["evidence_max_bytes"])
+            researchevidence.authenticate(packet, self.config)
             self.capacity(self.config["evidence_max_bytes"])
             researchevidence.retain(self.config["evidence_root"], packet, "evidence-packet")
             response.update(outcome="done", evidence="retained bounded research packet " + canonical_digest(packet),
@@ -233,7 +234,8 @@ class Adapter:
                     key = intent["intent_id"] + ":" + intent["input_digest"]
                     ident = "exp_" + canonical_digest({"submission": {"kind": "manual", "key": key},
                                                        "work": intent["experiment"]["work"]})[7:55]
-                    uncertain = os.path.lexists(os.path.join(config["root"], "requests", ident))
+                    uncertain = (isinstance(error, scenariosource.UncertainCapture)
+                                 or os.path.lexists(os.path.join(config["root"], "requests", ident)))
                     executor.atomic(status_path, dict(schema="af.perf-scenario-status/1",
                         intent_digest=canonical_digest(intent), state="uncertain" if uncertain else "refused",
                         detail=str(error)[:4096]), "scenario-status")
@@ -252,9 +254,18 @@ class Adapter:
             journal.capacity(CAPTURE_RESERVE, "accepted Snapshot capture")
             # Use the native exclusion/fence, including for heavy source materialization.
             # A killed capture leaves the same fence as other uncertain native preparation.
-            source, refusal = journal.exclusive("accepted Snapshot handoff", lambda: (
-                capture(self.config, path, intent["source_request_digest"]), None, False))
-            require(refusal is None, "native Snapshot handoff refused")
+            def handoff():
+                try:
+                    return capture(self.config, path, intent["source_request_digest"]), None, False
+                except scenariosource.CleanCaptureRefusal as error:
+                    return None, str(error), False
+            try:
+                source, refusal = journal.exclusive("accepted Snapshot handoff", handoff)
+            except executor.JournalBusy:
+                raise
+            except (ContractError, OSError) as error:
+                raise scenariosource.UncertainCapture(str(error)) from error
+            require(refusal is None, "native Snapshot handoff refused: " + str(refusal))
             self.capacity(0)
             config = dict(config, repository_path=source["repository"])
             journal.config = config

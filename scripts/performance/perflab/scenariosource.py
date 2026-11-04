@@ -1,10 +1,14 @@
 """Bounded invocation of the native accepted-Snapshot capture; no source format is reimplemented."""
 import os
+import signal
 import subprocess
 import tempfile
 
 from . import executor
 from .values import ContractError, canonical_digest, document_bytes, loads_strict, require, sha256_bytes
+
+
+CAPTURE_SECONDS = 300
 
 
 def create_request(receipt, revision, subject, native_config):
@@ -34,28 +38,73 @@ def save_request(path, request):
         os.close(fd)
 
 
+class UncertainCapture(ContractError):
+    """Capture termination or publication has not been confirmed clean."""
+
+
+class CleanCaptureRefusal(ContractError):
+    """No capture exists and no capture process remains; safe to settle exclusion."""
+
+
 def capture(config, path, expected_digest):
-    request_path = os.path.join(path, "source-request.json")
-    request = loads_strict(executor.read(request_path), "native source request", 131072)
-    require(canonical_digest(request) == expected_digest, "native source request changed")
-    require(sha256_bytes(executor.read(config["af"], 256 * 1024 * 1024)) == config["af_digest"],
-            "installed native af bytes changed")
+    into = os.path.join(path, "source")
+    # Existing materialization (including a torn one) is never a clean refusal.
+    try:
+        return _capture(config, path, expected_digest, into)
+    except CleanCaptureRefusal:
+        require(not os.path.lexists(into), "native capture appeared during refusal; cleanup uncertain")
+        raise
+
+
+def _capture(config, path, expected_digest, into):
+    try:
+        request_path = os.path.join(path, "source-request.json")
+        request = loads_strict(executor.read(request_path), "native source request", 131072)
+        require(canonical_digest(request) == expected_digest, "native source request changed")
+        require(sha256_bytes(executor.read(config["af"], 256 * 1024 * 1024)) == config["af_digest"],
+                "installed native af bytes changed")
+    except (ContractError, OSError) as error:
+        if not os.path.lexists(into):
+            raise CleanCaptureRefusal(str(error)) from error
+        raise
     # The native af command reopens the configured Store, verifies the exact accepted result,
     # materializes through its existing path/Manifest/Git helpers, and verifies replay. It
-    # spawns no model or benchmark. The outer oneshot service owns the process group.
-    into = os.path.join(path, "source")
+    # spawns no model or benchmark. A private, synchronously waited group lets us
+    # distinguish a reaped refusal from one with surviving descendants.
     with tempfile.TemporaryDirectory(dir=path) as home:
         env = {"PATH": os.defpath, "HOME": home, "XDG_CONFIG_HOME": home,
                "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home}
         with tempfile.TemporaryFile(dir=path) as output, tempfile.TemporaryFile(dir=path) as error:
             try:
-                result = subprocess.run([config["af"], "scenario", "experiment-source",
+                process = subprocess.Popen([config["af"], "scenario", "experiment-source",
                     "--file", request_path, "--repo", config["task_repo"], "--task-state", config["task_state"],
                     "--into", into, "--json"], env=env, stdout=output, stderr=error,
-                    stdin=subprocess.DEVNULL, timeout=300, check=False)
+                    stdin=subprocess.DEVNULL, start_new_session=True)
+                code = process.wait(timeout=CAPTURE_SECONDS)
             except subprocess.TimeoutExpired as expired:
+                # Best effort termination is not proof of cleanup. Keep the fence even
+                # after reaping the leader; descendants/capture publication may be torn.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
                 raise ContractError("native source capture uncertain; retain private capture for inspection") from expired
-            require(result.returncode == 0, "native source handoff refused; inspect the accepted Task and capture")
+            except BaseException:
+                if "process" in locals():
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                raise
+            if code != 0:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    if code > 0 and not os.path.lexists(into):
+                        raise CleanCaptureRefusal("native source handoff refused before capture")
+                raise ContractError("native source handoff refused; capture cleanup uncertain")
             output.seek(0)
             data = output.read(65537)
             require(len(data) <= 65536, "native source receipt exceeds its bound")

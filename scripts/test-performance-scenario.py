@@ -15,7 +15,7 @@ sys.dont_write_bytecode = True
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts/performance"))
 
-from perflab import contracts, executor, hostlock, researchevidence, scenarioadapter  # noqa: E402
+from perflab import contracts, executor, hostlock, researchevidence, scenarioadapter, scenariosource  # noqa: E402
 from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes  # noqa: E402
 from tests.test_executor import ExecutorFixture, PRODUCER, receipt  # noqa: E402
 
@@ -26,6 +26,62 @@ HEAD = "sha256:" + "3" * 64
 
 def datum(value):
     return dict(type="text", value=value)
+
+
+class SourceCapture(unittest.TestCase):
+    """Native process-boundary units; adapter tests below cover the common fence lifecycle."""
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        self.path = self.home.name
+        self.binary = pathlib.Path(self.path) / "af"
+        self.request = dict(baseline_snapshot_id=None, candidate_snapshot_id=HEAD)
+        scenariosource.save_request(os.path.join(self.path, "source-request.json"), self.request)
+        self.config = dict(af=str(self.binary), task_repo=self.path, task_state=self.path)
+
+    def program(self, body):
+        self.binary.write_text("#!/usr/bin/python3\n" + body + "\n")
+        self.binary.chmod(0o700)
+        self.config["af_digest"] = sha256_bytes(self.binary.read_bytes())
+
+    def capture(self):
+        return scenariosource.capture(self.config, self.path, canonical_digest(self.request))
+
+    def test_reaped_refusal_without_capture_is_clean(self):
+        self.program("import sys; sys.exit(1)")
+        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+            self.capture()
+
+    def test_preflight_refusal_is_clean_only_without_existing_capture(self):
+        self.program("raise AssertionError('must not execute')")
+        self.config["af_digest"] = D
+        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+            self.capture()
+        os.mkdir(os.path.join(self.path, "source"))
+        with self.assertRaises(ContractError) as caught:
+            self.capture()
+        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+
+    def test_torn_capture_refusal_is_not_clean(self):
+        self.program("import os, sys; os.mkdir(sys.argv[sys.argv.index('--into')+1]); sys.exit(1)")
+        with self.assertRaises(ContractError) as caught:
+            self.capture()
+        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+
+    def test_timeout_is_not_clean(self):
+        self.program("import time; time.sleep(30)")
+        with mock.patch.object(scenariosource, "CAPTURE_SECONDS", 0.05):
+            with self.assertRaises(ContractError) as caught:
+                self.capture()
+        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+
+    def test_surviving_process_group_is_not_clean(self):
+        self.program("import sys; sys.exit(1)")
+        # A successful signal probe means a descendant remains even after its leader exits.
+        with mock.patch.object(scenariosource.os, "killpg", return_value=None):
+            with self.assertRaises(ContractError) as caught:
+                self.capture()
+        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
 
 
 class ScenarioLab(ExecutorFixture):
@@ -227,10 +283,90 @@ class ScenarioLab(ExecutorFixture):
                 hostlock.MachineLock(self.locks)
             self.assertEqual(caught.exception.reason, "concurrent_shard")
             raise ContractError("native capture uncertain")
-        self.assertEqual(self.adapter.submit_pending(capture=uncertain), "refused")
+        self.assertEqual(self.adapter.submit_pending(capture=uncertain), "uncertain")
         self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
         with executor.Journal(self.c) as journal:
             self.assertEqual(journal.names(), [])
+
+    def native_capture_program(self, body):
+        binary = pathlib.Path(self.config["af"])
+        binary.write_text("#!/usr/bin/python3\n" + body + "\n")
+        binary.chmod(0o700)
+        self.config["af_digest"] = sha256_bytes(binary.read_bytes())
+
+    def test_clean_native_capture_refusal_settles_fence_and_later_work_submits(self):
+        self.native_capture_program("import sys; sys.exit(1)")
+        self.adapter.request(self.request)
+        self.assertEqual(self.adapter.submit_pending(), "refused")
+        self.assertFalse(os.path.lexists(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        other = dict(self.request, intent_id=HEAD)
+        self.assertEqual(self.adapter.request(other)["outcome"], "done")
+        self.assertEqual(self.adapter.submit_pending(capture=self.capture), "submitted")
+        self.assertEqual(self.adapter.submit_pending(capture=self.capture), "idle")
+
+    def test_torn_native_capture_refusal_keeps_fence_and_uncertain_status(self):
+        self.native_capture_program("import os, sys; os.mkdir(sys.argv[sys.argv.index('--into')+1]); sys.exit(1)")
+        self.adapter.request(self.request)
+        self.assertEqual(self.adapter.submit_pending(), "uncertain")
+        self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        with self.assertRaises(hostlock.Refused):
+            hostlock.MachineLock(self.locks)
+
+    def test_native_capture_timeout_keeps_fence_even_after_leader_reaped(self):
+        self.native_capture_program("import time; time.sleep(30)")
+        self.adapter.request(self.request)
+        with mock.patch.object(scenariosource, "CAPTURE_SECONDS", 0.05):
+            self.assertEqual(self.adapter.submit_pending(), "uncertain")
+        self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+
+    def research_wait(self, records):
+        index = researchevidence.rebuild(records)
+        self.config["evidence_index"] = researchevidence.retain(self.evidence, index, "evidence-index")
+        self.config["evidence_index_digest"] = canonical_digest(index)
+        return self.adapter.request(dict(self.request, method="observe", operation="observe",
+            inputs=dict(subject=datum(canonical_digest(index)), revision=datum(D),
+                        condition=datum("bounded_evidence"))))
+
+    def test_research_wait_refuses_fabricated_native_task_even_with_pinned_index(self):
+        record = Evidence().artifact(1)
+        response = self.research_wait([record])
+        self.assertIsNone(response["observation"])
+        self.assertNotEqual(response["outcome"], "done")
+
+    def test_research_wait_accepts_offline_verified_original_and_refuses_raw_tampering(self):
+        intent = self.submit_intent()
+        with executor.Journal(self.c) as journal:
+            native = journal.request(contracts.read_json(executor.read(os.path.join(
+                self.adapter.path(intent["intent_id"]), "receipt.json")), "scenario-receipt")["request_id"])
+            path, _ = self.complete_core(journal, native, [])
+            records = researchevidence.native(journal, [native["request_id"]])
+        self.assertEqual(records[0]["provenance"], "verified_native")
+        self.assertEqual(self.research_wait(records)["outcome"], "done")
+        with open(os.path.join(path, "run/shards/0/samples.jsonl"), "ab") as stream:
+            stream.write(b"tampered")
+        response = self.research_wait(records)
+        self.assertNotEqual(response["outcome"], "done")
+        self.assertIsNone(response["observation"])
+
+    def test_research_wait_rederives_native_original_and_refuses_changed_facts(self):
+        intent = self.submit_intent()
+        with executor.Journal(self.c) as journal:
+            records = researchevidence.native(journal, journal.names())
+        response = self.research_wait(records)
+        self.assertEqual(response["outcome"], "done")
+        for field, value in (("summary", "invented"), ("outcome", "positive"),
+                             ("source_digest", HEAD), ("source_id", D)):
+            with self.subTest(field=field):
+                response = self.research_wait([dict(records[0], **{field: value})])
+                self.assertNotEqual(response["outcome"], "done")
+                self.assertIsNone(response["observation"])
+        # Completed claims must pass the offline original verifier, not merely journal shape.
+        with executor.Journal(self.c) as journal:
+            journal.cycle(execute=lambda *args: receipt(), lock_directory=self.locks)
+        fabricated = dict(records[0], provenance="verified_native")
+        self.assertNotEqual(self.research_wait([fabricated])["outcome"], "done")
+        self.assertFalse(os.path.lexists(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        self.assertEqual(self.adapter.held(intent["intent_id"]), intent)
 
     def test_fake_verified_matched_negative_report_completes_and_is_not_reverified_on_restart(self):
         intent = self.submit_intent()

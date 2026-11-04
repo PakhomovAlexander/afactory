@@ -935,6 +935,63 @@ fn native_prior_packet(root: &Path) -> (PathBuf, PathBuf, Value, Value) {
     for item in packet["items"].as_array().unwrap() {
         assert_eq!(item["artifact"]["native_receipt"]["artifact_id"], id);
     }
+    let observed = std::process::Command::new("/usr/bin/python3")
+        .args(["-I", "-c", r#"
+import copy, json, os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from perflab import scenarioadapter, researchevidence
+from perflab.values import canonical_digest
+root, binary, digest, repo, state, index_path = sys.argv[2:]
+os.mkdir(root, 0o700)
+spool, evidence = root+'/spool', root+'/evidence'
+os.mkdir(spool, 0o700); os.mkdir(evidence, 0o700)
+# Only observation is under test: no executor configuration or experiment is needed.
+# Retain the real writer, capacity checks, native reader and packet bounds.
+a = scenarioadapter.Adapter.__new__(scenarioadapter.Adapter)
+a.root = spool
+a.native_config = dict(root=root, max_bytes=1<<30)
+a.config = dict(root=spool, evidence_root=evidence, max_bytes=1<<30,
+    af=binary, af_digest=digest, task_repo=repo, task_state=state,
+    destination='native:claw', evidence_max_age_ms=86400000,
+    evidence_max_items=32, evidence_max_bytes=24576)
+index = json.load(open(index_path))
+def observe(records):
+    current = researchevidence.rebuild(records)
+    a.config['evidence_index'] = researchevidence.retain(evidence, current, 'evidence-index')
+    a.config['evidence_index_digest'] = canonical_digest(current)
+    text = lambda v: dict(type='text', value=v)
+    return a.request(dict(schema='af/scenario-adapter-request@2', method='observe',
+        operation='observe', destination='native:claw', intent_id=digest, input_digest=digest,
+        inputs=dict(subject=text(canonical_digest(current)), revision=text(records[0]['compatibility']),
+                    condition=text('bounded_evidence'))))
+records = index['artifacts']
+assert observe(records)['observation']['satisfied']
+for field, value in [('summary','fabricated finding'), ('source_digest',digest),
+                     ('outcome','positive')]:
+    altered = copy.deepcopy(records); altered[0][field] = value
+    refused = observe(altered)
+    assert refused['outcome'] != 'done' and refused['observation'] is None, refused
+for field in ['task_id','artifact_id','revision_id']:
+    altered = copy.deepcopy(records)
+    altered[0]['native_receipt'][field] = 'nonexistent' if field == 'task_id' else digest
+    refused = observe(altered)
+    assert refused['outcome'] != 'done' and refused['observation'] is None, refused
+"#])
+        .arg(workspace().join("scripts/performance"))
+        .arg(root.join("adapter-observation"))
+        .arg(&binary)
+        .arg(&binary_digest)
+        .arg(&repo)
+        .arg(&state)
+        .arg(exported["index"].as_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        observed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
     (repo, state, native, packet)
 }
 

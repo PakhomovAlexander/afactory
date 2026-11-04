@@ -10,7 +10,7 @@ from collections import Counter
 
 from . import contracts, executor
 from .scenariocontracts import INDEX_BYTES
-from .values import canonical_digest, document_bytes, loads_strict, require, sha256_bytes
+from .values import ContractError, canonical_digest, document_bytes, loads_strict, require, sha256_bytes
 
 SOURCE_BYTES = 4 * 1024 * 1024
 SOURCES = 256
@@ -41,6 +41,8 @@ def native(journal, ids, verifier=executor.verify_original):
             outcome = {"pass": "positive", "fail": "negative"}.get(result["measurement_status"], "inconclusive")
         configuration = contracts.read_json(executor.read(os.path.join(journal.path(ident),
                                                      "configuration.json")), "executor")
+        require(canonical_digest(configuration) == request["configuration_digest"],
+                "original frozen configuration differs from native request")
         # Even terminal failures and uncertain executions remain history. Never discard a
         # negative result to make the next research packet look more promising.
         records.append(dict(kind="performance", source_id=canonical_digest(request),
@@ -201,6 +203,47 @@ def packet(index, cutoff, created, wanted, max_age_ms, max_items=32, max_bytes=3
     data = contracts.write_bytes(result, "evidence-packet")
     require(len(data) <= max_bytes, "evidence packet exceeds byte allowance")
     return result
+
+
+def authenticate(packet, config):
+    """Re-derive only the bounded packet's facts; an index pin grants no provenance.
+
+    Owner observation times and compatibility labels remain owner selections. All native
+    facts, including summaries, outcomes, content IDs and revision receipts, must match.
+    """
+    records = [item["artifact"] for item in packet["items"]]
+    selections, originals = {}, []
+    for record in records:
+        if record["provenance"] == "native_task":
+            receipt = record["native_receipt"]
+            selection = dict(task_id=receipt["task_id"], artifact_id=receipt["artifact_id"],
+                observed_unix_ms=record["observed_unix_ms"], compatibility=record["compatibility"])
+            key = canonical_digest(selection)
+            selections[key] = selection
+        else:
+            originals.append(record)
+    require(len(selections) <= SOURCES, "too many selected native artifacts")
+    derived = captured(list(selections.values()), config)
+    if originals:
+        with executor.Journal(executor.load_config(config["executor"]), readonly=True) as journal:
+            # Index records already retain the canonical request digest. Resolve that digest
+            # through the journal's checked membership, never through an index-supplied path.
+            names = journal.names()
+            wanted = {record["source_id"] for record in originals}
+            require(len(wanted) <= SOURCES, "too many selected native originals")
+            ids = [ident for ident in names if canonical_digest(journal.request(ident)) in wanted]
+            require(len(ids) == len(wanted), "selected native experiment is absent")
+            def verify():
+                try:
+                    return native(journal, ids), None, False
+                except (ContractError, OSError, ValueError) as error:
+                    # Offline verification launches no experiment and owns no container.
+                    return None, str(error), False
+            facts, refusal = journal.exclusive("research original verification", verify)
+            require(refusal is None, "native research evidence refused: " + str(refusal))
+            derived.extend(facts)
+    for record in records:
+        require(record in derived, "research index differs from authenticated native evidence")
 
 
 def retain(root, doc, contract):
