@@ -476,8 +476,9 @@ all writable roots and temporary areas share one bounded private filesystem; no 
 bind is exposed. Disk bounds are 4096-byte multiples through 8 GiB.
 Reviewer experiments cannot become the candidate. Optional cache policies select
 immutable layers in WarmSet@3 before reservation; retries retain that selection. Only admitted
-same-slot outputs may supply BuildCache@2 continuation. Machine-approved dependencies are
-available-only, and Worker caches never supply Gate evidence. See
+same-slot outputs may supply BuildCache@2 continuation. After source edits, pass both the sealed
+source and checkpoint to the next Worker; the old source is incompatible. Machine-approved
+dependencies are available-only, and Worker caches never supply Gate evidence. See
 `docs/design/worker-local-development.md` and `fixtures/worker-development/README.md`.
 
   version = 1
@@ -608,7 +609,7 @@ its own versioned document instead, carrying a classified outcome and af-authore
 Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
 one diagnostic line, so discarding stdout never hides a refusal. The Provider
 documents are af/provider-detect@4 (`af provider detect`), af/provider-status@5,
-af/provider-setup@2, af/pi-provider-setup@2 and af/provider-models@2; none carries an account,
+af/provider-setup@2, af/pi-provider-setup@3 and af/provider-models@2; none carries an account,
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
@@ -645,7 +646,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@15; a collected Task:
+  af task show --json                  af/task-inspection@16; a collected Task:
                                        af/task-collected-inspection@3
   af task show --checks --json         af/task-checks@3
   af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
@@ -668,7 +669,7 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@15, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-inspection@16, af/task-collected-inspection@3, af/task-checks@3, each
 af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
 af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
 af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the

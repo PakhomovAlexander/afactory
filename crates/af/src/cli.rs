@@ -269,10 +269,10 @@ explicitly requests convergence review, and repeat that explicit mode when resum
 A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
 packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init --profile software \
 --destination DIR` creates a new starter directory with a working catalog and runnable Task \
-files. The Task runs over a captured source Snapshot and ends at a verified or unverified \
+files. An implementation Task runs over a captured source Snapshot and ends at a verified or unverified \
 derived Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new \
 local branch and worktree, after confirming the Task ID, or `materialize` it into a worktree \
-you name.\n\nAn agent's loop — plan, run or run in the background, read the state, the \
+you name. Structured package kinds instead capture declared JSON ports with --input-json PORT=FILE. Their structurally_validated completion proves only the deterministic schema and provenance contract, without independent semantic verification or code delivery. Inspect their data with af task output.\n\nAn agent's loop — plan, run or run in the background, read the state, the \
 findings and the diff, run another round, deliver, describe the pull request — is `af help \
 agents`.",
         after_long_help = "Examples:\n  \
@@ -1473,7 +1473,8 @@ stdout and stderr, because the OAuth URL and authorization code that login print
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
 --auth-dir names an existing directory; only --login creates a missing one, because a login \
 needs a home.\n\n\
-Pi requires --backend openai-codex, an existing stored OAuth login with accountId, Node >=22.19 \
+Pi requires --backend openai-codex or kimi-coding and stored OAuth. OpenAI requires accountId; \
+Kimi account identity is unavailable and distinct_principals policy refuses it. Use Node >=22.19 \
 and the official Pi SDK 1.4.0 outside a repository. Pass --sdk-entrypoint to its dist/index.js \
 when its installed launcher cannot resolve it. Pi uses an embedded AF SDK host and confined file \
 tools, no shell or ambient resources. Pi setup never starts login; --login is unavailable.\n\n\
@@ -1493,7 +1494,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Provider CLI family
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
-        /// Pi upstream backend (openai-codex); required for --kind pi
+        /// Pi upstream backend (openai-codex or kimi-coding); required for --kind pi
         #[arg(long)]
         backend: Option<String>,
         /// Absolute installed Pi 1.4.0 SDK dist/index.js (never a repository module)
@@ -1505,7 +1506,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@2`)
+        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@3`)
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },
@@ -1853,6 +1854,9 @@ af task explain TASK_ID --tree   # needs: a Task\n  \
         /// Start from the working tree instead of a revision
         #[arg(long, help_heading = "Selector")]
         uncommitted: bool,
+        /// Capture a declared structured JSON port from FILE relative to the Task file
+        #[arg(long, value_name = "PORT=FILE")]
+        input_json: Vec<String>,
         /// Positive wall-clock budget for the whole Task
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..), help_heading = "Budget")]
         timeout_secs: Option<u64>,
@@ -1866,7 +1870,7 @@ af task explain TASK_ID --tree   # needs: a Task\n  \
 token-free, and nothing runs. `af task start` without --execute does the same. The Task is \
 recorded in its Store with the plan; `af task run TASK_ID --confirm-plan PLAN_ID` runs exactly \
 that plan, and `af task explain TASK_ID` shows it again.\n\nNever: calls a model, runs a check, \
-writes to the repository, commits or pushes.",
+writes to the repository, commits or pushes.\n\nStructured package kinds capture declared JSON ports with --input-json PORT=FILE, relative to the Task file. Their structurally_validated completion proves deterministic schema and provenance only, without independent semantic verification or code delivery.",
         after_long_help = "Examples:\n  \
 # needs: a Task file (af catalog init writes starters)\n  af task plan --file ../ticket.json\n  \
 af task plan --file ../ticket.json --uncommitted --json   # needs: a Task file"
@@ -1913,11 +1917,14 @@ af task plan --file ../ticket.json --uncommitted --json   # needs: a Task file"
         /// Capture the working tree instead of a revision
         #[arg(long, help_heading = "Selector")]
         uncommitted: bool,
+        /// Capture a declared structured JSON port from FILE relative to the Task file
+        #[arg(long, value_name = "PORT=FILE")]
+        input_json: Vec<String>,
         /// When the Task's limits are too small for the Pipeline, plan with the smallest limits
         /// that fit instead of refusing, and print every limit it raised
         #[arg(long)]
         fit: bool,
-        /// Re-plan an unstarted Task of the same ID from a changed Task file, in place
+        /// Re-plan an unstarted Task from a changed file, or recapture its structured JSON inputs
         #[arg(long)]
         replace: bool,
         /// One JSON document on stdout instead of text

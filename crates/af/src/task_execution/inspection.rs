@@ -56,7 +56,7 @@ pub(super) fn explain_plan(
     if recorded_event_ids.is_empty() {
         return Err("The requested plan is not recorded in this Task".into());
     }
-    let plan: ExecutionPlanV2 = artifact(cas, plan_id, EXECUTION_PLAN_V2)?;
+    let plan: ExecutionPlanV3 = artifact(cas, plan_id, EXECUTION_PLAN_V3)?;
     plan.validate()?;
     let revision: TaskRevisionV1 = artifact(cas, &plan.task_revision_id, TASK_REVISION_V1)?;
     revision.validate()?;
@@ -65,7 +65,7 @@ pub(super) fn explain_plan(
     }
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     let value = json!({
-        "schema":"af/task-plan-inspection@1", "task_id":task_id, "plan_id":plan_id,
+        "schema":"af/task-plan-inspection@2", "task_id":task_id, "plan_id":plan_id,
         "task_revision_id":plan.task_revision_id,
         "current_plan":state.plan_id.as_deref() == Some(plan_id),
         "recorded_event_ids":recorded_event_ids, "revision":revision, "plan":plan, "graph":graph,

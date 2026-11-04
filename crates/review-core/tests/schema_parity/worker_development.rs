@@ -417,6 +417,33 @@ fn worker_cache_policies_warm_selections_build_provenance_and_capture_receipts_h
     cache.validate().unwrap();
     let cache_value = serde_json::to_value(&cache).unwrap();
     assert!(validator("build-cache-v2.json").is_valid(&cache_value));
+    // The existing envelope binds the admitted output independently of input provenance;
+    // no new payload field or alternate Snapshot spelling is needed for continuations.
+    let output_snapshot = format!("sha256:{}", "b".repeat(64));
+    let envelope = review_core::ArtifactEnvelope {
+        artifact_type: review_core::contract::BUILD_CACHE_V2.into(),
+        artifact_id: identity(),
+        content_id: identity(),
+        producer: review_core::Producer::Attempt {
+            run_id: "task:fixture".into(),
+            node_id: cache.gate_node.clone(),
+            attempt_id: cache.gate_attempt_id.clone().unwrap(),
+        },
+        input_artifacts: vec![cache.head_snapshot_id.clone(), output_snapshot.clone()],
+        subject_snapshot_id: Some(output_snapshot),
+        payload: cache_value.clone(),
+    };
+    let value = serde_json::to_value(&envelope).unwrap();
+    assert!(validator("artifact-envelope-v1.json").is_valid(&value));
+    assert_eq!(
+        serde_json::from_value::<review_core::ArtifactEnvelope>(value).unwrap(),
+        envelope
+    );
+    assert_ne!(
+        envelope.subject_snapshot_id.as_ref(),
+        Some(&cache.head_snapshot_id)
+    );
+
     {
         let field = "worker";
         let mut value = cache_value.clone();

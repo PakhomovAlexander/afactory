@@ -123,3 +123,15 @@ It verifies exact volume cleanup, preservation of a live runtime and unchanged r
 These probes run with the other live container probes, and a missing daemon remains a failure.
 The recording Task toolchain tests establish compilation, dispatch and receipt behavior separately;
 they cannot substitute for these containment probes.
+
+The local Task gate `scripts/verify.sh --profile fast` selects functional, e2e and uix.
+Its `scripts/test-classes.py execute` path checks for `e2e` in the selection and then invokes
+`make review-kernel-container-probes`. That Makefile target runs
+`cargo test --locked -p review-sandbox --test container_probes -- --ignored`, including the
+aggregate-disk probe above, followed by the timeout and live Task Gate routing probes.
+Thus `#[ignore]` excludes these tests from the ordinary nextest selection but does not exclude
+them from the fast gate's explicit live-probe dispatch. `.af/code-policy.toml` declares this
+local gate route. A top-level kernel receipt must be traced through its stdout and this executor
+path; its check name alone does not show which probes executed. The older main-run record above
+covers its recorded revision only. Each new candidate still requires its own passing gate and
+live-probe output; this dispatch description is not an execution receipt.

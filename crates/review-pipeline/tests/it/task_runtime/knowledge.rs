@@ -43,7 +43,7 @@ impl TaskDomain for RetrievalDomain {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _: &review_graph::task::CompiledNode,
@@ -493,16 +493,16 @@ fn run_knowledge_task(model: bool, private_notes: bool) {
             "example/knowledge",
             AdmittedWorkerSettings {
                 execution: if model {
-                    WorkerExecutionV2::Model {
+                    WorkerExecutionV3::Model {
                         provider: "personal".into(),
                         provider_kind: "fixture".into(),
-                        principal_id: policy.clone(),
+                        principal_id: Some(policy.clone()),
                         model: "typed-model".into(),
                         effort: "high".into(),
                         pi: None,
                     }
                 } else {
-                    WorkerExecutionV2::Command {}
+                    WorkerExecutionV3::Command {}
                 },
                 invocation_policy_id: policy,
             },
@@ -511,7 +511,7 @@ fn run_knowledge_task(model: bool, private_notes: bool) {
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V2,
+            EXECUTION_PLAN_V3,
             producer(),
             vec![revision.clone()],
             None,

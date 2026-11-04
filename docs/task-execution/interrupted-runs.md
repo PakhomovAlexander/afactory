@@ -71,7 +71,7 @@ declares more. Within the allowance, the next `af task run` dispatches the node 
 interrupted check runs its check again. A node whose abandoned Attempts exceed the allowance
 is not dispatched again, and the Task cannot continue.
 
-A slot declares its allowance in its pipeline, which makes the pipeline `af.pipeline/3`:
+An ordinary Pipeline's slot recovery allowance uses `af.pipeline/3`:
 
 ```toml
 schema = "af.pipeline/3"
@@ -89,12 +89,14 @@ allow_local_replacement = true
 independent_from = []
 ```
 
-`recovery_attempts` is 0 to 8. A pipeline whose slots declare none keeps `af.pipeline/1`, or
+`recovery_attempts` is 0 to 8. Outside the structured profile, a pipeline whose slots declare none keeps `af.pipeline/1`, or
 `af.pipeline/2` with a Project Brief port, and its bytes; an `af.pipeline/1` or `af.pipeline/2`
 pipeline that declares one is refused when it loads, naming `af.pipeline/3`
 ([`pipeline-definition-v3`](../../schemas/pipeline-definition-v3.json)). Its compiled graph is
 `af.compiled-task/2` ([`compiled-task-v2`](../../schemas/compiled-task-v2.json)). A child slot
 bound to a parent slot may not allow more recoveries than the child declares.
+The [structured profile](structured.md) keeps `af.pipeline/4` and compiled graph
+`af.compiled-task/3`, including when its one Worker slot declares a recovery allowance.
 
 ## What `af task run` says first
 
@@ -141,7 +143,7 @@ next: af task run pagination-cli
 ```
 
 `af task list` prints the same state and `run` as its next command. Their `--json` documents,
-`af/task-inspection@15` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
+`af/task-inspection@16` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
 `outcome` `cancelled`, `cause` `writer_lost` or `host_cancelled`, and `next_action`; the
 top-level `phase` keeps the phase the Task recorded. A node past its allowance makes
 `next_action` `af task start --file TASK_FILE`.

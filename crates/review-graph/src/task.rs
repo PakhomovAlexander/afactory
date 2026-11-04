@@ -232,16 +232,29 @@ pub struct CompiledTask {
 /// need: the clock starts at admission, and the first reservation, which must still find the
 /// whole reserve ahead of it, comes a moment after.
 pub const FIT_WALL_START_MS: u64 = 5_000;
-/// The label of a compiled graph whose slots declare no recovery allowance.
+/// The label of a non-structured graph whose slots declare no recovery allowance.
 pub const COMPILED_TASK_SCHEMA_V1: &str = "af.compiled-task/1";
 /// The label of a compiled graph with a slot that declares `recovery_attempts`, the shape an
 /// `af.pipeline/3` slot compiles to (ADR-0209).
 pub const COMPILED_TASK_SCHEMA_V2: &str = "af.compiled-task/2";
+/// The label of a graph containing installed structural acceptance.
+pub const COMPILED_TASK_SCHEMA_V3: &str = "af.compiled-task/3";
 
 impl CompiledTask {
-    /// The one label this graph's shape has: version 2 when a slot declares
-    /// `recovery_attempts`, version 1 otherwise.
+    /// Structural acceptance takes version 3. Other graphs take version 2 when a slot
+    /// declares `recovery_attempts`, version 1 otherwise.
     pub fn expected_schema(&self) -> &'static str {
+        if self.nodes.values().any(|n| {
+            matches!(
+                n.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::StructuredAccept {},
+                    ..
+                }
+            )
+        }) {
+            return COMPILED_TASK_SCHEMA_V3;
+        }
         if self
             .slots
             .values()
@@ -337,7 +350,7 @@ impl CompiledTask {
 
     pub fn require_provider_admission(
         &mut self,
-        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV2>,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV3>,
         cost: &OperatorAttemptCost,
         limits: &review_core::task::TaskLimitsV1,
     ) -> Result<(), String> {
@@ -351,10 +364,10 @@ impl CompiledTask {
     /// `root.providers.admit{index}` node, in the order of that grouping key.
     pub fn install_provider_admission(
         &mut self,
-        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV2>,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV3>,
         cost: &OperatorAttemptCost,
     ) -> Result<(), String> {
-        use review_core::task::plan::WorkerExecutionV2;
+        use review_core::task::plan::WorkerExecutionV3;
         if cost.tokens == 0 || cost.wall_ms == 0 {
             return Err("Provider admission requires a bounded paid reservation".into());
         }
@@ -367,7 +380,7 @@ impl CompiledTask {
         }
         let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (slot, binding) in bindings {
-            if matches!(binding.execution, WorkerExecutionV2::Model { .. }) {
+            if matches!(binding.execution, WorkerExecutionV3::Model { .. }) {
                 let key =
                     serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
                         .map_err(|e| e.to_string())?;
@@ -420,7 +433,7 @@ impl CompiledTask {
                             "result".into(),
                             PipelinePortV1 {
                                 artifact_type:
-                                    review_core::task::provider::TASK_PROVIDER_ADMISSION_V2.into(),
+                                    review_core::task::provider::TASK_PROVIDER_ADMISSION_V3.into(),
                                 cardinality: review_core::PortCardinality::One,
                                 optional: false,
                                 affinity: PortAffinityV1::Unbound {},
@@ -2419,6 +2432,7 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
         TaskOperatorV1::DocumentCheck {} => Ok("document-check"),
         TaskOperatorV1::DocumentAccept {} => Ok("document-accept"),
+        TaskOperatorV1::StructuredAccept {} => Ok("structured-accept"),
         TaskOperatorV1::ReportSeal {} => Ok("report-seal"),
         TaskOperatorV1::ReportCheck {} => Ok("report-check"),
         TaskOperatorV1::ReportAccept {} => Ok("report-accept"),
@@ -2726,8 +2740,8 @@ mod recovery_tests {
         graph
     }
 
-    /// A graph with a slot recovery allowance is `af.compiled-task/2`, every other graph
-    /// `af.compiled-task/1`, and a graph labelled otherwise than its shape is refused
+    /// Outside structured graphs, a slot recovery allowance takes `af.compiled-task/2`,
+    /// otherwise `af.compiled-task/1`; a graph labelled otherwise than its shape is refused
     /// (ADR-0209).
     #[test]
     fn a_slot_recovery_allowance_labels_the_graph_version_2_and_reaches_its_node() {

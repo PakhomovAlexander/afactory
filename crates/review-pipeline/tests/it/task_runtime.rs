@@ -55,7 +55,7 @@ struct Fixture {
     compiler: TaskPlanCompiler,
     task: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV2,
+    plan: ExecutionPlanV3,
     plan_id: String,
     graph: CompiledTask,
 }
@@ -171,7 +171,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             cas: &Cas,
             _: &TaskRevisionV1,
-            _: &ExecutionPlanV2,
+            _: &ExecutionPlanV3,
             prepared: &ExperimentPreparedV1,
         ) -> Result<(), String> {
             let prepared_id = self
@@ -203,7 +203,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskRevisionV1,
-            _: &ExecutionPlanV2,
+            _: &ExecutionPlanV3,
             _: &TaskInvocationV1,
             _: &TaskOutputV1,
             _definition: &review_graph::task::CompiledNode,
@@ -310,7 +310,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
     f.plan_id = f
         .cas
         .put_artifact(
-            EXECUTION_PLAN_V2,
+            EXECUTION_PLAN_V3,
             producer(),
             vec![f.revision_id.clone()],
             None,
@@ -1090,16 +1090,16 @@ impl Fixture {
                 "builtin/document-author",
                 AdmittedWorkerSettings {
                     execution: if model {
-                        WorkerExecutionV2::Model {
+                        WorkerExecutionV3::Model {
                             provider: "personal".into(),
                             provider_kind: "fixture".into(),
-                            principal_id: policy.clone(),
+                            principal_id: Some(policy.clone()),
                             model: "typed-model".into(),
                             pi: None,
                             effort: "high".into(),
                         }
                     } else {
-                        WorkerExecutionV2::Command {}
+                        WorkerExecutionV3::Command {}
                     },
                     invocation_policy_id: policy,
                 },
@@ -1110,7 +1110,7 @@ impl Fixture {
             .unwrap();
         let plan_id = cas
             .put_artifact(
-                EXECUTION_PLAN_V2,
+                EXECUTION_PLAN_V3,
                 producer(),
                 vec![revision_id.clone()],
                 None,
@@ -1170,7 +1170,7 @@ impl TaskDomain for DocumentDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -1441,7 +1441,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
         f.plan_id = f
             .cas
             .put_artifact(
-                EXECUTION_PLAN_V2,
+                EXECUTION_PLAN_V3,
                 producer(),
                 vec![],
                 None,

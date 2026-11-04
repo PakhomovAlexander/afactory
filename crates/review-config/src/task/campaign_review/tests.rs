@@ -329,7 +329,7 @@ fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
 
 #[test]
 fn dynamic_review_retains_enveloped_history_and_shared_provider_guards() {
-    use review_core::task::plan::{EffectiveWorkerBindingV2, WorkerExecutionV2};
+    use review_core::task::plan::{EffectiveWorkerBindingV3, WorkerExecutionV3};
     use review_graph::task::OperatorAttemptCost;
     let loaded =
         crate::Definition::from_toml(include_str!("../../../tests/fixtures/dynamic-v5.toml"))
@@ -369,14 +369,14 @@ fn dynamic_review_retains_enveloped_history_and_shared_provider_guards() {
         .map(|slot| {
             (
                 slot.clone(),
-                EffectiveWorkerBindingV2 {
+                EffectiveWorkerBindingV3 {
                     package_digest: id.clone(),
                     package_artifact_id: id.clone(),
                     invocation_policy_id: id.clone(),
-                    execution: WorkerExecutionV2::Model {
+                    execution: WorkerExecutionV3::Model {
                         provider: "personal".into(),
                         provider_kind: "fixture".into(),
-                        principal_id: "same-person".into(),
+                        principal_id: Some("same-person".into()),
                         model: "fixture-model".into(),
                         pi: None,
                         effort: "high".into(),
@@ -436,7 +436,7 @@ fn resource_manifest(loaded: &Loaded) -> review_core::CampaignManifestV1 {
 #[test]
 fn original_review_task_envelope_preserves_round_caps_and_all_retry_wall_bounds() {
     use crate::captured_review::ReviewMode;
-    use review_core::task::plan::WorkerExecutionV2;
+    use review_core::task::plan::WorkerExecutionV3;
     let definition = PIPELINE.replace("version = 2", "version = 2\ncheck_timeout_seconds = 2")
         + "\n[[checks]]\nname = \"one\"\nprogram = \"/bin/true\"\n"
         + "\n[[checks]]\nname = \"two\"\nprogram = \"/bin/true\"\n"
@@ -450,7 +450,7 @@ fn original_review_task_envelope_preserves_round_caps_and_all_retry_wall_bounds(
     let mut executions: BTreeMap<_, _> = loaded
         .reviewers()
         .keys()
-        .map(|name| (name.clone(), WorkerExecutionV2::Command {}))
+        .map(|name| (name.clone(), WorkerExecutionV3::Command {}))
         .collect();
     let policy = resources::ReviewResourcePolicy {
         uncapped_attempt_tokens: 1000,
@@ -485,10 +485,10 @@ fn original_review_task_envelope_preserves_round_caps_and_all_retry_wall_bounds(
     manifest.convergence.max_rounds = 3;
     executions.insert(
         "second".into(),
-        WorkerExecutionV2::Model {
+        WorkerExecutionV3::Model {
             provider: "personal".into(),
             provider_kind: "claude".into(),
-            principal_id: content_id(&json!({"account":1})).unwrap(),
+            principal_id: Some(content_id(&json!({"account":1})).unwrap()),
             pi: None,
             model: "claude-fable-5-1".into(),
             effort: "high".into(),
@@ -568,7 +568,7 @@ fn original_review_task_envelope_preserves_round_caps_and_all_retry_wall_bounds(
 #[test]
 fn original_review_task_envelope_counts_owned_children_and_only_eligible_integration_phases() {
     use crate::captured_review::ReviewMode;
-    use review_core::task::plan::WorkerExecutionV2;
+    use review_core::task::plan::WorkerExecutionV3;
     let definition = include_str!("../../../tests/fixtures/dynamic-v5.toml").to_string()
         + "\n[[checks]]\nname = \"build\"\nprogram = \"/bin/true\"\n"
         + "\n[integration]\npost_apply_checks = [\"build\"]\n"
@@ -583,7 +583,7 @@ fn original_review_task_envelope_counts_owned_children_and_only_eligible_integra
     let executions = loaded
         .reviewers()
         .keys()
-        .map(|name| (name.clone(), WorkerExecutionV2::Command {}))
+        .map(|name| (name.clone(), WorkerExecutionV3::Command {}))
         .collect();
     let policy = resources::ReviewResourcePolicy {
         uncapped_attempt_tokens: 1,

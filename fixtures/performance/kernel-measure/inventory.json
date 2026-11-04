@@ -77,12 +77,12 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:3b9bb75f90b28fd2c1b4a25b2cda98a9078ff29563447d5d22f0d47e25c803a0",
+   "sha256": "sha256:9d1e922e5248e1eeabd491a4702c3c618225aeeabd367ecf9964f279792469a3",
    "size": 24426
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/cases.rs",
-   "sha256": "sha256:3117fd44d757fbf9be5a37e48ea06d1ff6bca918a517ffc321ab54c8105cdb91",
+   "sha256": "sha256:fa7af95dda24206b2874e6711baf9c9fd7dd76326015b55dec7c88264095e367",
    "size": 63191
   },
   {
@@ -3786,7 +3786,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:09a6e14a9e922a94d550c97e1b48752b65810f7adf1fbff6f28bf43599b2ad00",
+ "harness_digest": "sha256:c807efe2d8996d6d9d6696a61f8c4acdee6f3acf16436f5da22f98137acf3842",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

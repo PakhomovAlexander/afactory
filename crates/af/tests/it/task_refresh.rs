@@ -300,7 +300,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
         &["task", "explain", "issue-refresh", "--plan", old_plan_id],
         0,
     );
-    assert_eq!(old_plan["schema"], "af/task-plan-inspection@1");
+    assert_eq!(old_plan["schema"], "af/task-plan-inspection@2");
     assert_eq!(old_plan["current_plan"], false);
     assert_eq!(old_plan["revision"], original);
     assert_eq!(old_plan["plan"], approved["plan"]);

@@ -105,8 +105,8 @@ Pipeline must accept that kind. The kind package becomes an exact plan dependenc
 verification override cannot weaken its profile.
 
 The installed profiles are exactly `implementation`, `reviewed_implementation`,
-`repair_allowed_implementation`, `review`, `document`, `report`, `optimization_analysis` and
-`optimization_candidate`; a `kind.toml` naming any other `profile` is refused. A package only
+`repair_allowed_implementation`, `review`, `document`, `report`, `optimization_analysis`,
+`optimization_candidate` and `structured`; a `kind.toml` naming any other `profile` is refused. A package only
 gives a business name to one of these engine-owned profiles: it cannot install an arbitrary
 domain handler or replace the engine's acceptance rules. These are not the starter names that
 `af catalog init --profile` takes ([starters](starters.md)).
@@ -114,3 +114,7 @@ domain handler or replace the engine's acceptance rules. These are not the start
 Tests sync a transitive catalog, remove its original repository, plan an imported Task, modify
 the imported Worker and execute the captured plan. Fresh admission rejects the mutated package.
 Separate cases reject catalog cycles, missing dependencies, namespace collisions and symlinks.
+
+A package-defined data kind uses the separate `af.task-kind/2` shape with profile `structured`
+and captured `structured.json`. See [structured Tasks](structured.md); generation 1 continues
+to describe the existing installed profiles and refuses the structured profile.

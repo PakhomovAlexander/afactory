@@ -96,7 +96,7 @@ impl TaskDomain for IdentityHost {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,

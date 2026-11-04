@@ -145,7 +145,9 @@ pub(crate) fn select(
                 }
                 let id = &port.artifact_ids[0];
                 let envelope = cas.get_artifact(id).map_err(miss)?;
-                if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2 {
+                if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2
+                    || envelope.subject_snapshot_id != port.snapshot_id
+                {
                     return Err(DevelopmentCacheMissV1::Corrupt);
                 }
                 let cache: BuildCacheV2 = serde_json::from_value(envelope.payload)
@@ -177,7 +179,7 @@ pub(crate) fn select(
                 }
                 if provenance.compatibility_id != compatibility_id
                     || policy.selection == DevelopmentCacheSelectionV1::ExactSource
-                        && cache.head_snapshot_id != source
+                        && envelope.subject_snapshot_id.as_deref() != Some(source.as_str())
                 {
                     return Err(DevelopmentCacheMissV1::Incompatible);
                 }
@@ -506,7 +508,7 @@ pub(crate) fn attach_outputs(
         if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2 {
             continue;
         }
-        let cache: BuildCacheV2 =
+        let mut cache: BuildCacheV2 =
             serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
         cache.validate()?;
         let provenance = cache
@@ -516,22 +518,98 @@ pub(crate) fn attach_outputs(
         if cache.gate_node != input.node || cache.gate_attempt_id.as_deref() != Some(attempt_id) {
             return Err("Captured cache belongs to another Attempt".into());
         }
-        let port = request
+        let policy = request
             .caches
             .get(&provenance.name)
-            .and_then(|policy| policy.output.as_ref())
             .ok_or("Undeclared cache output")?;
+        let port = policy.output.as_ref().ok_or("Undeclared cache output")?;
+        let (id, snapshot_id) = if policy.selection == DevelopmentCacheSelectionV1::ExactSource {
+            // Only the environment's sealed candidate (or unchanged input) may bind a
+            // continuation. The command's final scan is evidence, not source authority.
+            let source = admitted_source(cas, input, outputs, &envelope.producer)?;
+            let (snapshot, _, manifest) = source_snapshot(cas, &source)?;
+            if provenance.output_tree_digest != manifest.content_digest() {
+                // Reviewer experiments and filtered scratch cannot authorize a continuation
+                // against a different admitted tree.
+                continue;
+            }
+            let compatibility_id = compatibility(cas, request, policy, &manifest, &snapshot)?;
+            cache
+                .worker
+                .as_mut()
+                .ok_or("Missing Worker cache provenance")?
+                .compatibility_id = compatibility_id.clone();
+            let mut refs = vec![
+                id.clone(),
+                cache.head_snapshot_id.clone(),
+                cache.manifest_id.clone(),
+                compatibility_id,
+            ];
+            refs.extend(source.artifact_ids);
+            let id = cas
+                .put_artifact(
+                    review_core::contract::BUILD_CACHE_V2,
+                    envelope.producer,
+                    refs,
+                    Some(snapshot.clone()),
+                    serde_json::to_value(&cache).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?
+                .0;
+            (id, Some(snapshot))
+        } else {
+            (id.clone(), None)
+        };
         outputs.insert(
             port.clone(),
             ArtifactInputV1 {
-                artifact_ids: vec![id.clone()],
+                artifact_ids: vec![id],
                 artifact_type: review_core::contract::BUILD_CACHE_V2.into(),
                 cardinality: review_core::PortCardinality::One,
-                snapshot_id: None,
+                snapshot_id,
             },
         );
     }
     Ok(())
+}
+
+/// Resolve exactly the source the typed seal operation will publish. The Snapshot identity
+/// is independent of the publishing operation; candidate bytes and parent are host-sealed.
+fn admitted_source(
+    cas: &Cas,
+    input: &TaskInvocationV1,
+    outputs: &BTreeMap<String, ArtifactInputV1>,
+    producer: &review_core::Producer,
+) -> Result<ArtifactInputV1, String> {
+    let source = input.inputs.get("source").ok_or("Missing source")?;
+    let Some(candidate) = outputs.get("candidate") else {
+        return Ok(source.clone());
+    };
+    if candidate.artifact_type != review_source_git::task::CANDIDATE_TREE_V1
+        || candidate.artifact_ids.len() != 1
+        || candidate.cardinality != review_core::PortCardinality::One
+    {
+        return Err("Worker cache requires one typed sealed candidate".into());
+    }
+    let envelope = cas
+        .get_artifact(&candidate.artifact_ids[0])
+        .map_err(|error| error.to_string())?;
+    let tree: review_source_git::task::CandidateTree =
+        serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
+    if envelope.artifact_type != review_source_git::task::CANDIDATE_TREE_V1
+        || &envelope.producer != producer
+        || Some(&tree.parent_snapshot_id) != source.snapshot_id.as_ref()
+        || Some(&tree.parent_snapshot_id) != candidate.snapshot_id.as_ref()
+    {
+        return Err("Worker cache candidate/source provenance mismatch".into());
+    }
+    review_source_git::task::derive_source_tree(
+        cas,
+        producer.clone(),
+        &tree.manifest_id,
+        &tree.parent_snapshot_id,
+        candidate.artifact_ids.clone(),
+    )
 }
 
 pub(crate) fn validate_output(
@@ -539,6 +617,7 @@ pub(crate) fn validate_output(
     input: &TaskInvocationV1,
     port: &str,
     value: &ArtifactInputV1,
+    outputs: &BTreeMap<String, ArtifactInputV1>,
     request: &WorkerDevelopmentV3,
     run_id: &str,
 ) -> Result<(), String> {
@@ -549,15 +628,18 @@ pub(crate) fn validate_output(
         .ok_or("Undeclared cache output")?;
     if value.artifact_type != review_core::contract::BUILD_CACHE_V2
         || value.artifact_ids.len() != 1
-        || value.snapshot_id.is_some()
+        || policy.selection != DevelopmentCacheSelectionV1::ExactSource
+            && value.snapshot_id.is_some()
     {
         return Err("Invalid kernel cache output".into());
     }
     let envelope = cas
         .get_artifact(&value.artifact_ids[0])
         .map_err(|error| error.to_string())?;
-    if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2 {
-        return Err("Unsupported cache version".into());
+    if envelope.artifact_type != review_core::contract::BUILD_CACHE_V2
+        || envelope.subject_snapshot_id != value.snapshot_id
+    {
+        return Err("Unsupported cache version or mismatched output Snapshot".into());
     }
     let cache: BuildCacheV2 =
         serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
@@ -583,6 +665,17 @@ pub(crate) fn validate_output(
             })
     {
         return Err("Worker cache producer/source provenance mismatch".into());
+    }
+    if policy.selection == DevelopmentCacheSelectionV1::ExactSource {
+        let source = admitted_source(cas, input, outputs, &envelope.producer)?;
+        let (snapshot, _, manifest) = source_snapshot(cas, &source)?;
+        if envelope.subject_snapshot_id.as_deref() != Some(snapshot.as_str())
+            || provenance.compatibility_id
+                != compatibility(cas, request, policy, &manifest, &snapshot)?
+            || provenance.output_tree_digest != manifest.content_digest()
+        {
+            return Err("Worker cache admitted output source mismatch".into());
+        }
     }
     let manifest = manifest_metadata(cas, &cache.manifest_id, &policy.limits)
         .map_err(|reason| format!("Worker cache output unavailable: {reason:?}"))?;

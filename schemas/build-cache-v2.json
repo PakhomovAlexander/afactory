@@ -41,6 +41,7 @@
       "$ref": "#/$defs/id"
     },
     "head_snapshot_id": {
+      "description": "The Gate head or Worker input Snapshot. For admitted exact-source Worker outputs, the enclosing artifact subject_snapshot_id separately binds the authoritative output source used by exact-source compatibility.",
       "$ref": "#/$defs/digest"
     },
     "manifest_id": {

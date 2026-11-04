@@ -3,8 +3,8 @@
 use super::*;
 use review_config::captured_review::ReviewMode;
 use review_core::task::plan::{
-    EffectiveWorkerBindingV2, ExecutionPlanV2, GeneratedOriginV1, PlanDependencyV1,
-    WorkerExecutionV2,
+    EffectiveWorkerBindingV3, ExecutionPlanV3, GeneratedOriginV1, PlanDependencyV1,
+    WorkerExecutionV3,
 };
 use review_core::task::{
     AcceptanceObligationV1, PipelineChoiceV1, PipelineFallbackV1, RequiredOutputV1,
@@ -14,9 +14,9 @@ use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewO
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const REVIEW_TASK_POLICY_V5: &str = "af/LegacyReviewTaskPolicy@5";
+pub const REVIEW_TASK_POLICY_V6: &str = "af/LegacyReviewTaskPolicy@6";
 pub const REVIEW_DEPENDENCY_V1: &str = "af/LegacyReviewDependency@1";
-pub const REVIEW_INVOCATION_POLICY_V2: &str = "af/LegacyReviewInvocationPolicy@2";
+pub const REVIEW_INVOCATION_POLICY_V3: &str = "af/LegacyReviewInvocationPolicy@3";
 const ROOT: &str = "af/legacy-review";
 
 mod continuation;
@@ -30,7 +30,7 @@ pub struct ReviewPlanSettings {
     pub resources: ReviewResourcePolicy,
     pub outputs: BTreeMap<String, Address>,
     /// Original Review node IDs; these are not Task-qualified slot names.
-    pub executions: BTreeMap<String, WorkerExecutionV2>,
+    pub executions: BTreeMap<String, WorkerExecutionV3>,
     pub provider_admission: OperatorAttemptCost,
     pub allowed_effects: BTreeSet<String>,
 }
@@ -66,12 +66,23 @@ impl ReviewPlanSettings {
         }
         for execution in self.executions.values() {
             execution.validate()?;
+            // This installed frontend has no trusted context-only policy. Such bindings
+            // belong to a catalog Task whose explicit independence policy admits them.
+            if matches!(
+                execution,
+                WorkerExecutionV3::Model {
+                    principal_id: None,
+                    ..
+                }
+            ) {
+                return Err("Installed Review requires known account principals; use a Task pipeline with explicit context-only policy".into());
+            }
         }
         Ok(())
     }
 }
 
-/// The `af/LegacyReviewTaskPolicy@5` payload. Its bytes are Task authority: resume and later
+/// The `af/LegacyReviewTaskPolicy@6` payload. Its bytes are Task authority: resume and later
 /// Rounds recheck them exactly, so the shape and field names must not change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,14 +141,14 @@ struct ReviewInvocationPolicy {
     /// Exact typed values are rederived from the dependency's original captured files.
     runner_digest: String,
     execution_policy_digest: String,
-    execution: WorkerExecutionV2,
+    execution: WorkerExecutionV3,
     result_type: String,
     timeout_ms: u64,
 }
 
 struct ValidatedReviewPlan {
     task: TaskRevisionV1,
-    plan: ExecutionPlanV2,
+    plan: ExecutionPlanV3,
     artifacts: BTreeSet<String>,
 }
 
@@ -165,7 +176,7 @@ impl CampaignReviewPlanCompiler {
         };
         let envelope = capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V5,
+            REVIEW_TASK_POLICY_V6,
             "policy",
             vec![
                 policy.engine_id.clone(),
@@ -186,7 +197,7 @@ impl CampaignReviewPlanCompiler {
         policy_id: &str,
     ) -> Result<Self, String> {
         let envelope = cas.get_artifact(policy_id).map_err(|e| e.to_string())?;
-        if envelope.artifact_type != REVIEW_TASK_POLICY_V5 {
+        if envelope.artifact_type != REVIEW_TASK_POLICY_V6 {
             return Err("Expected a captured Review Task policy".into());
         }
         let policy: ReviewTaskPolicy =
@@ -201,7 +212,7 @@ impl CampaignReviewPlanCompiler {
         }
         capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V5,
+            REVIEW_TASK_POLICY_V6,
             "policy",
             vec![
                 policy.engine_id.clone(),
@@ -307,7 +318,7 @@ impl CampaignReviewPlanCompiler {
                 .executions
                 .values()
                 .filter_map(|execution| match execution {
-                    WorkerExecutionV2::Model { provider, .. } => Some(provider.clone()),
+                    WorkerExecutionV3::Model { provider, .. } => Some(provider.clone()),
                     _ => None,
                 })
                 .collect(),
@@ -450,7 +461,7 @@ impl CampaignReviewPlanCompiler {
         &self,
         cas: &Cas,
         revision_id: &str,
-    ) -> Result<(ExecutionPlanV2, CapturedReviewCompilation), String> {
+    ) -> Result<(ExecutionPlanV3, CapturedReviewCompilation), String> {
         self.compile_inner(cas, revision_id, None)
     }
 
@@ -458,12 +469,12 @@ impl CampaignReviewPlanCompiler {
         &self,
         cas: &Cas,
         revision_id: &str,
-        recorded: Option<&ExecutionPlanV2>,
-    ) -> Result<(ExecutionPlanV2, CapturedReviewCompilation), String> {
+        recorded: Option<&ExecutionPlanV3>,
+    ) -> Result<(ExecutionPlanV3, CapturedReviewCompilation), String> {
         // Check policy bytes on every admission/resume, even when the compiler stays in memory.
         capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V5,
+            REVIEW_TASK_POLICY_V6,
             "policy",
             vec![
                 self.policy.engine_id.clone(),
@@ -593,7 +604,7 @@ impl CampaignReviewPlanCompiler {
                 .transpose()?;
             let policy = capture_or_read(
                 cas,
-                REVIEW_INVOCATION_POLICY_V2,
+                REVIEW_INVOCATION_POLICY_V3,
                 "invocation",
                 vec![self.policy_id.clone(), package.artifact_id.clone()],
                 &policy,
@@ -601,7 +612,7 @@ impl CampaignReviewPlanCompiler {
             )?;
             bindings.insert(
                 slot.clone(),
-                EffectiveWorkerBindingV2 {
+                EffectiveWorkerBindingV3 {
                     package_digest: package.content_digest.clone(),
                     package_artifact_id: package.artifact_id.clone(),
                     execution: self.settings().executions[review_node].clone(),
@@ -634,7 +645,7 @@ impl CampaignReviewPlanCompiler {
             graph,
             recorded.map(|plan| plan.compiled_graph_id.as_str()),
         )?;
-        let plan = ExecutionPlanV2 {
+        let plan = ExecutionPlanV3 {
             preparation: None,
             task_revision_id: revision_id.into(),
             engine_id: self.policy.engine_id.clone(),
@@ -667,7 +678,7 @@ impl CampaignReviewPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         let mut validated = self
             .validated
@@ -700,7 +711,7 @@ impl CampaignReviewPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<BTreeSet<String>, String> {
         let mut wrappers = BTreeSet::from([
             plan.task_revision_id.clone(),
@@ -773,7 +784,7 @@ impl CampaignReviewPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<CapturedReviewCompilation, String> {
         let revision = cas
             .get_artifact(&plan.task_revision_id)
@@ -794,7 +805,7 @@ impl CampaignReviewPlanCompiler {
 fn dependency(
     cas: &Cas,
     value: &ReviewDependency,
-    plan: Option<&ExecutionPlanV2>,
+    plan: Option<&ExecutionPlanV3>,
 ) -> Result<PlanDependencyV1, String> {
     let recorded = plan
         .map(|plan| {
@@ -858,7 +869,7 @@ fn capture_or_read<T: Serialize>(
 
 fn validate_executions(
     loaded: &review_config::Loaded,
-    executions: &BTreeMap<String, WorkerExecutionV2>,
+    executions: &BTreeMap<String, WorkerExecutionV3>,
 ) -> Result<(), String> {
     for (node, execution) in executions {
         let runner = &loaded.reviewers()[node];
@@ -867,11 +878,11 @@ fn validate_executions(
             .and_then(|name| name.to_str())
             .is_some_and(|name| matches!(name, "claude" | "codex" | "pi"));
         match execution {
-            WorkerExecutionV2::Command {} if native => {
+            WorkerExecutionV3::Command {} if native => {
                 return Err("Native Review model runner requires common Provider admission".into());
             }
-            WorkerExecutionV2::Command {} => {}
-            WorkerExecutionV2::Model {
+            WorkerExecutionV3::Command {} => {}
+            WorkerExecutionV3::Model {
                 provider_kind,
                 model,
                 effort,

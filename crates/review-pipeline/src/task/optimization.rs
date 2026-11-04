@@ -8,7 +8,7 @@ use review_core::task::optimization_experiment::*;
 use review_core::task::optimization_light::OptimizationProfileV1 as OptimizationDevelopmentProfileV1;
 use review_core::task::optimization_light::*;
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
 };
@@ -791,7 +791,7 @@ impl TaskDomain for OptimizationTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -823,7 +823,7 @@ impl TaskDomain for OptimizationTaskDomain {
 /// not produce delivery authority: independent finalization remains a separate obligation.
 pub struct OptimizationCandidateTaskDomain {
     graph: CompiledTask,
-    plan: ExecutionPlanV2,
+    plan: ExecutionPlanV3,
     parent: String,
     baseline_slot: String,
     candidate_slot: String,
@@ -1725,7 +1725,7 @@ impl OptimizationCandidateTaskDomain {
 
     pub fn captured(
         graph: CompiledTask,
-        plan: ExecutionPlanV2,
+        plan: ExecutionPlanV3,
         compiler: &review_config::task::catalog::TaskPlanCompiler,
     ) -> Result<Self, String> {
         let experiments = graph
@@ -1795,8 +1795,8 @@ impl OptimizationCandidateTaskDomain {
                 .ok_or("Optimization experiment Worker has no effective binding")?
                 .execution
             {
-                review_core::task::plan::WorkerExecutionV2::Command {} => "command".into(),
-                review_core::task::plan::WorkerExecutionV2::Model { effort, .. } => effort.clone(),
+                review_core::task::plan::WorkerExecutionV3::Command {} => "command".into(),
+                review_core::task::plan::WorkerExecutionV3::Model { effort, .. } => effort.clone(),
             };
             Ok((
                 review_graph::task::CompiledNode {
@@ -2475,7 +2475,7 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         prepared: &ExperimentPreparedV1,
     ) -> Result<(), String> {
         prepared.validate()?;
@@ -2575,7 +2575,7 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,

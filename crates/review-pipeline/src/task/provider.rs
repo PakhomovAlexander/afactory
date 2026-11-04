@@ -5,7 +5,7 @@ use super::source::invocation_producer;
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::ReceiptOutcomeV1;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::provider::*;
 use review_core::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompiledOperator, CompiledTask};
@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use review_runner::native_failure::NativeFailureKind;
 use review_runner::task::provider::{PROBE_INPUT, PROBE_INPUT_ALTERNATE};
+use review_runner::task::{RemainingTokenAllowance, reply_schema::ReplyContract};
 
 pub struct ProviderTaskDomain<'a> {
     pub graph: &'a CompiledTask,
@@ -34,7 +35,7 @@ impl ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-    ) -> Result<TaskProviderAdmissionV2, String> {
+    ) -> Result<TaskProviderAdmissionV3, String> {
         if !input.inputs.is_empty() {
             return Err("Provider admission cannot consume business inputs".into());
         }
@@ -45,7 +46,7 @@ impl ProviderTaskDomain<'_> {
             .models
             .get(slots.first().ok_or("Empty Provider capability")?)
             .ok_or("Provider admission has no captured adapter")?;
-        let plan: ExecutionPlanV2 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
+        let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
             .map_err(|e| e.to_string())?;
         for slot in slots {
             let model = self
@@ -56,7 +57,7 @@ impl ProviderTaskDomain<'_> {
                 || model.binding.execution != first.binding.execution
                 || model.binding.invocation_policy_id != first.binding.invocation_policy_id
                 || model.adapter.credential_mode() != first.adapter.credential_mode()
-                || !matches!(&model.binding.execution,review_core::task::plan::WorkerExecutionV2::Model {provider_kind,model: id,effort,..}
+                || !matches!(&model.binding.execution,review_core::task::plan::WorkerExecutionV3::Model {provider_kind,model: id,effort,..}
                     if model.adapter.provider_kind()==provider_kind && model.adapter.model_settings()==Some((id.clone(),effort.clone())))
             {
                 return Err(
@@ -65,7 +66,7 @@ impl ProviderTaskDomain<'_> {
                 );
             }
         }
-        let receipt = TaskProviderAdmissionV2 {
+        let receipt = TaskProviderAdmissionV3 {
             plan_id: input.plan_id.clone(),
             bindings: slots.clone(),
             execution: first.binding.execution.clone(),
@@ -107,9 +108,10 @@ impl ProviderTaskDomain<'_> {
                 model,
                 directory,
                 Duration::from_millis(remaining),
+                RemainingTokenAllowance::new(attempt.reservation().tokens)?,
             ))
         })();
-        let (receipt, context, model, directory, timeout) = match prepared {
+        let (receipt, context, model, directory, timeout, allowance) = match prepared {
             Ok(value) => value,
             Err(error) => {
                 return TaskWorkOutput {
@@ -127,20 +129,31 @@ impl ProviderTaskDomain<'_> {
             }
         };
         let started = std::time::Instant::now();
-        let mut returned = model.adapter.invoke(
-            cas,
-            directory.path(),
-            PROBE_INPUT.to_vec(),
-            timeout,
-            review_runner::task::WorkerAccess::ReadOnly,
-            cancellation,
-            &[],
-        );
+        let mut returned = model
+            .adapter
+            .invoke_with_allowance(
+                cas,
+                directory.path(),
+                PROBE_INPUT.to_vec(),
+                timeout,
+                review_runner::task::WorkerAccess::ReadOnly,
+                cancellation,
+                &[],
+                allowance,
+                ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
         // The classifier refused the probe itself: that says nothing about the account, so the
         // alternate wording is sent once in the same Attempt, its usage added to the first's
         // (ADR-0208). A second refusal fails the admission with both refusals named.
         if returned.native_failure == Some(NativeFailureKind::ModelRefused)
             && returned.usage_observation.is_none()
+            && let Some(remaining_tokens) = returned
+                .usage
+                .as_ref()
+                .and_then(|usage| u64::try_from(usage.chargeable_tokens.get()).ok())
+                .and_then(|charged| allowance.tokens().checked_sub(charged))
+                .and_then(|tokens| RemainingTokenAllowance::new(tokens).ok())
             && let Some(remaining) = timeout
                 .checked_sub(started.elapsed())
                 .filter(|left| *left >= Duration::from_millis(100))
@@ -153,6 +166,7 @@ impl ProviderTaskDomain<'_> {
                 remaining,
                 cancellation,
                 returned,
+                remaining_tokens,
             );
         }
         let charged_tokens = returned
@@ -183,7 +197,7 @@ impl ProviderTaskDomain<'_> {
             ];
             let id = cas
                 .put_artifact(
-                    TASK_PROVIDER_ADMISSION_V2,
+                    TASK_PROVIDER_ADMISSION_V3,
                     invocation_producer(cas, input, attempt)?,
                     refs,
                     None,
@@ -195,7 +209,7 @@ impl ProviderTaskDomain<'_> {
                 "result".into(),
                 ArtifactInputV1 {
                     artifact_ids: vec![id],
-                    artifact_type: TASK_PROVIDER_ADMISSION_V2.into(),
+                    artifact_type: TASK_PROVIDER_ADMISSION_V3.into(),
                     cardinality: review_core::PortCardinality::One,
                     snapshot_id: None,
                 },
@@ -223,6 +237,7 @@ impl ProviderTaskDomain<'_> {
     /// The alternate admission probe after the first was refused, as one return of the Attempt:
     /// both calls' usage and raw evidence, the alternate's outcome, and the event naming the
     /// refusal category the first call's stream reported.
+    #[allow(clippy::too_many_arguments)]
     fn reprobe(
         &self,
         cas: &Cas,
@@ -231,16 +246,22 @@ impl ProviderTaskDomain<'_> {
         remaining: Duration,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         first: review_runner::task::ModelWorkerReturn,
+        allowance: RemainingTokenAllowance,
     ) -> review_runner::task::ModelWorkerReturn {
-        let second = model.adapter.invoke(
-            cas,
-            directory,
-            PROBE_INPUT_ALTERNATE.to_vec(),
-            remaining,
-            review_runner::task::WorkerAccess::ReadOnly,
-            cancellation,
-            &[],
-        );
+        let second = model
+            .adapter
+            .invoke_with_allowance(
+                cas,
+                directory,
+                PROBE_INPUT_ALTERNATE.to_vec(),
+                remaining,
+                review_runner::task::WorkerAccess::ReadOnly,
+                cancellation,
+                &[],
+                allowance,
+                ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
         let mut raw = first.raw_artifact_ids;
         // The exact alternate text is the Attempt's evidence beside its native captures.
         if let Ok(id) = cas.put(PROBE_INPUT_ALTERNATE)
@@ -444,7 +465,7 @@ impl ProviderTaskDomain<'_> {
             return Err("Provider probe exceeds its captured reservation".into());
         }
         cas.put_artifact(
-            "af/TaskProviderContext@1",
+            "af/TaskProviderContext@2",
             invocation_producer(cas, input, None)?,
             vec![input.plan_id.clone(), rendered.clone()],
             None,
@@ -481,7 +502,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &review_core::task::TaskRevisionV1,
-        plan: &review_core::task::plan::ExecutionPlanV2,
+        plan: &review_core::task::plan::ExecutionPlanV3,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.inner
@@ -491,7 +512,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -503,7 +524,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
@@ -520,8 +541,8 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV2,
-        next_plan: &ExecutionPlanV2,
+        previous_plan: &ExecutionPlanV3,
+        next_plan: &ExecutionPlanV3,
         handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
     ) -> Result<(), String> {
         self.inner.validate_review_continuation(
@@ -537,7 +558,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -548,7 +569,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
         facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -562,7 +583,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -599,7 +620,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,
@@ -616,7 +637,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
             .ok_or("Provider admission lacks a result")?;
         let artifact = envelope(cas, id)?;
         let receipt = self.receipt(cas, input)?;
-        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V2
+        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V3
             || artifact.payload != serde_json::to_value(&receipt).map_err(|e| e.to_string())?
         {
             return Err("Provider receipt changed its exact capability".into());

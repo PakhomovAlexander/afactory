@@ -13,6 +13,7 @@ pub mod kind;
 pub mod knowledge;
 pub mod selection;
 pub mod shared;
+pub mod structured;
 
 pub fn parse_task_pipeline(text: &str) -> Result<PipelineDefinitionV1, ConfigError> {
     let toml: toml::Value = toml::from_str(text)

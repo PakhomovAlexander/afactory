@@ -529,6 +529,17 @@ pub(super) fn assets(
     // A report Task writes no source: its report is its only exit, whatever its acceptance
     // (ADR-0133). Said before anything else is read, so no prepared record or Git mutation
     // can follow.
+    if task
+        .revision
+        .acceptance
+        .values()
+        .any(|a| a.evidence_type == review_core::task::structured::STRUCTURED_VALIDATION_V1)
+    {
+        return Err(format!(
+            "Task {} has structural data validation only and no code Snapshot to deliver; inspect with af task output {} --port PORT --format json",
+            task.task_id, task.task_id
+        ));
+    }
     if is_report_task(task) {
         return Err(format!(
             "Task {} is a report Task and has no Snapshot to deliver; write its report with              `af task output {} --port report --format markdown --output FILE`",

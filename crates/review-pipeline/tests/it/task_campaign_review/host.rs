@@ -72,7 +72,7 @@ fn admit_with_limits(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -105,7 +105,7 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         .unwrap();
     let revision = plan::artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, mapping) = compiler.compile(&cas, &revision).unwrap();
-    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
     let admission = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -914,7 +914,7 @@ fn expired_review(mode: &str, wait_past_deadlines: impl FnOnce(u64)) {
         TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
     let state = runtime.projection().unwrap();
     let plan_id = state.plan_id.unwrap();
-    let plan: review_core::task::plan::ExecutionPlanV2 =
+    let plan: review_core::task::plan::ExecutionPlanV3 =
         serde_json::from_value(cas.get_artifact(&plan_id).unwrap().payload).unwrap();
     let graph: review_graph::task::CompiledTask =
         serde_json::from_value(cas.get_artifact(&plan.compiled_graph_id).unwrap().payload).unwrap();

@@ -64,6 +64,7 @@ mod task_attempt_wall;
 mod task_catalog;
 mod task_cli_fixture;
 mod task_continue;
+mod task_custom;
 mod task_delivery;
 mod task_developer;
 mod task_document;

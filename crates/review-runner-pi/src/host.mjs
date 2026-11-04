@@ -1,10 +1,10 @@
-// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/2.
+// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/4.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
-export const PROTOCOL = 'af.pi-host/2';
+export const PROTOCOL = 'af.pi-host/4';
 export const VERSION = '1.4.0';
 const MAX_LINE = 4 * 1024 * 1024;
 const FILE_LIMIT = 1024 * 1024;
@@ -14,7 +14,15 @@ class HostError extends Error {
 }
 const fail = (code) => { throw new HostError(code); };
 const hash = (text) => 'sha256:' + createHash('sha256').update(text).digest('hex');
-export function principal(credential) {
+// Pi owns OAuth metadata. Validate only the required mode and credential fields; extra
+// fields are opaque, never interpreted as identity, settings, routing or helpers. Reads
+// bypass AuthStorage's helper resolution and refresh preserves the SDK's complete record.
+function kimiIdentity(credential) {
+  if (credential?.type !== 'oauth' || typeof credential.access !== 'string' || !credential.access ||
+      typeof credential.refresh !== 'string' || !credential.refresh || !Number.isFinite(credential.expires)) fail('unsupported_auth');
+  return null;
+}
+function openaiIdentity(credential) {
   if (credential?.type !== 'oauth' || typeof credential.accountId !== 'string' ||
       !credential.accountId.trim() || /[\x00-\x1f\x7f]/.test(credential.accountId) || credential.accountId.length > 512 ||
       typeof credential.access !== 'string' || !credential.access || typeof credential.refresh !== 'string' || !credential.refresh ||
@@ -31,26 +39,74 @@ export function principal(credential) {
   if (routedAccount !== credential.accountId) fail('identity_changed');
   return hash('af.pi.account/openai-codex\0' + credential.accountId);
 }
-// Every read and every refresh transaction checks the same source inference uses. Token
-// rotation is allowed; a changed account is rejected before a refreshed credential can escape.
+// Each admitted backend supplies credential identity, native model routing and raw usage
+// accessors. Session orchestration, confinement, lifecycle and normalization stay common.
+const BACKENDS = Object.freeze({
+  'openai-codex': Object.freeze({
+    identity: 'account', credentialIdentity: openaiIdentity,
+    api: 'openai-codex-responses', endpoint: 'https://chatgpt.com/backend-api',
+    usageSources: (event, object) => [object(event.response)?.usage],
+    usageFields: (u, object) => {
+      const input = object(u.input_tokens_details), output = object(u.output_tokens_details);
+      return { input: u.input_tokens, output: u.output_tokens,
+        cached: [input?.cached_tokens], cache_write: input?.cache_write_tokens,
+        reasoning: output?.reasoning_tokens };
+    },
+  }),
+  'kimi-coding': Object.freeze({
+    identity: 'unavailable', credentialIdentity: kimiIdentity,
+    api: 'openai-completions', endpoint: 'https://api.kimi.com/coding/v1', model: 'k3',
+    usageSources: (event, object, invalidate) => {
+      // Keep the independent aggregate even when choices cannot be traversed.
+      const sources = [event.usage];
+      if (event.choices != null) {
+        if (!Array.isArray(event.choices)) invalidate();
+        else for (const choice of event.choices) {
+          if (choice == null) invalidate();
+          else sources.push(object(choice)?.usage);
+        }
+      }
+      return sources;
+    },
+    usageFields: (u, object) => {
+      const input = object(u.prompt_tokens_details), output = object(u.completion_tokens_details);
+      return { input: u.prompt_tokens, output: u.completion_tokens,
+        cached: [input?.cached_tokens, u.prompt_cache_hit_tokens, u.cached_tokens],
+        cache_write: input?.cache_write_tokens, reasoning: output?.reasoning_tokens };
+    },
+  }),
+});
+export function backendAdapter(backend) {
+  if (!Object.hasOwn(BACKENDS, backend)) fail('unsupported_backend');
+  return BACKENDS[backend];
+}
+export function principal(credential, backend = 'openai-codex') {
+  return backendAdapter(backend).credentialIdentity(credential);
+}
+// Every read and refresh validates the same source inference uses. OpenAI account drift
+// refuses; Kimi has no account identity to compare. Context and OAuth mode remain guarded.
 // AuthStorage.read resolves API-key helpers before returning. Inspect the raw credential
 // through its supported locked modify callback, returning undefined (no write) instead.
-export async function storedOAuth(storage, options) {
-  return storage.modify('openai-codex', async (current) => { principal(current); return undefined; }, options);
+export async function storedOAuth(storage, options, backend = 'openai-codex') {
+  backendAdapter(backend);
+  return storage.modify(backend, async (current) => { principal(current, backend); return undefined; }, options);
 }
-export function guardedCredentials(storage, expected) {
+export function guardedCredentials(storage, expected, backend = 'openai-codex', checkContext = () => {}) {
   const check = (value) => {
-    if (principal(value) !== expected) fail('identity_changed');
+    checkContext();
+    if (principal(value, backend) !== expected) fail('identity_changed');
     return value;
   };
   return {
     async read(id, options) {
-      if (id !== 'openai-codex') return undefined;
-      return check(await storedOAuth(storage, options));
+      if (id !== backend) return undefined;
+      checkContext();
+      return check(await storedOAuth(storage, options, backend));
     },
-    async list(options) { check(await storedOAuth(storage, options)); return [{ providerId: 'openai-codex', type: 'oauth' }]; },
+    async list(options) { checkContext(); check(await storedOAuth(storage, options, backend)); return [{ providerId: backend, type: 'oauth' }]; },
     async modify(id, fn, options) {
-      if (id !== 'openai-codex') fail('unsupported_backend');
+      if (id !== backend) fail('unsupported_backend');
+      checkContext();
       return check(await storage.modify(id, async (value) => {
         const next = await fn(check(value));
         if (next !== undefined) check(next);
@@ -60,7 +116,89 @@ export function guardedCredentials(storage, expected) {
     async delete() { fail('unsupported_auth'); },
   };
 }
-export function emptyResources(sdk) {
+// Only raw transport usage is evidence. SDK AssistantMessage counters start at zero.
+// A backend's cumulative observations replace counters for the same inference in Rust.
+export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')) {
+  let invalid = false;
+  const adapter = backendAdapter(backend);
+  const invalidate = () => { invalid = true; };
+  // Only the finite recognized native containers are inspected. Optional null/absent
+  // containers mean unknown; other non-object shapes fail without losing sibling usage.
+  const object = (value) => {
+    if (value == null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) { invalidate(); return undefined; }
+    return value;
+  };
+  const native = object(event);
+  if (!native) { onInvalid(); return undefined; }
+  const sources = adapter.usageSources(native, object, invalidate);
+  let result;
+  const counter = (value) => {
+    if (value === undefined || value === null) return null;
+    if (!Number.isSafeInteger(value) || value < 0) { invalid = true; return null; }
+    return value;
+  };
+  const keys = ['input', 'output', 'cache_read', 'cache_write', 'reasoning'];
+  const conflicted = new Set();
+  for (const u of sources) {
+    const source = object(u);
+    if (!source) continue;
+    const raw = adapter.usageFields(source, object);
+    // Malformed aliases fail accounting but do not hide independently valid numbers.
+    // Only distinct numeric aliases conflict; keep that conflict permanent across sources.
+    const cached = raw.cached.map(counter);
+    const observedCached = cached.filter((value) => value !== null);
+    const cacheConflict = new Set(observedCached).size > 1;
+    if (cacheConflict) conflicted.add('cache_read');
+    if (cacheConflict) invalid = true;
+    const next = { input: counter(raw.input), output: counter(raw.output),
+      cache_read: cacheConflict ? null : observedCached[0] ?? null,
+      cache_write: counter(raw.cache_write), reasoning: counter(raw.reasoning) };
+    if (!result) result = next;
+    else for (const key of keys) {
+      // Unknown is absence, not a value. Only distinct observed numbers conflict;
+      // that state is permanent for this event, regardless of later sources.
+      if (result[key] !== null && next[key] !== null && result[key] !== next[key]) {
+        invalid = true; conflicted.add(key);
+      }
+      if (conflicted.has(key)) result[key] = null;
+      else if (next[key] !== null) result[key] = next[key];
+    }
+  }
+  if (invalid) onInvalid();
+  return result;
+}
+export const FILE_INSTRUCTIONS = 'Follow only the AF Worker request. Use only the declared confined file tools. You have no shell or check execution tool. Do not claim tests ran. For a typed Worker request, return exactly one JSON object with schema af.worker-reply/1 and outputs whose declared port values are ARRAYS of payloads matching output_schemas. No prose or Markdown fences. Example for a report port: {"schema":"af.worker-reply/1","outputs":{"report":[{"summary":"..."}]}}. Use the actual declared ports and schemas; the example does not add a report port. For other requests follow their exact reply contract (including admission OK).';
+// The budget gates every SDK stream, not just session.prompt. Prompt cost is only known
+// afterward: one inference may overshoot; its observed charge is retained in full.
+export class InferenceBudget {
+  constructor(tokens, backend) {
+    if (!Number.isSafeInteger(tokens) || tokens <= 0) fail('invalid_allowance');
+    backendAdapter(backend);
+    this.tokens = BigInt(tokens); this.backend = backend; this.entries = [];
+    this.unsafe = false;
+  }
+  begin(model) {
+    if (this.unsafe) fail('unsafe_accounting');
+    let charged = 0n;
+    for (const entry of this.entries) {
+      const u = entry.observed;
+      if (!entry.finished || !entry.complete || u.input === null || u.output === null ||
+          (this.backend === 'openai-codex' && u.cache_read === null)) fail('unsafe_accounting');
+      charged += BigInt(u.input) - (this.backend === 'openai-codex' ? BigInt(u.cache_read) : 0n) + BigInt(u.output);
+    }
+    const remaining = this.tokens - charged;
+    if (remaining <= 0n) fail('allowance_exhausted');
+    // Stop before losing diagnostic coverage, rather than continuing with a partial trace.
+    if (this.entries.length >= 256) fail('diagnostic_capacity');
+    if (!Number.isSafeInteger(model.maxTokens) || model.maxTokens <= 0) fail('model_changed');
+    const entry = { id: this.entries.length + 1, finished: false, complete: false,
+      observations: 0, observed: { input: null, output: null, cache_read: null, cache_write: null, reasoning: null },
+      maxTokens: Number(remaining < BigInt(model.maxTokens) ? remaining : BigInt(model.maxTokens)) };
+    this.entries.push(entry); return entry;
+  }
+}
+export function emptyResources(sdk, replySchema = null) {
   const extensions = { extensions: [], errors: [], runtime: sdk.createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
@@ -68,7 +206,7 @@ export function emptyResources(sdk) {
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => 'Follow only the AF Worker request. Use only the declared confined file tools.',
+    getSystemPrompt: () => FILE_INSTRUCTIONS + (replySchema === null ? '' : '\nActual final reply JSON Schema: ' + JSON.stringify(replySchema)),
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
     getAppendSystemPromptSources: () => [],
@@ -78,7 +216,7 @@ export function emptyResources(sdk) {
 }
 // Reject symlinks (including in-tree links) and paths outside granted roots. Model-visible code cannot
 // run concurrently with these synchronous operations: no shell, extensions or other tools.
-export function confinedTools(cwd, readable, writable) {
+export function confinedTools(cwd, readable, writable, countTool = () => {}) {
   const aliases = [...readable, ...writable].map((value) => [path.resolve(value), fs.realpathSync(value)]);
   const roots = (values) => values.map((value) => fs.realpathSync(value));
   cwd = fs.realpathSync(cwd);
@@ -189,6 +327,7 @@ export function confinedTools(cwd, readable, writable) {
     async execute(_id, args, signal) {
       if (signal?.aborted) fail('cancelled');
       try {
+        countTool(name);
         const text = execute(args);
         if (Buffer.byteLength(text) > RESULT_LIMIT) fail('file_limit');
         return { content: [{ type: 'text', text }], details: {} };
@@ -213,20 +352,21 @@ export async function createRuntime(sdk, credentials) {
   return sdk.ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
 }
 const levels = ['off','minimal','low','medium','high','xhigh','max','ultra'];
-function modelIdentity(model) {
-  if (model.provider !== 'openai-codex' || model.api !== 'openai-codex-responses' || model.baseUrl !== 'https://chatgpt.com/backend-api') fail('model_changed');
+export function modelIdentity(model) {
+  const adapter = backendAdapter(model.provider);
+  if (model.api !== adapter.api || model.baseUrl !== adapter.endpoint || (adapter.model && model.id !== adapter.model)) fail('model_changed');
   return hash('af.pi.model/1\0' + JSON.stringify(model));
 }
-export async function createSession(sdk, runtime, model, effort, cwd, readable, writable, agentDir) {
+export async function createSession(sdk, runtime, model, effort, cwd, readable, writable, agentDir, replySchema = null, countTool = () => {}) {
   const expectedModel = modelIdentity(model);
-  const tools = confinedTools(cwd, readable, writable);
+  const tools = confinedTools(cwd, readable, writable, countTool);
   const settings = sdk.SettingsManager.inMemory({
     compaction: { enabled: false }, retry: { enabled: false, provider: { maxRetries: 0 } }, cacheWarming: 'off',
     transport: 'sse',
   }, { projectTrusted: false });
   const result = await sdk.createAgentSession({ cwd, agentDir, modelRuntime: runtime, model,
     thinkingLevel: effort, settingsManager: settings, sessionManager: sdk.SessionManager.inMemory(cwd),
-    resourceLoader: emptyResources(sdk), noTools: 'all', tools: tools.map((t) => t.name), customTools: tools,
+    resourceLoader: emptyResources(sdk, replySchema), noTools: 'all', tools: tools.map((t) => t.name), customTools: tools,
   });
   const session = result.session;
   session.setAutoRetryEnabled(false); session.setAutoCompactionEnabled(false);
@@ -254,71 +394,103 @@ export async function main() {
       const request = JSON.parse(line.toString('utf8'));
       if (request.schema !== PROTOCOL) fail('protocol');
       if (!initialized && request.type === 'init') {
-        if (request.backend !== 'openai-codex') fail('unsupported_backend');
+        backendAdapter(request.backend);
         const sdk = await loadSdk(request.sdk);
+        const authContext = fs.realpathSync(request.auth_dir);
+        const checkContext = () => {
+          if (hash(fs.realpathSync(request.auth_dir)) !== request.auth_context_id ||
+              fs.realpathSync(request.auth_dir) !== authContext || fs.lstatSync(request.auth_dir).isSymbolicLink()) fail('identity_changed');
+        };
+        checkContext();
         const storage = sdk.AuthStorage.create(path.join(request.auth_dir, 'auth.json'));
-        const account = principal(await storedOAuth(storage));
-        if (request.principal && request.principal !== account) fail('identity_changed');
-        const credentials = guardedCredentials(storage, account);
+        const account = principal(await storedOAuth(storage, undefined, request.backend), request.backend);
+        if (request.principal !== null && request.principal !== account) fail('identity_changed');
+        const credentials = guardedCredentials(storage, account, request.backend, checkContext);
         const runtime = await createRuntime(sdk, credentials);
         // Restrict authentication even if SDK defaults change: no API-key or env override.
         const stream = runtime.streamSimple.bind(runtime);
         runtime.streamSimple = (model, context, options) => {
           const inference = initialized.beginInference(model);
-          return stream(model, context, { ...options, env: {}, maxRetries: 0,
+          return stream(model, context, { ...options, maxTokens: inference.maxTokens, env: {}, maxRetries: 0,
             onProviderStreamEvent: (event, effective) => initialized.observe(inference, event, effective) });
         };
-        const models = runtime.getModels('openai-codex').map((model) => ({ id: model.id, efforts: sdk.getSupportedThinkingLevels(model), identity: modelIdentity(model) }));
+        const models = runtime.getModels(request.backend).filter((model) => !backendAdapter(request.backend).model || model.id === backendAdapter(request.backend).model).map((model) => ({ id: model.id, efforts: sdk.getSupportedThinkingLevels(model), identity: modelIdentity(model) }));
         initialized = { sdk, runtime, credentials, account, request };
-        emit('ready', { principal: account, auth_method: 'oauth', backend: 'openai-codex', version: VERSION, models });
+        emit('ready', { principal: account, auth_method: 'oauth', backend: request.backend, version: VERSION, models });
         if (request.probe) return;
       } else if (initialized && !running && request.type === 'prepare') {
         const state = initialized;
-        const model = state.runtime.getModel('openai-codex', request.model);
-        if (!model || modelIdentity(model) !== request.model_identity || !levels.includes(request.effort)) fail('model_changed');
-        await state.credentials.read('openai-codex');
+        const budget = new InferenceBudget(request.remaining_tokens, state.request.backend);
+        if (request.reply_schema !== null && (typeof request.reply_schema !== 'object' || Array.isArray(request.reply_schema))) fail('protocol');
+        const toolCounts = {}; let toolCalls = 0;
+        const countTool = (name) => {
+          if (++toolCalls > 4096) { budget.unsafe = true; fail('diagnostic_capacity'); }
+          toolCounts[name] = (toolCounts[name] ?? 0) + 1;
+          emit('tool_count', { name, count: toolCounts[name] });
+        };
+        const model = state.runtime.getModel(state.request.backend, request.model);
+        if (!model || modelIdentity(model) !== request.model_identity || !levels.includes(request.effort) || !state.sdk.getSupportedThinkingLevels(model).includes(request.effort)) fail('model_changed');
+        await state.credentials.read(state.request.backend);
         const result = await createSession(state.sdk, state.runtime, model, request.effort,
-          state.request.cwd, state.request.readable, state.request.writable, state.request.home);
+          state.request.cwd, state.request.readable, state.request.writable, state.request.home, request.reply_schema, countTool);
         session = result.session;
         let inference = 0; let active; let failed = false; let settled = false; let finalText;
         initialized.beginInference = (effective) => {
-          if ((active && !active.finished) || effective.provider !== 'openai-codex' || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
+          if ((active && !active.finished) || effective.provider !== state.request.backend || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
             failed = true; fail('model_changed');
           }
-          active = { id: ++inference, finished: false, observed: { input: null, output: null, cache_read: null, cache_write: null, reasoning: null } };
+          if (failed) fail('unsafe_accounting');
+          active = budget.begin(effective); inference = active.id;
           finalText = undefined;
-          emit('usage', { inference: active.id, complete: false, ...active.observed });
+          emit('usage', { inference: active.id, complete: false, observations: active.observations, ...active.observed });
           return active;
         };
         initialized.observe = (current, event, effective) => {
-          const u = event.response?.usage;
-          let invalid = false;
-          const counter = (value) => {
-            if (value === undefined || value === null) return null;
-            if (Number.isSafeInteger(value) && value >= 0) return value;
-            invalid = true; return null;
-          };
-          if (u) {
-            const next = { input: counter(u.input_tokens), output: counter(u.output_tokens),
-              cache_read: counter(u.input_tokens_details?.cached_tokens),
-              cache_write: counter(u.input_tokens_details?.cache_write_tokens),
-              reasoning: counter(u.output_tokens_details?.reasoning_tokens) };
-            for (const key of Object.keys(next)) if (next[key] !== null) current.observed[key] = next[key];
-            emit('usage', { inference: current.id, complete: false, ...current.observed });
+          let next; let invalid = false;
+          try { next = rawUsage(state.request.backend, event, () => { invalid = true; }); }
+          catch { failed = true; fail('invalid_usage'); }
+          if (next) {
+            // Validate cumulative counters before allowing another inference. Preserve safe
+            // observed floors even if another counter in this same event is malformed.
+            const prior = current.observed;
+            const safe = { ...prior };
+            for (const key of Object.keys(next)) if (next[key] !== null) {
+              if (prior[key] !== null && next[key] < prior[key]) invalid = true;
+              else safe[key] = next[key];
+            }
+            // Do not send Rust an inconsistent record: it correctly rejects the entire
+            // record. Roll back optional components first, retaining prior safe evidence.
+            // If a newly known aggregate contradicts prior components, leave it unknown.
+            const cacheExceeds = () => safe.input !== null &&
+              BigInt(safe.cache_read ?? 0) + BigInt(safe.cache_write ?? 0) > BigInt(safe.input);
+            if (cacheExceeds()) {
+              invalid = true;
+              safe.cache_read = prior.cache_read; safe.cache_write = prior.cache_write;
+              if (cacheExceeds()) safe.input = prior.input;
+            }
+            if (safe.output !== null && (safe.reasoning ?? 0) > safe.output) {
+              invalid = true; safe.reasoning = prior.reasoning;
+              if ((safe.reasoning ?? 0) > safe.output) safe.output = prior.output;
+            }
+            current.observed = safe;
+            current.observations++;
+            emit('usage', { inference: current.id, complete: false, observations: current.observations, ...current.observed });
+            if (current.observations >= 128) { budget.unsafe = true; fail('diagnostic_capacity'); }
           }
-          if (invalid) { failed = true; fail('invalid_usage'); }
-          if (current.finished || effective.provider !== 'openai-codex' || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
+          if (invalid) { budget.unsafe = true; failed = true; fail('invalid_usage'); }
+          if (current.finished || effective.provider !== state.request.backend || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
             failed = true; fail('model_changed');
           }
         };
         session.subscribe((event) => {
           if (['message_update','message_end'].includes(event.type) && event.message.role === 'assistant') {
             const msg = event.message;
-            if (msg.provider !== 'openai-codex' || msg.model !== request.model) failed = true;
+            if (msg.provider !== state.request.backend || msg.model !== request.model) failed = true;
             if (event.type === 'message_end') {
               if (!active || active.finished) { failed = true; return; }
               active.finished = true;
-              emit('usage', { inference: active.id, complete: !['error','aborted'].includes(msg.stopReason), ...active.observed });
+              active.complete = !failed && !['error','aborted'].includes(msg.stopReason);
+              emit('usage', { inference: active.id, complete: active.complete, observations: active.observations, ...active.observed });
             }
             if (event.type === 'message_end') {
               if (['error','aborted'].includes(msg.stopReason)) failed = true;
@@ -332,7 +504,7 @@ export async function main() {
           if (event.type === 'agent_settled') { settled = true; failed ||= event.aborted; }
         });
         initialized.run = async (text, promptNonce) => {
-          await initialized.credentials.read('openai-codex');
+          await initialized.credentials.read(state.request.backend);
           emit('accepted', { prompt_nonce: promptNonce });
           try { await session.prompt(text, { expandPromptTemplates: false, source: 'rpc' }); } catch { failed = true; }
           if (!settled || failed || inference === 0 || finalText === undefined) emit('error', { code: 'inference_failed' });

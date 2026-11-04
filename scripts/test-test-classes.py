@@ -809,6 +809,62 @@ ET.ElementTree(root).write(path, encoding='unicode')
                     for p in (root / 'output').rglob('feature-*-list.json'):
                         self.assertEqual(tc.read(p), inventory)
 
+    def test_class_workflow_uses_runner_temp_only_on_linux_and_children_inherit_it(self):
+        workflow = (ROOT / '.github/workflows/validate.yml').read_text()
+        classes = workflow.split('\n  classes:\n', 1)[1].split('\n  container-probes:\n', 1)[0]
+        entry = classes.split('      - name: Run exactly the selected class\n', 1)[1]
+        entry = entry.split('\n      - name:', 1)[0]
+        recipe = entry.split('        run: |\n', 1)[1]
+        recipe = '\n'.join(line[10:] for line in recipe.splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            shutil.copyfile(ROOT / 'scripts/ci-step.py', scripts / 'ci-step.py')
+            # Keep the real workflow shell and timing wrapper; replace only the class payload.
+            # Its child creates a real temp file, like the subprocess sandboxes in class tests.
+            child = ('import json, os, pathlib, tempfile\n'
+                     'with tempfile.TemporaryFile() as stream:\n'
+                     '    print(json.dumps({"tmpdir": os.getenv("TMPDIR"), '
+                     '"temp_root": str(pathlib.Path(tempfile.gettempdir()).resolve())}))\n')
+            (scripts / 'test-classes.py').write_text(
+                'import json, os, pathlib, subprocess, sys\n'
+                f'child = subprocess.check_output([sys.executable, "-c", {child!r}], text=True)\n'
+                'pathlib.Path(os.environ["PROBE_OUTPUT"]).write_text(json.dumps({'
+                '"args": sys.argv[1:], "tmpdir": os.getenv("TMPDIR"), '
+                '"child": json.loads(child)}))\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            (tools / 'python3').symlink_to(sys.executable)
+            runner_temp, ambient = root / 'runner temp', root / 'ambient temp'
+            runner_temp.mkdir()
+            ambient.mkdir()
+            for platform, inherited in itertools.product(('Linux', 'macOS'), (None, str(ambient))):
+                with self.subTest(platform=platform, inherited=inherited):
+                    env = {k: v for k, v in os.environ.items()
+                           if not k.startswith(('AF_', 'GITHUB_', 'RUNNER_')) and k != 'TMPDIR'}
+                    probe, metrics = root / 'probe.json', root / 'metrics.jsonl'
+                    metrics.unlink(missing_ok=True)
+                    env.update(PATH=str(tools) + os.pathsep + env['PATH'],
+                               RUNNER_OS=platform, RUNNER_TEMP=str(runner_temp),
+                               TEST_CLASS='functional', AF_CI_METRICS=str(metrics),
+                               PROBE_OUTPUT=str(probe))
+                    if inherited is not None:
+                        env['TMPDIR'] = inherited
+                    result = subprocess.run(['bash', '-e', '-c', recipe], cwd=root, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    observed = tc.read(probe)
+                    expected = str(runner_temp) if platform == 'Linux' else inherited
+                    self.assertEqual(observed['tmpdir'], expected)
+                    self.assertEqual(observed['child']['tmpdir'], expected)
+                    if expected is not None:
+                        self.assertEqual(observed['child']['temp_root'], str(Path(expected).resolve()))
+                    self.assertEqual(observed['args'], ['run', '--plan', 'target/test-classes/plan.json',
+                                     '--class', 'functional', '--output', 'target/class-evidence'])
+                    record, = [json.loads(line) for line in metrics.read_text().splitlines()]
+                    self.assertEqual((record['label'], record['exit_code']), ('class-functional', 0))
+
     def test_fresh_base_workflow_entry_records_timing_without_a_target_directory(self):
         workflow = (ROOT / '.github/workflows/validate.yml').read_text()
         base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]

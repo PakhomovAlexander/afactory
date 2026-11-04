@@ -38,7 +38,7 @@ impl CampaignReviewTaskHost<'_, '_> {
         Ok(value)
     }
 
-    fn execution(&self, node: &str) -> Result<&WorkerExecutionV2, String> {
+    fn execution(&self, node: &str) -> Result<&WorkerExecutionV3, String> {
         Ok(&self.plan.bindings[self.slot(node)?].execution)
     }
 
@@ -46,8 +46,8 @@ impl CampaignReviewTaskHost<'_, '_> {
         let mut expected = std::collections::BTreeSet::new();
         for node in self.captured.loaded.reviewers().keys() {
             let actual_mode = match self.execution(node)? {
-                WorkerExecutionV2::Command {} => review_core::CredentialModeV1::CredentialFree,
-                WorkerExecutionV2::Model { .. } => self.model(node)?.adapter.credential_mode(),
+                WorkerExecutionV3::Command {} => review_core::CredentialModeV1::CredentialFree,
+                WorkerExecutionV3::Model { .. } => self.model(node)?.adapter.credential_mode(),
             };
             if self
                 .captured
@@ -59,8 +59,8 @@ impl CampaignReviewTaskHost<'_, '_> {
                 return Err("Review transport differs from the captured credential mode".into());
             }
             match self.execution(node)? {
-                WorkerExecutionV2::Command {} => {}
-                WorkerExecutionV2::Model {
+                WorkerExecutionV3::Command {} => {}
+                WorkerExecutionV3::Model {
                     provider_kind,
                     model,
                     effort,
@@ -196,8 +196,8 @@ impl CampaignReviewTaskHost<'_, '_> {
             );
         }
         let (bytes, manifest) = match self.execution(&node.id)? {
-            WorkerExecutionV2::Command {} => review_runner::compose_command_input(&inputs)?,
-            WorkerExecutionV2::Model { .. } => {
+            WorkerExecutionV3::Command {} => review_runner::compose_command_input(&inputs)?,
+            WorkerExecutionV3::Model { .. } => {
                 let (text, manifest) =
                     review_runner::compose_model_prompt(&self.instructions(&node.id)?, &inputs)?;
                 if manifest.estimated_tokens > attempt.reservation().tokens {
@@ -310,10 +310,10 @@ impl CampaignReviewTaskHost<'_, '_> {
                     Some(self.retain_worker_runtime_evidence(cas, input, attempt, evidence)?);
             }
             let runtime = match self.execution(&node.id)? {
-                WorkerExecutionV2::Command {} => {
+                WorkerExecutionV3::Command {} => {
                     Some(tempfile::tempdir().map_err(|e| e.to_string())?)
                 }
-                WorkerExecutionV2::Model { .. } => None,
+                WorkerExecutionV3::Model { .. } => None,
             };
             self.current(attempt)?;
             // Materialization consumes this same Attempt's allowance, too.
@@ -322,17 +322,17 @@ impl CampaignReviewTaskHost<'_, '_> {
                 return Err("Review Attempt expired during sandbox setup".into());
             }
             feedback_code = match self.execution(&node.id)? {
-                WorkerExecutionV2::Command {} => TaskFeedbackCodeV1::ProcessFailure,
-                WorkerExecutionV2::Model { .. } => TaskFeedbackCodeV1::ProviderFailure,
+                WorkerExecutionV3::Command {} => TaskFeedbackCodeV1::ProcessFailure,
+                WorkerExecutionV3::Model { .. } => TaskFeedbackCodeV1::ProviderFailure,
             };
-            if matches!(self.execution(&node.id)?, WorkerExecutionV2::Model { provider_kind, .. } if provider_kind == "pi")
+            if matches!(self.execution(&node.id)?, WorkerExecutionV3::Model { provider_kind, .. } if provider_kind == "pi")
             {
                 for root in sandbox.readable_roots() {
                     environment.push(("AF_PI_READ_ROOT".into(), root.to_string_lossy().into()));
                 }
             }
             let returned = match self.execution(&node.id)? {
-                WorkerExecutionV2::Command {} => review_runner::task::invoke_command_bytes(
+                WorkerExecutionV3::Command {} => review_runner::task::invoke_command_bytes(
                     cas,
                     sandbox.root(),
                     runtime.as_ref().expect("command runtime").path(),
@@ -349,10 +349,10 @@ impl CampaignReviewTaskHost<'_, '_> {
                 // A different installed backend has no implicit edit authority. The reply is
                 // constrained natively to the Reviewer Result (ADR-0246); the parse and
                 // admission below judge it as before.
-                WorkerExecutionV2::Model { provider_kind, .. } => self
+                WorkerExecutionV3::Model { provider_kind, .. } => self
                     .model(&node.id)?
                     .adapter
-                    .invoke_constrained(
+                    .invoke_with_allowance(
                         cas,
                         sandbox.root(),
                         bytes,
@@ -364,6 +364,9 @@ impl CampaignReviewTaskHost<'_, '_> {
                         },
                         cancellation,
                         &environment,
+                        review_runner::task::RemainingTokenAllowance::new(
+                            attempt.reservation().tokens,
+                        )?,
                         review_runner::task::reply_schema::ReplyContract::ReviewerResult,
                     )
                     .unwrap_or_else(|unstarted| *unstarted.0),

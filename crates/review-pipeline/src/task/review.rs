@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::review::*;
 use review_core::task::verification::TASK_CHECK_RECEIPT_V2;
 use review_core::task::*;
@@ -1099,7 +1099,7 @@ impl ReviewTaskDomain {
                 let receipt: TaskReviewRoundV1 =
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 receipt.validate()?;
-                let plan: ExecutionPlanV2 =
+                let plan: ExecutionPlanV3 =
                     serde_json::from_value(envelope(cas, &receipt.invocation.plan_id)?.payload)
                         .map_err(|e| e.to_string())?;
                 if plan.task_revision_id != result.task_revision_id
@@ -1274,7 +1274,7 @@ impl TaskDomain for ReviewTaskDomain {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,

@@ -387,10 +387,24 @@ class Merge(unittest.TestCase):
         record, code = run_check(doc(), doc(), owner_labels=['pipeline/hand'])
         self.assertEqual((code, record['pipeline'], record['owner_override']), (0, 'hand', override))
         self.assertEqual(record['labels'], ['class/bug', 'size/M', 'pipeline/hand'])
-        # An owner label on the disputed namespace resolves the dispute.
-        record = self.merged(doc(), doc(**{'class': 'aix'}), outcome='failed',
-                             owner_override=triage.owner_overrides(['class/uix']))
-        self.assertEqual((record['verdict'], record['class'], record['labels'][0]), ('agreed', 'uix', 'class/uix'))
+        # Owner values remain effective without establishing agreement between the documents.
+        for fields, labels in (({'class': 'aix'}, ['class/uix']),
+                               ({'size': 'L', 'pipeline': 'design'}, ['size/S']),
+                               ({'class': 'aix', 'size': 'L', 'pipeline': 'design'},
+                                ['class/uix', 'size/S', 'pipeline/hand'])):
+            for outcome in ('passed', 'failed'):
+                with self.subTest(fields=fields, outcome=outcome):
+                    record, code = run_check(doc(), doc(**fields), outcome, owner_labels=labels)
+                    self.assertEqual((code, record['verdict']), (0, 'disputed'))
+                    self.assertEqual(record['labels'], labels + ['triage/disputed'])
+                    self.assertEqual(record['owner_override'], triage.owner_overrides(labels))
+                    for label in labels:
+                        namespace, value = label.split('/')
+                        self.assertEqual(record[namespace], value)
+                    for field in ('class', 'size'):
+                        if field in fields:
+                            self.assertNotEqual(record['author'][field], record['verifier'][field])
+                            self.assertTrue(any(reason.startswith(field + ':') for reason in record['reasons']))
         # The override stays the effective value when no class is agreed.
         record = self.merged(doc(needs_info=['?']), doc(), owner_override=triage.owner_overrides(['size/S']))
         self.assertEqual((record['verdict'], record['size'], record['labels']),

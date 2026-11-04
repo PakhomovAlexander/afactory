@@ -291,7 +291,16 @@ fresh. There is no ambient cross-Task cache index or session restoration.
 
 `BuildCache@2` records producer Attempt, Task/slot, initial Snapshot, actual initial/final tree
 digests and compatibility. Its historical `gate_node`/`gate_attempt_id` fields identify the
-producer on the Worker branch. It remains candidate-built data. Gate-to-reviewer captures
+producer on the Worker branch. `head_snapshot_id` retains the input Snapshot. At exact-source output
+admission the host binds the artifact envelope's `subject_snapshot_id` to the output Snapshot
+from its sealed candidate, using the same derivation as the typed `seal` operation (or to the
+unchanged input when there is no candidate). Exact-source compatibility is computed against
+that output Snapshot and checked against the captured final tree digest. Wire both the sealed
+source and cache output to the next same-slot Worker; the old input source is incompatible
+after an edit. A raw capture without this admitted binding cannot restore a continuation.
+Experiments or filtered scratch that differ from the admitted source cannot publish exact-source
+continuation outputs. These are existing envelope fields; no persisted payload shape changes.
+The cache remains candidate-built data. Gate-to-reviewer captures
 retain Gate-only events, trusted-local admission and same-Round producer checks. Worker
 captures never enter those events or the Gate's private warm-check directories. Reusing bytes
 never supplies test success or independent acceptance.
@@ -320,7 +329,13 @@ parallel writable clones, tool/config/dependency/profile invalidation, same-slot
 exact checkpoint continuation, failed sibling isolation, approved dependency clones, missing
 and corrupt selections, cancellation and incomplete capture. Schema parity covers positive
 and negative forms. The real Task publication/recovery test proves selection precedes
-reservation and is not repeated after a lost acknowledgement. Shared capture/clone and Task
+reservation and is not repeated after a lost acknowledgement.
+`task_runtime::development::exact_source_checkpoint_follows_admitted_edited_candidate_and_replays`
+runs captured command Workers through real Task production, source sealing, cache admission,
+typed routing and restoration. The producer edits Python source and writes checkpoint bytes;
+the next same-slot Worker must read those bytes on the admitted changed source, with no
+checkpoint fallback and fresh HOME. An old-source control is explicitly incompatible. It checks
+input/output Snapshot provenance, final tree identity, the exact Warm Set and Store replay. Shared capture/clone and Task
 collection tests cover interrupted work, active leases, byte accounting and resumed GC.
 `build_cache::tests::crash::mid_capture_and_clone_crashes_recover_private_roots_without_admitting_partial_caches`
 uses child processes and test-build-only barriers in the real capture and clone paths. Capture

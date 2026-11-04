@@ -36,11 +36,11 @@ impl ReviewResourcePolicy {
         loaded: &Loaded,
         manifest: &CampaignManifestV1,
         mode: crate::captured_review::ReviewMode,
-        executions: &BTreeMap<String, review_core::task::plan::WorkerExecutionV2>,
+        executions: &BTreeMap<String, review_core::task::plan::WorkerExecutionV3>,
         provider: &review_graph::task::OperatorAttemptCost,
         now_unix_ms: u64,
     ) -> Result<review_core::task::TaskLimitsV1, String> {
-        use review_core::task::plan::WorkerExecutionV2;
+        use review_core::task::plan::WorkerExecutionV3;
         self.validate()?;
         manifest.validate()?;
         let convergence = mode.convergence(loaded.convergence());
@@ -115,7 +115,7 @@ impl ReviewResourcePolicy {
                     )?;
                     wall = bounded_add(wall, bounded_mul(count, worker_wall)?)?;
                     executions[name].validate()?;
-                    if matches!(executions[name], WorkerExecutionV2::Model { .. }) {
+                    if matches!(executions[name], WorkerExecutionV3::Model { .. }) {
                         // The compiler may share an identical probe across slots. Counting
                         // each configured slot is an upper bound, not permission to duplicate it.
                         attempts = bounded_add(attempts, 1)?;

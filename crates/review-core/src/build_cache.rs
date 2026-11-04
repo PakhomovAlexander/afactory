@@ -178,7 +178,8 @@ pub struct BuildCacheV2 {
     /// The producing Task Attempt. Required for Worker captures; Gate captures may lack one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_attempt_id: Option<String>,
-    /// The head Snapshot the Gate built.
+    /// The head Snapshot the Gate built, or the input Snapshot of a Worker. An admitted
+    /// exact-source Worker output's envelope separately binds `subject_snapshot_id` to its output source.
     pub head_snapshot_id: String,
     pub manifest_id: String,
     pub content_digest: String,

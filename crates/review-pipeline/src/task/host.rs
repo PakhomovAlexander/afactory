@@ -9,8 +9,8 @@ use review_core::Producer;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::{PortAffinityV1, TaskOperatorV1};
 use review_core::task::plan::{
-    EffectiveWorkerBindingV2, ExecutionPlanV2, GeneratedOriginV1, PlanDecisionKindV1,
-    PlanDecisionV1, WorkerExecutionV2,
+    EffectiveWorkerBindingV3, ExecutionPlanV3, GeneratedOriginV1, PlanDecisionKindV1,
+    PlanDecisionV1, WorkerExecutionV3,
 };
 use review_core::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompiledOperator, CompiledTask, OperatorSignature};
@@ -182,7 +182,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Task domain has no installed experimental compiler".into())
@@ -191,7 +191,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         _evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -202,7 +202,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         _report: &review_core::task::report::TaskRunReportV1,
         _events: &[review_store::NewEvent],
@@ -217,8 +217,8 @@ pub trait TaskDomain: TaskOperatorHost {
         _cas: &Cas,
         _previous: &TaskRevisionV1,
         _next: &TaskRevisionV1,
-        _previous_plan: &ExecutionPlanV2,
-        _next_plan: &ExecutionPlanV2,
+        _previous_plan: &ExecutionPlanV3,
+        _next_plan: &ExecutionPlanV3,
         _handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
     ) -> Result<(), String> {
         Err("Task domain has no installed Review continuation".into())
@@ -227,7 +227,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _parent: &TaskInvocationV1,
         _children: &review_core::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -238,7 +238,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _parent: &TaskInvocationV1,
         _children: &review_core::task::owned_children::TaskOwnedChildSetV1,
         _facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -251,7 +251,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV2,
+        _plan: &ExecutionPlanV3,
         _input: &TaskInvocationV1,
         _previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -303,7 +303,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,
@@ -414,7 +414,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.validate_plan(cas, task, plan)?;
@@ -433,7 +433,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -449,7 +449,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
@@ -470,8 +470,8 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV2,
-        next_plan: &ExecutionPlanV2,
+        previous_plan: &ExecutionPlanV3,
+        next_plan: &ExecutionPlanV3,
         handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
     ) -> Result<(), String> {
         if !matches!(self.compiler, CapturedCompiler::Review(_)) {
@@ -491,7 +491,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -503,7 +503,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
         facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -518,7 +518,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -529,7 +529,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<(), String> {
         match &self.compiler {
             CapturedCompiler::Task(compiler) => {
@@ -544,7 +544,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         match &self.compiler {
             CapturedCompiler::Task(compiler) => {
@@ -569,7 +569,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         id: &str,
@@ -580,7 +580,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,
@@ -608,7 +608,7 @@ enum WorkerTransport<'a> {
 /// Installed by the host after Provider admission. The complete effective binding must equal
 /// the plan's captured slot; a local alias cannot substitute another principal or model.
 pub struct TaskModelBinding<'a> {
-    pub binding: EffectiveWorkerBindingV2,
+    pub binding: EffectiveWorkerBindingV3,
     pub adapter: &'a dyn review_runner::task::WorkerModelAdapter,
 }
 
@@ -738,6 +738,7 @@ impl<'a> CapturedTaskHost<'a> {
                     input,
                     port,
                     value,
+                    &output.outputs,
                     worker.development.as_ref().ok_or("Missing cache policy")?,
                     &self.run_id,
                 )?;
@@ -793,7 +794,7 @@ impl<'a> CapturedTaskHost<'a> {
         cas: &Cas,
         compiler: &TaskPlanCompiler,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         graph: CompiledTask,
         environment: &'a dyn TaskEnvironment,
         domain: &'a dyn TaskDomain,
@@ -817,7 +818,7 @@ impl<'a> CapturedTaskHost<'a> {
                         .get(slot)
                         .ok_or("Model Worker requires its admitted Provider adapter")?;
                     if plan.bindings.get(slot) != Some(&model.binding)
-                        || !matches!(&model.binding.execution, WorkerExecutionV2::Model {provider_kind:kind, model:model_id, effort, ..} if kind == provider_kind && kind == model.adapter.provider_kind() && model.adapter.model_settings().as_ref() == Some(&(model_id.clone(), effort.clone())))
+                        || !matches!(&model.binding.execution, WorkerExecutionV3::Model {provider_kind:kind, model:model_id, effort, ..} if kind == provider_kind && kind == model.adapter.provider_kind() && model.adapter.model_settings().as_ref() == Some(&(model_id.clone(), effort.clone())))
                     {
                         return Err(
                             "Model adapter differs from the exact admitted Worker binding".into(),
@@ -1519,7 +1520,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.domain
@@ -1529,7 +1530,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -1541,7 +1542,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
@@ -1558,8 +1559,8 @@ impl TaskDomain for CapturedTaskHost<'_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV2,
-        next_plan: &ExecutionPlanV2,
+        previous_plan: &ExecutionPlanV3,
+        next_plan: &ExecutionPlanV3,
         handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
     ) -> Result<(), String> {
         self.domain.validate_review_continuation(
@@ -1575,7 +1576,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -1586,7 +1587,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
         facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -1600,7 +1601,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -1676,7 +1677,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,

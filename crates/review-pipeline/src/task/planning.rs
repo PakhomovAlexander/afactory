@@ -5,7 +5,7 @@ use super::*;
 use review_config::task::catalog::TaskPlanCompiler;
 use review_core::task::feedback::*;
 use review_core::task::pipeline::TaskOperatorV1;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::planning::*;
 use review_core::task::{TaskAcceptanceV1, TaskResultV1};
 
@@ -113,7 +113,7 @@ impl TaskDomain for PlanningTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -257,7 +257,7 @@ impl TaskDomain for PlanningTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -276,7 +276,7 @@ impl TaskDomain for PlanningTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,

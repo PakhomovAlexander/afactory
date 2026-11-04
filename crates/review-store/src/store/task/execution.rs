@@ -483,7 +483,7 @@ impl TaskExecutionProjection {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         node: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<bool, StoreError> {
@@ -2159,7 +2159,7 @@ impl EventStore {
     fn validate_task_output(
         cas: &Cas,
         state: &TaskProjection,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         output_id: &str,
         attempt_id: Option<&str>,
         authority: &dyn TaskAuthority,

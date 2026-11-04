@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 
 fn ready() -> Ready {
     Ready {
-        principal: digest(b"account"),
+        principal: Some(digest(b"account")),
         auth_method: "oauth".into(),
         backend: "openai-codex".into(),
         version: SDK_VERSION.into(),
@@ -16,6 +16,9 @@ fn ready() -> Ready {
 }
 fn record(state: &mut State, kind: &str, data: Value) -> Result<(), String> {
     let mut value = data;
+    if kind == "usage" && value.get("observations").is_none() {
+        value["observations"] = json!(1);
+    }
     value["schema"] = json!(PROTOCOL);
     value["type"] = json!(kind);
     state.record(&serde_json::to_vec(&value).unwrap())
@@ -126,6 +129,11 @@ fn invalid_counters_versions_and_lifecycle_fail_closed() {
         .is_err()
     );
     assert!(record(&mut accepted(), "error", json!({"code":"raw secret"})).is_err());
+    for write in [8, 11] {
+        let mut impossible = usage(1, true, json!(10), json!(2));
+        impossible["cache_write"] = json!(write);
+        assert!(record(&mut accepted(), "usage", impossible).is_err());
+    }
     let mut missing = usage(1, true, json!(10), json!(2));
     missing.as_object_mut().unwrap().remove("input");
     assert!(record(&mut accepted(), "usage", missing).is_err());
@@ -141,11 +149,56 @@ fn invalid_counters_versions_and_lifecycle_fail_closed() {
     assert!(record(&mut state, "error", json!({"code":"host_refused"})).is_err());
 }
 
+#[test]
+fn kimi_invalid_missing_conflicting_and_unsafe_counters_keep_prior_observed_floor() {
+    for field in ["input", "output", "cache_read", "cache_write", "reasoning"] {
+        for bad in [
+            json!(-1),
+            json!(0.5),
+            json!("38"),
+            json!(true),
+            json!(9_007_199_254_740_992u64),
+            json!(u64::MAX),
+        ] {
+            let mut state = accepted();
+            let identity = state.ready.as_mut().unwrap();
+            identity.backend = "kimi-coding".into();
+            identity.principal = None;
+            identity.models[0].id = "k3".into();
+            identity.validate().unwrap();
+            let prior = json!({"inference":1,"complete":false,"input":439,"output":38,
+                "cache_read":null,"cache_write":null,"reasoning":24});
+            record(&mut state, "usage", prior.clone()).unwrap();
+            let mut next = prior.clone();
+            next[field] = bad;
+            assert!(record(&mut state, "usage", next).is_err(), "{field}");
+            let mut missing = prior;
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(record(&mut state, "usage", missing).is_err(), "{field}");
+            let observation = state.observation();
+            assert!(!observation.charge_complete);
+            let observed = observation.reported_usage.unwrap();
+            assert_eq!(observed.chargeable_tokens.get(), 477);
+            assert_eq!(observed.input_tokens.unwrap().get(), 439);
+            assert_eq!(observed.output_tokens.unwrap().get(), 38);
+            assert_eq!(observed.reasoning_tokens.unwrap().get(), 24);
+            assert!(observed.cache_read_tokens.is_none());
+            assert!(observed.cache_write_tokens.is_none());
+        }
+    }
+}
+
 mod process {
     use super::*;
     fn fixture(mode: &str, root: &Path, socket: Option<&Path>) -> PiTaskAdapter {
         let node = root.join("node");
-        let mut response = serde_json::to_value(ready()).unwrap();
+        let mut identity = ready();
+        if mode.starts_with("kimi-") {
+            identity.backend = "kimi-coding".into();
+            identity.principal = None;
+            identity.models[0].id = "k3".into();
+        }
+        let mut response = serde_json::to_value(&identity).unwrap();
         response["schema"] = json!(PROTOCOL);
         response["type"] = json!("ready");
         let body = r#"#!/usr/bin/python3 -B
@@ -154,7 +207,8 @@ mode=MODE
 open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
 def emit(v):
- v['schema']='af.pi-host/2'
+ if v.get('type')=='usage': v.setdefault('observations',1)
+ v['schema']='af.pi-host/4'
  data=(json.dumps(v,ensure_ascii=False)+'\n').encode()
  # Split inside a UTF-8 sequence too: LF is the only record separator.
  for at in range(0,len(data),len(data) if mode=='immediate' else 7): os.write(1,data[at:at+7] if mode!='immediate' else data)
@@ -182,6 +236,27 @@ if mode=='before-prompt':
 prompt=json.loads(sys.stdin.readline())
 open(MARKER,'w').write(prompt['text'])
 emit({'type':'accepted','prompt_nonce':prompt['prompt_nonce']})
+if mode.startswith('kimi-') or mode=='openai-no-cache':
+ u={'type':'usage','inference':1,'complete':True,'input':439,'output':38,'cache_read':None,'cache_write':None,'reasoning':24}
+ if mode=='kimi-cache': u.update(cache_read=200,cache_write=100)
+ if mode=='kimi-no-reasoning': u['reasoning']=None
+ if mode=='kimi-missing-input': u['input']=None
+ if mode=='kimi-missing-output': u['output']=None
+ if mode=='kimi-repeated':
+  emit(dict(u,complete=False,input=400,output=30))
+ emit(u)
+ if mode=='kimi-repeated': emit(u)
+ if mode=='kimi-multiple': emit(dict(u,inference=2))
+ if mode in ['kimi-malformed','kimi-overflow','kimi-conflict']:
+  bad=dict(u)
+  if mode=='kimi-malformed': bad['output']='38'
+  if mode=='kimi-overflow': bad['input']=2**64
+  if mode=='kimi-conflict': bad['cache_read']=440
+  emit(bad)
+ if mode=='kimi-failed':
+  emit({'type':'error','code':'inference_failed'}); sys.exit(0)
+ emit({'type':'message','text':'aggregate result'})
+ emit({'type':'settled'}); sys.exit(0)
 if mode!='no-usage':
  emit({'type':'usage','inference':1,'complete':mode not in ['incomplete','earlier-incomplete'],'input':None if mode=='unknown-usage' else 10,'output':None if mode=='unknown-usage' else 2,'cache_read':None if mode=='unknown-usage' else 3,'cache_write':None,'reasoning':None})
 if mode=='earlier-incomplete': emit({'type':'usage','inference':2,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
@@ -216,20 +291,195 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         std::fs::write(&node, body).unwrap();
         std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config = PiConfig {
-            backend: "openai-codex".into(),
+            backend: identity.backend.clone(),
             sdk_entrypoint: root.join("sdk/dist/index.js"),
         };
-        let captured = authority(&node, &config, root, &ready().models[0]);
+        let captured = authority(&node, &config, root, &identity.models[0]).unwrap();
         PiTaskAdapter {
             node,
             config,
             auth_dir: root.into(),
-            principal: digest(b"account"),
-            model: "o3".into(),
+            principal: identity.principal,
+            model: identity.models[0].id.clone(),
             effort: "high".into(),
             captured,
         }
     }
+    #[test]
+    fn missing_trusted_allowance_refuses_before_start_even_with_payload_and_environment_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = fixture("readonly", root.path(), None);
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            root.path(),
+            br#"{"remaining_tokens":999999}"#.to_vec(),
+            Duration::from_secs(30),
+            WorkerAccess::ReadOnly,
+            None,
+            &[("AF_PI_REMAINING_TOKENS".into(), "999999".into())],
+        );
+        assert!(
+            returned
+                .message
+                .unwrap_err()
+                .contains("trusted remaining token allowance")
+        );
+        assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
+        assert!(!root.path().join("started").exists());
+        let invalid = adapter
+            .invoke_with_allowance(
+                &cas,
+                root.path(),
+                b"request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+                RemainingTokenAllowance::new(u64::MAX).unwrap(),
+                review_runner::task::reply_schema::ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
+        assert!(invalid.message.is_err());
+        assert_eq!(invalid.usage.unwrap().chargeable_tokens.get(), 0);
+        assert!(!root.path().join("started").exists());
+    }
+
+    #[test]
+    fn safe_evidence_distinguishes_requests_with_identical_usage_without_sensitive_payloads() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = fixture("immediate", root.path(), None);
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let mut evidence = vec![];
+        for _ in 0..2 {
+            let returned = invoke_test(
+                &adapter,
+                &cas,
+                root.path(),
+                b"PRIVATE_PROMPT_SENTINEL".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            assert!(returned.message.is_ok());
+            let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE_PROMPT_SENTINEL"));
+            evidence.push(PiInferenceEvidenceV1::decode(&bytes).unwrap());
+        }
+        assert_ne!(evidence[0].request_nonce, evidence[1].request_nonce);
+        assert_eq!(evidence[0].aggregate, evidence[1].aggregate);
+        assert_eq!(evidence[0].started_inferences, 1);
+    }
+
+    #[test]
+    fn kimi_adapter_aggregate_budget_preserves_unknown_cache_and_refuses_bad_observations() {
+        for (mode, complete, charge, message_ok) in [
+            ("kimi-aggregate", true, 477, true),
+            ("kimi-cache", true, 477, true),
+            ("kimi-no-reasoning", true, 477, true),
+            ("kimi-repeated", true, 477, true),
+            ("kimi-multiple", true, 954, true),
+            ("kimi-missing-input", false, 38, true),
+            ("kimi-missing-output", false, 439, true),
+            ("kimi-malformed", false, 477, false),
+            ("kimi-overflow", false, 477, false),
+            ("kimi-conflict", false, 477, false),
+            ("kimi-failed", false, 477, false),
+            ("openai-no-cache", false, 38, true),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let adapter = fixture(mode, root.path(), None);
+            let cas = Cas::open(root.path().join("cas")).unwrap();
+            let returned = invoke_test(
+                &adapter,
+                &cas,
+                root.path(),
+                b"private request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            assert_eq!(
+                returned.message.is_ok(),
+                message_ok,
+                "{mode}: {:?}",
+                returned.message
+            );
+            assert_eq!(returned.raw_artifact_ids.len(), 1);
+            let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
+            PiInferenceEvidenceV1::decode(&bytes).unwrap();
+            let evidence: Value = serde_json::from_slice(&bytes).unwrap();
+            let mut old = evidence.clone();
+            old["schema"] = json!("af/pi-inference-evidence@0");
+            assert!(PiInferenceEvidenceV1::decode(&serde_json::to_vec(&old).unwrap()).is_err());
+            let mut secret = evidence.clone();
+            secret["tool_arguments"] = json!("PRIVATE");
+            assert!(PiInferenceEvidenceV1::decode(&serde_json::to_vec(&secret).unwrap()).is_err());
+            assert_eq!(evidence["schema"], "af/pi-inference-evidence@1");
+            assert_eq!(evidence["remaining_tokens"], 1_000_000);
+            assert_eq!(
+                evidence["started_inferences"],
+                if mode == "kimi-multiple" { 2 } else { 1 }
+            );
+            assert_eq!(
+                evidence["inferences"][0]["input"],
+                if mode == "kimi-missing-input" {
+                    Value::Null
+                } else {
+                    json!(439)
+                }
+            );
+            assert!(!evidence.to_string().contains("private request"));
+            // Incomplete observations refuse Task admission even when lifecycle/text succeeded.
+            assert_eq!(returned.usage_observation.is_none(), complete, "{mode}");
+            if let Some(observation) = &returned.usage_observation {
+                assert!(!observation.charge_complete, "{mode}");
+                assert_eq!(observation.reported_usage, returned.usage, "{mode}");
+            }
+            let observed = returned.usage.unwrap();
+            assert_eq!(observed.chargeable_tokens.get(), charge, "{mode}");
+            assert_eq!(
+                observed.input_tokens.map(|v| v.get()),
+                (mode != "kimi-missing-input").then_some(if mode == "kimi-multiple" {
+                    878
+                } else {
+                    439
+                }),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.output_tokens.map(|v| v.get()),
+                (mode != "kimi-missing-output").then_some(if mode == "kimi-multiple" {
+                    76
+                } else {
+                    38
+                }),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.cache_read_tokens.map(|v| v.get()),
+                (mode == "kimi-cache").then_some(200),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.cache_write_tokens.map(|v| v.get()),
+                (mode == "kimi-cache").then_some(100),
+                "{mode}"
+            );
+            assert_eq!(
+                observed.reasoning_tokens.map(|v| v.get()),
+                (mode != "kimi-no-reasoning").then_some(if mode == "kimi-multiple" {
+                    48
+                } else {
+                    24
+                }),
+                "{mode}"
+            );
+        }
+    }
+
     #[test]
     fn expired_or_cancelled_attempts_do_not_start_a_host() {
         for expired in [false, true] {
@@ -237,7 +487,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let adapter = fixture("success", root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
             let cancelled = AtomicBool::new(!expired);
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"PRIVATE".to_vec(),
@@ -267,7 +518,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"request".to_vec(),
@@ -286,7 +538,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"private request".to_vec(),
@@ -311,7 +564,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         let root = tempfile::tempdir().unwrap();
         let adapter = fixture("before-prompt", root.path(), None);
         let cas = Cas::open(root.path().join("cas")).unwrap();
-        let returned = adapter.invoke(
+        let returned = invoke_test(
+            &adapter,
             &cas,
             root.path(),
             b"PRIVATE".to_vec(),
@@ -341,7 +595,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"private request".to_vec(),
@@ -389,7 +644,7 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         let output = review_process::run_supervised_duplex(
             &mut child, Duration::from_secs(30), ExitPolicy::KillProcessGroup,
             move |writer| -> std::io::Result<()> {
-                write_record(writer, &init(&adapter.config, root_path, root_path, staging_path, None, false, false, &[]))?;
+                write_record(writer, &init(&adapter.config, root_path, &adapter.captured.auth_context_id, root_path, staging_path, None, false, false, &[]))?;
                 let wait = || observed.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(std::io::Error::other);
                 wait()?;
                 write_record(writer, &json!({"schema":PROTOCOL,"type":"prepare","model":"o3","effort":"high","model_identity":digest(b"model")}))?;
@@ -461,12 +716,31 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
     }
 
     #[test]
-    fn identity_backend_model_effort_and_version_drift_refuse_before_private_input() {
-        for mode in ["identity", "backend", "model", "effort", "version"] {
+    fn identity_auth_context_backend_model_effort_and_version_drift_refuse_before_private_input() {
+        for mode in [
+            "identity",
+            "auth-context",
+            "backend",
+            "model",
+            "effort",
+            "version",
+            "prior-policy",
+            "kimi-prior-policy",
+        ] {
             let root = tempfile::tempdir().unwrap();
-            let adapter = fixture(mode, root.path(), None);
+            let mut adapter = fixture(mode, root.path(), None);
+            if mode.ends_with("prior-policy") {
+                // The preceding policy captured only HOST, omitting Rust accounting semantics.
+                adapter.captured.adapter_policy_id = digest(HOST.as_bytes());
+                assert_ne!(adapter.captured.adapter_policy_id, policy_id());
+            }
+            if mode == "auth-context" {
+                adapter.auth_dir = root.path().join("different-auth-context");
+                std::fs::create_dir(&adapter.auth_dir).unwrap();
+            }
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"PRIVATE".to_vec(),
@@ -477,6 +751,9 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             );
             assert!(returned.message.is_err(), "{mode}");
             assert!(!root.path().join("prompt").exists(), "{mode}");
+            if mode.ends_with("prior-policy") {
+                assert!(!root.path().join("started").exists());
+            }
             assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
         }
     }
@@ -486,7 +763,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"request".to_vec(),
@@ -570,7 +848,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         let (finished, completed) = mpsc::channel();
         std::thread::scope(|scope| {
             let running = scope.spawn(|| {
-                let returned = adapter.invoke(
+                let returned = invoke_test(
+                    &adapter,
                     &cas,
                     root.path(),
                     b"request".to_vec(),
@@ -587,6 +866,21 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             cancelled.store(true, Ordering::Release);
             let returned = running.join().unwrap();
             assert!(returned.message.is_err());
+            assert_eq!(returned.raw_artifact_ids.len(), 1);
+            let evidence =
+                PiInferenceEvidenceV1::decode(&cas.get(&returned.raw_artifact_ids[0]).unwrap())
+                    .unwrap();
+            assert!(!evidence.successful && !evidence.settled);
+            assert_eq!(evidence.started_inferences, 1);
+            assert_eq!(
+                evidence
+                    .aggregate
+                    .reported_usage
+                    .unwrap()
+                    .chargeable_tokens
+                    .get(),
+                9
+            );
             assert_eq!(
                 returned
                     .usage_observation
@@ -618,4 +912,75 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             assert!(cancel_fixture(mode).is_err(), "{mode}");
         }
     }
+}
+
+#[test]
+fn kimi_catalog_requires_unavailable_identity_k3_and_exact_supported_efforts() {
+    let mut kimi = ready();
+    kimi.backend = "kimi-coding".into();
+    kimi.principal = None;
+    kimi.models[0].id = "k3".into();
+    kimi.models[0].efforts = vec!["low".into(), "high".into(), "max".into()];
+    kimi.validate().unwrap();
+    assert!(kimi.model("k3", "medium").is_err());
+    for effort in ["off", "minimal", "medium", "xhigh"] {
+        let mut bad = kimi.clone();
+        bad.models[0].efforts.push(effort.into());
+        assert!(bad.validate().is_err());
+    }
+    let mut invented = kimi.clone();
+    invented.principal = Some(digest(b"profile-name"));
+    assert!(invented.validate().is_err());
+    let mut bad_model = kimi.clone();
+    bad_model.models[0].id = "k3-256k".into();
+    assert!(bad_model.validate().is_err());
+    let mut openai = ready();
+    openai.principal = None;
+    assert!(openai.validate().is_err());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_test(
+    adapter: &PiTaskAdapter,
+    cas: &Cas,
+    workdir: &Path,
+    input: Vec<u8>,
+    timeout: Duration,
+    access: WorkerAccess,
+    cancellation: Option<&AtomicBool>,
+    environment: &[(String, String)],
+) -> ModelWorkerReturn {
+    adapter
+        .invoke_with_allowance(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            RemainingTokenAllowance::new(1_000_000).unwrap(),
+            review_runner::task::reply_schema::ReplyContract::Request,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0)
+}
+
+#[test]
+fn tool_count_evidence_accepts_only_declared_names_and_cumulative_counts() {
+    let mut state = accepted();
+    record(&mut state, "tool_count", json!({"name":"read","count":1})).unwrap();
+    record(&mut state, "tool_count", json!({"name":"read","count":2})).unwrap();
+    record(&mut state, "tool_count", json!({"name":"edit","count":1})).unwrap();
+    for wrong in [
+        json!({"name":"PRIVATE_NAME","count":1}),
+        json!({"name":"read","count":2}),
+        json!({"name":"read","count":3,"arguments":"PRIVATE_ARGS"}),
+        json!({"name":"write","count":4097}),
+    ] {
+        assert!(record(&mut state, "tool_count", wrong).is_err());
+    }
+    assert_eq!(
+        state.tool_counts,
+        BTreeMap::from([("edit".into(), 1), ("read".into(), 2)])
+    );
 }

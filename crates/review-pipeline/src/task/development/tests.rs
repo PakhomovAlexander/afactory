@@ -461,6 +461,7 @@ impl Fixture {
             &self.input,
             "cache_out",
             &value,
+            &outputs,
             &self.request,
             "development-fixture",
         )
@@ -865,6 +866,36 @@ printf '{"schema":"af.worker-reply/1","outputs":{"report":[{"answer":77}]}}\n'
 "#,
     );
     let output = fixture.captured_output(&returned);
+    let raw_id = returned
+        .raw_artifact_ids
+        .iter()
+        .find(|id| {
+            fixture
+                .cas
+                .get_optional_artifact(id)
+                .ok()
+                .flatten()
+                .is_some_and(|artifact| {
+                    artifact.artifact_type == review_core::contract::BUILD_CACHE_V2
+                })
+        })
+        .unwrap()
+        .clone();
+    let mut raw = output.clone();
+    raw.artifact_ids = vec![raw_id];
+    raw.snapshot_id = None;
+    fixture.input.inputs.insert("cache_in".into(), raw);
+    fixture.pin_and_select();
+    assert!(
+        matches!(
+            fixture.warm().development["objects"],
+            DevelopmentCacheSelectionRecordV1::Omitted {
+                reason: DevelopmentCacheMissV1::Incompatible,
+                ..
+            }
+        ),
+        "matching bytes without an admitted output binding cannot authorize continuation"
+    );
     fixture.input.inputs.insert("cache_in".into(), output);
     fixture.pin_and_select();
     let check = r#"set -eu
@@ -894,7 +925,24 @@ printf '8\n' > value.txt
 printf '{"schema":"af.worker-reply/1","outputs":{"report":[{"answer":77}]}}\n'
 "#,
     );
-    let changed = fixture.captured_output(&changed);
+    let changed = review_core::task::ArtifactInputV1 {
+        artifact_ids: changed
+            .raw_artifact_ids
+            .iter()
+            .filter(|id| {
+                fixture
+                    .cas
+                    .get_optional_artifact(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|a| a.artifact_type == review_core::contract::BUILD_CACHE_V2)
+            })
+            .cloned()
+            .collect(),
+        artifact_type: review_core::contract::BUILD_CACHE_V2.into(),
+        cardinality: review_core::PortCardinality::One,
+        snapshot_id: None,
+    };
     fixture.input.inputs.insert("cache_in".into(), changed);
     fixture.pin_and_select();
     assert!(

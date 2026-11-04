@@ -154,3 +154,9 @@ in reviewer experiments, exact host command receipts and replay after reopening 
 Its Cargo builds stay in disposable private directories under the checkout's `target/` or the
 gate-owned test target. `recording-runtime.py` is shared test infrastructure, never an operator
 binding or a containment backend; no Worker may select it as trusted machine authority.
+
+When a continuation producer edits source, wire its candidate through the typed `seal` operation
+and pass both the sealed `snapshot` and the admitted cache output to the next Worker on the same
+slot. The cache envelope's `subject_snapshot_id` names that output Snapshot; its payload's
+`head_snapshot_id` preserves the producer input. Exact-source selection refuses the old source,
+raw unadmitted captures and experiments that differ from the sealed candidate.

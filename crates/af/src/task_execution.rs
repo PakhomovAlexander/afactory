@@ -66,12 +66,14 @@ pub(crate) mod runs;
 mod selection;
 pub(crate) mod starter;
 pub(crate) mod state;
+mod structured;
 mod task_file_home;
 mod task_file_shape;
 pub(super) mod task_report;
 
 #[derive(Clone)]
 pub(super) struct StartOptions {
+    pub input_json: Vec<String>,
     pub file: PathBuf,
     pub bindings: Option<PathBuf>,
     pub source_bindings: Option<PathBuf>,
@@ -439,6 +441,12 @@ impl RunAuthority {
             &self.report_policy_id,
         ) {
             (Some(id), None, None) | (None, Some(id), None) | (None, None, Some(id)) => Ok(id),
+            (None, None, None) => self
+                .kind_package
+                .as_ref()
+                .and_then(|name| self.packages.get(name))
+                .map(|p| p.artifact_id.as_str())
+                .ok_or_else(|| "Task requires a captured structured kind package".into()),
             _ => Err("Task requires one captured domain policy".into()),
         }
     }
@@ -663,12 +671,12 @@ fn capture_authority(
         catalog.report_policy.as_deref(),
         ReportTaskPolicy::validate,
     )?;
+    let engine_id = engine(cas)?;
     let initial_policy = code_policy_id
         .as_ref()
         .or(document_policy_id.as_ref())
         .or(report_policy_id.as_ref())
-        .ok_or("Catalog has no installed domain policy")?;
-    let engine_id = engine(cas)?;
+        .unwrap_or(&engine_id);
     // Package capture does not compile a Task or choose its business acceptance profile.
     let mut capture = TaskPlanCompiler::new(
         engine_id.clone(),
@@ -783,7 +791,15 @@ fn capture_authority(
     let is_report = kind_profile.map_or(task_kind == "report", |profile| {
         profile == TaskKindProfile::Report
     });
-    let (code_policy_id, document_policy_id, report_policy_id) = if is_document {
+    let structured = catalog
+        .kinds
+        .get(task_kind)
+        .filter(|_| kind_profile == Some(TaskKindProfile::Structured))
+        .map(|name| capture.structured_contract(name))
+        .transpose()?;
+    let (code_policy_id, document_policy_id, report_policy_id) = if structured.is_some() {
+        (None, None, None)
+    } else if is_document {
         (
             None,
             Some(document_policy_id.ok_or("Document Task requires a captured document policy")?),
@@ -804,7 +820,7 @@ fn capture_authority(
             None,
         )
     };
-    let data_only = is_document || is_report;
+    let data_only = is_document || is_report || structured.is_some();
     let authority = RunAuthority {
         schema: provider_admission::RUN_AUTHORITY_SCHEMA.into(),
         provider_admission,
@@ -877,7 +893,19 @@ fn restore_compiler(
         cas.verify(lock).map_err(|e| e.to_string())?;
     }
     authority.invocation_policy_id()?;
-    let (mut signatures, mut coverage) = if let Some(id) = &authority.document_policy_id {
+    let (mut signatures, mut coverage) = if let Some(contract) = structured::policy(cas, authority)?
+    {
+        (
+            BTreeMap::from([(
+                "operator/structured-accept".into(),
+                review_config::task::structured::signature(
+                    authority.invocation_policy_id()?,
+                    &contract,
+                )?,
+            )]),
+            BTreeMap::from([("structured".into(), "validation".into())]),
+        )
+    } else if let Some(id) = &authority.document_policy_id {
         let policy: DocumentTaskPolicy =
             serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
@@ -957,7 +985,7 @@ fn restore_compiler(
             compiler.bind_worker(
                 name,
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV2::Command {},
+                    execution: WorkerExecutionV3::Command {},
                     invocation_policy_id: authority.invocation_policy_id()?.into(),
                 },
             )?;
@@ -1048,7 +1076,7 @@ fn bind_named_models(
         }
         let identity = &identities[&alias];
         let execution = identity.execution(&model, &effort)?;
-        if !matches!(&execution,WorkerExecutionV2::Model {provider_kind:kind,..} if *kind==provider_kind)
+        if !matches!(&execution,WorkerExecutionV3::Model {provider_kind:kind,..} if *kind==provider_kind)
         {
             return Err("Worker and Provider implementation families differ".into());
         }
@@ -1065,13 +1093,13 @@ fn bind_named_models(
 }
 
 fn model_bindings<'a>(
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     graph: &CompiledTask,
     adapters: &'a BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>,
 ) -> Result<BTreeMap<String, TaskModelBinding<'a>>, String> {
     plan.bindings
         .iter()
-        .filter(|(_, binding)| matches!(binding.execution, WorkerExecutionV2::Model { .. }))
+        .filter(|(_, binding)| matches!(binding.execution, WorkerExecutionV3::Model { .. }))
         .map(|(slot, binding)| {
             let name = &graph
                 .slots
@@ -1131,6 +1159,7 @@ pub(crate) fn plan_tree_preview_at(
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let state = scratch.path().join("state");
     let options = StartOptions {
+        input_json: Vec::new(),
         file: file.to_path_buf(),
         bindings: None,
         source_bindings: None,
@@ -1462,6 +1491,27 @@ fn existing_task(
         })
         .transpose()?;
     let started = state::started(&current);
+    // A structured request also captures external bytes and package schemas, which the Task
+    // file's digest alone cannot compare. Never present an earlier plan as a fresh capture.
+    if structured::policy(cas, &authority)?.is_some() {
+        if !options.replace {
+            return Err(format!(
+                "Task `{task_id}` already captured its structured inputs; use `af task run {task_id}` to use that exact plan, or `af task plan --file {} --replace` to recapture an unstarted Task",
+                shell_words::quote(&options.file.display().to_string())
+            ));
+        }
+        if started
+            || !matches!(
+                current.phase,
+                TaskPhaseV1::Ready {} | TaskPhaseV1::Submitted {}
+            )
+        {
+            return Err(format!(
+                "Task `{task_id}` has already run; give the Task file a new task_id to capture new structured inputs"
+            ));
+        }
+        return Ok(Some(Existing::Replace(Box::new(current))));
+    }
     if same_file && bindings == authority.local_bindings_id {
         return Ok(Some(Existing::Same));
     }
@@ -1689,6 +1739,17 @@ fn start_captured(
     replace: Option<Box<TaskProjection>>,
 ) -> Result<Started, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
+    if profile == TaskKindProfile::Structured
+        && (file.issue.is_some()
+            || file.document_sources.is_some()
+            || file.report_sources.is_some()
+            || file.optimization_history.is_some()
+            || !file.context.is_empty()
+            || file.continue_from.is_some()
+            || file.base.is_some())
+    {
+        return Err("Structured Tasks read only declared typed input ports and requirements; source, issue capture, continuation and document adapters are unavailable".into());
+    }
     let (_, state) = state_path(&options.repo, options.state.as_deref())?;
     // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
     // any Provider admitted. A bound port replaces this adapter's construction of it and
@@ -1715,6 +1776,9 @@ fn start_captured(
     if bound_ports.contains_key("sources") && file.report_sources.is_some() {
         return Err("A bound sources port and report_sources claim one input".into());
     }
+    if !options.input_json.is_empty() && profile != TaskKindProfile::Structured {
+        return Err("--input-json is only valid for a structured Task".into());
+    }
     if file.report_sources.is_some() && profile != TaskKindProfile::Report {
         return Err("report_sources is only valid for a report Task".into());
     }
@@ -1734,7 +1798,9 @@ fn start_captured(
     if file.base.is_some()
         && matches!(
             profile,
-            TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+            TaskKindProfile::Structured
+                | TaskKindProfile::Document
+                | TaskKindProfile::OptimizationAnalysis
         )
     {
         return Err(format!(
@@ -1746,7 +1812,9 @@ fn start_captured(
     if let Some(continued) = &continued {
         if matches!(
             profile,
-            TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+            TaskKindProfile::Structured
+                | TaskKindProfile::Document
+                | TaskKindProfile::OptimizationAnalysis
         ) {
             return Err(format!(
                 "continue: a {} Task reads no source tree, so it cannot continue Task `{}`",
@@ -1812,7 +1880,9 @@ fn start_captured(
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
     let source_port = if matches!(
         profile,
-        TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+        TaskKindProfile::Structured
+            | TaskKindProfile::Document
+            | TaskKindProfile::OptimizationAnalysis
     ) {
         None
     } else {
@@ -1840,7 +1910,9 @@ fn start_captured(
     // The rules and context the Worker reads first, bound by digest in one named tree: the
     // Snapshot the Task's Worker reads, read back from the Store, so every listed byte is one
     // that tree holds (ADR-0254). A profile without a `source` port reads the captured checkout.
-    let read_first = if file.context.is_empty() && read.get(context::RULES).is_none() {
+    let read_first = if profile == TaskKindProfile::Structured
+        || (file.context.is_empty() && read.get(context::RULES).is_none())
+    {
         None
     } else {
         let tree_id = match &source_port {
@@ -2001,6 +2073,57 @@ fn start_captured(
         revision
             .inputs
             .insert(review_core::task::acceptance::ACCEPTANCE_PORT.into(), port);
+    }
+    if profile == TaskKindProfile::Structured {
+        use review_core::task::structured::*;
+        if file.document_sources.is_some()
+            || file.issue.is_some()
+            || !file.context.is_empty()
+            || file.optimization_history.is_some()
+        {
+            return Err(
+                "Structured Tasks read only declared typed input ports and requirements".into(),
+            );
+        }
+        let contract =
+            structured::policy(&cas, &authority)?.ok_or("Structured Task lost contract")?;
+        revision.authority.allowed_effects.clear();
+        revision.required_outputs = contract
+            .outputs
+            .iter()
+            .map(|(n, p)| {
+                (
+                    n.clone(),
+                    review_core::task::RequiredOutputV1 {
+                        artifact_type: p.artifact_type.clone(),
+                        cardinality: PortCardinality::One,
+                    },
+                )
+            })
+            .collect();
+        revision.required_outputs.insert(
+            "validation".into(),
+            review_core::task::RequiredOutputV1 {
+                artifact_type: STRUCTURED_VALIDATION_V1.into(),
+                cardinality: PortCardinality::One,
+            },
+        );
+        revision.acceptance = BTreeMap::from([(
+            "structured".into(),
+            AcceptanceObligationV1 {
+                evidence_type: STRUCTURED_VALIDATION_V1.into(),
+                verifier_policy: authority.invocation_policy_id()?.into(),
+            },
+        )]);
+        // Recorded bindings and external files share the same compiler and schema admission.
+        revision.inputs.extend(bound_ports.clone());
+        structured::capture(
+            &cas,
+            &options,
+            &contract,
+            authority.invocation_policy_id()?,
+            &mut revision,
+        )?;
     }
     if profile == TaskKindProfile::Report {
         use review_core::task::report_task::*;
@@ -2423,7 +2546,7 @@ fn start_captured(
     }
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V2,
+            EXECUTION_PLAN_V3,
             producer(),
             vec![revision_id.clone()],
             None,
@@ -2665,8 +2788,8 @@ fn install_candidate_experiment(
     revision: &TaskRevisionV1,
     revision_id: &str,
     graph: &CompiledTask,
-    plan: &ExecutionPlanV2,
-) -> Result<(TaskPlanCompiler, ExecutionPlanV2, CompiledTask), String> {
+    plan: &ExecutionPlanV3,
+) -> Result<(TaskPlanCompiler, ExecutionPlanV3, CompiledTask), String> {
     use review_core::task::optimization_experiment::{
         EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentalSlotV2,
     };
@@ -2725,8 +2848,8 @@ fn install_candidate_experiment(
             .get(slot)
             .ok_or("Optimization experiment Worker has no exact binding")?;
         efforts.insert(match &binding.execution {
-            WorkerExecutionV2::Command {} => "command".into(),
-            WorkerExecutionV2::Model { effort, .. } => effort.clone(),
+            WorkerExecutionV3::Command {} => "command".into(),
+            WorkerExecutionV3::Model { effort, .. } => effort.clone(),
         });
         packages.insert(package.clone());
         package_ids.insert(binding.package_artifact_id.clone());
@@ -2815,7 +2938,7 @@ fn captured_domain(
     authority: &RunAuthority,
     profile: TaskKindProfile,
     graph: CompiledTask,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     compiler: &TaskPlanCompiler,
     state: &Path,
     repo: &Path,
@@ -2846,6 +2969,13 @@ fn captured_domain(
                 .with_cache_source_resolver(crate::caches::resolve_kind),
             ))
         }
+        TaskKindProfile::Structured => Ok(Box::new(
+            review_pipeline::task::structured::StructuredTaskDomain::captured(
+                authority.invocation_policy_id()?,
+                structured::policy(cas, authority)?.ok_or("Structured contract absent")?,
+                graph,
+            )?,
+        )),
         TaskKindProfile::Document => Ok(Box::new(DocumentTaskDomain::captured(
             cas,
             authority
@@ -3067,6 +3197,7 @@ pub(super) fn run_from(options: ContinueOptions) -> Result<i32, String> {
         crate::model_check::enable_plan_time();
     }
     let start = StartOptions {
+        input_json: Vec::new(),
         // Named for the messages that quote it; the bytes are the derived file, never read
         // from this path.
         file: PathBuf::from(format!(
@@ -3175,13 +3306,13 @@ pub(super) fn run(
     )
     .map_err(|e| e.to_string())?;
     let mut compiler = planning::restore(&cas, &projection, &authority)?;
-    let plan: ExecutionPlanV2 = artifact(
+    let plan: ExecutionPlanV3 = artifact(
         &cas,
         projection
             .plan_id
             .as_deref()
             .ok_or("Task has no captured plan")?,
-        EXECUTION_PLAN_V2,
+        EXECUTION_PLAN_V3,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     compiler = restore_experimental_slots(compiler, &graph)?;
@@ -4010,6 +4141,7 @@ pub(crate) fn recorded_artifact(state: &Path, id: &str) -> Result<serde_json::Va
 #[cfg(test)]
 pub(crate) fn run_silently(file: &Path, repo: &Path, state: &Path) -> Result<i32, String> {
     let options = StartOptions {
+        input_json: Vec::new(),
         file: file.to_path_buf(),
         bindings: None,
         source_bindings: None,
@@ -4037,7 +4169,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V14: &str = "af/task-inspection@15";
+pub(crate) const TASK_INSPECTION_V16: &str = "af/task-inspection@16";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -5004,7 +5136,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V14,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V16,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.
@@ -5381,7 +5513,7 @@ fn inspection(
         value["undeclared_af_paths"] = serde_json::to_value(group).map_err(|e| e.to_string())?;
     }
     if explain && let Some(id) = &state.plan_id {
-        let plan: ExecutionPlanV2 = artifact(cas, id, EXECUTION_PLAN_V2)?;
+        let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V3)?;
         let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
         // Each Worker slot's binding beside its Attempt wall (ADR-0257).
         value["slots"] = preview::slots_value(cas, &plan, &graph);
@@ -5466,6 +5598,7 @@ mod tree_preview_tests {
         // `af task plan --file` records the Task, and `af task explain --tree` prints this.
         let state = root.join("state");
         let options = StartOptions {
+            input_json: Vec::new(),
             file: file.clone(),
             bindings: None,
             source_bindings: None,
@@ -5719,6 +5852,7 @@ mod remote_check_line_tests {
         std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
         let owner = |state: &Path| {
             start(StartOptions {
+                input_json: Vec::new(),
                 file: file.clone(),
                 bindings: None,
                 source_bindings: None,

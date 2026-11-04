@@ -19,17 +19,29 @@ impl TaskOperatorHost for ToolchainDomain {
         _: &review_graph::task::CompiledNode,
         _: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        unreachable!("captured command Worker prepares its context")
+        Ok("Seal the admitted candidate".into())
     }
     fn execute(
         &self,
-        _: &Cas,
-        _: &TaskInvocationV1,
+        cas: &Cas,
+        input: &TaskInvocationV1,
         _: &review_graph::task::CompiledNode,
         _: Option<&PreparedTaskAttempt>,
         _: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        unreachable!("captured command Worker executes")
+        TaskWorkOutput {
+            outputs: review_pipeline::task::source::seal_candidate(cas, input)
+                .map(|source| BTreeMap::from([("snapshot".into(), source)])),
+            usage_observation: None,
+            usage: None,
+            charged_tokens: Some(0),
+            raw_artifact_ids: vec![],
+            usage_id: None,
+            feedback_id: None,
+            unknown_usage_cause: None,
+            refused_input: false,
+            notes: Default::default(),
+        }
     }
 }
 impl TaskDomain for ToolchainDomain {
@@ -46,11 +58,14 @@ impl TaskDomain for ToolchainDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
-        _: &TaskInvocationV1,
+        _: &ExecutionPlanV3,
+        input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
+        if output.outputs.contains_key("snapshot") {
+            return review_pipeline::task::source::validate_seal(cas, input, output);
+        }
         let report = cas
             .get_artifact(&output.outputs["report"].artifact_ids[0])
             .map_err(|e| e.to_string())?;
@@ -85,6 +100,15 @@ fn probe(program: &str, args: &[&str]) -> String {
 
 #[test]
 fn admitted_implementer_and_reviewer_tasks_compile_test_rust_and_python_with_private_state() {
+    run_toolchain_fixture("task_runtime::development::real_toolchain_task_child");
+}
+
+#[test]
+fn exact_source_checkpoint_follows_admitted_edited_candidate_and_replays() {
+    run_toolchain_fixture("task_runtime::development::checkpoint_task_child");
+}
+
+fn run_toolchain_fixture(child: &str) {
     // The machine binding is process-local authority. Pass it at exec, without mutating the
     // multithreaded test process's environment or borrowing an operator binding.
     let target = std::env::var_os("AF_GATE_NEXTEST_TARGET")
@@ -152,18 +176,15 @@ fn admitted_implementer_and_reviewer_tasks_compile_test_rust_and_python_with_pri
             processes: Some(128),
             disk_bytes: Some(268435456),
         },
-        cache_limits: None,
+        cache_limits: (child == "task_runtime::development::checkpoint_task_child")
+            .then_some(review_core::BuildCacheLimitsV1::default_v1()),
         dependency_sources: BTreeMap::new(),
     };
     let binding_path = private.join("binding.toml");
     std::fs::write(&binding_path, toml::to_string(&binding).unwrap()).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args([
-            "--exact",
-            "task_runtime::development::real_toolchain_task_child",
-            "--nocapture",
-        ])
+        .args(["--exact", child, "--nocapture"])
         .env(CHILD, &private)
         .env("AF_WORKER_DEVELOPMENT_BINDING_FILE", &binding_path);
     let output =
@@ -188,12 +209,29 @@ fn real_toolchain_task_child() {
         review_config::task::development::read_binding(&private.join("binding.toml")).unwrap();
     for language in ["rust", "python"] {
         for role in ["implement", "review"] {
-            run_task(&private, &binding, language, role);
+            run_task(&private, &binding, language, role, false);
         }
     }
 }
 
-fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str, role: &str) {
+#[test]
+fn checkpoint_task_child() {
+    let Some(private) = std::env::var_os(CHILD).map(PathBuf::from) else {
+        return;
+    };
+    review_sandbox::set_sandbox_root(private.clone()).unwrap();
+    let binding =
+        review_config::task::development::read_binding(&private.join("binding.toml")).unwrap();
+    run_task(&private, &binding, "python", "implement", true);
+}
+
+fn run_task(
+    private: &Path,
+    binding: &WorkerDevelopmentBindingV3,
+    language: &str,
+    role: &str,
+    continuation: bool,
+) {
     let directory = private.join(format!("{language}-{role}"));
     std::fs::create_dir(&directory).unwrap();
     let cas = Cas::open(directory.join("cas")).unwrap();
@@ -251,6 +289,54 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
     request
         .environment
         .insert("BUILD_ROOT".into(), "${build}".into());
+    if continuation {
+        let mut cache_port = worker.signature.contract.outputs["report"].clone();
+        cache_port.artifact_type = review_core::contract::BUILD_CACHE_V2.into();
+        cache_port.optional = true;
+        cache_port.affinity = PortAffinityV1::Unbound {};
+        worker
+            .signature
+            .contract
+            .inputs
+            .insert("cache_in".into(), cache_port.clone());
+        worker
+            .signature
+            .contract
+            .outputs
+            .insert("cache_out".into(), cache_port);
+        let mut warm = worker.signature.contract.inputs["cache_in"].clone();
+        warm.artifact_type = review_core::contract::WARM_SET_V3.into();
+        worker
+            .signature
+            .contract
+            .inputs
+            .insert("development_warm".into(), warm);
+        request
+            .environment
+            .insert("PRIVATE_STATE".into(), "${state}".into());
+        request.caches.insert(
+            "checkpoint".into(),
+            DevelopmentCachePolicyV1 {
+                role: DevelopmentCacheRoleV1::Continuation,
+                destination: DevelopmentRootV1::State,
+                path: "checkpoint".into(),
+                selection: DevelopmentCacheSelectionV1::ExactSource,
+                persistence: DevelopmentCachePersistenceV1::AdmittedOutput,
+                lifecycle: DevelopmentCacheLifecycleV1::Task,
+                limits: review_core::BuildCacheLimitsV1 {
+                    max_bytes: 4096,
+                    max_entries: 32,
+                    max_depth: 8,
+                    max_path_bytes: 256,
+                },
+                fingerprints: BTreeSet::from(["fixture.py".into()]),
+                keys: BTreeMap::new(),
+                input: Some("cache_in".into()),
+                output: Some("cache_out".into()),
+                dependency_source: None,
+            },
+        );
+    }
     binding.admit(&request).unwrap();
     let mut harness = std::fs::read_to_string(examples.join("harness.sh")).unwrap();
     // Quiet Cargo omits transport-fixture host paths from progress messages. Actual test
@@ -283,12 +369,34 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
     harness = harness.replace("read -r first", &format!(
         "sh -c 'test \"$(cat \"$HOME/first-command\")\" = \"first command completed\"'\n{check}\nread -r first"
     ));
+    if continuation {
+        // Only the producer edits source. The consumer has no rebuild/checkpoint fallback.
+        harness = r#"#!/bin/sh
+set -eu
+test ! -e "$HOME/conversation"
+edited=no
+while IFS= read -r line; do
+    case "$line" in '# CHECKPOINT_SOURCE') edited=yes ;; esac
+done < fixture.py
+if test "$edited" = yes; then
+    test "$(cat "$PRIVATE_STATE/checkpoint/step")" = 'admitted step 77'
+    printf '%s\n' '{"schema":"af.worker-reply/1","outputs":{"report":[{"summary":"restored admitted step 77"}]}}'
+else
+    test ! -e "$PRIVATE_STATE/checkpoint/step"
+    printf '\n# CHECKPOINT_SOURCE\n' >> fixture.py
+    mkdir -p "$PRIVATE_STATE/checkpoint"
+    printf 'admitted step 77' > "$PRIVATE_STATE/checkpoint/step"
+    printf private > "$HOME/conversation"
+    printf '%s\n' '{"schema":"af.worker-reply/1","outputs":{"report":[{"summary":"produced checkpoint"}]}}'
+fi
+"#.into();
+    }
     let files = BTreeMap::from([
         ("worker.toml".into(), toml::to_string(&worker).unwrap().into_bytes()),
         ("development.toml".into(), toml::to_string(&request).unwrap().into_bytes()),
         ("harness.sh".into(), harness.into_bytes()),
         ("instructions.md".into(), std::fs::read(examples.join("instructions.md")).unwrap()),
-        ("input.schema.json".into(), serde_json::to_vec(&json!({"type":"object","required":["source"],"properties":{"source":{"type":"array"}},"additionalProperties":false})).unwrap()),
+        ("input.schema.json".into(), serde_json::to_vec(&json!({"type":"object","required":["source"],"properties":worker.signature.contract.inputs.keys().map(|name| (name.clone(), json!({"type":"array"}))).collect::<BTreeMap<_,_>>(),"additionalProperties":false})).unwrap()),
         ("outputs/report.schema.json".into(), std::fs::read(examples.join("outputs/report.schema.json")).unwrap()),
     ]);
     let paths: &[&str] = if language == "rust" {
@@ -318,12 +426,17 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
         serde_json::from_slice(&std::fs::read(base.join("pipeline-definition.json")).unwrap())
             .unwrap();
     pipeline.contract.inputs = worker.signature.contract.inputs.clone();
+    pipeline.contract.inputs.retain(|name, _| name == "source");
     let output = pipeline.contract.outputs.get_mut("document").unwrap();
     output.artifact_type = worker.signature.contract.outputs["report"]
         .artifact_type
         .clone();
-    output.affinity = PortAffinityV1::SameAs {
-        input: "source".into(),
+    output.affinity = if continuation {
+        PortAffinityV1::Unbound {}
+    } else {
+        PortAffinityV1::SameAs {
+            input: "source".into(),
+        }
     };
     let slot = pipeline.slots.get_mut("author").unwrap();
     slot.worker = worker.name.clone();
@@ -346,6 +459,37 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
             port: "report".into(),
         };
     }
+    if continuation {
+        let from = |node: &str, port: &str| ValueRefV1::Node {
+            node: node.into(),
+            port: port.into(),
+        };
+        pipeline.nodes.push(TaskNodeV1 {
+            id: "seal".into(),
+            operator: TaskOperatorV1::Seal {},
+            inputs: BTreeMap::from([("candidate".into(), from("write", "candidate"))]),
+            when: None,
+        });
+        let mut next = pipeline.nodes[0].clone();
+        next.id = "resume".into();
+        next.inputs = BTreeMap::from([
+            ("source".into(), from("seal", "snapshot")),
+            ("cache_in".into(), from("write", "cache_out")),
+        ]);
+        pipeline.nodes.push(next);
+        let mut old = pipeline.nodes[0].clone();
+        old.id = "old_source".into();
+        old.inputs
+            .insert("cache_in".into(), from("write", "cache_out"));
+        pipeline.nodes.push(old);
+        pipeline
+            .outputs
+            .insert("document".into(), from("resume", "report"));
+        pipeline
+            .coverage
+            .insert("checked".into(), from("resume", "report"));
+        pipeline.max_attempts = 4;
+    }
     let mut task: TaskRevisionV1 =
         serde_json::from_slice(&std::fs::read(base.join("task-revision.json")).unwrap()).unwrap();
     task.inputs = BTreeMap::from([("source".into(), source)]);
@@ -360,6 +504,11 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
     task.authority.policy_id = policy.clone();
     task.authority.allowed_effects = worker.signature.effects.clone();
     task.limits.verification.wall_ms = request.limits.wall_ms;
+    if continuation {
+        // Three real Worker invocations each reserve the declared command allowance.
+        task.limits.verification.attempts = 3;
+        task.limits.verification.wall_ms = request.limits.wall_ms * 3;
+    }
     task.limits.deadline_unix_ms = review_store::store::task::now().unwrap() + 600000;
     let revision = cas
         .put_artifact(
@@ -374,7 +523,30 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
     let mut compiler = TaskPlanCompiler::new(
         policy.clone(),
         policy.clone(),
-        BTreeMap::new(),
+        if continuation {
+            let mut seal = worker.signature.clone();
+            seal.contract.inputs = BTreeMap::from([(
+                "candidate".into(),
+                worker.signature.contract.outputs["candidate"].clone(),
+            )]);
+            seal.contract.inputs.get_mut("candidate").unwrap().affinity =
+                PortAffinityV1::Unbound {};
+            let mut snapshot = worker.signature.contract.inputs["source"].clone();
+            snapshot.affinity = PortAffinityV1::DerivedFrom {
+                input: "candidate".into(),
+            };
+            seal.contract.outputs = BTreeMap::from([("snapshot".into(), snapshot)]);
+            seal.effects.clear();
+            seal.evidence.clear();
+            seal.retains.clear();
+            seal.roles.clear();
+            seal.worker_input_type = None;
+            seal.worker_output_type = None;
+            seal.attempt = None;
+            BTreeMap::from([("operator/seal".into(), seal)])
+        } else {
+            BTreeMap::new()
+        },
         BTreeMap::from([("checked".into(), "document".into())]),
         IndependencePolicyV1::default(),
     )
@@ -406,7 +578,7 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
         .bind_worker(
             &worker.name,
             AdmittedWorkerSettings {
-                execution: WorkerExecutionV2::Command {},
+                execution: WorkerExecutionV3::Command {},
                 invocation_policy_id: policy,
             },
         )
@@ -414,7 +586,7 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V2,
+            EXECUTION_PLAN_V3,
             producer(),
             vec![revision.clone()],
             None,
@@ -464,90 +636,172 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
         panic!("{language}/{role}: {report:?}");
     }
     let attempts = projection.attempt_accounting();
-    assert_eq!(attempts.len(), 1);
-    let attempt = &attempts[0];
-    let receipts: Vec<WorkerCommandEvidenceV1> = attempt
-        .raw_artifact_ids
-        .iter()
-        .filter_map(|id| cas.get_json(id).ok())
-        .filter_map(|v| serde_json::from_value(v).ok())
-        .collect();
-    assert_eq!(receipts.len(), 2, "tool probe and actual harness");
-    let evidence = receipts
-        .iter()
-        .find(|r| r.purpose == WorkerCommandPurposeV1::Harness)
-        .unwrap();
-    evidence.validate().unwrap();
-    assert_eq!(evidence.attempt_id, attempt.attempt_id);
-    assert_eq!(Some(&evidence.context_id), attempt.context_id.as_ref());
-    assert_eq!(evidence.source_snapshot_id, snapshot);
-    assert_eq!(evidence.binding_id, binding_identity);
-    assert_eq!(evidence.experiment, role == "review");
-    assert_eq!(evidence.command, ["/bin/sh", "/af/package/harness.sh"]);
-    assert_eq!(evidence.cwd, "/work");
-    assert_eq!(evidence.exit_code, Some(0));
-    assert!(evidence.failure.is_none(), "{evidence:?}");
-    assert!(!evidence.redacted);
-    assert_eq!(evidence.input_tree_digest, manifest.content_digest());
-    let before = read_manifest(&cas, &evidence.input_manifest_id).unwrap();
-    // An experiment receipt retains its exact Manifest, not a reusable source Snapshot or
-    // its edited file blobs. The implementer's candidate below must be fully readable.
-    let after: Manifest = serde_json::from_value(
-        cas.get_json(evidence.final_manifest_id.as_ref().unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    after.validate().unwrap();
-    assert_eq!(before, manifest);
-    assert_ne!(before.get(source_file), after.get(source_file));
-    let mut edited = std::fs::read(examples.join(source_file)).unwrap();
-    edited.extend_from_slice(format!("{addition}\n").as_bytes());
-    assert_eq!(
-        after.get(source_file).unwrap().content,
-        review_source_git::digest_bytes(&edited)
-    );
-    assert_eq!(Some(after.content_digest()), evidence.final_tree_digest);
-    let stderr = String::from_utf8(cas.get(&evidence.stderr_id).unwrap()).unwrap();
-    if language == "rust" {
-        assert_eq!(stderr.matches("2 passed").count(), 2, "{stderr}");
-        assert_eq!(stderr.matches("running 2 tests").count(), 2, "{stderr}");
-    } else {
-        assert!(stderr.contains("Ran 1 test"), "{stderr}");
-        assert!(stderr.contains("OK"), "{stderr}");
-    }
-    let returned = cas
-        .get(evidence.returned_output_id.as_ref().unwrap())
-        .unwrap();
-    assert_eq!(returned, cas.get(&evidence.stdout_id).unwrap());
-    let reply: serde_json::Value = serde_json::from_slice(&returned).unwrap();
-    let outputs = &projection.outputs["root.nodes.write"].1.outputs;
-    assert_eq!(
-        cas.get_artifact(&outputs["report"].artifact_ids[0])
-            .unwrap()
-            .payload,
-        reply["outputs"]["report"][0]
-    );
-    if role == "implement" {
-        let candidate: review_source_git::task::CandidateTree = serde_json::from_value(
-            cas.get_artifact(&outputs["candidate"].artifact_ids[0])
+    if continuation {
+        assert_eq!(
+            attempts.len(),
+            3,
+            "producer, resumed Worker and old-source control"
+        );
+        let produced = &projection.outputs["root.nodes.write"].1.outputs;
+        let resumed = &projection.outputs["root.nodes.resume"].1.outputs;
+        let sealed = &projection.outputs["root.nodes.seal"].1.outputs["snapshot"];
+        let output_snapshot = sealed.snapshot_id.as_ref().unwrap();
+        assert_ne!(output_snapshot, &snapshot);
+        let envelope = cas
+            .get_artifact(&produced["cache_out"].artifact_ids[0])
+            .unwrap();
+        let cache: review_core::BuildCacheV2 = serde_json::from_value(envelope.payload).unwrap();
+        assert_eq!(
+            cache.head_snapshot_id, snapshot,
+            "original input provenance"
+        );
+        assert_eq!(
+            envelope.subject_snapshot_id.as_ref(),
+            Some(output_snapshot),
+            "admitted output binding"
+        );
+        let provenance = cache.worker.unwrap();
+        assert_eq!(provenance.input_tree_digest, manifest.content_digest());
+        let (_, after) = review_source_git::task::read_snapshot(&cas, output_snapshot).unwrap();
+        assert_eq!(provenance.output_tree_digest, after.content_digest());
+        assert_ne!(provenance.input_tree_digest, provenance.output_tree_digest);
+        let resumed_cache: review_core::BuildCacheV2 = serde_json::from_value(
+            cas.get_artifact(&resumed["cache_out"].artifact_ids[0])
                 .unwrap()
                 .payload,
         )
         .unwrap();
-        assert_eq!(read_manifest(&cas, &candidate.manifest_id).unwrap(), after);
-    } else {
-        assert!(!outputs.contains_key("candidate"));
+        let checkpoint = read_manifest(&cas, &resumed_cache.manifest_id).unwrap();
         assert_eq!(
-            read_manifest(
-                &cas,
-                &review_source_git::task::read_snapshot(&cas, &snapshot)
-                    .unwrap()
-                    .0
-                    .manifest_id
-            )
-            .unwrap(),
-            manifest
+            cas.get(&checkpoint.get("step").unwrap().content).unwrap(),
+            b"admitted step 77"
         );
+        assert_eq!(
+            resumed_cache.manifest_id, cache.manifest_id,
+            "restored bytes remain immutable"
+        );
+        assert_eq!(
+            cas.get_artifact(&resumed["report"].artifact_ids[0])
+                .unwrap()
+                .payload["summary"],
+            "restored admitted step 77"
+        );
+        let next = &projection.invocations["root.nodes.resume"].1;
+        assert_eq!(next.inputs["source"], *sealed);
+        assert_eq!(next.inputs["cache_in"], produced["cache_out"]);
+        for (node, selected) in [
+            ("root.nodes.resume", true),
+            ("root.nodes.old_source", false),
+        ] {
+            let invocation = &projection.invocations[node].1;
+            let warm: review_core::WarmSetV3 = serde_json::from_value(
+                cas.get_artifact(&invocation.inputs["development_warm"].artifact_ids[0])
+                    .unwrap()
+                    .payload,
+            )
+            .unwrap();
+            if selected {
+                assert!(matches!(&warm.development["checkpoint"],
+                    DevelopmentCacheSelectionRecordV1::Selected { artifact_id, compatibility_id, .. }
+                    if artifact_id == &produced["cache_out"].artifact_ids[0]
+                        && compatibility_id == &provenance.compatibility_id));
+            } else {
+                assert!(matches!(
+                    warm.development["checkpoint"],
+                    DevelopmentCacheSelectionRecordV1::Omitted {
+                        reason: DevelopmentCacheMissV1::Incompatible,
+                        ..
+                    }
+                ));
+            }
+        }
+    }
+    if !continuation {
+        assert_eq!(attempts.len(), 1);
+        let attempt = &attempts[0];
+        let receipts: Vec<WorkerCommandEvidenceV1> = attempt
+            .raw_artifact_ids
+            .iter()
+            .filter_map(|id| cas.get_json(id).ok())
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        assert_eq!(receipts.len(), 2, "tool probe and actual harness");
+        let evidence = receipts
+            .iter()
+            .find(|r| r.purpose == WorkerCommandPurposeV1::Harness)
+            .unwrap();
+        evidence.validate().unwrap();
+        assert_eq!(evidence.attempt_id, attempt.attempt_id);
+        assert_eq!(Some(&evidence.context_id), attempt.context_id.as_ref());
+        assert_eq!(evidence.source_snapshot_id, snapshot);
+        assert_eq!(evidence.binding_id, binding_identity);
+        assert_eq!(evidence.experiment, role == "review");
+        assert_eq!(evidence.command, ["/bin/sh", "/af/package/harness.sh"]);
+        assert_eq!(evidence.cwd, "/work");
+        assert_eq!(evidence.exit_code, Some(0));
+        assert!(evidence.failure.is_none(), "{evidence:?}");
+        assert!(!evidence.redacted);
+        assert_eq!(evidence.input_tree_digest, manifest.content_digest());
+        let before = read_manifest(&cas, &evidence.input_manifest_id).unwrap();
+        // An experiment receipt retains its exact Manifest, not a reusable source Snapshot or
+        // its edited file blobs. The implementer's candidate below must be fully readable.
+        let after: Manifest = serde_json::from_value(
+            cas.get_json(evidence.final_manifest_id.as_ref().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        after.validate().unwrap();
+        assert_eq!(before, manifest);
+        assert_ne!(before.get(source_file), after.get(source_file));
+        let mut edited = std::fs::read(examples.join(source_file)).unwrap();
+        edited.extend_from_slice(format!("{addition}\n").as_bytes());
+        assert_eq!(
+            after.get(source_file).unwrap().content,
+            review_source_git::digest_bytes(&edited)
+        );
+        assert_eq!(Some(after.content_digest()), evidence.final_tree_digest);
+        let stderr = String::from_utf8(cas.get(&evidence.stderr_id).unwrap()).unwrap();
+        if language == "rust" {
+            assert_eq!(stderr.matches("2 passed").count(), 2, "{stderr}");
+            assert_eq!(stderr.matches("running 2 tests").count(), 2, "{stderr}");
+        } else {
+            assert!(stderr.contains("Ran 1 test"), "{stderr}");
+            assert!(stderr.contains("OK"), "{stderr}");
+        }
+        let returned = cas
+            .get(evidence.returned_output_id.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(returned, cas.get(&evidence.stdout_id).unwrap());
+        let reply: serde_json::Value = serde_json::from_slice(&returned).unwrap();
+        let outputs = &projection.outputs["root.nodes.write"].1.outputs;
+        assert_eq!(
+            cas.get_artifact(&outputs["report"].artifact_ids[0])
+                .unwrap()
+                .payload,
+            reply["outputs"]["report"][0]
+        );
+        if role == "implement" {
+            let candidate: review_source_git::task::CandidateTree = serde_json::from_value(
+                cas.get_artifact(&outputs["candidate"].artifact_ids[0])
+                    .unwrap()
+                    .payload,
+            )
+            .unwrap();
+            assert_eq!(read_manifest(&cas, &candidate.manifest_id).unwrap(), after);
+        } else {
+            assert!(!outputs.contains_key("candidate"));
+            assert_eq!(
+                read_manifest(
+                    &cas,
+                    &review_source_git::task::read_snapshot(&cas, &snapshot)
+                        .unwrap()
+                        .0
+                        .manifest_id
+                )
+                .unwrap(),
+                manifest
+            );
+        }
     }
     // Replay after reopening the Store cannot turn private reviewer experiments into source.
     store.release_task_lease(&cas, &lease).unwrap();
@@ -558,8 +812,7 @@ fn run_task(private: &Path, binding: &WorkerDevelopmentBindingV3, language: &str
         .unwrap();
     let runtime = TaskRuntime::new(&mut store, &cas, lease, &authority, &host).unwrap();
     assert!(runtime.execute().unwrap().complete());
-    assert_eq!(
-        runtime.projection().unwrap().execution.unwrap().outputs,
-        projection.outputs
-    );
+    let replay = runtime.projection().unwrap().execution.unwrap();
+    assert_eq!(replay.outputs, projection.outputs);
+    assert_eq!(replay.invocations, projection.invocations);
 }

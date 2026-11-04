@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pipeline-definition:4",
+  "description": "Package-defined structural acceptance: one Worker and the installed data-only acceptance operator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "version",
+    "contract",
+    "accepts",
+    "slots",
+    "nodes",
+    "outputs",
+    "coverage",
+    "max_attempts",
+    "max_parallel"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.pipeline/4"
+    },
+    "name": {
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+    },
+    "version": {
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/text"
+    },
+    "contract": {
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/contractV3"
+    },
+    "accepts": {
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/applicability"
+    },
+    "slots": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/slotV3"
+      },
+      "minProperties": 0
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "operator",
+          "inputs"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          },
+          "operator": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "op"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "structured_accept"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "op",
+                  "slot"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "worker"
+                  },
+                  "slot": {
+                    "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+                  }
+                }
+              }
+            ]
+          },
+          "inputs": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+            },
+            "additionalProperties": {
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/valueRef"
+            },
+            "minProperties": 0
+          },
+          "when": {
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/condition"
+          }
+        }
+      },
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 64,
+      "contains": {
+        "properties": {
+          "operator": {
+            "properties": {
+              "op": {
+                "const": "structured_accept"
+              }
+            }
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/valueRef"
+      },
+      "minProperties": 1
+    },
+    "coverage": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/valueRef"
+      },
+      "minProperties": 0
+    },
+    "max_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "max_parallel": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    }
+  }
+}

@@ -1,0 +1,58 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling serde v1.0.229
+   Compiling equivalent v1.0.2
+   Compiling memchr v2.8.3
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling itoa v1.0.18
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcsob7hr"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustc4GqzfO"
+
+error: could not compile `cfg-if` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `equivalent` (lib) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcMHQSHG"
+
+error: could not compile `unicode-ident` (lib) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustc6tMvXE"
+
+error: could not compile `foldhash` (lib) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcdvBlsj"
+
+error: could not compile `serde_core` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcVjM9CG"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcAYu1hM"
+
+error: could not compile `serde_json` (build script) due to 1 previous error
+error: could not compile `proc-macro2` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcA8bpJw"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustc5rTc6y"
+
+error: could not compile `zmij` (build script) due to 1 previous error
+error: could not compile `serde` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcPsPpLd"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcf2955b"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustceNfEMH"
+
+error: could not compile `libc` (build script) due to 1 previous error
+error: could not compile `itoa` (lib) due to 1 previous error
+error: could not compile `quote` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcKljVxS"
+
+error: could not compile `allocator-api2` (lib) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcqaU5WD"
+
+error: could not compile `memchr` (lib) due to 1 previous error
+error: command `/Users/apakhomov/.rustup/toolchains/1.88.0-aarch64-apple-darwin/bin/cargo test --no-run --message-format json-render-diagnostics --workspace --locked` exited with code 101
