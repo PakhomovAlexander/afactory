@@ -21,13 +21,10 @@ where
     Ok(set)
 }
 
-/// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/3`
-/// is the shape with a slot that declares `recovery_attempts` (ADR-0209), whether or not its
-/// contract also declares a Project Brief port; `af.pipeline/2` is the shape whose contract
-/// declares a Project Brief port and whose slots declare no recovery allowance (ADR-0160); and
-/// every other pipeline is `af.pipeline/1`, which declares neither. So no pipeline has two
-/// spellings, and a pipeline that carries what its version does not have is refused rather
-/// than read.
+/// The unique version of a Pipeline's shape. Structured acceptance is `af.pipeline/4`.
+/// Other Pipelines use `/3` when a slot declares `recovery_attempts` (ADR-0209), `/2`
+/// when they declare a Project Brief without that allowance (ADR-0160), and `/1` otherwise.
+/// A shape labelled with an earlier or unrelated version is refused rather than read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PipelineSchema {
     #[serde(rename = "af.pipeline/1")]
@@ -36,6 +33,8 @@ pub enum PipelineSchema {
     V2,
     #[serde(rename = "af.pipeline/3")]
     V3,
+    #[serde(rename = "af.pipeline/4")]
+    V4,
 }
 
 /// How many abandoned Attempts a node recovers from when its slot declares no
@@ -258,6 +257,8 @@ pub enum TaskOperatorV1 {
     DocumentSeal {},
     DocumentCheck {},
     DocumentAccept {},
+    /// Installed package-defined structural acceptance, without semantic verification.
+    StructuredAccept {},
     /// The report profile's renderer: the Document renderer over a report draft, bound to the
     /// exact source Snapshot the draft was written against.
     ReportSeal {},
@@ -405,6 +406,23 @@ impl PipelineDefinitionV1 {
     /// port is `af.pipeline/2`'s and `af.pipeline/3`'s, and each version is the shape of a
     /// pipeline that declares what it adds.
     fn validate_version(&self) -> Result<(), String> {
+        let structured = self
+            .nodes
+            .iter()
+            .any(|n| matches!(n.operator, TaskOperatorV1::StructuredAccept {}));
+        if structured || self.schema == PipelineSchema::V4 {
+            return require(
+                structured
+                    && self.schema == PipelineSchema::V4
+                    && self.nodes.iter().all(|n| {
+                        matches!(
+                            n.operator,
+                            TaskOperatorV1::Worker { .. } | TaskOperatorV1::StructuredAccept {}
+                        )
+                    }),
+                "Structured acceptance requires af.pipeline/4; af.pipeline/4 requires structured acceptance",
+            );
+        }
         let briefed = self
             .contract
             .inputs

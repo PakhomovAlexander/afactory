@@ -1,0 +1,457 @@
+{
+  "schema": "af.structured-contract/1",
+  "require_container": false,
+  "inputs": {
+    "issue": {
+      "artifact_type": "custom/Issue@1",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "repository",
+          "number",
+          "title",
+          "body",
+          "labels",
+          "comments",
+          "captured_identity",
+          "evidence",
+          "knowledge"
+        ],
+        "properties": {
+          "schema": {
+            "const": "custom.issue/1"
+          },
+          "repository": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "labels": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "comments": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "body",
+                "truncated",
+                "original_sha256"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "body": {
+                  "type": "string",
+                  "maxLength": 2048
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "original_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          },
+          "captured_identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision",
+              "captured_at",
+              "body_sha256"
+            ],
+            "properties": {
+              "revision": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "captured_at": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "body_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "citation",
+                "text"
+              ],
+              "properties": {
+                "citation": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 2048
+                }
+              }
+            }
+          },
+          "knowledge": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "as_of",
+              "freshness",
+              "entries"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "absent",
+                  "captured"
+                ]
+              },
+              "as_of": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "freshness": {
+                "enum": [
+                  "unknown",
+                  "stale",
+                  "current"
+                ]
+              },
+              "entries": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "citation",
+                    "revision",
+                    "text"
+                  ],
+                  "properties": {
+                    "citation": {
+                      "type": "string",
+                      "maxLength": 512
+                    },
+                    "revision": {
+                      "type": "string",
+                      "maxLength": 128
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 2048
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputs": {
+    "triage": {
+      "artifact_type": "custom/IssueTriage@2",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "source_artifact_ids",
+          "class",
+          "size",
+          "pipeline",
+          "confidence",
+          "rationale",
+          "needs_info",
+          "disposition",
+          "source_identity",
+          "adr"
+        ],
+        "properties": {
+          "schema": {
+            "const": "custom.issue-triage/2"
+          },
+          "source_artifact_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "class": {
+            "enum": [
+              null,
+              "bug",
+              "perf",
+              "feature",
+              "aix",
+              "uix",
+              "sdlc",
+              "security",
+              "docs",
+              "research",
+              "decision"
+            ]
+          },
+          "size": {
+            "enum": [
+              null,
+              "S",
+              "M",
+              "L",
+              "XL"
+            ]
+          },
+          "pipeline": {
+            "enum": [
+              null,
+              "light",
+              "default",
+              "design",
+              "hand"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "rationale": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "needs_info": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "disposition": {
+            "enum": [
+              "proposed",
+              "needs_info",
+              "held"
+            ]
+          },
+          "source_identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision",
+              "captured_at",
+              "body_sha256"
+            ],
+            "properties": {
+              "revision": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "captured_at": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "body_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          },
+          "adr": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 512
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "disposition": {
+                  "const": "proposed"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "not": {
+                    "const": "security"
+                  }
+                },
+                "size": {
+                  "type": "string"
+                },
+                "pipeline": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "minimum": 0.6
+                },
+                "needs_info": {
+                  "maxItems": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "disposition": {
+                  "const": "needs_info"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "class": {
+                  "type": "null"
+                },
+                "size": {
+                  "type": "null"
+                },
+                "pipeline": {
+                  "type": "null"
+                },
+                "needs_info": {
+                  "minItems": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "disposition": {
+                  "const": "held"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "size": {
+                  "type": "null"
+                },
+                "pipeline": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "class": {
+                  "const": "security"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "disposition": {
+                  "const": "held"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "size": {
+                  "const": "S"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "pipeline": {
+                  "const": "light"
+                },
+                "adr": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "size": {
+                  "const": "M"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "pipeline": {
+                  "const": "default"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "size": {
+                  "enum": [
+                    "L",
+                    "XL"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "pipeline": {
+                  "const": "design"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

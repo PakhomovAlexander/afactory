@@ -70,7 +70,8 @@ pub(super) fn require_judging_domain(
         TaskKindProfile::Implementation
         | TaskKindProfile::ReviewedImplementation
         | TaskKindProfile::RepairAllowedImplementation => Ok(()),
-        TaskKindProfile::Review
+        TaskKindProfile::Structured
+        | TaskKindProfile::Review
         | TaskKindProfile::Document
         | TaskKindProfile::Report
         | TaskKindProfile::OptimizationAnalysis

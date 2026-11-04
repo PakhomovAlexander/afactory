@@ -213,3 +213,8 @@ on restart; later eligible days may launch normally. Historical due-time modes a
 occurrences keep their original skipped outcomes.
 Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.
+
+A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
+of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
+uses the same pinned Task projection as every other kind, without report or evaluator nodes,
+dynamic Task creation or publication authority.
