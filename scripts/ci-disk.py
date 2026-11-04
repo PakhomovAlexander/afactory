@@ -22,6 +22,7 @@ UNUSED_SDKS = (
     Path('/usr/share/dotnet'),
     Path('/usr/local/.ghcup'),
     Path('/opt/ghc'),
+    Path('/usr/share/swift'),
 )
 
 

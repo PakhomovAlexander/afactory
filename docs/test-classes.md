@@ -64,7 +64,7 @@ Exclusivity is orthogonal: `.config/nextest.toml` remains authoritative. Its rea
 all threads and their original deadlines within their class job. Classes use separate runner jobs.
 Before Rust toolchain installation and cache restoration, the hosted Ubuntu Linux `base`,
 `classes` and `container-probes` jobs run `scripts/ci-disk.py`. It removes only fixed preinstalled
-Android, .NET and Haskell SDK directories, refuses symlinks and overlap with checkout, user state,
+Android, .NET, Haskell and Swift SDK directories, refuses symlinks and overlap with checkout, user state,
 runner temporary files or tool caches, and prints filesystem capacity before and after cleanup.
 Each of the root, workspace and runner temporary filesystems must then have at least 40 GiB free:
 30 GiB of build/test headroom plus the unchanged production 10 GiB free-disk floor. Missing SDKs
@@ -74,8 +74,12 @@ local gates, macOS and self-hosted runners never clean SDKs. Linux class tests s
 `RUNNER_TEMP` as `TMPDIR`; test selection, concurrency and resource admission are unchanged.
 The fixed SDK roots follow the runner image's
 [Android installation](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md#android),
-[.NET installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-dotnetcore-sdk.sh)
-and [Haskell installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-haskell.sh).
+[.NET installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-dotnetcore-sdk.sh),
+[Haskell installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-haskell.sh)
+and [Swift installer](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-swift.sh).
+Swift's `/usr/share/swift` payload supplies additional headroom on images where the other SDKs
+leave less than 40 GiB free. This repository's Rust/Python build and validation do not use Swift;
+only that fixed payload directory is eligible, never its shared `/usr/share` parent or tool caches.
 
 The full union includes the former preflight Python checks, performance schemas and harness digest,
 ordinary Rust suite and feature-on perf checks. The lab runs once per selected platform on latest

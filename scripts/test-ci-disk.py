@@ -30,7 +30,7 @@ class CiDisk(unittest.TestCase):
             path.mkdir()
             (path / 'keep').write_text('protected')
             self.env[name] = str(path)
-        self.sdks = (self.root / 'android', self.root / 'dotnet')
+        self.sdks = (self.root / 'android', self.root / 'dotnet', self.root / 'swift')
         for path in self.sdks:
             path.mkdir()
             (path / 'payload').write_text('SDK')
@@ -47,7 +47,8 @@ class CiDisk(unittest.TestCase):
 
     def test_only_fixed_unused_sdk_payloads_are_eligible(self):
         self.assertEqual(tuple(map(str, disk.UNUSED_SDKS)), (
-            '/usr/local/lib/android', '/usr/share/dotnet', '/usr/local/.ghcup', '/opt/ghc'))
+            '/usr/local/lib/android', '/usr/share/dotnet', '/usr/local/.ghcup', '/opt/ghc',
+            '/usr/share/swift'))
 
     def test_local_mac_self_hosted_and_unknown_images_never_dispatch_commands(self):
         # Run the actual entrypoint: even a fake sudo must never be reached.
