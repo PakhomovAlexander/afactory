@@ -1,9 +1,10 @@
 {
-  "schema": "af/scenario-bundle@1",
+  "schema": "af/scenario-bundle@3",
   "root": "triage",
   "definitions": {
     "triage": {
-      "schema": "af/scenario@1",
+      "schema": "af/scenario@3",
+      "admission": null,
       "inputs": {},
       "outputs": {
         "triage": "text",
@@ -107,6 +108,7 @@
         "task_plans": [
           "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         ],
+        "task_templates": [],
         "grants": [],
         "decision_owners": []
       },

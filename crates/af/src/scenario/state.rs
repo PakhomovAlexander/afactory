@@ -90,7 +90,23 @@ pub(super) struct Frame {
 pub(super) struct TaskCharge {
     pub maximum: u64,
     pub charged: Option<u64>,
+    pub unknown_usage: bool,
     pub step: String,
+}
+impl TaskCharge {
+    pub fn reserved(&self) -> u64 {
+        if self.unknown_usage || self.charged.is_none() {
+            self.maximum.saturating_sub(self.charged.unwrap_or(0))
+        } else {
+            0
+        }
+    }
+    pub fn committed(&self) -> u64 {
+        self.charged.unwrap_or(0).saturating_add(self.reserved())
+    }
+    pub fn uncertain(&self) -> bool {
+        self.charged.is_none() || self.unknown_usage
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,6 +147,8 @@ pub(super) struct Run {
     pub failure: Option<String>,
     pub cancellation: Option<Cancellation>,
     pub ant: Option<String>,
+    pub goal_claim: Option<super::roadmap::Claim>,
+    pub fresh_tasks: BTreeMap<String, TaskTarget>,
 }
 #[derive(Debug, Clone)]
 pub(super) struct Dispatch {
@@ -140,6 +158,7 @@ pub(super) struct Dispatch {
     pub inputs: BTreeMap<String, Datum>,
     pub intent: Intent,
     pub timeout_ms: u64,
+    pub target: Option<TaskTarget>,
 }
 impl Run {
     pub fn new(
@@ -176,7 +195,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@1".into(),
+            schema: "af/scenario-run@3".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -191,22 +210,45 @@ impl Run {
             failure: None,
             cancellation: None,
             ant,
+            goal_claim: None,
+            fresh_tasks: BTreeMap::new(),
         })
     }
     pub fn tokens(&self) -> Result<u64> {
         self.task_charges.values().try_fold(0_u64, |n, c| {
-            n.checked_add(c.charged.unwrap_or(c.maximum))
+            n.checked_add(c.committed())
                 .ok_or_else(|| "Scenario accounting overflow".into())
         })
     }
+    pub fn token_allowance(&self) -> u64 {
+        self.goal_claim
+            .as_ref()
+            .map_or(self.limits.max_tokens, |c| c.allowance)
+    }
+    pub fn accounted_tokens(&self) -> Result<u64> {
+        let used = self.tokens()?;
+        Ok(
+            if self.goal_claim.is_some() && self.task_charges.values().any(TaskCharge::uncertain) {
+                used.max(self.token_allowance())
+            } else {
+                used
+            },
+        )
+    }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@1" && review_core::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@3" && review_core::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;
         self.pin.validate()?;
         self.limits.validate()?;
+        require(
+            self.goal_claim
+                .as_ref()
+                .is_none_or(|c| c.allowance > 0 && c.allowance <= self.limits.max_tokens),
+            "Goal claim widens per-run budget",
+        )?;
         require(
             self.limits
                 .within(&self.pin.bundle.definitions[&self.pin.bundle.root].limits)
@@ -218,7 +260,7 @@ impl Run {
                     .checked_add(self.limits.max_wall_ms)
                     .is_some_and(|n| n <= review_core::json::SAFE_INTEGER_MAX as u64)
                 && self.dispatches <= self.limits.max_dispatches
-                && (self.tokens()? <= self.limits.max_tokens
+                && (self.tokens()? <= self.token_allowance()
                     || matches!(self.status, Status::Failed | Status::Cancelled)),
             "Corrupt Run limits, time or accounting",
         )?;
@@ -262,7 +304,10 @@ impl Run {
                     self.pin.bundle.definitions[&frame.scenario]
                         .steps
                         .iter()
-                        .any(|s| s.id == step && matches!(s.operation, Kind::Task { .. })),
+                        .any(|s| {
+                            s.id == step
+                                && matches!(s.operation, Kind::Task { .. } | Kind::FreshTask { .. })
+                        }),
                     "Cancellation targets a non-Task step",
                 )?;
             }
@@ -384,6 +429,29 @@ impl Run {
                 }
             }
         }
+        for (intent_id, target) in &self.fresh_tasks {
+            let mut found = false;
+            for frame in self.frames.values() {
+                let def = &self.pin.bundle.definitions[&frame.scenario];
+                for (p, step) in frame.steps.iter().zip(&def.steps) {
+                    if p.intents.iter().any(|i| &i.id == intent_id)
+                        && let Kind::FreshTask { template, .. } = &step.operation
+                    {
+                        require(
+                            target.task_id == super::template::task_id(intent_id)
+                                && target.repo == template.repo
+                                && target.state == template.state
+                                && target.max_tokens == template.max_tokens
+                                && review_core::is_digest(&target.plan_id)
+                                && review_core::is_digest(&target.revision_id),
+                            "Fresh Task plan widens recorded template",
+                        )?;
+                        found = true;
+                    }
+                }
+            }
+            require(found, "Fresh Task plan has no durable intent")?;
+        }
         for (key, charge) in &self.task_charges {
             require(
                 paths.contains(&charge.step)
@@ -400,14 +468,28 @@ impl Run {
                 .iter()
                 .find(|s| s.id == step_id)
                 .ok_or("Unknown charge step")?;
-            let Kind::Task { target } = &step.operation else {
-                return Err("Charge belongs to a non-Task step".into());
-            };
-            require(
-                *key == hash(&(target.state.clone(), &target.task_id, &target.revision_id))?
-                    && charge.maximum == target.max_tokens,
-                "Task charge identity differs",
-            )?;
+            match &step.operation {
+                Kind::Task { target } => require(
+                    *key == hash(&(&target.state, &target.task_id, &target.revision_id))?
+                        && charge.maximum == target.max_tokens,
+                    "Task charge identity differs",
+                )?,
+                Kind::FreshTask { template, .. } => {
+                    let progress = frame
+                        .steps
+                        .iter()
+                        .find(|p| p.step == step.id)
+                        .ok_or("Missing fresh Task progress")?;
+                    require(
+                        progress.intents.iter().any(|i| {
+                            hash(&(&template.state, super::template::task_id(&i.id))).as_ref()
+                                == Ok(key)
+                        }) && charge.maximum == template.max_tokens,
+                        "Fresh Task reservation identity differs",
+                    )?;
+                }
+                _ => return Err("Charge belongs to a non-Task step".into()),
+            }
         }
         require(
             self.status != Status::Succeeded || self.frames["root"].outputs.is_some(),
@@ -491,7 +573,9 @@ impl Run {
                     "Completed decision lacks matching approval",
                 )
             }
-            Kind::Task { target } => {
+            Kind::FreshTask { .. } | Kind::Task { .. } => {
+                let target = super::template::targets(self, p, step)
+                    .ok_or("Completed fresh Task lacks its recorded native plan")?;
                 let Some(Datum::Task(receipt)) = p.outputs.get("result") else {
                     return Err("Task completion has no typed receipt".into());
                 };
@@ -843,13 +927,18 @@ impl Run {
             if let Kind::Task { target } = &step.operation {
                 self.reserve_task(&full, target)?;
             }
+            let intent_id = hash(&(
+                &self.execution_id,
+                &self.pin.revision,
+                &full,
+                intents.len() + 1,
+            ))?;
+            if let Kind::FreshTask { template, .. } = &step.operation {
+                let key = hash(&(&template.state, super::template::task_id(&intent_id)))?;
+                self.reserve_charge(&full, key, template.max_tokens)?;
+            }
             intents.push(Intent {
-                id: hash(&(
-                    &self.execution_id,
-                    &self.pin.revision,
-                    &full,
-                    intents.len() + 1,
-                ))?,
+                id: intent_id,
                 input_digest: input_digest.clone(),
                 phase: Phase::Prepared,
                 evidence: Vec::new(),
@@ -885,6 +974,7 @@ impl Run {
             inputs,
             intent,
             timeout_ms: deadline - now,
+            target: None,
         }))
     }
     fn reserve_dispatch(&mut self, path: &str) -> Result<()> {
@@ -913,11 +1003,14 @@ impl Run {
     }
     fn reserve_task(&mut self, path: &str, target: &TaskTarget) -> Result<()> {
         let key = hash(&(target.state.clone(), &target.task_id, &target.revision_id))?;
+        self.reserve_charge(path, key, target.max_tokens)
+    }
+    fn reserve_charge(&mut self, path: &str, key: String, maximum: u64) -> Result<()> {
         if !self.task_charges.contains_key(&key) {
             require(
                 self.tokens()?
-                    .checked_add(target.max_tokens)
-                    .is_some_and(|n| n <= self.limits.max_tokens),
+                    .checked_add(maximum)
+                    .is_some_and(|n| n <= self.token_allowance()),
                 "Scenario token allowance exhausted",
             )?;
             // Check every containing Scenario's own allowance; root accounting is shared once.
@@ -928,11 +1021,11 @@ impl Run {
                         .values()
                         .filter(|c| c.step.starts_with(&format!("{frame_path}/")))
                         .try_fold(0_u64, |n, c| {
-                            n.checked_add(c.charged.unwrap_or(c.maximum))
+                            n.checked_add(c.committed())
                                 .ok_or("Child accounting overflow")
                         })?;
                     require(
-                        used.checked_add(target.max_tokens).is_some_and(|n| {
+                        used.checked_add(maximum).is_some_and(|n| {
                             n <= self.pin.bundle.definitions[&frame.scenario]
                                 .limits
                                 .max_tokens
@@ -944,8 +1037,9 @@ impl Run {
             self.task_charges.insert(
                 key,
                 TaskCharge {
-                    maximum: target.max_tokens,
+                    maximum,
                     charged: None,
+                    unknown_usage: false,
                     step: path.into(),
                 },
             );

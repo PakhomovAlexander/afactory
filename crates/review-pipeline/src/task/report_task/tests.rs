@@ -1139,3 +1139,34 @@ fn a_refused_draft_keeps_its_validation_receipt_and_the_author_reads_the_policy(
     };
     assert_eq!(domain.worker_instructions(&cas, &seal).unwrap(), None);
 }
+
+#[test]
+fn accepted_research_document_is_a_narrow_optional_report_worker_input() {
+    let mut author = PipelineContractV1 {
+        inputs: BTreeMap::from([
+            ("requirements".into(), port("af/Requirements@1", false)),
+            ("source".into(), port(SOURCE_TREE_V1, false)),
+            ("research_report".into(), port(DOCUMENT_V1, true)),
+        ]),
+        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+    };
+    assert!(author_contract(&author));
+    let mut verifier = author.clone();
+    verifier
+        .inputs
+        .insert("document".into(), same_source(DOCUMENT_V1, false));
+    verifier
+        .inputs
+        .insert("checks".into(), same_source(REPORT_CHECK_RECEIPT_V1, false));
+    verifier.outputs =
+        BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]);
+    assert!(verifier_contract(&verifier));
+    author
+        .inputs
+        .insert("research_report".into(), port(REPORT_SOURCES_V1, true));
+    verifier
+        .inputs
+        .insert("research_report".into(), port(REPORT_SOURCES_V1, true));
+    assert!(!author_contract(&author));
+    assert!(!verifier_contract(&verifier));
+}

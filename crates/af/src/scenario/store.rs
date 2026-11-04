@@ -16,19 +16,52 @@ pub(super) struct World {
     pub writer_version: String,
     pub runs: BTreeMap<String, Run>,
     pub ants: BTreeMap<String, AntState>,
+    pub roadmaps: BTreeMap<String, super::roadmap::Roadmap>,
 }
 impl World {
     fn empty() -> Self {
         Self {
-            schema: "af/scenario-store@1".into(),
+            schema: "af/scenario-store@4".into(),
             writer_version: env!("CARGO_PKG_VERSION").into(),
             runs: BTreeMap::new(),
             ants: BTreeMap::new(),
+            roadmaps: BTreeMap::new(),
         }
+    }
+    pub fn reconcile(&mut self) -> Result<()> {
+        for roadmap in self.roadmaps.values_mut() {
+            roadmap.reconcile(&self.runs)?;
+        }
+        Ok(())
+    }
+    pub fn admit_run(&mut self, mut run: Run) -> Result<Run> {
+        require(
+            !self.runs.contains_key(&run.id),
+            "Run ID already exists; inspect or resume it",
+        )?;
+        if let Some(admission) = run.pin.bundle.definitions[&run.pin.bundle.root]
+            .admission
+            .clone()
+        {
+            let roadmap = self
+                .roadmaps
+                .get_mut(&admission.roadmap)
+                .ok_or("Roadmap not found")?;
+            if let Some(claim) = roadmap.admit(&run)? {
+                run.goal_claim = Some(claim);
+            } else {
+                run.fail(
+                    "No eligible complete goal fits all roadmap budgets; inspect deferred reasons"
+                        .into(),
+                );
+            }
+        }
+        self.runs.insert(run.id.clone(), run.clone());
+        Ok(run)
     }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-store@1"
+            self.schema == "af/scenario-store@4"
                 && self.writer_version == env!("CARGO_PKG_VERSION"),
             "Scenario Store was written by another release or version",
         )?;
@@ -40,6 +73,49 @@ impl World {
             )?;
             require(*id == run.id, "Run key differs")?;
             run.validate()?;
+            if run.pin.bundle.definitions[&run.pin.bundle.root]
+                .admission
+                .is_some()
+                && run.goal_claim.is_none()
+            {
+                require(
+                    run.status == super::state::Status::Failed
+                        && run.dispatches == 0
+                        && run.task_charges.is_empty(),
+                    "Roadmap Run dispatched without a complete-loop claim",
+                )?;
+            }
+            if let Some(claim) = &run.goal_claim {
+                require(
+                    claim.run_id == run.id
+                        && claim.execution_id == run.execution_id
+                        && claim.started_unix_ms == run.created_unix_ms
+                        && claim.settled_unix_ms.is_none(),
+                    "Run claim identity changed",
+                )?;
+                let admission = run.pin.bundle.definitions[&run.pin.bundle.root]
+                    .admission
+                    .as_ref()
+                    .ok_or("Goal claim without admission")?;
+                let roadmap = self
+                    .roadmaps
+                    .get(&admission.roadmap)
+                    .ok_or("Goal claim without roadmap")?;
+                let native = roadmap
+                    .progress
+                    .get(&claim.goal_id)
+                    .and_then(|p| p.claim.as_ref())
+                    .ok_or("Run lost its goal claim")?;
+                require(
+                    native.run_id == run.id
+                        && native.execution_id == run.execution_id
+                        && native.revision == claim.revision
+                        && admission.revision == claim.revision
+                        && native.allowance == claim.allowance
+                        && admission.identity == roadmap.identity,
+                    "Run/goal claim identities differ",
+                )?;
+            }
             if let Some(ant_id) = &run.ant {
                 let ant = self.ants.get(ant_id).ok_or("Scheduled Run has no Ant")?;
                 require(ant.occurrences.iter().filter(|o| matches!(&o.outcome,super::schedule::OccurrenceOutcome::Started { run_id,.. } if run_id == id)).count() == 1,"Scheduled Run has no unique occurrence receipt")?;
@@ -48,6 +124,20 @@ impl World {
         for (id, ant) in &self.ants {
             require(*id == ant.pin.definition.id, "Ant key differs")?;
             ant.validate(&self.runs)?;
+        }
+        for (id, roadmap) in &self.roadmaps {
+            require(*id == roadmap.id, "Roadmap key differs")?;
+            require(
+                executions.insert(&roadmap.identity),
+                "Duplicate roadmap identity",
+            )?;
+            roadmap.validate()?;
+            let mut replay = roadmap.clone();
+            replay.reconcile(&self.runs)?;
+            require(
+                replay == *roadmap,
+                "Roadmap progress differs from recorded native Run evidence",
+            )?;
         }
         Ok(())
     }
@@ -159,12 +249,12 @@ impl Store {
                 .open(&marker)
                 .map_err(|e| e.to_string())?;
             use std::io::Write;
-            file.write_all(b"af/scenario-store@1\n")
+            file.write_all(b"af/scenario-store@4\n")
                 .and_then(|()| file.sync_all())
                 .map_err(|e| e.to_string())?;
         }
         require(
-            read(&marker, 128)? == b"af/scenario-store@1\n"
+            read(&marker, 128)? == b"af/scenario-store@4\n"
                 && db.is_file()
                 && path.join("events.sqlite").is_file(),
             "Invalid or incomplete Scenario Store; refusing to recreate lost state",
@@ -214,7 +304,29 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         let mut world = Self::load(&tx)?;
+        let old_roadmaps = world.roadmaps.clone();
+        world.reconcile()?;
         let value = action(&mut world)?;
+        world.reconcile()?;
+        for (id, old) in &old_roadmaps {
+            world
+                .roadmaps
+                .get(id)
+                .ok_or("Roadmap history cannot be deleted")?
+                .validate_revision_of(old)?;
+        }
+        for (id, roadmap) in &world.roadmaps {
+            if !old_roadmaps.contains_key(id) {
+                require(
+                    roadmap.revisions.len() == 1
+                        && roadmap
+                            .progress
+                            .values()
+                            .all(|p| p.state == super::roadmap::GoalState::Pending),
+                    "New roadmap must start pending without history",
+                )?;
+            }
+        }
         world.validate()?;
         let document = serde_json::to_string(&world).map_err(|e| e.to_string())?;
         require(

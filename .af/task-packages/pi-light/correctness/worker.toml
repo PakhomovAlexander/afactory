@@ -1,11 +1,11 @@
 schema = "af.worker/1"
 name = "pi-light/correctness"
-version = "1.0.0"
+version = "1.1.0"
 
 [signature]
 effects = ["read-source"]
 roles = ["review"]
-worker_input_type = "af/ReviewInput@1"
+worker_input_type = "af/ReviewInput@2"
 worker_output_type = "review.kernel/ReviewerResult@2"
 
 [signature.contract.inputs.assignment]

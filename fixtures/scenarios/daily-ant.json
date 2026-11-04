@@ -1,12 +1,12 @@
 {
-  "schema": "af/ant@1",
+  "schema": "af/ant@3",
   "id": "issue-fix-example",
   "scenario": {
-    "schema": "af/scenario-bundle@1",
+    "schema": "af/scenario-bundle@3",
     "root": "issue-fix",
     "definitions": {
       "issue-fix": {
-        "schema": "af/scenario@1",
+        "schema": "af/scenario@3",
         "inputs": {
           "file": "text",
           "content": "text",
@@ -290,16 +290,18 @@
           ],
           "task_plans": [
             "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-          ]
+          ],
+          "task_templates": []
         },
         "limits": {
           "max_tokens": 2000,
           "max_wall_ms": 604800000,
           "max_dispatches": 64
-        }
+        },
+        "admission": null
       },
       "owned-change": {
-        "schema": "af/scenario@1",
+        "schema": "af/scenario@3",
         "inputs": {
           "implementation": "task",
           "file": "text",
@@ -412,13 +414,15 @@
             }
           ],
           "decision_owners": [],
-          "task_plans": []
+          "task_plans": [],
+          "task_templates": []
         },
         "limits": {
           "max_tokens": 2000,
           "max_wall_ms": 604800000,
           "max_dispatches": 64
-        }
+        },
+        "admission": null
       }
     }
   },

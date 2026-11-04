@@ -1,10 +1,15 @@
 //! Scenarios orchestrate Tasks and bounded effects; Ants admit durable daily occurrences.
 mod adapter;
-mod contract;
+#[cfg(test)]
+mod admission_tests;
+pub(crate) mod contract;
+mod roadmap;
 mod runtime;
 mod schedule;
+pub(crate) mod source;
 mod state;
 mod store;
+pub(crate) mod template;
 #[cfg(test)]
 mod tests;
 
@@ -33,12 +38,88 @@ pub(crate) struct Definition {
     /// Versioned Scenario bundle or Ant definition (TOML authoring or JSON wire format)
     #[arg(long)]
     file: PathBuf,
-    /// Owner-only machine policy outside the checkout; grants exact Task plans and adapters
+    /// Owner-only machine policy outside the checkout; grants Task plans, templates and adapters
     #[arg(long)]
     authority: PathBuf,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum ScenarioCommand {
+    /// Retrieve one provenance-checked native findings, History Capture or adoption artifact
+    #[command(
+        override_usage = "af scenario evidence-source <TASK_ID> --artifact-id ID\n                            --repo REPO --task-state STORE [OPTIONS]",
+        after_long_help = "Examples:\n  # needs: a native artifact recorded by the selected Task\n  af scenario evidence-source TASK_ID --artifact-id sha256:... \\\n    --repo /project --task-state /private/tasks --json"
+    )]
+    EvidenceSource {
+        /// Task whose recorded evidence authorizes the selected artifact
+        task_id: String,
+        /// Exact native artifact ID, not a path to an exported JSON file
+        #[arg(long)]
+        artifact_id: String,
+        /// Repository the Task belongs to
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store containing the artifact and source receipts
+        #[arg(long)]
+        task_state: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Capture an accepted Task's exact Snapshots as private benchmark Git objects
+    #[command(
+        long_about = "Write a private experiment source representation from an exact accepted Task receipt. \
+The request binds the Task result and its original source and candidate Snapshots. Native \
+materialization writes their bytes without filters into private Git objects, with deterministic \
+commits and retained Snapshot provenance. The destination must be absent, outside the repository \
+and Task Store. Existing complete captures are verified and reused; incomplete captures refuse. \
+No checkout is changed and nothing is published.",
+        override_usage = "af scenario experiment-source --file FILE --repo REPO\n                              --task-state STORE --into DIR [OPTIONS]",
+        after_long_help = "Examples:\n  # needs: an accepted Task receipt in a versioned source request\n  \
+af scenario experiment-source --file source.json --repo /project \\\n    --task-state /private/tasks --into /private/experiments/source --json"
+    )]
+    ExperimentSource {
+        /// af/scenario-experiment-source-request@1 JSON request with an exact accepted Task receipt
+        #[arg(long)]
+        file: PathBuf,
+        /// Repository the Task belongs to
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store holding the accepted result and source objects
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Absent private capture directory outside the repository and Task Store
+        #[arg(long)]
+        into: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Capture fresh Task bytes, native authority and source identities; launches no Worker
+    #[command(
+        override_usage = "af scenario template-pin --file TASK --repo REPO --task-state STORE\n                         --authority-commit COMMIT [OPTIONS]"
+    )]
+    TemplatePin {
+        /// Native Task file to capture as a fresh Task template (TOML or JSON)
+        #[arg(long)]
+        file: PathBuf,
+        /// Repository whose committed source and Task authority the template pins
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private Task Store directory outside the checkout for instantiated Tasks
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Exact 40-character commit supplying the template's source and Task authority
+        #[arg(long)]
+        authority_commit: String,
+        /// Native slots and Provider bindings; local package paths are refused
+        #[arg(long)]
+        bindings: Option<PathBuf>,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Plan and retain goal-based optimization roadmaps; never dispatch Tasks or activate Ants
+    Roadmap {
+        #[command(subcommand)]
+        command: RoadmapCommand,
+    },
     /// Validate types, transitive definitions, authority and bounds; print the exact pin to review
     Validate {
         #[command(flatten)]
@@ -244,6 +325,73 @@ fn at(inspect: &Inspect) -> Result<u64> {
 }
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
+        ScenarioCommand::ExperimentSource {
+            file,
+            repo,
+            task_state,
+            into,
+            inspect,
+        } => {
+            let request: source::SourceRequest =
+                serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
+                    .map_err(|e| e.to_string())?;
+            request.validate()?;
+            let receipt = crate::task_execution::candidate::experiment_source(
+                &request,
+                &repo,
+                &task_state,
+                &into,
+            )?;
+            if inspect.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?
+                );
+            } else {
+                println!("{}", receipt.repository.display());
+            }
+            Ok(0)
+        }
+        ScenarioCommand::EvidenceSource {
+            task_id,
+            artifact_id,
+            repo,
+            task_state,
+            inspect,
+        } => print(
+            &crate::task_execution::scenario_evidence::read(
+                &repo,
+                &task_state,
+                &task_id,
+                &artifact_id,
+            )?,
+            &inspect,
+        ),
+        ScenarioCommand::TemplatePin {
+            file,
+            repo,
+            task_state,
+            authority_commit,
+            bindings,
+            inspect,
+        } => {
+            let template = crate::task_execution::scenario_template::pin(
+                repo,
+                task_state,
+                authority_commit,
+                store::definition(&file)?,
+                bindings
+                    .as_ref()
+                    .map(|p| store::definition(p))
+                    .transpose()?,
+            )?;
+            let id = template.id()?;
+            print(
+                &serde_json::json!({"schema":"af/scenario-template-pin@1","template_id":id,"template":template}),
+                &inspect,
+            )
+        }
+        ScenarioCommand::Roadmap { command } => roadmap_command(command),
         ScenarioCommand::Validate {
             definition,
             inspect,
@@ -271,14 +419,8 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 None,
             )?;
             let store = Store::open(inspect.state.as_deref(), true)?;
-            store.update(|world| {
-                require(
-                    !world.runs.contains_key(&run_id),
-                    "Run ID already exists; inspect or resume it",
-                )?;
-                world.runs.insert(run_id.clone(), run.clone());
-                Ok(())
-            })?;
+            runtime::reconcile_pending(&store, run.created_unix_ms)?;
+            let run = store.update(|world| world.admit_run(run))?;
             let run = if execute {
                 runtime::resume(&store, &run_id, inspect.now)?
             } else {
@@ -296,7 +438,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@1","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@3","runs":world.runs}),
                 &inspect,
             )
         }
@@ -396,7 +538,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@1","ants":world.ants}),
+                &serde_json::json!({"schema":"af/ant-list@3","ants":world.ants}),
                 &inspect,
             )
         }
@@ -406,8 +548,15 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::Tick { inspect } => {
             let now = at(&inspect)?;
             let store = Store::open(inspect.state.as_deref(), false)?;
-            let (started, refused) = store
-                .update(|world| Ok(schedule::tick_all(&mut world.ants, &mut world.runs, now)))?;
+            runtime::reconcile_pending(&store, now)?;
+            let (started, refused) = store.update(|world| {
+                Ok(schedule::tick_all_with_roadmaps(
+                    &mut world.ants,
+                    &mut world.runs,
+                    &mut world.roadmaps,
+                    now,
+                ))
+            })?;
             // Admission and execution are separate durable transitions. Recover an occurrence
             // admitted by a process that died before driving it, and poll existing waits too.
             let active: Vec<String> = store
@@ -431,7 +580,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 }
             }
             print(
-                &serde_json::json!({"schema":"af/ant-tick@1","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@3","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
@@ -446,4 +595,138 @@ fn change(id: &str, state: AntMode, inspect: &Inspect) -> Result<i32> {
         Ok(ant.clone())
     })?;
     print(&ant, inspect)
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum RoadmapCommand {
+    /// Validate a proposal and print the exact revision to review; creates no state
+    Validate {
+        /// Versioned goal proposal (TOML authoring or JSON wire format)
+        #[arg(long)]
+        file: PathBuf,
+        /// Existing roadmap label when planning a revision, rather than a new roadmap
+        #[arg(long)]
+        roadmap: Option<String>,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Create pending goals with zero actual charges after exact revision confirmation
+    Create {
+        /// Versioned goal proposal (TOML authoring or JSON wire format)
+        #[arg(long)]
+        file: PathBuf,
+        /// Exact revision from validate; binds the proposal content and parent
+        #[arg(long)]
+        confirm_revision: String,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Append an immutable revision; preserve stable goal identities and runtime evidence
+    #[command(
+        override_usage = "af scenario roadmap revise [OPTIONS] --file <FILE>\n       --confirm-revision <CONFIRM_REVISION> <ROADMAP_ID>"
+    )]
+    Revise {
+        /// Local roadmap label in the selected Scenario Store
+        roadmap_id: String,
+        /// Versioned goal proposal (TOML authoring or JSON wire format)
+        #[arg(long)]
+        file: PathBuf,
+        /// Exact revision from validate; binds the proposal content and parent
+        #[arg(long)]
+        confirm_revision: String,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Inspect complete revision history, proposed goals and runtime-owned progress
+    Show {
+        /// Local roadmap label in the selected Scenario Store
+        roadmap_id: String,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// List goal roadmaps in the selected private Scenario Store
+    List {
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+}
+fn roadmap_command(command: RoadmapCommand) -> Result<i32> {
+    use roadmap::{Proposal, Revision, Roadmap};
+    match command {
+        RoadmapCommand::Validate {
+            file,
+            roadmap,
+            inspect,
+        } => {
+            let proposal: Proposal = store::definition(&file)?;
+            let revision = if let Some(id) = roadmap {
+                let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+                world
+                    .roadmaps
+                    .get(&id)
+                    .ok_or("Roadmap not found")?
+                    .plan(proposal)?
+            } else {
+                Revision::new(None, proposal)?
+            };
+            print(&revision, &inspect)
+        }
+        RoadmapCommand::Create {
+            file,
+            confirm_revision,
+            inspect,
+        } => {
+            let revision = Revision::new(None, store::definition(&file)?)?;
+            require(
+                revision.revision == confirm_revision,
+                "Roadmap revision confirmation differs; validate and review it again",
+            )?;
+            let roadmap = Roadmap::new(revision)?;
+            let store = Store::open(inspect.state.as_deref(), true)?;
+            store.update(|world| {
+                require(
+                    !world.roadmaps.contains_key(&roadmap.id),
+                    "Roadmap already exists; inspect or revise it",
+                )?;
+                world.roadmaps.insert(roadmap.id.clone(), roadmap.clone());
+                Ok(())
+            })?;
+            print(&roadmap, &inspect)
+        }
+        RoadmapCommand::Revise {
+            roadmap_id,
+            file,
+            confirm_revision,
+            inspect,
+        } => {
+            let proposal: Proposal = store::definition(&file)?;
+            let store = Store::open(inspect.state.as_deref(), false)?;
+            let roadmap = store.update(|world| {
+                let roadmap = world
+                    .roadmaps
+                    .get_mut(&roadmap_id)
+                    .ok_or("Roadmap not found")?;
+                roadmap.revise(proposal, &confirm_revision)?;
+                Ok(roadmap.clone())
+            })?;
+            print(&roadmap, &inspect)
+        }
+        RoadmapCommand::Show {
+            roadmap_id,
+            inspect,
+        } => {
+            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            print(
+                world.roadmaps.get(&roadmap_id).ok_or("Roadmap not found")?,
+                &inspect,
+            )
+        }
+        RoadmapCommand::List { inspect } => {
+            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            print(
+                &serde_json::json!({"schema":"af/scenario-roadmap-list@2","roadmaps":world.roadmaps}),
+                &inspect,
+            )
+        }
+    }
 }

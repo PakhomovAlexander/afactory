@@ -5,7 +5,7 @@ version = "1.0.0"
 [signature]
 effects = ["read-source"]
 roles = ["verify"]
-worker_input_type = "af/ReportVerificationInput@1"
+worker_input_type = "af/ReportVerificationInput@2"
 worker_output_type = "af/ReportEvaluation@1"
 outcome_port = "result"
 
@@ -87,7 +87,7 @@ input = "source"
 [signature.evidence]
 
 [signature.retains]
-result = ["checks", "comparison", "document", "measurements", "requirements", "source", "sources"]
+result = ["checks", "comparison", "document", "measurements", "requirements", "source", "sources", "research_report"]
 
 [signature.attempt]
 tokens = 400000
@@ -98,3 +98,12 @@ kind = "model"
 provider_kind = "codex"
 model = "gpt-6-sol"
 effort = "high"
+
+[signature.contract.inputs.research_report]
+artifact_type = "af/Document@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.research_report.affinity]
+kind = "unbound"

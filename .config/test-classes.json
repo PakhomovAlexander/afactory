@@ -340,6 +340,7 @@
     "test-check-pr-report.py": "functional",
     "test-gate-owner.py": "functional",
     "test-nextest-gate.py": "functional",
+    "test-performance-scenario.py": "functional",
     "test-performance.py": "perf",
     "test-pi-host.py": "e2e",
     "test-pr-lines.py": "functional",

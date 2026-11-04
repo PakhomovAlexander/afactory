@@ -1,5 +1,5 @@
 //! The only effect boundary. No workflow supplies a command, argv or environment. Machine
-//! policy pins executable bytes; the bounded v1 adapter protocol binds every request to intent.
+//! policy pins executable bytes; the bounded versioned protocol binds every request to intent.
 use super::contract::*;
 use super::state::Dispatch;
 use super::store::read;
@@ -76,11 +76,16 @@ impl Response {
 #[derive(Debug)]
 pub(super) enum Settlement {
     Done(BTreeMap<String, Datum>),
+    TaskDone {
+        outputs: BTreeMap<String, Datum>,
+        unknown_usage: bool,
+    },
     Waiting(String),
     Failed(String),
     TaskFailed {
         diagnostic: String,
         charged_tokens: u64,
+        unknown_usage: bool,
     },
     Uncertain(String),
 }
@@ -139,9 +144,17 @@ pub(super) fn dispatch(
 ) -> Result<Settlement> {
     match &dispatch.definition.operation {
         Kind::Task { target } => task(dispatch, target, cancellation),
+        Kind::FreshTask { .. } => task(
+            dispatch,
+            dispatch
+                .target
+                .as_ref()
+                .ok_or("Fresh Task has no committed native plan")?,
+            cancellation,
+        ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@1".into(),
+                schema: "af/scenario-adapter-request@2".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -184,7 +197,7 @@ pub(super) fn dispatch(
                 .get(&grant.adapter)
                 .ok_or("Action adapter not in machine policy")?;
             let mut request = Request {
-                schema: "af/scenario-adapter-request@1".into(),
+                schema: "af/scenario-adapter-request@2".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -292,6 +305,11 @@ fn task(d: &Dispatch, target: &TaskTarget, cancellation: &AtomicBool) -> Result<
     let charged_tokens = task.task.execution.as_ref().map_or(Ok(0), |e| {
         u64::try_from(e.budget.committed_tokens()).map_err(|_| "Task charge exceeds u64")
     })?;
+    let unknown_usage = task.task.execution.as_ref().is_some_and(|e| {
+        e.attempt_accounting()
+            .iter()
+            .any(|a| a.unknown_usage.is_some())
+    });
     if result.acceptance != review_core::task::TaskAcceptanceV1::Satisfied
         || result.execution != review_core::task::TaskExecutionV1::Completed
     {
@@ -301,6 +319,7 @@ fn task(d: &Dispatch, target: &TaskTarget, cancellation: &AtomicBool) -> Result<
                 target.task_id, result.acceptance
             ),
             charged_tokens,
+            unknown_usage,
         });
     }
     let review_core::task::TaskPhaseV1::Finished { result_id } = &task.task.phase else {
@@ -314,10 +333,10 @@ fn task(d: &Dispatch, target: &TaskTarget, cancellation: &AtomicBool) -> Result<
         charged_tokens,
         result,
     };
-    Ok(Settlement::Done(BTreeMap::from([(
-        "result".into(),
-        Datum::Task(receipt),
-    )])))
+    Ok(Settlement::TaskDone {
+        outputs: BTreeMap::from([("result".into(), Datum::Task(receipt))]),
+        unknown_usage,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

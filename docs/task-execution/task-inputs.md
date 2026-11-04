@@ -13,6 +13,14 @@ bounded to 64 KiB, without symlink traversal, and validated against the captured
 before Provider admission. Its required custom ports also accept the recorded-output bindings
 below, under the same schema checks.
 
+Scenario fresh Task templates use this same resolver after checking an exact completed accepted
+predecessor receipt in the same Task Store. Their bindings declare the native output port and
+artifact type; accepted candidate sources retain the native Snapshot and re-rooting provenance.
+A missing output, wrong type, foreign repository or unaccepted Task is refused before fresh Task
+planning. This narrower orchestration path does not change ordinary Task-file bindings, which
+retain their explicitly recorded acceptance and domain conclusion. See
+[Scenarios and Ants](../scenarios.md#fresh-task-templates).
+
 ## The shape
 
 One optional top-level table, `inputs`, maps a root input port name to a reference:
@@ -330,3 +338,13 @@ Tests:
 - Compatibility: `task_input_bindings.rs`, `task_report.rs`, `task_experiment.rs`,
   `task_public_schemas.rs` and the other Task fixtures pass unedited, which is the evidence that
   a Task file without `inputs`, or with ADR-0117's bindings, is unaffected.
+
+## Accepted performance research
+
+The shipped `kernel/implementation-reviewed` and `kernel/report` pipelines declare the optional
+`research_report` root port (`af/Document@1`, one, unbound). They forward it to the implementer,
+report author and report verifier through their closed Worker contracts and input schemas.
+Scenario admission additionally checks the accepted research Task's exact result and original
+source, and refuses an envelope larger than 32 KiB. Native context receipts retain the same
+artifact ID throughout candidate construction and final reporting; no text is pasted into an
+acceptance boolean. See [Performance Scenarios](../performance-scenarios.md).

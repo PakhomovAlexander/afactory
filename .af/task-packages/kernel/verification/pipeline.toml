@@ -50,7 +50,7 @@ kinds = ["verification"]
 [slots.evaluator]
 worker = "kernel/evaluator"
 role = "evaluate"
-input_type = "af/EvaluationInput@1"
+input_type = "af/EvaluationInput@2"
 output_type = "af/TaskEvaluation@1"
 min_attempts = 1
 # A reply that does not parse, or a refused one, gets one more Attempt (issue #283).

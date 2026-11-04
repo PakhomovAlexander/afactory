@@ -547,6 +547,42 @@ pub(super) fn derived_file(
     Ok(derived)
 }
 
+/// Reconstruct a selected findings capture from its original recorded round and evaluator.
+/// CAS presence alone is insufficient authority for research evidence.
+pub(super) fn verify_findings(
+    cas: &Cas,
+    store: &EventStore,
+    record: &TaskReviewFindingsV1,
+) -> Result<(), String> {
+    let source = store
+        .task_projection(cas, &record.continues.task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Findings source Task missing")?;
+    if source.revision_id != record.continues.task_revision_id
+        || !matches!(&source.phase, TaskPhaseV1::Finished { result_id } if result_id == &record.continues.result_id)
+    {
+        return Err("Findings source receipt changed".into());
+    }
+    let run = review_store::store::task::task_run_id(&record.continues.task_id)
+        .map_err(|e| e.to_string())?;
+    let rounds = task_report::recorded_outputs(cas, store, &run, TASK_REVIEW_ROUND_V1)?;
+    let position = rounds
+        .iter()
+        .position(|id| id == &record.continues.round_id)
+        .ok_or("Findings round is not recorded")?;
+    let round: TaskReviewRoundV1 = artifact(cas, &record.continues.round_id, TASK_REVIEW_ROUND_V1)?;
+    let mut findings = reviewer_findings(cas, &round)?;
+    findings.extend(evaluator_finding(cas, store, &run, position)?);
+    if round.round != record.continues.round
+        || round.snapshot_id != record.continues.snapshot_id
+        || round.missing_reviewers != record.missing_reviewers
+        || findings != record.findings
+    {
+        return Err("Findings differ from native review evidence".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

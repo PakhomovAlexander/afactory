@@ -445,3 +445,251 @@ fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
         "expected the kernel's and the default reviewer packages, found {declaring}"
     );
 }
+
+/// Check the whole shipped catalog, including defaults, warm and light packages, rather
+/// than only the kernel pipelines selected by the performance Scenario.
+#[test]
+fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
+    use review_config::task::catalog::TaskPlanCompiler;
+    use review_core::task::pipeline::TaskOperatorV1;
+
+    let root = workspace();
+    let temporary = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(temporary.path().join("cas")).unwrap();
+    let policy = cas.put(b"catalog-contract-test").unwrap();
+    let mut compiler = TaskPlanCompiler::new(
+        policy.clone(),
+        policy,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Default::default(),
+    )
+    .unwrap();
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    for (name, value) in catalog["packages"].as_table().unwrap() {
+        let pin: review_config::task::catalog::TaskPackagePin = value.clone().try_into().unwrap();
+        let package = root.join(&pin.path);
+        let mut files = BTreeMap::new();
+        for (path, (bytes, _)) in tree(&package) {
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let text = String::from_utf8_lossy(&bytes);
+            for old in [
+                "af/ReviewInput@1",
+                "af/ImplementationInput@1",
+                "af/TaskCheckReceipt@1",
+            ] {
+                assert!(!text.contains(old), "{name}: {relative} still names {old}");
+            }
+            files.insert(relative, bytes);
+        }
+        compiler
+            .capture_package(&cas, name, &pin, &files)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    compiler.validate_dependency_closure().unwrap();
+    for (name, pipeline) in compiler.pipelines() {
+        for (slot_name, slot) in &pipeline.slots {
+            let worker = compiler.worker(&slot.worker).unwrap();
+            assert_eq!(
+                worker.signature.worker_input_type.as_deref(),
+                Some(slot.input_type.as_str()),
+                "{name}: {slot_name}"
+            );
+            assert_eq!(
+                worker.signature.worker_output_type.as_deref(),
+                Some(slot.output_type.as_str()),
+                "{name}: {slot_name}"
+            );
+        }
+        for node in &pipeline.nodes {
+            if let TaskOperatorV1::Call {
+                pipeline: child,
+                bindings,
+                ..
+            } = &node.operator
+            {
+                let child = &compiler.pipelines()[child];
+                for (local, parent) in bindings {
+                    assert_eq!(
+                        pipeline.slots[parent].input_type, child.slots[local].input_type,
+                        "{name}: {}: {local}",
+                        node.id
+                    );
+                    assert_eq!(
+                        pipeline.slots[parent].output_type, child.slots[local].output_type,
+                        "{name}: {}: {local}",
+                        node.id
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Regenerate with AF_WRITE_CATALOG_CONTRACT_FIXTURES=1; the normal gate only compares.
+#[test]
+fn staged_catalog_contract_fixtures_match_native_interfaces() {
+    use review_config::task::catalog::TaskPlanCompiler;
+    use review_config::task::catalog::export::CatalogContractFixtures;
+
+    let root = workspace();
+    let temporary = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(temporary.path().join("cas")).unwrap();
+    let policy = cas.put(b"staged-catalog-contract-test").unwrap();
+    for directory in ["fixtures/kernel-experiment", "fixtures/kernel-report"] {
+        let catalog: review_config::task::shared::SharedTaskCatalog = toml::from_str(
+            &std::fs::read_to_string(root.join(directory).join("catalog.toml")).unwrap(),
+        )
+        .unwrap();
+        let mut compiler = TaskPlanCompiler::new(
+            policy.clone(),
+            policy.clone(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Default::default(),
+        )
+        .unwrap();
+        for (name, pin) in &catalog.packages {
+            let files = tree(&root.join(&pin.path))
+                .into_iter()
+                .map(|(path, (bytes, _))| {
+                    (
+                        path.strip_prefix(&root)
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned(),
+                        bytes,
+                    )
+                })
+                .collect();
+            compiler
+                .capture_package(&cas, name, pin, &files)
+                .unwrap_or_else(|e| panic!("{directory}: {name}: {e}"));
+        }
+        compiler.validate_dependency_closure().unwrap();
+        let expected = CatalogContractFixtures {
+            schema: "af.catalog-contract-fixtures/1".into(),
+            pipelines: compiler
+                .pipelines()
+                .iter()
+                .map(|(name, p)| (name.clone(), p.into()))
+                .collect(),
+            workers: catalog
+                .packages
+                .keys()
+                .filter_map(|name| {
+                    compiler
+                        .worker(name)
+                        .map(|w| (name.clone(), w.signature.clone()))
+                })
+                .collect(),
+            kinds: catalog
+                .packages
+                .keys()
+                .filter_map(|name| compiler.task_kind(name).map(|k| (name.clone(), k.clone())))
+                .collect(),
+        };
+        let path = root.join(directory).join("contracts.json");
+        if std::env::var_os("AF_WRITE_CATALOG_CONTRACT_FIXTURES").is_some() {
+            let mut bytes = serde_json::to_vec_pretty(&expected).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let actual: CatalogContractFixtures =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        compiler
+            .check_contract_fixtures(&actual)
+            .unwrap_or_else(|e| panic!("{directory}: {e}"));
+        assert_eq!(actual, expected, "{directory}");
+    }
+}
+
+/// Shipped Pi schemas must accept native predecessor envelopes and omitted optional ports,
+/// while retaining closed input objects, exact artifact types and Snapshot requirements.
+#[test]
+fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
+    use serde_json::{Value, json};
+
+    for name in ["implementer", "correctness", "evaluator"] {
+        let package = workspace().join(".af/task-packages/pi-light").join(name);
+        let worker: review_config::task::catalog::TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+        let schema: Value =
+            serde_json::from_slice(&std::fs::read(package.join("input.schema.json")).unwrap())
+                .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let ports = &worker.signature.contract.inputs;
+        let properties = schema["properties"].as_object().unwrap();
+        assert_eq!(properties.len(), ports.len(), "{name}");
+        let required = schema["required"].as_array().unwrap();
+        assert_eq!(
+            required.len(),
+            ports.values().filter(|p| !p.optional).count()
+        );
+        let mut inputs = json!({});
+        for (port, contract) in ports {
+            assert_eq!(required.contains(&json!(port)), !contract.optional);
+            assert_eq!(properties[port]["items"]["additionalProperties"], false);
+            let value = json!([{
+                "artifact_id": format!("sha256:{}", "1".repeat(64)),
+                "artifact_type": contract.artifact_type,
+                "snapshot_id": format!("sha256:{}", "2".repeat(64)),
+                "payload": {}
+            }]);
+            inputs[port] = value;
+        }
+        assert!(validator.is_valid(&inputs), "{name}: {inputs}");
+        for port in ports.keys() {
+            let mut wrong_type = inputs.clone();
+            wrong_type[port][0]["artifact_type"] = json!("af/Unexpected@1");
+            assert!(!validator.is_valid(&wrong_type), "{name}/{port}: type");
+            let mut extra = inputs.clone();
+            extra[port][0]["unexpected"] = json!(true);
+            assert!(
+                !validator.is_valid(&extra),
+                "{name}/{port}: closed envelope"
+            );
+            let mut bad_snapshot = inputs.clone();
+            bad_snapshot[port][0]["snapshot_id"] = json!("not-a-digest");
+            assert!(
+                !validator.is_valid(&bad_snapshot),
+                "{name}/{port}: Snapshot"
+            );
+        }
+        for (port, contract) in ports {
+            if contract.optional {
+                inputs.as_object_mut().unwrap().remove(port);
+            } else if contract.artifact_type != "af/SourceTree@1"
+                && matches!(
+                    contract.affinity,
+                    review_core::task::pipeline::PortAffinityV1::Unbound {}
+                )
+            {
+                inputs[port][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("snapshot_id");
+            }
+        }
+        assert!(validator.is_valid(&inputs), "{name}: optional inputs");
+        let mut missing_snapshot = inputs.clone();
+        missing_snapshot["source"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("snapshot_id");
+        assert!(
+            !validator.is_valid(&missing_snapshot),
+            "{name}: source Snapshot"
+        );
+        inputs["unexpected"] = json!([]);
+        assert!(!validator.is_valid(&inputs), "{name}: closed inputs");
+    }
+}

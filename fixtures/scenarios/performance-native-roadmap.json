@@ -1,0 +1,45 @@
+{
+  "schema": "af/scenario-roadmap-proposal@2",
+  "id": "performance-native",
+  "objective": "Reduce Store replay cost while preserving checked history",
+  "horizon": {
+    "start_unix_ms": 1793577600000,
+    "end_unix_ms": 1796169600000
+  },
+  "max_tokens": 96000000,
+  "goals": [
+    {
+      "id": "store-replay",
+      "objective": "Reduce native Store application projection latency while preserving checked history",
+      "partition": "product_component",
+      "component": "Store application projection",
+      "scope": "Current-release Task event replay",
+      "workload": "Native state_projection case: events_10000, application_cold and prewarmed instances, seed/setup excluded exactly as the frozen native plan declares.",
+      "metric": {
+        "name": "paired median wall_ms",
+        "direction": "decrease",
+        "unit": "milliseconds"
+      },
+      "acceptance": [
+        "Either at least 10 percent lower paired median wall_ms on the same declared workload with verified native measured paired timing and independent verification, or an independently accepted no-worthwhile-optimization research report proving why no candidate in this bounded scope justifies its cost and uncertainty."
+      ],
+      "guardrails": [
+        "Identical replayed Task identities, accounting and acceptance"
+      ],
+      "priority": 1,
+      "dependencies": [],
+      "conflicts": [],
+      "estimated_tokens": null,
+      "proposed_eligible": true,
+      "deferral_reason": null,
+      "remaining_work": [
+        "Research, implement if worthwhile, experiment, verify and report this goal"
+      ],
+      "sources": [],
+      "loop_tokens": 32000000
+    }
+  ],
+  "daily_tokens": 32000000,
+  "rolling_tokens": 96000000,
+  "rolling_window_ms": 604800000
+}
