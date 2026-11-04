@@ -139,6 +139,7 @@ path = ".af/task-packages/kernel/gate-bench"
 
 [kinds]
 verification = "warm/verification-kind"
+triage = "backlog/triage-kind"
 
 [packages."kernel/experiment"]
 version = "1.0.0"
@@ -169,6 +170,26 @@ path = ".af/task-packages/kernel/analyst"
 version = "1.0.0"
 digest = "sha256:c41672e751a34379feb7e11152d6cf5e9e974d7dfaf97b69c78e281b6b587436"
 path = ".af/task-packages/kernel/report-verifier"
+
+[packages."backlog/triage"]
+version = "1.0.0"
+digest = "sha256:94a2f61753351b021749bc11282dfcfcce0c60bf2be77b6dd06ad9df81a44ebf"
+path = ".af/task-packages/backlog/triage"
+
+[packages."backlog/triage-author"]
+version = "1.0.0"
+digest = "sha256:1e5e71c1dc278159477b9a5a5febf35b3a96347e201d32783078b78357300225"
+path = ".af/task-packages/backlog/triage-author"
+
+[packages."backlog/triage-kind"]
+version = "1.0.0"
+digest = "sha256:1321c04198a9a30c54207aac2ae494aaffc803388ede24663eeedaa1f10e03d0"
+path = ".af/task-packages/backlog/triage-kind"
+
+[packages."backlog/triage-verifier"]
+version = "1.0.0"
+digest = "sha256:8641e681d040e27e66027ae85e71bfc4c4d953eb7e5d8fcd8802ad3de8957a8a"
+path = ".af/task-packages/backlog/triage-verifier"
 
 # Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
 # Each version is its local original's; the path is where the README installs it. Add each
@@ -288,6 +309,8 @@ distinct_models = true
 "kernel/experiment-evaluator" = "codex-main"
 "kernel/analyst" = "claude-main"
 "kernel/report-verifier" = "codex-main"
+"backlog/triage-author" = "codex-main"
+"backlog/triage-verifier" = "claude-main"
 "default/implementer" = "claude-main"
 "default/bugs" = "codex-main"
 "default/correctness" = "codex-main"
