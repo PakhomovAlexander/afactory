@@ -522,7 +522,7 @@ fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<String, Str
 
 /// The one Snapshot an `af/SourceTree@1` artifact holds: its payload's, which its envelope
 /// subject must name too.
-fn source_tree_snapshot(cas: &Cas, artifact_id: &str) -> Result<String, String> {
+pub(super) fn source_tree_snapshot(cas: &Cas, artifact_id: &str) -> Result<String, String> {
     let found = cas.get_artifact(artifact_id);
     let envelope = found.map_err(|e| format!("it is unreadable: {e}"))?;
     validate_envelope(&envelope)?;

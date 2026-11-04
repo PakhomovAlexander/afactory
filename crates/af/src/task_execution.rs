@@ -63,6 +63,8 @@ mod provider_admission;
 pub(crate) mod recovery;
 pub(super) mod refresh;
 pub(crate) mod runs;
+pub(crate) mod scenario_evidence;
+pub(crate) mod scenario_template;
 mod selection;
 pub(crate) mod starter;
 pub(crate) mod state;

@@ -1,6 +1,7 @@
 # Scenarios and Ants
 
-A Scenario orchestrates existing Tasks, child Scenarios, bounded actions, signed human decisions,
+A Scenario orchestrates pinned existing Tasks or authorized fresh Task templates, child Scenarios,
+bounded actions, signed human decisions,
 and observations. An Ant binds a pinned Scenario to a daily schedule. Neither command installs a
 cron job, starts a daemon, or creates an instance until explicitly requested. Models run only
 inside Tasks. [ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)
@@ -9,7 +10,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@1`. A bundle (`af/scenario-bundle@1`) names its
+`af/scenario@3`. A bundle (`af/scenario-bundle@3`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -19,9 +20,9 @@ The port types are `text`, `boolean`, `integer`, `task`, `action`, `decision`, `
 `literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`). Forward
 references and type mismatches fail admission. A `project` binding selects a typed receipt field:
 `task_conclusion`, `task_result_id`, `task_output_id` or `task_output_snapshot` (the latter two
-name a `port`), `observation_satisfied`, or `decision_approved`. Its `value` is another binding
-and its `projection` is an object with `kind`. An `equals` binding compares scalar `left` and
-`right` bindings of the same type and returns a boolean. This allows a Task's evidenced
+name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`. Its `value` is
+another binding and its `projection` is an object with `kind`. An `equals` binding compares scalar
+`left` and `right` bindings of the same type and returns a boolean. This allows a Task's evidenced
 `no_worthwhile_optimization` conclusion to skip implementation and still complete successfully.
 Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
@@ -97,6 +98,13 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   `required_condition` adds an `evidence` observation input with that exact condition. Both must
   match the same object and revision. Publication (`publish_pr`, `followup`) always requires a
   signed human decision. No Task delivery, commit, push, merge or blanket shell grant follows.
+  The native `experiment_submit_v1` Action additionally takes an accepted `candidate` Task receipt;
+  its separate verified-report Wait is described in the performance runbook.
+
+A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
+of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
+uses the same pinned Task projection as every other kind, without report or evaluator nodes,
+dynamic Task creation or publication authority.
 
 A Decision receipt used for publication may authorize exactly that one decision-consuming Action
 in the pinned bundle, including uses through aliased child inputs and outputs. Admission rejects
@@ -120,11 +128,12 @@ pausing its Ant are separate operations.
 
 ## Machine policy and bounded adapters
 
-`af/scenario-policy@1` is an explicit, owner-only machine file outside every Git checkout.
+`af/scenario-policy@3` is an explicit, owner-only machine file outside every Git checkout.
 Author it as TOML; its captured JSON wire form is also accepted. The filename selects the format
 (`.toml` or JSON); a parse failure never selects a fallback format or an earlier version.
 It contains
-`task_plans`, `decision_keys`, `file_roots`, and `adapters`. The pin includes the entire effective
+`task_plans`, `task_templates`, `decision_keys`, `file_roots`, and `adapters`. The pin includes the
+entire effective
 policy. No workflow supplies executable paths, arguments, environment variables, or credentials.
 Each adapter is an installed, trusted program outside the checkout, pinned by executable SHA-256,
 with finite `operations`, exact `destinations`, `max_wall_ms` (at most 30 seconds), and
@@ -134,7 +143,7 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@1`) carry `method` (`reconcile`, `execute`, `observe`),
+Requests (`af/scenario-adapter-request@2`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
@@ -175,7 +184,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Daily Ant scheduling
 
-An `af/ant@1` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@3` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
 `notify` action with its own authorized adapter.
@@ -214,7 +223,201 @@ occurrences keep their original skipped outcomes.
 Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.
 
-A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
-of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
-uses the same pinned Task projection as every other kind, without report or evaluator nodes,
-dynamic Task creation or publication authority.
+## Goal roadmaps: planning and complete-loop admission
+
+`af scenario roadmap` retains a bounded optimization roadmap without running it. A partition is
+one **product component**, **target metric**, or **optimization goal** that owns a complete loop:
+research, a candidate if worthwhile, experiments, verification and reporting are subordinate
+checkpoints. A pipeline stage or a calendar day is not a partition. A goal spanning several days
+keeps the same stable ID; a revision or a later horizon never resets its accounting. Admission
+explicitly defers a goal whose whole loop cannot fit. Only a reviewed proposal revision
+may narrow product/workload scope; admission never silently changes the goal.
+
+The proposal (`af/scenario-roadmap-proposal@2`) declares `id`, `objective`, `horizon` with Unix
+millisecond start/end bounds (at most 366 days), positive roadmap-total `max_tokens`,
+`daily_tokens`, `rolling_tokens`, `rolling_window_ms`,
+and 1–256 `goals`. Daily accounting uses UTC; the Ant schedule retains its separate pinned timezone.
+Every goal declares a stable `id`, `objective`, `partition` (`product_component`, `target_metric`
+or `optimization_goal`), `component`, product `scope`, bounded `workload`, and `metric` with
+`name`, `direction` (`decrease`, `increase`, `maintain`) and `unit`. Nonempty `acceptance`,
+`guardrails` and `remaining_work` describe the whole loop. `priority` is a positive integer;
+`dependencies` and `conflicts` name other stable goal IDs. Unknown/self/duplicate links,
+dependency cycles and a direct dependency that is also a conflict are refused.
+
+Each goal declares positive `loop_tokens`: the authorized allowance for its complete optimization
+loop, including every declared Task attempt. `estimated_tokens` is a separate untrusted planning
+estimate, null when unknown, bounded by `max_tokens`.
+It is never spending evidence or a reservation. `proposed_eligible` is a proposal, not admission;
+false requires a `deferral_reason`. `sources` are untrusted leads, each with a SHA-256 `digest`
+and `kind` (`source`, `research`, `candidate`, `experiment`, `verification`, `report`). A reference
+labelled verification or experiment does not establish acceptance or a completed experiment.
+These references never cause af to fetch or execute anything. Token bounds are safe JSON
+integers; malformed references, blank criteria and invalid horizons fail validation.
+
+The inert example is executable from the repository root. Review the full validation output
+before using its exact revision as confirmation:
+
+```sh
+cp fixtures/scenarios/performance-roadmap.json roadmap.json
+af scenario roadmap validate --file roadmap.json --json
+revision=$(af scenario roadmap validate --file roadmap.json --json |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')
+af scenario roadmap create --file roadmap.json --confirm-revision "$revision" --json
+af scenario roadmap show performance --json
+af scenario roadmap list --json
+```
+
+Edit future planning in `roadmap.json`, then review and confirm its successor revision:
+
+```sh
+python3 - <<'PY'
+import json
+with open("roadmap.json") as f:
+    proposal = json.load(f)
+proposal["goals"][0]["estimated_tokens"] = 3000
+with open("roadmap.json", "w") as f:
+    json.dump(proposal, f)
+PY
+af scenario roadmap validate --roadmap performance --file roadmap.json --json
+revision=$(af scenario roadmap validate --roadmap performance --file roadmap.json --json |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["revision"])')
+af scenario roadmap revise performance --file roadmap.json --confirm-revision "$revision" --json
+```
+
+Validation alone creates no Store. Creation and revision are token-free, deterministic local
+journal operations. They launch no model, Task, benchmark, adapter, Scenario Run or Ant; they
+install no schedule and grant no publication authority. They accept TOML or JSON by filename,
+using the same strict format selection as Scenario definitions. `--state` selects the existing
+private Scenario Store outside checkouts. `--json` emits `af/scenario-roadmap-revision@2` for
+validate, `af/scenario-roadmap@2` for create/show/revise, or `af/scenario-roadmap-list@2` for list;
+text validation prints the revision. `af schema show ID` provides the shipped contracts.
+
+Creation allocates an opaque roadmap identity separate from its local label; a goal's stable
+identity is the pair of roadmap identity and goal ID, including across Stores with equal labels.
+New goals always start pending with zero reserved/actual tokens and no execution evidence.
+Progress is runtime-owned: `state`, `reason`, `claim`, `captured_goal`, `reserved_tokens`,
+`actual_tokens`, `task_charges`, `task_receipts`, checkpoint `artifacts`, and `completed_work`
+cannot
+be supplied in proposals.
+There is no manual completion or receipt-import verb. Native accepted Task receipts remain the
+acceptance authority; a roadmap does not introduce another Task acceptance engine. Native Task
+charge records keep unresolved work reserved and retain failed work separately from
+accepted Task receipts; totals are derived from those records and a Task charge appears in only
+one goal. Actual tokens are native recorded charges, not inferred provider spending; absent
+estimates stay unknown.
+
+Each revision retains its exact proposal, parent and content identity. Revision confirmation
+binds the proposed content and current parent; a concurrent writer makes a stale confirmation
+fail, requiring validation again. Every previous revision and runtime receipt remains retained.
+Goal IDs cannot be removed or reused: defer future work instead. Pending goals may be respecified;
+active/completed goals retain their captured definition. Revisions cannot reset reservations,
+charges, evidence or completed work, or set a future token bound below committed accounting.
+Recorded overruns remain readable evidence; they never disappear because they exceed a bound.
+Creation refuses an existing label. Replay checks the revision chain and accounting; old shapes,
+missing ownership and corrupt journals fail closed.
+
+Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
+with Runs and Ants. The journal is now `af/scenario-store@4`; the previous Store shape is refused
+without migration. The unchanged 16 MiB document bound includes all roadmap history. The ordinary
+machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
+collects revisions or resets a ledger. No second registry or storage budget exists.
+
+Fresh Task instantiation and complete-loop admission are native. The bounded asynchronous
+Performance Lab adapter uses an explicit `experiment_submit_v1` Action, exact accepted Snapshot
+handoff and native verified completion. Research receives immutable bounded evidence packets;
+typed `scenario_evidence` observations enter fresh Task Requirements. See the executable inert
+bundles and [manual-first deployment runbook](performance-scenarios.md). The operator must perform
+one complete manual loop on Claw before separately authorizing its pinned Ant schedule there.
+Installation, real benchmarks and VM changes remain operator work; no Mac scheduler is supplied.
+
+## Fresh Task templates
+
+`af scenario template-pin` captures an `af/scenario-task-template@1` and its digest in an
+`af/scenario-template-pin@1` envelope. It is token-free and writes only native Task Store capture
+artifacts; it creates no Task or Scenario Run. Supply a native Task file with explicit pipeline,
+strategy and all limits, an exact 40-character authority commit and an external Task Store.
+Implementation files also declare verification; other kinds retain their captured native acceptance.
+Pipeline fallback must be `refuse`; generated/default plan selection is unauthorized.
+An optional native bindings file may pin slots and Providers, but may not supply local package
+paths. Source files, catalog packages, pipelines, policies and Worker settings come from the exact
+committed authority; the template retains their native authority identity, repository identity
+and source content digest. A base, if supplied, must also be an exact commit. Templates cannot
+prefill native inputs, continuations or issue authority.
+
+```text
+# needs: a reviewed native Task file, committed authority and external Task Store
+ af scenario template-pin --file task.json --repo /project --task-state /private/tasks \
+   --authority-commit 0123456789abcdef0123456789abcdef01234567 --json
+```
+
+Copy the returned `template` object into a step with `operation.kind: fresh_task`. Its `bindings`
+map is empty or maps each native root input name to `port` (a predecessor output name) and
+`artifact_type` (its exact native type). The corresponding Scenario step input must be a Task
+receipt from a preceding step or child port. For example, a `source` binding names output
+`snapshot` with type `af/SourceTree@1`. Both `authority.task_templates` and machine policy
+`task_templates` must contain the template digest. Children inherit a subset of template grants.
+The inert `fixtures/scenarios/fresh-task-loop.json` demonstrates the wire form; replace its
+placeholder pins through the capture command before use.
+
+Dispatch reserves the Task allowance and commits an intent before native planning. The fresh Task
+ID is derived from the opaque Run/step/attempt intent, not from a user label or date. Native
+planning captures predecessor references through the ordinary Task input resolver. Only the exact
+completed, accepted result in that same Task Store can bind; missing outputs, wrong artifact
+types, foreign repositories and invalid Snapshot provenance are refused. A reviewed candidate
+from an unaccepted Task cannot enter this path as accepted evidence. Native re-rooting retains
+its original provenance, including the predecessor's acceptance and conclusion.
+
+Before confirming and running the resulting exact native plan, the coordinator records its Task,
+revision and plan IDs. A lost planning response reconciles the same Task file and stable Task ID;
+resume never invents another Task. It also checks the captured template authority again, including
+catalog, pipeline, Provider bindings and source identities. Changed or missing native authority
+fails closed. Editing an authoring file cannot change an already pinned template. A definitive
+failure may use a fresh Task under the step's finite next attempt, with every earlier charge kept.
+Existing exact-plan `task` steps remain supported in the current Scenario shape.
+
+## Claiming complete roadmap goals
+
+Set the root Scenario's `admission` to an object with `roadmap` (local label), `identity` (opaque
+roadmap identity) and `revision` (the exact reviewed roadmap head). Use null for an ordinary Run.
+A child Scenario cannot claim another roadmap. A roadmap loop uses fresh Task steps throughout
+its pinned bundle;
+existing Task receipts cannot be recycled to complete another goal. Every fresh Task receives the
+complete captured goal as structured requirements under `scenario_goal`.
+
+Manual `scenario start` and scheduled Ant admission use the same immediate transaction. It sorts
+eligible goals by positive priority then stable ID, claims one, and reserves its whole
+`loop_tokens` before dispatch. Dependencies require completed native evidence. Conflicts are
+symmetric; an active, uncertain or completed goal also blocks a duplicate product partition,
+even under a new goal ID or revision. Each deferral retains an inspectable
+reason. The allowance must cover all declared Task attempts and fit per-run, UTC daily,
+roadmap-total and rolling bounds simultaneously. An impossible goal invokes no model. A manual
+Run records failure when nothing fits; an Ant records `skipped_roadmap` with its reason. Repeated
+starts/ticks cannot duplicate a claim or occurrence.
+
+An active or uncertain claim holds its complete unused allowance regardless of age. Terminal
+known charges count on both admission and settlement UTC dates, and through a rolling window
+after settlement. Known tokens from failed Tasks remain actual charges. Native unknown-usage
+Attempts retain uncertainty even when the Task is finished: known tokens and the unused loop
+reservation are kept separately. A deadline, cancellation, midnight, new occurrence, schedule
+replacement or roadmap revision cannot erase them. Native result reconciliation can settle a
+response lost before the Scenario recorded it; no CLI accepts a supplied charge or completion.
+Run resume retains its original claim and revision even after future planning changes.
+
+Only successful pinned Scenario completion with accepted native Task receipts and settled
+accounting completes a goal. A failed or uncertain loop remains deferred with its claim retained;
+it is never automatically re-claimed under another date or revision. A future revision can change
+unclaimed planning, but cannot replace captured goals or accumulated accounting. Roadmap history,
+claims and native receipts share the private Store and its bounded journal and Storage Budget.
+
+Performance roadmap implementation and verification model plans must use Sol (`gpt-6.1-sol`) medium
+for implementation, Terra
+(`gpt-6.1-terra`) high for bugs, Sol (`gpt-6-sol`) high for correctness, and Astra
+(`gpt-6-astra`) medium for evaluation, all on `codex-personal`. Verification is read-only and has
+no implementer. An advisory model role or a default-light judging team is refused before model
+dispatch. Command-only native fixtures remain token-free and use no Provider.
+
+The [native performance loop decision](adr/2026-11-03-native-performance-scenario-loops.md)
+extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous lab adapter.
+`af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
+retrieves one native findings, History Capture or adoption artifact after checking its recorded
+Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.

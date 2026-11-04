@@ -80,7 +80,7 @@ standard = true
 [slots.bugs]
 worker = "default/bugs"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2
@@ -90,7 +90,7 @@ independent_from = ["implementer"]
 [slots.correctness]
 worker = "default/correctness"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2
@@ -110,7 +110,7 @@ independent_from = ["implementer"]
 [slots.implementer]
 worker = "default/implementer"
 role = "implement"
-input_type = "af/ImplementationInput@1"
+input_type = "af/ImplementationInput@2"
 output_type = "af/ImplementationReport@1"
 min_attempts = 1
 max_attempts = 1
@@ -120,7 +120,7 @@ independent_from = []
 [slots.uix]
 worker = "default/advisor"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2

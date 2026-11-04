@@ -5,7 +5,7 @@ version = "1.0.0"
 [signature]
 effects = ["write-source"]
 roles = ["implement"]
-worker_input_type = "af/ImplementationInput@1"
+worker_input_type = "af/ImplementationInput@2"
 worker_output_type = "af/ImplementationReport@1"
 
 [signature.contract.inputs.requirements]

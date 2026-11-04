@@ -105,6 +105,7 @@ fn worker_inputs() -> BTreeMap<&'static str, PipelinePortV1> {
         ("source", port(SOURCE_TREE_V1, false)),
         ("sources", port(REPORT_SOURCES_V1, true)),
         ("comparison", port(MEASUREMENT_COMPARISON_V1, true)),
+        ("research_report", port(DOCUMENT_V1, true)),
         ("measurements", many(MEASUREMENT_V1)),
     ])
 }
@@ -129,7 +130,7 @@ fn author_contract(contract: &PipelineContractV1) -> bool {
 }
 
 /// Whether `contract` is an admissible report verifier: it declares `requirements`,
-/// `document`, `checks` and `source`, optionally `sources`, `comparison` and `measurements`, and
+/// `document`, `checks` and `source`, optionally `sources`, `comparison`, `measurements` and `research_report`, and
 /// one evaluation bound to the source Snapshot.
 fn verifier_contract(contract: &PipelineContractV1) -> bool {
     let mut inputs = worker_inputs();

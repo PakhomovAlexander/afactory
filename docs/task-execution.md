@@ -247,7 +247,8 @@ The operator-facing guide for the `implement` Task and local delivery is
 
 ## Coordination across Tasks
 
-[Scenarios and Ants](scenarios.md) orchestrate existing Tasks through their exact recorded plans,
+[Scenarios and Ants](scenarios.md) orchestrate existing Tasks through exact recorded plans or
+authorized fresh Task templates through ordinary native planning and execution,
 without replacing Task acceptance, sandboxing or local delivery. A Scenario Run also retains
 signed decisions, bounded adapter actions, observations and child Scenario progress across waits
 and restarts. An Ant schedules a pinned Scenario through local `af ant tick` admission.

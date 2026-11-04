@@ -27,6 +27,10 @@
           },
           "payload": {
             "type": "object"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
           }
         }
       }

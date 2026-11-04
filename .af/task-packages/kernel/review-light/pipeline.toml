@@ -61,7 +61,7 @@ covers = []
 kind = "unbound"
 
 [contract.outputs.checks]
-artifact_type = "af/TaskCheckReceipt@1"
+artifact_type = "af/TaskCheckReceipt@2"
 cardinality = "one"
 optional = false
 covers = []
@@ -107,7 +107,7 @@ kinds = ["review"]
 [slots.bugs]
 worker = "kernel/bugs"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2
@@ -117,7 +117,7 @@ independent_from = []
 [slots.correctness]
 worker = "kernel/correctness"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2
@@ -127,7 +127,7 @@ independent_from = []
 [slots.uix]
 worker = "kernel/uix"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2

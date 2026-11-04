@@ -1,0 +1,1 @@
+Adapt performance Scenario admission to the current V3 execution plan and Worker contracts, and update the native performance fixture to Provider registry v3. Preserve the exact codex-personal development team and native evidence and handoff contracts and extend the role regression to refuse Pi bindings.

@@ -725,6 +725,32 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         ],
     );
     assert_eq!(equivalent["observation"]["equivalence"], "equivalent");
+    // The performance research reader follows the prepared receipt and the completed
+    // delivery that adopted it, rather than accepting a hashed exported JSON file.
+    let native_adoption = command_json(
+        &delivered,
+        state,
+        &[
+            "scenario",
+            "evidence-source",
+            task,
+            "--artifact-id",
+            equivalent["observation_id"].as_str().unwrap(),
+            "--repo",
+            delivered.to_str().unwrap(),
+            "--task-state",
+            state.to_str().unwrap(),
+        ],
+    );
+    schemas::valid(
+        &schemas::validator("scenario-evidence-source-v1.json"),
+        &native_adoption,
+    );
+    assert_eq!(
+        native_adoption["artifact"]["payload"],
+        equivalent["observation"]
+    );
+
     let equivalent_replay = command_json(
         &delivered,
         state,
@@ -2082,6 +2108,34 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     assert_eq!(report["type"], "af/OptimizationReport@1");
+    let revision = cas
+        .get_artifact(executed["revision_id"].as_str().unwrap())
+        .unwrap();
+    let history_id = revision.payload["inputs"]["history"]["artifact_ids"][0]
+        .as_str()
+        .unwrap();
+    let native_history = command_json(
+        &repo,
+        &state,
+        &[
+            "scenario",
+            "evidence-source",
+            executed["task_id"].as_str().unwrap(),
+            "--artifact-id",
+            history_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--task-state",
+            state.to_str().unwrap(),
+        ],
+    );
+    schemas::valid(
+        &schemas::validator("scenario-evidence-source-v1.json"),
+        &native_history,
+    );
+    assert_eq!(native_history["artifact"]["artifact_id"], history_id);
+    assert_eq!(native_history["artifact"]["payload"]["project_id"], project);
+
     let output = crate::common::af()
         .current_dir(&repo)
         .args([

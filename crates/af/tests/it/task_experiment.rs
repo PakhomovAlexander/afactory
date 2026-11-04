@@ -1299,8 +1299,7 @@ fn kernel_repository(root: &Path) -> PathBuf {
         catalog["packages"]["kernel/implementer"]["digest"]
     );
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    // The committed packages and their staged copies name the receipt this release no longer
-    // reads; the copy takes ADR-0255's migration.
+    // Normalize only disposable fixture authority; the shipped packages already name @2.
     task_cli::migrate_check_receipt(
         &repo,
         &[".af", "fixtures/kernel-experiment"],

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-template-pin:1",
+  "title": "scenario-template-pin v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/scenario-template-pin@1"
+    },
+    "template_id": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/digest"
+    },
+    "template": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/Template"
+    }
+  },
+  "required": [
+    "schema",
+    "template_id",
+    "template"
+  ]
+}
