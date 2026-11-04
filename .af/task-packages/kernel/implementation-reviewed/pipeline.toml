@@ -80,7 +80,7 @@ standard = true
 [slots.bugs]
 worker = "kernel/bugs"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 # A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
@@ -91,7 +91,7 @@ independent_from = ["implementer"]
 [slots.correctness]
 worker = "kernel/correctness"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 # A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
@@ -102,7 +102,7 @@ independent_from = ["implementer"]
 [slots.evaluator]
 worker = "kernel/evaluator"
 role = "evaluate"
-input_type = "af/EvaluationInput@1"
+input_type = "af/EvaluationInput@2"
 output_type = "af/TaskEvaluation@1"
 min_attempts = 1
 # A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
@@ -113,7 +113,7 @@ independent_from = ["implementer"]
 [slots.implementer]
 worker = "kernel/implementer"
 role = "implement"
-input_type = "af/ImplementationInput@1"
+input_type = "af/ImplementationInput@2"
 output_type = "af/ImplementationReport@1"
 min_attempts = 1
 max_attempts = 1
@@ -138,6 +138,10 @@ port = "requirements"
 [nodes.inputs.source]
 kind = "input"
 port = "source"
+
+[nodes.inputs.research_report]
+kind = "input"
+port = "research_report"
 
 [[nodes]]
 id = "seal"
@@ -295,3 +299,12 @@ port = "result"
 kind = "node"
 node = "accept"
 port = "result"
+
+[contract.inputs.research_report]
+artifact_type = "af/Document@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.research_report.affinity]
+kind = "unbound"

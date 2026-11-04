@@ -1,7 +1,7 @@
 //! Real captured Review execution and fresh-process inspection of owned Task history.
 use super::*;
 use review_core::task::execution::{TASK_EXECUTION_RECORD_V5, TaskInvocationV1, TaskOutputV1};
-use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
+use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
 use review_core::task::{TaskLimitsV1, TaskResultV1, TaskRevisionV1, VerificationReserveV1};
 use review_graph::task::{Address, OperatorAttemptCost};
 use review_pipeline::task::campaign_review::{
@@ -52,7 +52,7 @@ impl TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -149,7 +149,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v15.json"), &planned);
+    valid(&validator("task-inspection-v16.json"), &planned);
     let normal = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
@@ -170,8 +170,8 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
             },
         )]),
         executions: BTreeMap::from([
-            ("scatter".into(), WorkerExecutionV2::Command {}),
-            ("closeout".into(), WorkerExecutionV2::Command {}),
+            ("scatter".into(), WorkerExecutionV3::Command {}),
+            ("closeout".into(), WorkerExecutionV3::Command {}),
         ]),
         provider_admission: OperatorAttemptCost {
             tokens: 1,
@@ -204,7 +204,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         .unwrap();
     let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let (plan, _) = compiler.compile(&cas, &revision).unwrap();
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &plan);
+    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &AdmissionOnly, &NoTaskDeveloper);
     let lease = store.open_task(&cas, &revision, "fixture", 60_000).unwrap();
@@ -289,11 +289,11 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     };
     let review_before = store.replay("review").unwrap();
     drop(store);
-    let schema = validator("task-inspection-v15.json");
+    let schema = validator("task-inspection-v16.json");
     let shown = json_output(cli(&repo, &state, &["task", "show", TASK]), 0);
     let explained = json_output(cli(&repo, &state, &["task", "explain", TASK]), 0);
     for value in [&shown, &explained] {
-        assert_eq!(value["schema"], "af/task-inspection@15");
+        assert_eq!(value["schema"], "af/task-inspection@16");
         valid(&schema, value);
         assert_eq!(
             value["owned_child_sets"],

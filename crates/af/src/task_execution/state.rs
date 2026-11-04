@@ -230,7 +230,7 @@ pub(crate) fn view(
 /// The state of a collected Task, from the summary its tombstone retained.
 pub(crate) fn collected(outcome: &str) -> TaskStateV1 {
     let outcome = match outcome {
-        "verified" | "pass" => TaskOutcomeV1::Verified,
+        "verified" | "pass" | "structurally_validated" => TaskOutcomeV1::Verified,
         "changes_requested" | "convergence_exhausted" => TaskOutcomeV1::ChangesRequested,
         _ => TaskOutcomeV1::Exhausted,
     };
@@ -413,7 +413,7 @@ fn gate_next_action(id: &str, retry: &GateRetry) -> String {
 /// a shell takes as one word.
 fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
     let execution = state.execution.as_ref()?;
-    let plan: ExecutionPlanV2 = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V2).ok()?;
+    let plan: ExecutionPlanV3 = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V3).ok()?;
     execution
         .attempt_accounting()
         .iter()
@@ -422,7 +422,7 @@ fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
             let node = execution.graph.nodes.get(&attempt.reservation.node)?;
             let slot = node_slot(&node.operator)?;
             match &plan.bindings.get(slot)?.execution {
-                WorkerExecutionV2::Model { provider, .. } if is_name(provider) => {
+                WorkerExecutionV3::Model { provider, .. } if is_name(provider) => {
                     Some(provider.clone())
                 }
                 _ => None,

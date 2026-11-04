@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@1",
+  "schema": "af/scenario-bundle@3",
   "root": "main",
   "definitions": {
     "main": {
-      "schema": "af/scenario@1",
+      "schema": "af/scenario@3",
       "inputs": {},
       "outputs": {
         "publication": "action",
@@ -378,7 +378,8 @@
         ],
         "decision_owners": [
           "owner"
-        ]
+        ],
+        "task_templates": []
       },
       "limits": {
         "max_tokens": 0,

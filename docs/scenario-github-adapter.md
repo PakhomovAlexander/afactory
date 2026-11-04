@@ -64,7 +64,7 @@ secret material. Editing config, scope, paths or application code refuses existi
 Finish/cancel old Runs under their original installation before approving a different installation.
 Do not discard uncertain receipts or reuse an old intent with a new installation.
 
-The existing `af/scenario-policy@1` adapter entry is authored by the operator, for example:
+The existing `af/scenario-policy@3` adapter entry is authored by the operator, for example:
 
 ```toml
 [adapters.github]
@@ -76,7 +76,7 @@ max_wall_ms = 30000
 max_output_bytes = 65536
 ```
 
-These fields are in addition to the policy's `schema`, `task_plans`, `decision_keys`, and
+These fields are in addition to the policy's `schema`, `task_plans`, `task_templates`, `decision_keys`, and
 `file_roots`. Grants in the Scenario must be subsets. No definition supplies an executable,
 credential path, URL, environment or interpreter argument. Install neither the mock transport
 nor a simulator in production. Re-pinning an executable is a new authority review.
@@ -174,7 +174,7 @@ performed by the adapter. Changed head or content remains unknown and cannot com
 ## Recovery, bounds and evidence
 
 Before any possible POST the adapter fsyncs `dispatched` in its private journal. A nonblocking
-exclusive lock serializes all invocations against one retained lock inode. The journal binds
+exclusive lock serializes all invocations against one retained lock inode. The `af/github-adapter-state@2` journal binds
 intent ID, opaque kernel input digest, entire exact request, config identity, phase and remote
 object ID/number; checksums detect corruption. Every invocation validates the journal and exact
 input match. A different intent cannot publish the same subject/revision while another one is
@@ -211,3 +211,10 @@ The mock service, private fake token and installed transport fixture in
 stdin/CLI path, crashes, concurrency, stale checks, scope, receipts and ambiguous recovery without
 using developer credentials or real external mutations. Schemas live under `schemas/github-*-v1.json`;
 `python3 -I scripts/scenario-github-schemas.py` checks their parity with the adapter contract.
+
+The current adapter reads `af/scenario-adapter-request@2` and writes its embedded requests in
+`af/github-adapter-state@2`; generation 1 requests and journals fail closed. Config and operation
+payloads retain generation 1. Finish old Runs under their original release/installation before
+upgrading; there is no journal migration or automatic replay through a replacement installation.
+The [performance loop integration decision](adr/2026-11-03-native-performance-scenario-loops.md)
+records this protocol integration without changing publication authority.

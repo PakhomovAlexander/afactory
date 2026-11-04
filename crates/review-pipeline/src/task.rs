@@ -23,6 +23,7 @@ mod report;
 pub mod report_task;
 pub mod review;
 pub mod source;
+pub mod structured;
 pub mod warm_check;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -340,7 +341,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         lease: TaskLease,
         authority: &'host dyn TaskAuthority,
         host: &'host dyn TaskOperatorHost,
-        plan: review_core::task::plan::ExecutionPlanV2,
+        plan: review_core::task::plan::ExecutionPlanV3,
         projection: TaskProjection,
         integration: Option<
             review_store::store::task::review_integration::RegisteredTaskReviewIntegration,

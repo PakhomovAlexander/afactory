@@ -1854,7 +1854,10 @@
               "$ref": "#/$defs/name"
             },
             "principal_id": {
-              "$ref": "#/$defs/text"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "model": {
               "$ref": "#/$defs/text"
@@ -1880,16 +1883,58 @@
                   "pi"
                 ],
                 "properties": {
-                  "principal_id": {
-                    "$ref": "#/$defs/digest"
+                  "principal_id": {}
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "pi": {
+                          "properties": {
+                            "identity_mode": {
+                              "const": "unavailable"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "principal_id": {
+                          "type": "null"
+                        },
+                        "model": {
+                          "const": "k3"
+                        },
+                        "effort": {
+                          "enum": [
+                            "low",
+                            "high",
+                            "max"
+                          ]
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "principal_id": {
+                          "$ref": "#/$defs/digest"
+                        }
+                      }
+                    }
                   }
-                }
+                ]
               },
               "else": {
                 "not": {
                   "required": [
                     "pi"
                   ]
+                },
+                "properties": {
+                  "principal_id": {
+                    "$ref": "#/$defs/text"
+                  }
                 }
               }
             }
@@ -2342,11 +2387,15 @@
         "node_program",
         "auth_context_id",
         "model_config_id",
-        "adapter_policy_id"
+        "adapter_policy_id",
+        "identity_mode"
       ],
       "properties": {
         "backend": {
-          "const": "openai-codex"
+          "enum": [
+            "openai-codex",
+            "kimi-coding"
+          ]
         },
         "auth_method": {
           "const": "oauth"
@@ -2370,8 +2419,39 @@
         },
         "adapter_policy_id": {
           "$ref": "#/$defs/digest"
+        },
+        "identity_mode": {
+          "enum": [
+            "account",
+            "unavailable"
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "kimi-coding"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "identity_mode": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "identity_mode": {
+                "const": "account"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

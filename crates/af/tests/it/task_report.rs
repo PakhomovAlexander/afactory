@@ -154,7 +154,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v15.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
     done
 }
 
@@ -584,6 +584,201 @@ fn a_negative_verdict_stays_unsatisfied() {
     assert!(String::from_utf8_lossy(&shown.stdout).contains("report verifier: failed"));
 }
 
+/// Issue #504: a valid verifier reply can settle above its own reservation even though the
+/// Task total still fits. The zero-cost acceptance node completes, but its passing receipt
+/// must not hide committed resource exhaustion when the Task is finished or read again.
+#[test]
+fn report_acceptance_followed_by_a_verifier_reservation_overrun_finishes_and_resumes() {
+    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = starter(root.path());
+    let home = root.path().join("provider");
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&bin).unwrap();
+    let native = r#"#!/usr/bin/python3 -B
+import json,os,sys
+home=os.environ['CODEX_HOME']
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  r=json.loads(line)
+  if r.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
+  if r.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
+ sys.exit(0)
+request=sys.stdin.read()
+if request==PROBE_INPUT:
+ kind='admission'; message='OK'; tokens=1
+else:
+ kind='verifier'; r=json.loads(request)
+ i={k:v[0] for k,v in r['inputs'].items()}
+ assert i['checks']['payload']['outcome']=='passed'
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{
+  'document_id':i['document']['artifact_id'],'sources_id':i['sources']['artifact_id'],
+  'requirements_id':i['requirements']['artifact_id'],'check_receipt_id':i['checks']['artifact_id'],
+  'source_snapshot_id':i['source']['snapshot_id'],'outcome':'passed','summary':'Checked report.'}]}})
+ tokens=16385
+with open(home+'/calls','a') as f: f.write(kind+'\n')
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+kind}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached_input_tokens':0,'output_tokens':0}}))
+"#;
+    std::fs::write(
+        bin.join("codex"),
+        crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(native)),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let providers = home.join("providers.toml");
+    std::fs::write(
+        &providers,
+        toml::to_string(&json!({"version":3,"providers":[{
+            "id":"codex-fixture","kind":"codex","auth_dir":home
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let worker_path = package(&repo, "builtin/report-verifier").join("worker.toml");
+    let mut worker: TaskWorkerManifest =
+        toml::from_str(&std::fs::read_to_string(&worker_path).unwrap()).unwrap();
+    worker.runner = TaskWorkerRunner::Model {
+        provider_kind: "codex".into(),
+        model: "codex-fixture-1".into(),
+        effort: "high".into(),
+    };
+    worker.signature.attempt.as_mut().unwrap().tokens = 16384;
+    std::fs::write(worker_path, toml::to_string(&worker).unwrap()).unwrap();
+    // The model verifier adds one Provider admission Attempt to the three-command starter.
+    let pipeline_path = package(&repo, "builtin/report").join("pipeline.toml");
+    let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+        toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
+    pipeline.max_attempts = 4;
+    std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["providers"] = json!({"builtin/report-verifier":"codex-fixture"});
+    catalog["provider_admission"] = json!({"tokens":100,"wall_ms":45000});
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    let task_path = repo.join("report.json");
+    let mut task: Value = serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
+    task["limits"] = json!({"tokens":50000,"max_attempts":4,"wall_ms":180000,
+        "verification":{"tokens":20000,"attempts":3,"wall_ms":90000}});
+    std::fs::write(task_path, serde_json::to_vec(&task).unwrap()).unwrap();
+    repin_and_commit(&repo);
+
+    let cli = |args: &[&str]| {
+        let output = crate::common::af()
+            .current_dir(&repo)
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", &providers)
+            .args(args)
+            .args(["--json", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4), "{}", text(&output));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let done = cli(&["task", "start", "--execute", "--file", "report.json"]);
+    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+    assert_eq!(done["state"]["phase"], "finished", "{done}");
+    assert_eq!(done["state"]["outcome"], "exhausted");
+    assert_eq!(done["state"]["cause"], "budget");
+    assert_eq!(done["result"]["execution"], "exhausted");
+    assert_eq!(done["result"]["acceptance"], "inconclusive");
+    assert_eq!(done["result"]["domain_conclusion"], "incomplete");
+    assert_eq!(done["attempts"], 4);
+    assert_eq!(done["chargeable_tokens"], "16386");
+    for node in ["author", "seal", "checks", "verify", "accept"] {
+        assert_eq!(
+            node_outcome(&done, &format!("root.nodes.{node}")),
+            "completed"
+        );
+    }
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let (verification, _) = receipts(&cas, &done);
+    assert_eq!(
+        verification.outcome,
+        review_core::task::pipeline::ReceiptOutcomeV1::Passed
+    );
+    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let projection = store.task_projection(&cas, TASK).unwrap().unwrap();
+    assert_eq!(projection.revision.limits.tokens, 50000);
+    assert_eq!(projection.revision.limits.verification.tokens, 20000);
+    // Result revalidation still checks the passing receipt and exact report, and refuses to
+    // call an exhausted result verified. Changing execution alone cannot bypass the Store's
+    // separate committed-budget fence (exercised by finalization on the unfixed tree).
+    use review_pipeline::task::host::TaskDomain;
+    let authority = cas
+        .get_json(&projection.revision.authority.policy_id)
+        .unwrap();
+    let plan = cas.get_artifact(done["plan_id"].as_str().unwrap()).unwrap();
+    let graph = cas
+        .get_artifact(plan.payload["compiled_graph_id"].as_str().unwrap())
+        .unwrap();
+    let domain = review_pipeline::task::report_task::ReportTaskDomain::captured(
+        &cas,
+        authority["report_policy_id"].as_str().unwrap(),
+        serde_json::from_value(graph.payload).unwrap(),
+    )
+    .unwrap();
+    let result: review_core::task::TaskResultV1 =
+        serde_json::from_value(done["result"].clone()).unwrap();
+    domain
+        .validate_result(&cas, &projection.revision, &result)
+        .unwrap();
+    let mut forged = result.clone();
+    forged.acceptance = review_core::task::TaskAcceptanceV1::Satisfied;
+    forged.domain_conclusion = "verified".into();
+    assert!(
+        domain
+            .validate_result(&cas, &projection.revision, &forged)
+            .is_err()
+    );
+    let mut missing = result.clone();
+    missing.evidence.clear();
+    assert!(
+        domain
+            .validate_result(&cas, &projection.revision, &missing)
+            .is_err()
+    );
+    let mut wrong_report = result;
+    wrong_report.outputs.get_mut("report").unwrap().artifact_ids =
+        wrong_report.outputs["verification"].artifact_ids.clone();
+    assert!(
+        domain
+            .validate_result(&cas, &projection.revision, &wrong_report)
+            .is_err()
+    );
+    let execution = projection.execution.unwrap();
+    assert!(execution.budget.breached());
+    assert_eq!(execution.budget.committed_tokens(), 16386);
+    assert!(execution.pending_attempts().is_empty());
+    let verifier = execution
+        .attempt_accounting()
+        .into_iter()
+        .find(|a| a.reservation.node == "root.nodes.verify")
+        .unwrap();
+    assert_eq!(verifier.reservation.tokens, 16384);
+    assert_eq!(verifier.charged_tokens, 16385);
+    let calls = std::fs::read_to_string(home.join("calls")).unwrap();
+    assert_eq!(calls, "admission\nverifier\n");
+    let resumed = cli(&["task", "run", "--execute", TASK]);
+    assert_eq!(
+        without_storage_sweeps(resumed),
+        without_storage_sweeps(done)
+    );
+    assert_eq!(std::fs::read_to_string(home.join("calls")).unwrap(), calls);
+}
+
 #[test]
 fn a_verifier_evaluation_that_names_another_snapshot_is_refused_at_output_admission() {
     let root = tempfile::tempdir().unwrap();
@@ -757,8 +952,7 @@ fn kernel_repository(root: &Path) -> PathBuf {
     );
     std::fs::write(repo.join("README.md"), "# Kernel\n\nA fixture copy.\n").unwrap();
     install_kernel_report(&repo);
-    // The committed packages name the receipt this release no longer reads; the copy takes
-    // ADR-0255's migration.
+    // Normalize only disposable fixture authority; the shipped packages already name @2.
     task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);

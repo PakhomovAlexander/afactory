@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-task-template:1",
+  "title": "scenario-task-template v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/scenario-task-template@1"
+    },
+    "repo": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/path"
+    },
+    "state": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/path"
+    },
+    "authority_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "repository_id": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/text"
+    },
+    "source_content_digest": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/digest"
+    },
+    "authority_id": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/digest"
+    },
+    "document": {
+      "type": "object"
+    },
+    "bindings": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "schema",
+    "repo",
+    "state",
+    "authority_commit",
+    "repository_id",
+    "source_content_digest",
+    "authority_id",
+    "document",
+    "bindings",
+    "max_tokens"
+  ]
+}

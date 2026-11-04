@@ -5,7 +5,7 @@ version = "1.0.1"
 [signature]
 effects = ["read-source"]
 roles = ["review"]
-worker_input_type = "af/ReviewInput@1"
+worker_input_type = "af/ReviewInput@2"
 worker_output_type = "review.kernel/ReviewerResult@2"
 
 [signature.contract.inputs.assignment]
@@ -19,7 +19,7 @@ kind = "same_as"
 input = "source"
 
 [signature.contract.inputs.checks]
-artifact_type = "af/TaskCheckReceipt@1"
+artifact_type = "af/TaskCheckReceipt@2"
 cardinality = "one"
 optional = false
 covers = []

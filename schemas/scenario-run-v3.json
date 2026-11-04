@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-run:3",
+  "title": "scenario-run v3",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "execution_id",
+    "pin",
+    "limits",
+    "created_unix_ms",
+    "updated_unix_ms",
+    "status",
+    "waiting",
+    "frames",
+    "task_charges",
+    "dispatches",
+    "failure",
+    "cancellation",
+    "ant",
+    "goal_claim",
+    "fresh_tasks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-run@3"
+    },
+    "id": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/name"
+    },
+    "execution_id": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/digest"
+    },
+    "pin": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/Pin"
+    },
+    "limits": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/Limits"
+    },
+    "created_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "updated_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "status": {
+      "$ref": "urn:af:schema:scenario:3#/$defs/Status"
+    },
+    "waiting": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:3#/$defs/Waiting"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "frames": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:3#/$defs/Frame"
+      }
+    },
+    "task_charges": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:3#/$defs/TaskCharge"
+      }
+    },
+    "dispatches": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:3#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cancellation": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:3#/$defs/Cancellation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ant": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:3#/$defs/name"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "goal_claim": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:3#/$defs/Claim"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fresh_tasks": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:3#/$defs/TaskTarget"
+      }
+    }
+  }
+}

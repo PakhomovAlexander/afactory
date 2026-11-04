@@ -332,7 +332,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     let before = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v15.json"),
+        &crate::schemas::validator("task-inspection-v16.json"),
         &before,
     );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
@@ -409,7 +409,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     assert!(!stdout.contains("--retry-gate"), "{stdout}");
     let after = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v15.json"),
+        &crate::schemas::validator("task-inspection-v16.json"),
         &after,
     );
     assert_eq!(after["result"]["domain_conclusion"], "verified");
@@ -1252,7 +1252,7 @@ fn a_passed_gate_s_evidence_is_its_report_s_not_its_preflight_fixtures() {
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-pass");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v15.json"),
+        &crate::schemas::validator("task-inspection-v16.json"),
         &shown,
     );
     let gate = &shown["gate"];
@@ -1319,7 +1319,7 @@ fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
     assert_eq!(code, 5, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-fail");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v15.json"),
+        &crate::schemas::validator("task-inspection-v16.json"),
         &shown,
     );
     assert_eq!(shown["state"]["cause"], "check_failed", "{shown:#}");

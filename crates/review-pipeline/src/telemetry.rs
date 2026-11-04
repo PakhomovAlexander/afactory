@@ -21,7 +21,7 @@ pub use mirror::{
     FINDING_DISPOSITION, STORE_EVENT, StoreMirror, USAGE_STATE, USAGE_WALL, install_store_mirror,
 };
 
-use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
+use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
 use review_graph::task::{CompiledNode, CompiledTask};
 use review_store::store::task::{TaskLease, TaskProjection, task_run_id};
 use review_store::{Cas, EventStore};
@@ -595,14 +595,14 @@ impl RunTelemetry {
         load: &tracing::Span,
         cas: &Cas,
         plan_id: &str,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         graph: &CompiledTask,
         task_kind: &str,
     ) {
         for (slot, definition) in &graph.slots {
             let binding = plan.bindings.get(slot);
             let (provider, provider_kind, model) = match binding.map(|binding| &binding.execution) {
-                Some(WorkerExecutionV2::Model {
+                Some(WorkerExecutionV3::Model {
                     provider,
                     provider_kind,
                     model,
@@ -698,7 +698,7 @@ impl RunTelemetry {
     fn record_config(
         &self,
         cas: &Cas,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
         graph: &CompiledTask,
         pipeline: Option<&str>,
         task_kind: &str,
@@ -742,7 +742,7 @@ impl RunTelemetry {
             let worker = graph.slots.get(&slot).map(|slot| slot.worker.as_str());
             let execution = plan.bindings.get(&slot).map(|binding| &binding.execution);
             let value = match execution {
-                Some(WorkerExecutionV2::Model {
+                Some(WorkerExecutionV3::Model {
                     provider,
                     model,
                     effort,
@@ -751,7 +751,7 @@ impl RunTelemetry {
                     "worker={} provider={provider} model={model} effort={effort}",
                     worker.unwrap_or("unknown")
                 ),
-                Some(WorkerExecutionV2::Command {}) => {
+                Some(WorkerExecutionV3::Command {}) => {
                     format!("worker={} command", worker.unwrap_or("unknown"))
                 }
                 None => format!("worker={} unbound", worker.unwrap_or("unknown")),

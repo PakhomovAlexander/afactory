@@ -91,9 +91,9 @@ pub fn copy_tree(source: &Path, destination: &Path) {
 /// under `repo`: every package file below `trees` (repository-relative directories) that names
 /// `af/TaskCheckReceipt@1` names `af/TaskCheckReceipt@2`, and every package each of `catalogs`
 /// (repository-relative catalog files, package paths relative to `repo`) pins is pinned again.
-/// This repository's own `.af/`, and the fixtures staged to install into it, take it when the
-/// release pin moves to the release that carries ADR-0255; until then a test that copies them
-/// to run them under this `af` takes it on its copy.
+/// The shipped catalog and its staged fixtures already use current receipts. This helper
+/// supports disposable test authority copied from packages that still declare the old type;
+/// it never changes the production reader or admits an old receipt.
 pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
     // A gate's sealed candidate supplies read-only files, and a copy made with `cp -R` keeps
     // their modes: every file this migration rewrites takes its owner-write bit first.

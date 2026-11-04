@@ -12,7 +12,7 @@ use review_core::task::document::*;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::measurement::{MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1};
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::report_task::*;
 use review_core::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
@@ -105,6 +105,7 @@ fn worker_inputs() -> BTreeMap<&'static str, PipelinePortV1> {
         ("source", port(SOURCE_TREE_V1, false)),
         ("sources", port(REPORT_SOURCES_V1, true)),
         ("comparison", port(MEASUREMENT_COMPARISON_V1, true)),
+        ("research_report", port(DOCUMENT_V1, true)),
         ("measurements", many(MEASUREMENT_V1)),
     ])
 }
@@ -129,7 +130,7 @@ fn author_contract(contract: &PipelineContractV1) -> bool {
 }
 
 /// Whether `contract` is an admissible report verifier: it declares `requirements`,
-/// `document`, `checks` and `source`, optionally `sources`, `comparison` and `measurements`, and
+/// `document`, `checks` and `source`, optionally `sources`, `comparison`, `measurements` and `research_report`, and
 /// one evaluation bound to the source Snapshot.
 fn verifier_contract(contract: &PipelineContractV1) -> bool {
     let mut inputs = worker_inputs();
@@ -931,7 +932,10 @@ impl ReportTaskDomain {
                 missing.insert(name.clone());
             }
         }
-        result.acceptance = if missing.is_empty() {
+        // A passing receipt still judges the report, but cannot satisfy an exhausted Task.
+        // Apply the same rule when the Store revalidates the assembled terminal result.
+        result.acceptance = if missing.is_empty() && result.execution == TaskExecutionV1::Completed
+        {
             TaskAcceptanceV1::Satisfied
         } else if failed {
             TaskAcceptanceV1::Unsatisfied
@@ -1334,14 +1338,17 @@ impl TaskDomain for ReportTaskDomain {
                 .collect(),
             missing_obligations: BTreeSet::new(),
         };
-        self.assess(cas, &state.revision, &mut result)?;
-        if report
-            .outcomes
-            .iter()
-            .any(|(_, outcome)| matches!(outcome, NodeOutcome::Failed { .. }))
+        // Pure acceptance can complete after a verifier settles above its reservation. The
+        // committed budget remains authoritative even when every graph node completed.
+        if execution.budget.breached()
+            || report
+                .outcomes
+                .iter()
+                .any(|(_, outcome)| matches!(outcome, NodeOutcome::Failed { .. }))
         {
             result.execution = TaskExecutionV1::Exhausted;
         }
+        self.assess(cas, &state.revision, &mut result)?;
         result.validate()?;
         Ok(result)
     }
@@ -1381,7 +1388,7 @@ impl TaskDomain for ReportTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,

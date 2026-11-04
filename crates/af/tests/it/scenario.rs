@@ -114,7 +114,7 @@ impl Fixture {
         let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         write(
             &policy,
-            &json!({"schema":"af/scenario-policy@1","adapters":{},"task_plans":[],"file_roots":[owned],"decision_keys":{"owner":key.pk.to_box().unwrap().into_string()}}),
+            &json!({"schema":"af/scenario-policy@3","adapters":{},"task_plans":[],"task_templates":[],"file_roots":[owned],"decision_keys":{"owner":key.pk.to_box().unwrap().into_string()}}),
         );
         std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
         write(&inputs, &json!({}));
@@ -135,7 +135,7 @@ impl Fixture {
         ];
         write(
             &bundle,
-            &json!({"schema":"af/scenario-bundle@1","root":"main","definitions":{"main":{"schema":"af/scenario@1","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
+            &json!({"schema":"af/scenario-bundle@3","root":"main","definitions":{"main":{"schema":"af/scenario@3","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
         );
         Self {
             _root: root,
@@ -162,7 +162,7 @@ impl Fixture {
                 self.policy.to_str().unwrap(),
             ],
         );
-        valid("scenario-pin-v1.json", &pinned);
+        valid("scenario-pin-v3.json", &pinned);
         cli(
             &self.repo,
             &self.state,
@@ -238,6 +238,77 @@ impl Fixture {
 }
 
 #[test]
+fn performance_scenario_native_task_submission_lost_response_wait_and_report_complete_without_models()
+ {
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let task_root = f._root.path().join("task-fixture");
+    std::fs::create_dir(&task_root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let plan = cli(
+        &f.repo,
+        &task_state,
+        &["task", "plan", "--file", "ticket.json"],
+    );
+    let mut policy = f.install_service();
+    policy["task_plans"] = json!([plan["plan_id"]]);
+    policy["adapters"]["service"]["operations"] = json!(["observe", "experiment_submit_v1"]);
+    write(&f.policy, &policy);
+    write(
+        &f.machine.join("observation.json"),
+        &json!({"revision":"head-1","native_verified":true}),
+    );
+    let submit = json!({"adapter":"service","operation":"experiment_submit_v1","destination":"fixture:repository"});
+    let observe =
+        json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
+    let candidate = json!({"source":"step","step":"candidate","port":"result"});
+    let report = json!({"source":"step","step":"comparison","port":"result"});
+    let bundle = json!({"schema":"af/scenario-bundle@3","root":"performance","definitions":{"performance":{
+        "schema":"af/scenario@3","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
+        "steps":[
+            step("candidate", json!({"kind":"task","target":{"repo":f.repo,"state":task_state,
+                "task_id":"pagination-cli","plan_id":plan["plan_id"],"revision_id":plan["revision_id"],"max_tokens":1000}}),json!({}),"task"),
+            step("experiment",json!({"kind":"action","grant":submit,"requires_decision":false,"required_condition":null}),
+                json!({"subject":literal("text",json!("declared-experiment")),"revision":literal("text",json!("head-1")),
+                    "body":literal("text",json!("fake native adapter result; no measurement claim")),"candidate":candidate}),"action"),
+            step("comparison",json!({"kind":"wait","grant":observe,"condition":"native_verified"}),
+                json!({"subject":{"source":"project","value":{"source":"step","step":"experiment","port":"result"},
+                    "projection":{"kind":"action_intent"}},"revision":literal("text",json!("head-1"))}),"observation")],
+        "result":{"candidate":candidate,"report":report},"completion":[{"source":"project","value":report,
+            "projection":{"kind":"observation_satisfied"}}],
+        "authority":{"task_plans":[plan["plan_id"]],"task_templates":[],"grants":[submit,observe],"decision_owners":[]},
+        "limits":{"max_tokens":1000,"max_wall_ms":3600000,"max_dispatches":8}}}});
+    valid("scenario-bundle-v3.json", &bundle);
+    write(&f.bundle, &bundle);
+    std::fs::write(
+        f.machine.join("lose-response"),
+        b"lose one submission response",
+    )
+    .unwrap();
+    let waiting = f.start("performance");
+    assert_eq!(waiting["status"], "waiting");
+    assert_eq!(waiting["waiting"]["kind"], "reconcile");
+    let done = cli(&f.repo, &f.state, &["scenario", "resume", "performance"]);
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(
+        done["frames"]["root"]["outputs"]["report"]["value"]["satisfied"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.machine.join("effects"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "resume", "performance"])["status"],
+        "succeeded"
+    );
+}
+
+#[test]
 fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evidence() {
     let f = Fixture::bare();
     // Reuse the existing captured command-Worker fixture rather than building a second Task
@@ -282,7 +353,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     )
     .unwrap();
     let waiting = f.start("issue-fix");
-    valid("scenario-run-v1.json", &waiting);
+    valid("scenario-run-v3.json", &waiting);
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waiting"]["kind"], "decision");
     assert_eq!(
@@ -325,7 +396,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
         &json!({"revision":"head-1","checks_passed":true,"merged":true}),
     );
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "issue-fix"]);
-    valid("scenario-run-v1.json", &done);
+    valid("scenario-run-v3.json", &done);
     assert_eq!(done["status"], "succeeded");
     assert_eq!(
         done["frames"]["root"]["outputs"]["implementation"]["type"],
@@ -375,7 +446,7 @@ fn cancellation_preserves_receipts_and_never_dispatches_later_effects() {
     );
     assert!(!f.owned.join("note").exists());
     assert_eq!(cancelled["cancellation"]["reason"], "operator cancelled");
-    valid("scenario-run-v1.json", &cancelled);
+    valid("scenario-run-v3.json", &cancelled);
 }
 
 #[test]
@@ -543,7 +614,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let ant = f._root.path().join("ant.json");
     write(
         &ant,
-        &json!({"schema":"af/ant@1","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
+        &json!({"schema":"af/ant@3","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
     );
     let pin = cli(
         &f.repo,
@@ -611,7 +682,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
         1
     );
     for tick in ticks {
-        valid("ant-tick-v1.json", &tick);
+        valid("ant-tick-v3.json", &tick);
     }
     let shown = cli(&f.repo, &f.state, &["ant", "show", "daily"]);
     assert_eq!(shown["occurrences"].as_array().unwrap().len(), 1);
@@ -644,7 +715,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let expired = cli(&f.repo, &f.state, &["scenario", "show", run_id]);
     assert_eq!(expired["status"], "failed");
     assert!(expired["failure"].as_str().unwrap().contains("deadline"));
-    valid("ant-state-v1.json", &paused);
+    valid("ant-state-v3.json", &paused);
 }
 
 #[test]
@@ -829,7 +900,7 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
             f.policy.to_str().unwrap(),
         ],
     );
-    valid("scenario-pin-v1.json", &pin);
+    valid("scenario-pin-v3.json", &pin);
     let json_wire = f._root.path().join("wire.json");
     write(&json_wire, &pin["bundle"]);
     let replay = cli(
@@ -1137,12 +1208,12 @@ fn github_read_only_source_sequence(f: Fixture) {
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
     assert_eq!(done["status"], "succeeded", "{done:#}");
     assert_eq!(done["pin"], pin);
-    valid("scenario-run-v1.json", &done);
+    valid("scenario-run-v3.json", &done);
     let journal: Value = serde_json::from_slice(
         &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
     )
     .unwrap();
-    valid("github-adapter-state-v1.json", &journal);
+    valid("github-adapter-state-v2.json", &journal);
     assert_eq!(journal["records"].as_object().unwrap().len(), 3);
     assert_eq!(
         f.github_state()["effects"],
@@ -1178,3 +1249,747 @@ fn production_github_adapter_changed_executable_digest_refuses_dispatch() {
     assert_eq!(result["waiting"]["kind"], "reconcile");
     assert_eq!(f.github_state()["effects"], json!([]));
 }
+
+#[test]
+fn roadmap_cli_restart_revision_confirmation_and_untrusted_progress_refusal() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let state = root.path().join("state");
+    let file = root.path().join("roadmap.json");
+    let mut proposal: Value = serde_json::from_slice(
+        &std::fs::read(workspace().join("fixtures/scenarios/performance-roadmap.json")).unwrap(),
+    )
+    .unwrap();
+    write(&file, &proposal);
+    let args = ["--file", file.to_str().unwrap()];
+    let pin = cli(
+        &repo,
+        &state,
+        &[&["scenario", "roadmap", "validate"][..], &args].concat(),
+    );
+    valid("scenario-roadmap-revision-v2.json", &pin);
+    assert!(
+        !state.exists(),
+        "validation creates no Store or execution state"
+    );
+    assert!(
+        !output(
+            &repo,
+            &state,
+            &[
+                &["scenario", "roadmap", "create"][..],
+                &args,
+                &["--confirm-revision", "wrong"]
+            ]
+            .concat()
+        )
+        .status
+        .success()
+    );
+    assert!(!state.exists(), "confirmation precedes creation");
+    let create = [
+        &["scenario", "roadmap", "create"][..],
+        &args,
+        &["--confirm-revision", pin["revision"].as_str().unwrap()],
+    ]
+    .concat();
+    let first = cli(&repo, &state, &create);
+    valid("scenario-roadmap-v2.json", &first);
+    assert_eq!(first["progress"]["store-replay"]["state"], "pending");
+    assert_eq!(first["progress"]["store-replay"]["actual_tokens"], 0);
+    assert_eq!(first["progress"]["store-replay"]["reserved_tokens"], 0);
+    assert_eq!(
+        first["progress"]["store-replay"]["task_receipts"],
+        json!([])
+    );
+    assert_eq!(
+        cli(
+            &repo,
+            &state,
+            &["scenario", "roadmap", "show", "performance"]
+        ),
+        first
+    );
+    assert!(
+        !output(&repo, &state, &create).status.success(),
+        "create cannot reset history"
+    );
+    let other = cli(&repo, &root.path().join("other-store"), &create);
+    assert_ne!(
+        first["identity"], other["identity"],
+        "equal labels in distinct Stores have separate stable goal namespaces"
+    );
+    proposal["goals"][0]["estimated_tokens"] = json!(3000);
+    write(&file, &proposal);
+    let planned = cli(
+        &repo,
+        &state,
+        &[
+            &["scenario", "roadmap", "validate"][..],
+            &args,
+            &["--roadmap", "performance"],
+        ]
+        .concat(),
+    );
+    assert_eq!(planned["parent"], pin["revision"]);
+    let revise = [
+        &["scenario", "roadmap", "revise", "performance"][..],
+        &args,
+        &["--confirm-revision", planned["revision"].as_str().unwrap()],
+    ]
+    .concat();
+    let revised = cli(&repo, &state, &revise);
+    assert_eq!(revised["identity"], first["identity"]);
+    assert_eq!(revised["progress"], first["progress"]);
+    assert_eq!(revised["revisions"][0], first["revisions"][0]);
+    assert_eq!(revised["revisions"].as_array().unwrap().len(), 2);
+    assert!(
+        !output(&repo, &state, &revise).status.success(),
+        "stale revision confirmation fails after restart"
+    );
+    let list = cli(&repo, &state, &["scenario", "roadmap", "list"]);
+    valid("scenario-roadmap-list-v2.json", &list);
+    assert_eq!(list["roadmaps"]["performance"], revised);
+    for (key, value) in [
+        ("actual_tokens", json!(2000)),
+        ("state", json!("completed")),
+        ("completed_work", json!(["claimed experiment"])),
+    ] {
+        let mut forged = proposal.clone();
+        forged["goals"][0][key] = value;
+        write(&file, &forged);
+        assert!(
+            !output(
+                &repo,
+                &state,
+                &[&["scenario", "roadmap", "validate"][..], &args].concat()
+            )
+            .status
+            .success()
+        );
+        assert!(!output(&repo, &state, &revise).status.success());
+    }
+    assert_eq!(
+        cli(
+            &repo,
+            &state,
+            &["scenario", "roadmap", "show", "performance"]
+        ),
+        revised
+    );
+    let runs = cli(&repo, &state, &["scenario", "list"]);
+    let ants = cli(&repo, &state, &["ant", "list"]);
+    assert_eq!(runs["runs"], json!({}));
+    assert_eq!(ants["ants"], json!({}));
+    // Native command catalog and generated completions see the nested public API.
+    let catalog = crate::common::af()
+        .args(["help", "scenario", "roadmap", "create", "--json"])
+        .output()
+        .unwrap();
+    let catalog = value(catalog, 0);
+    assert_eq!(catalog["scope"], "af scenario roadmap create");
+    let completion = crate::common::af()
+        .env("COMPLETE", "fish")
+        .args(["--", "af", "scenario", "roadmap", ""])
+        .output()
+        .unwrap();
+    assert!(completion.status.success());
+    let candidates = String::from_utf8_lossy(&completion.stdout);
+    for command in ["validate", "create", "revise", "show", "list"] {
+        assert!(candidates.contains(command), "{candidates}");
+    }
+}
+
+#[test]
+fn roadmap_cli_refuses_checkout_state_symlinked_journal_and_missing_ownership() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(repo.join(".git")).unwrap();
+    let file = workspace().join("fixtures/scenarios/performance-roadmap.json");
+    let state = root.path().join("state");
+    let pin = cli(
+        &repo,
+        &state,
+        &[
+            "scenario",
+            "roadmap",
+            "validate",
+            "--file",
+            file.to_str().unwrap(),
+        ],
+    );
+    let args = [
+        "scenario",
+        "roadmap",
+        "create",
+        "--file",
+        file.to_str().unwrap(),
+        "--confirm-revision",
+        pin["revision"].as_str().unwrap(),
+    ];
+    assert!(
+        !output(&repo, &repo.join("private-state"), &args)
+            .status
+            .success()
+    );
+    assert!(!repo.join("private-state").exists());
+    let initial = cli(&repo, &state, &args);
+    use std::os::unix::{fs::MetadataExt, fs::symlink};
+    for path in [
+        &state,
+        &state.join("runs"),
+        &state.join("runs/scenarios.sqlite"),
+    ] {
+        let meta = path.metadata().unwrap();
+        assert_eq!(meta.uid(), nix::unistd::geteuid().as_raw());
+        assert_eq!(meta.mode() & 0o077, 0, "private state: {}", path.display());
+    }
+    let db = state.join("runs/scenarios.sqlite");
+    let backup = root.path().join("journal");
+    std::fs::rename(&db, &backup).unwrap();
+    symlink(&backup, &db).unwrap();
+    assert!(
+        !output(
+            &repo,
+            &state,
+            &["scenario", "roadmap", "show", "performance"]
+        )
+        .status
+        .success()
+    );
+    std::fs::remove_file(&db).unwrap();
+    std::fs::rename(&backup, &db).unwrap();
+    assert_eq!(
+        cli(
+            &repo,
+            &state,
+            &["scenario", "roadmap", "show", "performance"]
+        ),
+        initial
+    );
+    std::fs::remove_file(state.join("runs/scenario-owner")).unwrap();
+    assert!(
+        !output(&repo, &state, &args).status.success(),
+        "create cannot recreate missing ownership over existing history"
+    );
+}
+
+#[test]
+fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_replayed_authority()
+{
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let task_root = f._root.path().join("task-fixture");
+    std::fs::create_dir(&task_root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let commit = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let file = f.machine.join("template.json");
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+    document["verification"] = json!("evaluation");
+    write(&file, &document);
+    let pinned = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "template-pin",
+            "--file",
+            file.to_str().unwrap(),
+            "--repo",
+            f.repo.to_str().unwrap(),
+            "--task-state",
+            task_state.to_str().unwrap(),
+            "--authority-commit",
+            commit.trim(),
+        ],
+    );
+    valid("scenario-template-pin-v1.json", &pinned);
+    valid("scenario-task-template-v1.json", &pinned["template"]);
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pinned["template_id"]]);
+    write(&f.policy, &policy);
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    let root = &mut bundle["definitions"]["main"];
+    root["authority"]["task_templates"] = json!([pinned["template_id"]]);
+    root["steps"] = json!([
+        step(
+            "first",
+            json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),
+            json!({}),
+            "task"
+        ),
+        step(
+            "second",
+            json!({"kind":"fresh_task","template":pinned["template"],"bindings":{"source":{"port":"snapshot","artifact_type":"af/SourceTree@1"}}}),
+            json!({"source":{"source":"step","step":"first","port":"result"}}),
+            "task"
+        )
+    ]);
+    root["limits"]["max_tokens"] = json!(2000);
+    let mut proposal: Value = serde_json::from_slice(
+        &std::fs::read(workspace().join("fixtures/scenarios/performance-roadmap.json")).unwrap(),
+    )
+    .unwrap();
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    proposal["horizon"] = json!({"start_unix_ms":now,"end_unix_ms":now+86400000});
+    proposal["goals"][0]["loop_tokens"] = json!(2000);
+    let roadmap_file = f.machine.join("roadmap.json");
+    write(&roadmap_file, &proposal);
+    let revision = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "roadmap",
+            "validate",
+            "--file",
+            roadmap_file.to_str().unwrap(),
+        ],
+    );
+    let roadmap = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "roadmap",
+            "create",
+            "--file",
+            roadmap_file.to_str().unwrap(),
+            "--confirm-revision",
+            revision["revision"].as_str().unwrap(),
+        ],
+    );
+    root["admission"] = json!({"roadmap":"performance","identity":roadmap["identity"],"revision":revision["revision"]});
+    write(&f.bundle, &bundle);
+    // Editing the authoring file after pinning cannot change an admitted template's bytes.
+    document["goal"] = json!("Changed unchecked future text");
+    write(&file, &document);
+    let refused = f.start("command-roadmap-refused");
+    assert_eq!(refused["status"], "failed", "{refused}");
+    assert!(refused["failure"].as_str().unwrap().contains("Performance"));
+    assert!(refused["fresh_tasks"].as_object().unwrap().is_empty());
+    bundle["definitions"]["main"]["admission"] = Value::Null;
+    write(&f.bundle, &bundle);
+    let done = f.start("fresh-chain");
+    assert_eq!(done["status"], "succeeded", "{done}");
+    valid("scenario-run-v3.json", &done);
+    let roadmap = cli(
+        &f.repo,
+        &f.state,
+        &["scenario", "roadmap", "show", "performance"],
+    );
+    assert_eq!(
+        roadmap["progress"]["store-replay"]["state"], "deferred",
+        "{roadmap}"
+    );
+    assert_eq!(
+        roadmap["progress"]["store-replay"]["task_receipts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(roadmap["progress"]["store-replay"]["reserved_tokens"], 2000);
+    let plans = done["fresh_tasks"].as_object().unwrap();
+    assert_eq!(plans.len(), 2);
+    let first = done["frames"]["root"]["steps"][0]["outputs"]["result"]["value"].clone();
+    let second = done["frames"]["root"]["steps"][1]["outputs"]["result"]["value"].clone();
+    assert_ne!(first["task_id"], second["task_id"]);
+    // The native handoff preserves both original Snapshots and the exact accepted result.
+    // It writes only private Git objects and verifies the same capture on restart.
+    let source_diff = cli(
+        &f.repo,
+        &task_state,
+        &["task", "diff", first["task_id"].as_str().unwrap()],
+    );
+    let branch = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["symbolic-ref", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(branch.status.success());
+    let branch = String::from_utf8(branch.stdout).unwrap();
+    let request = json!({"schema":"af/scenario-experiment-source-request@1", "receipt":first,
+        "baseline_snapshot_id":source_diff["base_snapshot_id"], "candidate_snapshot_id":source_diff["snapshot_id"],
+        "control_sha":commit.trim(), "trusted_ref":branch.trim()});
+    valid("scenario-experiment-source-request-v1.json", &request);
+    let request_file = f.machine.join("experiment-source.json");
+    write(&request_file, &request);
+    let capture = f.machine.join("capture");
+    let source_args = [
+        "scenario",
+        "experiment-source",
+        "--file",
+        request_file.to_str().unwrap(),
+        "--repo",
+        f.repo.to_str().unwrap(),
+        "--task-state",
+        task_state.to_str().unwrap(),
+        "--into",
+        capture.to_str().unwrap(),
+    ];
+    let captured = cli(&f.repo, &f.state, &source_args);
+    valid("scenario-experiment-source-v1.json", &captured);
+    assert_eq!(
+        captured["baseline_snapshot_id"],
+        source_diff["base_snapshot_id"]
+    );
+    assert_eq!(
+        captured["candidate_snapshot_id"],
+        source_diff["snapshot_id"]
+    );
+    assert_ne!(captured["baseline_sha"], captured["candidate_sha"]);
+    assert_eq!(captured, cli(&f.repo, &f.state, &source_args));
+    let mut stale = request.clone();
+    stale["candidate_snapshot_id"] = json!(format!("sha256:{}", "f".repeat(64)));
+    write(&request_file, &stale);
+    assert!(!output(&f.repo, &f.state, &source_args).status.success());
+    write(&request_file, &request);
+    std::fs::write(capture.join("source.json"), b"{}").unwrap();
+    assert!(!output(&f.repo, &f.state, &source_args).status.success());
+    let inspection = cli(
+        &f.repo,
+        &task_state,
+        &["task", "show", second["task_id"].as_str().unwrap()],
+    );
+    let shown = serde_json::to_string(&inspection).unwrap();
+    assert!(
+        shown.contains(first["task_id"].as_str().unwrap()),
+        "{inspection}"
+    );
+    for _ in 0..2 {
+        let resumed = cli(&f.repo, &f.state, &["scenario", "resume", "fresh-chain"]);
+        assert_eq!(resumed, done);
+    }
+    let listed = cli(&f.repo, &task_state, &["task", "list"]);
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 3, "{listed}");
+    let listed = serde_json::to_string(&listed).unwrap();
+    assert!(
+        !listed.contains("pagination-cli"),
+        "Template placeholder must never become a Task: {listed}"
+    );
+    // Invalid dependent outputs fail before planning another native Task. Reuse the already
+    // accepted exact-plan predecessor, so these refusal cases dispatch no new Worker.
+    bundle["definitions"]["main"]["admission"] = Value::Null;
+    bundle["definitions"]["main"]["steps"][0]["operation"] = json!({"kind":"task","target":{"repo":f.repo,"state":task_state,"task_id":first["task_id"],"plan_id":first["plan_id"],"revision_id":first["revision_id"],"max_tokens":1000}});
+    bundle["definitions"]["main"]["authority"]["task_plans"] = json!([first["plan_id"]]);
+    policy["task_plans"] = json!([first["plan_id"]]);
+    write(&f.policy, &policy);
+    for (label, port, kind, diagnostic) in [
+        ("missing-output", "absent", "af/SourceTree@1", "missing"),
+        ("mistyped-output", "snapshot", "af/Report@1", "wrong type"),
+    ] {
+        bundle["definitions"]["main"]["steps"][1]["operation"]["bindings"]["source"] =
+            json!({"port":port,"artifact_type":kind});
+        write(&f.bundle, &bundle);
+        let failed = f.start(label);
+        assert_eq!(failed["status"], "failed", "{failed}");
+        assert!(
+            failed["failure"].as_str().unwrap().contains(diagnostic),
+            "{failed}"
+        );
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+    }
+    let listed = cli(&f.repo, &task_state, &["task", "list"]);
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 3, "{listed}");
+    // Restore a fresh first step before checking its immutable template grant.
+    bundle["definitions"]["main"]["steps"][0]["operation"] =
+        json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}});
+    // Occupying a stable fresh Task ID with the same file bytes under other authority must
+    // not turn native same-file reconciliation into Scenario execution authority.
+    bundle["definitions"]["main"]["steps"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(1);
+    write(&f.bundle, &bundle);
+    let pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+        ],
+    );
+    let held = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "start",
+            "occupied-native",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+            "--inputs",
+            f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+        ],
+    );
+    let identity = serde_json::to_vec(&json!([
+        held["execution_id"],
+        held["pin"]["revision"],
+        "root/first",
+        1
+    ]))
+    .unwrap();
+    let fresh_id = format!(
+        "scenario-{}",
+        review_core::hex::encode(&Sha256::digest(identity))
+    );
+    let mut occupied = pinned["template"]["document"].clone();
+    occupied["task_id"] = json!(fresh_id);
+    let occupied_file = f.machine.join("occupied-task.json");
+    std::fs::write(&occupied_file, serde_json::to_vec(&occupied).unwrap()).unwrap();
+    // A native plan can be committed while its response is lost. Simulate exactly that gap
+    // through the native CLI, before the Scenario has recorded its fresh Task/plan mapping.
+    let lost = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "start",
+            "lost-planning",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+            "--inputs",
+            f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+        ],
+    );
+    let identity = serde_json::to_vec(&json!([
+        lost["execution_id"],
+        lost["pin"]["revision"],
+        "root/first",
+        1
+    ]))
+    .unwrap();
+    let lost_id = format!(
+        "scenario-{}",
+        review_core::hex::encode(&Sha256::digest(identity))
+    );
+    let mut lost_document = pinned["template"]["document"].clone();
+    lost_document["task_id"] = json!(lost_id);
+    let lost_file = f.machine.join("lost-task.json");
+    std::fs::write(&lost_file, serde_json::to_vec(&lost_document).unwrap()).unwrap();
+    let native_plan = cli(
+        &f.repo,
+        &task_state,
+        &["task", "plan", "--file", lost_file.to_str().unwrap()],
+    );
+    let recovered = cli(&f.repo, &f.state, &["scenario", "resume", "lost-planning"]);
+    assert_eq!(recovered["status"], "succeeded", "{recovered}");
+    let target = recovered["fresh_tasks"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(target["task_id"], lost_id);
+    assert_eq!(target["plan_id"], native_plan["plan_id"]);
+    let listed = cli(&f.repo, &task_state, &["task", "list"]);
+    assert_eq!(
+        listed["tasks"].as_array().unwrap().len(),
+        4,
+        "Native planning recovery duplicated work: {listed}"
+    );
+    let code_policy = f.repo.join(".af/code-policy.toml");
+    let policy_text = std::fs::read_to_string(&code_policy)
+        .unwrap()
+        .replace("check_wall_ms = 5000", "check_wall_ms = 4000");
+    std::fs::write(&code_policy, policy_text).unwrap();
+    for args in [
+        vec!["add", ".af/code-policy.toml"],
+        vec!["commit", "-qm", "different captured authority"],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&f.repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    cli(
+        &f.repo,
+        &task_state,
+        &["task", "plan", "--file", occupied_file.to_str().unwrap()],
+    );
+    let refused = cli(
+        &f.repo,
+        &f.state,
+        &["scenario", "resume", "occupied-native"],
+    );
+    assert_eq!(refused["status"], "failed", "{refused}");
+    assert!(
+        refused["failure"]
+            .as_str()
+            .unwrap()
+            .contains("pinned template authority"),
+        "{refused}"
+    );
+    assert!(refused["fresh_tasks"].as_object().unwrap().is_empty());
+    // A changed template requires its own machine grant and pin before it can dispatch.
+    bundle["definitions"]["main"]["steps"][0]["operation"]["template"]["document"]["goal"] =
+        json!("Widened unchecked text");
+    write(&f.bundle, &bundle);
+    let error = value(
+        output(
+            &f.repo,
+            &f.state,
+            &[
+                "scenario",
+                "validate",
+                "--file",
+                f.bundle.to_str().unwrap(),
+                "--authority",
+                f.policy.to_str().unwrap(),
+            ],
+        ),
+        1,
+    );
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("template exceeds"),
+        "{error}"
+    );
+}
+
+#[test]
+fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementation_verification_field()
+ {
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let task_root = f._root.path().join("read-only-fixture");
+    std::fs::create_dir(&task_root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "review");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let commit = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "template-pin",
+            "--file",
+            f.repo.join("review.json").to_str().unwrap(),
+            "--repo",
+            f.repo.to_str().unwrap(),
+            "--task-state",
+            task_state.to_str().unwrap(),
+            "--authority-commit",
+            commit.trim(),
+        ],
+    );
+    assert!(pin["template"]["document"].get("verification").is_none());
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pin["template_id"]]);
+    write(&f.policy, &policy);
+    f.install_service();
+    write(
+        &f.machine.join("observation.json"),
+        &json!({"revision":"head-1","bounded_evidence":true}),
+    );
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    let root = &mut bundle["definitions"]["main"];
+    root["authority"]["task_templates"] = json!([pin["template_id"]]);
+    let observe =
+        json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
+    root["authority"]["grants"] = json!([observe]);
+    root["steps"] = json!([
+        step(
+            "history",
+            json!({"kind":"wait","grant":observe,"condition":"bounded_evidence"}),
+            json!({"subject":literal("text",json!("selected-history")),"revision":literal("text",json!("head-1"))}),
+            "observation"
+        ),
+        step(
+            "review",
+            json!({"kind":"fresh_task","template":pin["template"],"bindings":{}}),
+            json!({"scenario_evidence":{"source":"step","step":"history","port":"result"}}),
+            "task"
+        )
+    ]);
+    write(&f.bundle, &bundle);
+    let done = f.start("read-only");
+    assert_eq!(done["status"], "succeeded", "{done}");
+    let receipt = &done["frames"]["root"]["steps"][1]["outputs"]["result"]["value"];
+    assert_eq!(receipt["result"]["acceptance"], "satisfied");
+    let cas = review_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let revision = cas
+        .get_artifact(receipt["revision_id"].as_str().unwrap())
+        .unwrap();
+    let requirements_id = revision.payload["inputs"]["requirements"]["artifact_ids"][0]
+        .as_str()
+        .unwrap();
+    let requirements = cas.get_artifact(requirements_id).unwrap();
+    assert_eq!(
+        requirements.payload["specification"]["scenario_evidence"]["condition"],
+        "bounded_evidence"
+    );
+    assert_eq!(
+        requirements.payload["specification"]["scenario_evidence"]["evidence"],
+        "service revision head-1"
+    );
+    let plan = cas
+        .get_artifact(receipt["plan_id"].as_str().unwrap())
+        .unwrap();
+    assert!(
+        plan.payload["bindings"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|slot| !slot.ends_with(".implementer"))
+    );
+    let status = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert!(
+        status.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+}
+
+#[path = "scenario_performance.rs"]
+mod performance;

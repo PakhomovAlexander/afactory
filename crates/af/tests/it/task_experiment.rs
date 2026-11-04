@@ -163,7 +163,7 @@ fn start(fixture: &Fixture, task_id: &str, files: Value, expected: i32) -> Value
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v15.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v16.json"), &outcome);
     outcome
 }
 
@@ -1299,8 +1299,7 @@ fn kernel_repository(root: &Path) -> PathBuf {
         catalog["packages"]["kernel/implementer"]["digest"]
     );
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    // The committed packages and their staged copies name the receipt this release no longer
-    // reads; the copy takes ADR-0255's migration.
+    // Normalize only disposable fixture authority; the shipped packages already name @2.
     task_cli::migrate_check_receipt(
         &repo,
         &[".af", "fixtures/kernel-experiment"],

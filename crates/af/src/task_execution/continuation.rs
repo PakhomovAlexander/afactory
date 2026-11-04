@@ -434,7 +434,7 @@ pub(super) fn recorded_partial(
     Ok(None)
 }
 
-/// The `continues` member of `af/task-inspection@15` for a partial tree (ADR-0257): the
+/// The `continues` member of `af/task-inspection@16` for a partial tree (ADR-0257): the
 /// continued Task, the node and Attempt its wall stopped, the wall end, the partial candidate
 /// and the Snapshot of the tree the new Task reads.
 pub(super) fn partial_inspection_value(
@@ -452,7 +452,7 @@ pub(super) fn partial_inspection_value(
     })
 }
 
-/// The `continues` member of `af/task-inspection@15`: the continued Task and round, the
+/// The `continues` member of `af/task-inspection@16`: the continued Task and round, the
 /// candidate the new Task reads, and the findings artifact with its count.
 pub(super) fn inspection_value(
     findings_id: &str,
@@ -545,6 +545,42 @@ pub(super) fn derived_file(
     let mut derived = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
     derived.push(b'\n');
     Ok(derived)
+}
+
+/// Reconstruct a selected findings capture from its original recorded round and evaluator.
+/// CAS presence alone is insufficient authority for research evidence.
+pub(super) fn verify_findings(
+    cas: &Cas,
+    store: &EventStore,
+    record: &TaskReviewFindingsV1,
+) -> Result<(), String> {
+    let source = store
+        .task_projection(cas, &record.continues.task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Findings source Task missing")?;
+    if source.revision_id != record.continues.task_revision_id
+        || !matches!(&source.phase, TaskPhaseV1::Finished { result_id } if result_id == &record.continues.result_id)
+    {
+        return Err("Findings source receipt changed".into());
+    }
+    let run = review_store::store::task::task_run_id(&record.continues.task_id)
+        .map_err(|e| e.to_string())?;
+    let rounds = task_report::recorded_outputs(cas, store, &run, TASK_REVIEW_ROUND_V1)?;
+    let position = rounds
+        .iter()
+        .position(|id| id == &record.continues.round_id)
+        .ok_or("Findings round is not recorded")?;
+    let round: TaskReviewRoundV1 = artifact(cas, &record.continues.round_id, TASK_REVIEW_ROUND_V1)?;
+    let mut findings = reviewer_findings(cas, &round)?;
+    findings.extend(evaluator_finding(cas, store, &run, position)?);
+    if round.round != record.continues.round
+        || round.snapshot_id != record.continues.snapshot_id
+        || round.missing_reviewers != record.missing_reviewers
+        || findings != record.findings
+    {
+        return Err("Findings differ from native review evidence".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -63,6 +63,11 @@ that Task's ID apart from the label, which carries a suffix when the Task ID was
 sweep collects the Task while the Workspace stays registered. While a Project Store cannot be
 read, a sweep collects no finished Task at all, and says which Project Store stopped it.
 
+For the manual bugfix/easy workflow, the separate [merge watcher](scenario-merge-watch.md)
+removes only explicitly named clean linked worktrees and local branches after verifying the exact
+human PR merge. It retains Task Stores, audit evidence and Workspace registry entries; it does
+not invoke `workspace remove`, collect Tasks or change native Scenario contracts.
+
 ## Workspaces
 
 A Workspace is one registered checkout of the Project for one line of work. Its ID is opaque:
@@ -1087,9 +1092,10 @@ counts.
 ### The port
 
 A pipeline that wants a Brief declares the root port and wires it only to the nodes that should
-see the Project. The port is version 2 of the pipeline shape: a pipeline that declares it says
-`schema = "af.pipeline/2"`, and every other pipeline stays `af.pipeline/1`
-([schema](../schemas/pipeline-definition-v2.json)):
+see the Project. Without a recovery allowance, a pipeline with this port says
+`schema = "af.pipeline/2"` ([schema](../schemas/pipeline-definition-v2.json)); a slot recovery
+allowance uses `af.pipeline/3`. The separate [structured profile](task-execution/structured.md)
+uses `af.pipeline/4` and has no Brief input. Other Pipelines stay `af.pipeline/1`:
 
 ```toml
 schema = "af.pipeline/2"

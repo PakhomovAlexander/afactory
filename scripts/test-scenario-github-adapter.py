@@ -52,7 +52,7 @@ def request(operation="publish_pr", intent="a", publication=None):
     inputs = {"subject": {"type": "text", "value": subject}, "revision": {"type": "text", "value": SHA},
               "body": {"type": "text", "value": A.canonical(p).decode()},
               "decision": {"type": "decision", "value": decision}}
-    return {"schema": "af/scenario-adapter-request@1", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
+    return {"schema": "af/scenario-adapter-request@2", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
             "input_digest": "sha256:" + "b" * 64, "operation": operation, "destination": "github:octo/project", "inputs": inputs}
 
 
@@ -136,7 +136,7 @@ class AdapterTests(unittest.TestCase):
         return req["inputs"]["subject"]["value"]
 
     def observe(self, publication, condition="checks_passed"):
-        req = {"schema": "af/scenario-adapter-request@1", "method": "observe", "operation": "observe",
+        req = {"schema": "af/scenario-adapter-request@2", "method": "observe", "operation": "observe",
                "intent_id": "sha256:" + "e" * 64, "input_digest": "sha256:" + "f" * 64,
                "destination": "github:octo/project", "inputs": {
                    "subject": {"type": "text", "value": publication}, "revision": {"type": "text", "value": SHA},
@@ -601,10 +601,15 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual((ROOT / "schemas" / name).read_text(), rendered)
         with self.assertRaises(A.Refused):
             A.validate_config({**self.config, "schema": "af/github-adapter-config@0"})
-        state = A.empty_state(self.config_digest)
-        state["schema"] = "af/github-adapter-state@0"
-        A.atomic_write(self.root / "receipts/state.json", A.state_bytes(state))
-        self.assertEqual(self.call(request())["outcome"], "pending")
+        earlier = request()
+        earlier["schema"] = "af/scenario-adapter-request@1"
+        with self.assertRaises(A.Refused):
+            A.validate_request(earlier, self.config)
+        for version in (0, 1):
+            state = A.empty_state(self.config_digest)
+            state["schema"] = "af/github-adapter-state@%d" % version
+            A.atomic_write(self.root / "receipts/state.json", A.state_bytes(state))
+            self.assertEqual(self.call(request())["outcome"], "pending")
 
 
 if __name__ == "__main__":

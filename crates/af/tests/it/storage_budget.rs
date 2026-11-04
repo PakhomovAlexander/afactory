@@ -236,8 +236,8 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
     let literal =
         |kind: &str, data: Value| json!({"source":"literal","value":{"type":kind,"value":data}});
     let bundle = json!({
-        "schema":"af/scenario-bundle@1","root":"main","definitions":{"main":{
-            "schema":"af/scenario@1","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
+        "schema":"af/scenario-bundle@3","root":"main","definitions":{"main":{
+            "schema":"af/scenario@3","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
             "steps":[{"id":"write","operation":{"kind":"action","grant":grant,
                 "requires_decision":false,"required_condition":null},
                 "inputs":{"file":{"source":"input","port":"file"},
@@ -246,10 +246,10 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
                 "timeout_ms":60000,"on_timeout":"fail"}],
             "result":{"ok":literal("boolean",json!(true))},
             "completion":[literal("boolean",json!(true))],
-            "authority":{"task_plans":[],"grants":[grant],"decision_owners":[]},"limits":limits
+            "authority":{"task_plans":[],"task_templates":[],"grants":[grant],"decision_owners":[]},"limits":limits
         }}
     });
-    let policy = json!({"schema":"af/scenario-policy@1","adapters":{},"task_plans":[],
+    let policy = json!({"schema":"af/scenario-policy@3","adapters":{},"task_plans":[],"task_templates":[],
         "decision_keys":{},"file_roots":[owned]});
     let write = |path: &Path, value: &Value| {
         std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
@@ -304,7 +304,7 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             _ => {
                 write(
                     &ant_file,
-                    &json!({"schema":"af/ant@1","id":"daily","scenario":bundle,
+                    &json!({"schema":"af/ant@3","id":"daily","scenario":bundle,
                     "inputs":{"file":{"type":"text","value":id}},
                     "schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
                     "owner":"owner","notification":"local:owner","execution":{"overlap":"skip",
@@ -847,7 +847,7 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     std::fs::write(
         &registry,
-        toml::to_string(&serde_json::json!({"version": 2, "providers": [
+        toml::to_string(&serde_json::json!({"version": 3, "providers": [
             {"id": "claude-personal", "kind": "claude", "auth_dir": config}]}))
         .unwrap(),
     )
@@ -1029,7 +1029,7 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     let (stdout, stderr) = text(&newer);
     assert!(newer.status.success(), "{stdout}\n{stderr}");
     let shown = json(&show("gc-newer", true));
-    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v16.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
@@ -1374,7 +1374,7 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
         machine.af(&repo, &[], &args)
     };
     let shown = json(&show(true));
-    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v16.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
@@ -1820,4 +1820,84 @@ fn a_version_1_store_registry_is_replaced_once_and_said_once() {
     assert!(text.contains("\nversion = 2\n"), "{text}");
     assert!(!text.contains("/elsewhere/state"), "{text}");
     assert!(text.contains("kind = \"project\""), "{text}");
+}
+
+#[test]
+fn roadmap_journal_is_registered_counted_and_retained_by_the_machine_storage_budget() {
+    let machine = Machine::new();
+    let state = machine.root.join("roadmap-store");
+    let file = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("fixtures/scenarios/performance-roadmap.json");
+    let pin = json(&machine.af(
+        &machine.root,
+        &[],
+        &[
+            "scenario",
+            "roadmap",
+            "validate",
+            "--file",
+            file.to_str().unwrap(),
+            "--json",
+        ],
+    ));
+    let initial = json(&machine.af(
+        &machine.root,
+        &[],
+        &[
+            "scenario",
+            "roadmap",
+            "create",
+            "--file",
+            file.to_str().unwrap(),
+            "--confirm-revision",
+            pin["revision"].as_str().unwrap(),
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    ));
+    let registry = std::fs::read_to_string(machine.state_home().join("af/stores.toml")).unwrap();
+    assert!(registry.contains(state.to_str().unwrap()));
+    let stock = json(&machine.af(&machine.root, &[], &["storage", "--json"]));
+    let entry = stock["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == state.to_str().unwrap())
+        .unwrap();
+    assert_eq!(entry["kind"], "task_store");
+    assert!(
+        entry["bytes"].as_u64().unwrap()
+            >= std::fs::metadata(state.join("runs/scenarios.sqlite"))
+                .unwrap()
+                .len()
+    );
+    let pruned = machine.af(
+        &machine.root,
+        &[
+            ("AF_STORAGE__MAX_BYTES", "1B"),
+            ("AF_STORAGE__MIN_FREE_BYTES", "0B"),
+        ],
+        &["storage", "prune", "--apply", "--json"],
+    );
+    assert!(pruned.status.success(), "{:?}", text(&pruned));
+    assert_eq!(
+        json(&machine.af(
+            &machine.root,
+            &[],
+            &[
+                "scenario",
+                "roadmap",
+                "show",
+                "performance",
+                "--state",
+                state.to_str().unwrap(),
+                "--json"
+            ]
+        )),
+        initial,
+        "budget pressure never silently resets roadmap history"
+    );
 }

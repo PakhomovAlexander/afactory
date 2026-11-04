@@ -6,7 +6,7 @@ use review_config::task::catalog::planning::PLANNER_PIPELINE;
 fn recorded_bindings(
     compiler: &mut TaskPlanCompiler,
     authority: &RunAuthority,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
 ) -> Result<(), String> {
     let mut admitted = BTreeMap::new();
     for binding in plan.bindings.values() {
@@ -56,7 +56,7 @@ pub(crate) fn run(
         .plan_id
         .as_deref()
         .ok_or("Task has no compiled plan to export")?;
-    let plan: ExecutionPlanV2 = artifact(&cas, plan_id, EXECUTION_PLAN_V2)?;
+    let plan: ExecutionPlanV3 = artifact(&cas, plan_id, EXECUTION_PLAN_V3)?;
     if plan.preparation.is_some() {
         return Err("Planning has not produced an executable definition to export".into());
     }
@@ -83,8 +83,8 @@ pub(crate) fn run(
                 .as_ref()
                 .ok_or("Captured Planner setting is absent")?,
         )?;
-        let bootstrap: ExecutionPlanV2 =
-            artifact(&cas, proof.bootstrap_plan_id(), EXECUTION_PLAN_V2)?;
+        let bootstrap: ExecutionPlanV3 =
+            artifact(&cas, proof.bootstrap_plan_id(), EXECUTION_PLAN_V3)?;
         recorded_bindings(&mut compiler, &authority, &bootstrap)?;
         compiler.install_selected_proposal(&cas, &proof)?;
         private_values.extend([

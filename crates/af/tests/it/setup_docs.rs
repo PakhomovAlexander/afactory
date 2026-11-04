@@ -30,7 +30,7 @@ fn help(args: &[&str]) -> String {
 
 /// Every installed profile, in the order the shared-catalog guide lists them. A new variant
 /// fails to compile in `profile_name` until it is added here and to the guide.
-const PROFILES: [&str; 8] = [
+const PROFILES: [&str; 9] = [
     "implementation",
     "reviewed_implementation",
     "repair_allowed_implementation",
@@ -39,10 +39,12 @@ const PROFILES: [&str; 8] = [
     "report",
     "optimization_analysis",
     "optimization_candidate",
+    "structured",
 ];
 
 fn profile_name(profile: TaskKindProfile) -> &'static str {
     match profile {
+        TaskKindProfile::Structured => "structured",
         TaskKindProfile::Implementation => "implementation",
         TaskKindProfile::ReviewedImplementation => "reviewed_implementation",
         TaskKindProfile::RepairAllowedImplementation => "repair_allowed_implementation",
@@ -217,4 +219,20 @@ fn catalog_destination_must_be_an_absent_project_relative_path() {
     let created = init("demo");
     assert!(created.status.success(), "{}", stderr(&created));
     assert!(root.path().join("demo").is_dir());
+}
+
+#[test]
+fn structured_task_help_distinguishes_deterministic_acceptance_from_semantic_verification() {
+    for args in [
+        ["task", "--help"].as_slice(),
+        ["task", "plan", "--help"].as_slice(),
+    ] {
+        let page = help(args);
+        assert!(page.contains("--input-json PORT=FILE"), "{page}");
+        assert!(page.contains("structurally_validated"), "{page}");
+        assert!(
+            page.contains("without independent semantic verification or code delivery"),
+            "{page}"
+        );
+    }
 }

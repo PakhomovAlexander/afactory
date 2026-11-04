@@ -107,16 +107,8 @@ class FixtureContracts(TempDir):
         self.assertEqual(overhead.select_contract("0.14.0-rc.1"), "check-receipt@2")
         self.assertEqual(overhead.select_contract("0.14.0-rc.1", "check-receipt@2"),
                          "check-receipt@2")
-        for release in ("0.14.0-rc.4", "0.14.0-rc.5"):
-            with self.subTest(release=release):
-                self.assertEqual(overhead.select_contract(release), "check-receipt@2")
-                self.assertEqual(overhead.select_contract(release, "check-receipt@2"),
-                                 "check-receipt@2")
         for release, requested in (("0.13.0", "check-receipt@2"),
-                                   ("0.14.0-rc.1", "check-receipt@1"),
-                                   ("0.14.0-rc.4", "check-receipt@1"),
-                                   ("0.14.0-rc.5", "check-receipt@1"),
-                                   ("0.14.0-rc.5", "unknown")):
+                                   ("0.14.0-rc.1", "check-receipt@1")):
             with self.assertRaisesRegex(overhead.BenchError, "measures under"):
                 overhead.select_contract(release, requested)
         with self.assertRaisesRegex(overhead.BenchError, "not `af VERSION`"):
@@ -125,8 +117,8 @@ class FixtureContracts(TempDir):
     def test_a_release_no_contract_names_is_refused_never_given_the_current_contract(self):
         # `0.11.9` (and a development `0.0.0`) declare no bench workload: refused, with or
         # without a requested contract, rather than measured under check-receipt@2.
-        for release in ("0.11.9", "0.0.0", "0.14.0-rc.6", "0.14.0",
-                        "0.14.0-nightly.20261103"):
+        for release in ("0.11.9", "0.0.0", "0.14.0", "0.14.0-rc.6",
+                        "0.14.0-nightly.20261102", "0.14.0-rc.5+unknown"):
             with self.subTest(release=release):
                 with self.assertRaisesRegex(overhead.BenchError, "named by no fixture contract"):
                     overhead.select_contract(release)
@@ -135,6 +127,21 @@ class FixtureContracts(TempDir):
         named = [version for contract in overhead.FIXTURE_CONTRACTS.values()
                  for version in contract["versions"]]
         self.assertEqual(len(named), len(set(named)), "a release is named by one contract")
+
+    def test_rc4_and_rc5_select_the_existing_receipt_2_contract(self):
+        # ADR-0255 introduced @2 before RC3; CHANGELOG.md's RC4 and RC5 sections
+        # retain it. The current writer (task/verification.rs) still writes @2, and
+        # the unchanged fixture packages declare it. Neither release needs an overlay.
+        for release in ("0.14.0-rc.4", "0.14.0-rc.5"):
+            with self.subTest(release=release):
+                self.assertEqual(overhead.select_contract(release), "check-receipt@2")
+                self.assertEqual(overhead.select_contract(release, "check-receipt@2"),
+                                 "check-receipt@2")
+                with self.assertRaisesRegex(overhead.BenchError, "measures under"):
+                    overhead.select_contract(release, "check-receipt@1")
+        contract = overhead.FIXTURE_CONTRACTS["check-receipt@2"]
+        self.assertEqual(contract["check_receipt"], "af/TaskCheckReceipt@2")
+        self.assertIsNone(contract["pins"])
 
     def test_check_receipt_1_renames_only_the_artifact_type_and_pins_the_declared_digests(self):
         fixture = "telemetry-bench-dense"
@@ -170,17 +177,32 @@ class FixtureContracts(TempDir):
             overhead.apply_contract(af, fixture, self.copy(fixture), "check-receipt@1")
 
     def test_the_current_contract_keeps_the_committed_packages(self):
-        fixture = "telemetry-bench-invocation-one"
-        catalog = (overhead.FIXTURES_DIR / fixture / "repo/.af/task-catalog.toml").read_text()
+        from perflab import clicases
         import re
-        committed = dict(re.findall(r'digest = "([^"]+)"\npath = "([^"]+)"', catalog))
-        af = self.stand_in("0.14.0-rc.1", {"@1": {}, "@2": {path: digest for digest, path
-                                                            in committed.items()}})
-        repo = self.copy(fixture)
-        produced = overhead.apply_contract(af, fixture, repo, "check-receipt@2")
-        self.assertEqual(produced["renamed_files"], [])
-        self.assertEqual(sorted(produced["packages"].values()), sorted(committed))
-        self.assertEqual((repo / ".af/task-catalog.toml").read_text(), catalog)
+        for source in sorted(overhead.FIXTURES_DIR.glob("*/repo")):
+            fixture = source.parent.name
+            with self.subTest(fixture=fixture):
+                catalog = source / ".af/task-catalog.toml"
+                committed = dict(re.findall(r'digest = "([^"]+)"\npath = "([^"]+)"',
+                                            catalog.read_text())) if catalog.exists() else {}
+                # Check real package bytes against their pins as well as the stand-in's
+                # answers. No measured AF command runs in this regression.
+                if catalog.exists():
+                    self.assertEqual(clicases.catalog_problems(str(source)), [])
+                else:
+                    self.assertEqual(clicases.pipeline_problems(str(source)), [])
+                af = self.stand_in("0.14.0-rc.5", {"@1": {}, "@2": {
+                    path: digest for digest, path in committed.items()}})
+                repo = self.copy(fixture)
+                produced = overhead.apply_contract(
+                    af, fixture, repo, overhead.select_contract("0.14.0-rc.5"))
+                self.assertEqual(produced["renamed_files"], [])
+                self.assertEqual(sorted(produced["packages"].values()), sorted(committed))
+                for path in source.rglob("*"):
+                    if path.is_file():
+                        relative = path.relative_to(source)
+                        self.assertEqual((repo / relative).read_bytes(), path.read_bytes(),
+                                         relative)
 
     def test_every_contract_pins_exactly_each_fixtures_packages(self):
         import re
@@ -194,30 +216,6 @@ class FixtureContracts(TempDir):
                 packages = re.findall(r'^\[packages\."([^"]+)"\]', catalog.read_text(), re.M)
                 self.assertEqual(sorted(contract["pins"][fixture]), sorted(packages),
                                  (name, fixture))
-
-    def test_rc4_and_rc5_keep_all_committed_fixtures_without_contract_specific_pins(self):
-        import re
-        for release in ("0.14.0-rc.4", "0.14.0-rc.5"):
-            contract = overhead.select_contract(release)
-            self.assertIsNone(overhead.FIXTURE_CONTRACTS[contract]["pins"])
-            for source in sorted(overhead.FIXTURES_DIR.glob("*/repo")):
-                fixture = source.parent.name
-                with self.subTest(release=release, fixture=fixture):
-                    catalog = source / ".af/task-catalog.toml"
-                    committed = (dict(re.findall(
-                        r'digest = "([^"]+)"\npath = "([^"]+)"', catalog.read_text()))
-                        if catalog.exists() else {})
-                    af = self.stand_in(release, {
-                        "@1": {}, "@2": {path: digest for digest, path in committed.items()}})
-                    repo = pathlib.Path(self.tmp) / release / fixture / "pristine"
-                    overhead.copy_writable(source, repo)
-                    produced = overhead.apply_contract(af, fixture, repo, contract)
-                    self.assertEqual(produced["renamed_files"], [])
-                    self.assertEqual(sorted(produced["packages"].values()), sorted(committed))
-                    for path in source.rglob("*"):
-                        if path.is_file():
-                            self.assertEqual((repo / path.relative_to(source)).read_bytes(),
-                                             path.read_bytes(), path)
 
 
 if __name__ == "__main__":

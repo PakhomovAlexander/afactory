@@ -11,7 +11,7 @@ pub(super) struct SelectedTask {
     pub revision_id: String,
     pub compiler: TaskPlanCompiler,
     pub adapters: Adapters,
-    pub plan: ExecutionPlanV2,
+    pub plan: ExecutionPlanV3,
     pub graph: CompiledTask,
 }
 

@@ -153,7 +153,7 @@ pub struct WorkerContract {
 
 /// Contracts are local captured data. External schema resolution would add undeclared
 /// filesystem/network inputs while validating a supposedly immutable Worker package.
-fn schema_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
+pub fn schema_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
     fn local(value: &Value, depth: usize, nodes: &mut usize) -> bool {
         *nodes += 1;
         if depth > 64 || *nodes > 16384 {
@@ -570,6 +570,22 @@ impl WorkerAccess {
     }
 }
 
+/// Kernel-owned remaining reservation for one native call. Never decoded from Worker input
+/// or environment. Pi separately checks the safe JSON integer range of its host protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemainingTokenAllowance(u64);
+impl RemainingTokenAllowance {
+    pub fn new(tokens: u64) -> Result<Self, String> {
+        if tokens == 0 {
+            return Err("Missing or invalid remaining token allowance".into());
+        }
+        Ok(Self(tokens))
+    }
+    pub fn tokens(self) -> u64 {
+        self.0
+    }
+}
+
 pub trait WorkerModelAdapter: Send + Sync {
     /// Credential boundary this adapter actually provides. Model transports run trusted and
     /// may hold ambient Provider credentials.
@@ -599,6 +615,44 @@ pub trait WorkerModelAdapter: Send + Sync {
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn;
+
+    /// Trusted dispatch with the actual remaining reservation. Existing adapters keep their
+    /// native behavior; Pi requires this path for every paid invocation, including admission.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_with_allowance(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        _allowance: RemainingTokenAllowance,
+        contract: reply_schema::ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        match contract {
+            reply_schema::ReplyContract::Request => self.invoke_started(
+                cas,
+                workdir,
+                input,
+                timeout,
+                access,
+                cancellation,
+                environment,
+            ),
+            reply_schema::ReplyContract::ReviewerResult => self.invoke_constrained(
+                cas,
+                workdir,
+                input,
+                timeout,
+                access,
+                cancellation,
+                environment,
+                contract,
+            ),
+        }
+    }
 
     /// `invoke`, with a program that could not be started told apart from every other return.
     /// An adapter that spawns a native client overrides this; the default never reports one.

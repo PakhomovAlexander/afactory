@@ -149,6 +149,11 @@ jobs:
           AF_CI_METRICS: target/class-metrics.jsonl
           AF_PERF_REQUIRE_TOMLLIB: '1'
         run: |
+          # Linux /tmp can be tmpfs, below the production sandbox free-disk floor.
+          # Keep macOS's existing temp-root semantics.
+          if [ "$RUNNER_OS" = Linux ]; then
+            export TMPDIR="$RUNNER_TEMP"
+          fi
           python3 scripts/ci-step.py --stage tests "class-$TEST_CLASS" python3 scripts/test-classes.py run             --plan target/test-classes/plan.json --class "$TEST_CLASS" --output target/class-evidence
       - name: Report observed class costs
         if: always()

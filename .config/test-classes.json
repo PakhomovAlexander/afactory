@@ -167,6 +167,7 @@
       "task_delivery": "e2e",
       "task_developer": "e2e",
       "task_document": "e2e",
+      "task_custom": "e2e",
       "task_experiment": "perf",
       "task_file": "e2e",
       "task_file_errors": "uix",
@@ -334,10 +335,12 @@
     "test-af-pin.py": "functional",
     "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",
+    "test-backlog-triage.py": "functional",
     "test-changelog-notes.py": "functional",
     "test-check-pr-report.py": "functional",
     "test-gate-owner.py": "functional",
     "test-nextest-gate.py": "functional",
+    "test-performance-scenario.py": "functional",
     "test-performance.py": "perf",
     "test-pi-host.py": "e2e",
     "test-pr-lines.py": "functional",
@@ -349,7 +352,8 @@
     "test-test-classes.py": "functional",
     "test-test-quarantine.py": "functional",
     "test-test-time-report.py": "functional",
-    "test-scenario-github-adapter.py": "e2e"
+    "test-scenario-github-adapter.py": "e2e",
+    "test-scenario-merge-watch.py": "e2e"
   },
   "utilities": [
     "test-classes.py",

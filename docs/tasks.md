@@ -297,7 +297,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 
 | Outcome | Exit code of `af task run` | Meaning |
 | --- | ---: | --- |
-| `verified` | 0 | every acceptance obligation is satisfied; the result can be delivered |
+| `verified` | 0 | all declared acceptance obligations met; inspect the domain conclusion |
 | `changes_requested` | 3 | the review or the evaluator ran to completion and asked for changes |
 | `gate_failed` | 5 | a required check of the gate failed or could not run |
 | `provider_failed` | 6 | a Worker's Provider or process failed, or its reply was not admissible |
@@ -572,7 +572,7 @@ round the selected Pipeline must declare `findings` (the kernel's
 do [`default/implementation`](#the-default-pipeline) and
 [`default-light/implementation`](#the-light-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@15`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@16`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 
@@ -769,7 +769,9 @@ adds up, and nothing is reset or refunded.
   2 of 3)`, and Ctrl-C ends it. A failure that outlasts the retries fails the node with its
   class and the retry history.
 - **An identity probe that proves nothing.** Before every private send af checks that the
-  Provider's account is still the one the plan captured. A probe that times out or answers
+  Provider's account is still the one the plan captured. Pi Kimi instead records unavailable
+  account identity and checks its captured auth context and OAuth mode; it cannot detect account
+  substitution within that context and refuses principal-independence policy. A native CLI probe that times out or answers
   malformed is sent again, three probes in all; then the node fails with `(environment)` in its
   line, as `provider_environment`, the environment's failure, not as an account change
   (`identity_changed`) or an unverified login (`identity_unverified`), and its next command is
@@ -1227,3 +1229,7 @@ directory once, or `**Lines added: none**` alone, then the end marker.
 | Worker authentication failure | Re-establish the named machine-local Provider login yourself with `af provider setup … --login` at a private terminal, then confirm with `af provider status`. |
 | missing check tool | Install the repository-approved toolchain; never remove or weaken the check. |
 | state or disk error | Preserve the external Task state directory, restore disk capacity/permissions, and retry the exact inspection or delivery command. |
+
+Package-defined [structured Tasks](task-execution/structured.md) accept captured JSON and return
+typed data with conclusion `structurally_validated`. That is structural acceptance without
+independent semantic verification or code delivery.

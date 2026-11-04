@@ -594,7 +594,7 @@ its own versioned document instead, carrying a classified outcome and af-authore
 Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
 one diagnostic line, so discarding stdout never hides a refusal. The Provider
 documents are af/provider-detect@4 (`af provider detect`), af/provider-status@5,
-af/provider-setup@2, af/pi-provider-setup@2 and af/provider-models@2; none carries an account,
+af/provider-setup@2, af/pi-provider-setup@3 and af/provider-models@2; none carries an account,
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
@@ -618,20 +618,25 @@ Review reading commands:
                                        (schemas/findings-sarif-v1.json)
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@1; start, show, resume, decide, cancel: af/scenario-run@1.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@1.
-  ant validate: af/ant-pin@1; add, show, enable, pause, disable: af/ant-state@1;
-  ant list: af/ant-list@1; tick: af/ant-tick@1.
-  Definitions and machine policy: af/scenario@1, af/scenario-bundle@1, af/scenario-policy@1,
-  af/ant@1; signed envelopes: af/scenario-signed-decision@1.
-  Journal: af/scenario-store@1. Owned file envelope: af/scenario-owned-file@1.
-  Bounded adapters: af/scenario-adapter-request@1 and af/scenario-adapter-response@1.
+  scenario validate: af/scenario-pin@3; start, show, resume, decide, cancel: af/scenario-run@3.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@3.
+  ant validate: af/ant-pin@3; add, show, enable, pause, disable: af/ant-state@3;
+  ant list: af/ant-list@3; tick: af/ant-tick@3.
+  Definitions and machine policy: af/scenario@3, af/scenario-bundle@3, af/scenario-policy@3,
+  af/ant@3; signed envelopes: af/scenario-signed-decision@1.
+  Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
+  af/scenario-roadmap@2 (create, show, revise), af/scenario-roadmap-list@2 (list).
+  Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
+  Journal: af/scenario-store@4. Owned file envelope: af/scenario-owned-file@1.
+  Research evidence: af/scenario-evidence-source@1.
+  Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
+  Bounded adapters: af/scenario-adapter-request@2 and af/scenario-adapter-response@1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@15; a collected Task:
+  af task show --json                  af/task-inspection@16; a collected Task:
                                        af/task-collected-inspection@3
   af task show --checks --json         af/task-checks@3
   af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
@@ -654,7 +659,7 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@15, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-inspection@16, af/task-collected-inspection@3, af/task-checks@3, each
 af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
 af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
 af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the

@@ -14,7 +14,8 @@ The durable business request, with immutable revisions, typed inputs and require
 acceptance obligations, captured authority and bounded resources. Review is one Task kind.
 
 **Scenario**:
-A reusable, versioned definition that orchestrates existing Tasks, child Scenarios, bounded
+A reusable, versioned definition that orchestrates pinned Tasks or authorized fresh Task templates,
+child Scenarios, bounded
 Actions, authenticated human Decisions and observable Waits through explicit typed ports. Its
 ordered steps, completion conditions, authority and limits are deterministic; models run only
 inside Tasks ([ADR-0274](docs/adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)).
@@ -31,6 +32,20 @@ pinned daily timezone, notification route, overlap and missed-occurrence policie
 rolling spending limits. Every admitted occurrence starts one Scenario Run; every skipped
 occurrence has a durable reason. Pause and disable stop future launches, separately from Run
 cancellation. `af ant tick` admits occurrences locally; no persistent scheduler is installed.
+
+**Scenario Roadmap**:
+A durable, bounded optimization plan partitioned by product component, target metric or
+optimization goal. Each stable goal owns a complete loop; research, candidates, experiments,
+verification and reporting are subordinate checkpoints, never partitions by pipeline stage or
+day. Immutable revisions retain future planning separately from runtime-owned progress, native
+Task receipts and accumulated accounting. Revisions and dates never reset the goal's ledger.
+Manual Scenario and Ant admission atomically claim one complete eligible goal and reserve its
+whole loop against per-run, UTC daily, rolling and roadmap-total limits. Native accepted Task
+receipts own completion; unknown charges keep their unused allowance reserved across dates and
+revisions. Fresh templates pin Task bytes, native authority and source identities and reconcile
+stable Task IDs through ordinary Task planning and execution. The bounded asynchronous native
+Performance Lab adapter and explicit research packets carry exact source and report provenance;
+live Claw proof and deployment remain operator work. No real Ant or Mac schedule is activated.
 
 **Observation**:
 A normalized, source-addressed fact about project execution, intervention, cache behavior or
@@ -757,7 +772,7 @@ _Avoid_: using "provider" for a CLI binary, model, reviewer package, or verified
 
 **Provider Admission**:
 A Task's captured, paid proof that one configured Provider can satisfy one adapter capability:
-after a token-free account identity probe, the Task runs one bounded acknowledgement inference
+after a token-free identity/auth-context probe, the Task runs one bounded acknowledgement inference
 under its own Attempt and reservation, charged to the Task budget. Its selected output lets that
 Task's Workers dispatch on the binding. Admission is local execution state, not pinned pipeline
 authority, and `af provider doctor` runs only a Review Task's admissions.
@@ -853,7 +868,9 @@ _Avoid_: a second full patch in the prompt; the marks exist to keep context mini
 - Every executable node resolves one **Execution Binding** before dispatch. A reviewer that can
   read reusable credentials is `trusted_unsafe` and cannot authorize `auto_apply`.
 - A configured **Provider** dispatches a Worker only after its Task's **Provider Admission**
-  succeeded, and the native account is rechecked before every private send
+  succeeded, and the native account is rechecked before every private send. Pi Kimi explicitly
+  records unavailable account identity, rechecks auth context and OAuth mode instead, and refuses
+  trusted principal-independence policy; account substitution within that context is undetectable
   ([ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
   [ADR-0091](docs/adr/0091-capture-explicit-task-provider-admission-costs.md)).
 - **Convergence** reads only the Round's exact final Finding Set and Demand Set plus recorded graph,

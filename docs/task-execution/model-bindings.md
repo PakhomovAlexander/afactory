@@ -1,6 +1,6 @@
 # Model bindings for Task files
 
-Task files accept captured command Workers and native Claude/Codex Model Workers. A Model
+Task files accept captured command Workers and native Claude/Codex/Pi Model Workers. A Model
 Worker's manifest declares its Provider family, versioned model ID and effort. The catalog
 maps its package name to a machine-local Provider registry label:
 
@@ -13,14 +13,19 @@ maps its package name to a machine-local Provider registry label:
 The registry contains authentication directory selectors. Credentials and those directories
 are not copied into shared packages or execution plans. The native identity adapters support
 first-party Claude subscription accounts and Codex ChatGPT accounts exposing an email identity.
-Unavailable identity or unsupported authentication types fail admission. An alias or directory
-name never proves independence.
+Unavailable Claude/Codex identity or unsupported authentication types fail admission. Pi OpenAI
+requires its OAuth accountId; Pi Kimi explicitly records unavailable account identity and a
+separate auth context, only under trusted policy without `distinct_principals`. Kimi account
+substitution within that context cannot be detected. An alias or directory name never proves
+independence. See the [Pi contract](../design/pi-provider.md) for its pinned SDK catalog rules.
+The following spelling/catalog rules describe Claude and Codex; Pi uses exact SDK IDs and
+model-supported thinking levels.
 
 Planning probes only accounts used by the selected Pipeline. It obtains account metadata from
 `claude auth status --json` or Codex's local `account/read` protocol, then records a
 domain-separated principal digest. Raw account metadata and email addresses are not stored in
 Task artifacts. Provider family, principal, explicit model/effort and invocation policy become
-part of the exact binding. Bare model-family aliases and `-latest` selectors are refused. A
+part of the exact Claude/Codex binding. Bare model-family aliases and `-latest` selectors are refused. A
 model ID or effort level must begin with an ASCII letter or digit and have at most 128 characters.
 Later characters may be ASCII letters, digits, `-`, `.`, `_` or `:`; `/`, `@` and whitespace are
 refused. This allowed spelling is called grammar G. Af prints a valid value verbatim. A value

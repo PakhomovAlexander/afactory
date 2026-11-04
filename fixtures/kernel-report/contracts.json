@@ -31,6 +31,15 @@
             },
             "covers": []
           },
+          "research_report": {
+            "artifact_type": "af/Document@1",
+            "cardinality": "one",
+            "optional": true,
+            "covers": [],
+            "affinity": {
+              "kind": "unbound"
+            }
+          },
           "source": {
             "artifact_type": "af/SourceTree@1",
             "cardinality": "one",
@@ -123,6 +132,15 @@
             },
             "covers": []
           },
+          "research_report": {
+            "artifact_type": "af/Document@1",
+            "cardinality": "one",
+            "optional": true,
+            "covers": [],
+            "affinity": {
+              "kind": "unbound"
+            }
+          },
           "source": {
             "artifact_type": "af/SourceTree@1",
             "cardinality": "one",
@@ -165,6 +183,7 @@
           "comparison",
           "measurements",
           "requirements",
+          "research_report",
           "source",
           "sources"
         ]
@@ -172,7 +191,7 @@
       "roles": [
         "author"
       ],
-      "worker_input_type": "af/ReportInput@1",
+      "worker_input_type": "af/ReportInput@2",
       "worker_output_type": "af/DocumentDraft@2",
       "attempt": {
         "tokens": 1500000,
@@ -229,6 +248,15 @@
             },
             "covers": []
           },
+          "research_report": {
+            "artifact_type": "af/Document@1",
+            "cardinality": "one",
+            "optional": true,
+            "covers": [],
+            "affinity": {
+              "kind": "unbound"
+            }
+          },
           "source": {
             "artifact_type": "af/SourceTree@1",
             "cardinality": "one",
@@ -272,6 +300,7 @@
           "document",
           "measurements",
           "requirements",
+          "research_report",
           "source",
           "sources"
         ]
@@ -279,7 +308,7 @@
       "roles": [
         "verify"
       ],
-      "worker_input_type": "af/ReportVerificationInput@1",
+      "worker_input_type": "af/ReportVerificationInput@2",
       "worker_output_type": "af/ReportEvaluation@1",
       "outcome_port": "result",
       "attempt": {

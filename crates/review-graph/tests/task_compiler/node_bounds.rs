@@ -99,7 +99,7 @@ fn nested_expansion_counts_its_physical_children_in_the_same_cap() {
 
 #[test]
 fn physical_64_nodes_still_refuse_an_installed_provider_node() {
-    use review_core::task::plan::{EffectiveWorkerBindingV2, WorkerExecutionV2};
+    use review_core::task::plan::{EffectiveWorkerBindingV3, WorkerExecutionV3};
     let (mut task, mut pipelines, signatures) = fixture();
     task.limits.max_attempts = 63;
     task.limits.verification.attempts = 63;
@@ -118,14 +118,14 @@ fn physical_64_nodes_still_refuse_an_installed_provider_node() {
     let digest = task.authority.policy_id.clone();
     let bindings = BTreeMap::from([(
         graph.slots.keys().next().unwrap().clone(),
-        EffectiveWorkerBindingV2 {
+        EffectiveWorkerBindingV3 {
             package_digest: digest.clone(),
             package_artifact_id: digest.clone(),
             invocation_policy_id: digest,
-            execution: WorkerExecutionV2::Model {
+            execution: WorkerExecutionV3::Model {
                 provider: "fixture".into(),
                 provider_kind: "codex".into(),
-                principal_id: "synthetic-principal".into(),
+                principal_id: Some("synthetic-principal".into()),
                 model: "synthetic".into(),
                 pi: None,
                 effort: "high".into(),

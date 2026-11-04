@@ -252,7 +252,7 @@ pub(super) struct Ant {
 }
 impl Ant {
     pub fn validate(&self) -> Result<()> {
-        require(self.schema == "af/ant@1", "Unsupported Ant version")?;
+        require(self.schema == "af/ant@3", "Unsupported Ant version")?;
         name(&self.id)?;
         name(&self.owner)?;
         text(&self.notification)?;
@@ -298,7 +298,7 @@ impl AntPin {
         let zone = Zone::load(&definition.schedule.timezone)?;
         let revision = hash(&(&definition, &scenario, &zone))?;
         Ok(Self {
-            schema: "af/ant-pin@1".into(),
+            schema: "af/ant-pin@3".into(),
             definition,
             scenario,
             zone,
@@ -310,7 +310,7 @@ impl AntPin {
         self.scenario.validate()?;
         self.zone.validate()?;
         require(
-            self.schema == "af/ant-pin@1"
+            self.schema == "af/ant-pin@3"
                 && self.definition.scenario == self.scenario.bundle
                 && self.definition.schedule.timezone == self.zone.name
                 && self.revision == hash(&(&self.definition, &self.scenario, &self.zone))?,
@@ -338,6 +338,9 @@ pub(super) enum OccurrenceOutcome {
     SkippedDisabled,
     SkippedBudget,
     SkippedMissingTime,
+    SkippedRoadmap {
+        reason: String,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -365,7 +368,7 @@ impl AntState {
                 .map_err(|e| e.to_string())?,
         )?;
         Ok(Self {
-            schema: "af/ant-state@1".into(),
+            schema: "af/ant-state@3".into(),
             pin,
             state: AntMode::Disabled,
             changes: vec![(now, AntMode::Disabled)],
@@ -377,7 +380,7 @@ impl AntState {
     pub fn validate(&self, runs: &BTreeMap<String, Run>) -> Result<()> {
         self.pin.validate()?;
         require(
-            self.schema == "af/ant-state@1"
+            self.schema == "af/ant-state@3"
                 && (-1..=100_001).contains(&self.next_day)
                 && self.last_tick_unix_ms > 0
                 && self.last_tick_unix_ms <= MAX_TIME
@@ -437,7 +440,16 @@ impl AntState {
         self.changes.push((now, state));
         Ok(())
     }
+    #[cfg(test)]
     pub fn tick(&mut self, now: u64, runs: &mut BTreeMap<String, Run>) -> Result<Vec<String>> {
+        self.tick_roadmaps(now, runs, &mut BTreeMap::new())
+    }
+    fn tick_roadmaps(
+        &mut self,
+        now: u64,
+        runs: &mut BTreeMap<String, Run>,
+        roadmaps: &mut BTreeMap<String, super::roadmap::Roadmap>,
+    ) -> Result<Vec<String>> {
         require(
             (-1..=100_001).contains(&self.next_day),
             "Corrupt Ant calendar cursor",
@@ -500,7 +512,7 @@ impl AntState {
                                 > now
                                     .saturating_sub(self.pin.definition.execution.rolling_window_ms)
                             {
-                                r.tokens()?
+                                r.accounted_tokens()?
                             } else {
                                 0
                             }
@@ -547,7 +559,7 @@ impl AntState {
                     !runs.contains_key(&run_id),
                     "Occurrence Run already exists without its receipt",
                 )?;
-                let run = Run::new(
+                let mut run = Run::new(
                     run_id.clone(),
                     self.pin.scenario.clone(),
                     self.pin.definition.inputs.clone(),
@@ -555,11 +567,28 @@ impl AntState {
                     now,
                     Some(self.pin.definition.id.clone()),
                 )?;
-                runs.insert(run_id.clone(), run);
-                started.push(run_id.clone());
-                OccurrenceOutcome::Started {
-                    run_id,
-                    reserved_tokens: self.pin.definition.execution.per_run.max_tokens,
+                let admitted = if let Some(admission) = run.pin.bundle.definitions
+                    [&run.pin.bundle.root]
+                    .admission
+                    .clone()
+                {
+                    let roadmap = roadmaps
+                        .get_mut(&admission.roadmap)
+                        .ok_or("Roadmap not found")?;
+                    run.goal_claim = roadmap.admit(&run)?;
+                    run.goal_claim.is_some()
+                } else {
+                    true
+                };
+                if admitted {
+                    runs.insert(run_id.clone(), run);
+                    started.push(run_id.clone());
+                    OccurrenceOutcome::Started {
+                        run_id,
+                        reserved_tokens: self.pin.definition.execution.per_run.max_tokens,
+                    }
+                } else {
+                    OccurrenceOutcome::SkippedRoadmap {reason:"No eligible complete goal fits all roadmap budgets; inspect deferred reasons".into()}
                 }
             };
             self.occurrences.push(Occurrence {
@@ -576,9 +605,18 @@ impl AntState {
 
 /// Plan each Ant independently under the caller's transaction. A refused timezone horizon or
 /// clock on one binding cannot block another binding, and leaves no partial admission behind.
+#[cfg(test)]
 pub(super) fn tick_all(
     ants: &mut BTreeMap<String, AntState>,
     runs: &mut BTreeMap<String, Run>,
+    now: u64,
+) -> (Vec<String>, BTreeMap<String, String>) {
+    tick_all_with_roadmaps(ants, runs, &mut BTreeMap::new(), now)
+}
+pub(super) fn tick_all_with_roadmaps(
+    ants: &mut BTreeMap<String, AntState>,
+    runs: &mut BTreeMap<String, Run>,
+    roadmaps: &mut BTreeMap<String, super::roadmap::Roadmap>,
     now: u64,
 ) -> (Vec<String>, BTreeMap<String, String>) {
     let mut started = Vec::new();
@@ -586,12 +624,14 @@ pub(super) fn tick_all(
     for (id, ant) in ants {
         let before: std::collections::BTreeSet<String> = runs.keys().cloned().collect();
         let mut candidate = ant.clone();
-        match candidate.tick(now, runs) {
+        let old_roadmaps = roadmaps.clone();
+        match candidate.tick_roadmaps(now, runs, roadmaps) {
             Ok(ids) => {
                 *ant = candidate;
                 started.extend(ids);
             }
             Err(why) => {
+                *roadmaps = old_roadmaps;
                 runs.retain(|id, _| before.contains(id));
                 refused.insert(id.clone(), why);
             }

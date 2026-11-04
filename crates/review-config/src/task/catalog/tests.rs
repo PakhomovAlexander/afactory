@@ -573,7 +573,7 @@ impl Fixture {
             .bind_worker(
                 "local/author",
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV2::Command {},
+                    execution: WorkerExecutionV3::Command {},
                     invocation_policy_id: self.task.authority.policy_id.clone(),
                 },
             )
@@ -704,7 +704,7 @@ impl Fixture {
             .bind_worker(
                 "builtin/document-author",
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV2::Command {},
+                    execution: WorkerExecutionV3::Command {},
                     invocation_policy_id: policy,
                 },
             )
@@ -1394,16 +1394,16 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
                 "builtin/planner",
                 AdmittedWorkerSettings {
                     execution: if native {
-                        WorkerExecutionV2::Model {
+                        WorkerExecutionV3::Model {
                             provider: "personal".into(),
                             provider_kind: "claude".into(),
-                            principal_id: f.task.authority.policy_id.clone(),
+                            principal_id: Some(f.task.authority.policy_id.clone()),
                             model: "fixture-model".into(),
                             pi: None,
                             effort: "high".into(),
                         }
                     } else {
-                        WorkerExecutionV2::Command {}
+                        WorkerExecutionV3::Command {}
                     },
                     invocation_policy_id: f.task.authority.policy_id.clone(),
                 },

@@ -59,7 +59,7 @@ commands, assertions, or the Task's own budget.
   ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
 - An Attempt whose writer was lost or whose run was interrupted is settled as abandoned, charged
   its reported usage and never its reservation, and counts against its node's recovery
-  allowance, one unless its `af.pipeline/3` slot declares `recovery_attempts`, instead of any
+  allowance, one unless its `af.pipeline/3` (or structured `af.pipeline/4`) slot declares `recovery_attempts`, instead of any
   Attempt limit; the writer lease is 60 s, renewed by its own heartbeat thread, and the resume
   says on its first line what it runs again or why it cannot
   ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
@@ -133,6 +133,9 @@ commands, assertions, or the Task's own budget.
   is admitted
   ([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md),
   [Retry a failed gate](tasks.md#retry-a-failed-gate)).
+- A package-defined [structured Task](task-execution/structured.md) reads bounded captured JSON
+  through typed ports and concludes `structurally_validated`. It proves its deterministic
+  contract, without independent semantic verification or code delivery.
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task
   allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`
@@ -198,7 +201,7 @@ What it never grants:
 |---|---|
 | Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v2`](../schemas/task-contracts-v2.json), `fixtures/task-contracts/` |
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-state-v2`](../schemas/task-state-v2.json), [`task-inspection-v15`](../schemas/task-inspection-v15.json), [`task-list-v4`](../schemas/task-list-v4.json), [`task-list-entry-v4`](../schemas/task-list-entry-v4.json), [`task-attention-v1`](../schemas/task-attention-v1.json), [`task-checks-v3`](../schemas/task-checks-v3.json), [`task-selection-v3`](../schemas/task-selection-v3.json), [`error-v2`](../schemas/error-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`compiled-task-v2`](../schemas/compiled-task-v2.json), [`task-report-v3`](../schemas/task-report-v3.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Inspection and listing | [`task-state-v2`](../schemas/task-state-v2.json), [`task-inspection-v16`](../schemas/task-inspection-v16.json), [`task-list-v4`](../schemas/task-list-v4.json), [`task-list-entry-v4`](../schemas/task-list-entry-v4.json), [`task-attention-v1`](../schemas/task-attention-v1.json), [`task-checks-v3`](../schemas/task-checks-v3.json), [`task-selection-v3`](../schemas/task-selection-v3.json), [`error-v2`](../schemas/error-v2.json), [`task-plan-inspection-v2`](../schemas/task-plan-inspection-v2.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`compiled-task-v2`](../schemas/compiled-task-v2.json), [`task-report-v3`](../schemas/task-report-v3.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
 | Recovery of a lost or interrupted run ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)) | `crates/review-pipeline/src/task/lease.rs`, `crates/review-attempt/src/task_budget.rs`, `crates/af/src/task_execution/recovery.rs`, [`pipeline-definition-v3`](../schemas/pipeline-definition-v3.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | The agent loop ([ADR-0211](adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md), [ADR-0250](adr/0250-follow-a-task-as-a-stream-of-its-store-events.md), [agents](agents.md)) | `crates/review-core/src/task/agent_loop.rs`, `crates/af/src/task_execution/{findings,candidate,runs,events,pr_body}.rs`, [`task-findings-v2`](../schemas/task-findings-v2.json), [`findings-sarif-v1`](../schemas/findings-sarif-v1.json), [`task-diff-v1`](../schemas/task-diff-v1.json), [`task-materialized-v1`](../schemas/task-materialized-v1.json), [`task-status-v2`](../schemas/task-status-v2.json), [`task-event-v1`](../schemas/task-event-v1.json), [`task-detached-v3`](../schemas/task-detached-v3.json), [`task-cancelled-v2`](../schemas/task-cancelled-v2.json), [`task-run-process-v1`](../schemas/task-run-process-v1.json), [`task-cancel-request-v1`](../schemas/task-cancel-request-v1.json), [`task-delivery-proof-v1`](../schemas/task-delivery-proof-v1.json) |
@@ -246,7 +249,8 @@ The operator-facing guide for the `implement` Task and local delivery is
 
 ## Coordination across Tasks
 
-[Scenarios and Ants](scenarios.md) orchestrate existing Tasks through their exact recorded plans,
+[Scenarios and Ants](scenarios.md) orchestrate existing Tasks through exact recorded plans or
+authorized fresh Task templates through ordinary native planning and execution,
 without replacing Task acceptance, sandboxing or local delivery. A Scenario Run also retains
 signed decisions, bounded adapter actions, observations and child Scenario progress across waits
 and restarts. An Ant schedules a pinned Scenario through local `af ant tick` admission.

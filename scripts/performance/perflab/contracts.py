@@ -5112,3 +5112,5 @@ import sys as _sys
 _executorcontracts.register(_sys.modules[__name__])
 from . import nightlycontracts as _nightlycontracts
 _nightlycontracts.register(_sys.modules[__name__])
+from . import scenariocontracts as _scenariocontracts
+_scenariocontracts.register(_sys.modules[__name__])

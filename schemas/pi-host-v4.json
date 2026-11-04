@@ -1,0 +1,508 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pi-host:4",
+  "title": "AF Pi SDK host protocol @4",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "sdk",
+        "backend",
+        "auth_dir",
+        "principal",
+        "cwd",
+        "home",
+        "readable",
+        "writable",
+        "probe",
+        "auth_context_id"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "init"
+        },
+        "sdk": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "backend": {
+          "enum": [
+            "openai-codex",
+            "kimi-coding"
+          ]
+        },
+        "auth_dir": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "principal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "home": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "readable": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "writable": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "probe": {
+          "type": "boolean"
+        },
+        "auth_context_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "principal",
+        "auth_method",
+        "backend",
+        "version",
+        "models"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "ready"
+        },
+        "principal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "auth_method": {
+          "const": "oauth"
+        },
+        "backend": {
+          "enum": [
+            "openai-codex",
+            "kimi-coding"
+          ]
+        },
+        "version": {
+          "const": "1.4.0"
+        },
+        "models": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "efforts",
+              "identity"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "efforts": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 7,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "off",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                }
+              },
+              "identity": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "kimi-coding"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "principal": {
+                "type": "null"
+              },
+              "models": {
+                "items": {
+                  "properties": {
+                    "id": {
+                      "const": "k3"
+                    },
+                    "efforts": {
+                      "items": {
+                        "enum": [
+                          "low",
+                          "high",
+                          "max"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "principal": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "model",
+        "effort",
+        "model_identity",
+        "remaining_tokens",
+        "reply_schema"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "prepare"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_identity": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "remaining_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "reply_schema": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "model",
+        "effort",
+        "model_identity"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "prepared"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_identity": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "text",
+        "prompt_nonce"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "prompt"
+        },
+        "text": {
+          "type": "string"
+        },
+        "prompt_nonce": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "prompt_nonce"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "accepted"
+        },
+        "prompt_nonce": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "inference",
+        "complete",
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+        "reasoning",
+        "observations"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "usage"
+        },
+        "inference": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "input": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "output": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cache_read": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cache_write": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reasoning": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "text"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "message"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "settled"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "code"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "error"
+        },
+        "code": {
+          "enum": [
+            "host_refused",
+            "inference_failed",
+            "unsupported_auth",
+            "identity_changed",
+            "sdk_version",
+            "node_version",
+            "unsupported_backend",
+            "model_changed",
+            "settings_changed"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "name",
+        "count"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "tool_count"
+        },
+        "name": {
+          "enum": [
+            "read",
+            "ls",
+            "find",
+            "grep",
+            "write",
+            "edit"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    }
+  ]
+}

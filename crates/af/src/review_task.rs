@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use review_config::captured_review::ReviewMode;
-use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
-use review_core::task::{EXECUTION_PLAN_V2, TASK_REVISION_V1, TaskRevisionV1};
+use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
+use review_core::task::{EXECUTION_PLAN_V3, TASK_REVISION_V1, TaskRevisionV1};
 use review_graph::NodeKind;
 use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
 use review_pipeline::task::campaign_review::plan::{
@@ -45,7 +45,7 @@ pub(super) fn initial_provider_admission(options: &Options) -> OperatorAttemptCo
 
 #[derive(Clone)]
 struct LocalWorkers {
-    executions: BTreeMap<String, WorkerExecutionV2>,
+    executions: BTreeMap<String, WorkerExecutionV3>,
     adapters: BTreeMap<String, std::sync::Arc<dyn WorkerModelAdapter>>,
 }
 
@@ -77,7 +77,7 @@ fn local_workers(
                     "Command Worker {node} has no Model Provider binding"
                 ));
             }
-            executions.insert(node.clone(), WorkerExecutionV2::Command {});
+            executions.insert(node.clone(), WorkerExecutionV3::Command {});
             continue;
         }
         let package = loaded
@@ -120,7 +120,7 @@ fn local_workers(
         }
         let identity = &identities[alias];
         let execution = identity.execution(&settings.model, &settings.effort)?;
-        if !matches!(&execution, WorkerExecutionV2::Model { provider_kind, .. } if provider_kind == &kind)
+        if !matches!(&execution, WorkerExecutionV3::Model { provider_kind, .. } if provider_kind == &kind)
             || settings.backend.to_string() != kind
         {
             return Err("Captured Worker and local Provider families differ".into());
@@ -166,7 +166,7 @@ struct CapturedReviewTask {
     compiler: CampaignReviewPlanCompiler,
     revision: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV2,
+    plan: ExecutionPlanV3,
     plan_id: String,
     captured: CapturedReviewCompilation,
     workers: LocalWorkers,
@@ -241,7 +241,7 @@ fn capture_new(
     let plan_id = persist(
         cas,
         task_id,
-        EXECUTION_PLAN_V2,
+        EXECUTION_PLAN_V3,
         vec![revision_id.clone()],
         &plan,
     )?;
@@ -279,7 +279,7 @@ fn persist(
 }
 
 fn model_bindings<'a>(
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     captured: &CapturedReviewCompilation,
     workers: &'a LocalWorkers,
 ) -> Result<BTreeMap<String, TaskModelBinding<'a>>, String> {
@@ -302,7 +302,7 @@ fn model_bindings<'a>(
                 "Current Provider/account binding for {original} differs from the original Review Task plan"
             ));
         }
-        if matches!(binding.execution, WorkerExecutionV2::Model { .. }) {
+        if matches!(binding.execution, WorkerExecutionV3::Model { .. }) {
             let adapter = workers
                 .adapters
                 .get(original)
@@ -403,7 +403,7 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV2,
+        _: &ExecutionPlanV3,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,

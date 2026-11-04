@@ -538,7 +538,7 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
 /// at `root/providers.toml`; `AF_PROVIDERS_FILE` points `af` at it.
 fn registry(root: &Path, providers: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(root).unwrap();
-    let mut text = "version = 2\n".to_string();
+    let mut text = "version = 3\n".to_string();
     for (id, kind) in providers {
         let auth = root.join(format!("auth-{id}"));
         std::fs::create_dir_all(&auth).unwrap();
@@ -977,9 +977,7 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         .output()
         .unwrap();
     assert!(copied.status.success(), "{}", stderr(&copied));
-    // ADR-0255: this repository's `.af/` takes the check receipt migration when its release pin
-    // moves; a copy run under this `af` takes it on the copy.
-    crate::task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
+    // Plan the shipped catalog as published, without rewriting its contracts or pins.
     let project: toml::Value =
         toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
     assert_eq!(
