@@ -73,7 +73,7 @@ are at any point, token-free.
    It finds the logins on this machine and registers them. With no login yet, run
    `af provider setup claude-main --kind claude --login` (or `codex-main --kind codex`) yourself,
    at your own terminal, never through an agent. The registry keeps non-secret configuration only. The native CLI, or AF's Pi SDK host, owns
-   credentials. Explicit Pi 1.4.0 `openai-codex` OAuth setup is described in
+   credentials. Explicit Pi 1.4.0 `openai-codex` and `kimi-coding` OAuth setup is described in
    [docs/providers.md](docs/providers.md).
 
 3. **Onboard a repository.** In a clean checkout you trust, preview `.af/`, write it, and commit

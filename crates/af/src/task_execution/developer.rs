@@ -129,7 +129,7 @@ impl SignedTaskDeveloper<'_> {
     fn verify(
         &self,
         signed: &SignedAuthorization,
-    ) -> Result<(TaskRevisionV1, ExecutionPlanV2), String> {
+    ) -> Result<(TaskRevisionV1, ExecutionPlanV3), String> {
         self.policy.validate()?;
         if signed.schema != "af.signed-task-authorization/1" || signed.signature.len() > 8192 {
             return Err("Invalid signed developer authorization".into());
@@ -148,7 +148,7 @@ impl SignedTaskDeveloper<'_> {
             .map_err(|_| "Developer signature does not authorize these exact bytes")?;
         let revision: TaskRevisionV1 =
             artifact(self.cas, &request.task_revision_id, TASK_REVISION_V1)?;
-        let plan: ExecutionPlanV2 = artifact(self.cas, &request.plan_id, EXECUTION_PLAN_V2)?;
+        let plan: ExecutionPlanV3 = artifact(self.cas, &request.plan_id, EXECUTION_PLAN_V3)?;
         revision.validate()?;
         plan.validate()?;
         let authority: RunAuthority = serde_json::from_value(
@@ -309,7 +309,7 @@ impl review_store::store::task::TaskAuthority for DecisionAuthority<'_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<(), String> {
         self.compiler
             .validate_planning_inputs(cas, previous, next, plan)
@@ -318,7 +318,7 @@ impl review_store::store::task::TaskAuthority for DecisionAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV2,
+        plan: &ExecutionPlanV3,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         self.compiler.validate_plan(cas, task, plan)
     }
@@ -359,13 +359,13 @@ fn captured(
         .ok_or("This Task has no configured developer signing keys")?
         .validate()?;
     let mut compiler = planning::restore(cas, &projection, &authority)?;
-    let plan: ExecutionPlanV2 = artifact(
+    let plan: ExecutionPlanV3 = artifact(
         cas,
         projection
             .plan_id
             .as_deref()
             .ok_or("Task has no captured plan")?,
-        EXECUTION_PLAN_V2,
+        EXECUTION_PLAN_V3,
     )?;
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     compiler = super::restore_experimental_slots(compiler, &graph)?;

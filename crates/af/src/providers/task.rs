@@ -8,7 +8,7 @@
 //! app-server that exits before answering it is refused as the missing protocol capability.
 use super::compatibility::protocol_incompatibility;
 use super::*;
-use review_core::task::plan::WorkerExecutionV2;
+use review_core::task::plan::WorkerExecutionV3;
 use review_core::task::provider_event::{ProbeSilenceV1, ProviderEventV1};
 use review_runner::native_failure::NativeFailureKind;
 use review_runner::task::reply_schema::ReplyContract;
@@ -21,7 +21,7 @@ pub struct TaskProviderIdentity {
     spec: ProviderSpec,
     pi_ready: Option<review_runner_pi::Ready>,
     program: PathBuf,
-    principal_id: String,
+    principal_id: Option<String>,
     auth_method: String,
     /// A digest of the organization the account answered for, when the CLI names one.
     org: Option<String>,
@@ -180,14 +180,14 @@ impl TaskProviderIdentity {
             user: std::env::var_os("USER"),
         })
     }
-    pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV2, String> {
+    pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV3, String> {
         Self::check_static_rules(&self.spec.id, self.spec.kind.name(), model, effort)?;
         let pi = self
             .pi_ready
             .as_ref()
             .map(|ready| {
                 let model = ready.model(model, effort)?;
-                Ok::<_, String>(review_runner_pi::authority(
+                review_runner_pi::authority(
                     &self.program,
                     self.spec.pi.as_ref().ok_or("Pi configuration missing")?,
                     self.spec
@@ -195,10 +195,10 @@ impl TaskProviderIdentity {
                         .as_deref()
                         .ok_or("Pi auth directory missing")?,
                     model,
-                ))
+                )
             })
             .transpose()?;
-        let execution = WorkerExecutionV2::Model {
+        let execution = WorkerExecutionV3::Model {
             provider: self.spec.id.clone(),
             provider_kind: self.spec.kind.name().into(),
             principal_id: self.principal_id.clone(),
@@ -211,9 +211,9 @@ impl TaskProviderIdentity {
     }
     pub fn adapter(
         &self,
-        execution: &WorkerExecutionV2,
+        execution: &WorkerExecutionV3,
     ) -> Result<Box<dyn WorkerModelAdapter>, String> {
-        let WorkerExecutionV2::Model { model, effort, .. } = execution else {
+        let WorkerExecutionV3::Model { model, effort, .. } = execution else {
             return Err("A Command binding has no Model adapter".into());
         };
         if &self.execution(model, effort)? != execution {
@@ -234,7 +234,7 @@ impl TaskProviderIdentity {
         effort: &str,
     ) -> Result<Box<dyn WorkerModelAdapter>, String> {
         if self.spec.kind == ProviderKind::Pi {
-            let WorkerExecutionV2::Model {
+            let WorkerExecutionV3::Model {
                 pi: Some(captured), ..
             } = self.execution(model, effort)?
             else {
@@ -587,7 +587,7 @@ impl IdentityFailure {
 
 /// What one identity probe observed.
 struct Observation {
-    principal: String,
+    principal: Option<String>,
     auth_method: String,
     org: Option<String>,
 }
@@ -659,7 +659,7 @@ fn probe_identity(
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
-) -> Result<(String, String), String> {
+) -> Result<(Option<String>, String), String> {
     observe_identity(program, spec, probe_path, cancelled, deadline)
         .map(|observed| (observed.principal, observed.auth_method))
         .map_err(|f| f.message)
@@ -716,7 +716,7 @@ fn observe_identity(
             })?;
             let principal = claude_principal(&status).map_err(IdentityFailure::answered)?;
             Ok(Observation {
-                principal,
+                principal: Some(principal),
                 auth_method: status["authMethod"].as_str().unwrap().into(),
                 org: org_digest("claude", status["orgId"].as_str()),
             })
@@ -747,7 +747,7 @@ fn observe_identity(
             })?;
             let principal = codex_principal(&response).map_err(IdentityFailure::answered)?;
             Ok(Observation {
-                principal,
+                principal: Some(principal),
                 auth_method: "chatgpt".into(),
                 org: None,
             })
@@ -861,6 +861,30 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         )
         .unwrap_or_else(|unstarted| *unstarted.0)
     }
+    fn invoke_with_allowance(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: review_runner::task::WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: review_runner::task::RemainingTokenAllowance,
+        contract: ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        Ok(self.invoke_current(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            contract,
+            Some(allowance),
+        ))
+    }
     /// Sandbox-local environment (a carried Build Cache location), the kernel-derived access and
     /// the reply contract are forwarded to the native client exactly as they arrived, and only
     /// after the identity recheck passes.
@@ -884,6 +908,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             cancellation,
             environment,
             contract,
+            None,
         ))
     }
 }
@@ -902,6 +927,7 @@ impl CurrentTaskProviderAdapter {
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
         contract: ReplyContract,
+        allowance: Option<review_runner::task::RemainingTokenAllowance>,
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
             notes: Default::default(),
@@ -958,16 +984,30 @@ impl CurrentTaskProviderAdapter {
             if let Err(reason) = availability::check(&identity.spec) {
                 return refuse(&reason);
             }
-            let mut returned = match native.invoke_constrained(
-                cas,
-                workdir,
-                input.clone(),
-                remaining,
-                access,
-                cancellation,
-                environment,
-                contract,
-            ) {
+            let invoke = |allowance| match allowance {
+                Some(allowance) => native.invoke_with_allowance(
+                    cas,
+                    workdir,
+                    input.clone(),
+                    remaining,
+                    access,
+                    cancellation,
+                    environment,
+                    allowance,
+                    contract,
+                ),
+                None => native.invoke_constrained(
+                    cas,
+                    workdir,
+                    input.clone(),
+                    remaining,
+                    access,
+                    cancellation,
+                    environment,
+                    contract,
+                ),
+            };
+            let mut returned = match invoke(allowance) {
                 Ok(returned) => returned,
                 Err(Unstarted(_)) if !is_executable(&identity.program) => continue,
                 Err(Unstarted(returned)) => *returned,
@@ -1074,7 +1114,7 @@ mod tests {
                 source: "fixture".into(),
             },
             program: PathBuf::from("/nonexistent/claude"),
-            principal_id: "sha256:".to_string() + &"0".repeat(64),
+            principal_id: Some("sha256:".to_string() + &"0".repeat(64)),
             auth_method: "claude.ai".into(),
             org: None,
             cli_version: None,

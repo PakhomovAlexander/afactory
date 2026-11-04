@@ -30,10 +30,10 @@ fn integration_inspection_preserves_phase_and_handoff_wire_without_mutating_hist
         ),
         0,
     );
-    let schema = validator("task-inspection-v15.json");
+    let schema = validator("task-inspection-v16.json");
     for value in [&shown, &explained] {
         valid(&schema, value);
-        assert_eq!(value["schema"], "af/task-inspection@15");
+        assert_eq!(value["schema"], "af/task-inspection@16");
         assert_eq!(value["phase"]["kind"], "finished");
         let phases = value["review_integrations"].as_array().unwrap();
         assert_eq!(phases.len(), 2);
@@ -111,7 +111,7 @@ fn integration_inspection_preserves_phase_and_handoff_wire_without_mutating_hist
         ),
         0,
     );
-    valid(&validator("task-plan-inspection-v1.json"), &historical);
+    valid(&validator("task-plan-inspection-v2.json"), &historical);
     assert_eq!(historical["current_plan"], false);
     let listed = json_output(cli(repo.path(), state, &["task", "list"]), 0);
     assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);

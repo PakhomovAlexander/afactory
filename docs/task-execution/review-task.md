@@ -15,8 +15,9 @@ Demand requirements, the severity gate and bounded convergence policy. Its optio
 `generation` key may only be `2`, the one Review generation; omitting it means the same
 `af.review-task-policy/2`. The existing captured
 code-check policy supplies the required checks. Command Workers and native Model Workers use
-the same runtime; [Model bindings](model-bindings.md) require account identity and charged
-capability admission inside the Task.
+the same runtime; [Model bindings](model-bindings.md) require captured identity mode and charged
+capability admission inside the Task. Pi Kimi has explicit unavailable account identity and
+requires trusted policy without principal independence.
 
 The executable fixture is `fixtures/task-runtime/review`. Copy it into an empty directory,
 initialize and commit a Git repository there, and run the commands above. It has two command

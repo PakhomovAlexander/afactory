@@ -23,19 +23,27 @@ pub struct GeneratedOriginV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct EffectiveWorkerBindingV2 {
+pub struct EffectiveWorkerBindingV3 {
     pub package_digest: String,
     pub package_artifact_id: String,
-    pub execution: WorkerExecutionV2,
+    pub execution: WorkerExecutionV3,
     /// Content identity of the effective isolation, environment and context policy.
     pub invocation_policy_id: String,
 }
 
 /// Captured Pi SDK authority. All fields are non-secret; account identity is the Model
 /// binding's opaque principal. Native model endpoints/configuration are pinned by digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PiIdentityModeV1 {
+    Account,
+    Unavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PiAuthorityV1 {
+pub struct PiAuthorityV2 {
+    pub identity_mode: PiIdentityModeV1,
     pub backend: String,
     pub auth_method: String,
     pub sdk_version: String,
@@ -48,14 +56,15 @@ pub struct PiAuthorityV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum WorkerExecutionV2 {
+pub enum WorkerExecutionV3 {
     Command {},
     Model {
         /// Machine-local binding label; it never proves Provider diversity.
         provider: String,
         /// Canonical Provider implementation family supplied by trusted admission.
         provider_kind: String,
-        principal_id: String,
+        #[serde(deserialize_with = "Option::deserialize")]
+        principal_id: Option<String>,
         /// Canonical resolved model identity, not a mutable selector alias.
         model: String,
         effort: String,
@@ -64,11 +73,11 @@ pub enum WorkerExecutionV2 {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "super::present_option"
         )]
-        pi: Option<Box<PiAuthorityV1>>,
+        pi: Option<Box<PiAuthorityV2>>,
     },
 }
 
-impl EffectiveWorkerBindingV2 {
+impl EffectiveWorkerBindingV3 {
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_digest(&self.package_digest) && is_digest(&self.package_artifact_id),
@@ -82,9 +91,9 @@ impl EffectiveWorkerBindingV2 {
     }
 }
 
-impl WorkerExecutionV2 {
+impl WorkerExecutionV3 {
     pub fn validate(&self) -> Result<(), String> {
-        if let WorkerExecutionV2::Model {
+        if let WorkerExecutionV3::Model {
             provider,
             provider_kind,
             principal_id,
@@ -94,7 +103,7 @@ impl WorkerExecutionV2 {
         } = self
         {
             require(
-                is_name(provider) && is_name(provider_kind) && !principal_id.trim().is_empty(),
+                is_name(provider) && is_name(provider_kind),
                 "Worker binding needs an admitted Provider principal",
             )?;
             if provider_kind == "pi" {
@@ -102,11 +111,22 @@ impl WorkerExecutionV2 {
                     .as_ref()
                     .ok_or("Pi binding requires captured SDK authority")?;
                 require(
-                    is_digest(principal_id),
-                    "Pi principal must be an opaque account digest",
+                    match identity.identity_mode {
+                        PiIdentityModeV1::Account => {
+                            identity.backend == "openai-codex"
+                                && principal_id.as_deref().is_some_and(is_digest)
+                        }
+                        PiIdentityModeV1::Unavailable => {
+                            identity.backend == "kimi-coding"
+                                && principal_id.is_none()
+                                && model == "k3"
+                                && matches!(effort.as_str(), "low" | "high" | "max")
+                        }
+                    },
+                    "Pi binding requires an honest supported identity mode and exact model settings",
                 )?;
                 require(
-                    identity.backend == "openai-codex"
+                    matches!(identity.backend.as_str(), "openai-codex" | "kimi-coding")
                         && identity.auth_method == "oauth"
                         && identity.sdk_version == "1.4.0"
                         && std::path::Path::new(&identity.node_program).is_absolute()
@@ -122,6 +142,12 @@ impl WorkerExecutionV2 {
                 )?;
             } else {
                 require(pi.is_none(), "Only a Pi binding carries Pi SDK authority")?;
+                require(
+                    principal_id
+                        .as_ref()
+                        .is_some_and(|id| !id.trim().is_empty()),
+                    "Worker binding needs an admitted Provider principal",
+                )?;
             }
             require(
                 !model.trim().is_empty() && is_name(effort),
@@ -158,25 +184,39 @@ impl Default for IndependencePolicyV1 {
 /// Static binding predicate. Fresh isolated sessions and role-scoped context are additional
 /// mandatory runtime checks; matching this predicate never permits session reuse.
 pub fn validate_independent_bindings(
-    a: &EffectiveWorkerBindingV2,
-    b: &EffectiveWorkerBindingV2,
+    a: &EffectiveWorkerBindingV3,
+    b: &EffectiveWorkerBindingV3,
     policy: IndependencePolicyV1,
 ) -> Result<(), String> {
     a.validate()?;
     b.validate()?;
+    if policy.distinct_principals {
+        for binding in [a, b] {
+            require(
+                !matches!(
+                    &binding.execution,
+                    WorkerExecutionV3::Model {
+                        principal_id: None,
+                        ..
+                    }
+                ),
+                "Principal independence requires known account identities",
+            )?;
+        }
+    }
     require(
         a.package_digest != b.package_digest,
         "Independent slots require distinct effective Worker packages",
     )?;
     match (&a.execution, &b.execution) {
         (
-            WorkerExecutionV2::Model {
+            WorkerExecutionV3::Model {
                 provider_kind: ap,
                 principal_id: ai,
                 model: am,
                 ..
             },
-            WorkerExecutionV2::Model {
+            WorkerExecutionV3::Model {
                 provider_kind: bp,
                 principal_id: bi,
                 model: bm,
@@ -184,7 +224,7 @@ pub fn validate_independent_bindings(
             },
         ) => {
             require(
-                !policy.distinct_principals || ai != bi,
+                !policy.distinct_principals || (ai.is_some() && bi.is_some() && ai != bi),
                 "Provider aliases do not establish principal independence",
             )?;
             require(
@@ -214,7 +254,7 @@ pub enum PlanPreparationV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecutionPlanV2 {
+pub struct ExecutionPlanV3 {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -228,7 +268,7 @@ pub struct ExecutionPlanV2 {
     pub authority: TaskAuthorityV1,
     pub limits: TaskLimitsV1,
     pub inputs: BTreeMap<String, ArtifactInputV1>,
-    pub bindings: BTreeMap<String, EffectiveWorkerBindingV2>,
+    pub bindings: BTreeMap<String, EffectiveWorkerBindingV3>,
     pub dependencies: BTreeMap<String, PlanDependencyV1>,
     pub generated_origins: Vec<GeneratedOriginV1>,
     /// Every Task obligation names its compiled evidence producers (qualified node.port).
@@ -236,7 +276,7 @@ pub struct ExecutionPlanV2 {
     pub acceptance: BTreeMap<String, BTreeSet<String>>,
 }
 
-impl ExecutionPlanV2 {
+impl ExecutionPlanV3 {
     /// The compiler derives this closure from verified package provenance. A caller cannot
     /// make a plan trusted by deleting generated_origins: admission rechecks the closure.
     pub fn requires_developer_approval(&self) -> bool {
@@ -367,7 +407,7 @@ impl PlanDecisionV1 {
 
     /// Structural matching only. The trusted Store entry point must separately authenticate
     /// the developer, validate authorization, check revocation and enforce transition order.
-    pub fn approves(&self, plan_id: &str, plan: &ExecutionPlanV2) -> bool {
+    pub fn approves(&self, plan_id: &str, plan: &ExecutionPlanV3) -> bool {
         self.decision == PlanDecisionKindV1::Approved
             && self.plan_id == plan_id
             && self.task_revision_id == plan.task_revision_id

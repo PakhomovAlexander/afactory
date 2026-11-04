@@ -483,7 +483,7 @@ def merge(author, verifier, *, outcome='passed', owner_override=None):
         return _labelled(dict(record, verdict='needs-info', needs_info=questions, reasons=reasons), override)
 
     for field in ('class', 'size'):
-        if field not in effective and author[field] != verifier[field]:
+        if author[field] != verifier[field]:
             reasons.append(f'{field}: the author says {author[field]}, the verifier {verifier[field]}')
     a_state, v_state = author['resolution']['state'], verifier['resolution']['state']
     if a_state != v_state:
@@ -491,9 +491,8 @@ def merge(author, verifier, *, outcome='passed', owner_override=None):
     if sorted(author['duplicates']) != sorted(verifier['duplicates']):
         reasons.append(f'duplicates: the author names {sorted(author["duplicates"])}, '
                        f'the verifier {sorted(verifier["duplicates"])}')
-    # A failed evaluation whose own document names the author's class and size still failed the
-    # report: no agreement. One that differs only where an owner's label decides is resolved by it.
-    if outcome == 'failed' and not reasons and all(author[f] == verifier[f] for f in ('class', 'size')):
+    # Owner labels determine effective values, never independent agreement or report acceptance.
+    if outcome == 'failed' and not reasons:
         reasons.append('the verifier failed the author\'s report')
     if reasons:
         return _labelled(dict(record, verdict='disputed', reasons=reasons), override)

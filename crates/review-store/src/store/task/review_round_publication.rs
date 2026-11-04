@@ -46,7 +46,7 @@ impl TaskReviewRoundPreview {
         cas: &Cas,
         successor_plan_id: &str,
     ) -> Result<TaskReviewHandoffV1, StoreError> {
-        let next_plan: ExecutionPlanV2 = payload(cas, successor_plan_id, task::EXECUTION_PLAN_V2)?;
+        let next_plan: ExecutionPlanV3 = payload(cas, successor_plan_id, task::EXECUTION_PLAN_V3)?;
         let previous = revision(cas, &self.permit.revision_id)?;
         let next = revision(cas, &next_plan.task_revision_id)?;
         let round_id = |task: &TaskRevisionV1| -> Result<String, StoreError> {

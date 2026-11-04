@@ -10,10 +10,10 @@ pub(super) fn restore(
     authority: &RunAuthority,
 ) -> Result<TaskPlanCompiler, String> {
     let mut compiler = restore_compiler(cas, &state.revision.authority.policy_id, authority)?;
-    let plan: Option<ExecutionPlanV2> = state
+    let plan: Option<ExecutionPlanV3> = state
         .plan_id
         .as_deref()
-        .map(|id| artifact(cas, id, EXECUTION_PLAN_V2))
+        .map(|id| artifact(cas, id, EXECUTION_PLAN_V3))
         .transpose()?;
     if state.planning.is_some() {
         let proof = state.planning_proof(cas).map_err(|e| e.to_string())?;
@@ -154,7 +154,7 @@ pub(super) fn resume(
     authority: RunAuthority,
     mut compiler: TaskPlanCompiler,
     state: TaskProjection,
-    plan: ExecutionPlanV2,
+    plan: ExecutionPlanV3,
     graph: CompiledTask,
     json: bool,
 ) -> Result<i32, String> {
@@ -212,9 +212,9 @@ pub(super) fn resume(
     present_noting(&cas, &store, &state.task_id, json, true)
 }
 
-pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV2) -> Result<String, String> {
+pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV3) -> Result<String, String> {
     cas.put_artifact(
-        EXECUTION_PLAN_V2,
+        EXECUTION_PLAN_V3,
         producer(),
         vec![plan.task_revision_id.clone()],
         None,
@@ -278,7 +278,7 @@ fn run_planner(
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
     task: &TaskRevisionV1,
-    plan: &ExecutionPlanV2,
+    plan: &ExecutionPlanV3,
     graph: &CompiledTask,
     adapters: &BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>,
 ) -> Result<(), String> {

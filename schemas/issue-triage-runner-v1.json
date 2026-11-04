@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:issue-triage-runner:1",
+  "title": "Private issue triage coordinator journal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository",
+    "principal",
+    "timezone",
+    "cursor",
+    "events",
+    "issues",
+    "generations",
+    "ledger",
+    "owner_review",
+    "blocked",
+    "owner"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.issue-triage-runner/1"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "principal": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "cursor": {
+      "type": "string"
+    },
+    "events": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue",
+          "status"
+        ],
+        "properties": {
+          "issue": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "claimed",
+              "held",
+              "suspended"
+            ]
+          },
+          "generation": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "comment_id",
+          "failures",
+          "hold",
+          "notified",
+          "needs_since",
+          "reminded",
+          "sweeps",
+          "aux_bodies"
+        ],
+        "properties": {
+          "comment_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "hold": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notified": {
+            "type": "boolean"
+          },
+          "needs_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reminded": {
+            "type": "boolean"
+          },
+          "sweeps": {
+            "type": "object",
+            "additionalProperties": {
+              "enum": [
+                "comment-intent",
+                "done"
+              ]
+            }
+          },
+          "published": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "seen_body": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "hold_event": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_event": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "current_generation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "needs_label_event": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "suspension": {
+            "type": "string"
+          },
+          "hold_since": {
+            "type": "string"
+          },
+          "aux_bodies": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "generations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "identity",
+          "bundle",
+          "input",
+          "status",
+          "labels_done",
+          "comment_done",
+          "task_id"
+        ],
+        "properties": {
+          "identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "issue",
+              "bundle_sha256",
+              "main_commit",
+              "policy_version",
+              "event_id"
+            ],
+            "properties": {
+              "issue": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "bundle_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "main_commit": {
+                "type": "string",
+                "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+              },
+              "policy_version": {
+                "const": "triage-runner/1"
+              },
+              "event_id": {
+                "type": "string"
+              }
+            }
+          },
+          "bundle": {
+            "type": "object"
+          },
+          "input": {
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "claimed",
+              "planning",
+              "admitting",
+              "uncertain",
+              "checked",
+              "publishing",
+              "published",
+              "stale",
+              "held",
+              "failed",
+              "dry-run",
+              "suspended"
+            ]
+          },
+          "labels_done": {
+            "type": "boolean"
+          },
+          "comment_done": {
+            "type": "boolean"
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^triage-[0-9a-f]{64}$"
+          },
+          "source_snapshot_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "sources_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "record": {
+            "type": "object"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "desired_labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels_intent": {
+            "type": "boolean"
+          },
+          "comment_intent": {
+            "type": "boolean"
+          },
+          "failure": {
+            "type": "boolean"
+          },
+          "failure_counted": {
+            "type": "boolean"
+          },
+          "failure_reason": {
+            "type": "string"
+          },
+          "labels_aborted": {
+            "type": "boolean"
+          },
+          "comment_aborted": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "day",
+          "reserved",
+          "settled",
+          "settled_day"
+        ],
+        "properties": {
+          "day": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          },
+          "reserved": {
+            "const": 150000
+          },
+          "settled": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 150000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settled_day": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          }
+        }
+      }
+    },
+    "owner_review": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "blocked": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "owner": {
+      "type": "string"
+    }
+  }
+}

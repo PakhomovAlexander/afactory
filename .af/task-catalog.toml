@@ -139,6 +139,7 @@ path = ".af/task-packages/kernel/gate-bench"
 
 [kinds]
 verification = "warm/verification-kind"
+triage = "backlog/triage-kind"
 
 [packages."kernel/experiment"]
 version = "1.0.0"
@@ -169,6 +170,26 @@ path = ".af/task-packages/kernel/analyst"
 version = "1.0.0"
 digest = "sha256:c7176060094b777f04746ee9e66d5c178a852f0cd3356b58687f93220b39ac87"
 path = ".af/task-packages/kernel/report-verifier"
+
+[packages."backlog/triage"]
+version = "1.0.0"
+digest = "sha256:94a2f61753351b021749bc11282dfcfcce0c60bf2be77b6dd06ad9df81a44ebf"
+path = ".af/task-packages/backlog/triage"
+
+[packages."backlog/triage-author"]
+version = "1.0.0"
+digest = "sha256:1e5e71c1dc278159477b9a5a5febf35b3a96347e201d32783078b78357300225"
+path = ".af/task-packages/backlog/triage-author"
+
+[packages."backlog/triage-kind"]
+version = "1.0.0"
+digest = "sha256:1321c04198a9a30c54207aac2ae494aaffc803388ede24663eeedaa1f10e03d0"
+path = ".af/task-packages/backlog/triage-kind"
+
+[packages."backlog/triage-verifier"]
+version = "1.0.0"
+digest = "sha256:8641e681d040e27e66027ae85e71bfc4c4d953eb7e5d8fcd8802ad3de8957a8a"
+path = ".af/task-packages/backlog/triage-verifier"
 
 # Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
 # Each version is its local original's; the path is where the README installs it. Add each
@@ -269,6 +290,36 @@ version = "1.0.0"
 digest = "sha256:4134f24846090ace8b02493f6b2abcd814ac445bbd8cb971afc51432f54f83dd"
 path = ".af/task-packages/default-light/verification"
 
+[packages."pi-light/implementer"]
+version = "1.0.0"
+digest = "sha256:48349a1eaf2334043bded370dc4394c504a63faf6dd608e49a9b8f4dd29db9e2"
+path = ".af/task-packages/pi-light/implementer"
+
+[packages."pi-light/correctness"]
+version = "1.0.0"
+digest = "sha256:f43a23acac0876018d3e6f9b61b190cfc53d7e7e8a8f7c849b526f8787d0efb8"
+path = ".af/task-packages/pi-light/correctness"
+
+[packages."pi-light/evaluator"]
+version = "1.0.0"
+digest = "sha256:e87647bda666ec70f62a3b20d759ec0303f6bd0d00b190bb860e17f95e0c79fa"
+path = ".af/task-packages/pi-light/evaluator"
+
+[packages."pi-light/review"]
+version = "1.0.0"
+digest = "sha256:b77b3de3e310ab71940413fe8074815c9e092c229809aeb9b8d3eb3c94b9d570"
+path = ".af/task-packages/pi-light/review"
+
+[packages."pi-light/implementation"]
+version = "1.0.0"
+digest = "sha256:f4bb4b908e90a5f64071ec340aaedd23b3e68d225e9e3cd899ee4836a77eaf2f"
+path = ".af/task-packages/pi-light/implementation"
+
+[packages."pi-light/verification"]
+version = "1.0.0"
+digest = "sha256:6decd3d7ca89b89925a4d43a38b95ef63e48739bba80a3a3eb1252bccc5323d5"
+path = ".af/task-packages/pi-light/verification"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = false
@@ -288,6 +339,8 @@ distinct_models = true
 "kernel/experiment-evaluator" = "codex-main"
 "kernel/analyst" = "claude-main"
 "kernel/report-verifier" = "codex-main"
+"backlog/triage-author" = "codex-main"
+"backlog/triage-verifier" = "claude-main"
 "default/implementer" = "claude-main"
 "default/bugs" = "codex-main"
 "default/correctness" = "codex-main"
@@ -296,6 +349,10 @@ distinct_models = true
 "default-light/implementer" = "claude-main"
 "default-light/correctness" = "codex-main"
 "default-light/evaluator" = "codex-main"
+
+"pi-light/implementer" = "pi-kimi"
+"pi-light/correctness" = "codex-main"
+"pi-light/evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768

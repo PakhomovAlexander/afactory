@@ -9,7 +9,7 @@ use review_core::task::diff_subject::{
 };
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::PortAffinityV1;
-use review_core::task::plan::ExecutionPlanV2;
+use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::{ArtifactInputV1, TaskRevisionV1};
 use review_core::{PortCardinality, Producer};
 use review_graph::task::OperatorSignature;
@@ -114,7 +114,7 @@ fn plan_revision(cas: &Cas, plan_id: &str) -> Result<Option<TaskRevisionV1>, Str
     let Ok(plan) = envelope(cas, plan_id) else {
         return Ok(None);
     };
-    let Ok(plan) = serde_json::from_value::<ExecutionPlanV2>(plan.payload) else {
+    let Ok(plan) = serde_json::from_value::<ExecutionPlanV3>(plan.payload) else {
         return Ok(None);
     };
     serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
@@ -296,7 +296,7 @@ pub fn task_acceptance(
     let Ok(plan) = envelope(cas, plan_id) else {
         return Ok(None);
     };
-    let Ok(plan) = serde_json::from_value::<ExecutionPlanV2>(plan.payload) else {
+    let Ok(plan) = serde_json::from_value::<ExecutionPlanV3>(plan.payload) else {
         return Ok(None);
     };
     let task: TaskRevisionV1 =
@@ -463,7 +463,7 @@ pub fn invocation_producer(
     invocation: &TaskInvocationV1,
     attempt: Option<&PreparedTaskAttempt>,
 ) -> Result<Producer, String> {
-    let plan: ExecutionPlanV2 = serde_json::from_value(envelope(cas, &invocation.plan_id)?.payload)
+    let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &invocation.plan_id)?.payload)
         .map_err(|e| e.to_string())?;
     let task: TaskRevisionV1 =
         serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
