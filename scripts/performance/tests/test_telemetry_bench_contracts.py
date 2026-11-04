@@ -13,7 +13,7 @@ import shutil
 import stat
 import time
 
-from perflab import telemetrylab
+from perflab import telemetrylab, tomlfile
 from tests.support import TempDir
 
 overhead = telemetrylab.script_module("scripts/telemetry-overhead.py")
@@ -97,8 +97,8 @@ class FixtureContracts(TempDir):
         self.addCleanup(os.environ.pop, "STAND_IN_TABLE", None)
         return str(path)
 
-    def copy(self, fixture):
-        repo = pathlib.Path(self.tmp) / fixture / "pristine"
+    def copy(self, fixture, release=""):
+        repo = pathlib.Path(self.tmp) / release / fixture / "pristine"
         overhead.copy_writable(overhead.FIXTURES_DIR / fixture / "repo", repo)
         return repo
 
@@ -117,7 +117,7 @@ class FixtureContracts(TempDir):
     def test_a_release_no_contract_names_is_refused_never_given_the_current_contract(self):
         # `0.11.9` (and a development `0.0.0`) declare no bench workload: refused, with or
         # without a requested contract, rather than measured under check-receipt@2.
-        for release in ("0.11.9", "0.0.0", "0.14.0", "0.14.0-rc.6",
+        for release in ("0.11.9", "0.0.0", "0.14.0", "0.14.0-rc.7",
                         "0.14.0-nightly.20261102", "0.14.0-rc.5+unknown"):
             with self.subTest(release=release):
                 with self.assertRaisesRegex(overhead.BenchError, "named by no fixture contract"):
@@ -128,11 +128,12 @@ class FixtureContracts(TempDir):
                  for version in contract["versions"]]
         self.assertEqual(len(named), len(set(named)), "a release is named by one contract")
 
-    def test_rc4_and_rc5_select_the_existing_receipt_2_contract(self):
+    def test_rc4_rc5_and_rc6_select_the_existing_receipt_2_contract(self):
         # ADR-0255 introduced @2 before RC3; CHANGELOG.md's RC4 and RC5 sections
-        # retain it. The current writer (task/verification.rs) still writes @2, and
-        # the unchanged fixture packages declare it. Neither release needs an overlay.
-        for release in ("0.14.0-rc.4", "0.14.0-rc.5"):
+        # retain it. RC6 still publishes @2 in review-pipeline/src/task/code.rs;
+        # its definition and schema match RC4/RC5 (docs/telemetry.md). The unchanged
+        # fixture packages declare it. None of these releases needs an overlay.
+        for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6"):
             with self.subTest(release=release):
                 self.assertEqual(overhead.select_contract(release), "check-receipt@2")
                 self.assertEqual(overhead.select_contract(release, "check-receipt@2"),
@@ -142,6 +143,16 @@ class FixtureContracts(TempDir):
         contract = overhead.FIXTURE_CONTRACTS["check-receipt@2"]
         self.assertEqual(contract["check_receipt"], "af/TaskCheckReceipt@2")
         self.assertIsNone(contract["pins"])
+
+    def test_workspace_release_has_an_explicit_valid_telemetry_contract(self):
+        manifest = tomlfile.loads((REPOSITORY / "Cargo.toml").read_bytes(), "Cargo.toml")
+        release = manifest["workspace"]["package"]["version"]
+        selected = overhead.select_contract(release)
+        self.assertEqual(selected, overhead.CURRENT_CONTRACT)
+        self.assertEqual(overhead.select_contract(release, selected), selected)
+        contract = overhead.FIXTURE_CONTRACTS[selected]
+        self.assertEqual(contract["check_receipt"], overhead.CHECK_RECEIPT_CURRENT)
+        self.assertIsNone(contract["pins"], "the workspace uses the committed fixture pins")
 
     def test_check_receipt_1_renames_only_the_artifact_type_and_pins_the_declared_digests(self):
         fixture = "telemetry-bench-dense"
@@ -176,7 +187,7 @@ class FixtureContracts(TempDir):
         with self.assertRaisesRegex(overhead.BenchError, "not the declared"):
             overhead.apply_contract(af, fixture, self.copy(fixture), "check-receipt@1")
 
-    def test_the_current_contract_keeps_the_committed_packages(self):
+    def test_rc4_rc5_and_rc6_keep_all_committed_fixtures_without_contract_specific_pins(self):
         from perflab import clicases
         import re
         for source in sorted(overhead.FIXTURES_DIR.glob("*/repo")):
@@ -191,18 +202,20 @@ class FixtureContracts(TempDir):
                     self.assertEqual(clicases.catalog_problems(str(source)), [])
                 else:
                     self.assertEqual(clicases.pipeline_problems(str(source)), [])
-                af = self.stand_in("0.14.0-rc.5", {"@1": {}, "@2": {
-                    path: digest for digest, path in committed.items()}})
-                repo = self.copy(fixture)
-                produced = overhead.apply_contract(
-                    af, fixture, repo, overhead.select_contract("0.14.0-rc.5"))
-                self.assertEqual(produced["renamed_files"], [])
-                self.assertEqual(sorted(produced["packages"].values()), sorted(committed))
-                for path in source.rglob("*"):
-                    if path.is_file():
-                        relative = path.relative_to(source)
-                        self.assertEqual((repo / relative).read_bytes(), path.read_bytes(),
-                                         relative)
+                for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6"):
+                    with self.subTest(release=release):
+                        af = self.stand_in(release, {"@1": {}, "@2": {
+                            path: digest for digest, path in committed.items()}})
+                        repo = self.copy(fixture, release)
+                        produced = overhead.apply_contract(
+                            af, fixture, repo, overhead.select_contract(release))
+                        self.assertEqual(produced["renamed_files"], [])
+                        self.assertEqual(sorted(produced["packages"].values()), sorted(committed))
+                        for path in source.rglob("*"):
+                            if path.is_file():
+                                relative = path.relative_to(source)
+                                self.assertEqual((repo / relative).read_bytes(), path.read_bytes(),
+                                                 relative)
 
     def test_every_contract_pins_exactly_each_fixtures_packages(self):
         import re

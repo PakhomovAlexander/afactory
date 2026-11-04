@@ -395,7 +395,7 @@ install -d -o af-perf-exec -g af-perf-readers -m 0750 /var/lib/af-nightly/report
 The build and publish units keep primary group `af-perf-readers` and explicitly add
 supplementary group `af-nightly` to read the signing key and publish tokens; the build also
 keeps supplementary group `docker`. See the [focused verification](nightly-check-verification.md)
-for the unit and RC4/RC5 contract regressions and the local check report repair.
+for the unit and RC4/RC5/RC6 contract regressions and the local check report repair.
 
 The units set `UMask=0027`, so what one step writes the next reads through the group; the
 measurement keeps the executor's `UMask=0077` for the journal. Secrets stay files: the

@@ -1194,36 +1194,39 @@ committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
 `FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
 artifact type renamed and each re-pinned with the digest the contract declares, which the
 measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
-that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4 and rc.5), and a release
+that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5 and rc.6), and a release
 no contract names is refused, never measured under the committed contract. The contract is
 selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
 refused when the version selects another. It is benchmark fixture
 production, never a reader of state an earlier release wrote.
 
-**RC4 and RC5 source evidence.** The exact release revisions are
+**RC4, RC5 and RC6 source evidence.** The exact release revisions are
 [RC4, `443c998c8231f4d88d3c98b55adebca4c23cd713`](https://github.com/PakhomovAlexander/afactory/commit/443c998c8231f4d88d3c98b55adebca4c23cd713)
 and
 [RC5, `88a524eb1e10cd738cc8086d9f4bf3164d180b09`](https://github.com/PakhomovAlexander/afactory/commit/88a524eb1e10cd738cc8086d9f4bf3164d180b09).
 Their `Cargo.toml` workspace versions are `0.14.0-rc.4` and `0.14.0-rc.5`, respectively.
-The following Git blob IDs, checked from both revisions, also match this tree (`git hash-object
-PATH`). The receipt definition names `TASK_CHECK_RECEIPT_V2 = "af/TaskCheckReceipt@2"`;
-the check writer constructs `TaskCheckReceiptV2` and publishes it through `put_artifact` with
-that constant. The schema and the package capture and digest paths are unchanged too.
+The following Git blob IDs record those revisions and this RC6 tree (`git hash-object PATH`);
+`Cargo.toml` names this workspace `0.14.0-rc.6`. The receipt definition still names
+`TASK_CHECK_RECEIPT_V2 = "af/TaskCheckReceipt@2"`, and the schema is byte-identical. Although
+the writer and catalog modules have changed, RC6 still
+constructs `TaskCheckReceiptV2` in `CodeDomain::check`, publishes it with
+`TASK_CHECK_RECEIPT_V2`, and checks captured package bytes with `package_digest_from_files` in
+`TaskPlanCompiler::capture_package`; the digest implementation and canonical serialization are unchanged.
 
-| Source path | Git blob ID in RC4, RC5 and this tree |
-| --- | --- |
-| [`crates/review-core/src/task/verification.rs`](../crates/review-core/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
-| [`schemas/task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json) | `49e71c04c24222cc9855135785d540644a73b7dc` |
-| [`crates/review-pipeline/src/task/code.rs`](../crates/review-pipeline/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` |
-| [`crates/af/src/task_execution/catalog.rs`](../crates/af/src/task_execution/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
-| [`crates/review-config/src/task/catalog.rs`](../crates/review-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` |
-| [`crates/review-config/src/lock.rs`](../crates/review-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
-| [`crates/review-store/src/canonical.rs`](../crates/review-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
+| Source path | Git blob ID in RC4 and RC5 | Git blob ID in RC6 (this tree) |
+| --- | --- | --- |
+| [`crates/review-core/src/task/verification.rs`](../crates/review-core/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
+| [`schemas/task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json) | `49e71c04c24222cc9855135785d540644a73b7dc` | `49e71c04c24222cc9855135785d540644a73b7dc` |
+| [`crates/review-pipeline/src/task/code.rs`](../crates/review-pipeline/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` | `15cbd9d55bedd0dbc993bf55dce16ea44deb9924` |
+| [`crates/af/src/task_execution/catalog.rs`](../crates/af/src/task_execution/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
+| [`crates/review-config/src/task/catalog.rs`](../crates/review-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` | `8a047a34fc3f880a982ae4fd541ac9ed11b48c15` |
+| [`crates/review-config/src/lock.rs`](../crates/review-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
+| [`crates/review-store/src/canonical.rs`](../crates/review-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
 
 All four catalogs under `fixtures/telemetry-bench/<fixture>/repo/.af/task-catalog.toml` are
-also byte-identical in those three trees:
+also byte-identical in RC4, RC5 and this RC6 tree:
 
-| Fixture | Catalog Git blob ID in RC4, RC5 and this tree |
+| Fixture | Catalog Git blob ID in RC4, RC5 and RC6 |
 | --- | --- |
 | `telemetry-bench-concurrent` | `f622b8be465473c2996e4b2732e08b954187a61e` |
 | `telemetry-bench-dense` | `519c86f7f4d00861cfc2bb355502f275f3ec52f4` |
@@ -1233,9 +1236,11 @@ also byte-identical in those three trees:
 This supports using `check-receipt@2` with `pins = None`: keep the committed package pins,
 perform no receipt-type renaming, and still require each measured binary's `af catalog digest`
 to match each committed pin. The Store fixture has no Task catalog. The focused regression
-`test_rc4_and_rc5_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
-fixture for both versions and checks that every copied file stays byte-identical. This evidence
-admits only the two named releases; RC6, stable 0.14.0 and nightly version strings remain unnamed.
+`test_rc4_rc5_and_rc6_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
+fixture for all three versions and checks that every copied file stays byte-identical. This evidence
+admits only the named releases; RC7, stable 0.14.0 and nightly version strings remain unnamed.
+`test_workspace_release_has_an_explicit_valid_telemetry_contract` reads the workspace version
+and requires an explicit current contract, so a version bump must declare its workload before shipping.
 
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
 writes the `af/telemetry-overhead@2` document
