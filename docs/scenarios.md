@@ -152,7 +152,8 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@3`) carry `method` (`reconcile`, `execute`, `observe`, or the native lifecycle-only `recover`),
+Requests (`af/scenario-adapter-request@3`) carry `method` (`reconcile`, `execute`, `observe`,
+or the native lifecycle-only `recover`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).

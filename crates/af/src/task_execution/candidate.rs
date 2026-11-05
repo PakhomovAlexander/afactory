@@ -997,47 +997,6 @@ pub(crate) fn diff(
     Ok(0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry(path: &str, kind: EntryKind, content: &[u8]) -> Entry {
-        Entry {
-            path: path.into(),
-            kind,
-            content: digest_bytes(content),
-            size: content.len() as u64,
-        }
-    }
-
-    #[test]
-    fn a_candidate_writes_deletes_and_changes_modes_against_the_tracked_tree() {
-        let from = Manifest::new(vec![
-            entry("kept", EntryKind::File, b"a"),
-            entry("changed", EntryKind::File, b"a"),
-            entry("gone", EntryKind::File, b"a"),
-            entry("tool", EntryKind::File, b"#!"),
-            entry("untracked", EntryKind::File, b"u"),
-        ])
-        .unwrap();
-        let to = Manifest::new(vec![
-            entry("kept", EntryKind::File, b"a"),
-            entry("changed", EntryKind::File, b"b"),
-            entry("new", EntryKind::File, b"n"),
-            entry("tool", EntryKind::Executable, b"#!"),
-        ])
-        .unwrap();
-        let tracked: BTreeSet<String> = ["kept", "changed", "gone", "tool"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        let (written, deleted, mode) = changes(&from, &to, &tracked);
-        assert_eq!(written, ["changed", "new"]);
-        assert_eq!(deleted, ["gone"], "an untracked file is never deleted");
-        assert_eq!(mode, ["tool"]);
-    }
-}
-
 /// Scenario lifecycle staging uses the exact native accepted candidate, never a Worker's
 /// filesystem claim. This is an isolated object export; only the separately installed adapter
 /// can create a source-repository branch/worktree or publish it under signed authority.
@@ -1235,4 +1194,45 @@ pub(crate) fn implementation_source(
     ]);
     run_git(fsck, None, "verifying implementation staging objects")?;
     Ok(expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, kind: EntryKind, content: &[u8]) -> Entry {
+        Entry {
+            path: path.into(),
+            kind,
+            content: digest_bytes(content),
+            size: content.len() as u64,
+        }
+    }
+
+    #[test]
+    fn a_candidate_writes_deletes_and_changes_modes_against_the_tracked_tree() {
+        let from = Manifest::new(vec![
+            entry("kept", EntryKind::File, b"a"),
+            entry("changed", EntryKind::File, b"a"),
+            entry("gone", EntryKind::File, b"a"),
+            entry("tool", EntryKind::File, b"#!"),
+            entry("untracked", EntryKind::File, b"u"),
+        ])
+        .unwrap();
+        let to = Manifest::new(vec![
+            entry("kept", EntryKind::File, b"a"),
+            entry("changed", EntryKind::File, b"b"),
+            entry("new", EntryKind::File, b"n"),
+            entry("tool", EntryKind::Executable, b"#!"),
+        ])
+        .unwrap();
+        let tracked: BTreeSet<String> = ["kept", "changed", "gone", "tool"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let (written, deleted, mode) = changes(&from, &to, &tracked);
+        assert_eq!(written, ["changed", "new"]);
+        assert_eq!(deleted, ["gone"], "an untracked file is never deleted");
+        assert_eq!(mode, ["tool"]);
+    }
 }

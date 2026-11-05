@@ -2056,6 +2056,21 @@ fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changin
                 toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap())
                     .unwrap();
             assert_eq!(catalog["providers"][name].as_str(), Some("codex-personal"));
+            let (expected_model, expected_effort) = match name.as_str() {
+                "impl/implementer" => ("gpt-6.1-sol", "medium"),
+                "impl/correctness" => ("gpt-6-sol", "high"),
+                "impl/bugs" => ("gpt-6.1-terra", "high"),
+                "impl/evaluator" => ("gpt-6-astra", "medium"),
+                _ => panic!("unexpected impl Worker {name}"),
+            };
+            assert_eq!(
+                worker.runner,
+                review_config::task::catalog::TaskWorkerRunner::Model {
+                    provider_kind: "codex".into(),
+                    model: expected_model.into(),
+                    effort: expected_effort.into(),
+                }
+            );
             assert_eq!(
                 worker.signature.effects.contains("execute-checks"),
                 name == "impl/correctness" || name == "impl/implementer"

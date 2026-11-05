@@ -362,17 +362,3 @@ wall_ms = 45000
 version = "1.0.0"
 digest = "sha256:9ba9f8679258a49277f0797c9a5d2bd396b08ebebfee1f65bb35b7381b65139b"
 path = ".af/task-packages/kernel/verification-ux"
-
-# BEGIN temporary devrec workstream execution authority
-
-[packages."local/owner-review-executable"]
-version = "1.1.0"
-digest = "sha256:5f7645885d1a5cb7572e1936801ec842b0998e7464452fd8c900d99e34c6ec04"
-path = ".af/task-packages/devrec-workstream/owner-review-executable"
-
-[packages."local/owner-impl-executable"]
-version = "1.4.0"
-digest = "sha256:0829dfd290028be047111e2b3cfc491e305426e9a541cfddf39c224c9de4a252"
-path = ".af/task-packages/devrec-workstream/owner-impl-executable"
-
-# END temporary devrec workstream execution authority

@@ -587,7 +587,7 @@ fn implementation_executions<'a>(
         let role = slot.rsplit('.').next().ok_or("Missing impl role")?;
         let (expected_model, expected_effort) = match role {
             "implementer" => ("gpt-6.1-sol", "medium"),
-            "correctness" => ("gpt-6.1-sol", "high"),
+            "correctness" => ("gpt-6-sol", "high"),
             "bugs" => ("gpt-6.1-terra", "high"),
             "evaluator" => ("gpt-6-astra", "medium"),
             _ => return Err("impl refuses additional/default-light model roles".into()),
@@ -883,7 +883,7 @@ mod implementation_tests {
         let mut bindings = BTreeMap::new();
         for (role, model, effort) in [
             ("implementer", "gpt-6.1-sol", "medium"),
-            ("correctness", "gpt-6.1-sol", "high"),
+            ("correctness", "gpt-6-sol", "high"),
             ("bugs", "gpt-6.1-terra", "high"),
             ("evaluator", "gpt-6-astra", "medium"),
         ] {
@@ -915,7 +915,7 @@ mod implementation_tests {
         for (field, value) in [
             ("provider", "default"),
             ("provider_kind", "claude"),
-            ("model", "gpt-6-sol"),
+            ("model", "gpt-6.1-sol"),
             ("effort", "medium"),
         ] {
             let mut wrong = bindings.clone();

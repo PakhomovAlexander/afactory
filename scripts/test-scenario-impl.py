@@ -522,6 +522,15 @@ print(json.dumps(source))
             return subprocess.CompletedProcess(args, 0, stdout=D + "\n", stderr="")
         with patch.object(B.subprocess, "run", hashed):
             B.packages(output, Path(self.config["af"]), ["local"])
+        # Literal owner defaults: do not derive expectations from the builder's TEAM.
+        for role, model, effort in [
+                ("implementer", "gpt-6.1-sol", "medium"),
+                ("correctness", "gpt-6-sol", "high"),
+                ("bugs", "gpt-6.1-terra", "high"),
+                ("evaluator", "gpt-6-astra", "medium")]:
+            worker = (output / role / "worker.toml").read_text()
+            self.assertIn('model = "' + model + '"', worker)
+            self.assertIn('effort = "' + effort + '"', worker)
         correct = (output / "correctness/worker.toml").read_text()
         self.assertIn('[signature.contract.outputs.testing]', correct)
         self.assertTrue((output / "correctness/outputs/testing.schema.json").is_file())

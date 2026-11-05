@@ -30,6 +30,11 @@ environment, so a changed compiler is a new layer. Beside each layer af keeps th
 `<toolchain>.sources` (what the layer last built), `<toolchain>.holder` (who holds it now) and
 `<toolchain>.evicted` (when the Storage Budget removed it).
 
+Cargo homes retain dependency caches, not installed tools. A root `bin/` makes a `cargo_home`
+suspect, because Cargo searches it before PATH for external subcommands such as Clippy and fmt.
+The kernel discards such a layer before reuse; a busy layer's private copy is refused instead,
+leaving the live holder untouched and using the check's cold private Cargo home.
+
 ## The key rule: content, not modification times
 
 Cargo decides whether a crate is fresh by comparing modification times, and a materialized

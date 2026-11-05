@@ -20,7 +20,7 @@ passed evaluation for failed, unavailable or stale testing. The existing native 
 reviewer boundary grants no host publication.
 
 The model team is fixed to `codex-personal`: `gpt-6.1-sol` medium implements,
-`gpt-6.1-sol` high performs executable correctness verification, `gpt-6.1-terra` high reviews bugs,
+`gpt-6-sol` high performs executable correctness verification, `gpt-6.1-terra` high reviews bugs,
 and `gpt-6-astra` medium evaluates acceptance. Both reviewers are required. The native planner
 checks the effective bindings, reviewer capability and local-only Gate graph before dispatch.
 The standalone project may be named `devrec`; this Scenario adds no `af devrec` command.

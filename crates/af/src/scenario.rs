@@ -47,8 +47,9 @@ pub(crate) struct Definition {
 pub(crate) enum ScenarioCommand {
     /// Capture one accepted implementation candidate as private, filter-free Git objects
     #[command(
+        override_usage = "af scenario impl-source --file FILE --repo REPO\n                        --task-state STORE --into DIR [OPTIONS]",
         long_about = "Validate an exact accepted Task receipt and its committed source, then encode its candidate Snapshot as private Git objects. No source checkout, branch or remote is changed. Existing complete captures are verified and reused; incomplete or foreign captures are refused.",
-        after_long_help = "Examples:\n  # needs: an exact accepted implementation Task receipt and committed source\n  af scenario impl-source --file source.json --repo /project --task-state /private/tasks --into /private/staging/source --json"
+        after_long_help = "Examples:\n  # needs: an exact accepted implementation Task receipt and committed source\n  af scenario impl-source --file source.json --repo /project \\\n    --task-state /private/tasks --into /private/staging/source --json"
     )]
     ImplSource {
         /// af/scenario-impl-source-request@1 request naming the accepted Task and source commit

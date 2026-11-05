@@ -921,8 +921,8 @@ refused before any Worker starts. No directory ever enters a Worker sandbox, a S
 delivered worktree, and its bytes never change a check's result. Before reuse the whole
 directory is inspected without following links, relative to each parent's descriptor. It is
 removed and recreated empty, so the check runs cold, when it is suspect. Suspect means a link, a
-special file, another user's entry, a widened mode, a `credentials.toml` in a `cargo_home`, or
-any entry the inspection cannot read. A check runs cold and says why when its toolchain cannot
+special file, another user's entry, a widened mode, a `credentials.toml` or root `bin/` in a
+`cargo_home`, or any entry the inspection cannot read. A check runs cold and says why when its toolchain cannot
 be resolved, when another check holds its directory for 60 seconds, or when its directories are
 already above `max_bytes`. The directories are measured again when the check ends and before
 its result counts

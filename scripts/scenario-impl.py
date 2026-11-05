@@ -10,7 +10,7 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
-TEAM = {"implementer": ("gpt-6.1-sol", "medium"), "correctness": ("gpt-6.1-sol", "high"),
+TEAM = {"implementer": ("gpt-6.1-sol", "medium"), "correctness": ("gpt-6-sol", "high"),
         "bugs": ("gpt-6.1-terra", "high"), "evaluator": ("gpt-6-astra", "medium")}
 
 
