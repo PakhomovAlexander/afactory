@@ -13,18 +13,22 @@ pub struct StructuredPortV1 {
     pub schema: serde_json::Value,
 }
 
+/// V2 requires one model invocation per structured Worker Attempt. Unsupported
+/// versions are refused during package admission, before any Provider invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StructuredContractV1 {
+pub struct StructuredContractV2 {
     pub schema: String,
     pub inputs: BTreeMap<String, StructuredPortV1>,
     pub outputs: BTreeMap<String, StructuredPortV1>,
     pub require_container: bool,
 }
-impl StructuredContractV1 {
+impl StructuredContractV2 {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != "af.structured-contract/1"
-            || !(1..=4).contains(&self.inputs.len())
+        if self.schema != "af.structured-contract/2" {
+            return Err("Unsupported structured contract: this client requires af.structured-contract/2 (one model call per Worker Attempt)".into());
+        }
+        if !(1..=4).contains(&self.inputs.len())
             || !(1..=4).contains(&self.outputs.len())
             || self.inputs.iter().chain(&self.outputs).any(|(name, port)| {
                 !is_name(name)

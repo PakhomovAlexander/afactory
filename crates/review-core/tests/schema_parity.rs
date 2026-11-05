@@ -43,7 +43,7 @@ const SCHEMAS: [&str; 260] = [
     "worker-cache-capture-v1.json",
     "worker-development-binding-v3.json",
     "worker-command-evidence-v1.json",
-    "structured-contract-v1.json",
+    "structured-contract-v2.json",
     "structured-validation-v1.json",
     "task-kind-v2.json",
     "pipeline-definition-v4.json",

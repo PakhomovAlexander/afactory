@@ -954,12 +954,14 @@ impl<'a> CapturedTaskHost<'a> {
         .map_err(|e| e.to_string())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn worker_execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
         worker: &CapturedWorker<'_>,
+        policy: review_runner::task::ModelCallPolicy,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         use review_core::task::feedback::*;
@@ -1096,7 +1098,7 @@ impl<'a> CapturedTaskHost<'a> {
                         } else {
                             vec![]
                         };
-                        review_runner::task::invoke_model_with_environment(
+                        review_runner::task::invoke_model_with_policy(
                             cas,
                             sandbox.root(),
                             *adapter,
@@ -1108,6 +1110,7 @@ impl<'a> CapturedTaskHost<'a> {
                             cancellation,
                             attempt.reservation().tokens,
                             &environment,
+                            policy,
                         )
                     }
                 };
@@ -1318,6 +1321,13 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
+    fn model_call_policy(
+        &self,
+        definition: &review_graph::task::CompiledNode,
+    ) -> review_runner::task::ModelCallPolicy {
+        self.domain.model_call_policy(definition)
+    }
+
     fn prepare_invocation(
         &self,
         cas: &Cas,
@@ -1418,9 +1428,14 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             Err(error) => return crate::task::control::refused(error),
         };
         match (worker, attempt) {
-            (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, &worker, cancellation)
-            }
+            (Some(worker), Some(attempt)) => self.worker_execute(
+                cas,
+                input,
+                attempt,
+                &worker,
+                self.domain.model_call_policy(definition),
+                cancellation,
+            ),
             (Some(_), None) => TaskWorkOutput {
                 notes: Default::default(),
                 usage_observation: None,

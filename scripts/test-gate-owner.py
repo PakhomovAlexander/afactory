@@ -49,6 +49,21 @@ def load_owner():
     return module
 
 
+def signal_owner(command):
+    """Exclude host core collection from this disposable signal-test owner only.
+
+    RLIMIT_CORE=0 does not exclude piped core collectors. PR_SET_DUMPABLE does;
+    exec restores dumpability for the actual command. Keep real signal termination
+    in gate-owner.finish(), including SIGQUIT and its exact negative wait status.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+        raise OSError(ctypes.get_errno(), 'PR_SET_DUMPABLE')
+    assert libc.prctl(3, 0, 0, 0, 0) == 0  # PR_GET_DUMPABLE
+    sys.argv = [str(OWNER), *command]
+    return load_owner().main()
+
+
 def publish(path, message, before_publish=lambda: None):
     """Fixture readiness appears only with its complete message (ADR-0155)."""
     temporary = path.with_name(path.name + '.pending-' + str(os.getpid()))
@@ -435,22 +450,26 @@ class Ownership(unittest.TestCase):
         self.assertIsNone(state(pid))
 
     def test_cancellation_forwards_each_supported_signal(self):
+        libc = ctypes.CDLL(None, use_errno=True)
+        parent_dumpable = libc.prctl(3, 0, 0, 0, 0)
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
             root = self.root / str(sig)
             root.mkdir()
             source = '''
-import os, signal, sys, time
+import ctypes, os, signal, sys, time
 from pathlib import Path
 root, sig = Path(sys.argv[1]), int(sys.argv[2])
 def stopped(sent, frame):
     (root / 'received').write_text(str(sent))
     sys.exit(17)
 signal.signal(sig, stopped)
+(root / 'dumpable').write_text(str(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0)))
 (root / 'ready').write_text(str(os.getpid()))
 time.sleep(60)
 '''
-            child = subprocess.Popen(self.command(sys.executable, '-c', source,
-                                                  str(root), str(sig)), env=self.env)
+            child = subprocess.Popen([sys.executable, str(SELF), '--signal-owner',
+                                      sys.executable, '-c', source, str(root), str(sig)],
+                                     env=self.env)
             self.addCleanup(self.stop, child)
             until(lambda: (root / 'ready').exists())
             pid = int((root / 'ready').read_text())
@@ -458,6 +477,10 @@ time.sleep(60)
             self.assertEqual(child.wait(timeout=5), -sig)
             self.assertEqual((root / 'received').read_text(), str(sig))
             self.assertIsNone(state(pid))
+            self.assertEqual((root / 'dumpable').read_text(), '1',
+                             'exec must restore the command dumpability')
+        self.assertEqual(libc.prctl(3, 0, 0, 0, 0), parent_dumpable,
+                         'the test runner dumpability must remain unchanged')
 
     def test_observation_error_is_failure_and_tears_down_owned_children(self):
         source = '''
@@ -552,7 +575,9 @@ sys.exit(owner.main())
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == '--gate':
+    if len(sys.argv) > 1 and sys.argv[1] == '--signal-owner':
+        sys.exit(signal_owner(sys.argv[2:]))
+    elif len(sys.argv) > 1 and sys.argv[1] == '--gate':
         gate_fixture(Path(sys.argv[2]), sys.argv[3])
     elif len(sys.argv) > 1 and sys.argv[1] == '--outer':
         outer(Path(sys.argv[2]), bool(int(sys.argv[3])))

@@ -1,5 +1,5 @@
 {
-  "schema": "af.structured-contract/1",
+  "schema": "af.structured-contract/2",
   "require_container": false,
   "inputs": {
     "note": {
