@@ -369,6 +369,14 @@ without truncating the selection or changing test inventory validation. Default 
 build variants have distinct JUnit identities for reporting. Base, container and Linux perf smoke timings are separate artifacts. The perf smoke commands
 contribute to the observed command envelope, with their cost reported separately from class shares. The gate-owner preflight is mandatory in both the base check and each selected class runner.
 
+The supported-signal cancellation fixture disables core dumping only in its disposable Linux
+owner, through a test-only bootstrap. The command still receives real signals, exec restores
+its dumpability, and the owner still terminates by the exact original signal within the existing
+five-second wait. The outer test runner and production gate owner keep their original policy.
+This excludes host core collection from the signal assertion; it does not reproduce or prove
+the cause of the hosted SIGQUIT timeout. See the
+[decision and controlled Linux evidence](adr/2026-11-05-isolate-signal-test-owner-core-collection.md).
+
 The `task_gate::the_shipping_gate_producers_write_one_tests_record_the_task_runtime_admits`
 regression runs the shipping report producers inside a local Task check of a sealed candidate.
 Its JUnit stays in the check's private runtime through `AF_GATE_NEXTEST_RUN`, as in `verify.sh`;
