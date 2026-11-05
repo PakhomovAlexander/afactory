@@ -1,6 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:implementation-test-evidence:1",
   "type": "object",
   "additionalProperties": false,
   "required": [
