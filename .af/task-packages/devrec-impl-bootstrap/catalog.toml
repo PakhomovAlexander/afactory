@@ -1,0 +1,58 @@
+# Review this native catalog with the consuming repository local code policy.
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+no_match = "refuse"
+
+[review]
+generation = 2
+gate = "major"
+clean_rounds = 1
+max_rounds = 2
+allow_targeted_repairs = false
+
+[independence]
+command_workers_by_package = true
+distinct_principals = false
+distinct_providers = false
+distinct_models = false
+
+[packages."impl/bugs"]
+version = "1.0.0"
+digest = "sha256:ede9378454869c345c5400f7464365b5146d1b8e5ef1692a08b2541965dc259d"
+path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/bugs"
+
+[packages."impl/correctness"]
+version = "1.0.0"
+digest = "sha256:49b19242329ede8908227f21db2c0dac2b772485d5cac894b84a4948b2809745"
+path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/correctness"
+
+[packages."impl/evaluator"]
+version = "1.0.0"
+digest = "sha256:e93c1f1beed31b7729fb792dc4539919dd0eaf94df3ce1860758122d56dd0e6f"
+path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/evaluator"
+
+[packages."impl/implementation"]
+version = "1.0.0"
+digest = "sha256:2932ffba4a64ba6331865e3d0c672a36da88b533c388b5718a3c909b4ab88424"
+path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/implementation"
+
+[packages."impl/implementer"]
+version = "1.0.0"
+digest = "sha256:58fa23d2704b3e5bf5f1de45e93ff6fa89591d2f126b74a8f2631fb8b7d88f3b"
+path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/implementer"
+
+[packages."impl/review"]
+version = "1.0.0"
+digest = "sha256:b12a0f8aff522d473c829297880c34e093e382fbcfa7a5f72772e000aa6252e1"
+path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/review"
+
+[providers]
+"impl/implementer" = "codex-personal"
+"impl/correctness" = "codex-personal"
+"impl/bugs" = "codex-personal"
+"impl/evaluator" = "codex-personal"
+
+# Both are required; no default-light pipeline is selected.
+[review.reviewers]
+bugs = "required"
+correctness = "required"
