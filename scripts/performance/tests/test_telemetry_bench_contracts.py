@@ -117,8 +117,8 @@ class FixtureContracts(TempDir):
     def test_a_release_no_contract_names_is_refused_never_given_the_current_contract(self):
         # `0.11.9` (and a development `0.0.0`) declare no bench workload: refused, with or
         # without a requested contract, rather than measured under check-receipt@2.
-        for release in ("0.11.9", "0.0.0", "0.14.0", "0.14.0-rc.7",
-                        "0.14.0-nightly.20261102", "0.14.0-rc.5+unknown"):
+        for release in ("0.11.9", "0.0.0", "0.14.0", "0.14.0-rc.8",
+                        "0.14.0-nightly.20261102", "0.14.0-rc.5+unknown", "0.14.0-rc.7+unknown"):
             with self.subTest(release=release):
                 with self.assertRaisesRegex(overhead.BenchError, "named by no fixture contract"):
                     overhead.select_contract(release)
@@ -128,12 +128,12 @@ class FixtureContracts(TempDir):
                  for version in contract["versions"]]
         self.assertEqual(len(named), len(set(named)), "a release is named by one contract")
 
-    def test_rc4_rc5_and_rc6_select_the_existing_receipt_2_contract(self):
+    def test_rc4_through_rc7_select_the_existing_receipt_2_contract(self):
         # ADR-0255 introduced @2 before RC3; CHANGELOG.md's RC4 and RC5 sections
-        # retain it. RC6 still publishes @2 in review-pipeline/src/task/code.rs;
-        # its definition and schema match RC4/RC5 (docs/telemetry.md). The unchanged
+        # retain it. RC6 and RC7 publish @2 in review-pipeline/src/task/code.rs;
+        # their definition and schema match RC4/RC5 (docs/telemetry.md). The unchanged
         # fixture packages declare it. None of these releases needs an overlay.
-        for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6"):
+        for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7"):
             with self.subTest(release=release):
                 self.assertEqual(overhead.select_contract(release), "check-receipt@2")
                 self.assertEqual(overhead.select_contract(release, "check-receipt@2"),
@@ -187,7 +187,7 @@ class FixtureContracts(TempDir):
         with self.assertRaisesRegex(overhead.BenchError, "not the declared"):
             overhead.apply_contract(af, fixture, self.copy(fixture), "check-receipt@1")
 
-    def test_rc4_rc5_and_rc6_keep_all_committed_fixtures_without_contract_specific_pins(self):
+    def test_rc4_through_rc7_keep_all_committed_fixtures_without_contract_specific_pins(self):
         from perflab import clicases
         import re
         for source in sorted(overhead.FIXTURES_DIR.glob("*/repo")):
@@ -202,7 +202,7 @@ class FixtureContracts(TempDir):
                     self.assertEqual(clicases.catalog_problems(str(source)), [])
                 else:
                     self.assertEqual(clicases.pipeline_problems(str(source)), [])
-                for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6"):
+                for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7"):
                     with self.subTest(release=release):
                         af = self.stand_in(release, {"@1": {}, "@2": {
                             path: digest for digest, path in committed.items()}})

@@ -19,6 +19,136 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.14.0-rc.7] - 2026-11-04
+
+### Authority compatibility
+
+Existing committed .af authority without the new optional Worker development or knowledge companions needs no hand edit. Adding or changing Worker companions requires af onboard --refresh-lock. Pre-GA persisted state remains unsupported and must be discarded on upgrade.
+
+### Changes
+
+- Admit RC7 explicitly under the unchanged telemetry `check-receipt@2` fixture contract.
+- fix: stabilize nightly secret access, telemetry contracts and gate reports (#649)
+- feat: add bounded worker development and context tooling (#627)
+
+- Nightly build and publish units can read their `root:af-nightly` 0440 secrets through the
+  supplementary group `af-nightly`, keeping `af-perf-readers` as their primary group and Docker
+  access for the build ([#575](https://github.com/PakhomovAlexander/afactory/issues/575)).
+- Telemetry measurements now also admit af 0.14.0-rc.4, 0.14.0-rc.5 and 0.14.0-rc.6 under the existing
+  `check-receipt@2` fixture contract; unnamed versions and mismatched requested contracts still
+  refuse. A regression requires the workspace release to have an explicit contract
+  ([#576](https://github.com/PakhomovAlexander/afactory/issues/576)).
+- The native gate publishes one complete tests record across its selected classes, preserving
+  failed and flaky tests and streaming build steps. Script step labels use filename stems and
+  complete Rust filters are retained in files, keeping the normal Task report fields valid.
+  The receipt regression keeps execution evidence outside sealed sources and prints nested
+  check logs on failure so report production failures can be diagnosed from gate output.
+- The deterministic comparison tests parse documented configuration with the vendored TOML
+  reader, so the performance script suite also imports on Python 3.9.
+
+- Wrap checkpoint continuation guidance in `af help config` within 100 columns.
+
+- Reclaim unused Java, Azure CLI and PowerShell payloads on disposable hosted Linux runners
+  that lack Swift, preserving the 40 GiB CI headroom and 10 GiB production disk floor.
+
+- Reclaim the unused preinstalled Swift SDK on GitHub-hosted Ubuntu validation runners to
+  provide additional build headroom. Keep the 40 GiB preparation requirement, 10 GiB production
+  free-disk floor and existing cleanup safety checks unchanged; local gates never remove SDKs.
+
+- Prepare the crash-recovery container probe's pinned multi-architecture image with its selected
+  runtime before launching the child, and pass that exact image to the child. Clean runners no
+  longer depend on another probe populating the image cache before the storage barrier.
+
+- Linux validation on ephemeral GitHub-hosted Ubuntu runners reclaims unused Android, .NET and
+  Haskell SDK payloads before Rust builds, logs disk capacity before and after cleanup, and
+  requires 40 GiB free for build/test headroom above the unchanged production 10 GiB disk floor.
+  Local, macOS and self-hosted gates keep their existing filesystem contents and test coverage.
+
+- Integrate structured Tasks, Pi/Kimi support and the issue-triage runner with Worker
+  development environments, exact cache Warm Sets and bounded knowledge retrieval.
+
+- Keep private Worker Notes queries valid across unrelated source changes, delivering the
+  current Head Delta with exact context evidence while preserving freshness, privacy and bounds.
+
+- Integrate the rc6 release while preserving Worker development tooling and native performance
+  Scenarios. Regenerate the protected harness fixtures and remove superseded Scenario, Ant and
+  GitHub adapter schemas; current schema versions remain unchanged.
+
+- Require finite aggregate disk limits for Worker development environments. Version 3 companions
+  and machine bindings explicitly authorize one private tmpfs filesystem for all writable roots
+  and temporary areas; unsupported enforcement refuses dispatch. Bounded exports and dead-owner
+  recovery preserve source, cache and reviewer isolation. See
+  [the storage decision](../docs/adr/2026-11-04-bound-worker-storage-in-one-private-tmpfs.md).
+
+- Worker packages can declare bounded source knowledge and same-slot private Notes in a pinned
+  `knowledge.toml` companion. Typed queries retrieve exact source-addressed excerpts on later
+  invocations, with freshness checks, explicit omissions and replayable context evidence on
+  command and model transports. Private hypotheses never become independent reviewer context;
+  cross-Task source facts require an explicit capability and content revalidation. See
+  [the decision](docs/adr/2026-11-04-select-bounded-worker-knowledge-through-typed-ports.md).
+
+- Resolve Worker cache contract test fixtures from `AF_WORKSPACE_ROOT` when set, with the
+  compile-time workspace root as a fallback, so reused test binaries read the current candidate.
+
+- Correct the Worker command-evidence parity fixture's omission ordering and cover canonical
+  round trips with and without final-tree evidence, preserving rejection of unsorted or duplicate
+  omission markers.
+
+- Forward declared Worker context through container stdin so local development harnesses can
+  read their input. Preserve separate bounded output streams and report live probe failures
+  with status, truncation and captured stdout/stderr diagnostics.
+
+- Worker development fixture checks use the admitted compiler's real tools and verify the pinned
+  version, allowing local gates to compile and test offline with private Cargo and Rustup homes
+  and temporary builds under the gate's supplied target for read-only source Snapshots.
+
+- Verify actual offline Rust and Python compilation/tests through admitted Task Worker packages
+  for implementers and reviewers, including private state, experiment isolation and exact command
+  receipts. Keep transport fixtures distinct from live container containment evidence.
+- Declare the Rust example's pinned `cc` linker driver so Cargo can link tests through the
+  configured tool PATH without inheriting the operator's PATH.
+- Exercise subprocess crashes inside cache capture and clone, then reopen the Task Store and
+  sweep abandoned private roots; verify lease protection, preserved roots and refusal to admit
+  or reuse incomplete caches under the existing Worker development contracts
+  ([design](docs/design/worker-local-development.md)).
+
+- Add explicit immutable cache and checkpoint policies to Worker development companions. Same-slot
+  admitted outputs can warm later Workers through recorded Warm Sets, with private writable clones,
+  language-neutral compatibility keys, bounded capture and explicit miss/corruption outcomes.
+  Retries preserve their original inputs; Worker caches never become Gate evidence. Companion and
+  machine bindings now require version 2, Build Caches version 2 and Warm Sets version 3. See the
+  [decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-04-carry-declared-worker-caches-in-exact-warm-sets.md).
+
+- Add pinned, language-neutral Worker `development.toml` contracts for contained command
+  harnesses, with private Attempt state, separate reviewer experiments and bounded host-recorded
+  command evidence. Exact machine bindings and tool identities are checked before dispatch;
+  model adapters and unsupported aggregate disk quotas are refused. See the
+  [decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-03-worker-development-environments.md) and
+  [examples](https://github.com/PakhomovAlexander/afactory/blob/main/fixtures/worker-development/README.md).
+
+- Integrate native performance Scenarios with Worker development environments, caches and knowledge
+  retrieval; regenerate the protected harness inventory and measure digests from the combined tree.
+
+- Preserve private Notes retrieval for real Task Attempt identities while retaining credential
+  checks on Worker-authored Notes text and paths, following the
+  [knowledge decision](docs/adr/2026-11-04-select-bounded-worker-knowledge-through-typed-ports.md).
+- Add Task runtime regression coverage for private Notes queries across unrelated source changes,
+  checking Worker reply admission, same-slot routing and current Head Delta context evidence.
+
+- Restore exact-source Worker checkpoints on their admitted changed source. The host binds
+  compatibility to the sealed output Snapshot, keeps input provenance, and still refuses the
+  old source, unadmitted captures and other slots. Task tests cover restored bytes and replay.
+- Document the fast gate's e2e dispatch through the live containment probe target, including
+  the aggregate Worker disk-bound probe.
+
+- Integrate main `3f5c9746bd31587742282b9fcfe17079ef236937` with Worker development tooling:
+  retain verification Review acceptance, the Scenario merge watcher and RC4/RC5 telemetry
+  contracts alongside Worker development v3, immutable caches and bounded knowledge retrieval.
+  The 18 incoming-only files retain main's exact bytes and executable modes. The combined test
+  catalog retains both sets of regressions and live probes; the performance policy and inventory
+  are regenerated over the combined harness, including the Worker Rust fixture's Cargo inputs.
+  The validated coordinator input bundle is removed from the delivered source.
+
 ## [0.14.0-rc.6] - 2026-11-04
 
 ### Authority compatibility
