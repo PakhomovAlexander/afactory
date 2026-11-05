@@ -236,6 +236,19 @@ impl StructuredTaskDomain {
     }
 }
 impl TaskOperatorHost for StructuredTaskDomain {
+    fn model_call_policy(
+        &self,
+        definition: &review_graph::task::CompiledNode,
+    ) -> review_runner::task::ModelCallPolicy {
+        match definition.operator {
+            CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker { .. },
+                ..
+            } => review_runner::task::ModelCallPolicy::SingleCall,
+            _ => review_runner::task::ModelCallPolicy::RecoverWithinAttempt,
+        }
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,

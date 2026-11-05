@@ -315,6 +315,13 @@ impl ProviderTaskDomain<'_> {
 }
 
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
+    fn model_call_policy(
+        &self,
+        definition: &review_graph::task::CompiledNode,
+    ) -> review_runner::task::ModelCallPolicy {
+        self.inner.model_call_policy(definition)
+    }
+
     fn prepare_invocation(
         &self,
         cas: &Cas,

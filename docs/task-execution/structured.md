@@ -55,8 +55,14 @@ The standard model adapter delivers only bounded declared inputs, instructions, 
 and admitted retry feedback. The Worker supplies payloads, with `source_artifact_ids` containing
 the sorted exact IDs of all custom input artifacts. The kernel constructs canonical envelopes
 and validation evidence. A Worker cannot claim a receipt by adding a JSON field or output port.
-Malformed replies receive normal durable feedback within the existing Attempt limits. Failures
-and cancellation never imply acceptance. Resuming a finished Task reads its recorded result
+Each model Worker Attempt permits one model invocation. Local extraction of a valid JSON object
+from surrounding prose makes no additional call. Malformed or schema-invalid replies fail with
+raw evidence; wrong provenance fails domain admission. Transient Provider failures also settle
+the Attempt without an in-Attempt retry. Another semantic call requires the native scheduler's
+explicit Worker slot and Task Attempt allowance, with separate accounting and durable feedback.
+Provider Admission remains its own separately counted operation with its existing recovery policy.
+See [the one-call decision](../adr/2026-11-05-limit-structured-worker-attempts-to-one-model-call.md).
+Failures and cancellation never imply acceptance. Resuming a finished Task reads its recorded result
 without another Worker Attempt. `af task output --format json` writes the canonical envelope.
 `af task deliver` refuses structured data Tasks before any Git mutation.
 

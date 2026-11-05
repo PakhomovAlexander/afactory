@@ -80,9 +80,9 @@ impl Truncation {
 /// A cap as a person reads it: whole MiB or KiB when it is one, bytes otherwise.
 fn size_text(bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
-    if bytes >= MIB && bytes % MIB == 0 {
+    if bytes >= MIB && bytes.is_multiple_of(MIB) {
         format!("{} MiB", bytes / MIB)
-    } else if bytes >= 1024 && bytes % 1024 == 0 {
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
         format!("{} KiB", bytes / 1024)
     } else {
         format!("{bytes} bytes")

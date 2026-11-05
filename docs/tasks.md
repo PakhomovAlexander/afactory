@@ -750,7 +750,11 @@ nor a Diff Subject.
 One call of an Attempt can fail and the Attempt still succeed
 ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)).
 Everything below happens inside the Attempt's own wall and token reservation; the calls' usage
-adds up, and nothing is reset or refunded.
+adds up, and nothing is reset or refunded. Structured-profile Worker Attempts instead permit
+one model invocation: local JSON extraction is allowed, but invalid output or a transient failure
+settles the Attempt. A further call needs the scheduler's declared retry allowance, with its own
+Attempt accounting. Provider Admission remains separate; see
+[structured Tasks](task-execution/structured.md).
 
 - **A reply that does not parse.** A typed reply with prose around a valid JSON object is
   admitted as that object. Any other reply that does not parse is re-asked once from the same

@@ -78,6 +78,14 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    /// Installed profile policy, rederived from captured domain authority, not Worker input.
+    fn model_call_policy(
+        &self,
+        _definition: &review_graph::task::CompiledNode,
+    ) -> review_runner::task::ModelCallPolicy {
+        review_runner::task::ModelCallPolicy::RecoverWithinAttempt
+    }
+
     /// Pure bounded immutable input selection, before the invocation and any reservation.
     /// Replay uses the recorded invocation and never asks the selector again.
     fn prepare_invocation(
@@ -467,6 +475,22 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             return result;
         };
         self.record_provider_events(input, attempt, &mut result);
+        // Only a transient failure can reach the in-Attempt retry path. Ordinary successful
+        // work and invalid replies need no extra domain lookup here.
+        if result.outputs.is_err() && result.notes.transient.is_some() {
+            let definition = match self.resolve_node(&input.node) {
+                Ok(resolved) => resolved.definition,
+                Err(error) => {
+                    result.outputs = Err(error);
+                    return result;
+                }
+            };
+            if self.host.model_call_policy(&definition)
+                == review_runner::task::ModelCallPolicy::SingleCall
+            {
+                return result;
+            }
+        }
         let mut retries = retry::Retries::default();
         while let Some(transient) = result.notes.transient.filter(|_| result.outputs.is_err()) {
             let wait = match retries.next_wait(transient, &result, attempt) {

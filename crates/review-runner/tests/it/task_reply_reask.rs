@@ -294,3 +294,55 @@ fn object_payload_instead_of_output_array_is_still_refused() {
     assert!(run(&f, &model, 37).reply.is_err());
     assert_eq!(*model.allowances.lock().unwrap(), vec![37, 27]);
 }
+
+/// Single-call policy retains local extraction and exact validation, without corrective sends.
+#[test]
+fn single_call_policy_counts_valid_malformed_and_schema_invalid_replies_once() {
+    for (message, valid) in [
+        (VALID, true),
+        (BROKEN, false),
+        (
+            r#"{"schema":"af.worker-reply/1","outputs":{"result":[{"verdict":"maybe"}]}}"#,
+            false,
+        ),
+        (
+            r#"Here is the reply: {"schema":"af.worker-reply/1","outputs":{"result":[{"verdict":"pass"}]}}"#,
+            true,
+        ),
+    ] {
+        let f = fixture();
+        let model = Scripted::new(&[message, VALID]);
+        let returned = review_runner::task::invoke_model_with_policy(
+            &f.cas,
+            Path::new("/nonexistent"),
+            &model,
+            &f.contract,
+            &f.context_id,
+            Duration::from_secs(60),
+            WorkerAccess::ReadOnly,
+            None,
+            37,
+            &[],
+            review_runner::task::ModelCallPolicy::SingleCall,
+        );
+        assert_eq!(returned.reply.is_ok(), valid, "{message}");
+        assert_eq!(model.requests.lock().unwrap().len(), 1);
+        assert_eq!(*model.allowances.lock().unwrap(), vec![37]);
+        assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 10);
+        assert!(returned.notes.events.is_empty());
+        if !valid {
+            assert_eq!(
+                returned.feedback_code,
+                Some(TaskFeedbackCodeV1::InvalidOutputContract)
+            );
+            let raw = f.cas.put(message.as_bytes()).unwrap();
+            assert!(returned.raw_artifact_ids.contains(&raw));
+            assert!(
+                returned
+                    .reply
+                    .unwrap_err()
+                    .contains("permits one model call")
+            );
+        }
+    }
+}
