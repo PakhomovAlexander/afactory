@@ -295,6 +295,5 @@
       }
     }
   },
-  "$id": "urn:af:schema:implementation-evaluation-input:1",
   "title": "af/ImplementationEvaluationInput@1"
 }

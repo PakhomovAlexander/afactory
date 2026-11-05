@@ -23,12 +23,12 @@ path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-pack
 
 [packages."impl/correctness"]
 version = "1.0.0"
-digest = "sha256:49b19242329ede8908227f21db2c0dac2b772485d5cac894b84a4948b2809745"
+digest = "sha256:96bed20c1ef6f0295df3e92ffeb82f6eb60f9480050ea9496230c61510e1804a"
 path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/correctness"
 
 [packages."impl/evaluator"]
 version = "1.0.0"
-digest = "sha256:e93c1f1beed31b7729fb792dc4539919dd0eaf94df3ce1860758122d56dd0e6f"
+digest = "sha256:d41df1f382f0494a639763db4cb4c4cf35be13089347c07107429383b5ca4ca9"
 path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/evaluator"
 
 [packages."impl/implementation"]
