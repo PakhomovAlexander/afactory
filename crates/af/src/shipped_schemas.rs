@@ -58,7 +58,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("scenario-impl-publication", 1),
     schema!("scenario-impl-source-request", 1),
     schema!("scenario-impl-source", 1),
-    schema!("scenario-impl-state", 1),
+    schema!("scenario-impl-state", 2),
     schema!("scenario-list", 4),
     schema!("scenario-owned-file", 1),
     schema!("scenario-pin", 4),

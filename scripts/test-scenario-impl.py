@@ -227,7 +227,7 @@ print(json.dumps(source))
         def crash(journal):
             save(journal)
             rec = journal.state["records"].get(self.prepare_req["intent_id"])
-            if rec and rec["inode"] is not None:
+            if rec and rec["reservations"]["worktree"]["published"]:
                 raise RuntimeError("crash after empty directory journal save")
         with patch.object(A.ImplJournal, "save", crash):
             with self.assertRaisesRegex(RuntimeError, "empty directory journal save"):
@@ -287,6 +287,217 @@ print(json.dumps(source))
             self.call(self.prepare_req, "recover")
         self.assertEqual(list(path.iterdir()), [])
         self.assertEqual(self.git("worktree", "list", "--porcelain"), registered)
+
+    def reservation_crash(self, kind, event, resume=True):
+        active = None
+        fired = False
+        renamed = False
+        reserve = A.ImplAdapter.reserve_directory
+        mkdir, sync, publish, save = Path.mkdir, A.sync_directory, A.publish_directory, A.ImplJournal.save
+
+        def checkpoint(name, when):
+            nonlocal fired
+            if active == kind and event == name + "." + when and not fired:
+                fired = True
+                raise RuntimeError("injected reservation interruption")
+
+        def reserving(adapter, rec, current, destination):
+            nonlocal active, renamed
+            renamed = False
+            active = current
+            try:
+                return reserve(adapter, rec, current, destination)
+            finally:
+                active = None
+
+        def creating(path, *args, **kwargs):
+            if path.name.startswith(".reserve-"):
+                checkpoint("create", "before")
+                result = mkdir(path, *args, **kwargs)
+                checkpoint("create", "after")
+                return result
+            return mkdir(path, *args, **kwargs)
+
+        def syncing(path):
+            name = ("sync_stage" if path.name.startswith(".reserve-") else
+                    "sync_root" if path == Path(self.config["worktree_root"]) and not renamed else "sync_final")
+            checkpoint(name, "before")
+            sync(path)
+            checkpoint(name, "after")
+
+        def publishing(source, destination):
+            nonlocal renamed
+            checkpoint("publish", "before")
+            publish(source, destination)
+            renamed = True
+            checkpoint("publish", "after")
+
+        def saving(journal):
+            rec = journal.state["records"].get(self.prepare_req["intent_id"])
+            name = None
+            if active == kind and rec:
+                owned = rec["inode"] is not None if kind == "worktree" else rec["build"] is not None
+                if owned:
+                    name = "completion" if rec["reservations"][kind]["published"] else "ownership"
+            if name:
+                checkpoint(name, "before")
+            save(journal)
+            if name:
+                checkpoint(name, "after")
+
+        with patch.object(A.ImplAdapter, "reserve_directory", reserving), \
+             patch.object(Path, "mkdir", creating), patch.object(A, "sync_directory", syncing), \
+             patch.object(A, "publish_directory", publishing), patch.object(A.ImplJournal, "save", saving):
+            with self.assertRaisesRegex(RuntimeError, "injected reservation interruption"):
+                self.call(self.prepare_req)
+        self.assertTrue(fired)
+        adapter = self.adapter()
+        with adapter.journal.locked():
+            retained = copy.deepcopy(adapter.journal.state["records"][self.prepare_req["intent_id"]])
+            expected = retained["prepared"]
+        saved_identity = ({"device": retained["device"], "inode": retained["inode"]}
+                          if kind == "worktree" and retained["inode"] is not None else
+                          retained["build"] if kind == "build" else None)
+        uncertain = {path: path.stat().st_ino for path in Path(self.config["worktree_root"]).glob(".reserve-*")}
+        self.assertEqual(self.call(self.prepare_req, "reconcile")["outcome"], "pending")
+        if not resume:
+            return expected
+        result = self.call(self.prepare_req, "recover")
+        self.assertEqual(result["outcome"], "done")
+        self.assertEqual(json.loads(result["evidence"]), expected)
+        self.assertEqual(self.call(self.prepare_req)["evidence"], result["evidence"])
+        self.assertEqual((Path(expected["worktree"]) / "new").read_text(), "candidate\n")
+        final = Path(expected["worktree"]) / "target" if kind == "build" else Path(expected["worktree"])
+        if saved_identity is not None:
+            self.assertEqual((final.stat().st_dev, final.stat().st_ino),
+                             (saved_identity["device"], saved_identity["inode"]))
+        else:
+            self.assertEqual({path: path.stat().st_ino for path in uncertain}, uncertain)
+        stages = list(Path(self.config["worktree_root"]).glob(".reserve-*"))
+        self.assertLessEqual(len(stages), 1)
+        self.assertTrue(all(not list(stage.iterdir()) for stage in stages))
+        self.assertEqual((self.service.posts, self.service.pushes), (0, 0))
+
+    def changed_reservation(self, kind, event):
+        expected = self.reservation_crash(kind, event, resume=False)
+        root = Path(self.config["worktree_root"])
+        path = (root / (".reserve-" + "a" * 64 + "-" + kind + "-0") if event == "ownership.after"
+                else Path(expected["worktree"]) / "target" if kind == "build" else Path(expected["worktree"]))
+        original = path.with_name(path.name + "-original")
+        path.rename(original)
+        path.mkdir(mode=0o700)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertTrue(path.is_dir())
+        path.rmdir()
+        path.symlink_to(original, target_is_directory=True)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertTrue(path.is_symlink())
+        path.unlink()
+        original.rename(path)
+        path.chmod(0o755)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        path.chmod(0o700)
+        (path / "foreign").write_text("preserve")
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertEqual((path / "foreign").read_text(), "preserve")
+        (path / "foreign").unlink()
+        self.assertEqual(self.call(self.prepare_req, "recover")["outcome"], "done")
+
+    def foreign_destination(self, kind):
+        expected = self.reservation_crash(kind, "ownership.after", resume=False)
+        destination = Path(expected["worktree"])
+        if kind == "build":
+            destination /= "target"
+        destination.mkdir(mode=0o700)
+        inode = destination.stat().st_ino
+        with self.assertRaises((A.Refused, OSError)):
+            self.call(self.prepare_req, "recover")
+        self.assertEqual(destination.stat().st_ino, inode)
+        self.assertEqual(list(destination.iterdir()), [])
+        destination.rmdir()
+        self.assertEqual(self.call(self.prepare_req, "recover")["outcome"], "done")
+
+    def uncertain_slot_crash(self, kind, when):
+        stage = Path(self.config["worktree_root"]) / (".reserve-" + "a" * 64 + "-" + kind + "-0")
+        stage.mkdir(mode=0o700)
+        inode = stage.stat().st_ino
+        save = A.ImplJournal.save
+        def saving(journal):
+            rec = journal.state["records"].get(self.prepare_req["intent_id"])
+            if rec and rec["reservations"][kind]["slot"] == 1:
+                if when == "after":
+                    save(journal)
+                raise RuntimeError("slot advancement interruption")
+            save(journal)
+        with patch.object(A.ImplJournal, "save", saving):
+            with self.assertRaisesRegex(RuntimeError, "slot advancement interruption"):
+                self.call(self.prepare_req)
+        self.assertEqual(self.call(self.prepare_req, "recover")["outcome"], "done")
+        self.assertEqual(stage.stat().st_ino, inode)
+        self.assertEqual(list(stage.iterdir()), [])
+        self.assertEqual(list(Path(self.config["worktree_root"]).glob(".reserve-*")), [stage])
+
+    def uncertain_symlink(self, kind):
+        self.reservation_crash(kind, "create.before", resume=False)
+        stage = Path(self.config["worktree_root"]) / (".reserve-" + "a" * 64 + "-" + kind + "-0")
+        stage.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertTrue(stage.is_symlink())
+        stage.unlink()
+        stage.mkdir(mode=0o700)
+        (stage / "foreign").write_text("preserve")
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertEqual((stage / "foreign").read_text(), "preserve")
+
+    def test_prepare_completion_journal_crash(self):
+        save = A.ImplJournal.save
+        for when in ("before", "after"):
+            # The first iteration resumes through the completion write; the second
+            # uses that same completed intent to exercise lost completion response.
+            def saving(journal):
+                rec = journal.state["records"].get(self.prepare_req["intent_id"])
+                if rec and rec["phase"] == "done":
+                    if when == "after":
+                        save(journal)
+                    raise RuntimeError("completion interruption")
+                save(journal)
+            if when == "before":
+                with patch.object(A.ImplJournal, "save", saving):
+                    with self.assertRaisesRegex(RuntimeError, "completion interruption"):
+                        self.call(self.prepare_req)
+            else:
+                with patch.object(A.ImplJournal, "save", saving):
+                    with self.assertRaisesRegex(RuntimeError, "completion interruption"):
+                        self.call(self.prepare_req, "recover")
+        self.assertEqual(self.call(self.prepare_req, "recover")["outcome"], "done")
+
+    def test_exclusive_publication_preserves_foreign_empty_destination(self):
+        source, destination = self.root / "staged", self.root / "foreign"
+        source.mkdir(mode=0o700)
+        destination.mkdir(mode=0o700)
+        identities = source.stat().st_ino, destination.stat().st_ino
+        with self.assertRaises(OSError):
+            A.publish_directory(source, destination)
+        self.assertEqual((source.stat().st_ino, destination.stat().st_ino), identities)
+
+    def test_uncertain_staging_is_bounded_and_never_adopted_or_deleted(self):
+        root = Path(self.config["worktree_root"])
+        stages = [root / (".reserve-" + "a" * 64 + "-worktree-" + str(n)) for n in range(A.RESERVATION_SLOTS)]
+        for stage in stages:
+            stage.mkdir(mode=0o700)
+        identities = [stage.stat().st_ino for stage in stages]
+        for _ in range(2):
+            with self.assertRaisesRegex(A.Refused, "reservation budget exhausted"):
+                self.call(self.prepare_req)
+        self.assertEqual([stage.stat().st_ino for stage in stages], identities)
+        self.assertEqual(len(list(root.iterdir())), A.RESERVATION_SLOTS)
+        self.assertFalse((root / ("a" * 64)).exists())
 
     def action(self, p, op="impl_publish_v1", key="b"):
         prepared = dict(intent_id=p["owner"], operation="impl_prepare_v1", destination="github:octo/project",
@@ -631,6 +842,12 @@ print(json.dumps(source))
             self.call(old)
         state_path = Path(self.config["state_dir"]) / "state.json"
         raw = A.decode(state_path.read_bytes(), A.STATE_LIMIT)
+        old_state = copy.deepcopy(raw)
+        old_state["schema"] = "af/scenario-impl-state@1"
+        old_state.pop("checksum")
+        state_path.write_bytes(A.state_bytes(old_state))
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req)
         raw["checksum"] = D
         state_path.write_bytes(A.canonical(raw))
         with self.assertRaises(A.Refused):
@@ -646,6 +863,33 @@ print(json.dumps(source))
         self.assertNotIn(b"TEST_CREDENTIAL", out.stdout + out.stderr)
         self.assertEqual(self.service.posts, 0)
 
+
+# Every boundary runs with a fresh machine journal and real local Git. Restart drops
+# all in-memory state, including mutations made before an interrupted journal save.
+for _kind in ("worktree", "build"):
+    for _boundary in ("create", "sync_stage", "sync_root", "ownership", "publish", "sync_final", "completion"):
+        for _when in ("before", "after"):
+            def _case(self, kind=_kind, event=_boundary + "." + _when):
+                self.reservation_crash(kind, event)
+            setattr(LifecycleTests, "test_reservation_" + _kind + "_" + _boundary + "_" + _when, _case)
+
+for _kind in ("worktree", "build"):
+    for _event in ("ownership.after", "publish.after", "completion.after"):
+        def _changed(self, kind=_kind, event=_event):
+            self.changed_reservation(kind, event)
+        setattr(LifecycleTests, "test_changed_reservation_" + _kind + "_" + _event.replace(".", "_"), _changed)
+
+for _kind in ("worktree", "build"):
+    for _when in ("before", "after"):
+        def _slot(self, kind=_kind, when=_when):
+            self.uncertain_slot_crash(kind, when)
+        setattr(LifecycleTests, "test_slot_advancement_" + _kind + "_" + _when, _slot)
+    def _foreign(self, kind=_kind):
+        self.foreign_destination(kind)
+    setattr(LifecycleTests, "test_foreign_final_" + _kind, _foreign)
+    def _symlink(self, kind=_kind):
+        self.uncertain_symlink(kind)
+    setattr(LifecycleTests, "test_uncertain_symlink_" + _kind, _symlink)
 
 if __name__ == "__main__":
     unittest.main()

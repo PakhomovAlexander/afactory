@@ -14,3 +14,7 @@
 - Select the generated pipeline's reviewed implementation guarantee in the shipped impl fixture,
   and remove only published schema metadata from local Worker copies. Cover generated package
   admission with native Task planning and Scenario template pinning.
+- Recover worktree and build reservations across directory creation, ownership journaling and
+  atomic publication interruptions. Exclusive rename preserves foreign destinations; bounded
+  unpublished staging remains unclaimed for operator inspection. Journal v2 rejects v1 state.
+  See the [reservation decision](../docs/adr/2026-11-05-publish-owned-impl-directory-reservations.md).

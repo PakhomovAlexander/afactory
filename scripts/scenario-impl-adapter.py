@@ -7,12 +7,40 @@ import shlex
 import subprocess
 import shutil
 import tempfile
+import ctypes
 
 IMPL_MAX_RECORDS = 32
 IMPL_CONFIG = "af/scenario-impl-config@1"
-IMPL_STATE = "af/scenario-impl-state@1"
+IMPL_STATE = "af/scenario-impl-state@2"
+RESERVATION_SLOTS = 4
 PREPARED = "af/scenario-impl-prepared@1"
 OPS = {"impl_prepare_v1", "impl_publish_v1", "impl_cleanup_v1", "observe"}
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def publish_directory(source, destination):
+    # Ordinary rename can replace a foreign empty directory. Require the platform's
+    # exclusive atomic rename; unsupported systems fail closed, without a fallback.
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        result = rename(os.fsencode(source), os.fsencode(destination), 4)  # RENAME_EXCL
+    else:
+        need(sys.platform.startswith("linux") and hasattr(libc, "renameat2"),
+             "exclusive directory publication unavailable")
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        result = rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1)  # RENAME_NOREPLACE
+    if result != 0:
+        raise OSError(ctypes.get_errno(), "exclusive directory publication refused")
 
 
 def validate_config(c):
@@ -241,7 +269,7 @@ class ImplJournal(Journal):
              and state["config_digest"] == self.config_digest, "foreign or corrupt implementation journal")
         need(isinstance(state["records"], dict) and len(state["records"]) <= IMPL_MAX_RECORDS, "journal bound exceeded")
         for key, rec in state["records"].items():
-            fields(rec, ("request", "phase", "prepared", "object", "inode", "device", "build", "cleaned", "cleanup_pending", "progress"))
+            fields(rec, ("request", "phase", "prepared", "object", "inode", "device", "build", "cleaned", "cleanup_pending", "progress", "reservations"))
             need(rec["phase"] in ("reserved", "started", "done"), "invalid lifecycle phase")
             need(key == rec["request"]["intent_id"], "journal intent differs")
             validate_impl_request({**rec["request"], "method": "reconcile"}, self.config)
@@ -259,12 +287,22 @@ class ImplJournal(Journal):
             for prop in ("inode", "device"):
                 if rec[prop] is not None:
                     integer(rec[prop])
+            fields(rec["reservations"], ("worktree", "build"))
+            for kind, reservation in rec["reservations"].items():
+                fields(reservation, ("slot", "published"))
+                need(type(reservation["slot"]) is int and 0 <= reservation["slot"] < RESERVATION_SLOTS
+                     and type(reservation["published"]) is bool, "invalid directory reservation")
+                if reservation["published"]:
+                    need(rec["inode"] is not None if kind == "worktree" else rec["build"] is not None,
+                         "published directory lacks ownership")
+            need((rec["inode"] is None) == (rec["device"] is None), "incomplete workspace identity")
             if rec["build"] is not None:
                 fields(rec["build"], ("inode", "device"))
                 integer(rec["build"]["inode"])
                 integer(rec["build"]["device"])
             if rec["request"]["operation"] == "impl_prepare_v1" and rec["phase"] == "done":
-                need(rec["prepared"] is not None and rec["inode"] is not None and rec["device"] is not None and rec["build"] is not None, "completed preparation lacks owned artifacts")
+                need(rec["prepared"] is not None and rec["inode"] is not None and rec["device"] is not None and rec["build"] is not None
+                     and all(r["published"] for r in rec["reservations"].values()), "completed preparation lacks owned artifacts")
             if rec["request"]["operation"] != "impl_cleanup_v1":
                 need(not rec["cleaned"] and rec["cleanup_pending"] is None, "non-cleanup intent has cleanup progress")
             need(isinstance(rec["progress"], list) and set(rec["progress"]) <= {"push", "post", "build", "worktree", "branch", "remote"}
@@ -283,7 +321,8 @@ class ImplJournal(Journal):
             a, b = rec["request"], exact
             need((a["operation"], a["inputs"]["subject"], a["inputs"]["revision"]) !=
                  (b["operation"], b["inputs"]["subject"], b["inputs"]["revision"]), "lifecycle object has another reserved intent")
-        rec = dict(request=exact, phase="reserved", prepared=None, object=None, inode=None, device=None, build=None, cleaned=[], cleanup_pending=None, progress=[])
+        rec = dict(request=exact, phase="reserved", prepared=None, object=None, inode=None, device=None, build=None, cleaned=[], cleanup_pending=None, progress=[],
+                   reservations={kind: dict(slot=0, published=False) for kind in ("worktree", "build")})
         records[r["intent_id"]] = rec
         need(len(state_bytes(self.state)) + len(records) * 60000 <= STATE_LIMIT, "completion evidence reservation exhausted")
         self.save()
@@ -388,12 +427,7 @@ class ImplAdapter:
         need((refs.decode() or None) in (expected_parent, p["commit"]), "foreign branch retained")
         if refs.decode() != p["commit"]:
             self.git("update-ref", "refs/heads/" + ref, p["commit"], expected_parent or "0" * 40)
-        if not worktree.exists():
-            need(rec["inode"] is None, "owned worktree disappeared; never replace it")
-            worktree.mkdir(mode=0o700)
-            st = worktree.stat()
-            rec["inode"], rec["device"] = st.st_ino, st.st_dev
-            self.journal.save()
+        self.reserve_directory(rec, "worktree", worktree)
         # The saved inode reserves this empty directory before Git creates its worktree.
         # Resume that exact reservation, but never retry a partially registered checkout.
         need(worktree.resolve() == worktree and not worktree.is_symlink(), "foreign workspace path")
@@ -408,15 +442,71 @@ class ImplAdapter:
         # An interrupted Git checkout can leave partial bytes: preserve rather than reset them.
         self.owned(rec, p)
         build = worktree / "target"
-        if rec["build"] is None:
-            need(not build.exists() and not build.is_symlink(), "candidate occupies reserved build directory")
-            build.mkdir(mode=0o700)
-            st = build.stat()
-            rec["build"] = {"device": st.st_dev, "inode": st.st_ino}
-            self.journal.save()
+        self.reserve_directory(rec, "build", build)
         rec["phase"] = "done"
         self.journal.save()
         return "done", canonical(p).decode()
+
+    def reserve_directory(self, rec, kind, destination):
+        reservation = rec["reservations"][kind]
+        root = Path(self.config["worktree_root"])
+        private_path(root, directory=True)
+        while True:
+            stage = root / (".reserve-" + rec["request"]["intent_id"].split(":")[1]
+                            + "-" + kind + "-" + str(reservation["slot"]))
+            identity = ({"device": rec["device"], "inode": rec["inode"]}
+                        if kind == "worktree" and rec["inode"] is not None else
+                        rec["build"] if kind == "build" else None)
+            if identity is None:
+                need(not destination.exists() and not destination.is_symlink(),
+                     "candidate or foreign directory occupies reservation")
+                if stage.exists() or stage.is_symlink():
+                    # An unjournaled mkdir cannot establish ownership. Retain it,
+                    # never adopt/delete it. At most three uncertain slots per kind
+                    # may be bypassed; exhaustion refuses without growing artifacts.
+                    st = stage.lstat()
+                    need(stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700
+                         and not any(stage.iterdir()), "uncertain staging content retained")
+                    need(reservation["slot"] + 1 < RESERVATION_SLOTS, "directory reservation budget exhausted")
+                    reservation["slot"] += 1
+                    self.journal.save()
+                    continue
+                stage.mkdir(mode=0o700)
+                st = stage.lstat()
+                sync_directory(stage)
+                sync_directory(root)
+                identity = dict(device=st.st_dev, inode=st.st_ino)
+                if kind == "worktree":
+                    rec["device"], rec["inode"] = st.st_dev, st.st_ino
+                else:
+                    rec["build"] = identity
+                self.journal.save()  # Identity is durable BEFORE final-path publication.
+            if reservation["published"]:
+                need(destination.exists() or destination.is_symlink(), "owned directory disappeared; never replace it")
+                st = destination.lstat()
+                need(stat.S_ISDIR(st.st_mode) and st.st_dev == identity["device"]
+                     and st.st_ino == identity["inode"], "published directory ownership changed")
+                if kind == "build":
+                    need(stat.S_IMODE(st.st_mode) == 0o700 and not any(destination.iterdir()),
+                         "unfinished build reservation changed")
+                return
+            if stage.exists() or stage.is_symlink():
+                st = stage.lstat()
+                need(stat.S_ISDIR(st.st_mode) and st.st_dev == identity["device"]
+                     and st.st_ino == identity["inode"] and stat.S_IMODE(st.st_mode) == 0o700
+                     and not any(stage.iterdir()), "staging ownership or content changed")
+                publish_directory(stage, destination)
+            # A crash after rename resumes from this exact inode, never from emptiness.
+            need(destination.exists() or destination.is_symlink(), "reserved directory disappeared; never replace it")
+            st = destination.lstat()
+            need(stat.S_ISDIR(st.st_mode) and st.st_dev == identity["device"]
+                 and st.st_ino == identity["inode"] and stat.S_IMODE(st.st_mode) == 0o700
+                 and not any(destination.iterdir()), "directory publication ownership changed")
+            sync_directory(destination.parent)
+            sync_directory(root)
+            reservation["published"] = True
+            self.journal.save()
+            return
 
     def preparation(self, p):
         rec = self.journal.state["records"].get(p["owner"])
@@ -800,9 +890,9 @@ def impl_schema_documents():
     nullable_int = dict(anyOf=[dict(type="null"), positive])
     who = obj(dict(id=positive, login=text(LOGIN)))
     schemas = {}
-    def doc(name, properties):
-        schemas[name + "-v1.json"] = {"$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "urn:af:schema:" + name + ":1", "title": name + " v1", **obj(dict(schema={"const": "af/" + name + "@1"}, **properties))}
+    def doc(name, properties, version=1):
+        schemas[name + "-v" + str(version) + ".json"] = {"$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "urn:af:schema:" + name + ":" + str(version), "title": name + " v" + str(version), **obj(dict(schema={"const": "af/" + name + "@" + str(version)}, **properties))}
     prepared = dict(owner=dig, previous_owner=dict(anyOf=[dict(type="null"), dig]), config_digest=dig, repository=text(REPO), repository_id=positive,
         task_id=text(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"), result_id=dig, snapshot_id=dig, source_snapshot=dig, source_predecessor=dict(anyOf=[dict(type="null"), dig]),
         source_commit=sha, branch=text(), base=text(), commit=sha, tree=sha, worktree=path,
@@ -834,10 +924,12 @@ def impl_schema_documents():
         object=dict(anyOf=[dict(type="null"), obj(dict(id=positive, number=positive))]),
         inode=nullable_int, device=nullable_int,
         build=dict(anyOf=[dict(type="null"), obj(dict(device=positive, inode=positive))]),
+        reservations=obj({kind: obj(dict(slot=dict(type="integer", minimum=0, maximum=RESERVATION_SLOTS - 1),
+                                       published=dict(type="boolean"))) for kind in ("worktree", "build")}),
         cleaned=array(dig, 3), cleanup_pending=dict(anyOf=[dict(type="null"), dig]),
         progress=array({"enum": ["push", "post", "build", "worktree", "branch", "remote"]}, 6)))
     doc("scenario-impl-state", dict(config_digest=dig, checksum=dig, records={"type": "object", "maxProperties": IMPL_MAX_RECORDS,
-        "propertyNames": dig, "additionalProperties": rec}))
+        "propertyNames": dig, "additionalProperties": rec}), version=2)
     return schemas
 
 if __name__ == "__main__":

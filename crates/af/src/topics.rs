@@ -647,7 +647,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Implementation lifecycle: af/scenario-impl-prepared@1, af/scenario-impl-outcome@1;
   publication text: af/scenario-impl-publication@1; machine config: af/scenario-impl-config@1;
-  adapter journal: af/scenario-impl-state@1; testing evidence: af/implementation-test-evidence@1.
+  adapter journal: af/scenario-impl-state@2; testing evidence: af/implementation-test-evidence@1.
   impl-source: af/scenario-impl-source-request@1 and af/scenario-impl-source@1.
   Bounded adapters: af/scenario-adapter-request@3 and af/scenario-adapter-response@1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,

@@ -145,10 +145,26 @@ positive marker, actor, repository, content, branch and commit evidence. After p
 remote absence stays pending; it never authorizes another POST. A changed head invalidates CI,
 review and merge observations. Closed unmerged PRs fail with workspace and branches retained.
 
-Preparation can recover the directory reservation saved immediately before `git worktree add`.
-Only the recorded device/inode at the canonical path, still empty with private permissions and
-absent from Git's worktree registrations, may finish that creation. Replaced paths, symlinks,
-partial contents and partial registrations remain preserved and refused.
+Preparation stages each worktree and build directory under the private configured worktree
+root. It fsyncs the new directory and root, journals its device/inode, and only then publishes
+it using an exclusive atomic rename (Linux `renameat2` or macOS `renamex_np`). Publication
+never replaces an existing destination. Recovery verifies the same inode at either the staging
+or final path, fsyncs both parents, and durably records publication before proceeding. It can
+resume interruptions before/after creation, identity persistence, rename and completion without
+adopting final paths with unknown ownership. Replaced paths, symlinks, changed permissions,
+partial contents and partial Git registrations remain preserved and refused.
+
+A crash after staging mkdir but before identity persistence leaves uncertain ownership. Recovery
+preserves that unpublished directory without adopting or deleting it and durably advances to the
+next deterministic staging slot. There are four slots per directory kind and intent: at most three
+uncertain directories can be bypassed; exhausting the fourth refuses further creation. Repeated
+restarts cannot grow this set. Uncertain staging is retained for operator inspection, including
+after normal owned cleanup; cleanup does not acquire authority over it. Nonempty, symlinked or
+nonprivate uncertain staging is refused. The private journal lock serializes the entire protocol.
+The [reservation decision](adr/2026-11-05-publish-owned-impl-directory-reservations.md)
+records this protocol. The journal is now `af/scenario-impl-state@2`; v1 state fails closed, with no migration or fallback.
+The interruption and preservation matrix is exercised by `scripts/test-scenario-impl.py` using
+real local Git and fresh journal loads for each restart.
 
 The implementation journal admits at most 32 retained intents and 16 MiB of journal bytes;
 preparation supports at most 32768 entries and 64 MiB of candidate content. Tools are read and
