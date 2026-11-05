@@ -1300,9 +1300,23 @@ impl TaskDomain for ReviewTaskDomain {
         }
         if self.reviewer(input) {
             let subject = self.current_subject(cas, input)?;
-            for port in output.outputs.values() {
+            for (name, port) in &output.outputs {
                 for id in &port.artifact_ids {
                     let artifact = envelope(cas, id)?;
+                    if name == "testing"
+                        && artifact.artifact_type
+                            == review_core::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1
+                    {
+                        let tests: review_core::task::verification::ImplementationTestEvidenceV1 =
+                            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                        tests.validate()?;
+                        if artifact.subject_snapshot_id.as_ref() != Some(&subject.snapshot_id)
+                            || tests.snapshot_id != subject.snapshot_id
+                        {
+                            return Err("Executable review evidence has a stale Snapshot".into());
+                        }
+                        continue;
+                    }
                     if artifact.artifact_type != RESULT_TYPE
                         || artifact.subject_snapshot_id.as_ref() != Some(&subject.snapshot_id)
                     {

@@ -3,6 +3,7 @@
 use super::*;
 use crate::scenario::contract::{TaskReceipt, TaskTarget};
 use crate::scenario::template::Template;
+use review_core::task::pipeline::TaskOperatorV1;
 
 pub(crate) fn validate_document(
     document: &serde_json::Value,
@@ -253,7 +254,11 @@ pub(crate) fn check_experiment_source(
     experiment_source_matches(&opened.cas, &snapshot, expected)
 }
 
-fn experiment_source_matches(cas: &Cas, source: &str, expected: &str) -> Result<(), String> {
+pub(super) fn experiment_source_matches(
+    cas: &Cas,
+    source: &str,
+    expected: &str,
+) -> Result<(), String> {
     if !review_core::is_digest(expected) {
         return Err("Native experiment evidence revision is not an exact Snapshot".into());
     }
@@ -333,6 +338,9 @@ pub(crate) fn plan(
     })?;
     let opened = open_task(&id, &template.repo, Some(&template.state))?;
     validate_recorded_plan(template, &opened, predecessors)?;
+    if document["requirements"]["scenario_mode"] == "impl" {
+        implementation_plan(&opened)?;
+    }
     if performance
         && matches!(
             profile,
@@ -453,6 +461,160 @@ fn validate_recorded_plan(
         {
             return Err("Recorded fresh Task source differs from pinned committed source".into());
         }
+    }
+    Ok(())
+}
+
+/// The reusable impl lifecycle has one implementation Task with an executable reviewer.
+/// Validate the captured native plan, rather than trusting an authoring script's model names.
+pub(super) fn implementation_plan(opened: &OpenedTask) -> Result<(), String> {
+    let plan_id = opened
+        .task
+        .plan_id
+        .as_deref()
+        .ok_or("Implementation has no native plan")?;
+    let plan: ExecutionPlanV3 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V3)?;
+    implementation_executions(
+        plan.bindings
+            .iter()
+            .map(|(slot, binding)| (slot.as_str(), &binding.execution)),
+    )?;
+    let graph = artifact::<CompiledTask>(&opened.cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    if !graph.remote_checks().is_empty() || graph.slots.len() != 4 {
+        return Err("impl requires exactly four model slots and local Gates only".into());
+    }
+    let authority: RunAuthority = serde_json::from_value(
+        opened
+            .cas
+            .get_json(&opened.task.revision.authority.policy_id)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let policy_id = authority
+        .review_policy_id
+        .as_deref()
+        .ok_or("impl has no captured review policy")?;
+    let policy: ReviewTaskPolicy =
+        serde_json::from_value(opened.cas.get_json(policy_id).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    if ["bugs", "correctness"]
+        .iter()
+        .any(|role| policy.reviewers.get(*role) != Some(&review_core::DemandRequirement::Required))
+    {
+        return Err("impl bugs and executable correctness reviewers are both required".into());
+    }
+    let compiler = restore_compiler(
+        &opened.cas,
+        &opened.task.revision.authority.policy_id,
+        &authority,
+    )?;
+    let (_, slot) = graph
+        .slots
+        .iter()
+        .find(|(name, _)| name.ends_with(".correctness"))
+        .ok_or("impl lacks its executable correctness reviewer")?;
+    let worker = compiler
+        .worker(&slot.worker)
+        .ok_or("impl reviewer package absent")?;
+    if slot.role != "review"
+        || worker.signature.effects
+            != BTreeSet::from(["read-source".into(), "execute-checks".into()])
+    {
+        return Err(
+            "impl correctness reviewer must execute checks without source-writing authority".into(),
+        );
+    }
+    use review_core::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1;
+    if !worker
+        .signature
+        .contract
+        .outputs
+        .get("testing")
+        .is_some_and(|p| {
+            p.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1
+                && !p.optional
+                && p.cardinality == PortCardinality::One
+        })
+    {
+        return Err("impl reviewer requires its public executable-testing evidence port".into());
+    }
+    let (_, evaluator_slot) = graph
+        .slots
+        .iter()
+        .find(|(name, _)| name.ends_with(".evaluator"))
+        .ok_or("impl evaluator slot absent")?;
+    let evaluator_worker = compiler
+        .worker(&evaluator_slot.worker)
+        .ok_or("impl evaluator package absent")?;
+    if evaluator_slot.input_type != "af/ImplementationEvaluationInput@1"
+        || !evaluator_worker
+            .signature
+            .contract
+            .inputs
+            .get("testing")
+            .is_some_and(|p| {
+                p.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1
+                    && !p.optional
+                    && p.cardinality == PortCardinality::One
+            })
+        || !evaluator_worker
+            .signature
+            .retains
+            .get("result")
+            .is_some_and(|ports| ports.contains("testing"))
+    {
+        return Err("impl evaluation requires versioned, retained executable-review input".into());
+    }
+    let correctness = graph.nodes.iter().find(|(_, node)| matches!(&node.operator, review_graph::task::CompiledOperator::Primitive {operator: TaskOperatorV1::Verify {slot}, ..} if slot.ends_with(".correctness"))).map(|(name,_)| name).ok_or("impl correctness invocation absent")?;
+    let evaluator = graph.nodes.values().find(|node| matches!(&node.operator, review_graph::task::CompiledOperator::Primitive {operator: TaskOperatorV1::Verify {slot}, ..} if slot.ends_with(".evaluator"))).ok_or("impl evaluator invocation absent")?;
+    if !evaluator
+        .inputs
+        .get("testing")
+        .is_some_and(|a| &a.node == correctness && a.port == "testing")
+    {
+        return Err(
+            "impl evaluator must consume the independent correctness reviewer's testing evidence"
+                .into(),
+        );
+    }
+    Ok(())
+}
+fn implementation_executions<'a>(
+    bindings: impl IntoIterator<Item = (&'a str, &'a WorkerExecutionV3)>,
+) -> Result<(), String> {
+    let mut roles = BTreeSet::new();
+    for (slot, execution) in bindings {
+        let role = slot.rsplit('.').next().ok_or("Missing impl role")?;
+        let (expected_model, expected_effort) = match role {
+            "implementer" => ("gpt-6.1-sol", "medium"),
+            "correctness" => ("gpt-6.1-sol", "high"),
+            "bugs" => ("gpt-6.1-terra", "high"),
+            "evaluator" => ("gpt-6-astra", "medium"),
+            _ => return Err("impl refuses additional/default-light model roles".into()),
+        };
+        let WorkerExecutionV3::Model {
+            provider,
+            provider_kind,
+            model,
+            effort,
+            ..
+        } = execution
+        else {
+            return Err("impl requires model-backed roles".into());
+        };
+        if provider != "codex-personal"
+            || provider_kind != "codex"
+            || model != expected_model
+            || effort != expected_effort
+            || !roles.insert(role)
+        {
+            return Err(format!(
+                "impl role {role} requires {expected_model} {expected_effort} on codex-personal"
+            ));
+        }
+    }
+    if roles != BTreeSet::from(["implementer", "correctness", "bugs", "evaluator"]) {
+        return Err("impl requires its implementer, executable correctness reviewer, bugs reviewer and evaluator".into());
     }
     Ok(())
 }
@@ -710,5 +872,73 @@ mod tests {
             assert!(validate_document(&wrong, None, 20).is_err(), "{field}");
         }
         assert!(validate_document(&doc,Some(&json!({"schema":"af.task-bindings/1","packages":{"local/wider":{"path":"mutable","version":"1.0.0","digest":format!("sha256:{}","a".repeat(64))}}})),20).is_err());
+    }
+}
+
+#[cfg(test)]
+mod implementation_tests {
+    use super::*;
+    #[test]
+    fn impl_models_require_owner_defaults_exact_provider_and_all_four_independent_roles() {
+        let mut bindings = BTreeMap::new();
+        for (role, model, effort) in [
+            ("implementer", "gpt-6.1-sol", "medium"),
+            ("correctness", "gpt-6.1-sol", "high"),
+            ("bugs", "gpt-6.1-terra", "high"),
+            ("evaluator", "gpt-6-astra", "medium"),
+        ] {
+            bindings.insert(
+                format!("root.slots.{role}"),
+                WorkerExecutionV3::Model {
+                    provider: "codex-personal".into(),
+                    provider_kind: "codex".into(),
+                    principal_id: Some("fixture".into()),
+                    model: model.into(),
+                    effort: effort.into(),
+                    pi: None,
+                },
+            );
+        }
+        let check = |team: &BTreeMap<String, WorkerExecutionV3>| {
+            implementation_executions(team.iter().map(|(name, binding)| (name.as_str(), binding)))
+        };
+        check(&bindings).unwrap();
+        let mut missing = bindings.clone();
+        missing.remove("root.slots.correctness");
+        assert!(check(&missing).is_err());
+        let mut command = bindings.clone();
+        command.insert(
+            "root.slots.correctness".into(),
+            WorkerExecutionV3::Command {},
+        );
+        assert!(check(&command).is_err());
+        for (field, value) in [
+            ("provider", "default"),
+            ("provider_kind", "claude"),
+            ("model", "gpt-6-sol"),
+            ("effort", "medium"),
+        ] {
+            let mut wrong = bindings.clone();
+            let WorkerExecutionV3::Model {
+                provider,
+                provider_kind,
+                model,
+                effort,
+                ..
+            } = wrong.get_mut("root.slots.correctness").unwrap()
+            else {
+                unreachable!()
+            };
+            match field {
+                "provider" => *provider = value.into(),
+                "provider_kind" => *provider_kind = value.into(),
+                "model" => *model = value.into(),
+                _ => *effort = value.into(),
+            };
+            assert!(check(&wrong).is_err(), "accepted changed {field}");
+        }
+        let mut extra = bindings.clone();
+        extra.insert("root.slots.uix".into(), bindings["root.slots.bugs"].clone());
+        assert!(check(&extra).is_err());
     }
 }

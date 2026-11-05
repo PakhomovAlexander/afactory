@@ -114,7 +114,7 @@ impl Fixture {
         let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         write(
             &policy,
-            &json!({"schema":"af/scenario-policy@3","adapters":{},"task_plans":[],"task_templates":[],"file_roots":[owned],"decision_keys":{"owner":key.pk.to_box().unwrap().into_string()}}),
+            &json!({"schema":"af/scenario-policy@4","adapters":{},"task_plans":[],"task_templates":[],"file_roots":[owned],"decision_keys":{"owner":key.pk.to_box().unwrap().into_string()}}),
         );
         std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
         write(&inputs, &json!({}));
@@ -135,7 +135,7 @@ impl Fixture {
         ];
         write(
             &bundle,
-            &json!({"schema":"af/scenario-bundle@3","root":"main","definitions":{"main":{"schema":"af/scenario@3","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
+            &json!({"schema":"af/scenario-bundle@4","root":"main","definitions":{"main":{"schema":"af/scenario@4","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
         );
         Self {
             _root: root,
@@ -162,7 +162,7 @@ impl Fixture {
                 self.policy.to_str().unwrap(),
             ],
         );
-        valid("scenario-pin-v3.json", &pinned);
+        valid("scenario-pin-v4.json", &pinned);
         cli(
             &self.repo,
             &self.state,
@@ -264,8 +264,8 @@ fn performance_scenario_native_task_submission_lost_response_wait_and_report_com
         json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
     let candidate = json!({"source":"step","step":"candidate","port":"result"});
     let report = json!({"source":"step","step":"comparison","port":"result"});
-    let bundle = json!({"schema":"af/scenario-bundle@3","root":"performance","definitions":{"performance":{
-        "schema":"af/scenario@3","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
+    let bundle = json!({"schema":"af/scenario-bundle@4","root":"performance","definitions":{"performance":{
+        "schema":"af/scenario@4","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
         "steps":[
             step("candidate", json!({"kind":"task","target":{"repo":f.repo,"state":task_state,
                 "task_id":"pagination-cli","plan_id":plan["plan_id"],"revision_id":plan["revision_id"],"max_tokens":1000}}),json!({}),"task"),
@@ -279,7 +279,7 @@ fn performance_scenario_native_task_submission_lost_response_wait_and_report_com
             "projection":{"kind":"observation_satisfied"}}],
         "authority":{"task_plans":[plan["plan_id"]],"task_templates":[],"grants":[submit,observe],"decision_owners":[]},
         "limits":{"max_tokens":1000,"max_wall_ms":3600000,"max_dispatches":8}}}});
-    valid("scenario-bundle-v3.json", &bundle);
+    valid("scenario-bundle-v4.json", &bundle);
     write(&f.bundle, &bundle);
     std::fs::write(
         f.machine.join("lose-response"),
@@ -353,7 +353,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     )
     .unwrap();
     let waiting = f.start("issue-fix");
-    valid("scenario-run-v3.json", &waiting);
+    valid("scenario-run-v4.json", &waiting);
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waiting"]["kind"], "decision");
     assert_eq!(
@@ -396,7 +396,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
         &json!({"revision":"head-1","checks_passed":true,"merged":true}),
     );
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "issue-fix"]);
-    valid("scenario-run-v3.json", &done);
+    valid("scenario-run-v4.json", &done);
     assert_eq!(done["status"], "succeeded");
     assert_eq!(
         done["frames"]["root"]["outputs"]["implementation"]["type"],
@@ -446,7 +446,7 @@ fn cancellation_preserves_receipts_and_never_dispatches_later_effects() {
     );
     assert!(!f.owned.join("note").exists());
     assert_eq!(cancelled["cancellation"]["reason"], "operator cancelled");
-    valid("scenario-run-v3.json", &cancelled);
+    valid("scenario-run-v4.json", &cancelled);
 }
 
 #[test]
@@ -614,7 +614,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let ant = f._root.path().join("ant.json");
     write(
         &ant,
-        &json!({"schema":"af/ant@3","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
+        &json!({"schema":"af/ant@4","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
     );
     let pin = cli(
         &f.repo,
@@ -682,7 +682,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
         1
     );
     for tick in ticks {
-        valid("ant-tick-v3.json", &tick);
+        valid("ant-tick-v4.json", &tick);
     }
     let shown = cli(&f.repo, &f.state, &["ant", "show", "daily"]);
     assert_eq!(shown["occurrences"].as_array().unwrap().len(), 1);
@@ -715,7 +715,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let expired = cli(&f.repo, &f.state, &["scenario", "show", run_id]);
     assert_eq!(expired["status"], "failed");
     assert!(expired["failure"].as_str().unwrap().contains("deadline"));
-    valid("ant-state-v3.json", &paused);
+    valid("ant-state-v4.json", &paused);
 }
 
 #[test]
@@ -900,7 +900,7 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
             f.policy.to_str().unwrap(),
         ],
     );
-    valid("scenario-pin-v3.json", &pin);
+    valid("scenario-pin-v4.json", &pin);
     let json_wire = f._root.path().join("wire.json");
     write(&json_wire, &pin["bundle"]);
     let replay = cli(
@@ -1208,12 +1208,12 @@ fn github_read_only_source_sequence(f: Fixture) {
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
     assert_eq!(done["status"], "succeeded", "{done:#}");
     assert_eq!(done["pin"], pin);
-    valid("scenario-run-v3.json", &done);
+    valid("scenario-run-v4.json", &done);
     let journal: Value = serde_json::from_slice(
         &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
     )
     .unwrap();
-    valid("github-adapter-state-v2.json", &journal);
+    valid("github-adapter-state-v3.json", &journal);
     assert_eq!(journal["records"].as_object().unwrap().len(), 3);
     assert_eq!(
         f.github_state()["effects"],
@@ -1588,7 +1588,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     write(&f.bundle, &bundle);
     let done = f.start("fresh-chain");
     assert_eq!(done["status"], "succeeded", "{done}");
-    valid("scenario-run-v3.json", &done);
+    valid("scenario-run-v4.json", &done);
     let roadmap = cli(
         &f.repo,
         &f.state,
@@ -1993,3 +1993,88 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
 
 #[path = "scenario_performance.rs"]
 mod performance;
+
+#[test]
+fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changing_shipped_tasks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new("/usr/bin/python3");
+    command
+        .args(["-I"])
+        .arg(workspace().join("scripts/scenario-impl.py"))
+        .args([
+            "packages",
+            "--output",
+            "impl-packages",
+            "--check",
+            "local",
+            "--af",
+        ])
+        .arg(crate::common::af_binary())
+        .current_dir(directory.path());
+    // The builder launches only af catalog digest. Propagate the actual common::af isolation
+    // to those indirect native invocations; no Provider CLI or developer Store is reachable.
+    for (key, value) in crate::common::af().get_envs() {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+    command.env("PATH", "/usr/bin:/bin");
+    let out = command.output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let catalog: toml::Value = toml::from_str(
+        &std::fs::read_to_string(directory.path().join("impl-packages/catalog.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["packages"].as_table().unwrap().len(), 6);
+    for (name, pin) in catalog["packages"].as_table().unwrap() {
+        let package = directory.path().join(pin["path"].as_str().unwrap());
+        assert_eq!(
+            review_config::lock::package_digest(name, &package).unwrap(),
+            pin["digest"].as_str().unwrap()
+        );
+        if name.ends_with("/implementation") || name.ends_with("/review") {
+            let pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+                toml::from_str(&std::fs::read_to_string(package.join("pipeline.toml")).unwrap())
+                    .unwrap();
+            pipeline.validate().unwrap();
+            assert!(
+                !std::fs::read_to_string(package.join("pipeline.toml"))
+                    .unwrap()
+                    .contains("remote_checks")
+            );
+        } else {
+            let worker: review_config::task::catalog::TaskWorkerManifest =
+                toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap())
+                    .unwrap();
+            assert_eq!(catalog["providers"][name].as_str(), Some("codex-personal"));
+            assert_eq!(
+                worker.signature.effects.contains("execute-checks"),
+                name == "impl/correctness" || name == "impl/implementer"
+            );
+            if name == "impl/correctness" {
+                assert!(!worker.signature.effects.contains("write-source"));
+                let instructions =
+                    std::fs::read_to_string(package.join("instructions.md")).unwrap();
+                assert!(instructions.contains("cargo install --path . --root PATH"));
+                assert!(instructions.contains("file a blocking Finding"));
+            }
+        }
+    }
+    assert_eq!(
+        catalog["review"]["reviewers"]["bugs"].as_str(),
+        Some("required")
+    );
+    assert_eq!(
+        catalog["review"]["reviewers"]["correctness"].as_str(),
+        Some("required")
+    );
+}

@@ -3347,7 +3347,7 @@
   },
   {
    "path": "scripts/performance/perflab/scenarioadapter.py",
-   "sha256": "sha256:86d9729447a5861dc671d43b96b56973657744c75f75331e0b78334e551e30ae",
+   "sha256": "sha256:8b79fa4589688d0b37a8134aace7ac92122e02b5f1b94c4b825878ccb85ec75b",
    "size": 26373
   },
   {
@@ -3951,7 +3951,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:4f3df94fb6d5fa086c64822b352613b4a0506552467389a8fb17d8d267016ea8",
+ "harness_digest": "sha256:dc979001eb06982204caef315a9835c55c43ce8c5744a2054d68449fd61387e7",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

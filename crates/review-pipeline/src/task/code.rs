@@ -3054,6 +3054,40 @@ impl TaskDomain for CodeTaskDomain {
                         let value: TaskEvaluationV1 =
                             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                         value.validate()?;
+                        if let Some(testing) = input
+                            .inputs
+                            .get("testing")
+                            .filter(|p| p.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1)
+                        {
+                            let [test_id] = testing.artifact_ids.as_slice() else {
+                                return Err(
+                                    "Executable review requires one exact evidence artifact".into(),
+                                );
+                            };
+                            let recorded = envelope(cas, test_id)?;
+                            if recorded.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1 {
+                                return Err(
+                                    "Executable review evidence has another artifact type".into()
+                                );
+                            }
+                            let tests: ImplementationTestEvidenceV1 =
+                                serde_json::from_value(recorded.payload)
+                                    .map_err(|e| e.to_string())?;
+                            if recorded.subject_snapshot_id.as_ref()
+                                != input.inputs["source"].snapshot_id.as_ref()
+                            {
+                                return Err(
+                                    "Executable review evidence has a stale Snapshot".into()
+                                );
+                            }
+                            tests.permits_evaluation(
+                                input.inputs["source"]
+                                    .snapshot_id
+                                    .as_deref()
+                                    .ok_or("Evaluation has no source Snapshot")?,
+                                value.outcome,
+                            )?;
+                        }
                         judged_by_id(cas, input, &value)?;
                     }
                 }

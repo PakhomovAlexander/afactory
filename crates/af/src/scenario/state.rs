@@ -195,7 +195,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@3".into(),
+            schema: "af/scenario-run@4".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -237,7 +237,7 @@ impl Run {
     }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@3" && review_core::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@4" && review_core::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;
@@ -638,6 +638,10 @@ impl Run {
                             "Action receipt has stale object identity",
                         )?;
                     }
+                    super::implementation::validate_inputs(grant.operation, &inputs)?;
+                    if grant.operation == Operation::ImplPrepareV1 {
+                        super::implementation::validate_preparation(receipt, &inputs)?;
+                    }
                     Ok(())
                 }
             }
@@ -648,6 +652,16 @@ impl Run {
         let value = match binding {
             Binding::Project { value, projection } => {
                 return projection.apply(self.resolve(path, value)?);
+            }
+            Binding::Select {
+                condition,
+                passed,
+                failed,
+            } => {
+                let Datum::Boolean(take_passed) = self.resolve(path, condition)? else {
+                    return Err("Selection condition is not boolean".into());
+                };
+                return self.resolve(path, if take_passed { passed } else { failed });
             }
             Binding::Equals { left, right } => {
                 return Ok(Datum::Boolean(
@@ -867,9 +881,9 @@ impl Run {
                 return self.prepare_frame(&full, now);
             }
             Kind::Action {
+                grant,
                 requires_decision,
                 required_condition,
-                ..
             } => {
                 let subject = inputs
                     .get("subject")
@@ -881,6 +895,7 @@ impl Run {
                     .map(Datum::as_text)
                     .transpose()?
                     .unwrap_or("");
+                super::implementation::validate_inputs(grant.operation, &inputs)?;
                 if *requires_decision {
                     let Some(Datum::Decision(d)) = inputs.get("decision") else {
                         return Err("Action requires signed human evidence".into());

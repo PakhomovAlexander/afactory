@@ -915,7 +915,7 @@ mod tests {
             initial.revisions[0]
         );
         assert_eq!(replay.roadmaps["performance"].progress, initial.progress);
-        valid("scenario-store-v4.json", &replay);
+        valid("scenario-store-v5.json", &replay);
         assert!(
             store
                 .update(|w| {
@@ -955,7 +955,7 @@ mod tests {
         // All prior-release Store documents fail closed, rather than defaulting missing history.
         let mut old = json!(replay);
         old["schema"] = json!("af/scenario-store@1");
-        assert!(!schema("scenario-store-v4.json").is_valid(&old));
+        assert!(!schema("scenario-store-v5.json").is_valid(&old));
         let parsed: super::super::store::World = serde_json::from_value(old.clone()).unwrap();
         assert!(parsed.validate().is_err());
         old.as_object_mut().unwrap().remove("roadmaps");

@@ -1,0 +1,20 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "impl-template",
+  "kind": "implement",
+  "goal": "Implement the supplied standalone Rust CLI requirements and prove every acceptance item",
+  "requirements": {
+    "scenario_mode": "impl",
+    "deliverables": ["Working standalone CLI", "Focused tests and executable reviewer evidence"],
+    "acceptance": ["The executable correctness reviewer privately installs and tests the candidate"]
+  },
+  "pipeline": {"name": "impl/implementation", "fallback": "refuse"},
+  "strategy": "small",
+  "verification": "evaluation",
+  "limits": {
+    "tokens": 6000000,
+    "max_attempts": 16,
+    "wall_ms": 28800000,
+    "verification": {"tokens": 2000000, "attempts": 10, "wall_ms": 14400000}
+  }
+}

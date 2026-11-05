@@ -131,10 +131,32 @@ pub(super) fn instantiate(d: &Dispatch, goal: Option<&super::roadmap::Goal>) -> 
             observation.satisfied
                 && matches!(
                     observation.condition.as_str(),
-                    "bounded_evidence" | "native_verified"
+                    "bounded_evidence" | "native_verified" | "implementation_outcome"
                 ),
             "Fresh Task requires satisfied bounded research or verified native experiment evidence",
         )?;
+        if observation.condition == "implementation_outcome" {
+            let outcome = super::implementation::CheckOutcome::parse(observation)?;
+            let (source, port) = predecessors
+                .get("source")
+                .ok_or("Implementation repair requires an accepted source predecessor")?;
+            require(
+                outcome.repair
+                    && outcome.result_id == source.result_id
+                    && source
+                        .result
+                        .outputs
+                        .get(port)
+                        .and_then(|p| p.snapshot_id.as_ref())
+                        == Some(&outcome.snapshot_id),
+                "Implementation repair differs from its exact accepted predecessor",
+            )?;
+            require(
+                document["kind"] == "implement"
+                    && document["requirements"]["scenario_mode"] == "impl",
+                "Repair evidence is restricted to the impl implementation template",
+            )?;
+        }
         if observation.condition == "native_verified" {
             let (source, port) = predecessors
                 .get("source")

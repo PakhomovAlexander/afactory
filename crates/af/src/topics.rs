@@ -633,19 +633,23 @@ Review reading commands:
                                        (schemas/findings-sarif-v1.json)
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@3; start, show, resume, decide, cancel: af/scenario-run@3.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@3.
-  ant validate: af/ant-pin@3; add, show, enable, pause, disable: af/ant-state@3;
-  ant list: af/ant-list@3; tick: af/ant-tick@3.
-  Definitions and machine policy: af/scenario@3, af/scenario-bundle@3, af/scenario-policy@3,
-  af/ant@3; signed envelopes: af/scenario-signed-decision@1.
+  scenario validate: af/scenario-pin@4; start, show, resume, decide, cancel: af/scenario-run@4.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@4.
+  ant validate: af/ant-pin@4; add, show, enable, pause, disable: af/ant-state@4;
+  ant list: af/ant-list@4; tick: af/ant-tick@4.
+  Definitions and machine policy: af/scenario@4, af/scenario-bundle@4, af/scenario-policy@4,
+  af/ant@4; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@2 (create, show, revise), af/scenario-roadmap-list@2 (list).
   Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
-  Journal: af/scenario-store@4. Owned file envelope: af/scenario-owned-file@1.
+  Journal: af/scenario-store@5. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
-  Bounded adapters: af/scenario-adapter-request@2 and af/scenario-adapter-response@1.
+  Implementation lifecycle: af/scenario-impl-prepared@1, af/scenario-impl-outcome@1;
+  publication text: af/scenario-impl-publication@1; machine config: af/scenario-impl-config@1;
+  adapter journal: af/scenario-impl-state@1; testing evidence: af/implementation-test-evidence@1.
+  impl-source: af/scenario-impl-source-request@1 and af/scenario-impl-source@1.
+  Bounded adapters: af/scenario-adapter-request@3 and af/scenario-adapter-response@1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 

@@ -64,11 +64,11 @@ def main():
     root["admission"] = read(args.admission)
     if set(root["admission"]) != {"roadmap", "identity", "revision"}:
         raise ValueError("admission must be the exact native roadmap identity and revision")
-    policy = dict(schema="af/scenario-policy@3", adapters={"lab":dict(executable=launcher["executable"],
+    policy = dict(schema="af/scenario-policy@4", adapters={"lab":dict(executable=launcher["executable"],
         digest=launcher["digest"], operations=["experiment_submit_v1", "observe"], destinations=["native:claw"],
         max_wall_ms=30000, max_output_bytes=65536)}, task_plans=[], task_templates=sorted(set(digests)),
         decision_keys={}, file_roots=[])
-    ant = dict(schema="af/ant@3", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
+    ant = dict(schema="af/ant@4", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
         schedule=dict(timezone="UTC", hour=3, minute=0, start_unix_ms=1793664000000),
         owner="performance-owner", notification="local:performance-owner",
         execution=dict(overlap="skip", missed="skip", lateness_ms=60000, per_run=root["limits"],

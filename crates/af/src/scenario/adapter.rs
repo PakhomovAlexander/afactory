@@ -18,6 +18,7 @@ const OWNED_BYTES: u64 = 400_000;
 pub(super) enum Method {
     Reconcile,
     Execute,
+    Recover,
     Observe,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +97,14 @@ fn call(
     cancellation: &AtomicBool,
 ) -> Result<Response> {
     require(
+        request.method != Method::Recover
+            || matches!(
+                request.operation,
+                Operation::ImplPrepareV1 | Operation::ImplPublishV1 | Operation::ImplCleanupV1
+            ),
+        "Recovery is restricted to native lifecycle operations",
+    )?;
+    require(
         digest(&read(&adapter.executable, MAX_BYTES)?) == adapter.digest,
         "Pinned adapter executable changed",
     )?;
@@ -154,7 +163,7 @@ pub(super) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@2".into(),
+                schema: "af/scenario-adapter-request@3".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -192,12 +201,13 @@ pub(super) fn dispatch(
         }
         Kind::Action { grant, .. } if grant.adapter == "builtin" => file_action(dispatch, grant),
         Kind::Action { grant, .. } => {
+            super::implementation::validate_inputs(grant.operation, &dispatch.inputs)?;
             let a = policy
                 .adapters
                 .get(&grant.adapter)
                 .ok_or("Action adapter not in machine policy")?;
             let mut request = Request {
-                schema: "af/scenario-adapter-request@2".into(),
+                schema: "af/scenario-adapter-request@3".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -229,18 +239,59 @@ pub(super) fn dispatch(
                 };
                 require(r.outcome != Outcome::Absent, "Execute cannot return absent")?;
             }
+            if r.outcome == Outcome::Pending
+                && matches!(
+                    grant.operation,
+                    Operation::ImplPrepareV1 | Operation::ImplPublishV1 | Operation::ImplCleanupV1
+                )
+            {
+                // Recovery is explicit execution authority for this already reserved lifecycle
+                // intent. Reconcile itself never executes a remaining lifecycle substep.
+                request.method = Method::Recover;
+                let left = dispatch.timeout_ms.saturating_sub(
+                    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                );
+                if left == 0 {
+                    return Ok(Settlement::Uncertain(
+                        "Lifecycle recovery reached its original step deadline".into(),
+                    ));
+                }
+                r = match call(a, &request, left, cancellation) {
+                    Ok(r) => r,
+                    Err(why) => return Ok(Settlement::Uncertain(why)),
+                };
+                require(
+                    r.outcome != Outcome::Absent,
+                    "Recovery cannot return absent",
+                )?;
+            }
             match r.outcome {
-                Outcome::Done => Ok(Settlement::Done(BTreeMap::from([(
-                    "result".into(),
-                    Datum::Action(ActionReceipt {
-                        intent_id: dispatch.intent.id.clone(),
-                        operation: grant.operation,
-                        destination: grant.destination.clone(),
-                        subject: dispatch.inputs["subject"].as_text()?.into(),
-                        revision: dispatch.inputs["revision"].as_text()?.into(),
-                        evidence: r.evidence,
-                    }),
-                )]))),
+                Outcome::Done => {
+                    if grant.operation == Operation::ImplPrepareV1 {
+                        super::implementation::validate_preparation(
+                            &ActionReceipt {
+                                intent_id: dispatch.intent.id.clone(),
+                                operation: grant.operation,
+                                destination: grant.destination.clone(),
+                                subject: dispatch.inputs["subject"].as_text()?.into(),
+                                revision: dispatch.inputs["revision"].as_text()?.into(),
+                                evidence: r.evidence.clone(),
+                            },
+                            &dispatch.inputs,
+                        )?;
+                    }
+                    Ok(Settlement::Done(BTreeMap::from([(
+                        "result".into(),
+                        Datum::Action(ActionReceipt {
+                            intent_id: dispatch.intent.id.clone(),
+                            operation: grant.operation,
+                            destination: grant.destination.clone(),
+                            subject: dispatch.inputs["subject"].as_text()?.into(),
+                            revision: dispatch.inputs["revision"].as_text()?.into(),
+                            evidence: r.evidence,
+                        }),
+                    )])))
+                }
                 Outcome::Failed => Ok(Settlement::Failed(r.evidence)),
                 _ => Ok(Settlement::Waiting(r.evidence)),
             }

@@ -30,7 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 258] = [
+const SCHEMAS: [&str; 260] = [
+    "implementation-test-evidence-v1.json",
+    "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
     "worker-storage-v1.json",
     "worker-knowledge-v1.json",
@@ -4803,3 +4805,93 @@ mod worker_development;
 
 #[path = "schema_parity/knowledge.rs"]
 mod knowledge;
+
+#[test]
+fn implementation_test_evidence_requires_build_install_test_success_and_refuses_unavailable_passes()
+{
+    use review_core::task::verification::*;
+    let mut evidence = ImplementationTestEvidenceV1 {
+        schema: "af/implementation-test-evidence@1".into(),
+        snapshot_id: format!("sha256:{}", "1".repeat(64)),
+        status: ImplementationTestStatusV1::Passed,
+        reason:
+            "Independently built and installed the exact candidate and ran its CLI acceptance cases"
+                .into(),
+        commands: vec![
+            ImplementationTestCommandV1 {
+                purpose: ImplementationTestPurposeV1::Build,
+                command: "cargo build --locked".into(),
+                exit_code: Some(0),
+                evidence: "Built the candidate".into(),
+            },
+            ImplementationTestCommandV1 {
+                purpose: ImplementationTestPurposeV1::Install,
+                command: "cargo install --locked --path . --root target/private-install".into(),
+                exit_code: Some(0),
+                evidence: "Installed privately".into(),
+            },
+            ImplementationTestCommandV1 {
+                purpose: ImplementationTestPurposeV1::Test,
+                command: "target/private-install/bin/devrec --help".into(),
+                exit_code: Some(0),
+                evidence: "Exercised the installed CLI".into(),
+            },
+        ],
+    };
+    evidence.validate().unwrap();
+    assert_valid(
+        "implementation-test-evidence-v1.json",
+        &serde_json::to_value(&evidence).unwrap(),
+    );
+    for position in 0..3 {
+        let mut missing = evidence.clone();
+        missing.commands.remove(position);
+        assert!(missing.validate().is_err());
+        assert!(
+            !validator("implementation-test-evidence-v1.json")
+                .is_valid(&serde_json::to_value(missing).unwrap())
+        );
+    }
+    evidence.commands[0].exit_code = None;
+    assert!(evidence.validate().is_err());
+    assert!(
+        !validator("implementation-test-evidence-v1.json")
+            .is_valid(&serde_json::to_value(&evidence).unwrap())
+    );
+    evidence.status = ImplementationTestStatusV1::Unavailable;
+    evidence.commands.clear();
+    evidence.reason = "The sandbox lacks the required compiler; no tests ran".into();
+    evidence.validate().unwrap();
+    assert_valid(
+        "implementation-test-evidence-v1.json",
+        &serde_json::to_value(&evidence).unwrap(),
+    );
+    assert!(
+        evidence
+            .permits_evaluation(
+                &evidence.snapshot_id,
+                review_core::task::pipeline::ReceiptOutcomeV1::Passed
+            )
+            .is_err()
+    );
+    evidence
+        .permits_evaluation(
+            &evidence.snapshot_id,
+            review_core::task::pipeline::ReceiptOutcomeV1::Inconclusive,
+        )
+        .unwrap();
+    assert!(
+        evidence
+            .permits_evaluation(
+                &format!("sha256:{}", "2".repeat(64)),
+                review_core::task::pipeline::ReceiptOutcomeV1::Inconclusive
+            )
+            .is_err()
+    );
+    evidence.schema = "af/implementation-test-evidence@0".into();
+    assert!(evidence.validate().is_err());
+    assert!(
+        !validator("implementation-test-evidence-v1.json")
+            .is_valid(&serde_json::to_value(evidence).unwrap())
+    );
+}

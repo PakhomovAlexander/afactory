@@ -3,6 +3,7 @@ mod adapter;
 #[cfg(test)]
 mod admission_tests;
 pub(crate) mod contract;
+pub(crate) mod implementation;
 mod roadmap;
 mod runtime;
 mod schedule;
@@ -44,6 +45,27 @@ pub(crate) struct Definition {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum ScenarioCommand {
+    /// Capture one accepted implementation candidate as private, filter-free Git objects
+    #[command(
+        long_about = "Validate an exact accepted Task receipt and its committed source, then encode its candidate Snapshot as private Git objects. No source checkout, branch or remote is changed. Existing complete captures are verified and reused; incomplete or foreign captures are refused.",
+        after_long_help = "Examples:\n  # needs: an exact accepted implementation Task receipt and committed source\n  af scenario impl-source --file source.json --repo /project --task-state /private/tasks --into /private/staging/source --json"
+    )]
+    ImplSource {
+        /// af/scenario-impl-source-request@1 request naming the accepted Task and source commit
+        #[arg(long)]
+        file: PathBuf,
+        /// Repository the accepted Task belongs to
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Private capture leaf outside the repository and Task Store
+        #[arg(long)]
+        into: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Retrieve one provenance-checked native findings, History Capture or adoption artifact
     #[command(
         override_usage = "af scenario evidence-source <TASK_ID> --artifact-id ID\n                            --repo REPO --task-state STORE [OPTIONS]",
@@ -325,6 +347,32 @@ fn at(inspect: &Inspect) -> Result<u64> {
 }
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
+        ScenarioCommand::ImplSource {
+            file,
+            repo,
+            task_state,
+            into,
+            inspect,
+        } => {
+            let request: implementation::SourceRequest =
+                serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
+                    .map_err(|e| e.to_string())?;
+            let receipt = crate::task_execution::candidate::implementation_source(
+                &request,
+                &repo,
+                &task_state,
+                &into,
+            )?;
+            if inspect.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?
+                );
+            } else {
+                println!("{}", receipt.repository.display());
+            }
+            Ok(0)
+        }
         ScenarioCommand::ExperimentSource {
             file,
             repo,
@@ -438,7 +486,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@3","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@4","runs":world.runs}),
                 &inspect,
             )
         }
@@ -538,7 +586,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@3","ants":world.ants}),
+                &serde_json::json!({"schema":"af/ant-list@4","ants":world.ants}),
                 &inspect,
             )
         }
@@ -580,7 +628,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 }
             }
             print(
-                &serde_json::json!({"schema":"af/ant-tick@3","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@4","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
