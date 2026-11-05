@@ -20,13 +20,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub struct StructuredTaskDomain {
     contract_id: String,
-    contract: StructuredContractV1,
+    contract: StructuredContractV2,
     graph: CompiledTask,
 }
 impl StructuredTaskDomain {
     pub fn captured(
         id: &str,
-        contract: StructuredContractV1,
+        contract: StructuredContractV2,
         graph: CompiledTask,
     ) -> Result<Self, String> {
         let accept = signature(id, &contract)?;
@@ -236,6 +236,19 @@ impl StructuredTaskDomain {
     }
 }
 impl TaskOperatorHost for StructuredTaskDomain {
+    fn model_call_policy(
+        &self,
+        definition: &review_graph::task::CompiledNode,
+    ) -> review_runner::task::ModelCallPolicy {
+        match definition.operator {
+            CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker { .. },
+                ..
+            } => review_runner::task::ModelCallPolicy::SingleCall,
+            _ => review_runner::task::ModelCallPolicy::RecoverWithinAttempt,
+        }
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -419,7 +432,7 @@ mod tests {
     fn domain() -> StructuredTaskDomain {
         StructuredTaskDomain {
             contract_id: format!("sha256:{}","a".repeat(64)),
-            contract: serde_json::from_value(json!({"schema":"af.structured-contract/1","require_container":false,"inputs":{"note":{"artifact_type":"custom/Note@1","schema":{"type":"object"}}},"outputs":{"value":{"artifact_type":"custom/Value@1","schema":{"type":"object"}}}})).unwrap(),
+            contract: serde_json::from_value(json!({"schema":"af.structured-contract/2","require_container":false,"inputs":{"note":{"artifact_type":"custom/Note@1","schema":{"type":"object"}}},"outputs":{"value":{"artifact_type":"custom/Value@1","schema":{"type":"object"}}}})).unwrap(),
             graph: serde_json::from_value(json!({"schema":"af.compiled-task/1","nodes":{},"order":[],"inputs":{},"outputs":{},"coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}})).unwrap(),
         }
     }

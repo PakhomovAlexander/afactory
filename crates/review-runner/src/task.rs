@@ -813,9 +813,17 @@ impl ModelWorkerReturn {
     }
 }
 
-/// Validates the captured context and the returned output around one model call. This path
-/// gives model Workers no sandbox-local environment; a Review Task reviewer is dispatched
-/// through the Campaign Review host instead, which forwards its Build Cache location.
+/// Installed domain policy for semantic calls inside one declared Worker Attempt.
+/// This is runtime policy, never a Worker-controlled or persisted field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelCallPolicy {
+    SingleCall,
+    RecoverWithinAttempt,
+}
+
+/// Validates captured context and output with the ordinary in-Attempt recovery policy.
+/// Structured domains use [`invoke_model_with_policy`] to require a single call instead.
+/// This entry point supplies no sandbox-local environment.
 ///
 /// A reply that does not parse is read once more tolerantly — the first balanced JSON object of
 /// a reply that carries prose around it — and, failing that, the same Worker is asked once more
@@ -862,6 +870,36 @@ pub fn invoke_model_with_environment(
     reserved_tokens: u64,
     environment: &[(String, String)],
 ) -> WorkerReturn {
+    invoke_model_with_policy(
+        cas,
+        workdir,
+        adapter,
+        contract,
+        context_id,
+        timeout,
+        access,
+        cancellation,
+        reserved_tokens,
+        environment,
+        ModelCallPolicy::RecoverWithinAttempt,
+    )
+}
+
+/// Invoke under installed domain authority, including its in-Attempt model-call limit.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_with_policy(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    access: WorkerAccess,
+    cancellation: Option<&AtomicBool>,
+    reserved_tokens: u64,
+    environment: &[(String, String)],
+    policy: ModelCallPolicy,
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
@@ -887,6 +925,7 @@ pub fn invoke_model_with_environment(
         cancellation,
         reserved_tokens,
         environment,
+        policy,
     )
 }
 

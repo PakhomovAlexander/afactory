@@ -22,6 +22,17 @@ impl Fixture {
             &crate::task_report::workspace().join("fixtures/custom-tasks"),
             &repo.join("custom-tasks"),
         );
+        // The exact singleton schema from #664, captured identically by kind and Worker.
+        // Two IDs must fail schema validation before provenance admission.
+        let kind = repo.join("custom-tasks/triage/kind/structured.json");
+        let mut contract: Value = serde_json::from_slice(&std::fs::read(&kind).unwrap()).unwrap();
+        contract["outputs"]["triage"]["schema"]["properties"]["source_artifact_ids"]["maxItems"] =
+            json!(1);
+        write(&kind, &contract);
+        write(
+            &repo.join("custom-tasks/triage/worker/outputs/triage.schema.json"),
+            &contract["outputs"]["triage"]["schema"],
+        );
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
                 .unwrap();
@@ -65,14 +76,17 @@ else:
  with open(home+'/requests','a') as f: f.write(json.dumps(r)+'\n')
  mode=open(home+'/mode').read() if os.path.exists(home+'/mode') else 'good'
  retry=bool(r['feedback'])
- if mode=='retry' and retry: mode='good'
+ if mode.startswith('retry') and retry: mode='good'
  if mode=='retry': mode='wrong-source'
+ if mode=='retry-malformed': mode='malformed'
+ if mode=='retry-schema': mode='two-sources'
  if 'issue' in r['inputs']:
   v=r['inputs']['issue'][0]; p=v['payload']
   value={'schema':'custom.issue-triage/2','source_artifact_ids':[v['artifact_id']],'class':None,'size':None,'pipeline':None,'confidence':0.2,'rationale':'Captured evidence is incomplete.','needs_info':['Supply source evidence.'],'disposition':'needs_info','adr':None,'source_identity':p['captured_identity']}
   port='triage'
  else:
   v=r['inputs']['note'][0]; value={'source_artifact_ids':[v['artifact_id']],'text':v['payload']['text'].upper()}; port='capitalized'
+ if mode=='two-sources':value['source_artifact_ids'].append('sha256:'+'f'*64)
  if mode=='wrong-source':value['source_artifact_ids']=['sha256:'+'f'*64]
  if mode=='wrong-type':value['confidence']='not a number';value['text']=9
  outputs={port:[value]}
@@ -81,6 +95,9 @@ else:
  message=json.dumps({'schema':'af.worker-reply/1','outputs':outputs})
  if mode=='malformed':message='plain text is not typed output'
 with open(home+'/calls','a') as f:f.write(kind+'\n')
+if kind=='worker' and mode=='transient':
+ print(json.dumps({'type':'turn.failed','error':{'message':'Selected model is at capacity. Please try again in 1ms.'}}))
+ sys.exit(1)
 if '-o' in sys.argv:
  with open(sys.argv[sys.argv.index('-o')+1],'w') as f:f.write(message)
 print(json.dumps({'type':'thread.started','thread_id':'custom-fixture'}))
@@ -299,11 +316,15 @@ fn malformed_unknown_missing_wrong_type_and_wrong_source_outputs_never_accept() 
         "missing",
         "wrong-type",
         "wrong-source",
+        "two-sources",
         "retry",
+        "retry-malformed",
+        "retry-schema",
     ] {
         std::fs::write(f.auth.join("mode"), mode).unwrap();
         task["task_id"] = json!(mode);
         write(&path, &task);
+        let before = f.calls();
         let plan = f.plan("triage");
         let out = f.cli(&[
             "task",
@@ -314,7 +335,24 @@ fn malformed_unknown_missing_wrong_type_and_wrong_source_outputs_never_accept() 
         ]);
         let done: Value =
             serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", text(&out)));
-        if mode == "retry" {
+        assert_eq!(
+            f.calls().strip_prefix(&before).unwrap(),
+            "admission\nworker\nworker\n",
+            "{mode}"
+        );
+        assert_eq!(done["attempts"], 3, "{done}");
+        let rows = accounting(&f, mode);
+        assert_eq!(rows.len(), 3);
+        for row in rows {
+            assert_eq!(
+                row.charged_tokens, 5,
+                "one call charged per Attempt: {mode}"
+            );
+            assert!(row.unknown_usage.is_none());
+            assert!(row.settled_unix_ms.is_some());
+            assert!(!row.raw_artifact_ids.is_empty());
+        }
+        if mode.starts_with("retry") {
             assert!(out.status.success(), "{}", text(&out));
             assert_eq!(done["result"]["acceptance"], "satisfied");
         } else {
@@ -324,12 +362,26 @@ fn malformed_unknown_missing_wrong_type_and_wrong_source_outputs_never_accept() 
         }
     }
     let requests = std::fs::read_to_string(f.auth.join("requests")).unwrap();
-    assert!(
-        requests
-            .lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .any(|r| !r["feedback"].as_array().unwrap().is_empty())
-    );
+    let requests: Vec<Value> = requests
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 18);
+    for pair in requests.chunks_exact(2) {
+        assert!(pair[0]["feedback"].as_array().unwrap().is_empty());
+        let feedback = pair[1]["feedback"].as_array().unwrap();
+        assert!(!feedback.is_empty());
+        assert!(
+            feedback
+                .iter()
+                .any(|value| value["artifact_type"] == "af/TaskRetryFeedback@1")
+        );
+        assert!(
+            feedback
+                .iter()
+                .all(|value| value["artifact_type"] != "af/WorkerReplyReask@1")
+        );
+    }
 }
 
 #[test]
@@ -421,13 +473,63 @@ fn external_inputs_fail_before_dispatch_and_exact_bytes_and_schemas_change_ident
 }
 
 #[test]
+fn structured_contract_version_is_guarded_at_digest_and_planning_before_model_calls() {
+    let f = Fixture::new();
+    let path = f.repo.join("custom-tasks/triage/kind/structured.json");
+    let mut contract: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let digest = || {
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["catalog", "digest", "custom-tasks/triage/kind"])
+            .output()
+            .unwrap()
+    };
+    assert!(digest().status.success());
+    let current = f.plan("triage");
+    assert_eq!(current["attempts"], 0);
+    // The exact-version check also protects an older client from a newer contract:
+    // a future version cannot acquire authority by carrying a correct package digest.
+    for version in ["af.structured-contract/1", "af.structured-contract/3"] {
+        contract["schema"] = json!(version);
+        write(&path, &contract);
+        let out = digest();
+        assert!(!out.status.success(), "{}", text(&out));
+        assert!(
+            text(&out).contains("Unsupported structured contract"),
+            "{}",
+            text(&out)
+        );
+        // Bypass the friendly digest command and pin the exact unsupported bytes, so
+        // planning must exercise package validation rather than a stale-pin refusal.
+        crate::task_report::repin_and_commit(&f.repo);
+        let out = f.cli(&[
+            "task",
+            "plan",
+            "--replace",
+            "--file",
+            "custom-tasks/triage/task.json",
+            "--input-json",
+            "issue=issue.json",
+        ]);
+        assert!(!out.status.success(), "{}", text(&out));
+        assert!(
+            text(&out).contains("Unsupported structured contract"),
+            "{}",
+            text(&out)
+        );
+        assert!(f.calls().is_empty());
+        assert!(!f.auth.join("requests").exists());
+    }
+}
+
+#[test]
 fn schema_mutation_changes_plan_and_remote_schemas_and_reserved_types_refuse() {
     let f = Fixture::new();
     let first = f.plan("triage");
     let path = f.repo.join("custom-tasks/triage/kind/structured.json");
     let mut contract: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("structured-contract-v1.json"),
+        &crate::schemas::validator("structured-contract-v2.json"),
         &contract,
     );
     contract["inputs"]["issue"]["schema"]["properties"]["title"]["maxLength"] = json!(511);
@@ -684,4 +786,124 @@ fn staged_business_schema_parity_preserves_held_missing_information_and_rubric_r
         value["pipeline"] = json!("hand");
         assert!(!validator.is_valid(&value));
     }
+}
+
+/// Admission and a single Worker exhaust the exact two-Attempt plan: no hidden re-ask or
+/// transient recovery is allowed, including schema maxItems failures and wrong provenance.
+#[test]
+fn structured_single_attempt_makes_one_worker_call_and_fails_closed() {
+    let f = Fixture::new();
+    let pipeline = f.repo.join("custom-tasks/triage/pipeline/pipeline.toml");
+    std::fs::write(
+        &pipeline,
+        std::fs::read_to_string(&pipeline)
+            .unwrap()
+            .replace("max_attempts = 8", "max_attempts = 2")
+            .replace(
+                "max_attempts = 2\nallow_local",
+                "max_attempts = 1\nallow_local",
+            ),
+    )
+    .unwrap();
+    crate::task_report::repin_and_commit(&f.repo);
+    let path = f.repo.join("custom-tasks/triage/task.json");
+    let mut task: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    task["limits"]["max_attempts"] = json!(2);
+    for mode in [
+        "good",
+        "malformed",
+        "wrong-type",
+        "two-sources",
+        "wrong-source",
+        "transient",
+    ] {
+        std::fs::write(f.auth.join("mode"), mode).unwrap();
+        task["task_id"] = json!(mode);
+        write(&path, &task);
+        let before = f.calls();
+        let plan = f.plan("triage");
+        let out = f.cli(&[
+            "task",
+            "run",
+            mode,
+            "--confirm-plan",
+            plan["plan_id"].as_str().unwrap(),
+        ]);
+        let done: Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", text(&out)));
+        assert_eq!(
+            out.status.success(),
+            mode == "good",
+            "{mode}: {}",
+            text(&out)
+        );
+        assert_eq!(
+            f.calls().strip_prefix(&before).unwrap(),
+            "admission\nworker\n",
+            "{mode}"
+        );
+        assert_eq!(done["attempts"], 2, "{done}");
+        let rows = accounting(&f, mode);
+        assert_eq!(rows.len(), 2);
+        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        for row in rows {
+            if mode != "good" && row.reservation.node.ends_with(".work") {
+                let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+                    diagnostic_id,
+                    feedback_id: Some(feedback_id),
+                }) = &row.result
+                else {
+                    panic!("Worker failure must retain typed feedback: {mode}")
+                };
+                let feedback = cas.get_artifact(feedback_id).unwrap();
+                let expected = match mode {
+                    "wrong-source" => "output_admission_rejected",
+                    "transient" => "provider_failure",
+                    _ => "invalid_output_contract",
+                };
+                assert_eq!(feedback.payload["code"], expected, "{mode}");
+                if mode == "two-sources" {
+                    let diagnostic = cas.get_json(diagnostic_id).unwrap();
+                    let error = diagnostic["error"].as_str().unwrap();
+                    assert!(error.contains("Worker output triage:"), "{error}");
+                    assert!(error.contains("not re-asked:"), "{error}");
+                }
+            }
+            let transient_worker = mode == "transient" && row.reservation.node.ends_with(".work");
+            assert_eq!(
+                row.charged_tokens,
+                if transient_worker { 0 } else { 5 },
+                "{mode}"
+            );
+            assert_eq!(row.unknown_usage.is_some(), transient_worker, "{mode}");
+            assert!(row.settled_unix_ms.is_some());
+            assert!(!row.raw_artifact_ids.is_empty());
+        }
+        assert_eq!(
+            done["result"]["acceptance"] == "satisfied",
+            mode == "good",
+            "{done}"
+        );
+        if mode != "good" {
+            assert!(done["result"]["outputs"].get("validation").is_none());
+        }
+        let calls = f.calls();
+        let _ = f.cli(&["task", "run", mode]);
+        assert_eq!(f.calls(), calls, "finished Task replay dispatches nothing");
+    }
+}
+
+fn accounting(
+    f: &Fixture,
+    task: &str,
+) -> Vec<review_store::store::task::execution::TaskAttemptAccounting> {
+    let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    review_store::EventStore::open_read_only(f.state.join("events.sqlite"))
+        .unwrap()
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap()
+        .attempt_accounting()
 }

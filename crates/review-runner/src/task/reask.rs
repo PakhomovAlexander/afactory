@@ -237,6 +237,7 @@ pub(super) fn invoke(
     cancellation: Option<&AtomicBool>,
     reserved_tokens: u64,
     environment: &[(String, String)],
+    policy: super::ModelCallPolicy,
 ) -> WorkerReturn {
     let allowance = match super::RemainingTokenAllowance::new(reserved_tokens) {
         Ok(allowance) => allowance,
@@ -315,6 +316,13 @@ pub(super) fn invoke(
         }
     };
     let kept = format!("{}; raw reply kept: {raw_reply_id}", refusal.error);
+    if policy == super::ModelCallPolicy::SingleCall {
+        return failed(
+            raw,
+            first,
+            format!("{kept}; not re-asked: structured Worker Attempt permits one model call"),
+        );
+    }
     let remaining = timeout.checked_sub(started.elapsed());
     if let Some(why) = no_reask(&first, reserved_tokens, remaining, cancellation) {
         return failed(raw, first, format!("{kept}; not re-asked: {why}"));

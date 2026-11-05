@@ -9,6 +9,10 @@ The [profile reference](../../docs/task-execution/structured.md) explains the st
 and limits. The older `fixtures/issue-triage` report flow remains a historical two-model runner
 prototype; it is not the single-model custom Task recipe here.
 
+These packages require a client supporting `af.structured-contract/2`: one model call per
+Worker Attempt, with any additional call owned by an explicit scheduler retry. Older clients
+refuse the package version before model invocation.
+
 ## Install after review
 
 Review each kind, Pipeline, Worker and schema. In a consuming repository copy the selected

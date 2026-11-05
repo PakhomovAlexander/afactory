@@ -52,7 +52,7 @@ fn read(root: &Path, relative: &str) -> Result<Vec<u8>, String> {
 pub(super) fn capture(
     cas: &Cas,
     options: &StartOptions,
-    contract: &StructuredContractV1,
+    contract: &StructuredContractV2,
     policy_id: &str,
     revision: &mut TaskRevisionV1,
 ) -> Result<(), String> {
@@ -103,7 +103,7 @@ pub(super) fn capture(
 pub(super) fn policy(
     cas: &Cas,
     authority: &RunAuthority,
-) -> Result<Option<StructuredContractV1>, String> {
+) -> Result<Option<StructuredContractV2>, String> {
     if authority.code_policy_id.is_some()
         || authority.document_policy_id.is_some()
         || authority.report_policy_id.is_some()
