@@ -28,7 +28,7 @@ path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-pack
 
 [packages."impl/evaluator"]
 version = "1.0.0"
-digest = "sha256:d41df1f382f0494a639763db4cb4c4cf35be13089347c07107429383b5ca4ca9"
+digest = "sha256:4fcac77953569f2df51f64276562b1baf3cb1ec09b51a3013420ed7e0536a11e"
 path = "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-devrec-impl/.af/task-packages/devrec-impl-bootstrap/evaluator"
 
 [packages."impl/implementation"]
