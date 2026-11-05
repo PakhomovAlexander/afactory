@@ -222,6 +222,72 @@ print(json.dumps(source))
         self.service.source = p
         return p
 
+    def interrupt_empty_worktree(self):
+        save = A.ImplJournal.save
+        def crash(journal):
+            save(journal)
+            rec = journal.state["records"].get(self.prepare_req["intent_id"])
+            if rec and rec["inode"] is not None:
+                raise RuntimeError("crash after empty directory journal save")
+        with patch.object(A.ImplJournal, "save", crash):
+            with self.assertRaisesRegex(RuntimeError, "empty directory journal save"):
+                self.call(self.prepare_req)
+        adapter = self.adapter()
+        with adapter.journal.locked():
+            rec = copy.deepcopy(adapter.journal.state["records"][self.prepare_req["intent_id"]])
+        path = Path(rec["prepared"]["worktree"])
+        self.assertEqual(list(path.iterdir()), [])
+        return rec, path
+
+    def test_prepare_resumes_same_empty_directory_after_journal_crash(self):
+        rec, path = self.interrupt_empty_worktree()
+        self.assertEqual(self.call(self.prepare_req, "reconcile")["outcome"], "pending")
+        result = self.call(self.prepare_req, "recover")
+        self.assertEqual(result["outcome"], "done")
+        self.assertEqual(json.loads(result["evidence"]), rec["prepared"])
+        self.assertEqual((path.stat().st_dev, path.stat().st_ino), (rec["device"], rec["inode"]))
+        self.assertEqual((path / "new").read_text(), "candidate\n")
+        self.assertEqual(self.call(self.prepare_req)["evidence"], result["evidence"])
+        self.assertEqual((self.service.posts, self.service.pushes), (0, 0))
+
+    def test_prepare_retains_changed_empty_directory_and_partial_content(self):
+        rec, path = self.interrupt_empty_worktree()
+        # Renaming keeps the original inode live so a replacement cannot reuse it.
+        original = path.with_name(path.name + "-original")
+        path.rename(original)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertFalse(path.exists())
+        path.mkdir(mode=0o700)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertEqual(list(path.iterdir()), [])
+        path.rmdir()
+        path.symlink_to(original, target_is_directory=True)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        path.unlink()
+        original.rename(path)
+        path.chmod(0o755)
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        path.chmod(0o700)
+        for name in ("foreign", ".git"):
+            (path / name).write_text("partial or foreign bytes")
+            with self.assertRaises(A.Refused):
+                self.call(self.prepare_req, "recover")
+            self.assertEqual((path / name).read_text(), "partial or foreign bytes")
+            (path / name).unlink()
+        # Git can have registered an interrupted checkout even when the directory is empty.
+        self.git("worktree", "add", "--detach", str(path), rec["prepared"]["commit"])
+        for entry in path.iterdir():
+            entry.unlink()
+        registered = self.git("worktree", "list", "--porcelain")
+        with self.assertRaises(A.Refused):
+            self.call(self.prepare_req, "recover")
+        self.assertEqual(list(path.iterdir()), [])
+        self.assertEqual(self.git("worktree", "list", "--porcelain"), registered)
+
     def action(self, p, op="impl_publish_v1", key="b"):
         prepared = dict(intent_id=p["owner"], operation="impl_prepare_v1", destination="github:octo/project",
                         subject=p["result_id"], revision=p["snapshot_id"], evidence=A.canonical(p).decode())
@@ -548,6 +614,13 @@ print(json.dumps(source))
         schema = json.loads((output / "evaluator/input.schema.json").read_text())
         self.assertIn('testing', schema['required'])
         self.assertEqual(schema['properties']['testing']['items']['properties']['artifact_type']['const'], 'af/ImplementationTestEvidence@1')
+        for published, local in [
+                ('implementation-test-evidence-v1.json', 'correctness/outputs/testing.schema.json'),
+                ('implementation-evaluation-input-v1.json', 'evaluator/input.schema.json')]:
+            expected = json.loads((ROOT / 'schemas' / published).read_text(),
+                                  object_hook=lambda obj: {k: v for k, v in obj.items()
+                                                           if k not in ('$id', '$schema')})
+            self.assertEqual(json.loads((output / local).read_text()), expected)
 
     def test_schema_writers_match_current_files_and_old_requests_fail_closed(self):
         for name, value in A.impl_schema_documents().items():

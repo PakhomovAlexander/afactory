@@ -9,3 +9,8 @@
   Clippy's divisibility lint, without suppressing warnings or changing the toolchain pin.
 - Include `scenario impl-source` in `af help --json` with its token-free file-write effects,
   and keep lifecycle help examples copyable within the terminal width contract.
+- Recover a journaled empty owned worktree reservation after interruption, refusing changed
+  directories and partial Git registrations. Exercise the crash window with real local Git.
+- Select the generated pipeline's reviewed implementation guarantee in the shipped impl fixture,
+  and remove only published schema metadata from local Worker copies. Cover generated package
+  admission with native Task planning and Scenario template pinning.

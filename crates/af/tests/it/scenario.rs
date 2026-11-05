@@ -1997,6 +1997,7 @@ mod performance;
 #[test]
 fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changing_shipped_tasks() {
     let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = crate::task_cli::fixture_named(directory.path(), "pagination");
     let mut command = std::process::Command::new("/usr/bin/python3");
     command
         .args(["-I"])
@@ -2006,11 +2007,11 @@ fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changin
             "--output",
             "impl-packages",
             "--check",
-            "local",
+            "pagination",
             "--af",
         ])
         .arg(crate::common::af_binary())
-        .current_dir(directory.path());
+        .current_dir(&repo);
     // The builder launches only af catalog digest. Propagate the actual common::af isolation
     // to those indirect native invocations; no Provider CLI or developer Store is reachable.
     for (key, value) in crate::common::af().get_envs() {
@@ -2030,13 +2031,12 @@ fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changin
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let catalog: toml::Value = toml::from_str(
-        &std::fs::read_to_string(directory.path().join("impl-packages/catalog.toml")).unwrap(),
-    )
-    .unwrap();
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join("impl-packages/catalog.toml")).unwrap())
+            .unwrap();
     assert_eq!(catalog["packages"].as_table().unwrap().len(), 6);
     for (name, pin) in catalog["packages"].as_table().unwrap() {
-        let package = directory.path().join(pin["path"].as_str().unwrap());
+        let package = repo.join(pin["path"].as_str().unwrap());
         assert_eq!(
             review_config::lock::package_digest(name, &package).unwrap(),
             pin["digest"].as_str().unwrap()
@@ -2092,4 +2092,87 @@ fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changin
         catalog["review"]["reviewers"]["correctness"].as_str(),
         Some("required")
     );
+    // Admit the real generated packages through native planning, including Worker schema
+    // resolution and the fixture's public verification guarantee, before pinning a template.
+    std::fs::rename(
+        repo.join("impl-packages/catalog.toml"),
+        repo.join(".af/task-catalog.toml"),
+    )
+    .unwrap();
+    std::fs::copy(
+        workspace().join("fixtures/scenarios/impl-task.json"),
+        repo.join("impl-task.json"),
+    )
+    .unwrap();
+    for args in [
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "generated impl authority"],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // Supply only a disposable fake Provider registry; planning never reaches an account
+    // or dispatches a model turn, and the generated codex-personal bindings stay exact.
+    let bin = directory.path().join("bin");
+    let auth = directory.path().join("codex");
+    crate::fake_models::install("codex", &bin, &auth);
+    let registry = directory.path().join("providers.toml");
+    std::fs::write(
+        &registry,
+        toml::to_string(&json!({"version":3,"providers":[{
+            "id":"codex-personal","kind":"codex","auth_dir":auth
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let path =
+        std::env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    let native = |args: &[&str]| {
+        value(
+            crate::common::af()
+                .current_dir(&repo)
+                .env("PATH", &path)
+                .env("AF_PROVIDERS_FILE", &registry)
+                .args(args)
+                .args(["--json", "--state"])
+                .arg(&state)
+                .output()
+                .unwrap(),
+            0,
+        )
+    };
+    let planned = native(&["task", "plan", "--file", "impl-task.json"]);
+    assert!(planned["plan_id"].as_str().unwrap().starts_with("sha256:"));
+    let commit = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let pinned = native(&[
+        "scenario",
+        "template-pin",
+        "--file",
+        "impl-task.json",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--task-state",
+        state.to_str().unwrap(),
+        "--authority-commit",
+        commit.trim(),
+    ]);
+    valid("scenario-template-pin-v1.json", &pinned);
+    assert_eq!(pinned["template"]["document"]["verification"], "review");
+    assert_eq!(crate::fake_models::turns(&auth), "");
 }

@@ -394,6 +394,16 @@ class ImplAdapter:
             st = worktree.stat()
             rec["inode"], rec["device"] = st.st_ino, st.st_dev
             self.journal.save()
+        # The saved inode reserves this empty directory before Git creates its worktree.
+        # Resume that exact reservation, but never retry a partially registered checkout.
+        need(worktree.resolve() == worktree and not worktree.is_symlink(), "foreign workspace path")
+        st = worktree.lstat()
+        need(stat.S_ISDIR(st.st_mode) and st.st_dev == rec["device"] and st.st_ino == rec["inode"],
+             "workspace ownership changed")
+        if not any(worktree.iterdir()):
+            need(stat.S_IMODE(st.st_mode) == 0o700, "empty workspace permissions changed")
+            # No --force: Git refuses an existing registration before changing it,
+            # including a partial checkout whose directory is now empty (Git 2.30+).
             self.git("worktree", "add", "--detach", str(worktree), p["commit"])
         # An interrupted Git checkout can leave partial bytes: preserve rather than reset them.
         self.owned(rec, p)

@@ -9,8 +9,9 @@
     "acceptance": ["The executable correctness reviewer privately installs and tests the candidate"]
   },
   "pipeline": {"name": "impl/implementation", "fallback": "refuse"},
+  "facts": {"standard": true},
   "strategy": "small",
-  "verification": "evaluation",
+  "verification": "review",
   "limits": {
     "tokens": 6000000,
     "max_attempts": 16,

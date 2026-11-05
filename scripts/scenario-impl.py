@@ -25,6 +25,24 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def local_worker_schema(source, destination):
+    schema = read(source)
+    # Published metadata is external authority to the bounded Worker resolver. Keep
+    # every validation constraint, including in embedded schemas; only local copies
+    # lose metadata. External references and the native resolver remain unchanged.
+    def strip_metadata(value):
+        if isinstance(value, dict):
+            for key in ("$id", "$schema"):
+                value.pop(key, None)
+            for child in value.values():
+                strip_metadata(child)
+        elif isinstance(value, list):
+            for child in value:
+                strip_metadata(child)
+    strip_metadata(schema)
+    Path(destination).write_bytes(canonical(schema) + b"\n")
+
+
 
 def literal(text):
     return {"source": "literal", "value": {"type": "text", "value": text}}
@@ -51,7 +69,7 @@ def bundle(pin, destination, title, body, owner="owner", adapter="impl", repairs
     template = copy.deepcopy(pin["template"])
     doc = template["document"]
     if (doc["kind"] != "implement" or doc["pipeline"] != {"name": "impl/implementation", "fallback": "refuse"}
-            or doc["verification"] != "evaluation" or doc["requirements"].get("scenario_mode") != "impl"):
+            or doc["verification"] != "review" or doc["requirements"].get("scenario_mode") != "impl"):
         raise ValueError("impl requires its exact implementation pipeline and executable reviewer contract")
     if re.fullmatch(r"github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", destination) is None:
         raise ValueError("exact GitHub machine destination required")
@@ -176,12 +194,12 @@ it does not establish publication, PR checks, human merge or Scenario completion
             text = text.replace('effects = ["read-source"]', 'effects = ["read-source", "execute-checks"]')
             text = text.replace('[signature.retains]\n', '[signature.retains]\ntesting = ["source", "subject", "checks"]\n')
             text += '\n[signature.contract.outputs.testing]\nartifact_type = "af/ImplementationTestEvidence@1"\ncardinality = "one"\noptional = false\ncovers = []\n[signature.contract.outputs.testing.affinity]\nkind = "same_as"\ninput = "source"\n'
-            shutil.copyfile(ROOT / 'schemas/implementation-test-evidence-v1.json', dest / 'outputs/testing.schema.json')
+            local_worker_schema(ROOT / 'schemas/implementation-test-evidence-v1.json', dest / 'outputs/testing.schema.json')
         if role == "evaluator":
             text = text.replace('af/EvaluationInput@2', 'af/ImplementationEvaluationInput@1')
             text = text.replace('result = ["checks", "requirements", "source"]', 'result = ["checks", "requirements", "source", "testing"]')
             text += '\n[signature.contract.inputs.testing]\nartifact_type = "af/ImplementationTestEvidence@1"\ncardinality = "one"\noptional = false\ncovers = []\n[signature.contract.inputs.testing.affinity]\nkind = "same_as"\ninput = "source"\n'
-            shutil.copyfile(ROOT / 'schemas/implementation-evaluation-input-v1.json', dest / 'input.schema.json')
+            local_worker_schema(ROOT / 'schemas/implementation-evaluation-input-v1.json', dest / 'input.schema.json')
         manifest.write_text(text)
         (dest / "instructions.md").write_text(instructions[role])
         entries["impl/" + role] = dest

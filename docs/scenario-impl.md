@@ -48,7 +48,10 @@ repository's code policy. No remote check mapping is needed. Multiple `--check` 
 multiple declared local checks. No package pin is a placeholder.
 
 Copy `fixtures/scenarios/impl-task.json`, replace its goal and requirements with the actual change,
-and review its finite Task/verification reservations. Commit the authority bundle and source.
+and review its finite Task/verification reservations. Keep `verification: "review"`: the pipeline
+publicly guarantees `ReviewedImplementation@1`; its required evaluator still consumes the
+correctness reviewer's executable testing evidence. The fixture also declares `facts.standard`
+to select that pipeline's standard implementation contract. Commit the authority bundle and source.
 Capture the exact native template; existing pinned Tasks remain unchanged:
 
 ```sh
@@ -141,6 +144,12 @@ A lost push is recovered by exact remote-ref readback. A lost PR response is rec
 positive marker, actor, repository, content, branch and commit evidence. After possible POST,
 remote absence stays pending; it never authorizes another POST. A changed head invalidates CI,
 review and merge observations. Closed unmerged PRs fail with workspace and branches retained.
+
+Preparation can recover the directory reservation saved immediately before `git worktree add`.
+Only the recorded device/inode at the canonical path, still empty with private permissions and
+absent from Git's worktree registrations, may finish that creation. Replaced paths, symlinks,
+partial contents and partial registrations remain preserved and refused.
+
 The implementation journal admits at most 32 retained intents and 16 MiB of journal bytes;
 preparation supports at most 32768 entries and 64 MiB of candidate content. Tools are read and
 hashed in bounded chunks (at most 256 MiB per executable). Native source captures are retained
