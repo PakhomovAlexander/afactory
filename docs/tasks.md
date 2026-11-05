@@ -750,7 +750,8 @@ nor a Diff Subject.
 One call of an Attempt can fail and the Attempt still succeed
 ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)).
 Everything below happens inside the Attempt's own wall and token reservation; the calls' usage
-adds up, and nothing is reset or refunded. Structured-profile Worker Attempts instead permit
+adds up, and nothing is reset or refunded. Structured-profile Worker Attempts under the current
+`af.structured-contract/2` package contract instead permit
 one model invocation: local JSON extraction is allowed, but invalid output or a transient failure
 settles the Attempt. A further call needs the scheduler's declared retry allowance, with its own
 Attempt accounting. Provider Admission remains separate; see

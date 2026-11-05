@@ -18,7 +18,7 @@ pub fn port(ty: &str) -> PipelinePortV1 {
         covers: BTreeSet::new(),
     }
 }
-pub fn root_contract(contract: &StructuredContractV1) -> PipelineContractV1 {
+pub fn root_contract(contract: &StructuredContractV2) -> PipelineContractV1 {
     let mut inputs = contract
         .inputs
         .iter()
@@ -34,7 +34,7 @@ pub fn root_contract(contract: &StructuredContractV1) -> PipelineContractV1 {
             .collect(),
     }
 }
-pub fn signature(id: &str, contract: &StructuredContractV1) -> Result<OperatorSignature, String> {
+pub fn signature(id: &str, contract: &StructuredContractV2) -> Result<OperatorSignature, String> {
     validate_schemas(contract)?;
     if !review_core::is_digest(id) {
         return Err(
@@ -76,16 +76,16 @@ pub fn signature(id: &str, contract: &StructuredContractV1) -> Result<OperatorSi
         unbound_allowed: BTreeSet::new(),
     })
 }
-pub fn parse_contract(bytes: &[u8]) -> Result<StructuredContractV1, String> {
+pub fn parse_contract(bytes: &[u8]) -> Result<StructuredContractV2, String> {
     if bytes.len() > 262144 {
         return Err("Structured contract file exceeds 256 KiB".into());
     }
-    let contract: StructuredContractV1 =
+    let contract: StructuredContractV2 =
         serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     validate_schemas(&contract)?;
     Ok(contract)
 }
-pub fn validate_schemas(contract: &StructuredContractV1) -> Result<(), String> {
+pub fn validate_schemas(contract: &StructuredContractV2) -> Result<(), String> {
     contract.validate()?;
     for p in contract.inputs.values().chain(contract.outputs.values()) {
         review_runner::task::schema_validator(&p.schema)?;
@@ -94,7 +94,7 @@ pub fn validate_schemas(contract: &StructuredContractV1) -> Result<(), String> {
 }
 impl TaskPlanCompiler {
     /// Captured schemas belong to the kind package, never to a Task's untrusted input.
-    pub fn structured_contract(&self, name: &str) -> Result<StructuredContractV1, String> {
+    pub fn structured_contract(&self, name: &str) -> Result<StructuredContractV2, String> {
         let kind = self.task_kind(name).ok_or("Missing structured kind")?;
         if kind.profile != super::kind::TaskKindProfile::Structured {
             return Err("Kind is not structured".into());

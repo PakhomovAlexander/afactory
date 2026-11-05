@@ -12,7 +12,7 @@ The decision is
 ## Package contract
 
 A kind package uses `schema = "af.task-kind/2"`, `profile = "structured"`, and its business
-`kind`, plus `structured.json` with `schema: af.structured-contract/1`, `inputs`, `outputs`, and
+`kind`, plus `structured.json` with `schema: af.structured-contract/2`, `inputs`, `outputs`, and
 `require_container`. Every port has `artifact_type` and an embedded local `schema`. Only
 `custom/Name@N` artifact types are admitted; kernel port names and artifact types are reserved.
 There are one to four required inputs and one to four required outputs, each cardinality one,
@@ -27,6 +27,16 @@ returns each business port unchanged and `validation: af/StructuredValidation@1`
 input. There is no package check executable in this profile. Effects are empty. A container can
 be required by the captured contract; `false` uses the existing trusted-local data environment.
 That choice is reviewed authority, never an instruction in captured input.
+
+Version 2 requires an AF client that supports `af.structured-contract/2` and enforces one
+model invocation per structured Worker Attempt. Version 1 is refused by the current client;
+there is no compatibility reader. Finish or abandon older Tasks with their original client
+before upgrading. Review and repin consuming packages with the v2 identity. Merely renaming
+the contract does not make an older client support these semantics: its exact-version validator
+rejects v2 during `af catalog digest` and package capture for planning, before Provider
+admission or Worker invocation. The package digest includes `structured.json`, so changing its
+version also changes the captured authority identity.
+See [the contract version decision](../adr/2026-11-05-version-the-single-call-structured-contract.md).
 
 ## Capture, run and inspect
 

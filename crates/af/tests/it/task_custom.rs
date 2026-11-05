@@ -473,13 +473,63 @@ fn external_inputs_fail_before_dispatch_and_exact_bytes_and_schemas_change_ident
 }
 
 #[test]
+fn structured_contract_version_is_guarded_at_digest_and_planning_before_model_calls() {
+    let f = Fixture::new();
+    let path = f.repo.join("custom-tasks/triage/kind/structured.json");
+    let mut contract: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let digest = || {
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["catalog", "digest", "custom-tasks/triage/kind"])
+            .output()
+            .unwrap()
+    };
+    assert!(digest().status.success());
+    let current = f.plan("triage");
+    assert_eq!(current["attempts"], 0);
+    // The exact-version check also protects an older client from a newer contract:
+    // a future version cannot acquire authority by carrying a correct package digest.
+    for version in ["af.structured-contract/1", "af.structured-contract/3"] {
+        contract["schema"] = json!(version);
+        write(&path, &contract);
+        let out = digest();
+        assert!(!out.status.success(), "{}", text(&out));
+        assert!(
+            text(&out).contains("Unsupported structured contract"),
+            "{}",
+            text(&out)
+        );
+        // Bypass the friendly digest command and pin the exact unsupported bytes, so
+        // planning must exercise package validation rather than a stale-pin refusal.
+        crate::task_report::repin_and_commit(&f.repo);
+        let out = f.cli(&[
+            "task",
+            "plan",
+            "--replace",
+            "--file",
+            "custom-tasks/triage/task.json",
+            "--input-json",
+            "issue=issue.json",
+        ]);
+        assert!(!out.status.success(), "{}", text(&out));
+        assert!(
+            text(&out).contains("Unsupported structured contract"),
+            "{}",
+            text(&out)
+        );
+        assert!(f.calls().is_empty());
+        assert!(!f.auth.join("requests").exists());
+    }
+}
+
+#[test]
 fn schema_mutation_changes_plan_and_remote_schemas_and_reserved_types_refuse() {
     let f = Fixture::new();
     let first = f.plan("triage");
     let path = f.repo.join("custom-tasks/triage/kind/structured.json");
     let mut contract: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("structured-contract-v1.json"),
+        &crate::schemas::validator("structured-contract-v2.json"),
         &contract,
     );
     contract["inputs"]["issue"]["schema"]["properties"]["title"]["maxLength"] = json!(511);
