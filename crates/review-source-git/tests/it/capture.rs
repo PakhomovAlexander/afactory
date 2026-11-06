@@ -237,6 +237,41 @@ fn a_settled_worktree_is_admitted_on_retry() {
     );
 }
 
+/// Let native macOS batches arrive during both attempts. The old per-attempt stream replayed
+/// setup and first-attempt events into the second attempt, yielding three attempts despite
+/// equal index and worktree fingerprints. This delay changes the fixture's scheduling, not
+/// capture's 250 ms boundary budget or three-attempt limit.
+struct DelayedMutateOnce<'a> {
+    fixture: &'a Fixture,
+}
+
+impl CaptureObserver for DelayedMutateOnce<'_> {
+    fn between_passes(&self, attempt: u32) {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        MutateOnce {
+            fixture: self.fixture,
+        }
+        .between_passes(attempt);
+    }
+}
+
+#[test]
+fn a_settled_worktree_does_not_replay_a_previous_attempts_events() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let snapshot = Capture::new(&repo, &cas)
+        .dirty_observed(&DelayedMutateOnce { fixture: &fixture })
+        .unwrap();
+    assert_eq!(snapshot.attempts, 2);
+    assert_eq!(
+        snapshot.manifest.get("src/main.rs").unwrap().content,
+        review_source_git::digest_bytes(b"fn main() { /* one edit */ }\n"),
+    );
+}
+
 #[test]
 fn an_untracked_file_created_between_passes_retries_without_a_cas_error() {
     let fixture = Fixture::new();
