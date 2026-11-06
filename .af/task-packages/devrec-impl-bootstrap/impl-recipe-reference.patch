@@ -1,0 +1,572 @@
+diff --git a/docs/scenario-impl.md b/docs/scenario-impl.md
+new file mode 100644
+index 00000000..36f3b5cd
+--- /dev/null
++++ b/docs/scenario-impl.md
+@@ -0,0 +1,213 @@
++# Implementation through human merge
++
++The reusable native Scenario `impl` runs an implementation Task, prepares its accepted candidate,
++obtains an exact signed publication decision, publishes one PR, waits for CI and review, observes
++its human merge, and removes its explicit owned worktrees, builds and branches. Completion requires
++both the merge observation and successful cleanup. It installs no scheduler and performs no merge.
++The [lifecycle decision](adr/2026-11-05-bind-implementation-lifecycle-to-native-scenario-authority.md)
++records the separate machine authority.
++
++The initial implementation Task contains its verifier as the required correctness reviewer. There
++is no verification Task. The reviewer receives the already applied candidate in a disposable
++sandbox, has `read-source` and `execute-checks`, builds and privately installs the CLI, and executes
++meaningful tests and installed-binary acceptance cases. Source changes are refused when that
++sandbox finishes. Missing execution evidence must block the reviewer and independent evaluator.
++The reviewer also returns the required public `af/ImplementationTestEvidence@1` artifact beside
++its unchanged flat Reviewer Result. It records the exact Snapshot and build/install/test commands,
++exit codes and bounded evidence, including failed or unavailable results. The evaluator's new
++`af/ImplementationEvaluationInput@1` contract consumes that exact artifact; the kernel refuses a
++passed evaluation for failed, unavailable or stale testing. The existing native execute-checks
++reviewer boundary grants no host publication.
++
++The model team is fixed to `codex-personal`: `gpt-6.1-sol` medium implements,
++`gpt-6-sol` high performs executable correctness verification, `gpt-6.1-terra` high reviews bugs,
++and `gpt-6-astra` medium evaluates acceptance. Both reviewers are required. The native planner
++checks the effective bindings, reviewer capability and local-only Gate graph before dispatch.
++The standalone project may be named `devrec`; this Scenario adds no `af devrec` command.
++
++## Author the consuming repository
++
++Run the package builder from the consuming repository with a current native af executable. Its
++output directory must be absent. The builder copies the reusable native interfaces, supplies
++project-neutral instructions and exact model defaults, and computes every pin with the native
++`af catalog digest`. It launches no models, changes no shipped package and publishes nothing.
++
++```sh
++python3 /path/to/afactory/scripts/scenario-impl.py packages \
++  --af /path/to/installed/af --output .af/task-packages/impl --check local
++```
++
++Review the generated packages and versioned native `catalog.toml`; use it for a new consuming
++repository or merge its entries into that repository's catalog,
++using repository-relative package paths. Move the generated catalog to `.af/task-catalog.toml`
++or remove the intermediate copy after merging, before committing the authority bundle. Its `[providers]` bindings name `codex-personal` and its
++review policy makes bugs and correctness required. Its explicit independence policy permits the
++same Provider, account and model across roles; native per-slot isolated Attempts and private
++context remain mandatory. Configure a real local `local` check in that
++repository's code policy. No remote check mapping is needed. Multiple `--check` arguments select
++multiple declared local checks. No package pin is a placeholder.
++
++Copy `fixtures/scenarios/impl-task.json`, replace its goal and requirements with the actual change,
++and review its finite Task/verification reservations. Keep `verification: "review"`: the pipeline
++publicly guarantees `ReviewedImplementation@1`; its required evaluator still consumes the
++correctness reviewer's executable testing evidence. The fixture also declares `facts.standard`
++to select that pipeline's standard implementation contract. Commit the authority bundle and source.
++Capture the exact native template; existing pinned Tasks remain unchanged:
++
++```sh
++ af scenario template-pin --file impl-task.json --repo /project \
++   --task-state /private/tasks --authority-commit COMMIT --json > template-pin.json
++python3 /path/to/afactory/scripts/scenario-impl.py bundle --pin template-pin.json \
++  --destination github:owner/project --title 'Implement the requested CLI' \
++  --body-file pr-body.txt --repairs 2 --output impl-bundle.json
++```
++
++The bundle builder retains the native template digest; native Scenario validation rehashes the
++complete template and refuses a mismatch before any dispatch. It writes `af/scenario-bundle@4`
++with root `impl`; no hand-edited definition pin, account setup, gate publication or public PR is
++part of authoring. The PR title/body are fixed before preparation and remain the same during
++repairs. Include the consuming repository's required PR evidence in the body.
++
++## Install bounded machine authority
++
++Use `schemas/scenario-impl-config-v1.json` for the complete `af/scenario-impl-config@1` machine
++configuration. Keep it owner-only outside every checkout. It declares:
++
++- The canonical source `repo`, external native `task_store`, private `worktree_root` and new
++  private `state_dir`, all disjoint; exact initial `source_commit` and `source_content_digest`
++  from the native template; `base` and an owned `branch_prefix`.
++- The GitHub repository name and numeric ID, authenticated actor's numeric ID/login, private
++  `token_file`, required check identities and explicit required reviewer identities. An empty
++  reviewer list means the accepted native reviews and eventual human merge provide review
++  authority; external changes-requested reviews still block readiness and admit bounded repair.
++- Exact native `af` and `git` executable paths and SHA-256 digests; a private SSH configuration
++  and its digest; the commit author name/email. Push uses only
++  `ssh://git@github.com/OWNER/REPOSITORY.git`, noninteractive strict host checking and that SSH
++  configuration. No workflow supplies a command, remote URL, environment or credential.
++
++The source repository must have no executable Git filters, includes or URL rewrites in local
++configuration. Standard core identity settings, user name/email, remote URL/refspec entries and
++branch tracking settings are admitted; other local keys are refused. Global/system Git
++configuration, hooks and fsmonitor are disabled. Prepare uses
++native raw Snapshot-to-Git objects, so no candidate attributes control staging.
++
++```sh
++python3 /path/to/afactory/scripts/install-scenario-impl-adapter.py \
++  --config /private/impl-config.json --output /private/impl-adapter
++```
++
++Installation is offline. The executable embeds the complete shared GitHub transport and lifecycle
++application, pins the configuration bytes, and initializes a new private lock/journal. Keep those
++bytes and receipts while any Run can resume. Never reset uncertain receipts or reinstall over them.
++Authorize adapter `impl` in the external `af/scenario-policy@4` with the printed executable digest,
++operations `impl_prepare_v1`, `impl_publish_v1`, `impl_cleanup_v1`, `observe`, and exactly
++`github:owner/project`. Use a 30000 ms adapter wall and 65536-byte output cap. Add the exact native
++`template_id` and the owner's minisign public key. This is explicit machine-installed authority,
++not an authority file supplied by the candidate.
++
++Validate the bundle against that policy, review the entire pin, and confirm it using ordinary
++`af scenario start --confirm-pin`. Inputs are `{}`. The initial Task and every admitted repair
++use their exact captured plan through `af task run --confirm-plan`.
++
++## Preparation, signing and recovery
++
++`impl_prepare_v1` takes a native accepted `candidate` Task receipt, with its result ID as `subject`
++and candidate Snapshot as `revision`, plus versioned publication text in `body`. Native
++`af scenario impl-source` reopens the configured Task Store, checks acceptance, exact result,
++models, source repository and complete committed source content. It writes private raw Git objects
++and a checked `af/scenario-impl-source@1` receipt. A changed result, unverified candidate, foreign
++repository or different source commit fails closed.
++
++The adapter imports only those private objects and creates deterministic commit bytes before
++signing or publication. `af/scenario-impl-prepared@1` binds the Task, result, source and candidate
++Snapshots, checked predecessor provenance, source commit, tree, final commit, repository, branch, owned workspace, publication text,
++configuration and preparation intent. Native `impl_subject`, `impl_revision` and `impl_body`
++projections expose its exact publication identity, commit and body. Root inputs cannot invent an
++Action or Task receipt.
++
++At `publication-owner`, use ordinary `af scenario decision-payload`, sign outside af, and submit
++`af/scenario-signed-decision@1` with `af scenario decide`. The native signature binds this Run,
++execution, pin, Decision invocation, exact prepared object, commit, owner, choice and deadline.
++Each publication has exactly one Decision consumer. `impl_publish_v1` authorizes only its exact
++compare-and-create push and PR creation, or a fast-forward repair of its recorded PR. It authorizes
++no merge. Cleanup separately requires a machine grant and exact typed `merged` observation.
++
++Lifecycle steps retain a seven-day elapsed recovery window within the Run's overall wall budget;
++each adapter subprocess still has a separately enforced at-most-30-second machine wall. A process
++restart therefore does not lose recovery authority merely because one invocation ended.
++Every Action is reconciled before execute. A retained dispatched lifecycle intent can use the
++native bounded `recover` method to finish only its own remaining substeps under the same inputs,
++grant and decision. Fresh intents cannot recover; reconciliation and observation execute no
++lifecycle substep. Possible PR POSTs are never resent during recovery. The adapter journals exact inputs and intent before
++effects, serializes callers with a private nonblocking lock, and fsyncs receipts before stdout.
++A lost push is recovered by exact remote-ref readback. A lost PR response is recovered only from
++positive marker, actor, repository, content, branch and commit evidence. After possible POST,
++remote absence stays pending; it never authorizes another POST. A changed head invalidates CI,
++review and merge observations. Closed unmerged PRs fail with workspace and branches retained.
++
++Preparation stages each worktree and build directory under the private configured worktree
++root. It fsyncs the new directory and root, journals its device/inode, and only then publishes
++it using an exclusive atomic rename (Linux `renameat2` or macOS `renamex_np`). Publication
++never replaces an existing destination. Recovery verifies the same inode at either the staging
++or final path, fsyncs both parents, and durably records publication before proceeding. It can
++resume interruptions before/after creation, identity persistence, rename and completion without
++adopting final paths with unknown ownership. Replaced paths, symlinks, changed permissions,
++partial contents and partial Git registrations remain preserved and refused.
++
++A crash after staging mkdir but before identity persistence leaves uncertain ownership. Recovery
++preserves that unpublished directory without adopting or deleting it and durably advances to the
++next deterministic staging slot. There are four slots per directory kind and intent: at most three
++uncertain directories can be bypassed; exhausting the fourth refuses further creation. Repeated
++restarts cannot grow this set. Uncertain staging is retained for operator inspection, including
++after normal owned cleanup; cleanup does not acquire authority over it. Nonempty, symlinked or
++nonprivate uncertain staging is refused. The private journal lock serializes the entire protocol.
++The [reservation decision](adr/2026-11-05-publish-owned-impl-directory-reservations.md)
++records this protocol. The journal is now `af/scenario-impl-state@2`; v1 state fails closed, with no migration or fallback.
++The interruption and preservation matrix is exercised by `scripts/test-scenario-impl.py` using
++real local Git and fresh journal loads for each restart.
++
++The implementation journal admits at most 32 retained intents and 16 MiB of journal bytes;
++preparation supports at most 32768 entries and 64 MiB of candidate content. Tools are read and
++hashed in bounded chunks (at most 256 MiB per executable). Native source captures are retained
++separately from journal bytes. Partial native captures or incomplete checkouts are preserved for inspection; they are never
++reset over uncertain or dirty content.
++
++## Bounded repair and completion
++
++The outcome Wait remains active after green CI/review until human merge, so a later failed check
++or changes-requested review can still admit a bounded repair without restarting the Run.
++The builder permits zero, one or two implementation repairs, reserved in the Scenario's token and
++wall limits. Each is a fresh implementation continuation on the previous accepted candidate,
++with bounded `af/scenario-impl-outcome@1` CI/review/conflict evidence in its requirements. It has
++the same required executable reviewer and evaluator, and no separate verification Task. A typed
++`select` binding follows only the selected available receipt when other repair steps were skipped.
++Decisions cannot use selection to alias publication approval.
++
++Native staging retains the continuation's actual source Snapshot and separately checks its
++predecessor through native rerooted-source provenance. Each repair stages a new commit whose
++exact parent is the previous owned commit. Its separate
++signature approves that head. The original PR and branch remain the publication identity; repair
++never creates another PR or overwrites a foreign head. Detached owned worktrees retain each
++candidate until the final human merge. The adapter refuses a third repair. After the allowance,
++unresolved CI/review/conflicts fail readiness and preserve the workspaces; green CI alone cannot
++complete the Run.
++
++Conflict observations identify the current PR conflict, but the implementation template does not
++capture a newly changed remote base as a native input. A repair that needs unavailable base bytes
++must remain unresolved; this implementation does not claim automatic conflict resolution. Capture
++new reviewed source/authority through the ordinary native workflow before pursuing that change.
++
++After actual merge, cleanup reobserves the exact recorded PR/head and checks the entire explicit
++repair lineage before deleting anything. It refuses dirty source, foreign ignored files, replaced
++worktree/build inodes, attached foreign worktrees and changed local/remote branch identities.
++Only adapter-created `target/` directories are recursively removed, with symlink-resistant removal.
++Local branch deletion compares the expected commit; remote deletion uses an exact commit lease.
++Crash recovery retains per-artifact cleanup progress and refuses replacement paths. Native source
++captures and audit receipts remain private recovery evidence. No unrelated worktree is enumerated
++as a cleanup target.
++
++The tests use real local Git and fake service transport; they never publish. Run
++`python3 -I scripts/test-scenario-impl.py` and `python3 -I scripts/scenario-impl-schemas.py`.
++Native `scenario::implementation::tests`, `scenario::impl_package_builder_*` and
++`task_execution::scenario_template::implementation_tests` cover typed admission and package pins;
++the existing execute-checks reviewer tests cover the source-preservation boundary.
+diff --git a/scripts/scenario-impl.py b/scripts/scenario-impl.py
+new file mode 100644
+index 00000000..b8881b19
+--- /dev/null
++++ b/scripts/scenario-impl.py
+@@ -0,0 +1,347 @@
++#!/usr/bin/env python3
++"""Author reusable impl packages and a real native Scenario bundle. Never run models or publish."""
++import argparse
++import copy
++import json
++import os
++from pathlib import Path
++import re
++import shutil
++import subprocess
++
++ROOT = Path(__file__).resolve().parent.parent
++TEAM = {"implementer": ("gpt-6.1-sol", "medium"), "correctness": ("gpt-6-sol", "high"),
++        "bugs": ("gpt-6.1-terra", "high"), "evaluator": ("gpt-6-astra", "medium")}
++
++
++def read(path):
++    raw = Path(path).read_bytes()
++    if len(raw) > 1048576:
++        raise ValueError("authoring input exceeds 1 MiB")
++    return json.loads(raw)
++
++
++def canonical(value):
++    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++
++
++def local_worker_schema(source, destination):
++    schema = read(source)
++    # Published metadata is external authority to the bounded Worker resolver. Keep
++    # every validation constraint, including in embedded schemas; only local copies
++    # lose metadata. External references and the native resolver remain unchanged.
++    def strip_metadata(value):
++        if isinstance(value, dict):
++            for key in ("$id", "$schema"):
++                value.pop(key, None)
++            for child in value.values():
++                strip_metadata(child)
++        elif isinstance(value, list):
++            for child in value:
++                strip_metadata(child)
++    strip_metadata(schema)
++    Path(destination).write_bytes(canonical(schema) + b"\n")
++
++
++
++def literal(text):
++    return {"source": "literal", "value": {"type": "text", "value": text}}
++
++
++def step_ref(step):
++    return {"source": "step", "step": step, "port": "result"}
++
++
++def project(step, kind, **kwargs):
++    return {"source": "project", "value": step_ref(step), "projection": {"kind": kind, **kwargs}}
++
++
++def step(name, operation, inputs, port, timeout=604800000):
++    return dict(id=name, operation=operation, inputs=inputs, outputs={"result": port}, when=None,
++                max_attempts=1, timeout_ms=timeout, on_timeout="fail")
++
++
++def bundle(pin, destination, title, body, owner="owner", adapter="impl", repairs=2):
++    if type(repairs) is not int or not 0 <= repairs <= 2:
++        raise ValueError("impl permits zero, one or two bounded implementation repairs")
++    if pin["schema"] != "af/scenario-template-pin@1" or re.fullmatch(r"sha256:[0-9a-f]{64}", pin["template_id"]) is None:
++        raise ValueError("expected exact native template-pin receipt")
++    template = copy.deepcopy(pin["template"])
++    doc = template["document"]
++    if (doc["kind"] != "implement" or doc["pipeline"] != {"name": "impl/implementation", "fallback": "refuse"}
++            or doc["verification"] != "review" or doc["requirements"].get("scenario_mode") != "impl"):
++        raise ValueError("impl requires its exact implementation pipeline and executable reviewer contract")
++    if re.fullmatch(r"github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", destination) is None:
++        raise ValueError("exact GitHub machine destination required")
++    grants = [dict(adapter=adapter, operation=op, destination=destination)
++              for op in ("impl_prepare_v1", "impl_publish_v1", "impl_cleanup_v1", "observe")]
++    by_op = {g["operation"]: g for g in grants}
++    def action(op, decision=False, condition=None):
++        return dict(kind="action", grant=by_op[op], requires_decision=decision, required_condition=condition)
++    def wait(condition):
++        return dict(kind="wait", grant=by_op["observe"], condition=condition)
++    def projection(value, kind, **kwargs):
++        return dict(source="project", value=value, projection=dict(kind=kind, **kwargs))
++    def choose(condition, passed, failed):
++        return dict(source="select", condition=condition, passed=passed, failed=failed)
++    publication_body = literal(canonical(dict(schema="af/scenario-impl-publication@1", title=title, body=body)).decode())
++    steps = []
++    task_value = prepared_value = outcome_value = publication_value = None
++    for iteration in range(repairs + 1):
++        suffix = "" if iteration == 0 else "-repair-" + str(iteration)
++        impl, prep, decision, pub, observed = [name + suffix for name in ("implement", "prepare", "publication-owner", "publish", "outcome")]
++        condition = projection(outcome_value, "impl_repair_needed") if iteration else None
++        bindings = {"source": {"port": "snapshot", "artifact_type": "af/SourceTree@1"}} if iteration else {}
++        task_inputs = dict(source=task_value, scenario_evidence=outcome_value) if iteration else {}
++        task = step(impl, dict(kind="fresh_task", template=template, bindings=bindings), task_inputs, "task", doc["limits"]["wall_ms"])
++        prepare_inputs = dict(subject=project(impl, "task_result_id"), revision=project(impl, "task_output_snapshot", port="snapshot"),
++                              body=publication_body, candidate=step_ref(impl))
++        if iteration:
++            prepare_inputs.update(previous=prepared_value, repair=outcome_value)
++        prepare = step(prep, action("impl_prepare_v1"), prepare_inputs, "action")
++        obj = dict(subject=project(prep, "impl_subject"), revision=project(prep, "impl_revision"))
++        owner_step = step(decision, dict(kind="decision", owner=owner), obj, "decision")
++        publish = step(pub, action("impl_publish_v1", True), dict(**obj, body=project(prep, "impl_body"), prepared=step_ref(prep), decision=step_ref(decision)), "action")
++        outcome = step(observed, wait("implementation_outcome"), obj, "observation")
++        for item in (task, prepare, owner_step, publish, outcome):
++            item["when"] = condition
++            steps.append(item)
++        task_value = choose(condition, step_ref(impl), task_value) if iteration else step_ref(impl)
++        prepared_value = choose(condition, step_ref(prep), prepared_value) if iteration else step_ref(prep)
++        publication_value = choose(condition, step_ref(pub), publication_value) if iteration else step_ref(pub)
++        outcome_value = choose(condition, step_ref(observed), outcome_value) if iteration else step_ref(observed)
++    obj = dict(subject=projection(prepared_value, "impl_subject"), revision=projection(prepared_value, "impl_revision"))
++    steps += [step("ready", wait("implementation_ready"), obj, "observation"),
++              step("merged", wait("merged"), obj, "observation"),
++              step("cleanup", action("impl_cleanup_v1", condition="merged"), dict(**obj, body=projection(prepared_value, "impl_body"),
++                  prepared=prepared_value, evidence=step_ref("merged")), "action")]
++    root = dict(schema="af/scenario@4", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
++        steps=steps, result={"implementation": task_value, "publication": publication_value, "merged": step_ref("merged"), "cleanup": step_ref("cleanup")},
++        completion=[project("merged", "observation_satisfied")],
++        authority=dict(task_plans=[], task_templates=[pin["template_id"]], grants=grants, decision_owners=[owner]),
++        limits=dict(max_tokens=template["max_tokens"] * (repairs + 1), max_wall_ms=doc["limits"]["wall_ms"] * (repairs + 1) + 604800000, max_dispatches=256), admission=None)
++    return dict(schema="af/scenario-bundle@4", root="impl", definitions={"impl": root})
++
++
++def packages(output, af, checks):
++    """Generate independent packages, reusing native reviewed Pipeline/Worker interfaces."""
++    output = Path(output)
++    output.mkdir(mode=0o700)
++    entries = {}
++    instructions = {
++        "implementer": """# Implement one bounded change
++
++Implement the Task requirements in the captured source. This is a standalone CLI/project;
++its name does not authorize adding an af subcommand. Use the repository guidance and tests.
++The required local Gate and two required reviewers check the sealed candidate, and the
++independent correctness reviewer builds, privately installs and executes it. Address every
++acceptance item. Report all failed or unavailable checks exactly. Never publish or use
++credentials. Keep the declared Attempt and Task budgets; unfinished work is not complete.
++""",
++        "correctness": """# Executable correctness verifier
++
++Independently verify the complete candidate against the requirements and base. You have the
++native execute-checks capability in a private disposable sandbox. The candidate is already
++applied; do not edit its source. Build the standalone CLI with the pinned toolchain, install
++it under a private sandbox directory (for Rust, cargo install --path . --root PATH), and
++execute meaningful focused tests and installed-binary acceptance cases. Keep every build and
++install artifact inside your sandbox. Inspect and exercise error paths and lifecycle behavior.
++
++Return both declared ports: the unchanged flat Reviewer Result in result, and
++ImplementationTestEvidence@1 in testing. The testing artifact names the exact candidate Snapshot,
++records build/install/test commands, exit statuses and bounded public execution evidence. Its
++status is passed only when every command ran successfully and all three purposes are covered.
++Use failed or unavailable otherwise; never invent a successful command receipt.
++
++A prose review, reading the implementer's report, or observing the Gate is insufficient.
++Run actual commands yourself. State their exact commands, exit status and the behavior each
++proves in evidence. If execution is unavailable, fails, or cannot establish an acceptance
++item, file a blocking Finding naming the missing proof. Never claim a pass for an unrun
++command. Never print credentials or publish. Your source must seal unchanged; generated
++private build/install files are disposable, never a candidate or a Task result.
++""",
++        "bugs": """# Required bugs reviewer
++
++Independently inspect the complete sealed candidate and requirements, including recovery,
++security, edge cases and regressions. Trace concrete reachable defects and return the native
++Reviewer Result contract. Inspect actual code and tests; do not accept the implementer's
++summary as evidence. Missing acceptance work blocks acceptance. Never publish or edit source.
++""",
++        "evaluator": """# Independent acceptance evaluator
++
++Judge the entire requirements contract on the exact candidate, local Gate receipts and the
++public testing artifact from the required correctness reviewer. The correctness reviewer must have independently built, privately
++installed and executed meaningful tests of the candidate. Missing executable evidence or
++unresolved requirements means acceptance is not satisfied. Task acceptance permits preparation;
++it does not establish publication, PR checks, human merge or Scenario completion.
++"""}
++    for role, (model, effort) in TEAM.items():
++        src = ROOT / ".af/task-packages/kernel" / role
++        dest = output / role
++        shutil.copytree(src, dest)
++        # Captured source is read-only under the real Gate; only the new package copies
++        # receive write permission. Never chmod the shipped package or a shared inode.
++        for path in [dest, *dest.rglob("*")]:
++            path.chmod(path.stat().st_mode | (0o700 if path.is_dir() else 0o200))
++        manifest = dest / "worker.toml"
++        text = manifest.read_text()
++        text = re.sub(r'^name = .*$', 'name = "impl/' + role + '"', text, count=1, flags=re.M)
++        text = re.sub(r'^version = .*$', 'version = "1.0.0"', text, count=1, flags=re.M)
++        text = re.sub(r'^provider_kind = .*$', 'provider_kind = "codex"', text, flags=re.M)
++        text = re.sub(r'^model = .*$', 'model = "' + model + '"', text, flags=re.M)
++        text = re.sub(r'^effort = .*$', 'effort = "' + effort + '"', text, flags=re.M)
++        if role == "correctness":
++            text = text.replace('effects = ["read-source"]', 'effects = ["read-source", "execute-checks"]')
++            text = text.replace('[signature.retains]\n', '[signature.retains]\ntesting = ["source", "subject", "checks"]\n')
++            text += '\n[signature.contract.outputs.testing]\nartifact_type = "af/ImplementationTestEvidence@1"\ncardinality = "one"\noptional = false\ncovers = []\n[signature.contract.outputs.testing.affinity]\nkind = "same_as"\ninput = "source"\n'
++            local_worker_schema(ROOT / 'schemas/implementation-test-evidence-v1.json', dest / 'outputs/testing.schema.json')
++        if role == "evaluator":
++            text = text.replace('af/EvaluationInput@2', 'af/ImplementationEvaluationInput@1')
++            text = text.replace('result = ["checks", "requirements", "source"]', 'result = ["checks", "requirements", "source", "testing"]')
++            text += '\n[signature.contract.inputs.testing]\nartifact_type = "af/ImplementationTestEvidence@1"\ncardinality = "one"\noptional = false\ncovers = []\n[signature.contract.inputs.testing.affinity]\nkind = "same_as"\ninput = "source"\n'
++            local_worker_schema(ROOT / 'schemas/implementation-evaluation-input-v1.json', dest / 'input.schema.json')
++        manifest.write_text(text)
++        (dest / "instructions.md").write_text(instructions[role])
++        entries["impl/" + role] = dest
++    for name, original in (("implementation", "implementation-reviewed"), ("review", "review-code")):
++        dest = output / name
++        dest.mkdir()
++        text = (ROOT / ".af/task-packages/kernel" / original / "pipeline.toml").read_text()
++        text = text.replace("kernel/implementation-reviewed", "impl/implementation").replace("kernel/review-code", "impl/review")
++        for role in TEAM:
++            text = text.replace("kernel/" + role, "impl/" + role)
++        text = re.sub(r'^version = .*$', 'version = "1.0.0"', text, count=1, flags=re.M)
++        text = text.replace('checks = ["kernel", "markdownlint"]', "checks = " + json.dumps(checks))
++        if name == "review":
++            # The evaluator shares the Gate's conditional scope with correctness. Its
++            # required testing input therefore cannot be absent on a selected invocation.
++            text = re.sub(r'^max_attempts = 8$', 'max_attempts = 10', text, count=1, flags=re.M)
++            text = re.sub(r'(\[contract.inputs.requirements\][^[]*?)optional = true', r'\1optional = false', text, count=1)
++            text += """
++[contract.outputs.testing]
++artifact_type = "af/ImplementationTestEvidence@1"
++cardinality = "one"
++optional = true
++covers = []
++[contract.outputs.testing.affinity]
++kind = "same_as"
++input = "source"
++[outputs.testing]
++kind = "node"
++node = "correctness"
++port = "testing"
++[contract.outputs.evaluation]
++artifact_type = "af/TaskEvaluation@1"
++cardinality = "one"
++optional = true
++covers = []
++[contract.outputs.evaluation.affinity]
++kind = "same_as"
++input = "source"
++[outputs.evaluation]
++kind = "node"
++node = "evaluate_goal"
++port = "result"
++[slots.evaluator]
++worker = "impl/evaluator"
++role = "evaluate"
++input_type = "af/ImplementationEvaluationInput@1"
++output_type = "af/TaskEvaluation@1"
++min_attempts = 1
++max_attempts = 2
++allow_local_replacement = true
++independent_from = []
++[[nodes]]
++id = "evaluate_goal"
++[nodes.operator]
++op = "verify"
++slot = "evaluator"
++[nodes.inputs.checks]
++kind = "node"
++node = "checks"
++port = "result"
++[nodes.inputs.requirements]
++kind = "input"
++port = "requirements"
++[nodes.inputs.source]
++kind = "input"
++port = "source"
++[nodes.inputs.testing]
++kind = "node"
++node = "correctness"
++port = "testing"
++[nodes.when]
++node = "checks"
++outcome = "passed"
++"""
++        else:
++            text = text.replace('af/EvaluationInput@2', 'af/ImplementationEvaluationInput@1')
++            text = text.replace('[nodes.operator.bindings]\n', '[nodes.operator.bindings]\nevaluator = "evaluator"\n')
++            begin = text.index('[[nodes]]\nid = "evaluate_goal"')
++            end = text.index('[[nodes]]\nid = "accept_goal"', begin)
++            text = text[:begin] + text[end:]
++            text = text.replace('node = "evaluate_goal"\nport = "result"', 'node = "review"\nport = "evaluation"')
++            text += """
++[contract.outputs.testing]
++artifact_type = "af/ImplementationTestEvidence@1"
++cardinality = "one"
++optional = true
++covers = []
++[contract.outputs.testing.affinity]
++kind = "derived_from"
++input = "source"
++[outputs.testing]
++kind = "node"
++node = "review"
++port = "testing"
++"""
++        if "remote_checks" in text:
++            raise ValueError("impl packages require local Gates only")
++        (dest / "pipeline.toml").write_text(text)
++        entries["impl/" + name] = dest
++    lines = ['# Review this native catalog with the consuming repository local code policy.',
++             'schema = "af.task-catalog/2"', 'code_policy = ".af/code-policy.toml"', 'no_match = "refuse"',
++             '', '[review]', 'generation = 2', 'gate = "major"', 'clean_rounds = 1', 'max_rounds = 2',
++             'allow_targeted_repairs = false', '', '[independence]', 'command_workers_by_package = true',
++             'distinct_principals = false', 'distinct_providers = false', 'distinct_models = false']
++    for name, dest in sorted(entries.items()):
++        # The native hasher is the only package pin writer; no hand-typed digest or placeholder.
++        process = subprocess.run([str(af), "catalog", "digest", str(dest)], check=True, capture_output=True, text=True,
++                                 env=dict(os.environ, AF_SELF_OFFLINE="1"))
++        digest = process.stdout.strip()
++        if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
++            raise ValueError("native package digest receipt differs")
++        lines += ["", '[packages.' + json.dumps(name) + ']', 'version = "1.0.0"', 'digest = ' + json.dumps(digest),
++                  'path = ' + json.dumps(str(dest))]
++    lines += ["", "[providers]"] + [json.dumps("impl/" + role) + ' = "codex-personal"' for role in TEAM]
++    lines += ["", "# Both are required; no default-light pipeline is selected.", "[review.reviewers]", 'bugs = "required"', 'correctness = "required"']
++    (output / "catalog.toml").write_text("\n".join(lines) + "\n")
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    subs = parser.add_subparsers(dest="command", required=True)
++    pkg = subs.add_parser("packages", help="create new consuming-repository packages and exact native catalog pins")
++    pkg.add_argument("--output", required=True)
++    pkg.add_argument("--af", required=True, type=Path)
++    pkg.add_argument("--check", action="append", required=True)
++    build = subs.add_parser("bundle", help="create impl bundle from a real native template pin")
++    build.add_argument("--pin", required=True)
++    build.add_argument("--destination", required=True)
++    build.add_argument("--title", required=True)
++    build.add_argument("--body-file", required=True)
++    build.add_argument("--owner", default="owner")
++    build.add_argument("--repairs", type=int, choices=range(3), default=2)
++    build.add_argument("--output", required=True)
++    args = parser.parse_args()
++    if args.command == "packages":
++        packages(args.output, args.af.resolve(strict=True), args.check)
++    else:
++        value = bundle(read(args.pin), args.destination, args.title, Path(args.body_file).read_text(), args.owner, repairs=args.repairs)
++        with Path(args.output).open("x") as output:
++            json.dump(value, output, indent=2)
++            output.write("\n")
++
++
++if __name__ == "__main__":
++    main()
