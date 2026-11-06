@@ -1,0 +1,137 @@
+library: command=['target/debug/deps/review_source_git-d52f0313df9d420c', '--test-threads=4', '--nocapture']
+exe_sha256=3f08a61dfbfbb4c06c8361aac241bd5d4ac323f63b3ddaeea32ee716a34f26e7
+status=0
+
+running 42 tests
+test capture::macos_monitor::tests::metadata_aba_is_a_mutation_even_when_bytes_and_mode_agree ... ok
+test capture::macos_monitor::tests::missing_watch_roots_fail_closed ... ok
+
+running 1 test
+test capture::macos_monitor::tests::a_transient_creation_survives_later_watch_registration ... ok
+test capture::macos_monitor::tests::links_are_watched_without_traversing_their_targets ... ok
+test capture::tests::a_body_shorter_than_its_header_is_a_protocol_failure ... ok
+test digest::tests::a_ceiling_stops_the_manifest_with_its_reason ... ok
+test capture::macos_monitor::tests::setup_and_read_access_do_not_dirty_a_new_boundary ... ok
+test git::tests::malformed_combined_output_fails_closed ... ok
+test git::tests::one_deadline_cuts_every_subprocess_timeout_to_what_remains ... ok
+test git::tests::rename_limit_warnings_are_detected_even_when_git_exits_zero ... ok
+test manifest::tests::a_symlink_is_not_the_file_it_points_at ... ok
+test manifest::tests::deserialized_manifests_must_retain_canonical_path_order ... ok
+test manifest::tests::duplicate_paths_are_not_a_manifest ... ok
+test manifest::tests::encode_and_decode_are_inverse ... ok
+test manifest::tests::every_spelling_of_git_administration_is_refused ... ok
+test manifest::tests::fields_cannot_be_re_cut_into_a_different_manifest ... ok
+test manifest::tests::legacy_regular_file_modes_are_files_with_the_owner_execute_bit ... ok
+test manifest::tests::non_utf8_paths_round_trip_instead_of_being_dropped ... ok
+test manifest::tests::only_the_encode_path_spelling_is_canonical ... ok
+test manifest::tests::order_of_construction_does_not_change_identity ... ok
+test manifest::tests::the_executable_bit_is_part_of_identity ... ok
+test digest::tests::spilled_runs_merge_into_canonical_order_and_leave_nothing_behind ... ok
+test materialize::tests::a_colliding_manifest_is_refused_only_where_the_volume_folds_it ... ok
+test materialize::tests::a_manifest_entry_below_a_symlink_is_refused ... ok
+test capture::tests::a_blob_larger_than_the_buffer_streams_into_the_cas ... ok
+test materialize::tests::a_large_repeated_digest_materializes_without_nested_executor_work ... ok
+test materialize::tests::every_spelling_of_git_administration_is_refused_by_name ... ok
+test materialize::tests::a_tree_with_git_administration_is_refused_before_any_write ... ok
+test materialize::tests::duplicate_targets_are_refused_before_any_write_can_race ... ok
+test materialize::tests::paths_one_folded_spelling_names_are_collisions ... ok
+test materialize::tests::paths_that_leave_the_root_are_refused ... ok
+test materialize::tests::oversized_symlink_targets_are_refused_before_allocation ... ok
+test rebase::tests::a_directory_where_the_previous_manifest_names_a_file_refuses_the_rebase ... ok
+test rebase::tests::a_drifted_symlinked_parent_cannot_delete_outside_the_tree ... ok
+test rebase::tests::a_stray_file_in_the_tree_fails_verification ... ok
+test rebase::tests::a_symlink_root_is_refused_before_anything_is_touched ... ok
+test capture::macos_monitor::tests::descriptor_exhaustion_refuses_and_releases_partial_watches ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.30s
+
+test capture::macos_monitor::tests::descriptor_exhaustion_refuses_and_releases_partial_watches ... ok
+test rebase::tests::a_rebase_reproduces_a_full_materialization_byte_for_byte ... ok
+test task::origin_tests::both_origin_generations_read_and_only_generation_one_carries_a_revision ... ok
+test task::origin_tests::an_unknown_field_or_generation_is_refused_in_either_origin ... ok
+test task::origin_tests::a_task_manifest_naming_git_administration_is_refused_in_every_spelling ... ok
+test rebase::tests::an_unchanged_manifest_touches_nothing ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+
+integration: command=['target/debug/deps/it-1cc9f140965b3a39', '--test-threads=4', '--nocapture']
+exe_sha256=3cb0fe2a8076385a7159ecbf978d39ae835d9eb3b75febbdb47be7a9ea1d0351
+status=0
+
+running 41 tests
+test capture::a_committed_capture_is_stable_and_content_identified ... ok
+test capture::a_legacy_group_writable_blob_is_captured_as_a_regular_file ... ok
+test capture::a_persisted_committed_tree_is_rehydrated_only_when_all_authority_agrees ... ok
+test capture::a_dirty_capture_sees_the_worktree_including_untracked_files ... ok
+test capture::a_committed_blob_larger_than_the_buffer_is_stored_byte_identical ... ok
+test capture::a_worktree_changing_under_the_read_fails_closed ... ok
+test capture::a_settled_worktree_is_admitted_on_retry ... ok
+test capture::a_tree_naming_git_administration_is_refused_at_capture ... ok
+test capture::an_object_git_cannot_produce_is_refused_not_zeroed ... ok
+test capture::an_index_change_alone_invalidates_a_pass ... ok
+test capture::an_untracked_file_created_between_passes_retries_without_a_cas_error ... ok
+test capture::dirty_capture_large_tree_measurement ... ignored, release measurement; run with --release -- --ignored --nocapture
+test capture::capture_leaves_the_checkout_exactly_as_it_found_it ... ok
+test capture::dirty_capture_fails_closed_when_the_index_contains_a_gitlink ... ok
+test capture::dirty_capture_refuses_a_symlink_in_a_tracked_paths_parent ... ok
+test capture::encoded_filenames_survive_capture_and_materialize ... ok
+test capture::materialization_reproduces_the_tree_from_the_manifest_alone ... ok
+test capture::identical_content_in_two_repositories_is_one_snapshot ... ok
+test capture::matching_manifests_do_not_hide_an_intervening_change_event ... ok
+test capture::non_utf8_symlink_targets_roundtrip_through_both_capture_modes ... ok
+test capture::the_snapshot_payload_matches_source_snapshot_v1 ... ok
+test hostile_git_config::a_submodule_url_is_never_contacted ... ok
+test git_deadline::a_wedged_git_process_is_killed_at_the_capture_deadline ... ok
+test hostile_git_config::a_hostile_global_config_is_inert ... ok
+test hostile_git_config::filtering_subcommands_are_refused_outright ... ok
+test hostile_git_config::git_receives_only_the_allowlisted_environment ... ok
+test hostile_git_config::a_weaponized_repository_cannot_execute_anything_or_change_identity ... ok
+test task_identity::derived_source_keeps_exact_identity_and_revalidates_both_trees_on_every_call ... ok
+test tree_diff::a_file_to_symlink_type_change_has_two_patch_stanzas ... ok
+test hostile_git_config::tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration ... ok
+test hostile_git_config::one_filtering_command_would_have_been_enough ... ok
+test capture::a_settled_worktree_does_not_replay_a_previous_attempts_events ... ok
+test tree_diff::a_synthetic_tree_refuses_an_unverified_manifest_size_before_framing ... ok
+test tree_diff::revision_like_options_cannot_become_tree_operands ... ok
+test tree_diff::resolved_trees_produce_typed_changes_and_a_fixed_patch ... ok
+test tree_digest::a_ceiling_leaves_no_digest_its_reason_and_nothing_in_temporary_storage ... ok
+test tree_digest::an_empty_tree_has_the_empty_manifests_digest ... ok
+test tree_digest::the_object_repository_reads_objects_and_nothing_of_the_checkout ... ok
+test tree_diff::a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree ... ok
+test tree_digest::the_digest_only_path_equals_the_committed_capture_held_or_spilled ... ok
+test tree_diff::an_over_limit_rename_search_records_truncation_without_losing_scope_paths ... ok
+
+test result: ok. 40 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.54s
+
+
+delayed-repeat-1: command=['target/debug/deps/it-1cc9f140965b3a39', '--exact', 'capture::a_settled_worktree_does_not_replay_a_previous_attempts_events', '--nocapture']
+exe_sha256=3cb0fe2a8076385a7159ecbf978d39ae835d9eb3b75febbdb47be7a9ea1d0351
+status=0
+
+running 1 test
+test capture::a_settled_worktree_does_not_replay_a_previous_attempts_events ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 4.51s
+
+
+delayed-repeat-2: command=['target/debug/deps/it-1cc9f140965b3a39', '--exact', 'capture::a_settled_worktree_does_not_replay_a_previous_attempts_events', '--nocapture']
+exe_sha256=3cb0fe2a8076385a7159ecbf978d39ae835d9eb3b75febbdb47be7a9ea1d0351
+status=0
+
+running 1 test
+test capture::a_settled_worktree_does_not_replay_a_previous_attempts_events ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 4.50s
+
+
+delayed-repeat-3: command=['target/debug/deps/it-1cc9f140965b3a39', '--exact', 'capture::a_settled_worktree_does_not_replay_a_previous_attempts_events', '--nocapture']
+exe_sha256=3cb0fe2a8076385a7159ecbf978d39ae835d9eb3b75febbdb47be7a9ea1d0351
+status=0
+
+running 1 test
+test capture::a_settled_worktree_does_not_replay_a_previous_attempts_events ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 40 filtered out; finished in 4.52s
+
+

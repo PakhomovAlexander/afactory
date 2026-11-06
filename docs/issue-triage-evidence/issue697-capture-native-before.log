@@ -1,0 +1,38 @@
+
+running 22 tests
+test capture::a_committed_blob_larger_than_the_buffer_is_stored_byte_identical ... ok
+test capture::a_committed_capture_is_stable_and_content_identified ... ok
+test capture::a_dirty_capture_sees_the_worktree_including_untracked_files ... ok
+test capture::a_legacy_group_writable_blob_is_captured_as_a_regular_file ... ok
+test capture::a_persisted_committed_tree_is_rehydrated_only_when_all_authority_agrees ... ok
+test capture::a_settled_worktree_does_not_replay_a_previous_attempts_events ... ok
+test capture::a_settled_worktree_is_admitted_on_retry ... ok
+test capture::a_tree_naming_git_administration_is_refused_at_capture ... ok
+test capture::a_worktree_changing_under_the_read_fails_closed ... ok
+test capture::an_index_change_alone_invalidates_a_pass ... 
+thread 'capture::an_index_change_alone_invalidates_a_pass' panicked at crates/review-source-git/tests/it/capture.rs:410:5:
+assertion `left == right` failed: the index fingerprint caught it
+  left: 3
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test capture::an_object_git_cannot_produce_is_refused_not_zeroed ... ok
+test capture::an_untracked_file_created_between_passes_retries_without_a_cas_error ... ok
+test capture::capture_leaves_the_checkout_exactly_as_it_found_it ... ok
+test capture::dirty_capture_fails_closed_when_the_index_contains_a_gitlink ... ok
+test capture::dirty_capture_large_tree_measurement ... ignored, release measurement; run with --release -- --ignored --nocapture
+test capture::dirty_capture_refuses_a_symlink_in_a_tracked_paths_parent ... ok
+test capture::encoded_filenames_survive_capture_and_materialize ... ok
+test capture::identical_content_in_two_repositories_is_one_snapshot ... ok
+test capture::matching_manifests_do_not_hide_an_intervening_change_event ... ok
+test capture::materialization_reproduces_the_tree_from_the_manifest_alone ... ok
+test capture::non_utf8_symlink_targets_roundtrip_through_both_capture_modes ... ok
+test capture::the_snapshot_payload_matches_source_snapshot_v1 ... ok
+
+failures:
+
+failures:
+    capture::an_index_change_alone_invalidates_a_pass
+
+test result: FAILED. 20 passed; 1 failed; 1 ignored; 0 measured; 19 filtered out; finished in 14.98s
+
