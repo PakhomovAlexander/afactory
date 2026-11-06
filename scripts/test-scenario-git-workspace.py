@@ -119,6 +119,9 @@ class LifecycleTests(unittest.TestCase):
                         GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null",
                         GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
                         GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid")
+        git = shutil.which("git", path=self.env["PATH"])
+        self.assertIsNotNone(git, "Git must be available on the fixture's hermetic PATH")
+        self.git_path = Path(git).resolve()
         self.git("init", "-q")
         (self.repo / ".gitignore").write_text("target/\nforeign/\n")
         (self.repo / "old").write_text("before\n")
@@ -186,7 +189,7 @@ p.mkdir(exist_ok=True)
 print(json.dumps(source))
 ''')
         af.chmod(0o700)
-        git_path = Path(shutil.which("git")).resolve()
+        git_path = self.git_path
         self.config = dict(schema=A.WORKSPACE_CONFIG, repository="octo/project", repository_id=17,
             actor=dict(id=7, login="owner"), token_file=str(token), state_dir=str(self.root / "state"),
             repo=str(self.repo), task_store=str(task_store), worktree_root=str(worktrees), base="main",
@@ -212,7 +215,7 @@ print(json.dumps(source))
             candidate=dict(type="task", value=self.candidate)))
 
     def git(self, *args):
-        p = subprocess.run([shutil.which("git"), *args], cwd=self.repo, env=self.env, capture_output=True)
+        p = subprocess.run([str(self.git_path), *args], cwd=self.repo, env=self.env, capture_output=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         return p.stdout.decode().strip()
 
