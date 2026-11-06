@@ -29,6 +29,9 @@ unicode-normalization = "0.1.26"
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["event"] }
+
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }
 

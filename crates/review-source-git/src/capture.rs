@@ -17,9 +17,12 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
+#[cfg(not(target_os = "macos"))]
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+#[cfg(not(target_os = "macos"))]
 use std::time::Duration;
 
+#[cfg(not(target_os = "macos"))]
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use review_core::snapshot::Vcs;
 use review_core::{Capture as SourceCapture, SourceSnapshot, Submodule};
@@ -30,6 +33,11 @@ use crate::git::{GitError, Repo, TreeId, split_nul};
 use crate::manifest::{
     Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path, git_refuses_path,
 };
+
+#[cfg(target_os = "macos")]
+mod macos_monitor;
+#[cfg(target_os = "macos")]
+use macos_monitor::WorktreeMonitor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorktreeFingerprint {
@@ -840,11 +848,13 @@ fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
     )
 }
 
+#[cfg(not(target_os = "macos"))]
 struct WorktreeMonitor {
     _watcher: RecommendedWatcher,
     events: Receiver<notify::Result<notify::Event>>,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl WorktreeMonitor {
     fn start(root: &Path) -> Result<Self, CaptureError> {
         let (send, events) = std::sync::mpsc::channel();

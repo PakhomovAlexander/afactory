@@ -2,60 +2,123 @@
 
 ## What I saw
 
-The exact two-attempt assertion can fail when native macOS FSEvents deliver old events during
-an otherwise stable second attempt. A focused pass in the command sandbox is insufficient:
-that sandbox delivered no native watcher events, even with two-second observer delays.
+Native macOS FSEvents can deliver setup and prior-attempt activity during a stable capture
+retry. The original traced execution had equal index and worktree passes on attempt two,
+but its watcher still reported a change, forcing an incorrect third attempt. Command-sandbox
+passes were misleading because native events were not delivered there.
 
-The added `a_settled_worktree_does_not_replay_a_previous_attempts_events` regression retains the
-original two-attempt and settled-content assertions. Its observer delays each pass by two
-seconds before performing the first attempt's single edit. This changes test scheduling only;
-production's maximum three attempts and 250 ms boundary wait are unchanged.
+The two-second observer reproducer and original settled/untracked/index assertions are
+unchanged. Production still allows at most three attempts with a 250 ms boundary wait.
 
-## Evidence
+## Cause and correction
 
-Temporary tracing of the original implementation, executed natively, recorded:
+Inspection of the locally installed notify 8.2.0 `src/fsevent.rs` established that it starts
+with `kFSEventStreamEventIdSinceNow`, latency zero and `NoDefer`, discards native event IDs,
+and exposes neither its stream handle nor a flush operation. `SinceNow` does not establish
+an attempt-local delivery barrier for delayed/coalesced filesystem activity. Retaining one
+monitor and draining delivered batches previously failed under Rust 1.88 and was reverted.
 
-```text
-attempt=1 changed=true  index_equal=true passes_equal=false
-attempt=2 changed=true  index_equal=true passes_equal=true
-attempt=3 changed=false index_equal=true passes_equal=true
-assertion failed: actual attempts 3, expected 2
-```
+Apple documents a synchronous delivery barrier in
+[`FSEventStreamFlushSync`](https://developer.apple.com/documentation/coreservices/1445629-fseventstreamflushsync),
+but it requires the stream handle. The final correction uses an attempt-local macOS kqueue
+through nix's safe API, querying pending kernel vnode notifications directly. Parents are
+registered before child enumeration, registration receipts are checked, and descriptors stay
+open until the boundary closes. Other platforms keep the original notify implementation.
 
-Callbacks included fixture repository/`.git` creation and first-attempt source activity.
-The original native diagnostic log's SHA-256 is
+notify's kqueue adapter was also inspected and rejected: `File::open` follows links and
+rejects dangling targets. The capture monitor uses event-only descriptors with `O_SYMLINK`
+and watches the link itself. Native testing also established that reading Git's index emits
+`NOTE_ATTRIB` for atime updates. Attribute-only notifications are dismissed only after checking
+the descriptor's change stamp, mode, ownership, link count and size against registration.
+Genuine metadata changes and all other mutation flags still invalidate. The deadline is never
+renewed; syscall errors, resource exhaustion and an unsettled event storm fail closed.
+
+The decision and descriptor-cost tradeoff are recorded in
+[the ADR](adr/2026-11-06-use-vnode-boundaries-for-macos-capture.md).
+
+## Execution evidence
+
+All final Rust tests were built with `rustc 1.88.0 (6b00bc388 2025-06-23)`, a private
+`CARGO_HOME=target/issue697-cargo`, the checkout's own target, and private
+`TMPDIR=target/issue697-tmp`. Test executables were run through the authorized native execution
+capability, outside the command sandbox, with actual macOS vnode/FSEvents delivery.
+
+- Before changing production code, native `it-1cc9f140965b3a39 capture:: --test-threads=1
+  --nocapture` produced 20 passes, one failure and one existing ignored manual measurement.
+  `an_index_change_alone_invalidates_a_pass` reported three attempts instead of two. The delayed
+  and untracked tests passed in that particular run; earlier native runs failed them as below.
+  [The baseline log](issue-triage-evidence/issue697-capture-native-before.log) has SHA-256
+  `679bb77a1f2731b4fecf628cf3785f4c9a5e42ffda8d8a2cbed3c75fcda68e02`.
+- Final `cargo test -p review-source-git --no-run --offline` exited zero. Running both emitted
+  executables with `--test-threads=4 --nocapture` natively exited zero: 42 library tests passed;
+  40 integration tests passed, with the existing release measurement ignored. This includes
+  the unchanged delayed-event, settled, untracked, index-only, mutation/ABA, hostile-Git,
+  symlink, content and refusal tests. The six new direct monitor tests include transient
+  creation across registration receipts, metadata ABA, read access, dangling/external links,
+  missing roots, and descriptor exhaustion/cleanup in a child limited to 64 descriptors.
+- Three additional exact native runs of
+  `capture::a_settled_worktree_does_not_replay_a_previous_attempts_events` all exited zero,
+  retaining the two-second observer, exact two-attempt assertion and settled-content proof.
+  [The final log](issue-triage-evidence/issue697-capture-native-after.log) records commands,
+  executable digests and statuses; its SHA-256 is
+  `144308627cc2879311a005a88a17ef98111f211e6bc365e87c4ce74b7914ab4a`.
+- Pinned `cargo clippy -p review-source-git --all-targets --offline -- -D warnings` exited zero.
+  The first invocation selected Homebrew's incompatible clippy driver and failed with E0514;
+  putting the complete 1.88.0 toolchain `bin` first on PATH corrected that invocation.
+- Python 3.15 kernelguard `Bootstrap` and `Staged` selections passed all nine tests. The first
+  run omitted `-B`, generated bytecode and correctly failed the CLI's trusted-source refusal.
+  Removing only those generated caches and rerunning with `-I -B` passed. No refusal changed.
+- The original catalog was restored byte-for-byte (SHA-256
+  `a2144f92644d30100a13ea19d65dc25cd7399923e44233b74aafd8984ac75645`) and the entire temporary
+  `devrec-impl-bootstrap` removed. Protected-harness pins were regenerated and checked; the
+  second regeneration was byte-identical and the final check exited zero. The digest is
+  `sha256:1c539ab523d06a81e4132c492279830f4e062a55b7441d7d676a746486800322`.
+- Rust 1.88 `cargo fmt --all -- --check`, changelog validation, ADR discovery and the cached
+  markdownlint-cli2 0.22.1 executable on the three changed Markdown files all exited zero
+  (markdownlint: three files, zero errors).
+
+An initial native run of the new backend failed 15 of 41 integration tests: conflicting
+`O_NOFOLLOW | O_SYMLINK` flags refused links, and index read-atime notifications invalidated
+stable attempts. Both implementation mistakes were corrected before the final passing runs.
+The final implementation contains no temporary event tracing.
+
+## Prior evidence and remaining acceptance
+
+The original trace showed `changed=true`, equal index fingerprints and unequal passes on
+attempt one; `changed=true` with equal index and worktree fingerprints on attempt two; and
+`changed=false` with equal fingerprints on attempt three. Its diagnostic log SHA-256 was
 `288c3f87ab0d13933c76b63b0c4f98a68691f42c4f90d2845d343767bbbeac93`.
-Temporary tracing has been removed.
 
-An experiment retained one monitor across attempts and consumed its complete delivered batch
-under the unchanged 250 ms deadline. Its initial native selection passed 26 tests. Under pinned
-Rust 1.88.0 the same selection passed 25 and failed the delayed-event regression with three
-attempts. This experiment therefore did **not** establish a fix and was reverted, including
-its proposed ADR/changelog and associated unit tests. No production consistency checks have
-been changed. Delayed delivery remains unresolved; the regression has not been weakened.
+The earlier single-monitor/batch-drain experiment initially passed 26 native tests, then
+failed the delayed regression under pinned 1.88 (25 passed, one failed). After its reversion,
+the previous native selection passed 21 and failed the delayed/untracked exact-two assertions.
+The previous full fast gate stopped in CI-disk (three failures, three errors) because its
+TMPDIR overlapped protected source/target; e2e/uix did not run.
 
-After reverting the experiment, the final native Rust 1.88.0 capture selection ran 23 tests:
-21 passed and two failed. The delayed-event regression and the existing
-`an_untracked_file_created_between_passes_retries_without_a_cas_error` both reported three
-attempts instead of two. This confirms the unresolved issue extends to untracked creation.
-
-The attempted complete fast gate used Rust 1.88.0, Python 3.15 and TEST_THREADS=4. It stopped
-in functional `test-ci-disk.py` with three failures and three errors: placing TMPDIR below the
-checkout made its fake SDK paths overlap protected workspace state. E2e/uix did not run.
-This is an environment/setup failure, not a passing gate or evidence about capture correctness.
+Per this implementation Task's instructions, the complete kernel/markdownlint fast gate runs
+after seal; it has not been duplicated here. Its check-runtime TMPDIR must remain outside
+protected source/target. Independent bugs/correctness/evaluator acceptance, including an
+independent build/private stage and native executable tests of the sealed candidate, remains
+for the unchanged required pipeline. No remote gate or publication was performed.
 
 ## Repro
 
-Build with the repository's rustup proxy first on PATH; Homebrew Cargo otherwise selects Rust
-1.94.0 despite `rust-toolchain.toml`. Use Python 3.15, a private writable TMPDIR, and native
-execution with real FSEvents delivery. Run:
+Put the entire installed Rust 1.88.0 toolchain `bin` first on PATH (including cargo-clippy),
+use a private writable Cargo home and TMPDIR, and build in this checkout's target:
+
+```sh
+cargo test -p review-source-git --no-run --offline
+cargo clippy -p review-source-git --all-targets --offline -- -D warnings
+```
+
+Execute the emitted library and integration binaries natively with `--test-threads=4
+--nocapture`. Also run the emitted integration binary with `--exact
+capture::a_settled_worktree_does_not_replay_a_previous_attempts_events --nocapture`.
+Alternatively, use a native Rust 1.88 nextest invocation:
 
 ```sh
 cargo nextest run --profile ci -p review-source-git \
   -E 'test(capture::a_settled_worktree_does_not_replay_a_previous_attempts_events)' --no-capture
 ```
 
-A full gate's TMPDIR must also avoid overlap with its protected checkout and build target;
-otherwise the CI-disk fixture correctly refuses its fake SDK cleanup before the Rust suite.
-The complete kernelguard module was not run; six focused regeneration/refusal cases passed.
-Independent bugs/correctness/evaluator acceptance has not been established for this candidate.
+A command-sandbox-only pass does not establish native watcher correctness.
