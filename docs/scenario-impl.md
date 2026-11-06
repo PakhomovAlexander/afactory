@@ -1,213 +1,126 @@
 # Implementation through human merge
 
-The reusable native Scenario `impl` runs an implementation Task, prepares its accepted candidate,
-obtains an exact signed publication decision, publishes one PR, waits for CI and review, observes
-its human merge, and removes its explicit owned worktrees, builds and branches. Completion requires
-both the merge observation and successful cleanup. It installs no scheduler and performs no merge.
-The [lifecycle decision](adr/2026-11-05-bind-implementation-lifecycle-to-native-scenario-authority.md)
-records the separate machine authority.
+A Pipeline describes one Task's execution and typed acceptance. The reusable `impl` Scenario
+orchestrates accepted Tasks, owned candidate preparation, signed PR publication, completed CI,
+actual human merge and owned cleanup. Models run only inside Tasks. There is no verification-only
+Task, automatic merge or scheduler installation.
 
-The initial implementation Task contains its verifier as the required correctness reviewer. There
-is no verification Task. The reviewer receives the already applied candidate in a disposable
-sandbox, has `read-source` and `execute-checks`, builds and privately installs the CLI, and executes
-meaningful tests and installed-binary acceptance cases. Source changes are refused when that
-sandbox finishes. Missing execution evidence must block the reviewer and independent evaluator.
-The reviewer also returns the required public `af/ImplementationTestEvidence@1` artifact beside
-its unchanged flat Reviewer Result. It records the exact Snapshot and build/install/test commands,
-exit codes and bounded evidence, including failed or unavailable results. The evaluator's new
-`af/ImplementationEvaluationInput@1` contract consumes that exact artifact; the kernel refuses a
-passed evaluation for failed, unavailable or stale testing. The existing native execute-checks
-reviewer boundary grants no host publication.
+`scripts/scenario-impl.py` is an offline authoring recipe. It creates packages in a consuming
+repository, using the existing native package manifests and `af catalog digest`; it installs
+nothing into Afactory's catalog. Supply the team's runners, Provider bindings, Attempt budgets
+and native independence policy in a JSON file:
 
-The model team is fixed to `codex-personal`: `gpt-6.1-sol` medium implements,
-`gpt-6-sol` high performs executable correctness verification, `gpt-6.1-terra` high reviews bugs,
-and `gpt-6-astra` medium evaluates acceptance. Both reviewers are required. The native planner
-checks the effective bindings, reviewer capability and local-only Gate graph before dispatch.
-The standalone project may be named `devrec`; this Scenario adds no `af devrec` command.
-
-## Author the consuming repository
-
-Run the package builder from the consuming repository with a current native af executable. Its
-output directory must be absent. The builder copies the reusable native interfaces, supplies
-project-neutral instructions and exact model defaults, and computes every pin with the native
-`af catalog digest`. It launches no models, changes no shipped package and publishes nothing.
-
-```sh
-python3 /path/to/afactory/scripts/scenario-impl.py packages \
-  --af /path/to/installed/af --output .af/task-packages/impl --check local
+```json
+{
+  "workers": {
+    "implementer": {
+      "runner": {"kind": "model", "provider_kind": "codex", "model": "YOUR_MODEL", "effort": "medium"},
+      "provider": "YOUR_CONFIGURED_PROVIDER",
+      "attempt": {"tokens": 100000, "wall_ms": 900000}
+    }
+  },
+  "independence": {
+    "command_workers_by_package": true,
+    "distinct_principals": false,
+    "distinct_providers": false,
+    "distinct_models": true
+  }
+}
 ```
 
-Review the generated packages and versioned native `catalog.toml`; use it for a new consuming
-repository or merge its entries into that repository's catalog,
-using repository-relative package paths. Move the generated catalog to `.af/task-catalog.toml`
-or remove the intermediate copy after merging, before committing the authority bundle. Its `[providers]` bindings name `codex-personal` and its
-review policy makes bugs and correctness required. Its explicit independence policy permits the
-same Provider, account and model across roles; native per-slot isolated Attempts and private
-context remain mandatory. Configure a real local `local` check in that
-repository's code policy. No remote check mapping is needed. Multiple `--check` arguments select
-multiple declared local checks. No package pin is a placeholder.
+The [complete inert shape](../fixtures/scenarios/impl/team.example.json) supplies all four roles
+with placeholder models and no live bindings. The abbreviated example above must be completed with `correctness`, `bugs` and `evaluator` entries of
+the same shape. Choose each runner and reservation explicitly; command runners use the native
+`command` object and zero tokens. Personal accounts, models and effort choices belong in the
+consumer's workstream configuration. Both reviewers are required and independent of the
+implementer; the evaluator is also independent. Native admission enforces the supplied independence
+policy. Distinct principals, providers or models can be required by the consuming policy.
 
-Copy `fixtures/scenarios/impl-task.json`, replace its goal and requirements with the actual change,
-and review its finite Task/verification reservations. Keep `verification: "review"`: the pipeline
-publicly guarantees `ReviewedImplementation@1`; its required evaluator still consumes the
-correctness reviewer's executable testing evidence. The fixture also declares `facts.standard`
-to select that pipeline's standard implementation contract. Commit the authority bundle and source.
-Capture the exact native template; existing pinned Tasks remain unchanged:
+From the consumer repository (output must be a new directory immediately below
+`.af/task-packages/`):
 
 ```sh
- af scenario template-pin --file impl-task.json --repo /project \
-   --task-state /private/tasks --authority-commit COMMIT --json > template-pin.json
-python3 /path/to/afactory/scripts/scenario-impl.py bundle --pin template-pin.json \
-  --destination github:owner/project --title 'Implement the requested CLI' \
-  --body-file pr-body.txt --repairs 2 --output impl-bundle.json
+python3 -I /path/to/afactory/scripts/scenario-impl.py packages \
+  --output .af/task-packages/my-team --namespace my-team \
+  --af /private/tools/af --team /private/workstream/team.json --check project-gate
 ```
 
-The bundle builder retains the native template digest; native Scenario validation rehashes the
-complete template and refuses a mismatch before any dispatch. It writes `af/scenario-bundle@4`
-with root `impl`; no hand-edited definition pin, account setup, gate publication or public PR is
-part of authoring. The PR title/body are fixed before preparation and remain the same during
-repairs. Include the consuming repository's required PR evidence in the body.
+Review the generated `catalog.toml`, merge its entries into the project's catalog, and commit
+the packages and policy together. Keep the project's local checks under `.af/code-policy.toml`.
+The generated catalog is a complete minimal example, not permission to overwrite existing
+configuration. Recompute pins after any package edit. No personal pipeline is shipped in AF.
 
-## Install bounded machine authority
+The generated implementation Pipeline routes optional typed continuation `findings` to the
+implementer. `af task run NEW --from OLD` uses the consumer's `[task.defaults]` Pipeline and
+carries native findings and candidate provenance. The focused regression actually plans and
+executes this continuation with inert Workers; a bundle's structure alone proves no such support.
+The correctness reviewer has `read-source` and `execute-checks`, returns required exact-Snapshot
+`ImplementationTestEvidence@1`, and must build, privately install or stage the candidate in the
+project's appropriate isolated test environment, and execute meaningful tests and acceptance cases.
+The evaluator receives that evidence, local checks, requirements and the reduced Review Round
+through explicit typed edges. Failed or unavailable execution cannot become passing acceptance.
 
-Use `schemas/scenario-impl-config-v1.json` for the complete `af/scenario-impl-config@1` machine
-configuration. Keep it owner-only outside every checkout. It declares:
-
-- The canonical source `repo`, external native `task_store`, private `worktree_root` and new
-  private `state_dir`, all disjoint; exact initial `source_commit` and `source_content_digest`
-  from the native template; `base` and an owned `branch_prefix`.
-- The GitHub repository name and numeric ID, authenticated actor's numeric ID/login, private
-  `token_file`, required check identities and explicit required reviewer identities. An empty
-  reviewer list means the accepted native reviews and eventual human merge provide review
-  authority; external changes-requested reviews still block readiness and admit bounded repair.
-- Exact native `af` and `git` executable paths and SHA-256 digests; a private SSH configuration
-  and its digest; the commit author name/email. Push uses only
-  `ssh://git@github.com/OWNER/REPOSITORY.git`, noninteractive strict host checking and that SSH
-  configuration. No workflow supplies a command, remote URL, environment or credential.
-
-The source repository must have no executable Git filters, includes or URL rewrites in local
-configuration. Standard core identity settings, user name/email, remote URL/refspec entries and
-branch tracking settings are admitted; other local keys are refused. Global/system Git
-configuration, hooks and fsmonitor are disabled. Prepare uses
-native raw Snapshot-to-Git objects, so no candidate attributes control staging.
+Author a native implement Task using `my-team/implementation`, `verification: "review"`,
+`facts: {"standard": true}` and adequate Task/verification limits for the team's declared
+reservations. Review the exact native plan before execution. Pin the committed Task template
+with `af scenario template-pin` as described in [Scenarios](scenarios.md), then build the bundle:
 
 ```sh
-python3 /path/to/afactory/scripts/install-scenario-impl-adapter.py \
-  --config /private/impl-config.json --output /private/impl-adapter
+python3 -I /path/to/afactory/scripts/scenario-impl.py bundle \
+  --pin template-pin.json --destination github:OWNER/REPOSITORY \
+  --title 'Implement the requested change' --body-file pr-body.md \
+  --repairs 2 --owner owner --output impl-bundle.json
 ```
 
-Installation is offline. The executable embeds the complete shared GitHub transport and lifecycle
-application, pins the configuration bytes, and initializes a new private lock/journal. Keep those
-bytes and receipts while any Run can resume. Never reset uncertain receipts or reinstall over them.
-Authorize adapter `impl` in the external `af/scenario-policy@4` with the printed executable digest,
-operations `impl_prepare_v1`, `impl_publish_v1`, `impl_cleanup_v1`, `observe`, and exactly
-`github:owner/project`. Use a 30000 ms adapter wall and 65536-byte output cap. Add the exact native
-`template_id` and the owner's minisign public key. This is explicit machine-installed authority,
-not an authority file supplied by the candidate.
+The recipe accepts any reviewed implement template; inspect its pinned package contracts before
+granting machine authority. The Scenario name is `impl`; its Pipeline name is configurable.
+Template pinning, policy installation, Run creation and signing remain operator-controlled.
+Use the separately installed [Git workspace capability](scenario-git-workspace.md) under adapter
+name `workspace`, granting only its preparation, publication, observation and cleanup operations
+at the exact destination. Its exclusive owned writer restriction and all signed publication,
+lease, recovery and owned-resource checks remain binding. The
+[executable-review guide](task-execution/executable-review.md) explains evidence limits.
 
-Validate the bundle against that policy, review the entire pin, and confirm it using ordinary
-`af scenario start --confirm-pin`. Inputs are `{}`. The initial Task and every admitted repair
-use their exact captured plan through `af task run --confirm-plan`.
+`--repairs` permits zero, one or two fresh implementation Tasks. Only exact completed failing CI
+(`checks_completed` with `checks_state = repairable`) selects a repair. Its typed inputs carry
+the accepted predecessor Task, completed observation and preparation Action; native admission
+adds CI evidence to requirements. Each repair repeats reviewers and evaluator, prepares with the
+previous owned receipt, and requires a fresh exact signed Decision before updating the same PR.
+Lazy selection avoids consuming skipped receipts. Pending, missing or unknown CI never starts
+repair. After the finite repairs, successful checks still precede a separate actual `merged`
+Wait and cleanup. Closed-unmerged PRs cannot complete. The Run has finite token, elapsed-time and
+dispatch limits; repeated pending observations consume dispatch allowance and can exhaust it.
 
-## Preparation, signing and recovery
+The current generic evidence contract admits CI outcomes only. Review comments/change requests
+and remote base/conflict bytes are unavailable as automatic repair inputs. Human review and
+merge remain external actions; CI readiness proves neither. Handle conflicts through a separately
+captured source and explicit operator action. Task Stores are retained; cleanup removes only the
+workspace capability's explicitly owned resources after its independent actual-merge readback.
 
-`impl_prepare_v1` takes a native accepted `candidate` Task receipt, with its result ID as `subject`
-and candidate Snapshot as `revision`, plus versioned publication text in `body`. Native
-`af scenario impl-source` reopens the configured Task Store, checks acceptance, exact result,
-models, source repository and complete committed source content. It writes private raw Git objects
-and a checked `af/scenario-impl-source@1` receipt. A changed result, unverified candidate, foreign
-repository or different source commit fails closed.
+Run the focused native tests without live services or models:
 
-The adapter imports only those private objects and creates deterministic commit bytes before
-signing or publication. `af/scenario-impl-prepared@1` binds the Task, result, source and candidate
-Snapshots, checked predecessor provenance, source commit, tree, final commit, repository, branch, owned workspace, publication text,
-configuration and preparation intent. Native `impl_subject`, `impl_revision` and `impl_body`
-projections expose its exact publication identity, commit and body. Root inputs cannot invent an
-Action or Task receipt.
+```sh
+cargo test --locked -p af --test it generated_impl
+cargo test --locked -p af --test it production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge
+```
 
-At `publication-owner`, use ordinary `af scenario decision-payload`, sign outside af, and submit
-`af/scenario-signed-decision@1` with `af scenario decide`. The native signature binds this Run,
-execution, pin, Decision invocation, exact prepared object, commit, owner, choice and deadline.
-Each publication has exactly one Decision consumer. `impl_publish_v1` authorizes only its exact
-compare-and-create push and PR creation, or a fast-forward repair of its recorded PR. It authorizes
-no merge. Cleanup separately requires a machine grant and exact typed `merged` observation.
+The focused generated recipe tests use private homes, command Workers and an inert workspace
+outcome service. They cover package pins/planning, another configured team without execution,
+native continuation with actual findings delivery, and zero/one/two CI repairs with fresh
+signatures, lazy skipped receipts, same-PR identity, separate merge waiting and cleanup. This
+outcome fixture models the lifecycle; it does not prove production adapter composition.
 
-Lifecycle steps retain a seven-day elapsed recovery window within the Run's overall wall budget;
-each adapter subprocess still has a separately enforced at-most-30-second machine wall. A process
-restart therefore does not lose recovery authority merely because one invocation ended.
-Every Action is reconciled before execute. A retained dispatched lifecycle intent can use the
-native bounded `recover` method to finish only its own remaining substeps under the same inputs,
-grant and decision. Fresh intents cannot recover; reconciliation and observation execute no
-lifecycle substep. Possible PR POSTs are never resent during recovery. The adapter journals exact inputs and intent before
-effects, serializes callers with a private nonblocking lock, and fsyncs receipts before stdout.
-A lost push is recovered by exact remote-ref readback. A lost PR response is recovered only from
-positive marker, actor, repository, content, branch and commit evidence. After possible POST,
-remote absence stays pending; it never authorizes another POST. A changed head invalidates CI,
-review and merge observations. Closed unmerged PRs fail with workspace and branches retained.
+The installed production adapter regression
+`production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge` independently
+exercises that boundary with real Git commits, worktrees and bare remote refs, real accepted
+command-backed Tasks and native signed Decisions. Only external HTTPS/GitHub transport is mocked.
+It covers ready and pending CI, stale-head refusal, completed failing CI admitting a fresh repair
+with predecessor/source provenance, a second signature and the same PR with exactly one creation
+POST. An actual local merge precedes removal of owned worktrees, build roots and local/remote
+refs; the merged base remains. It uses the reusable capabilities directly, separately from the
+generated recipe fixture.
 
-Preparation stages each worktree and build directory under the private configured worktree
-root. It fsyncs the new directory and root, journals its device/inode, and only then publishes
-it using an exclusive atomic rename (Linux `renameat2` or macOS `renamex_np`). Publication
-never replaces an existing destination. Recovery verifies the same inode at either the staging
-or final path, fsyncs both parents, and durably records publication before proceeding. It can
-resume interruptions before/after creation, identity persistence, rename and completion without
-adopting final paths with unknown ownership. Replaced paths, symlinks, changed permissions,
-partial contents and partial Git registrations remain preserved and refused.
-
-A crash after staging mkdir but before identity persistence leaves uncertain ownership. Recovery
-preserves that unpublished directory without adopting or deleting it and durably advances to the
-next deterministic staging slot. There are four slots per directory kind and intent: at most three
-uncertain directories can be bypassed; exhausting the fourth refuses further creation. Repeated
-restarts cannot grow this set. Uncertain staging is retained for operator inspection, including
-after normal owned cleanup; cleanup does not acquire authority over it. Nonempty, symlinked or
-nonprivate uncertain staging is refused. The private journal lock serializes the entire protocol.
-The [reservation decision](adr/2026-11-05-publish-owned-impl-directory-reservations.md)
-records this protocol. The journal is now `af/scenario-impl-state@2`; v1 state fails closed, with no migration or fallback.
-The interruption and preservation matrix is exercised by `scripts/test-scenario-impl.py` using
-real local Git and fresh journal loads for each restart.
-
-The implementation journal admits at most 32 retained intents and 16 MiB of journal bytes;
-preparation supports at most 32768 entries and 64 MiB of candidate content. Tools are read and
-hashed in bounded chunks (at most 256 MiB per executable). Native source captures are retained
-separately from journal bytes. Partial native captures or incomplete checkouts are preserved for inspection; they are never
-reset over uncertain or dirty content.
-
-## Bounded repair and completion
-
-The outcome Wait remains active after green CI/review until human merge, so a later failed check
-or changes-requested review can still admit a bounded repair without restarting the Run.
-The builder permits zero, one or two implementation repairs, reserved in the Scenario's token and
-wall limits. Each is a fresh implementation continuation on the previous accepted candidate,
-with bounded `af/scenario-impl-outcome@1` CI/review/conflict evidence in its requirements. It has
-the same required executable reviewer and evaluator, and no separate verification Task. A typed
-`select` binding follows only the selected available receipt when other repair steps were skipped.
-Decisions cannot use selection to alias publication approval.
-
-Native staging retains the continuation's actual source Snapshot and separately checks its
-predecessor through native rerooted-source provenance. Each repair stages a new commit whose
-exact parent is the previous owned commit. Its separate
-signature approves that head. The original PR and branch remain the publication identity; repair
-never creates another PR or overwrites a foreign head. Detached owned worktrees retain each
-candidate until the final human merge. The adapter refuses a third repair. After the allowance,
-unresolved CI/review/conflicts fail readiness and preserve the workspaces; green CI alone cannot
-complete the Run.
-
-Conflict observations identify the current PR conflict, but the implementation template does not
-capture a newly changed remote base as a native input. A repair that needs unavailable base bytes
-must remain unresolved; this implementation does not claim automatic conflict resolution. Capture
-new reviewed source/authority through the ordinary native workflow before pursuing that change.
-
-After actual merge, cleanup reobserves the exact recorded PR/head and checks the entire explicit
-repair lineage before deleting anything. It refuses dirty source, foreign ignored files, replaced
-worktree/build inodes, attached foreign worktrees and changed local/remote branch identities.
-Only adapter-created `target/` directories are recursively removed, with symlink-resistant removal.
-Local branch deletion compares the expected commit; remote deletion uses an exact commit lease.
-Crash recovery retains per-artifact cleanup progress and refuses replacement paths. Native source
-captures and audit receipts remain private recovery evidence. No unrelated worktree is enumerated
-as a cleanup target.
-
-The tests use real local Git and fake service transport; they never publish. Run
-`python3 -I scripts/test-scenario-impl.py` and `python3 -I scripts/scenario-impl-schemas.py`.
-Native `scenario::implementation::tests`, `scenario::impl_package_builder_*` and
-`task_execution::scenario_template::implementation_tests` cover typed admission and package pins;
-the existing execute-checks reviewer tests cover the source-preservation boundary.
+See [generic capability coverage](scenario-git-workspace.md#recovery-and-bounds) for production
+transport/recovery, dirty/foreign cleanup refusals and the ordinary native repair regression,
+including `python3 -I scripts/test-scenario-git-workspace.py`. None of these tests claims live
+publication.

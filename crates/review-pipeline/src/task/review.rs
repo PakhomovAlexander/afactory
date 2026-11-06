@@ -1300,12 +1300,11 @@ impl TaskDomain for ReviewTaskDomain {
         }
         if self.reviewer(input) {
             let subject = self.current_subject(cas, input)?;
-            for (name, port) in &output.outputs {
+            for port in output.outputs.values() {
                 for id in &port.artifact_ids {
                     let artifact = envelope(cas, id)?;
-                    if name == "testing"
-                        && artifact.artifact_type
-                            == review_core::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1
+                    if artifact.artifact_type
+                        == review_core::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1
                     {
                         let tests: review_core::task::verification::ImplementationTestEvidenceV1 =
                             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;

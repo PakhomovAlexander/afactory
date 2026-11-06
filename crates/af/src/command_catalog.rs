@@ -253,7 +253,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af scenario template-pin", writes(&[(Store, None)])),
     ("af scenario evidence-source", READS),
     ("af scenario experiment-source", writes(&[(Files, None)])),
-    ("af scenario impl-source", writes(&[(Files, None)])),
+    ("af scenario candidate-source", writes(&[(Files, None)])),
     (
         "af scenario start",
         Effects {
@@ -739,18 +739,6 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    #[test]
-    fn scenario_impl_source_catalog_declares_only_token_free_file_writes() {
-        let document = document(&["scenario".into(), "impl-source".into()]).unwrap();
-        assert_eq!(
-            document["commands"][0]["effects"],
-            json!({
-                "tokens": "free", "charges_when": null,
-                "writes": [{"state": "files", "when": null}], "human": []
-            })
-        );
     }
 
     /// For a Codex Provider, `af provider models` starts `codex app-server`, which caches the

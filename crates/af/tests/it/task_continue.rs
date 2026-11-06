@@ -1015,3 +1015,111 @@ fn a_continuation_whose_candidate_changed_its_rules_gives_the_worker_the_candida
     );
     assert!(!seen.contains(&digest(&base_rules)), "{seen}");
 }
+
+/// The reusable builder must route findings through its actual native child Pipeline.
+#[test]
+fn generated_impl_packages_continue_with_native_findings_and_configurable_team() {
+    for (namespace, mode) in [
+        ("consumer", "command"),
+        ("alternate", "alternate"),
+        ("configured", "models"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = fixture_with(root.path(), |repo| {
+            let af = crate::common::af();
+            let output = Command::new("/usr/bin/python3")
+                .args(["-B", "-I"])
+                .arg(workspace().join("fixtures/scenarios/impl/generate.py"))
+                .arg(workspace())
+                .arg(repo)
+                .arg(af.get_program())
+                .args([namespace, mode])
+                .envs(af.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let file = repo.join("first.json");
+            let mut task: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            task["pipeline"]["name"] = serde_json::json!(format!("{namespace}/implementation"));
+            task["facts"]["standard"] = serde_json::json!(true);
+            task["limits"]["max_attempts"] = serde_json::json!(16);
+            task["limits"]["verification"]["attempts"] = serde_json::json!(10);
+            task["limits"]["verification"]["wall_ms"] = serde_json::json!(35000);
+            task["limits"]["verification"]["tokens"] = serde_json::json!(500);
+            std::fs::write(file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+            // task run --from takes the repository's consuming default, not a magic name.
+            let config = repo.join(".af/af.toml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(
+                config,
+                text.replace(
+                    "fixture/implementation",
+                    &format!("{namespace}/implementation"),
+                )
+                .replace("wall_ms = 20000", "wall_ms = 35000"),
+            )
+            .unwrap();
+        });
+        if mode == "models" {
+            let catalog: toml::Value = toml::from_str(
+                &std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                catalog["providers"]["configured/implementer"].as_str(),
+                Some("configured-team")
+            );
+            let worker: toml::Value = toml::from_str(
+                &std::fs::read_to_string(
+                    repo.join(".af/task-packages/configured/correctness/worker.toml"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                worker["runner"]["model"].as_str(),
+                Some("configured-correctness")
+            );
+            assert_eq!(worker["runner"]["effort"].as_str(), Some("medium"));
+            // Native catalog digest and fixture pinning validated every package, without
+            // installing a Provider registry or invoking this model team.
+            continue;
+        }
+        if mode == "alternate" {
+            let (plan, _) = json(&repo, &state, &["task", "start", "--file", "first.json"], 0);
+            assert!(plan["plan_id"].is_string());
+            continue;
+        }
+        let (first, _) = json(
+            &repo,
+            &state,
+            &["task", "start", "--execute", "--file", "first.json"],
+            3,
+        );
+        assert_eq!(first["state"]["outcome"], "changes_requested", "{first}");
+        let (planned, _) = json(
+            &repo,
+            &state,
+            &["task", "run", "repaired", "--from", "first"],
+            0,
+        );
+        assert_eq!(planned["continues"]["findings"], 1, "{planned}");
+        let plan = planned["plan_id"].as_str().unwrap();
+        let (done, _) = json(
+            &repo,
+            &state,
+            &["task", "run", "repaired", "--confirm-plan", plan],
+            0,
+        );
+        assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
+        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let sealed = &done["result"]["outputs"]["snapshot"]["artifact_ids"][0];
+        let seen: Value =
+            serde_json::from_slice(&file_in(&cas, sealed, "seen-findings.json").unwrap()).unwrap();
+        assert_eq!(seen, payload(&cas, &planned["continues"]["findings_id"]));
+    }
+}

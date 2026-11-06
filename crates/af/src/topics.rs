@@ -645,10 +645,9 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   Journal: af/scenario-store@5. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
-  Implementation lifecycle: af/scenario-impl-prepared@1, af/scenario-impl-outcome@1;
-  publication text: af/scenario-impl-publication@1; machine config: af/scenario-impl-config@1;
-  adapter journal: af/scenario-impl-state@2; testing evidence: af/implementation-test-evidence@1.
-  impl-source: af/scenario-impl-source-request@1 and af/scenario-impl-source@1.
+  Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
+  Installed Git workspaces: af/git-workspace-config@1, af/git-workspace-content@1,
+  af/git-workspace-prepared@1 and af/git-workspace-state@1.
   Bounded adapters: af/scenario-adapter-request@3 and af/scenario-adapter-response@1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.

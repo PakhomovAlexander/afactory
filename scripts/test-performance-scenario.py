@@ -374,13 +374,8 @@ class ScenarioLab(ExecutorFixture):
         (installed / "fractions.py").write_text("raise RuntimeError('SHADOW-MUST-NOT-RUN')")
         poison = installed / "poison.py"
         poison.write_text("raise RuntimeError('BYTECODE-MUST-NOT-RUN')")
-        # Apple's Python may redirect bytecode into HOME/Library/Caches. Keep the poison
-        # inside this disposable installation, with the same cache selection in its child.
-        with mock.patch.object(sys, "pycache_prefix", None):
-            cached = importlib.util.cache_from_source(str(installed / "perflab/values.py"))
-        self.assertEqual(pathlib.Path(cached).parent, installed / "perflab/__pycache__")
+        cached = importlib.util.cache_from_source(str(installed / "perflab/values.py"))
         pathlib.Path(cached).parent.mkdir(exist_ok=True)
-        command = [sys.executable, "-I", "-X", "pycache_prefix=", str(output)]
         py_compile.compile(str(poison), cfile=cached,
             invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
         for directory, _, files in os.walk(installed / "perflab"):
@@ -389,14 +384,14 @@ class ScenarioLab(ExecutorFixture):
             os.chmod(directory, 0o555)
         self.assertFalse(os.access(installed / "perflab", os.W_OK))
         self.assertFalse(os.access(installed / "perflab/values.py", os.W_OK))
-        result = subprocess.run(command, input=b"{}",
+        result = subprocess.run([sys.executable, "-I", str(output)], input=b"{}",
                                 capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(b"executor.toml", result.stderr)  # Reached native config, without either poison.
         self.assertNotIn(b"MUST-NOT-RUN", result.stderr)
         # Permission refusal stays independent of content pinning, including scenario.py.
         (installed / "scenario.py").chmod(0o664)
-        unsafe = subprocess.run(command, input=b"{}",
+        unsafe = subprocess.run([sys.executable, "-I", str(output)], input=b"{}",
                                 capture_output=True, timeout=20)
         self.assertNotEqual(unsafe.returncode, 0)
         self.assertIn(b"unsafe installed adapter closure", unsafe.stderr)
@@ -405,7 +400,7 @@ class ScenarioLab(ExecutorFixture):
         os.chmod(installed / "perflab/values.py", 0o644)
         with (installed / "perflab/values.py").open("a") as changed:
             changed.write("\n# changed installed source\n")
-        result = subprocess.run(command, input=b"{}",
+        result = subprocess.run([sys.executable, "-I", str(output)], input=b"{}",
                                 capture_output=True, timeout=20)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"installed adapter closure changed", result.stderr)

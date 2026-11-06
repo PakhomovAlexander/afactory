@@ -638,9 +638,8 @@ impl Run {
                             "Action receipt has stale object identity",
                         )?;
                     }
-                    super::implementation::validate_inputs(grant.operation, &inputs)?;
-                    if grant.operation == Operation::ImplPrepareV1 {
-                        super::implementation::validate_preparation(receipt, &inputs)?;
+                    if grant.operation == Operation::PrepareCandidateV1 {
+                        super::workspace::validate_preparation(receipt, &inputs)?;
                     }
                     Ok(())
                 }
@@ -655,13 +654,14 @@ impl Run {
             }
             Binding::Select {
                 condition,
-                passed,
-                failed,
+                when_true,
+                when_false,
             } => {
-                let Datum::Boolean(take_passed) = self.resolve(path, condition)? else {
-                    return Err("Selection condition is not boolean".into());
+                // Only the selected arm is resolved: a skipped step has no receipt to read.
+                let Datum::Boolean(choice) = self.resolve(path, condition)? else {
+                    return Err("Selection requires a boolean condition".into());
                 };
-                return self.resolve(path, if take_passed { passed } else { failed });
+                return self.resolve(path, if choice { when_true } else { when_false });
             }
             Binding::Equals { left, right } => {
                 return Ok(Datum::Boolean(
@@ -881,9 +881,9 @@ impl Run {
                 return self.prepare_frame(&full, now);
             }
             Kind::Action {
-                grant,
                 requires_decision,
                 required_condition,
+                ..
             } => {
                 let subject = inputs
                     .get("subject")
@@ -895,7 +895,6 @@ impl Run {
                     .map(Datum::as_text)
                     .transpose()?
                     .unwrap_or("");
-                super::implementation::validate_inputs(grant.operation, &inputs)?;
                 if *requires_decision {
                     let Some(Datum::Decision(d)) = inputs.get("decision") else {
                         return Err("Action requires signed human evidence".into());

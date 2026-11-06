@@ -224,61 +224,67 @@ pub(super) enum Binding {
         value: Box<Binding>,
         projection: Projection,
     },
+    Select {
+        condition: Box<Binding>,
+        when_true: Box<Binding>,
+        when_false: Box<Binding>,
+    },
     Equals {
         left: Box<Binding>,
         right: Box<Binding>,
-    },
-    Select {
-        condition: Box<Binding>,
-        passed: Box<Binding>,
-        failed: Box<Binding>,
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Projection {
     ActionIntent,
-    ImplSubject,
-    ImplRevision,
-    ImplBody,
-    ImplRepairNeeded,
+    WorkspaceSubject,
+    WorkspaceRevision,
+    WorkspacePublication,
+    WorkspaceReceipt,
     TaskConclusion,
     TaskResultId,
     TaskOutputId { port: String },
     TaskOutputSnapshot { port: String },
     ObservationSatisfied,
+    ChecksState,
     DecisionApproved,
 }
 impl Projection {
     fn types(&self) -> Result<(Port, Port)> {
         Ok(match self {
-            Self::ActionIntent | Self::ImplSubject | Self::ImplRevision | Self::ImplBody => {
-                (Port::Action, Port::Text)
-            }
+            Self::ActionIntent
+            | Self::WorkspaceSubject
+            | Self::WorkspaceRevision
+            | Self::WorkspacePublication
+            | Self::WorkspaceReceipt => (Port::Action, Port::Text),
             Self::TaskConclusion | Self::TaskResultId => (Port::Task, Port::Text),
             Self::TaskOutputId { port } | Self::TaskOutputSnapshot { port } => {
                 name(port)?;
                 (Port::Task, Port::Text)
             }
-            Self::ObservationSatisfied | Self::ImplRepairNeeded => {
-                (Port::Observation, Port::Boolean)
-            }
+            Self::ChecksState => (Port::Observation, Port::Text),
+            Self::ObservationSatisfied => (Port::Observation, Port::Boolean),
             Self::DecisionApproved => (Port::Decision, Port::Boolean),
         })
     }
     pub fn apply(&self, value: Datum) -> Result<Datum> {
         Ok(match (self, value) {
-            (Self::ActionIntent, Datum::Action(a)) => Datum::Text(a.intent_id),
-            (Self::ImplSubject, Datum::Action(a)) => {
-                Datum::Text(super::implementation::Prepared::parse(&a)?.subject()?)
+            (Self::WorkspaceSubject, Datum::Action(a)) => {
+                Datum::Text(super::workspace::Prepared::parse(&a)?.subject()?)
             }
-            (Self::ImplRevision, Datum::Action(a)) => {
-                Datum::Text(super::implementation::Prepared::parse(&a)?.commit)
+            (Self::WorkspaceRevision, Datum::Action(a)) => {
+                Datum::Text(super::workspace::Prepared::parse(&a)?.commit)
             }
-            (Self::ImplBody, Datum::Action(a)) => Datum::Text(
-                serde_json::to_string(&super::implementation::Prepared::parse(&a)?)
+            (Self::WorkspacePublication, Datum::Action(a)) => Datum::Text(
+                serde_json::to_string(&super::workspace::Prepared::parse(&a)?.publication())
                     .map_err(|e| e.to_string())?,
             ),
+            (Self::WorkspaceReceipt, Datum::Action(a)) => {
+                super::workspace::Prepared::parse(&a)?;
+                Datum::Text(a.evidence)
+            }
+            (Self::ActionIntent, Datum::Action(a)) => Datum::Text(a.intent_id),
             (Self::TaskConclusion, Datum::Task(t)) => Datum::Text(t.result.domain_conclusion),
             (Self::TaskResultId, Datum::Task(t)) => Datum::Text(t.result_id),
             (Self::TaskOutputId { port }, Datum::Task(t)) => {
@@ -307,10 +313,10 @@ impl Projection {
                         .ok_or("Task output has no exact Snapshot identity")?,
                 )
             }
-            (Self::ObservationSatisfied, Datum::Observation(o)) => Datum::Boolean(o.satisfied),
-            (Self::ImplRepairNeeded, Datum::Observation(o)) => {
-                Datum::Boolean(super::implementation::CheckOutcome::parse(&o)?.repair)
+            (Self::ChecksState, Datum::Observation(o)) => {
+                Datum::Text(super::checks::Outcome::parse(&o)?.state)
             }
+            (Self::ObservationSatisfied, Datum::Observation(o)) => Datum::Boolean(o.satisfied),
             (Self::DecisionApproved, Datum::Decision(d)) => Datum::Boolean(d.request.approve),
             _ => return Err("Projection input type differs".into()),
         })
@@ -333,20 +339,19 @@ impl Binding {
             }
             Self::Select {
                 condition,
-                passed,
-                failed,
+                when_true,
+                when_false,
             } => {
-                let p = passed.port(inputs, previous)?;
                 require(
-                    condition.port(inputs, previous)? == Port::Boolean
-                        && p == failed.port(inputs, previous)?,
-                    "Selection requires a boolean and two values of the same type",
+                    condition.port(inputs, previous)? == Port::Boolean,
+                    "Selection requires a boolean condition",
                 )?;
+                let port = when_true.port(inputs, previous)?;
                 require(
-                    p != Port::Decision,
-                    "Signed decisions cannot be selected or aliased",
+                    port == when_false.port(inputs, previous)? && port != Port::Decision,
+                    "Selection requires equal non-Decision branch types",
                 )?;
-                Ok(p)
+                Ok(port)
             }
             Self::Equals { left, right } => {
                 let p = left.port(inputs, previous)?;
@@ -403,12 +408,11 @@ impl Limits {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Operation {
     PublishPr,
-    ImplPrepareV1,
-    ImplPublishV1,
-    ImplCleanupV1,
     Followup,
     Notify,
     ExperimentSubmitV1,
+    PrepareCandidateV1,
+    CleanupWorkspaceV1,
     WriteOwnedFile,
     CleanupOwnedFile,
     Observe,
@@ -647,7 +651,7 @@ impl Bundle {
                         actions: 1,
                         publication: matches!(
                             grant.operation,
-                            Operation::PublishPr | Operation::Followup | Operation::ImplPublishV1
+                            Operation::PublishPr | Operation::Followup
                         ),
                     })?;
                 }
@@ -799,6 +803,13 @@ impl Scenario {
                     if step.inputs.contains_key("scenario_evidence") {
                         expected.insert("scenario_evidence".into(), Port::Observation);
                     }
+                    if step.inputs.contains_key("publication") {
+                        require(
+                            step.inputs.contains_key("scenario_evidence"),
+                            "Repair publication requires check evidence",
+                        )?;
+                        expected.insert("publication".into(), Port::Action);
+                    }
                     output = Port::Task;
                 }
                 Kind::Task { target } => {
@@ -867,34 +878,30 @@ impl Scenario {
                         "Unauthorized action",
                     )?;
                     require(
-                        !matches!(
-                            grant.operation,
-                            Operation::PublishPr | Operation::Followup | Operation::ImplPublishV1
-                        ) || *requires_decision,
+                        !matches!(grant.operation, Operation::PublishPr | Operation::Followup)
+                            || *requires_decision,
                         "Publication requires an exact human decision",
                     )?;
-                    if grant.operation == Operation::ImplCleanupV1 {
-                        require(
-                            required_condition.as_deref() == Some("merged"),
-                            "Implementation cleanup requires exact merged evidence",
-                        )?;
-                    }
                     match grant.operation {
-                        Operation::ImplPrepareV1
-                        | Operation::ImplPublishV1
-                        | Operation::ImplCleanupV1 => {
+                        Operation::PrepareCandidateV1 => {
                             expected.insert("subject".into(), Port::Text);
                             expected.insert("revision".into(), Port::Text);
                             expected.insert("body".into(), Port::Text);
-                            if grant.operation == Operation::ImplPrepareV1 {
-                                expected.insert("candidate".into(), Port::Task);
-                                if step.inputs.contains_key("previous") {
-                                    expected.insert("previous".into(), Port::Action);
-                                    expected.insert("repair".into(), Port::Observation);
-                                }
-                            } else {
-                                expected.insert("prepared".into(), Port::Action);
+                            expected.insert("candidate".into(), Port::Task);
+                            if step.inputs.contains_key("previous") {
+                                expected.insert("previous".into(), Port::Action);
                             }
+                            output = Port::Action;
+                        }
+                        Operation::CleanupWorkspaceV1 => {
+                            require(
+                                required_condition.as_deref() == Some("merged"),
+                                "Workspace cleanup requires exact merge evidence",
+                            )?;
+                            expected.insert("subject".into(), Port::Text);
+                            expected.insert("revision".into(), Port::Text);
+                            expected.insert("body".into(), Port::Text);
+                            expected.insert("prepared".into(), Port::Action);
                             output = Port::Action;
                         }
                         Operation::ExperimentSubmitV1 => {

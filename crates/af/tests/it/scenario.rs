@@ -1,5 +1,8 @@
-//! Real CLI orchestration across existing Tasks and process restarts, with a pinned,
-//! credential-free service adapter. No real scenarios, Ants, Providers or remotes are used.
+//! Real CLI orchestration across ordinary Tasks and process restarts. Production adapters use
+//! credential-free inert service transports; Git lifecycle tests also use real local remotes.
+#[path = "scenario/workspace_lifecycle.rs"]
+mod workspace_lifecycle;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -1993,186 +1996,399 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
 
 #[path = "scenario_performance.rs"]
 mod performance;
-
 #[test]
-fn impl_package_builder_uses_native_pins_and_executable_reviewer_without_changing_shipped_tasks() {
-    let directory = tempfile::tempdir().unwrap();
-    let (repo, state) = crate::task_cli::fixture_named(directory.path(), "pagination");
-    let mut command = std::process::Command::new("/usr/bin/python3");
-    command
-        .args(["-I"])
-        .arg(workspace().join("scripts/scenario-impl.py"))
-        .args([
-            "packages",
-            "--output",
-            "impl-packages",
-            "--check",
-            "pagination",
-            "--af",
-        ])
-        .arg(crate::common::af_binary())
-        .current_dir(&repo);
-    // The builder launches only af catalog digest. Propagate the actual common::af isolation
-    // to those indirect native invocations; no Provider CLI or developer Store is reachable.
-    for (key, value) in crate::common::af().get_envs() {
-        match value {
-            Some(value) => {
-                command.env(key, value);
-            }
-            None => {
-                command.env_remove(key);
-            }
-        }
-    }
-    command.env("PATH", "/usr/bin:/bin");
-    let out = command.output().unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let catalog: toml::Value =
-        toml::from_str(&std::fs::read_to_string(repo.join("impl-packages/catalog.toml")).unwrap())
+fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_same_pr() {
+    for mode in ["ready", "repairable", "pending", "stale"] {
+        let f = Fixture::bare();
+        std::fs::remove_dir(&f.repo).unwrap();
+        let task_root = f._root.path().join("task-fixture");
+        std::fs::create_dir(&task_root).unwrap();
+        let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "pagination");
+        std::fs::rename(repo, &f.repo).unwrap();
+        let commit = std::process::Command::new("git")
+            .current_dir(&f.repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
             .unwrap();
-    assert_eq!(catalog["packages"].as_table().unwrap().len(), 6);
-    for (name, pin) in catalog["packages"].as_table().unwrap() {
-        let package = repo.join(pin["path"].as_str().unwrap());
-        assert_eq!(
-            review_config::lock::package_digest(name, &package).unwrap(),
-            pin["digest"].as_str().unwrap()
+        assert!(commit.status.success());
+        let commit = String::from_utf8(commit.stdout).unwrap();
+        let file = f.machine.join("template.json");
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+        document["verification"] = json!("evaluation");
+        write(&file, &document);
+        let pinned = cli(
+            &f.repo,
+            &f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                f.repo.to_str().unwrap(),
+                "--task-state",
+                task_state.to_str().unwrap(),
+                "--authority-commit",
+                commit.trim(),
+            ],
         );
-        if name.ends_with("/implementation") || name.ends_with("/review") {
-            let pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-                toml::from_str(&std::fs::read_to_string(package.join("pipeline.toml")).unwrap())
-                    .unwrap();
-            pipeline.validate().unwrap();
-            assert!(
-                !std::fs::read_to_string(package.join("pipeline.toml"))
-                    .unwrap()
-                    .contains("remote_checks")
-            );
+        let adapter = f.machine.join("outcome-service.py");
+        std::fs::copy(
+            workspace().join("fixtures/scenarios/workspace/outcome-service.py"),
+            &adapter,
+        )
+        .unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(f.machine.join("mode"), mode).unwrap();
+        let digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
+        );
+        let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+        policy["task_templates"] = json!([pinned["template_id"]]);
+        policy["adapters"] = json!({"workspace":{"executable":adapter,"digest":digest,
+            "operations":["prepare_candidate_v1","publish_pr","observe"],"destinations":["github:octo/project"],
+            "max_wall_ms":30000,"max_output_bytes":65536}});
+        write(&f.policy, &policy);
+        let binding = |id: &str| json!({"source":"step","step":id,"port":"result"});
+        let project = |id: &str, kind: &str| json!({"source":"project","value":binding(id),"projection":{"kind":kind}});
+        let grant = |op: &str| json!({"adapter":"workspace","operation":op,"destination":"github:octo/project"});
+        let action = |op: &str, signed: bool| json!({"kind":"action","grant":grant(op),"requires_decision":signed,"required_condition":null});
+        let prepare = |id: &str, candidate: &str| {
+            step(
+                id,
+                action("prepare_candidate_v1", false),
+                json!({"candidate":binding(candidate),"subject":project(candidate,"task_result_id"),
+            "revision":{"source":"project","value":binding(candidate),"projection":{"kind":"task_output_snapshot","port":"snapshot"}},
+            "body":literal("text",json!("{\"schema\":\"af/git-workspace-content@1\",\"title\":\"Documentation\",\"body\":\"Exact accepted candidate\"}"))}),
+                "action",
+            )
+        };
+        let decision = |id: &str, prepared: &str| {
+            step(
+                id,
+                json!({"kind":"decision","owner":"owner"}),
+                json!({"subject":project(prepared,"workspace_subject"),"revision":project(prepared,"workspace_revision")}),
+                "decision",
+            )
+        };
+        let publish = |id: &str, prepared: &str, approval: &str| {
+            step(
+                id,
+                action("publish_pr", true),
+                json!({"subject":project(prepared,"workspace_subject"),"revision":project(prepared,"workspace_revision"),
+            "body":project(prepared,"workspace_publication"),"decision":binding(approval)}),
+                "action",
+            )
+        };
+        let repair_if = json!({"source":"equals","left":project("checks","checks_state"),"right":literal("text",json!("repairable"))});
+        let mut repair = step(
+            "repair",
+            json!({"kind":"fresh_task","template":pinned["template"],
+            "bindings":{"source":{"port":"snapshot","artifact_type":"af/SourceTree@1"}}}),
+            json!({"source":binding("edit"),"scenario_evidence":binding("checks"),"publication":binding("prepare")}),
+            "task",
+        );
+        repair["when"] = repair_if.clone();
+        let mut repaired = prepare("repaired", "repair");
+        repaired["inputs"]["previous"] = binding("prepare");
+        repaired["when"] = repair_if.clone();
+        let mut approve_repair = decision("approve-repair", "repaired");
+        approve_repair["when"] = repair_if.clone();
+        let mut publish_repair = publish("publish-repair", "repaired", "approve-repair");
+        publish_repair["when"] = repair_if.clone();
+        let selected = json!({"source":"select","condition":repair_if,"when_true":binding("repaired"),"when_false":binding("prepare")});
+        let bundle = json!({"schema":"af/scenario-bundle@4","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@4","admission":null,"inputs":{},"outputs":{"selected":"action"},
+            "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
+                prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
+                step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
+                    json!({"subject":project("prepare","workspace_subject"),"revision":project("prepare","workspace_revision")}),"observation"),
+                repair,repaired,approve_repair,publish_repair],
+            "result":{"selected":selected},"completion":[literal("boolean",json!(true))],
+            "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
+                "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe")],"decision_owners":["owner"]},
+            "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":16}}}});
+        valid("scenario-bundle-v4.json", &bundle);
+        write(&f.bundle, &bundle);
+        assert_eq!(f.start("documentation")["status"], "waiting");
+        f.approve("documentation");
+        let mut run = cli(&f.repo, &f.state, &["scenario", "resume", "documentation"]);
+        if mode == "stale" {
+            assert_eq!(run["status"], "failed", "{run}");
+            assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 1);
+        } else if mode == "pending" {
+            assert_eq!(run["status"], "waiting", "{run}");
+            assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 1);
         } else {
-            let worker: review_config::task::catalog::TaskWorkerManifest =
-                toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap())
-                    .unwrap();
-            assert_eq!(catalog["providers"][name].as_str(), Some("codex-personal"));
-            let (expected_model, expected_effort) = match name.as_str() {
-                "impl/implementer" => ("gpt-6.1-sol", "medium"),
-                "impl/correctness" => ("gpt-6-sol", "high"),
-                "impl/bugs" => ("gpt-6.1-terra", "high"),
-                "impl/evaluator" => ("gpt-6-astra", "medium"),
-                _ => panic!("unexpected impl Worker {name}"),
-            };
+            if mode == "repairable" {
+                assert_eq!(run["status"], "waiting", "{run}");
+                assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 2);
+                f.approve("documentation");
+                run = cli(&f.repo, &f.state, &["scenario", "resume", "documentation"]);
+            }
+            assert_eq!(run["status"], "succeeded", "{run}");
+            let prepared: Value = serde_json::from_str(
+                run["frames"]["root"]["outputs"]["selected"]["value"]["evidence"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
             assert_eq!(
-                worker.runner,
-                review_config::task::catalog::TaskWorkerRunner::Model {
-                    provider_kind: "codex".into(),
-                    model: expected_model.into(),
-                    effort: expected_effort.into(),
+                prepared["commit"],
+                if mode == "ready" {
+                    "b".repeat(40)
+                } else {
+                    "c".repeat(40)
                 }
             );
-            assert_eq!(
-                worker.signature.effects.contains("execute-checks"),
-                name == "impl/correctness" || name == "impl/implementer"
-            );
-            if name == "impl/correctness" {
-                assert!(!worker.signature.effects.contains("write-source"));
-                let instructions =
-                    std::fs::read_to_string(package.join("instructions.md")).unwrap();
-                assert!(instructions.contains("cargo install --path . --root PATH"));
-                assert!(instructions.contains("file a blocking Finding"));
-            }
         }
+        let effects: Value =
+            serde_json::from_slice(&std::fs::read(f.machine.join("effects.json")).unwrap())
+                .unwrap();
+        assert_eq!(effects["posts"], 1);
+        assert_eq!(
+            effects["publications"].as_array().unwrap().len(),
+            if mode == "repairable" { 2 } else { 1 }
+        );
     }
-    assert_eq!(
-        catalog["review"]["reviewers"]["bugs"].as_str(),
-        Some("required")
-    );
-    assert_eq!(
-        catalog["review"]["reviewers"]["correctness"].as_str(),
-        Some("required")
-    );
-    // Admit the real generated packages through native planning, including Worker schema
-    // resolution and the fixture's public verification guarantee, before pinning a template.
-    std::fs::rename(
-        repo.join("impl-packages/catalog.toml"),
-        repo.join(".af/task-catalog.toml"),
-    )
-    .unwrap();
-    std::fs::copy(
-        workspace().join("fixtures/scenarios/impl-task.json"),
-        repo.join("impl-task.json"),
-    )
-    .unwrap();
-    for args in [
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "generated impl authority"],
-    ] {
-        let out = std::process::Command::new("git")
-            .current_dir(&repo)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .args(args)
+}
+
+#[test]
+fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned_cleanup() {
+    for (repairs, failures) in [(0, 0), (1, 1), (2, 2), (2, 3)] {
+        let mode = format!("repairs-{failures}");
+        let f = Fixture::bare();
+        std::fs::remove_dir(&f.repo).unwrap();
+        let task_root = f._root.path().join("task-fixture");
+        std::fs::create_dir(&task_root).unwrap();
+        let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "continue");
+        std::fs::rename(repo, &f.repo).unwrap();
+        let af = crate::common::af();
+        let generated = std::process::Command::new("/usr/bin/python3")
+            .args(["-B", "-I"])
+            .arg(workspace().join("fixtures/scenarios/impl/generate.py"))
+            .arg(workspace())
+            .arg(&f.repo)
+            .arg(af.get_program())
+            .args(["consumer", "command"])
+            .envs(af.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
             .output()
             .unwrap();
         assert!(
-            out.status.success(),
+            generated.status.success(),
             "{}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&generated.stderr)
         );
-    }
-    // Supply only a disposable fake Provider registry; planning never reaches an account
-    // or dispatches a model turn, and the generated codex-personal bindings stay exact.
-    let bin = directory.path().join("bin");
-    let auth = directory.path().join("codex");
-    crate::fake_models::install("codex", &bin, &auth);
-    let registry = directory.path().join("providers.toml");
-    std::fs::write(
-        &registry,
-        toml::to_string(&json!({"version":3,"providers":[{
-            "id":"codex-personal","kind":"codex","auth_dir":auth
-        }]}))
-        .unwrap(),
-    )
-    .unwrap();
-    let path =
-        std::env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
-    let native = |args: &[&str]| {
-        value(
-            crate::common::af()
-                .current_dir(&repo)
-                .env("PATH", &path)
-                .env("AF_PROVIDERS_FILE", &registry)
-                .args(args)
-                .args(["--json", "--state"])
-                .arg(&state)
-                .output()
-                .unwrap(),
-            0,
+        std::fs::write(f.repo.join("NOTES.md"), "paginate documentation").unwrap();
+        for args in [
+            ["add", "-A"].as_slice(),
+            ["commit", "-qm", "generated consuming packages"].as_slice(),
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(&f.repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let commit = std::process::Command::new("git")
+            .current_dir(&f.repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit = String::from_utf8(commit.stdout).unwrap();
+        let file = f.machine.join("template.json");
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("first.json")).unwrap()).unwrap();
+        document["pipeline"]["name"] = json!("consumer/implementation");
+        document["facts"]["standard"] = json!(true);
+        document["limits"]["max_attempts"] = json!(16);
+        document["limits"]["verification"]["attempts"] = json!(10);
+        document["limits"]["verification"]["wall_ms"] = json!(35000);
+        write(&file, &document);
+        let pinned = cli(
+            &f.repo,
+            &f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                f.repo.to_str().unwrap(),
+                "--task-state",
+                task_state.to_str().unwrap(),
+                "--authority-commit",
+                commit.trim(),
+            ],
+        );
+        let adapter = f.machine.join("outcome-service.py");
+        std::fs::copy(
+            workspace().join("fixtures/scenarios/workspace/outcome-service.py"),
+            &adapter,
         )
-    };
-    let planned = native(&["task", "plan", "--file", "impl-task.json"]);
-    assert!(planned["plan_id"].as_str().unwrap().starts_with("sha256:"));
-    let commit = std::process::Command::new("git")
-        .current_dir(&repo)
-        .args(["rev-parse", "HEAD"])
-        .output()
         .unwrap();
-    assert!(commit.status.success());
-    let commit = String::from_utf8(commit.stdout).unwrap();
-    let pinned = native(&[
-        "scenario",
-        "template-pin",
-        "--file",
-        "impl-task.json",
-        "--repo",
-        repo.to_str().unwrap(),
-        "--task-state",
-        state.to_str().unwrap(),
-        "--authority-commit",
-        commit.trim(),
-    ]);
-    valid("scenario-template-pin-v1.json", &pinned);
-    assert_eq!(pinned["template"]["document"]["verification"], "review");
-    assert_eq!(crate::fake_models::turns(&auth), "");
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(f.machine.join("mode"), &mode).unwrap();
+        let digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
+        );
+        let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+        policy["task_templates"] = json!([pinned["template_id"]]);
+        policy["adapters"] = json!({"workspace":{"executable":adapter,"digest":digest,
+            "operations":["prepare_candidate_v1","publish_pr","observe","cleanup_workspace_v1"],"destinations":["github:octo/project"],
+            "max_wall_ms":30000,"max_output_bytes":65536}});
+        write(&f.policy, &policy);
+        write(&f.machine.join("pin.json"), &pinned);
+        std::fs::write(f.machine.join("body.md"), "Exact accepted candidate").unwrap();
+        std::fs::write(f.machine.join("human-state"), "open").unwrap();
+        let generated = std::process::Command::new("/usr/bin/python3")
+            .args(["-B", "-I"])
+            .arg(workspace().join("scripts/scenario-impl.py"))
+            .args(["bundle", "--pin"])
+            .arg(f.machine.join("pin.json"))
+            .args([
+                "--destination",
+                "github:octo/project",
+                "--title",
+                "Documentation",
+                "--body-file",
+            ])
+            .arg(f.machine.join("body.md"))
+            .args(["--repairs", &repairs.to_string(), "--output"])
+            .arg(f.bundle.with_extension("generated.json"))
+            .output()
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let bundle: Value = serde_json::from_slice(
+            &std::fs::read(f.bundle.with_extension("generated.json")).unwrap(),
+        )
+        .unwrap();
+        valid("scenario-bundle-v4.json", &bundle);
+        let mut tampered = bundle.clone();
+        tampered["definitions"]["impl"]["steps"][0]["operation"]["template"]["document"]["goal"] =
+            json!("unapproved goal");
+        write(&f.bundle, &tampered);
+        let refused = value(
+            output(
+                &f.repo,
+                &f.state,
+                &[
+                    "scenario",
+                    "validate",
+                    "--file",
+                    f.bundle.to_str().unwrap(),
+                    "--authority",
+                    f.policy.to_str().unwrap(),
+                ],
+            ),
+            1,
+        );
+        assert!(
+            refused["error"].as_str().unwrap().contains("template"),
+            "{refused}"
+        );
+        write(&f.bundle, &bundle);
+        let started = f.start("impl-run");
+        assert_eq!(started["status"], "waiting", "{started}");
+        let mut run = Value::Null;
+        for _ in 0..=repairs {
+            f.approve("impl-run");
+            run = cli(&f.repo, &f.state, &["scenario", "resume", "impl-run"]);
+            assert_eq!(run["status"], "waiting", "{run}");
+        }
+        assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), repairs + 1);
+        let effects = || -> Value {
+            serde_json::from_slice(&std::fs::read(f.machine.join("effects.json")).unwrap()).unwrap()
+        };
+        assert_eq!(effects()["posts"], 1);
+        assert_eq!(
+            effects()["publications"].as_array().unwrap().len(),
+            repairs + 1
+        );
+        assert!(effects().get("cleaned").is_none());
+        if failures > repairs {
+            // The last failed head cannot dispatch a third repair or reach merge/cleanup.
+            let capped = cli(&f.repo, &f.state, &["scenario", "resume", "impl-run"]);
+            assert_eq!(capped["status"], "waiting", "{capped}");
+            assert_eq!(
+                capped["fresh_tasks"].as_object().unwrap().len(),
+                repairs + 1
+            );
+            assert!(effects().get("cleaned").is_none());
+            continue;
+        }
+        // Closed without a merge still cannot release owned objects.
+        std::fs::write(f.machine.join("human-state"), "closed-unmerged").unwrap();
+        assert_eq!(
+            cli(&f.repo, &f.state, &["scenario", "resume", "impl-run"])["status"],
+            "waiting"
+        );
+        assert!(effects().get("cleaned").is_none());
+        std::fs::write(f.machine.join("human-state"), "merged").unwrap();
+        let done = cli(&f.repo, &f.state, &["scenario", "resume", "impl-run"]);
+        assert_eq!(done["status"], "succeeded", "{done}");
+        assert_eq!(
+            effects()["cleaned"],
+            (char::from(b'b' + repairs as u8).to_string()).repeat(40)
+        );
+        // Every repair has native captured completed-CI evidence and the predecessor source.
+        let cas = review_store::Cas::open_existing(task_state.join("cas")).unwrap();
+        let mut evidence_count = 0;
+        for task in done["fresh_tasks"].as_object().unwrap().values() {
+            let revision = cas
+                .get_artifact(task["revision_id"].as_str().unwrap())
+                .unwrap();
+            let req = cas
+                .get_artifact(
+                    revision.payload["inputs"]["requirements"]["artifact_ids"][0]
+                        .as_str()
+                        .unwrap(),
+                )
+                .unwrap();
+            if let Some(evidence) = req.payload["specification"].get("scenario_evidence") {
+                assert_eq!(evidence["condition"], "checks_completed");
+                let packet: Value =
+                    serde_json::from_str(evidence["evidence"].as_str().unwrap()).unwrap();
+                assert_eq!(packet["state"], "repairable");
+                evidence_count += 1;
+                let receipt = done["frames"]["root"]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|step| &step["outputs"]["result"]["value"])
+                    .find(|receipt| receipt["task_id"] == task["task_id"])
+                    .unwrap();
+                let source_id = receipt["result"]["outputs"]["snapshot"]["artifact_ids"][0]
+                    .as_str()
+                    .unwrap();
+                let source = cas.get_artifact(source_id).unwrap();
+                let (_, manifest) = review_source_git::task::read_snapshot(
+                    &cas,
+                    source.payload["snapshot_id"].as_str().unwrap(),
+                )
+                .unwrap();
+                let seen: Value = serde_json::from_slice(
+                    &cas.get(&manifest.get("seen-ci.json").unwrap().content)
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    seen, packet,
+                    "the repair implementer read exact admitted CI evidence"
+                );
+            }
+        }
+        assert_eq!(evidence_count, repairs);
+    }
 }

@@ -48,7 +48,5 @@ receipts. It never runs or confirms a plan. Follow the
 [manual-first runbook](../../docs/performance-scenarios.md); a real complete Claw run precedes
 separate Ant enablement. No example grants publication.
 
-`impl-task.json` is an unpinned native authoring Task for the consuming-repository `impl` packages.
-Replace its requirements, generate real packages/pins with `scripts/scenario-impl.py`, then capture
-it with native `af scenario template-pin`. The bundle builder uses that receipt; there is no shipped
-placeholder impl bundle or publication grant. See [the impl runbook](../../docs/scenario-impl.md).
+The inert [workspace example](workspace/README.md) composes an ordinary accepted Task with
+owned preparation, exact signed publication, actual merge waiting and safe cleanup.

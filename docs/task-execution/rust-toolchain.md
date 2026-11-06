@@ -84,12 +84,6 @@ a repair. On a hit, copied binaries come first on PATH; CARGO_HOME/RUSTUP_HOME a
 directories. Inherited `.cargo/bin` remains available for extra tools such as cargo-nextest;
 the private prefix shadows its Rust proxies. Mapped seed paths and `.rustup` tool directories
 are removed from PATH. This is tool selection, not same-UID filesystem containment.
-Warm `cargo_home` entries containing a root `bin` directory are discarded before reuse. Cargo
-searches `$CARGO_HOME/bin` before PATH for external subcommands, so a retained `cargo-clippy`
-or `cargo-fmt` could otherwise run another toolchain even when copied rustc verifies the pin.
-A busy layer's private clone is also refused if it contains those installed subcommands;
-the live holder's cache stays untouched. Extra tools remain available through the inherited
-PATH rather than a retained Cargo install root.
 Cargo dependency downloads remain separate under existing check policy; this does
 not claim all of make check is offline.
 

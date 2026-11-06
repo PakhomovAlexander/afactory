@@ -1,4 +1,4 @@
-"""Implementation lifecycle extension, embedded with the GitHub transport at installation.
+"""Workspace lifecycle extension, embedded with the GitHub transport at installation.
 
 No workflow command, environment or path is executed. The owner-side installer pins both
 sources and the exact machine configuration in one isolated Python executable.
@@ -9,12 +9,12 @@ import shutil
 import tempfile
 import ctypes
 
-IMPL_MAX_RECORDS = 32
-IMPL_CONFIG = "af/scenario-impl-config@1"
-IMPL_STATE = "af/scenario-impl-state@2"
+WORKSPACE_MAX_RECORDS = 32
+WORKSPACE_CONFIG = "af/git-workspace-config@1"
+WORKSPACE_STATE = "af/git-workspace-state@1"
 RESERVATION_SLOTS = 4
-PREPARED = "af/scenario-impl-prepared@1"
-OPS = {"impl_prepare_v1", "impl_publish_v1", "impl_cleanup_v1", "observe"}
+PREPARED = "af/git-workspace-prepared@1"
+OPS = {"prepare_candidate_v1", "cleanup_workspace_v1"}
 
 
 def sync_directory(path):
@@ -43,12 +43,12 @@ def publish_directory(source, destination):
         raise OSError(ctypes.get_errno(), "exclusive directory publication refused")
 
 
-def validate_config(c):
+def workspace_validate_config(c):
     fields(c, ("schema", "repository", "repository_id", "actor", "token_file", "state_dir",
                "repo", "task_store", "worktree_root", "base", "branch_prefix", "source_commit",
                "source_content_digest", "af", "af_digest", "git", "git_digest", "ssh_config",
-               "ssh_config_digest", "author_name", "author_email", "required_checks", "reviewers"))
-    need(c["schema"] == IMPL_CONFIG, "unsupported implementation machine configuration")
+               "ssh_config_digest", "author_name", "author_email", "required_checks", "reviewers", "publication_mode", "operations"))
+    need(c["schema"] == WORKSPACE_CONFIG, "unsupported workspace machine configuration")
     string(c["repository"], REPO)
     integer(c["repository_id"])
     person(c["actor"])
@@ -56,6 +56,7 @@ def validate_config(c):
     string(c["source_content_digest"], DIGEST)
     branch(c["base"])
     branch(c["branch_prefix"])
+    need(len(c["branch_prefix"]) <= 134, "owned branch prefix exceeds GitHub payload bound")
     for key in ("author_name", "author_email"):
         string(c[key], limit=200)
         need("\n" not in c[key] and "\r" not in c[key], "invalid author")
@@ -64,24 +65,23 @@ def validate_config(c):
         p = Path(string(c[key]))
         need(p.is_absolute() and p.resolve() == p, "machine paths must be canonical")
     for a, b in (("repo", "task_store"), ("repo", "worktree_root"), ("repo", "state_dir"),
-                 ("state_dir", "worktree_root"), ("task_store", "worktree_root")):
+                 ("state_dir", "worktree_root"), ("task_store", "worktree_root"), ("state_dir", "task_store")):
         p, q = Path(c[a]), Path(c[b])
         need(p != q and p not in q.parents and q not in p.parents, "machine roots overlap")
-    for key in ("state_dir", "task_store", "worktree_root", "token_file", "ssh_config"):
+    for key in ("state_dir", "task_store", "worktree_root", "token_file", "ssh_config", "af", "git"):
         outside_checkout(Path(c[key]))
     for key in ("af_digest", "git_digest", "ssh_config_digest"):
         string(c[key], DIGEST)
+    need(c["publication_mode"] == "exclusive_owned_writer", "explicit exclusive writer authority required")
+    operations = c["operations"]
+    need(isinstance(operations, list) and operations and len(set(operations)) == len(operations)
+         and set(operations) <= OPS | set(PAYLOAD_SCHEMAS) | {"observe"}, "invalid machine workspace operations")
     # Reuse the established check/person schema and validators without its fixed branch map.
-    original_validate_config({"schema": "af/github-adapter-config@1", "repository": c["repository"],
+    validate_config({"schema": "af/github-adapter-config@1", "repository": c["repository"],
         "repository_id": c["repository_id"], "actor": c["actor"], "token_file": c["token_file"],
-        "state_dir": c["state_dir"], "heads": {"impl/config-validation": c["base"]},
+        "state_dir": c["state_dir"], "heads": {"workspace/config-validation": c["base"]},
         "required_checks": c["required_checks"], "reviewers": c["reviewers"], "operations": ["observe"]})
-    need(all(r["id"] != c["actor"]["id"] for r in c["reviewers"]), "a publishing actor cannot approve its own PR; use explicit independent reviewers or an empty approval set")
     return c
-
-
-# The installer inserts this assignment before overriding the common validator.
-# original_validate_config refers to the GitHub transport's configuration validator.
 
 
 def file_digest(path):
@@ -126,11 +126,11 @@ def repository_settings(c):
              "local Git configuration contains unpinned executable or URL-rewrite authority")
 
 
-def load_config():
+def workspace_load_config():
     need(CONFIG_PATH is not None and CONFIG_DIGEST is not None, "adapter is not installed")
     raw = read_private(Path(CONFIG_PATH), LIMIT)
-    need(digest(raw) == CONFIG_DIGEST, "installed implementation configuration changed")
-    c = validate_config(decode(raw))
+    need(digest(raw) == CONFIG_DIGEST, "installed workspace configuration changed")
+    c = workspace_validate_config(decode(raw))
     for key in ("af", "git"):
         path = Path(c[key])
         need(path.is_file() and file_digest(path) == c[key + "_digest"], "pinned tool changed")
@@ -144,12 +144,12 @@ def load_config():
 def datum(inputs, key, kind="text"):
     value = inputs[key]
     fields(value, ("type", "value"))
-    need(value["type"] == kind, "implementation input type differs")
+    need(value["type"] == kind, "workspace input type differs")
     return value["value"]
 
 
 def prepared_subject(p):
-    return "impl:" + digest(canonical(p))
+    return subject("publish_pr", publication_payload(p))
 
 
 def validate_prepared(p, c, config_digest):
@@ -174,9 +174,11 @@ def validate_prepared(p, c, config_digest):
         string(p["previous_owner"], DIGEST)
         string(p["branch"], re.escape(c["branch_prefix"]) + r"/[0-9a-f]{64}")
     need(p["worktree"] == str(Path(c["worktree_root"]) / suffix), "foreign owned artifact path")
+    branch(p["branch"])
+    need(p["branch"] != p["base"], "workspace head must differ from base")
     string(p["title"], limit=200)
     string(p["body"], limit=48000)
-    need("\n" not in p["title"] and "\r" not in p["title"] and "<!-- af-impl:" not in p["body"],
+    need("\n" not in p["title"] and "\r" not in p["title"] and "<!-- af-github:" not in p["body"],
          "invalid publication content")
     # The response wraps this JSON as evidence text. Check its escaped wire size before
     # branch/worktree creation; valid content must fit the existing native output cap.
@@ -184,36 +186,27 @@ def validate_prepared(p, c, config_digest):
     return p
 
 
-def validate_impl_request(r, c):
+def publication_payload(p):
+    return dict(schema="af/github-publish-pr@1", head=p["branch"], base=p["base"], title=p["title"], body=p["body"])
+
+
+def workspace_validate_request(r, c):
     fields(r, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(r["schema"] == "af/scenario-adapter-request@3", "unsupported native adapter request")
+    need(r["schema"] == "af/scenario-adapter-request@3", "unsupported workspace request")
     for key in ("intent_id", "input_digest"):
         string(r[key], DIGEST)
-    op = r["operation"]
-    need(op in OPS and r["destination"] == "github:" + c["repository"], "unauthorized lifecycle operation/destination")
-    need((op == "observe" and r["method"] == "observe") or
-         (op != "observe" and r["method"] in ("execute", "reconcile", "recover")), "method cannot disguise effects")
-    i = r["inputs"]
-    if op == "observe":
-        fields(i, ("subject", "revision", "condition"))
-        string(datum(i, "subject"), r"impl:sha256:[0-9a-f]{64}")
-        string(datum(i, "revision"), SHA)
-        need(datum(i, "condition") in ("checks_passed", "review_passed", "merged", "implementation_outcome", "implementation_ready"), "unsupported implementation Wait")
-        return None
-    expected = ["subject", "revision", "body", "candidate"] if op == "impl_prepare_v1" else ["subject", "revision", "body", "prepared"]
-    if op == "impl_publish_v1":
-        expected.append("decision")
-    if op == "impl_cleanup_v1":
-        expected.append("evidence")
-    if op == "impl_prepare_v1" and "previous" in i:
-        expected += ["previous", "repair"]
-    fields(i, expected)
+    op, i = r["operation"], r["inputs"]
+    need(op in {"prepare_candidate_v1", "cleanup_workspace_v1"}
+         and r["destination"] == "github:" + c["repository"]
+         and r["method"] in ("execute", "reconcile"), "unauthorized workspace operation")
+    expected = ["subject", "revision", "body", "candidate"] if op == "prepare_candidate_v1" else ["subject", "revision", "body", "prepared", "evidence"]
+    fields(i, expected, ["previous"] if op == "prepare_candidate_v1" else [])
     string(datum(i, "subject"))
     string(datum(i, "revision"))
     p = decode(string(datum(i, "body")).encode())
-    if op == "impl_prepare_v1":
+    if op == "prepare_candidate_v1":
         fields(p, ("schema", "title", "body"))
-        need(p["schema"] == "af/scenario-impl-publication@1", "unsupported publication content")
+        need(p["schema"] == "af/git-workspace-content@1", "unsupported workspace content")
         string(p["title"], limit=200)
         string(p["body"], limit=48000)
         t = datum(i, "candidate", "task")
@@ -221,69 +214,48 @@ def validate_impl_request(r, c):
         string(t["task_id"], r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
         for key in ("plan_id", "revision_id", "result_id"):
             string(t[key], DIGEST)
-        result = t["result"]
-        need(result["execution"] == "completed" and result["acceptance"] == "satisfied"
+        need(t["result"]["execution"] == "completed" and t["result"]["acceptance"] == "satisfied"
+             and t["result"]["task_revision_id"] == t["revision_id"]
              and t["result_id"] == datum(i, "subject")
-             and result["outputs"]["snapshot"]["snapshot_id"] == datum(i, "revision"),
-             "preparation is not an accepted exact candidate")
+             and t["result"]["outputs"]["snapshot"]["snapshot_id"] == datum(i, "revision"),
+             "preparation requires the exact accepted candidate")
         if "previous" in i:
-            previous = decode(datum(i, "previous", "action")["evidence"].encode())
-            validate_prepared(previous, c, CONFIG_DIGEST)
-            observed = datum(i, "repair", "observation")
-            outcome = decode(observed["evidence"].encode())
-            need(observed["satisfied"] is True and observed["condition"] == "implementation_outcome"
-                 and outcome["schema"] == "af/scenario-impl-outcome@1" and outcome["repair"] is True
-                 and outcome["result_id"] == previous["result_id"] and outcome["snapshot_id"] == previous["snapshot_id"]
-                 and observed["subject"] == prepared_subject(previous) and observed["revision"] == previous["commit"],
-                 "repair preparation lacks exact native failure evidence")
+            validate_prepared(decode(datum(i, "previous", "action")["evidence"].encode()), c, CONFIG_DIGEST)
         return p
     validate_prepared(p, c, CONFIG_DIGEST)
     a = datum(i, "prepared", "action")
-    fields(a, ("intent_id", "operation", "destination", "subject", "revision", "evidence"))
-    need(a["operation"] == "impl_prepare_v1" and a["intent_id"] == p["owner"]
+    need(a["operation"] == "prepare_candidate_v1" and a["intent_id"] == p["owner"]
          and a["destination"] == r["destination"] and a["subject"] == p["result_id"]
          and a["revision"] == p["snapshot_id"] and decode(a["evidence"].encode()) == p,
          "preparation Action provenance differs")
-    need(datum(i, "subject") == prepared_subject(p) and datum(i, "revision") == p["commit"],
-         "action does not bind prepared bytes and exact commit")
-    if op == "impl_publish_v1":
-        d = datum(i, "decision", "decision")
-        need(d["schema"] == "af/scenario-signed-decision@1" and d["signature"], "signed native decision required")
-        q = d["request"]
-        need(q["approve"] is True and q["subject"] == prepared_subject(p)
-             and q["revision"] == p["commit"] and type(q["expires_unix_ms"]) is int,
-             "decision is stale or differs from prepared publication")
-    else:
-        o = datum(i, "evidence", "observation")
-        need(o["condition"] == "merged" and o["satisfied"] is True
-             and o["subject"] == prepared_subject(p) and o["revision"] == p["commit"], "cleanup needs exact merge evidence")
+    o = datum(i, "evidence", "observation")
+    need(datum(i, "subject") == prepared_subject(p) and datum(i, "revision") == p["commit"]
+         and o["condition"] == "merged" and o["satisfied"] is True
+         and o["subject"] == prepared_subject(p) and o["revision"] == p["commit"],
+         "cleanup requires exact native merge evidence")
     return p
 
 
-class ImplJournal(Journal):
+class WorkspaceJournal(Journal):
     def load(self):
         state = decode(read_private(self.path, STATE_LIMIT), STATE_LIMIT)
         fields(state, ("schema", "config_digest", "records", "checksum"))
         checksum = state.pop("checksum")
-        need(checksum == digest(canonical(state)) and state["schema"] == IMPL_STATE
-             and state["config_digest"] == self.config_digest, "foreign or corrupt implementation journal")
-        need(isinstance(state["records"], dict) and len(state["records"]) <= IMPL_MAX_RECORDS, "journal bound exceeded")
+        need(checksum == digest(canonical(state)) and state["schema"] == WORKSPACE_STATE
+             and state["config_digest"] == self.config_digest, "foreign or corrupt workspace journal")
+        need(isinstance(state["records"], dict) and len(state["records"]) <= WORKSPACE_MAX_RECORDS, "journal bound exceeded")
         for key, rec in state["records"].items():
-            fields(rec, ("request", "phase", "prepared", "object", "inode", "device", "build", "cleaned", "cleanup_pending", "progress", "reservations"))
+            fields(rec, ("request", "phase", "prepared", "inode", "device", "build", "cleaned", "cleanup_pending", "progress", "reservations"))
             need(rec["phase"] in ("reserved", "started", "done"), "invalid lifecycle phase")
             need(key == rec["request"]["intent_id"], "journal intent differs")
-            validate_impl_request({**rec["request"], "method": "reconcile"}, self.config)
+            workspace_validate_request({**rec["request"], "method": "reconcile"}, self.config)
             if rec["prepared"] is not None:
                 validate_prepared(rec["prepared"], self.config, self.config_digest)
-            need(isinstance(rec["cleaned"], list) and len(rec["cleaned"]) <= 3 and len(set(rec["cleaned"])) == len(rec["cleaned"]), "invalid cleanup ownership ledger")
+            need(isinstance(rec["cleaned"], list) and len(rec["cleaned"]) <= WORKSPACE_MAX_RECORDS and len(set(rec["cleaned"])) == len(rec["cleaned"]), "invalid cleanup ownership ledger")
             for owner in rec["cleaned"]:
                 string(owner, DIGEST)
             if rec["cleanup_pending"] is not None:
                 string(rec["cleanup_pending"], DIGEST)
-            if rec["object"] is not None:
-                fields(rec["object"], ("id", "number"))
-                integer(rec["object"]["id"])
-                integer(rec["object"]["number"])
             for prop in ("inode", "device"):
                 if rec[prop] is not None:
                     integer(rec[prop])
@@ -300,12 +272,12 @@ class ImplJournal(Journal):
                 fields(rec["build"], ("inode", "device"))
                 integer(rec["build"]["inode"])
                 integer(rec["build"]["device"])
-            if rec["request"]["operation"] == "impl_prepare_v1" and rec["phase"] == "done":
+            if rec["request"]["operation"] == "prepare_candidate_v1" and rec["phase"] == "done":
                 need(rec["prepared"] is not None and rec["inode"] is not None and rec["device"] is not None and rec["build"] is not None
                      and all(r["published"] for r in rec["reservations"].values()), "completed preparation lacks owned artifacts")
-            if rec["request"]["operation"] != "impl_cleanup_v1":
+            if rec["request"]["operation"] != "cleanup_workspace_v1":
                 need(not rec["cleaned"] and rec["cleanup_pending"] is None, "non-cleanup intent has cleanup progress")
-            need(isinstance(rec["progress"], list) and set(rec["progress"]) <= {"push", "post", "build", "worktree", "branch", "remote"}
+            need(isinstance(rec["progress"], list) and set(rec["progress"]) <= {"branch", "remote"}
                  and len(set(rec["progress"])) == len(rec["progress"]), "invalid lifecycle recovery progress")
         return state
 
@@ -316,12 +288,12 @@ class ImplJournal(Journal):
             rec = records[r["intent_id"]]
             need(rec["request"] == exact, "intent reused with changed native input")
             return rec
-        need(len(records) < IMPL_MAX_RECORDS, "lifecycle receipt budget exhausted")
+        need(len(records) < WORKSPACE_MAX_RECORDS, "lifecycle receipt budget exhausted")
         for rec in records.values():
             a, b = rec["request"], exact
             need((a["operation"], a["inputs"]["subject"], a["inputs"]["revision"]) !=
                  (b["operation"], b["inputs"]["subject"], b["inputs"]["revision"]), "lifecycle object has another reserved intent")
-        rec = dict(request=exact, phase="reserved", prepared=None, object=None, inode=None, device=None, build=None, cleaned=[], cleanup_pending=None, progress=[],
+        rec = dict(request=exact, phase="reserved", prepared=None, inode=None, device=None, build=None, cleaned=[], cleanup_pending=None, progress=[],
                    reservations={kind: dict(slot=0, published=False) for kind in ("worktree", "build")})
         records[r["intent_id"]] = rec
         need(len(state_bytes(self.state)) + len(records) * 60000 <= STATE_LIMIT, "completion evidence reservation exhausted")
@@ -329,13 +301,12 @@ class ImplJournal(Journal):
         return rec
 
 
-class ImplAdapter:
+class WorkspaceAdapter:
     def __init__(self, config, config_digest, service):
         self.config, self.config_digest, self.service = config, config_digest, service
-        self.journal = ImplJournal(config, config_digest)
+        self.journal = WorkspaceJournal(config, config_digest)
         self.repo = "/repos/" + config["repository"]
-        self.common = Adapter.__new__(Adapter)
-        self.common.config, self.common.service, self.common.repo = config, service, self.repo
+        self.common = None
 
     def git(self, *args, cwd=None, data=None, extra=None):
         c = self.config
@@ -353,7 +324,7 @@ class ImplAdapter:
     def native_source(self, t, owner, previous=None):
         c = self.config
         path = Path(c["state_dir"]) / (owner.split(":")[1] + ".request.json")
-        request = dict(schema="af/scenario-impl-source-request@1", receipt=t,
+        request = dict(schema="af/git-candidate-source-request@1", receipt=t,
                        source_commit=previous["commit"] if previous else c["source_commit"], candidate_snapshot_id=t["result"]["outputs"]["snapshot"]["snapshot_id"],
                        predecessor_snapshot_id=previous["snapshot_id"] if previous else None)
         if path.exists():
@@ -362,19 +333,37 @@ class ImplAdapter:
             atomic_write(path, canonical(request))
         home = Path(c["state_dir"]) / "home"
         capture = Path(c["state_dir"]) / (owner.split(":")[1] + ".source")
-        raw = bounded_command([c["af"], "scenario", "impl-source", "--file", str(path),
+        raw = bounded_command([c["af"], "scenario", "candidate-source", "--file", str(path),
             "--repo", c["repo"], "--task-state", c["task_store"], "--into", str(capture), "--json"],
             c["state_dir"], {"PATH": "/usr/bin:/bin", "AF_SELF_OFFLINE": "1", "HOME": str(home), "XDG_CONFIG_HOME": str(home),
-                 "XDG_DATA_HOME": str(home), "XDG_STATE_HOME": str(home), "XDG_CACHE_HOME": str(home)},
+                 "XDG_DATA_HOME": str(home), "XDG_STATE_HOME": str(home), "XDG_CACHE_HOME": str(home), "TMPDIR": c["state_dir"]},
             None, 18, c["state_dir"], LIMIT)
         source = decode(raw, LIMIT)
-        need(source["schema"] == "af/scenario-impl-source@1"
+        need(source["schema"] == "af/git-candidate-source@1"
              and source["request_digest"] == digest(canonical(request))
              and source["source_commit"] == request["source_commit"]
              and (source["predecessor_snapshot"] == previous["snapshot_id"] if previous else source["source_content_digest"] == c["source_content_digest"] and source["predecessor_snapshot"] is None)
              and source["candidate_snapshot"] == request["candidate_snapshot_id"]
              and source["repository"] == str(capture / "repository.git"), "native source provenance differs")
         return source
+
+    def populate(self, p):
+        # Only the just-created --no-checkout worktree may enter this path. Never reset
+        # an interrupted/foreign checkout on reconciliation. Native materialization bypasses
+        # attributes/filters and reads back exact Snapshot bytes, modes and symlinks.
+        c = self.config
+        path = Path(p["worktree"])
+        need({entry.name for entry in path.iterdir()} == {".git"}, "workspace is not a fresh empty checkout")
+        home = str(Path(c["state_dir"]) / "home")
+        raw = bounded_command([c["af"], "task", "materialize", p["task_id"], "--snapshot", p["snapshot_id"],
+            "--into", str(path), "--force", "--repo", c["repo"], "--state", c["task_store"], "--json"],
+            c["state_dir"], {"PATH": "/usr/bin:/bin", "AF_SELF_OFFLINE": "1", "HOME": home, "XDG_CONFIG_HOME": home,
+                 "XDG_DATA_HOME": home, "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home, "TMPDIR": c["state_dir"]}, None, 18, c["state_dir"], LIMIT)
+        receipt = decode(raw, LIMIT)
+        need(receipt["schema"] == "af/task-materialized@1" and receipt["task_id"] == p["task_id"]
+             and receipt["snapshot_id"] == p["snapshot_id"] and receipt["verified"] is True,
+             "native workspace materialization differs from accepted preparation")
+        self.git("read-tree", p["commit"], cwd=path)
 
     def prepare(self, rec):
         c, r = self.config, rec["request"]
@@ -388,7 +377,7 @@ class ImplAdapter:
             previous = decode(datum(i, "previous", "action")["evidence"].encode())
             self.preparation(previous)
             chain = self.lineage(previous)
-            need(len(chain) <= 2, "implementation repair allowance exhausted")
+            need(len(chain) < WORKSPACE_MAX_RECORDS, "workspace lineage bound exceeded")
             self.publication(prepared_subject(previous), previous["commit"])
         ref = previous["branch"] if previous else c["branch_prefix"] + "/" + suffix
         if rec["phase"] == "done":
@@ -404,10 +393,11 @@ class ImplAdapter:
             source = self.native_source(t, owner, previous)
             # This fixed local fetch imports only objects from the just-validated native capture.
             self.git("-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
-                     source["repository"], "refs/heads/af-impl-candidate")
+                     source["repository"], "refs/heads/af-candidate")
             tree = source["candidate_tree"]
             need(self.git("rev-parse", source["transport_commit"] + "^{tree}").decode() == tree, "native candidate tree changed")
             content = decode(datum(i, "body").encode())
+            need(previous is None or (content["title"], content["body"]) == (previous["title"], previous["body"]), "continuation changed publication identity")
             message = content["title"] + "\n\nIntent: " + owner + "\nTask: " + t["task_id"] + "\nResult: " + t["result_id"] + "\nSnapshot: " + datum(i, "revision") + "\n"
             commit_env = {"GIT_AUTHOR_NAME": c["author_name"], "GIT_AUTHOR_EMAIL": c["author_email"],
                           "GIT_COMMITTER_NAME": c["author_name"], "GIT_COMMITTER_EMAIL": c["author_email"],
@@ -438,7 +428,8 @@ class ImplAdapter:
             need(stat.S_IMODE(st.st_mode) == 0o700, "empty workspace permissions changed")
             # No --force: Git refuses an existing registration before changing it,
             # including a partial checkout whose directory is now empty (Git 2.30+).
-            self.git("worktree", "add", "--detach", str(worktree), p["commit"])
+            self.git("worktree", "add", "--no-checkout", "--detach", str(worktree), p["commit"])
+            self.populate(p)
         # An interrupted Git checkout can leave partial bytes: preserve rather than reset them.
         self.owned(rec, p)
         build = worktree / "target"
@@ -511,13 +502,13 @@ class ImplAdapter:
     def preparation(self, p):
         rec = self.journal.state["records"].get(p["owner"])
         need(rec is not None and rec["phase"] == "done" and rec["prepared"] == p
-             and rec["request"]["operation"] == "impl_prepare_v1", "no local completed preparation provenance")
+             and rec["request"]["operation"] == "prepare_candidate_v1", "no local completed preparation provenance")
         return rec
 
     def lineage(self, p):
         chain, seen = [], set()
         while p is not None:
-            need(p["owner"] not in seen and len(chain) < 3, "invalid or excessive repair lineage")
+            need(p["owner"] not in seen and len(chain) < WORKSPACE_MAX_RECORDS, "invalid or excessive repair lineage")
             seen.add(p["owner"])
             chain.append(p)
             owner = p["previous_owner"]
@@ -532,29 +523,72 @@ class ImplAdapter:
                 p = None
         return chain
 
+    def exact_tree(self, p):
+        # Git status is insufficient: attributes, assume-unchanged and core.filemode can
+        # hide changes to accepted bytes/modes. Compare raw tracked blobs to the owned commit.
+        root = Path(p["worktree"])
+        pending, expected, argument_bytes = [], [], 0
+        def flush():
+            nonlocal argument_bytes
+            if pending:
+                actual = self.git("hash-object", "--no-filters", "--", *pending, cwd=root).splitlines()
+                need(actual == expected, "changed raw workspace bytes retained")
+                pending.clear()
+                expected.clear()
+                argument_bytes = 0
+        for row in self.git("ls-tree", "-r", "-l", "-z", p["commit"]).split(b"\0"):
+            if not row:
+                continue
+            metadata, name = row.split(b"\t", 1)
+            mode, kind, oid, size = metadata.split()
+            path = root / os.fsdecode(name)
+            info = path.lstat()
+            need(kind == b"blob" and info.st_size == int(size), "changed workspace entry retained")
+            if mode == b"120000":
+                need(stat.S_ISLNK(info.st_mode), "changed workspace link retained")
+                raw = os.fsencode(os.readlink(path))
+                need(self.git("hash-object", "--no-filters", "--stdin", data=raw) == oid,
+                     "changed workspace link bytes retained")
+            else:
+                need(mode in (b"100644", b"100755") and stat.S_ISREG(info.st_mode)
+                     and bool(info.st_mode & 0o100) == (mode == b"100755"),
+                     "changed workspace type or mode retained")
+                pending.append(os.fsdecode(name))
+                expected.append(oid)
+                argument_bytes += len(name) + 1
+                if len(pending) >= 256 or argument_bytes >= 32768:
+                    flush()
+        flush()
+
     def owned(self, rec, p, check_tip=True):
         path = Path(p["worktree"])
         need(path.resolve() == path and not path.is_symlink(), "foreign workspace path")
         st = path.stat()
         need(st.st_dev == rec["device"] and st.st_ino == rec["inode"], "workspace ownership changed")
+        need(not (path / ".git").is_symlink() and (path / ".git").is_file(), "foreign worktree metadata retained")
         common = Path(self.git("rev-parse", "--git-common-dir", cwd=path).decode())
         common = (path / common).resolve()
         expected = Path(self.git("rev-parse", "--git-common-dir").decode())
         expected = (Path(self.config["repo"]) / expected).resolve()
-        need(common == expected and (path / ".git").is_file()
+        need(common == expected
              and self.git("rev-parse", "HEAD", cwd=path).decode() == p["commit"], "workspace identity changed")
         # Detached HEAD is intentional: all repair worktrees retain their exact candidate
         # while the one publication branch advances only under compare-and-swap.
         need(self.git("rev-parse", "--abbrev-ref", "HEAD", cwd=path) == b"HEAD", "foreign attached worktree retained")
-        need(not self.git("status", "--porcelain=v1", "--untracked-files=all", cwd=path), "dirty workspace retained")
-        ignored = self.git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=path)
-        need(all(item.startswith(b"target/") for item in ignored.split(b"\0") if item), "foreign ignored content retained")
         if rec["build"] is not None:
             build = path / "target"
             if build.exists() or build.is_symlink():
                 st = build.lstat()
                 need(stat.S_ISDIR(st.st_mode) and st.st_dev == rec["build"]["device"]
                      and st.st_ino == rec["build"]["inode"], "foreign build directory retained")
+        need(not self.git("status", "--porcelain=v1", "--untracked-files=no", cwd=path), "dirty workspace retained")
+        # The exact leased build directory is owned whether or not a project ignores it.
+        # Every other untracked/ignored path remains foreign; tracked changes always refuse.
+        for flags in (("--exclude-standard",), ("--ignored", "--exclude-standard")):
+            paths = self.git("ls-files", "--others", "--directory", *flags, "-z", cwd=path)
+            need(all(rec["build"] is not None and item.startswith(b"target/")
+                     for item in paths.split(b"\0") if item), "foreign workspace content retained")
+        self.exact_tree(p)
         if check_tip:
             need(self.git("rev-parse", "refs/heads/" + p["branch"]).decode() == p["commit"], "owned branch changed")
 
@@ -567,209 +601,16 @@ class ImplAdapter:
         need(len(parts) == 2 and parts[1] == "refs/heads/" + p["branch"], "unexpected remote ref listing")
         return string(parts[0], SHA)
 
-    def marker(self, rec):
-        if rec["request"]["operation"] == "impl_publish_v1":
-            p = decode(datum(rec["request"]["inputs"], "body").encode())
-            if p["previous_owner"] is not None:
-                parent = self.journal.state["records"][p["previous_owner"]]["prepared"]
-                previous, _ = self.publication(prepared_subject(parent), parent["commit"])
-                return self.marker(previous)
-        return "\n\n<!-- af-impl:" + rec["request"]["intent_id"] + ":" + digest(canonical(rec["request"])) + " -->"
-
-    def validate_pr(self, rec, p, remote):
-        integer(remote.get("id"))
-        integer(remote.get("number"))
-        if rec["object"] is not None:
-            need(rec["object"] == {"id": remote["id"], "number": remote["number"]}, "foreign PR identity")
-        need(remote.get("user", {}).get("id") == self.config["actor"]["id"]
-             and remote.get("title") == p["title"] and remote.get("body") == p["body"] + self.marker(rec), "PR content or creator changed")
-        for side, ref in (("head", p["branch"]), ("base", p["base"])):
-            need(remote.get(side, {}).get("ref") == ref
-                 and remote[side].get("repo", {}).get("id") == p["repository_id"]
-                 and remote[side]["repo"].get("full_name") == p["repository"], "PR repository or branch changed")
-        need(remote["head"].get("sha") == p["commit"], "changed head invalidates all checks and merge observations")
-        return remote
-
-    def read_pr(self, rec, p):
-        if rec["object"] is not None:
-            pr = self.service.request("GET", self.repo + "/pulls/" + str(rec["object"]["number"]))
-            return self.validate_pr(rec, p, pr)
-        rows = self.service.pages(self.repo + "/pulls", params={"state": "all", "head": p["repository"].split("/")[0] + ":" + p["branch"], "base": p["base"]})
-        matches = [row for row in rows if row.get("body") == p["body"] + self.marker(rec)]
-        need(len(matches) <= 1, "multiple matching publication objects")
-        return self.validate_pr(rec, p, matches[0]) if matches else None
-
-    def publish(self, rec, p, execute):
-        self.preparation(p)
-        self.common.actor()
-        chain = self.lineage(p)
-        previous = chain[1] if len(chain) > 1 else None
-        if previous:
-            prior, _ = self.publication(prepared_subject(previous), previous["commit"])
-            need(prior["object"] is not None, "repair lacks its original PR identity")
-            rec["object"] = prior["object"]
-            raw = self.service.request("GET", self.repo + "/pulls/" + str(rec["object"]["number"]))
-            if raw.get("head", {}).get("sha") == p["commit"]:
-                self.validate_pr(rec, p, raw)
-                rec["phase"] = "done"
-                self.journal.save()
-                return "done", "Owned repaired PR " + str(raw["number"]) + " at " + p["commit"]
-            self.validate_pr(prior, previous, raw)
-            need(raw.get("state") == "open" and raw.get("merged") is False, "closed PR cannot be repaired")
-            pr = None
-        else:
-            pr = self.read_pr(rec, p)
-        if pr is not None:
-            rec["object"] = {"id": pr["id"], "number": pr["number"]}
-            rec["phase"] = "done"
-            self.journal.save()
-            return "done", "Owned PR " + str(pr["number"]) + " at " + p["commit"]
-        if "post" in rec["progress"]:
-            return "pending", "PR creation may have occurred; remote absence never authorizes another POST"
-        if not execute:
-            return ("absent", "Reserved publication has not dispatched") if rec["phase"] == "reserved" else ("pending", "Resume the same publication intent")
-        self.owned(self.preparation(p), p)
-        rec["phase"] = "started"
-        if "push" not in rec["progress"]:
-            rec["progress"].append("push")
-            self.journal.save()
-        remote = self.remote_ref(p)
-        parent_commit = previous["commit"] if previous else None
-        need(remote in (parent_commit, p["commit"]), "foreign or changed remote branch retained")
-        if remote != p["commit"]:
-            # Initial publication compares against absence. Repair compares against the prior
-            # owned commit, and the new commit's parent must be exactly that prior commit.
-            need(self.git("rev-parse", p["commit"] + "^").decode() == p["source_commit"], "prepared parent changed")
-            url = "ssh://git@github.com/" + self.config["repository"] + ".git"
-            self.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":" + (parent_commit or ""), url,
-                     p["commit"] + ":refs/heads/" + p["branch"])
-        need(self.remote_ref(p) == p["commit"], "pushed head readback differs")
-        if previous:
-            self.read_pr(rec, p)
-        else:
-            rec["progress"].append("post")
-            self.journal.save()
-            pr = self.service.request("POST", self.repo + "/pulls", {"head": p["branch"], "base": p["base"],
-                "title": p["title"], "body": p["body"] + self.marker(rec), "draft": False})
-            self.validate_pr(rec, p, pr)
-            rec["object"] = {"id": pr["id"], "number": pr["number"]}
-        rec["phase"] = "done"
-        self.journal.save()
-        return "done", "Owned PR " + str(rec["object"]["number"]) + " at " + p["commit"]
-
-    def publication(self, subject_value, revision):
-        matches = [r for r in self.journal.state["records"].values()
-                   if r["request"]["operation"] == "impl_publish_v1"
-                   and datum(r["request"]["inputs"], "subject") == subject_value
-                   and datum(r["request"]["inputs"], "revision") == revision and r["phase"] == "done"]
-        need(len(matches) == 1, "no completed owned PR receipt")
-        rec = matches[0]
-        p = decode(datum(rec["request"]["inputs"], "body").encode())
-        self.preparation(p)
-        return rec, p
-
-    def check_outcome(self, p, pr):
-        reasons = []
-        green = self.common.green(p["commit"])
-        if not green:
-            for check in self.config["required_checks"]:
-                if check["kind"] == "check":
-                    rows = self.service.pages(self.repo + "/commits/" + p["commit"] + "/check-runs", key="check_runs", params={"filter": "all"})
-                    matches = [r for r in rows if r.get("name") == check["name"] and r.get("app", {}).get("id") == check["app_id"] and r.get("head_sha") == p["commit"]]
-                    if matches:
-                        latest = max(matches, key=lambda r: integer(r["id"]))
-                        suites = self.service.pages(self.repo + "/commits/" + p["commit"] + "/check-suites", key="check_suites")
-                        app_suites = [s for s in suites if s.get("app", {}).get("id") == check["app_id"]]
-                        newest = max(app_suites, key=lambda s: integer(s["id"])) if app_suites else None
-                        if newest is not None:
-                            need(newest.get("head_sha") == p["commit"], "stale failure suite")
-                        if (newest is not None and latest.get("check_suite", {}).get("id") == newest["id"]
-                                and latest.get("status") == "completed"
-                                and latest.get("conclusion") in ("failure", "timed_out", "cancelled", "action_required", "startup_failure", "skipped", "neutral", "stale")):
-                            reasons.append("CI " + check["name"] + " failed, run " + str(latest["id"]))
-                else:
-                    rows = self.service.pages(self.repo + "/commits/" + p["commit"] + "/statuses")
-                    matches = [r for r in rows if r.get("context") == check["context"] and r.get("creator", {}).get("id") == check["creator_id"]]
-                    if matches and max(matches, key=lambda r: integer(r["id"])).get("state") in ("error", "failure"):
-                        reasons.append("CI status " + check["context"] + " failed")
-        reviews = self.service.pages(self.repo + "/pulls/" + str(pr["number"]) + "/reviews")
-        latest = {}
-        for review in reviews:
-            if review.get("state") not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-                continue
-            ident = integer(review.get("user", {}).get("id"))
-            if ident not in latest or integer(review["id"]) > latest[ident]["id"]:
-                latest[ident] = review
-        for row in latest.values():
-            if row.get("state") == "CHANGES_REQUESTED" and row.get("commit_id") == p["commit"]:
-                body = str(row.get("body") or "Changes requested").replace("\x00", "").encode("utf-8")[:512].decode("utf-8", errors="ignore")
-                reasons.append("Review " + str(row["id"]) + ": " + body)
-        if pr.get("state") == "open" and (pr.get("mergeable") is False or pr.get("mergeable_state") == "dirty"):
-            reasons.append("PR conflicts with its current base; repair requires captured base evidence")
-        approved = all(
-            latest.get(who["id"], {}).get("state") == "APPROVED" and latest[who["id"]].get("commit_id") == p["commit"]
-            for who in self.config["reviewers"])
-        approved = approved and not any(row.get("state") == "CHANGES_REQUESTED" for row in latest.values())
-        reasons = reasons[:32]
-        ready = green and approved and not reasons and (pr.get("state") == "open" or pr.get("merged") is True)
-        if not reasons and not ready:
-            return None
-        return dict(schema="af/scenario-impl-outcome@1", subject=prepared_subject(p), revision=p["commit"],
-                    result_id=p["result_id"], snapshot_id=p["snapshot_id"], ready=ready, repair=bool(reasons),
-                    reasons=reasons, pr_id=pr["id"], pr_number=pr["number"])
-
-    def observe(self, r):
-        i = r["inputs"]
-        subject_value, revision, condition = (datum(i, k) for k in ("subject", "revision", "condition"))
-        self.common.actor()
-        rec, p = self.publication(subject_value, revision)
-        pr = self.read_pr(rec, p)
-        need(pr is not None, "owned PR disappeared")
-        if pr.get("state") == "closed" and pr.get("merged") is not True:
-            return "failed", "PR closed without merge; workspace and branches retained", False
-        if condition in ("implementation_outcome", "implementation_ready"):
-            result = self.check_outcome(p, pr)
-            after = self.read_pr(rec, p)
-            need(after.get("state") == pr.get("state") and after.get("merged") == pr.get("merged"), "PR changed during failure observation")
-            if result is None:
-                return "pending", "Waiting for exact-head CI and required review evidence", False
-            if result["repair"] and pr.get("merged") is True:
-                return "failed", "Merged PR has unresolved CI/review evidence; workspace retained", False
-            if condition == "implementation_outcome" and result["ready"] and pr.get("merged") is not True:
-                return "pending", "Exact-head CI/review passed; waiting for human merge or later failure", False
-            if condition == "implementation_ready":
-                return ("done", "Exact-head CI/review passed", True) if result["ready"] else ("failed", "Implementation repair allowance exhausted: " + "; ".join(result["reasons"]), False)
-            return "done", canonical(result).decode(), True
-        if condition == "merged":
-            ok = pr.get("state") == "closed" and pr.get("merged") is True and isinstance(pr.get("merged_at"), str) and bool(pr["merged_at"]) and re.fullmatch(SHA, pr.get("merge_commit_sha") or "") is not None
-        elif condition == "checks_passed":
-            ok = pr.get("state") == "open" and self.common.green(revision)
-        else:
-            reviews = self.service.pages(self.repo + "/pulls/" + str(pr["number"]) + "/reviews")
-            latest = {}
-            for review in reviews:
-                if review.get("state") not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-                    continue
-                ident = review.get("user", {}).get("id")
-                if ident not in latest or review["id"] > latest[ident]["id"]:
-                    latest[ident] = review
-            ok = all(
-                latest.get(who["id"], {}).get("state") == "APPROVED"
-                and latest[who["id"]].get("commit_id") == revision for who in self.config["reviewers"])
-            ok = ok and not any(row.get("state") == "CHANGES_REQUESTED" for row in latest.values())
-        # Re-read PR identity and exact head after all listings. No result survives a head change.
-        after = self.read_pr(rec, p)
-        need(after.get("state") == pr.get("state") and after.get("merged") == pr.get("merged"), "PR changed during observation")
-        return ("done" if ok else "pending"), ("Exact-head " + condition + (" satisfied" if ok else " pending")), bool(ok)
-
     def cleanup(self, rec, p):
         chain = self.lineage(p)
         check = {**rec["request"], "method": "observe", "operation": "observe", "inputs": {
             "subject": {"type": "text", "value": prepared_subject(p)},
             "revision": {"type": "text", "value": p["commit"]},
             "condition": {"type": "text", "value": "merged"}}}
-        outcome, _, merged = self.observe(check)
-        need(outcome == "done" and merged, "cleanup requires actual exact-head merge")
+        texts, _ = validate_request(check, self.common.config)
+        self.common.actor()
+        outcome, _, observed = self.common.observe(check, texts)
+        need(outcome == "done" and observed is not None and observed["satisfied"], "cleanup requires actual exact-head merge")
         if rec["phase"] == "done":
             need(all(not Path(item["worktree"]).exists() and not Path(item["worktree"]).is_symlink() for item in chain), "completed cleanup path was replaced; foreign content retained")
             need(not self.git("for-each-ref", "--format=%(objectname)", "refs/heads/" + p["branch"])
@@ -781,6 +622,10 @@ class ImplAdapter:
         need((refs.decode() == p["commit"]) or (not refs and "branch" in rec["progress"]), "changed local branch retained")
         remote = self.remote_ref(p)
         need(remote is None or remote == p["commit"], "changed remote branch retained")
+        # A persisted deletion intent may have dispatched, even if no reply was saved.
+        # Commit equality is not ownership: another actor can recreate the same SHA.
+        need(not refs or "branch" not in rec["progress"], "uncertain local deletion; present ref retained")
+        need(remote is None or "remote" not in rec["progress"], "uncertain remote deletion; present ref retained")
         worktrees = self.git("worktree", "list", "--porcelain")
         need(("branch refs/heads/" + p["branch"]).encode() not in worktrees.splitlines(), "foreign attached branch retained")
         for item in chain:
@@ -827,53 +672,156 @@ class ImplAdapter:
         self.journal.save()
         return "done", "Owned lineage worktrees/builds and branches removed after human merge"
 
+    def configure_github(self):
+        c = self.config
+        heads = {r["prepared"]["branch"]: c["base"] for r in self.journal.state["records"].values() if r["prepared"] is not None}
+        common_config = {key: c[key] for key in ("repository", "repository_id", "actor", "token_file", "state_dir", "required_checks", "reviewers")}
+        common_config.update(schema=CONFIG_SCHEMA, heads=heads, operations=[op for op in c["operations"] if op in PAYLOAD_SCHEMAS or op == "observe"])
+        self.common = WorkspaceGitHub(common_config, self.config_digest, self.service, self)
+        self.common.journal.path = Path(c["state_dir"]) / "github.json"
+        self.common.journal.state = self.common.journal.load()
+
+    def publication(self, subject_value, revision):
+        return self.common.publication(subject_value, revision)
+
     def handle(self, r):
-        p = validate_impl_request(r, self.config)
+        need(r.get("operation") in self.config["operations"], "operation outside installed machine scope")
         with self.journal.locked():
-            if r["operation"] == "observe":
-                outcome, evidence, satisfied = self.observe(r)
-                obs = dict(subject=datum(r["inputs"], "subject"), revision=datum(r["inputs"], "revision"),
-                           condition=datum(r["inputs"], "condition"), satisfied=satisfied, evidence=evidence)
+            self.configure_github()
+            if r["operation"] in PAYLOAD_SCHEMAS or r["operation"] == "observe":
+                texts, _ = validate_request(r, self.common.config)
+                self.common.actor()
+                if r["method"] == "observe":
+                    outcome, evidence, obs = self.common.observe(r, texts)
+                else:
+                    rec = self.common.journal.record(r)
+                    outcome, evidence = (self.common.execute(rec) if r["method"] == "execute" else self.common.reconcile(rec))
+                    obs = None
             else:
+                p = workspace_validate_request(r, self.config)
                 rec = self.journal.record(r)
-                op = r["operation"]
-                need(r["method"] != "recover" or rec["phase"] != "reserved", "recovery requires an already dispatched lifecycle intent")
-                if op == "impl_publish_v1":
-                    outcome, evidence = self.publish(rec, p, r["method"] in ("execute", "recover"))
-                elif rec["phase"] == "started" and r["method"] == "reconcile":
-                    outcome, evidence = "pending", "Retained lifecycle intent requires explicit bounded recovery"
-                elif rec["phase"] == "reserved" and r["method"] == "reconcile":
-                    outcome, evidence = "absent", "Durable local lifecycle intent has not dispatched"
-                elif op == "impl_prepare_v1":
+                if rec["phase"] == "reserved" and r["method"] == "reconcile":
+                    outcome, evidence = "absent", "Local intent has never dispatched"
+                elif r["operation"] == "prepare_candidate_v1":
+                    # Local operations are idempotent and resume from exact journaled leases.
                     outcome, evidence = self.prepare(rec)
                 else:
                     outcome, evidence = self.cleanup(rec, p)
                 obs = None
-            need(len(evidence.encode()) <= 65536, "lifecycle output bound exceeded")
             response = dict(schema="af/scenario-adapter-response@1", intent_id=r["intent_id"],
                             input_digest=r["input_digest"], outcome=outcome, evidence=evidence, observation=obs)
-            need(len(canonical(response)) <= 65536, "native lifecycle response bound exceeded")
+            need(len(canonical(response)) <= 65536, "workspace response bound exceeded")
             return response
 
 
-def main():
+class WorkspaceGitHub(Adapter):
+    """Reuse production publication, exact-head checks, merge observation and uncertain POST recovery.
+
+    This installation explicitly trusts one exclusive remote writer. The stable workspace lock
+    covers pushes and publication; Git ref changes additionally use exact remote leases. Unlike
+    locked_head mode, GitHub cannot enforce a POST head precondition in this mode. Administrators
+    must prevent all writers outside this installation, including automation and human pushes.
+    """
+    def __init__(self, config, config_digest, service, workspace):
+        super().__init__(config, config_digest, service)
+        self.workspace = workspace
+
+    def prepared(self, record):
+        payload, revision = self.payload(record), datum(record["request"]["inputs"], "revision")
+        matches = [r["prepared"] for r in self.workspace.journal.state["records"].values()
+                   if r["request"]["operation"] == "prepare_candidate_v1" and r["phase"] == "done"
+                   and r["prepared"]["commit"] == revision and publication_payload(r["prepared"]) == payload]
+        need(len(matches) == 1, "publication requires one exact local accepted-candidate preparation")
+        return matches[0]
+
+    def locked_head(self, payload, revision):
+        # An explicit alternative to production locked_head, never a fallback after refusal.
+        matches = [r["prepared"] for r in self.workspace.journal.state["records"].values()
+                   if r["prepared"] is not None and publication_payload(r["prepared"]) == payload
+                   and r["prepared"]["commit"] == revision and r["phase"] == "done"]
+        need(len(matches) == 1 and self.workspace.remote_ref(matches[0]) == revision,
+             "exclusive owned publication head changed")
+
+    def prior(self, p):
+        if p["previous_owner"] is None:
+            return None
+        parent = self.workspace.journal.state["records"][p["previous_owner"]]["prepared"]
+        return self.journal.publication(prepared_subject(parent), parent["commit"])
+
+    def marker(self, record):
+        if record["request"]["operation"] == "publish_pr":
+            previous = self.prior(self.prepared(record))
+            if previous is not None:
+                return self.marker(previous)
+        return super().marker(record)
+
+    def push(self, p):
+        w = self.workspace
+        w.owned(w.preparation(p), p)
+        remote = w.remote_ref(p)
+        parent = None if p["previous_owner"] is None else p["source_commit"]
+        need(remote in (parent, p["commit"]), "foreign remote branch retained")
+        need(w.git("rev-parse", p["commit"] + "^").decode() == p["source_commit"], "prepared parent changed")
+        if remote != p["commit"]:
+            url = "ssh://git@github.com/" + w.config["repository"] + ".git"
+            w.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":" + (parent or ""),
+                  url, p["commit"] + ":refs/heads/" + p["branch"])
+        self.locked_head(publication_payload(p), p["commit"])
+
+    def execute(self, record):
+        if record["request"]["operation"] != "publish_pr":
+            return super().execute(record)
+        p = self.prepared(record)
+        self.workspace.lineage(p)
+        previous = self.prior(p)
+        if previous is None:
+            if record["phase"] == "prepared":
+                self.push(p)
+            return super().execute(record)
+        # Repair changes only the exact owned head of the same open PR; no second POST.
+        if record["phase"] == "done":
+            return super().reconcile(record)
+        need(previous["object"] is not None, "continuation lacks an owned PR")
+        remote = self.service.request("GET", self.repo + "/pulls/" + str(previous["object"]["number"]))
+        need(remote.get("state") == "open" and remote.get("merged") is False, "closed PR cannot advance")
+        if remote.get("head", {}).get("sha") == p["source_commit"]:
+            self.validate_remote(previous, remote)
+        else:
+            self.validate_remote(record, remote)
+        record.update(phase="dispatched", object=previous["object"])
+        self.journal.save()  # Authority is durable before push, including lost-push recovery.
+        self.push(p)
+        self.read_object(record)
+        return self.finish(record, previous["object"])
+
+    def reconcile(self, record):
+        if record["request"]["operation"] == "publish_pr" and record["phase"] == "dispatched":
+            p = self.prepared(record)
+            if p["previous_owner"] is not None:
+                return self.execute(record)
+        return super().reconcile(record)
+
+
+def workspace_main():
     os.environ.clear()
     os.umask(0o077)
-    need(sys.flags.isolated and sys.flags.no_site and len(sys.argv) == 1, "isolated stdin-only adapter required")
+    need(sys.flags.isolated and sys.flags.no_site and len(sys.argv) == 1, "isolated stdin adapter required")
     signal.signal(signal.SIGALRM, deadline_expired)
     signal.alarm(WALL_SECONDS)
     try:
         r = decode(sys.stdin.buffer.read(LIMIT + 1))
-        c = load_config()
-        response = ImplAdapter(c, CONFIG_DIGEST, GitHub(c) if r.get("operation") != "impl_prepare_v1" else None).handle(r)
+        c = workspace_load_config()
+        # Initial preparation is offline. A continuation must read back its prior
+        # publication before admitting the next local commit, so it needs transport too.
+        offline = r.get("operation") == "prepare_candidate_v1" and "previous" not in r.get("inputs", {})
+        response = WorkspaceAdapter(c, CONFIG_DIGEST, None if offline else GitHub(c)).handle(r)
         sys.stdout.buffer.write(canonical(response) + b"\n")
         sys.stdout.buffer.flush()
     finally:
         signal.alarm(0)
 
 
-
-def impl_schema_documents():
+def workspace_schema_documents():
     def obj(properties):
         return dict(type="object", additionalProperties=False, required=list(properties), properties=properties)
     def text(pattern=None, maximum=65536):
@@ -897,13 +845,11 @@ def impl_schema_documents():
         task_id=text(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"), result_id=dig, snapshot_id=dig, source_snapshot=dig, source_predecessor=dict(anyOf=[dict(type="null"), dig]),
         source_commit=sha, branch=text(), base=text(), commit=sha, tree=sha, worktree=path,
         title=text(maximum=200), body=text(maximum=48000))
-    doc("scenario-impl-prepared", prepared)
-    doc("scenario-impl-outcome", dict(subject=text(r"impl:sha256:[0-9a-f]{64}"), revision=sha, result_id=dig,
-        snapshot_id=dig, ready=dict(type="boolean"), repair=dict(type="boolean"), reasons=array(text(), 32), pr_id=positive, pr_number=positive))
-    doc("scenario-impl-publication", dict(title=text(maximum=200), body=text(maximum=48000)))
-    doc("scenario-impl-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:4#/$defs/TaskReceipt"},
+    doc("git-workspace-prepared", prepared)
+    doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
+    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:4#/$defs/TaskReceipt"},
         source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])))
-    doc("scenario-impl-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig,
+    doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig,
         candidate_snapshot=dig, predecessor_snapshot=dict(anyOf=[dict(type="null"), dig]), source_content_digest=dig, source_commit=sha, candidate_tree=sha,
         transport_commit=sha, repository=path))
     check = obj(dict(kind={"const": "check"}, name=text(maximum=200), app_id=positive))
@@ -914,27 +860,21 @@ def impl_schema_documents():
         repo=path, task_store=path, worktree_root=path, base=text(), branch_prefix=text(), source_commit=sha,
         source_content_digest=dig, af=path, af_digest=dig, git=path, git_digest=dig, ssh_config=path,
         ssh_config_digest=dig, author_name=text(maximum=200), author_email=text(maximum=200),
-        required_checks=required_checks, reviewers=array(who, 15))
-    doc("scenario-impl-config", config)
+        required_checks=required_checks, reviewers=array(who, 15), publication_mode={"const": "exclusive_owned_writer"},
+        operations={"type":"array", "items":{"enum":sorted(OPS | set(PAYLOAD_SCHEMAS) | {"observe"})}, "minItems":1, "maxItems":6, "uniqueItems":True})
+    doc("git-workspace-config", config)
     request = obj(dict(schema={"const": "af/scenario-adapter-request@3"}, intent_id=dig, input_digest=dig,
         operation={"enum": sorted(OPS - {"observe"})}, destination=text(), inputs={"type": "object",
             "additionalProperties": {"$ref": "urn:af:schema:scenario:4#/$defs/Datum"}}))
     rec = obj(dict(request=request, phase={"enum": ["reserved", "started", "done"]},
         prepared=dict(anyOf=[dict(type="null"), obj(dict(schema={"const": PREPARED}, **prepared))]),
-        object=dict(anyOf=[dict(type="null"), obj(dict(id=positive, number=positive))]),
         inode=nullable_int, device=nullable_int,
         build=dict(anyOf=[dict(type="null"), obj(dict(device=positive, inode=positive))]),
         reservations=obj({kind: obj(dict(slot=dict(type="integer", minimum=0, maximum=RESERVATION_SLOTS - 1),
                                        published=dict(type="boolean"))) for kind in ("worktree", "build")}),
-        cleaned=array(dig, 3), cleanup_pending=dict(anyOf=[dict(type="null"), dig]),
-        progress=array({"enum": ["push", "post", "build", "worktree", "branch", "remote"]}, 6)))
-    doc("scenario-impl-state", dict(config_digest=dig, checksum=dig, records={"type": "object", "maxProperties": IMPL_MAX_RECORDS,
-        "propertyNames": dig, "additionalProperties": rec}), version=2)
+        cleaned=array(dig, WORKSPACE_MAX_RECORDS), cleanup_pending=dict(anyOf=[dict(type="null"), dig]),
+        progress=array({"enum": ["branch", "remote"]}, 2)))
+    doc("git-workspace-state", dict(config_digest=dig, checksum=dig, records={"type": "object", "maxProperties": WORKSPACE_MAX_RECORDS,
+        "propertyNames": dig, "additionalProperties": rec}), version=1)
     return schemas
 
-if __name__ == "__main__":
-    try:
-        main()
-    except (Refused, OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.SubprocessError):
-        sys.stderr.write("Implementation adapter refused input or machine state; retain receipts and owned workspace\n")
-        sys.exit(1)

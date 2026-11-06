@@ -259,7 +259,7 @@ def validate_request(request, config):
     string(texts["revision"], SHA)
     if observe:
         string(texts["subject"], PUB)
-        need(texts["condition"] in ("checks_passed", "merged"), "unsupported observation")
+        need(texts["condition"] in ("checks_passed", "checks_completed", "merged"), "unsupported observation")
         return texts, None
     payload = validate_payload(op, decode(texts["body"].encode()), config)
     need(texts["subject"] == subject(op, payload), "subject does not bind exact operation content")
@@ -612,7 +612,10 @@ class Adapter:
         record = self.journal.publication(subject_value, revision)
         return record, self.read_object(record)
 
-    def green(self, revision):
+    def checks(self, revision):
+        """One exact-head enumeration for both green gating and terminal outcomes."""
+        evidence = []
+        pending = False
         required = self.config["required_checks"]
         for kind in ("check", "status"):
             checks = [c for c in required if c["kind"] == kind]
@@ -640,24 +643,37 @@ class Adapter:
                             need(row["sha"] == revision, "status belongs to a stale SHA")
                         matches.append(row)
                 if not matches:
-                    return False
+                    pending = True
+                    continue
                 latest = max(matches, key=lambda row: integer(row["id"]))
                 if kind == "check":
                     app_suites = [s for s in suites if isinstance(s.get("app"), dict)
                                   and s["app"].get("id") == wanted["app_id"]]
                     if not app_suites:
-                        return False
+                        pending = True
+                        continue
                     newest = max(app_suites, key=lambda s: integer(s["id"]))
                     need(newest.get("head_sha") == revision, "stale check suite")
-                    if (newest.get("status") != "completed" or newest.get("conclusion") != "success"
-                            or not isinstance(latest.get("check_suite"), dict)
-                            or latest["check_suite"].get("id") != newest["id"]):
-                        return False
-                    if latest.get("status") != "completed" or latest.get("conclusion") != "success":
-                        return False
-                elif latest.get("state") != "success":
-                    return False
-        return True
+                    current = (isinstance(latest.get("check_suite"), dict)
+                               and latest["check_suite"].get("id") == newest["id"])
+                    conclusions = (latest.get("conclusion"), newest.get("conclusion"))
+                    failures = {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}
+                    complete = (current and latest.get("status") == "completed"
+                                and newest.get("status") == "completed"
+                                and all(c == "success" or c in failures for c in conclusions))
+                    outcome = ("ready" if all(c == "success" for c in conclusions) else "repairable") if complete else "pending"
+                    suite_id = integer(newest["id"])
+                else:
+                    state = latest.get("state")
+                    outcome = "ready" if state == "success" else "repairable" if state in ("failure", "error") else "pending"
+                    suite_id = None
+                pending |= outcome == "pending"
+                evidence.append(dict(identity=wanted, id=integer(latest["id"]), suite_id=suite_id, outcome=outcome))
+        state = "pending" if pending else "repairable" if any(e["outcome"] == "repairable" for e in evidence) else "ready"
+        return state, evidence
+
+    def green(self, revision):
+        return self.checks(revision)[0] == "ready"
 
     def finish(self, record, obj):
         record.update(phase="done", object=obj,
@@ -792,12 +808,16 @@ class Adapter:
                 string(remote.get("merge_commit_sha"), SHA)
         else:
             self.locked_head(self.payload(source), texts["revision"])
-            satisfied = self.green(texts["revision"])
+            state, checks = self.checks(texts["revision"])
+            satisfied = state != "pending" if texts["condition"] == "checks_completed" else state == "ready"
         # Bracket CI/merge observation with independently fetched exact PR identity and head.
         after = self.read_object(source)
         need(after.get("state") == remote["state"] and after.get("merged") is remote["merged"],
              "PR lifecycle changed during observation")
         evidence = "Exact PR " + str(source["object"]["number"]) + " at " + texts["revision"] + ": " + texts["condition"]
+        if texts["condition"] == "checks_completed":
+            evidence = canonical(dict(schema="af/github-check-outcome@1", subject=texts["subject"],
+                                      revision=texts["revision"], state=state, checks=checks)).decode()
         return "done", evidence, {"subject": texts["subject"], "revision": texts["revision"],
                                   "condition": texts["condition"], "satisfied": satisfied, "evidence": evidence}
 
@@ -896,6 +916,11 @@ def schema_documents():
              "config_digest": text(DIGEST), "checksum": text(DIGEST),
              "records": {"type": "object", "maxProperties": MAX_RECORDS,
                          "propertyNames": text(DIGEST), "additionalProperties": record}}))
+    outcome = {"enum": ["pending", "ready", "repairable"]}
+    document("github-check-outcome", obj({"schema": {"const": "af/github-check-outcome@1"},
+        "subject": text(PUB), "revision": text(SHA), "state": outcome,
+        "checks": array(obj({"identity": {"oneOf": [check, status]}, "id": positive,
+            "suite_id": {"anyOf": [positive, {"type": "null"}]}, "outcome": outcome}))}))
     return documents
 
 

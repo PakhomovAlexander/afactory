@@ -293,12 +293,6 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         observation: None,
     };
     valid("scenario-adapter-request-v3.json", &request);
-    let mut recovered = request.clone();
-    recovered.method = Method::Recover;
-    recovered.operation = Operation::ImplPrepareV1;
-    valid("scenario-adapter-request-v3.json", &recovered);
-    recovered.operation = Operation::PublishPr;
-    assert!(!schema("scenario-adapter-request-v3.json").is_valid(&json!(recovered)));
     valid("scenario-adapter-response-v1.json", &response);
     valid(
         "scenario-owned-file-v1.json",
@@ -1581,4 +1575,80 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             Operation::Observe | Operation::ExperimentSubmitV1
         )));
     }
+}
+
+#[test]
+fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
+    let (mut bundle, policy) = simple();
+    let def = bundle.definitions.get_mut("main").unwrap();
+    def.steps[0].when = Some(lit(Datum::Boolean(false)));
+    let skipped = Binding::Project {
+        value: Box::new(Binding::Step {
+            step: "review".into(),
+            port: "result".into(),
+        }),
+        projection: Projection::DecisionApproved,
+    };
+    let selection = Binding::Select {
+        condition: Box::new(lit(Datum::Boolean(false))),
+        when_true: Box::new(skipped),
+        when_false: Box::new(lit(Datum::Boolean(true))),
+    };
+    def.result.insert("ok".into(), selection.clone());
+    def.completion = vec![selection];
+    bundle.validate().unwrap();
+    valid("scenario-bundle-v4.json", &bundle);
+    let mut run = Run::new(
+        "selection".into(),
+        Pin::new(bundle.clone(), policy).unwrap(),
+        BTreeMap::new(),
+        limits(),
+        START,
+        None,
+    )
+    .unwrap();
+    for _ in 0..3 {
+        run.prepare(START).unwrap();
+    }
+    run.validate().unwrap();
+    assert_eq!(run.status, Status::Succeeded);
+    assert_eq!(
+        run.frames["root"].outputs.as_ref().unwrap()["ok"],
+        Datum::Boolean(true)
+    );
+    let def = bundle.definitions.get_mut("main").unwrap();
+    let Binding::Select { condition, .. } = def.result.get_mut("ok").unwrap() else {
+        panic!()
+    };
+    *condition = Box::new(lit(Datum::Text("truthy".into())));
+    assert!(bundle.validate().is_err());
+    let def = bundle.definitions.get_mut("main").unwrap();
+    let Binding::Select {
+        condition,
+        when_true,
+        ..
+    } = def.result.get_mut("ok").unwrap()
+    else {
+        panic!()
+    };
+    *condition = Box::new(lit(Datum::Boolean(true)));
+    *when_true = Box::new(lit(Datum::Text("different type".into())));
+    assert!(bundle.validate().is_err());
+    let def = bundle.definitions.get_mut("main").unwrap();
+    def.outputs.insert("ok".into(), Port::Decision);
+    def.result.insert(
+        "ok".into(),
+        Binding::Select {
+            condition: Box::new(lit(Datum::Boolean(true))),
+            when_true: Box::new(Binding::Step {
+                step: "review".into(),
+                port: "result".into(),
+            }),
+            when_false: Box::new(Binding::Step {
+                step: "review".into(),
+                port: "result".into(),
+            }),
+        },
+    );
+    assert!(bundle.validate().unwrap_err().contains("non-Decision"));
 }

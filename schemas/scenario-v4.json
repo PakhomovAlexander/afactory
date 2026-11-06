@@ -159,9 +159,8 @@
         "cleanup_owned_file",
         "observe",
         "experiment_submit_v1",
-        "impl_prepare_v1",
-        "impl_publish_v1",
-        "impl_cleanup_v1"
+        "prepare_candidate_v1",
+        "cleanup_workspace_v1"
       ]
     },
     "ActionReceipt": {
@@ -496,7 +495,7 @@
           ],
           "properties": {
             "kind": {
-              "const": "impl_subject"
+              "const": "workspace_subject"
             }
           }
         },
@@ -508,7 +507,7 @@
           ],
           "properties": {
             "kind": {
-              "const": "impl_revision"
+              "const": "workspace_revision"
             }
           }
         },
@@ -520,7 +519,7 @@
           ],
           "properties": {
             "kind": {
-              "const": "impl_body"
+              "const": "workspace_publication"
             }
           }
         },
@@ -532,7 +531,19 @@
           ],
           "properties": {
             "kind": {
-              "const": "impl_repair_needed"
+              "const": "workspace_receipt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "checks_state"
             }
           }
         }
@@ -638,8 +649,8 @@
           "required": [
             "source",
             "condition",
-            "passed",
-            "failed"
+            "when_true",
+            "when_false"
           ],
           "properties": {
             "source": {
@@ -648,10 +659,10 @@
             "condition": {
               "$ref": "urn:af:schema:scenario:4#/$defs/Binding"
             },
-            "passed": {
+            "when_true": {
               "$ref": "urn:af:schema:scenario:4#/$defs/Binding"
             },
-            "failed": {
+            "when_false": {
               "$ref": "urn:af:schema:scenario:4#/$defs/Binding"
             }
           }
@@ -2216,8 +2227,7 @@
           "enum": [
             "reconcile",
             "execute",
-            "observe",
-            "recover"
+            "observe"
           ]
         },
         "intent_id": {
@@ -2241,29 +2251,7 @@
             "$ref": "urn:af:schema:scenario:4#/$defs/Datum"
           }
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "method": {
-                "const": "recover"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "operation": {
-                "enum": [
-                  "impl_prepare_v1",
-                  "impl_publish_v1",
-                  "impl_cleanup_v1"
-                ]
-              }
-            }
-          }
-        }
-      ]
+      }
     },
     "Response": {
       "type": "object",

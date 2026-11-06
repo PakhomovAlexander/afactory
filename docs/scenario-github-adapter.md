@@ -209,13 +209,16 @@ Cancellation does not roll back an effect. There is no automatic unsafe “force
 The mock service, private fake token and installed transport fixture in
 `test-scenario-github-adapter.py` and `scenario::production_github_adapter_*` test the production
 stdin/CLI path, crashes, concurrency, stale checks, scope, receipts and ambiguous recovery without
-using developer credentials or real external mutations. Schemas live under `schemas/github-*-v1.json`, with retained journals in
-`schemas/github-adapter-state-v3.json`;
+using developer credentials or real external mutations. Schemas live under `schemas/github-*-v1.json`;
 `python3 -I scripts/scenario-github-schemas.py` checks their parity with the adapter contract.
 
 The current adapter reads `af/scenario-adapter-request@3` and writes its embedded requests in
-`af/github-adapter-state@3`; earlier request and journal generations fail closed. Config and operation
+`af/github-adapter-state@3`; earlier request/journal generations fail closed. Config and operation
 payloads retain generation 1. Finish old Runs under their original release/installation before
 upgrading; there is no journal migration or automatic replay through a replacement installation.
 The [performance loop integration decision](adr/2026-11-03-native-performance-scenario-loops.md)
 records this protocol integration without changing publication authority.
+
+The optional [Git workspace capability](scenario-git-workspace.md) reuses this production adapter
+for accepted-candidate publication and waits. Its explicit exclusive writer mode is separate
+from this installer's unchanged server-locked-head contract.

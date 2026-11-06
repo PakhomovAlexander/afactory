@@ -218,6 +218,8 @@ impl VerificationResultV1 {
     }
 }
 
+pub const IMPLEMENTATION_EVALUATION_INPUT_V1: &str = "af/ImplementationEvaluationInput@1";
+
 /// Public executable-review evidence, beside the unchanged flat ReviewerResult@2.
 pub const IMPLEMENTATION_TEST_EVIDENCE_V1: &str = "af/ImplementationTestEvidence@1";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

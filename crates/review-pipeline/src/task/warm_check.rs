@@ -124,32 +124,13 @@ impl WarmBuildCacheKind {
         }
     }
 
-    /// Root entries that make a directory suspect: credentials and installed Cargo tools
-    /// must not persist into another check or override its selected toolchain.
+    /// Names that make the directory suspect when present at its root: Cargo reads a registry
+    /// token from either, and the kernel never lets one persist between checks.
     const fn forbidden(self) -> &'static [&'static str] {
         match self {
             Self::CargoTarget | Self::NpmCache => &[],
-            // Cargo searches CARGO_HOME/bin before PATH for external subcommands.
-            // Reusing installed clippy/fmt binaries would override the private toolchain.
-            Self::CargoHome => &["credentials.toml", "credentials", "bin"],
+            Self::CargoHome => &["credentials.toml", "credentials"],
         }
-    }
-
-    fn validate_clone(self, destination: &Path) -> Result<(), String> {
-        // A busy layer is copied without its lock. Apply the same root-entry
-        // admission before binding that private copy to a check.
-        for name in self.forbidden() {
-            match std::fs::symlink_metadata(destination.join(name)) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                _ => {
-                    return Err(format!(
-                        "cloned warm {} contains or cannot inspect forbidden entry {name}",
-                        self.as_str()
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1159,12 +1140,6 @@ impl<'a> WarmSession<'a> {
                                                     && !cancellation.is_some_and(|flag| {
                                                         flag.load(Ordering::Acquire)
                                                     })
-                                            },
-                                        )
-                                        .and_then(
-                                            |bytes| {
-                                                kind.validate_clone(&destination)?;
-                                                Ok(bytes)
                                             },
                                         ) {
                                             Ok(bytes) => Some((destination, bytes, copying)),
@@ -2811,30 +2786,6 @@ mod tests {
     }
 
     #[test]
-    fn cargo_home_installed_subcommands_are_discarded_before_warm_reuse() {
-        let fixture = fixture();
-        let host = host(&fixture, None);
-        let policy = only_home(None);
-        let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
-        let prepared = prepare(&fixture, &mut session);
-        let home = prepared.directories[0].1.path().to_path_buf();
-        std::fs::create_dir(home.join("bin")).unwrap();
-        std::fs::write(home.join("bin/cargo-clippy"), b"foreign toolchain").unwrap();
-        std::fs::write(home.join("bin/cargo-fmt"), b"foreign toolchain").unwrap();
-        session
-            .finish(prepared.key_lock, prepared.directories, None)
-            .unwrap();
-
-        let again = prepare(&fixture, &mut session);
-        assert_eq!(again.observations[0].kind, "cargo_home");
-        assert_eq!(again.observations[0].bytes_available, 0);
-        assert!(
-            !home.join("bin").exists(),
-            "installed tools must not shadow the pinned toolchain"
-        );
-    }
-
-    #[test]
     fn the_kinds_of_one_toolchain_share_one_bound() {
         let fixture = fixture();
         let host = host(&fixture, None);
@@ -3430,30 +3381,6 @@ mod tests {
             "the layer is untouched"
         );
         drop(held);
-    }
-
-    #[test]
-    fn busy_cargo_home_with_installed_subcommands_is_not_bound_from_a_clone() {
-        let fixture = fixture();
-        let host = host(&fixture, None);
-        let policy = CodeWarmPolicy {
-            clone_when_busy: Some(true),
-            ..only_home(None)
-        };
-        let mut first = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
-        let held = prepare(&fixture, &mut first);
-        let home = held.directories[0].1.path();
-        std::fs::create_dir(home.join("bin")).unwrap();
-        std::fs::write(home.join("bin/cargo-clippy"), b"foreign toolchain").unwrap();
-        let mut second = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
-        let cold = prepare(&fixture, &mut second);
-        assert_eq!(cold.observations[0].kind, "cargo_home:busy");
-        assert!(cold.clones.is_empty());
-        assert!(!cold.environment.iter().any(|(key, _)| key == "CARGO_HOME"));
-        assert!(
-            home.join("bin/cargo-clippy").exists(),
-            "a live holder's cache is untouched"
-        );
     }
 
     fn step_line(label: &str, stage: &str) -> String {

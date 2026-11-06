@@ -22,8 +22,7 @@
       "enum": [
         "reconcile",
         "execute",
-        "observe",
-        "recover"
+        "observe"
       ]
     },
     "intent_id": {
@@ -47,27 +46,5 @@
         "$ref": "urn:af:schema:scenario:4#/$defs/Datum"
       }
     }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "method": {
-            "const": "recover"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "operation": {
-            "enum": [
-              "impl_prepare_v1",
-              "impl_publish_v1",
-              "impl_cleanup_v1"
-            ]
-          }
-        }
-      }
-    }
-  ]
+  }
 }

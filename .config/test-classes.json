@@ -366,14 +366,14 @@
     "test-provider-auth-host.py": "functional",
     "test-release-resolve.py": "functional",
     "test-scenario-github-adapter.py": "e2e",
+    "test-scenario-git-workspace.py": "e2e",
     "test-stress-proof.py": "e2e",
     "test-task-preflight.py": "functional",
     "test-test-classes.py": "functional",
     "test-test-quarantine.py": "functional",
     "test-test-time-report.py": "functional",
     "test-worker-development.py": "e2e",
-    "test-scenario-merge-watch.py": "e2e",
-    "test-scenario-impl.py": "e2e"
+    "test-scenario-merge-watch.py": "e2e"
   },
   "utilities": [
     "test-classes.py",

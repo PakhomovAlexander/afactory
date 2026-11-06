@@ -2,8 +2,8 @@
 mod adapter;
 #[cfg(test)]
 mod admission_tests;
+mod checks;
 pub(crate) mod contract;
-pub(crate) mod implementation;
 mod roadmap;
 mod runtime;
 mod schedule;
@@ -13,6 +13,7 @@ mod store;
 pub(crate) mod template;
 #[cfg(test)]
 mod tests;
+pub(crate) mod workspace;
 
 use clap::{Args, Subcommand};
 use contract::*;
@@ -45,28 +46,6 @@ pub(crate) struct Definition {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum ScenarioCommand {
-    /// Capture one accepted implementation candidate as private, filter-free Git objects
-    #[command(
-        override_usage = "af scenario impl-source --file FILE --repo REPO\n                        --task-state STORE --into DIR [OPTIONS]",
-        long_about = "Validate an exact accepted Task receipt and its committed source, then encode its candidate Snapshot as private Git objects. No source checkout, branch or remote is changed. Existing complete captures are verified and reused; incomplete or foreign captures are refused.",
-        after_long_help = "Examples:\n  # needs: an exact accepted implementation Task receipt and committed source\n  af scenario impl-source --file source.json --repo /project \\\n    --task-state /private/tasks --into /private/staging/source --json"
-    )]
-    ImplSource {
-        /// af/scenario-impl-source-request@1 request naming the accepted Task and source commit
-        #[arg(long)]
-        file: PathBuf,
-        /// Repository the accepted Task belongs to
-        #[arg(long)]
-        repo: PathBuf,
-        /// Private native Task Store
-        #[arg(long)]
-        task_state: PathBuf,
-        /// Private capture leaf outside the repository and Task Store
-        #[arg(long)]
-        into: PathBuf,
-        #[command(flatten)]
-        inspect: Inspect,
-    },
     /// Retrieve one provenance-checked native findings, History Capture or adoption artifact
     #[command(
         override_usage = "af scenario evidence-source <TASK_ID> --artifact-id ID\n                            --repo REPO --task-state STORE [OPTIONS]",
@@ -84,6 +63,27 @@ pub(crate) enum ScenarioCommand {
         /// Private native Task Store containing the artifact and source receipts
         #[arg(long)]
         task_state: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Export an ordinary accepted Task candidate as private, provenance-checked Git objects
+    #[command(
+        override_usage = "af scenario candidate-source --file FILE --repo REPO\n                             --task-state STORE --into DIR [OPTIONS]",
+        after_long_help = "Examples:\n  # needs: an exact accepted Task receipt in a versioned request\n  af scenario candidate-source --file request.json --repo /project \\\n    --task-state /private/tasks --into /private/captures/candidate --json"
+    )]
+    CandidateSource {
+        /// af/git-candidate-source-request@1 JSON containing the exact accepted Task receipt
+        #[arg(long)]
+        file: PathBuf,
+        /// Repository whose Git history anchors the Task source
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store holding the accepted result and Snapshots
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Private capture directory outside the repository and Task Store
+        #[arg(long)]
+        into: PathBuf,
         #[command(flatten)]
         inspect: Inspect,
     },
@@ -348,31 +348,24 @@ fn at(inspect: &Inspect) -> Result<u64> {
 }
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
-        ScenarioCommand::ImplSource {
+        ScenarioCommand::CandidateSource {
             file,
             repo,
             task_state,
             into,
             inspect,
         } => {
-            let request: implementation::SourceRequest =
+            let request: workspace::SourceRequest =
                 serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
                     .map_err(|e| e.to_string())?;
-            let receipt = crate::task_execution::candidate::implementation_source(
+            request.validate()?;
+            let receipt = crate::task_execution::candidate::candidate_source(
                 &request,
                 &repo,
                 &task_state,
                 &into,
             )?;
-            if inspect.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?
-                );
-            } else {
-                println!("{}", receipt.repository.display());
-            }
-            Ok(0)
+            print(&receipt, &inspect)
         }
         ScenarioCommand::ExperimentSource {
             file,

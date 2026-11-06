@@ -4832,7 +4832,7 @@ fn implementation_test_evidence_requires_build_install_test_success_and_refuses_
             },
             ImplementationTestCommandV1 {
                 purpose: ImplementationTestPurposeV1::Test,
-                command: "target/private-install/bin/devrec --help".into(),
+                command: "target/private-install/bin/sample --help".into(),
                 exit_code: Some(0),
                 evidence: "Exercised the installed CLI".into(),
             },
@@ -4894,4 +4894,36 @@ fn implementation_test_evidence_requires_build_install_test_success_and_refuses_
         !validator("implementation-test-evidence-v1.json")
             .is_valid(&serde_json::to_value(evidence).unwrap())
     );
+}
+
+#[test]
+fn implementation_evaluation_input_requires_testing_and_closed_typed_envelopes() {
+    let digest = format!("sha256:{}", "1".repeat(64));
+    let envelope = |kind: &str, bound: bool, payload: Value| {
+        let mut value = json!({"artifact_id":digest,"artifact_type":kind,"payload":payload});
+        if bound {
+            value["snapshot_id"] = json!(digest);
+        }
+        value
+    };
+    let mut input = json!({
+        "source":[envelope("af/SourceTree@1", true, json!({}))],
+        "checks":[envelope("af/TaskCheckReceipt@2", true, json!({}))],
+        "requirements":[envelope("af/Requirements@1", false, json!({}))],
+        "testing":[envelope("af/ImplementationTestEvidence@1", true, json!({
+            "schema":"af/implementation-test-evidence@1","snapshot_id":digest,
+            "status":"unavailable","reason":"Compiler unavailable; no tests ran","commands":[]
+        }))]
+    });
+    assert_valid("implementation-evaluation-input-v1.json", &input);
+    for port in ["testing", "source", "checks", "requirements"] {
+        let mut missing = input.clone();
+        missing.as_object_mut().unwrap().remove(port);
+        assert!(
+            !validator("implementation-evaluation-input-v1.json").is_valid(&missing),
+            "{port}"
+        );
+    }
+    input["testing"][0]["artifact_type"] = json!("consumer/Other@1");
+    assert!(!validator("implementation-evaluation-input-v1.json").is_valid(&input));
 }

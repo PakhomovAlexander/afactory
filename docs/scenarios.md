@@ -22,13 +22,11 @@ references and type mismatches fail admission. A `project` binding selects a typ
 `task_conclusion`, `task_result_id`, `task_output_id` or `task_output_snapshot` (the latter two
 name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`. Its `value` is
 another binding and its `projection` is an object with `kind`. An `equals` binding compares scalar
-`left` and `right` bindings of the same type and returns a boolean. A `select` binding takes a
-boolean `condition` and same-typed `passed` and `failed` bindings, resolving only the selected
-available value. It cannot select Decisions. Implementation preparation additionally exposes
-`impl_subject`, `impl_revision`, `impl_body`; `impl_repair_needed` projects a checked exact-head
-implementation outcome. This allows a Task's evidenced
+`left` and `right` bindings of the same type and returns a boolean. This allows a Task's evidenced
 `no_worthwhile_optimization` conclusion to skip implementation and still complete successfully.
-Root inputs and literals are scalar data; they
+A `select` binding has boolean `condition` and equal-type `when_true`/`when_false` bindings;
+it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
+are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
 
 Each step declares `id`, `operation`, `inputs`, `outputs`, `when` (null or boolean binding),
@@ -101,12 +99,7 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   `subject`, `revision`, and `body`. `requires_decision` adds a signed `decision` input;
   `required_condition` adds an `evidence` observation input with that exact condition. Both must
   match the same object and revision. Publication (`publish_pr`, `followup`) always requires a
-  signed human decision. Those grants do not authorize Task delivery, commit, push, merge or shell.
-  The separate [impl lifecycle](scenario-impl.md) adds typed `impl_prepare_v1`, `impl_publish_v1`
-  and `impl_cleanup_v1` Actions. Preparation takes an accepted `candidate` Task; publication and
-  cleanup take its `prepared` Action provenance. Signed publication binds deterministic commit
-  bytes and permits the exact owned push/PR; cleanup requires real exact-head merge evidence.
-  Neither operation grants merge or an arbitrary shell.
+  signed human decision. No Task delivery, commit, push, merge or blanket shell grant follows.
   The native `experiment_submit_v1` Action additionally takes an accepted `candidate` Task receipt;
   its separate verified-report Wait is described in the performance runbook.
 
@@ -152,8 +145,7 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@3`) carry `method` (`reconcile`, `execute`, `observe`,
-or the native lifecycle-only `recover`),
+Requests (`af/scenario-adapter-request@3`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
@@ -165,17 +157,9 @@ Before returning `done`, it must retain a service receipt that reconciliation ca
 means the service has authoritatively established that no effect exists; only then may af call
 `execute` with the same key. `failed` means a definitive unsuccessful operation, safe for a new
 bounded attempt. Timeouts, truncated output and lost connections never mean absent. Execute
-Native implementation lifecycle Actions may return pending for a retained dispatched intent;
-the kernel can issue the explicit bounded `recover` method under that same intent, exact inputs,
-machine grant and original decision. Only those typed operations admit recovery; a fresh intent
-cannot recover, and reconciliation/observation never executes a remaining substep. Execute/recover
 must enforce exact object-revision preconditions, including checking the current head atomically
 with publication where the service supports it, and refuse when it cannot establish them. This
 contract, rather than process exit, prevents repeated PRs or follow-ups across restart.
-
-The reusable native [impl Scenario](scenario-impl.md) includes an executable reviewer, bounded
-implementation continuations, exact signed push/PR authority and cleanup after human merge.
-Its machine adapter is separately installed and pins native tool and configuration bytes.
 
 An optional production [GitHub adapter](scenario-github-adapter.md) implements publication,
 exact-head CI and merge observation, approved follow-up issues and bounded owner review requests.
@@ -189,7 +173,12 @@ wrapper atomically without replacing an existing file, and returns an `owned_fil
 `cleanup_owned_file` takes that receipt as `owned`, checks device, inode, owner and complete
 content digest, and removes only that file. Unowned and modified content is preserved; conflicting
 recovery content remains in a named cleanup claim. Neither operation recursively removes a user's
-workspace. Whole-workspace removal is outside the built-in cleanup scope.
+workspace. Whole-workspace removal is outside the built-in cleanup scope. The optional
+[Git workspace capability](scenario-git-workspace.md) supplies independently owned worktree/build
+preparation and merge-gated cleanup through installed Actions.
+
+The offline [`impl` recipe](scenario-impl.md) generates configurable consuming packages and
+a finite implementation-to-human-merge Scenario using these ordinary capabilities.
 
 ## Manual bugfix workflow merge watcher
 

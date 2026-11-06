@@ -125,36 +125,47 @@ pub(super) fn instantiate(d: &Dispatch, goal: Option<&super::roadmap::Goal>) -> 
             serde_json::to_value(goal).map_err(|e| e.to_string())?,
         );
     }
+    if d.inputs.contains_key("publication") {
+        require(
+            matches!(d.inputs.get("scenario_evidence"), Some(Datum::Observation(o)) if o.condition == "checks_completed"),
+            "Repair publication requires completed-check evidence",
+        )?;
+    }
     if let Some(Datum::Observation(observation)) = d.inputs.get("scenario_evidence") {
         observation.validate()?;
         require(
             observation.satisfied
                 && matches!(
                     observation.condition.as_str(),
-                    "bounded_evidence" | "native_verified" | "implementation_outcome"
+                    "bounded_evidence" | "native_verified" | "checks_completed"
                 ),
-            "Fresh Task requires satisfied bounded research or verified native experiment evidence",
+            "Fresh Task requires satisfied bounded observation evidence",
         )?;
-        if observation.condition == "implementation_outcome" {
-            let outcome = super::implementation::CheckOutcome::parse(observation)?;
+        if observation.condition == "checks_completed" {
+            let outcome = super::checks::Outcome::parse(observation)?;
+            require(
+                outcome.state == "repairable",
+                "Repair requires completed failing checks",
+            )?;
+            let Some(Datum::Action(publication)) = d.inputs.get("publication") else {
+                return Err("Check repair requires exact prepared publication".into());
+            };
+            let prepared = super::workspace::Prepared::parse(publication)?;
             let (source, port) = predecessors
                 .get("source")
-                .ok_or("Implementation repair requires an accepted source predecessor")?;
+                .ok_or("Check repair requires an accepted source predecessor")?;
             require(
-                outcome.repair
-                    && outcome.result_id == source.result_id
+                prepared.task_id == source.task_id
+                    && prepared.result_id == source.result_id
                     && source
                         .result
                         .outputs
                         .get(port)
-                        .and_then(|p| p.snapshot_id.as_ref())
-                        == Some(&outcome.snapshot_id),
-                "Implementation repair differs from its exact accepted predecessor",
-            )?;
-            require(
-                document["kind"] == "implement"
-                    && document["requirements"]["scenario_mode"] == "impl",
-                "Repair evidence is restricted to the impl implementation template",
+                        .and_then(|o| o.snapshot_id.as_ref())
+                        == Some(&prepared.snapshot_id)
+                    && observation.subject == prepared.subject()?
+                    && observation.revision == prepared.commit,
+                "Check repair differs from accepted published source",
             )?;
         }
         if observation.condition == "native_verified" {
