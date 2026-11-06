@@ -1,5 +1,8 @@
-//! Real CLI orchestration across existing Tasks and process restarts, with a pinned,
-//! credential-free service adapter. No real scenarios, Ants, Providers or remotes are used.
+//! Real CLI orchestration across ordinary Tasks and process restarts. Production adapters use
+//! credential-free inert service transports; Git lifecycle tests also use real local remotes.
+#[path = "scenario/workspace_lifecycle.rs"]
+mod workspace_lifecycle;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Write;

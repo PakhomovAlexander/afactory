@@ -811,7 +811,10 @@ def workspace_main():
     try:
         r = decode(sys.stdin.buffer.read(LIMIT + 1))
         c = workspace_load_config()
-        response = WorkspaceAdapter(c, CONFIG_DIGEST, GitHub(c) if r.get("operation") != "prepare_candidate_v1" else None).handle(r)
+        # Initial preparation is offline. A continuation must read back its prior
+        # publication before admitting the next local commit, so it needs transport too.
+        offline = r.get("operation") == "prepare_candidate_v1" and "previous" not in r.get("inputs", {})
+        response = WorkspaceAdapter(c, CONFIG_DIGEST, None if offline else GitHub(c)).handle(r)
         sys.stdout.buffer.write(canonical(response) + b"\n")
         sys.stdout.buffer.flush()
     finally:
