@@ -1212,6 +1212,50 @@ impl CodeTaskDomain {
         }
     }
 
+    /// Read the declared evidence edge, including its envelope and payload Snapshot binding.
+    fn validate_testing(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        outcome: ReceiptOutcomeV1,
+    ) -> Result<(), String> {
+        let definition = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .ok_or("Unknown evaluator")?;
+        for (name, declaration) in &definition.contract.inputs {
+            if declaration.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1 {
+                continue;
+            }
+            let testing = input
+                .inputs
+                .get(name)
+                .ok_or("Missing required executable-review evidence")?;
+            let [id] = testing.artifact_ids.as_slice() else {
+                return Err("Executable review requires one exact evidence artifact".into());
+            };
+            let source = input
+                .inputs
+                .get("source")
+                .and_then(|p| p.snapshot_id.as_deref())
+                .ok_or("Evaluation has no source Snapshot")?;
+            let recorded = envelope(cas, id)?;
+            if testing.cardinality != PortCardinality::One
+                || testing.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1
+                || recorded.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1
+                || testing.snapshot_id.as_deref() != Some(source)
+                || recorded.subject_snapshot_id.as_deref() != Some(source)
+            {
+                return Err("Executable review evidence has a stale type or Snapshot".into());
+            }
+            let tests: ImplementationTestEvidenceV1 =
+                serde_json::from_value(recorded.payload).map_err(|e| e.to_string())?;
+            tests.permits_evaluation(source, outcome)?;
+        }
+        Ok(())
+    }
+
     fn check_outcome(
         &self,
         cas: &Cas,
@@ -2670,6 +2714,65 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 } if *recorded == run_id => node_id,
                 _ => return Err("Verification evidence has no current Task Attempt".into()),
             };
+            if evaluator {
+                let definition = self.graph.nodes.get(upstream).ok_or("Unknown evaluator")?;
+                if definition
+                    .contract
+                    .inputs
+                    .values()
+                    .any(|port| port.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1)
+                {
+                    let contexts = evidence
+                        .input_artifacts
+                        .iter()
+                        .map(|id| envelope(cas, id))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .filter(|artifact| {
+                            artifact.artifact_type == review_runner::task::TASK_CONTEXT_V1
+                        })
+                        .collect::<Vec<_>>();
+                    let [context] = contexts.as_slice() else {
+                        return Err("Evaluation lacks one exact recorded Worker context".into());
+                    };
+                    let context: review_runner::task::TaskContext =
+                        serde_json::from_value(context.payload.clone())
+                            .map_err(|e| e.to_string())?;
+                    context.validate()?;
+                    let invocation = &context.invocation;
+                    if invocation.plan_id != receipt.plan_id
+                        || invocation.node != *upstream
+                        || source_input(
+                            cas,
+                            invocation
+                                .inputs
+                                .get("source")
+                                .ok_or("Evaluation context lacks its source")?,
+                        )? != receipt.snapshot_id
+                    {
+                        return Err("Evaluation context belongs to another invocation".into());
+                    }
+                    for (name, declaration) in &definition.contract.inputs {
+                        if declaration.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1 {
+                            let bound = invocation
+                                .inputs
+                                .get(name)
+                                .ok_or("Missing required executable-review evidence")?;
+                            if bound
+                                .artifact_ids
+                                .iter()
+                                .any(|id| !evidence.input_artifacts.contains(id))
+                            {
+                                return Err("Evaluation lost its exact testing input".into());
+                            }
+                        }
+                    }
+                    let evaluation: TaskEvaluationV1 =
+                        serde_json::from_value(evidence.payload.clone())
+                            .map_err(|e| e.to_string())?;
+                    self.validate_testing(cas, invocation, evaluation.outcome)?;
+                }
+            }
             let operator = self.graph.nodes.get(upstream).map(|n| &n.operator);
             if if evaluator {
                 !matches!(
@@ -3054,6 +3157,7 @@ impl TaskDomain for CodeTaskDomain {
                         let value: TaskEvaluationV1 =
                             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                         value.validate()?;
+                        self.validate_testing(cas, input, value.outcome)?;
                         judged_by_id(cas, input, &value)?;
                     }
                 }
@@ -3118,6 +3222,98 @@ impl TaskDomain for CodeTaskDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_evaluation_refuses_wrong_envelopes_missing_ports_and_stale_payloads() {
+        use review_core::Producer;
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path()).unwrap();
+        let snapshot = format!("sha256:{}", "1".repeat(64));
+        let other = format!("sha256:{}", "2".repeat(64));
+        let policy: CodeTaskPolicy = serde_json::from_value(json!({"schema":"af.code-task-policy/1",
+            "checks":{"test":{"name":"test","required":true,"command":{"program":"true","args":[]}}},
+            "check_wall_ms":1000,"require_container":false})).unwrap();
+        let policy_id = cas
+            .put_json(&serde_json::to_value(policy).unwrap())
+            .unwrap();
+        let graph: CompiledTask = serde_json::from_value(json!({"schema":"af.compiled-task/1",
+            "nodes":{"judge":{"operator":{"kind":"primitive","operator":{"op":"verify","slot":"judge"},"signature":"worker/judge"},
+                "contract":{"inputs":{"testing":{"artifact_type":IMPLEMENTATION_TEST_EVIDENCE_V1,"cardinality":"one","optional":false,"affinity":{"kind":"same_as","input":"source"},"covers":[]}},"outputs":{}},
+                "inputs":{},"conditions":[]}},
+            "order":[],"inputs":{},"outputs":{},"coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}})).unwrap();
+        let domain = CodeTaskDomain::captured(&cas, &policy_id, graph).unwrap();
+        for case in [
+            "passed",
+            "failed",
+            "unavailable",
+            "wrong_envelope",
+            "wrong_payload",
+            "missing",
+            "wrong_type",
+            "many",
+        ] {
+            let payload = json!({"schema":"af/implementation-test-evidence@1",
+                "snapshot_id":if case == "wrong_payload" { &other } else { &snapshot },
+                "status":match case { "failed"=>"failed", "unavailable"=>"unavailable", _=>"passed" },
+                "reason":"Recorded execution", "commands":[
+                    {"purpose":"build","command":"cc program.c -o target/program","exit_code":0,"evidence":"Built"},
+                    {"purpose":"install","command":"cp target/program target/private/program","exit_code":0,"evidence":"Installed privately"},
+                    {"purpose":"test","command":"target/private/program exact","exit_code":0,"evidence":"Executed installed bytes"}]});
+            let id = cas
+                .put_artifact(
+                    if case == "wrong_type" {
+                        "consumer/Other@1"
+                    } else {
+                        IMPLEMENTATION_TEST_EVIDENCE_V1
+                    },
+                    Producer::KernelOperation {
+                        run_id: "fixture".into(),
+                        node_id: None,
+                        operation_id: "test".into(),
+                    },
+                    vec![],
+                    Some(if case == "wrong_envelope" {
+                        other.clone()
+                    } else {
+                        snapshot.clone()
+                    }),
+                    payload,
+                )
+                .unwrap()
+                .0;
+            let source = ArtifactInputV1 {
+                artifact_ids: vec![id.clone()],
+                artifact_type: SOURCE_TREE_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: Some(snapshot.clone()),
+            };
+            let mut testing = source.clone();
+            testing.artifact_type = IMPLEMENTATION_TEST_EVIDENCE_V1.into();
+            if case == "many" {
+                testing.artifact_ids.push(id);
+            }
+            let mut invocation = TaskInvocationV1 {
+                plan_id: policy_id.clone(),
+                node: "judge".into(),
+                inputs: BTreeMap::from([("source".into(), source), ("testing".into(), testing)]),
+            };
+            if case == "missing" {
+                invocation.inputs.remove("testing");
+            }
+            assert_eq!(
+                domain
+                    .validate_testing(&cas, &invocation, ReceiptOutcomeV1::Passed)
+                    .is_ok(),
+                case == "passed",
+                "{case}"
+            );
+            if matches!(case, "failed" | "unavailable") {
+                domain
+                    .validate_testing(&cas, &invocation, ReceiptOutcomeV1::Inconclusive)
+                    .unwrap();
+            }
+        }
+    }
 
     /// A check the kernel killed at its wall records that wall and how long it ran (ADR-0255):
     /// the timeout its process ran under, or the warm phase deadline that ended it; a check that

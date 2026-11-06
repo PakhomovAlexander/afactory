@@ -64,6 +64,66 @@ pub struct OperatorSignature {
     pub attempt: Option<OperatorAttemptCost>,
 }
 
+/// Opt-in implementation evaluation retains one current executable-review receipt.
+/// Ordinary Worker contracts are unchanged.
+fn validate_executable_review(signature: &OperatorSignature) -> Result<(), String> {
+    use review_core::task::verification::{
+        IMPLEMENTATION_EVALUATION_INPUT_V1, IMPLEMENTATION_TEST_EVIDENCE_V1,
+    };
+    let current = |p: &PipelinePortV1| {
+        p.cardinality == review_core::PortCardinality::One
+            && !p.optional
+            && p.affinity
+                == (PortAffinityV1::SameAs {
+                    input: "source".into(),
+                })
+    };
+    for (name, p) in &signature.contract.outputs {
+        if p.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1 {
+            continue;
+        }
+        if signature.effects.contains("write-source")
+            || !signature.effects.contains("execute-checks")
+            || !current(p)
+            || !signature
+                .retains
+                .get(name)
+                .is_some_and(|inputs| inputs.contains("source") && inputs.contains("checks"))
+        {
+            return Err("Executable-review evidence requires immutable source, execute-checks and retained current source/checks".into());
+        }
+    }
+    if signature.worker_input_type.as_deref() == Some(IMPLEMENTATION_EVALUATION_INPUT_V1)
+        && !signature
+            .contract
+            .inputs
+            .get("testing")
+            .is_some_and(|p| p.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1 && current(p))
+    {
+        return Err("ImplementationEvaluationInput requires one current testing port".into());
+    }
+    for (name, p) in &signature.contract.inputs {
+        if p.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1 {
+            continue;
+        }
+        if !current(p)
+            || signature.contract.outputs.iter().any(|(output, p)| {
+                p.artifact_type == review_core::task::verification::TASK_EVALUATION_V1
+                    && !signature
+                        .retains
+                        .get(output)
+                        .is_some_and(|inputs| inputs.contains(name))
+            })
+        {
+            return Err(
+                "Executable-review evaluation requires current testing retained by evaluation"
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorAttemptCost {
@@ -2012,6 +2072,7 @@ impl Compiler<'_> {
                                 .ok_or_else(|| format!("Unsupported {signature_name}"))?,
                         };
                         signature.contract.validate()?;
+                        validate_executable_review(signature)?;
                         refuse_retired_ports(&signature.contract)
                             .map_err(|error| format!("{signature_name}: {error}"))?;
                         if signature
@@ -2768,5 +2829,63 @@ mod recovery_tests {
                     .contains("but its shape is")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod executable_review_tests {
+    use super::*;
+    use review_core::task::verification::*;
+    use serde_json::json;
+
+    #[test]
+    fn opt_in_requires_the_port_current_affinity_and_retention_but_ordinary_contracts_stay_valid() {
+        let mut signature: OperatorSignature = serde_json::from_value(json!({
+            "contract":{"inputs":{},"outputs":{}},"effects":[],"roles":[],"evidence":{},
+            "worker_input_type":IMPLEMENTATION_EVALUATION_INPUT_V1
+        }))
+        .unwrap();
+        assert!(validate_executable_review(&signature).is_err());
+        let port: PipelinePortV1 = serde_json::from_value(json!({"artifact_type":IMPLEMENTATION_TEST_EVIDENCE_V1,
+            "cardinality":"one","optional":false,"affinity":{"kind":"same_as","input":"source"},"covers":[]})).unwrap();
+        signature
+            .contract
+            .inputs
+            .insert("testing".into(), port.clone());
+        let mut evaluation = port.clone();
+        evaluation.artifact_type = TASK_EVALUATION_V1.into();
+        signature
+            .contract
+            .outputs
+            .insert("result".into(), evaluation);
+        assert!(validate_executable_review(&signature).is_err());
+        signature
+            .retains
+            .insert("result".into(), BTreeSet::from(["testing".into()]));
+        validate_executable_review(&signature).unwrap();
+        for field in ["optional", "affinity", "cardinality"] {
+            let mut broken = signature.clone();
+            let p = broken.contract.inputs.get_mut("testing").unwrap();
+            match field {
+                "optional" => p.optional = true,
+                "affinity" => p.affinity = PortAffinityV1::Unbound {},
+                _ => p.cardinality = review_core::PortCardinality::Many,
+            }
+            assert!(validate_executable_review(&broken).is_err(), "{field}");
+        }
+        signature.worker_input_type = Some("consumer/OrdinaryInput@1".into());
+        signature.contract.inputs.clear();
+        signature.retains.clear();
+        validate_executable_review(&signature).unwrap();
+        signature.contract.outputs.insert("testing".into(), port);
+        assert!(validate_executable_review(&signature).is_err());
+        signature.effects.insert("execute-checks".into());
+        signature.retains.insert(
+            "testing".into(),
+            BTreeSet::from(["source".into(), "checks".into()]),
+        );
+        validate_executable_review(&signature).unwrap();
+        signature.effects.insert("write-source".into());
+        assert!(validate_executable_review(&signature).is_err());
     }
 }
