@@ -30,7 +30,7 @@ review-telemetry = { path = "../review-telemetry" }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 # Tests build real locked packages; the library itself never touches the config layer.
 review-config = { path = "../review-config" }
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 tempfile = "3.27.0"
 
 [lints]

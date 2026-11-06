@@ -19,7 +19,7 @@ review-store = { path = "../review-store" }
 review-telemetry = { path = "../review-telemetry" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
