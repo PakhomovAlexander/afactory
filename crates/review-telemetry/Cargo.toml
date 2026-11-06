@@ -24,7 +24,7 @@ tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 tempfile = "3.27.0"
 
 [lints]

@@ -46,7 +46,7 @@ perf-calibration = ["review-core/perf-calibration"]
 review-runner-claude = { path = "../review-runner-claude" }
 review-runner-codex = { path = "../review-runner-codex" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 # A real CommonMark and GFM parser: the human report export is judged by what it renders.
 comrak = { version = "0.55.0", default-features = false }
 # The test executables boundary every crate's tests share (`review-process/tests/support`).

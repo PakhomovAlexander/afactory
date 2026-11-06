@@ -30,7 +30,7 @@ nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 
 [lints]
 workspace = true
