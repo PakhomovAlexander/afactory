@@ -20,7 +20,7 @@ const PACKAGES: [(&str, Option<&str>); 4] = [
     ("backlog/triage-kind", None),
     ("backlog/triage", None),
     ("backlog/triage-author", Some("codex-main")),
-    ("backlog/triage-verifier", Some("claude-main")),
+    ("backlog/triage-verifier", Some("codex-main")),
 ];
 
 /// Perform the install steps of `fixtures/issue-triage/README.md` on `repo`'s `.af/`, or, where
@@ -140,7 +140,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         &bindings,
         "schema = \"af.task-bindings/1\"\n\n[providers]\n\
          \"backlog/triage-author\" = \"fixture-codex\"\n\
-         \"backlog/triage-verifier\" = \"fixture-claude\"\n",
+         \"backlog/triage-verifier\" = \"fixture-codex\"\n",
     )
     .unwrap();
     let state = root.join("state");
@@ -203,12 +203,12 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         toml::from_str(&std::fs::read_to_string(repo.join(STAGED).join("catalog.toml")).unwrap())
             .unwrap();
     for (slot, worker, provider_kind, model) in [
-        ("author", "backlog/triage-author", "codex", "gpt-6-astra"),
+        ("author", "backlog/triage-author", "codex", "gpt-6.1-sol"),
         (
             "verifier",
             "backlog/triage-verifier",
-            "claude",
-            "claude-opus-5-5",
+            "codex",
+            "gpt-6.1-terra",
         ),
     ] {
         let slot = format!("root.slots.{slot}");

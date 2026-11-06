@@ -188,8 +188,8 @@ type is refused, and an existing file is never overwritten.
 
 `af task deliver` refuses a report Task before any Git mutation and names `af task output`.
 
-This repository's `kernel/report` Pipeline, with `kernel/analyst` (Claude Opus 5.5) and
-`kernel/report-verifier` (GPT-6 Sol), is staged under
+This repository's `kernel/report` Pipeline, with `kernel/analyst` (Codex GPT-6.1 Sol) and
+`kernel/report-verifier` (GPT-6.1 Terra), is staged under
 [`fixtures/kernel-report/`](../../fixtures/kernel-report/README.md) with its install steps.
 Its issue-triage Task, the kind `triage` on this profile with the `backlog/triage` Pipeline
 of [`docs/design/issue-triage.md`](../design/issue-triage.md), is staged the same way under

@@ -1,7 +1,7 @@
 # Package-defined structured Task examples
 
 These are inert staged packages. They install nothing into the operator's configuration and
-change no committed `.af/` authority. `triage` has one typed external `issue` input and one Astra
+change no committed `.af/` authority. `triage` has one typed external `issue` input and one GPT-6.1 Sol
 medium Worker on `codex-personal`, followed by kernel structural acceptance. It has no report,
 Document or evaluator node. `capitalize` proves the same profile for another business kind.
 

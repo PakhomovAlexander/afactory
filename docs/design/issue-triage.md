@@ -7,7 +7,7 @@ gpt-6-astra, medium); revision 3 closes the last two open questions.
 ## Current staged single-model flow
 
 On 2026-11-03 the owner selected a reusable custom structured Task capability for the next
-business flow: one captured issue input, one `gpt-6-astra` medium Worker on `codex-personal`,
+business flow: one captured issue input, one `gpt-6.1-sol` medium Worker on `codex-personal`,
 and a typed triage proposal, without a mandatory semantic verifier. The implementation and
 installation recipes are staged under [custom Tasks](../../fixtures/custom-tasks/README.md),
 with the [structural acceptance decision](../adr/2026-11-03-accept-package-defined-structured-tasks.md).
@@ -37,7 +37,7 @@ labels for people and as a typed document for agents.
 ## 2. Decisions taken by the owner
 
 1. The triage process runs on the Claw executor (`claw-3`) as a cron job, beside the nightly,
-   using the `codex-personal` and `claude-personal` logins registered there. GitHub Actions is
+   using the `codex-personal` login registered there. GitHub Actions is
    not an option: the repository's Providers are OAuth CLI logins, not API keys.
 2. Two models triage every issue independently, and the comparison runs through an af
    pipeline, not an ad hoc script.
@@ -162,9 +162,9 @@ produces `needs-info`, never an invented size.
 | Size | Test, in order | Default pipeline | Model and reviewers |
 |---|---|---|---|
 | `XL` | Needs a design document and owner decisions before any code. | `design` | Design rounds with the owner; no implementation Task until the design is accepted |
-| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` | A workstream: one design review by Astra xhigh before the first implementing Task, then `default` per Task |
-| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`default/implementation`, ADR-0253) | Opus 5.5 high implementer; Terra bugs and Sol correctness reviewers (Sol required); Astra medium gate-quality reviewer; Astra high evaluator. Findings from every bound reviewer count toward convergence |
-| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`default-light/implementation`, ADR-0262) | Opus 5.5 medium implementer, correctness reviewer, evaluator |
+| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` | A workstream: one design review by GPT-6.1 Terra high before the first implementing Task, then `default` per Task |
+| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`default/implementation`, ADR-0253) | GPT-6.1 Sol high implementer; GPT-6.1 Terra bugs and correctness reviewers (correctness required); GPT-6.1 Terra medium gate-quality reviewer; GPT-6.1 Terra high evaluator. Findings from every bound reviewer count toward convergence |
+| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`default-light/implementation`, ADR-0262) | GPT-6.1 Sol high implementer, correctness reviewer, evaluator |
 
 Two rules the check enforces mechanically (§6.3):
 
@@ -196,7 +196,7 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 
 - The business kind is `triage`, an `af.task-kind/1` package with `profile = "report"`, so Task
   files and `af task list` say what the Task is while the kernel runs the installed operators.
-- The **author** slot is the first triager: Codex `gpt-6-astra`, `model_reasoning_effort =
+- The **author** slot is the first triager: Codex `gpt-6.1-sol`, `model_reasoning_effort =
   "medium"`, Provider `codex-personal`, `read-source` only (no `execute-checks`, so no shell).
   It returns an `af/DocumentDraft@2` with two required sections, `Triage` (the
   `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the
@@ -208,8 +208,8 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
   Snapshot of `main`, and every citation is resolved against that Manifest, so a path the issue
   invented, a symlink or a binary fails the check and suppresses the verifier (ADR-0133,
   decision 5).
-- The **verifier** slot is the second triager: Claude Opus 5.5, effort medium, Provider
-  `claude-personal`, `read-source`. Its requirements say: classify the issue yourself by §4 and
+- The **verifier** slot is the second triager: Codex `gpt-6.1-terra`, effort medium, Provider
+  `codex-personal`, `read-source`. Its requirements say: classify the issue yourself by §4 and
   §5 before reading the author's `Triage` section, then return `af/ReportEvaluation@1` with
   `verified` only when your class and size equal the author's, and in every outcome your own
   class, size and reason in the evaluation's text as a second `Triage` block in the same JSON
@@ -219,7 +219,7 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 - The runner reads `af task output --port report` and `af task show --json` after the Task
   finishes and runs `scripts/backlog-check-triage.py` on both (§6.3) before any write to GitHub.
 
-Both replies go through the typed paths (ADR-0103 for Claude, ADR-0208 for Codex): a reply that
+Both replies go through the typed Codex path (ADR-0208): a reply that
 does not parse is a failed Attempt. Budget per Task: 150k chargeable tokens, `max_attempts`
 as the report pipeline's 8 (two model Attempts, two admissions, room for one retry each),
 `wall_ms` 20 minutes. A Task that exhausts its budget leaves the issue `triage/pending` for the

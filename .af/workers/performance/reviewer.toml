@@ -1,7 +1,7 @@
 name = "performance"
-version = "1.1.0"
+version = "1.1.1"
 subjects = ["diff", "whole-tree"]
 
 [runner]
-program = "claude"
-args = [{ value = "--model" }, { value = "claude-opus-5-5" }, { value = "--effort" }, { value = "xhigh" }]
+program = "codex"
+args = [{ value = "--model" }, { value = "gpt-6.1-terra" }, { value = "-c" }, { value = "model_reasoning_effort=\"xhigh\"" }]

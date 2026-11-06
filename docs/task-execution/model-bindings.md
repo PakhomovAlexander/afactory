@@ -6,7 +6,7 @@ maps its package name to a machine-local Provider registry label:
 
 ```toml
 [providers]
-"team/implementer" = "claude-main"
+"team/implementer" = "codex-main"
 "team/reviewer" = "codex-main"
 ```
 

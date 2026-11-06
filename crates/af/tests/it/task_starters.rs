@@ -867,8 +867,8 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
         let expected = if kind == "implementation" { 3 } else { 2 };
         assert_eq!(bindings.as_object().unwrap().len(), expected);
         for (slot, model, effort) in [
-            ("correctness", "gpt-6-sol", "high"),
-            ("evaluator", "gpt-6-astra", "medium"),
+            ("correctness", "gpt-6.1-terra", "high"),
+            ("evaluator", "gpt-6.1-terra", "medium"),
         ] {
             let execution = &bindings[format!("root.slots.{slot}")]["execution"];
             assert_eq!(execution["provider_kind"], "codex");

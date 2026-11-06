@@ -501,8 +501,8 @@ fn performance_executions<'a>(
         let (expected_model, expected_effort) = match role {
             "implementer" => ("gpt-6.1-sol", "medium"),
             "bugs" => ("gpt-6.1-terra", "high"),
-            "correctness" => ("gpt-6-sol", "high"),
-            "evaluator" => ("gpt-6-astra", "medium"),
+            "correctness" => ("gpt-6.1-terra", "high"),
+            "evaluator" => ("gpt-6.1-terra", "medium"),
             _ => {
                 return Err(format!(
                     "Performance roadmap refuses model role {role}; no advisory/default-light fallback"
@@ -587,8 +587,8 @@ mod tests {
         [
             ("implementer", "gpt-6.1-sol", "medium"),
             ("bugs", "gpt-6.1-terra", "high"),
-            ("correctness", "gpt-6-sol", "high"),
-            ("evaluator", "gpt-6-astra", "medium"),
+            ("correctness", "gpt-6.1-terra", "high"),
+            ("evaluator", "gpt-6.1-terra", "medium"),
         ]
         .into_iter()
         .map(|(role, model, effort)| {
@@ -625,6 +625,13 @@ mod tests {
         for (slot, field, value) in [
             ("bugs", "effort", "medium"),
             ("evaluator", "model", "gpt-6-sol"),
+            ("correctness", "model", "gpt-6-sol"),
+            ("evaluator", "model", "gpt-6-astra"),
+            ("evaluator", "model", "gpt-6.1-astra"),
+            ("correctness", "model", "gpt-6.1-sol"),
+            ("evaluator", "model", "gpt-6.1-sol"),
+            ("correctness", "effort", "medium"),
+            ("evaluator", "effort", "high"),
             ("correctness", "provider", "default"),
             ("implementer", "provider_kind", "pi"),
         ] {
@@ -647,6 +654,10 @@ mod tests {
                 _ => *provider = value.into(),
             };
             assert!(check(&wrong, "implement").is_err());
+            if slot != "implementer" {
+                wrong.remove("root.slots.implementer");
+                assert!(check(&wrong, "verification").is_err());
+            }
         }
         assert!(check(&BTreeMap::new(), "implement").is_err());
         assert!(check(&BTreeMap::new(), "verification").is_err());

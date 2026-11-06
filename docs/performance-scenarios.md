@@ -196,9 +196,11 @@ overrides and silent old-role fallback are refused by native performance templat
 | --- | --- | --- | --- |
 | Implementer | `gpt-6.1-sol` | medium | `codex-personal` |
 | Bugs | `gpt-6.1-terra` | high | `codex-personal` |
-| Correctness | `gpt-6-sol` | high | `codex-personal` |
-| Evaluator | `gpt-6-astra` | medium | `codex-personal` |
+| Correctness | `gpt-6.1-terra` | high | `codex-personal` |
+| Evaluator | `gpt-6.1-terra` | medium | `codex-personal` |
 
+All owner Workers use GPT-6.1: Sol for implementation and Report authoring, Terra for the
+development judges, preserving their model independence from the Sol implementer.
 There is no advisory role or default-light pipeline. Verification has no implementer. Native
 performance roadmap admission checks these model bindings before dispatch. Research and final
 reporting use the explicit read-only Report bindings above.

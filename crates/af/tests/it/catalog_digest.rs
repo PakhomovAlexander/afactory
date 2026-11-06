@@ -105,6 +105,169 @@ fn every_published_package_pin_reproduces() {
     assert!(checked >= 28, "fixture catalogs held {checked} pins");
 }
 
+/// Audit every shipped Task package, including packages not used by today's default, against
+/// the supported Codex catalog. Judges share Terra, while source/document authors use Sol.
+#[test]
+fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() {
+    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+
+    let root = workspace();
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    let models: serde_json::Value = serde_json::from_str(include_str!(
+        "../fixtures/provider-models/codex-model-list.json",
+    ))
+    .unwrap();
+    let mut checked = 0;
+    for (name, pin) in catalog["packages"].as_table().unwrap() {
+        let package = root.join(pin["path"].as_str().unwrap());
+        let path = package.join("worker.toml");
+        if !path.is_file() {
+            continue;
+        }
+        let worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(&worker.name, name);
+        assert_eq!(
+            pin["version"].as_str(),
+            Some(worker.version.as_str()),
+            "{}",
+            worker.name
+        );
+        assert_eq!(
+            pin["digest"].as_str().unwrap(),
+            review_config::lock::package_digest(&worker.name, &package).unwrap(),
+            "{}",
+            worker.name
+        );
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            continue;
+        };
+        if provider_kind == "pi" {
+            assert_eq!(worker.name, "pi-light/implementer");
+            assert_eq!((model.as_str(), effort.as_str()), ("k3", "high"));
+            assert_eq!(catalog["providers"][&worker.name].as_str(), Some("pi-kimi"));
+            continue;
+        }
+        assert_eq!(provider_kind, "codex", "{}", worker.name);
+        let author = worker
+            .signature
+            .roles
+            .iter()
+            .any(|role| role == "implement" || role == "author");
+        assert_eq!(
+            model,
+            if author {
+                "gpt-6.1-sol"
+            } else {
+                "gpt-6.1-terra"
+            },
+            "{}",
+            worker.name
+        );
+        if worker
+            .signature
+            .roles
+            .iter()
+            .any(|role| role == "implement")
+        {
+            assert_eq!(effort, "high", "{}", worker.name);
+        }
+        if let Some(provider) = catalog["providers"].get(worker.name.as_str()) {
+            assert_eq!(provider.as_str(), Some("codex-main"), "{}", worker.name);
+        }
+        let listed = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"].as_str() == Some(model.as_str()))
+            .unwrap();
+        assert!(
+            listed["supportedReasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|level| level["reasoningEffort"].as_str() == Some(effort.as_str())),
+            "{}: {model}/{effort}",
+            worker.name
+        );
+        checked += 1;
+    }
+    assert!(checked >= 25, "audited only {checked} model Workers");
+    assert_eq!(
+        catalog["independence"]["distinct_models"].as_bool(),
+        Some(true)
+    );
+}
+
+/// Legacy Review pipelines use the same current judges. Resolve every locked package through
+/// the real parser and validate each declared pipeline's byte pin and referenced Workers.
+#[test]
+fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
+    use review_config::lock::{
+        Lockfile, PackageManifest, Registry, ReviewerBackend,
+        reviewer_runner_settings_from_manifest,
+    };
+
+    let root = workspace();
+    let lock =
+        Lockfile::from_toml(&std::fs::read_to_string(root.join(".af/af.lock")).unwrap()).unwrap();
+    let registry = Registry::new(root.join(".af/workers"));
+    for name in lock.workers.keys() {
+        let worker = lock
+            .resolve_for_subject(name, &registry, review_core::SubjectKind::Diff)
+            .unwrap();
+        let manifest: PackageManifest = toml::from_str(
+            &std::fs::read_to_string(root.join(".af/workers").join(name).join("reviewer.toml"))
+                .unwrap(),
+        )
+        .unwrap();
+        let settings = reviewer_runner_settings_from_manifest(&manifest).unwrap();
+        assert_eq!(settings.backend, ReviewerBackend::Codex, "{name}");
+        assert_eq!(settings.model, "gpt-6.1-terra", "{name}");
+        assert_eq!(
+            settings.effort,
+            if name.contains("xhigh") || name == "performance" {
+                "xhigh"
+            } else {
+                "high"
+            },
+            "{name}"
+        );
+        assert_eq!(worker.version, manifest.version);
+    }
+    for entry in std::fs::read_dir(root.join(".af/pipelines")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_stem().unwrap().to_str().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            lock.pipelines[name].digest,
+            review_store::canonical::blob_content_id(&bytes),
+            "{name}"
+        );
+        let pipeline =
+            review_config::Definition::from_toml(std::str::from_utf8(&bytes).unwrap()).unwrap();
+        let subject = pipeline.subject.unwrap().kind;
+        for node in pipeline.nodes {
+            if matches!(node.kind, review_config::NodeKindSpec::Reviewer) {
+                assert!(
+                    node.runner.is_none(),
+                    "{name}: shipped reviewers must use pinned packages"
+                );
+                let package = node.package.expect("shipped reviewer has a package pin");
+                lock.resolve_for_subject(&package, &registry, subject)
+                    .unwrap();
+            }
+        }
+    }
+}
+
 /// A copy of a read-only package is writable, so the mutations below never need the checkout
 /// to be writable, and never touch it.
 #[test]

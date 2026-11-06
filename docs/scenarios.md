@@ -426,8 +426,8 @@ claims and native receipts share the private Store and its bounded journal and S
 
 Performance roadmap implementation and verification model plans must use Sol (`gpt-6.1-sol`) medium
 for implementation, Terra
-(`gpt-6.1-terra`) high for bugs, Sol (`gpt-6-sol`) high for correctness, and Astra
-(`gpt-6-astra`) medium for evaluation, all on `codex-personal`. Verification is read-only and has
+(`gpt-6.1-terra`) high for bugs, Terra (`gpt-6.1-terra`) high for correctness, and Terra
+(`gpt-6.1-terra`) medium for evaluation, all on `codex-personal`. Verification is read-only and has
 no implementer. An advisory model role or a default-light judging team is refused before model
 dispatch. Command-only native fixtures remain token-free and use no Provider.
 

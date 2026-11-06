@@ -90,9 +90,9 @@ produces `needs-info`, never an invented size.
 | Size | Test, in order | Default pipeline | Model and reviewers |
 |---|---|---|---|
 | `XL` | Needs a design document and owner decisions before any code. | `design` | Design rounds with the owner; no implementation Task until the design is accepted |
-| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` | A workstream: one design review by Astra xhigh before the first implementing Task, then `default` per Task |
-| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`default/implementation`, ADR-0253) | Opus 5.5 high implementer; Terra bugs and Sol correctness reviewers (Sol required); Astra medium gate-quality reviewer; Astra high evaluator. Findings from every bound reviewer count toward convergence |
-| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`default-light/implementation`, ADR-0262) | Opus 5.5 medium implementer, correctness reviewer, evaluator |
+| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` | A workstream: one design review by GPT-6.1 Terra high before the first implementing Task, then `default` per Task |
+| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`default/implementation`, ADR-0253) | GPT-6.1 Sol high implementer; GPT-6.1 Terra bugs and correctness reviewers (correctness required); GPT-6.1 Terra medium gate-quality reviewer; GPT-6.1 Terra high evaluator. Findings from every bound reviewer count toward convergence |
+| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`default-light/implementation`, ADR-0262) | GPT-6.1 Sol high implementer, correctness reviewer, evaluator |
 
 Two rules the check enforces mechanically (§6.3):
 

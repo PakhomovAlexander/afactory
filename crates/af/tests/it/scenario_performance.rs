@@ -745,13 +745,13 @@ sys.exit(99)
                 (
                     "correctness",
                     "owner-default/correctness",
-                    "gpt-6-sol",
+                    "gpt-6.1-terra",
                     "high",
                 ),
                 (
                     "evaluator",
                     "owner-default/evaluator",
-                    "gpt-6-astra",
+                    "gpt-6.1-terra",
                     "medium",
                 ),
             ];

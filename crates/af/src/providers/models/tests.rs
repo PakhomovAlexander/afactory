@@ -3,8 +3,9 @@
 //! fields the recording elided (descriptions, the effort levels of the alias entries, the efforts
 //! of the Codex models other than `gpt-6.1-sol` and `gpt-6-luna`) are filled to match what was
 //! recorded; every exact ID, alias, display name and the effort facts the requirements cite are
-//! verbatim. `gpt-5.6-terra`, which the catalog's `default/bugs` binds, is added after the
-//! recording with `gpt-5.6-sol`'s effort levels, so a plan of the default pipeline verifies it.
+//! verbatim. `gpt-6.1-terra`, which the catalog's independent judges bind, is added after the
+//! recording as a synthetic entry covering low/medium/high/xhigh, so plans verify the shipped
+//! bindings without claiming a new live catalog recording.
 use super::*;
 
 const CLAUDE: &str =
@@ -97,6 +98,7 @@ fn the_codex_catalog_keeps_each_models_levels_and_default() {
         ids,
         [
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -122,7 +124,7 @@ fn an_entry_outside_g_is_left_out_and_counted() {
     list["data"][0]["id"] = "gpt 6/sol".into();
     let (catalog, skipped) = parse_codex_model_list(&list).unwrap();
     assert_eq!(skipped, 1);
-    assert_eq!(catalog.models.len(), 5);
+    assert_eq!(catalog.models.len(), 6);
     assert!(parse_codex_model_list(&serde_json::json!({})).is_err());
     assert!(parse_claude_list_models(&serde_json::json!({"models": 1})).is_err());
 }

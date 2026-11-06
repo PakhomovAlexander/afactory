@@ -497,7 +497,7 @@ refusal that happens anyway is still `model_refused`
 af provider models                                        # every registered Provider's catalog
 af provider models claude-work --json                     # the same, as af/provider-models@2
 af provider models claude-work --resolve 'Fable 5.1/xhigh'
-af provider models codex-main --resolve 'GPT-6 Sol/ultra'
+af provider models codex-main --resolve 'GPT-6.1 Sol/ultra'
 ```
 
 `af provider models` lists, for every registered Provider or the named ones, the model catalog
@@ -520,7 +520,7 @@ Code's catalog is the account's `/model` picker, which leaves out exact IDs such
 only by the charged `af provider doctor`.
 
 `--resolve SPELLING[/EFFORT]` reads an alias, a display name (case-insensitively), an exact ID
-or a family and version such as `Fable 5.1` or `GPT-6 Sol`, and says what it is: an exact ID
+or a family and version such as `Fable 5.1` or `GPT-6.1 Sol`, and says what it is: an exact ID
 the catalog lists (confirmed), an alias of an exact ID (af binds exact IDs, never the alias), a
 display name or family form of an exact ID, a misspelling with the nearest catalog IDs (the
 same family or at most two edits away), or an exact ID the catalog does not list, which passes

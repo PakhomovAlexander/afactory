@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "backlog/triage-verifier"
-version = "1.0.0"
+version = "1.0.1"
 
 [signature]
 effects = ["read-source"]
@@ -95,6 +95,6 @@ wall_ms = 500000
 
 [runner]
 kind = "model"
-provider_kind = "claude"
-model = "claude-opus-5-5"
+provider_kind = "codex"
+model = "gpt-6.1-terra"
 effort = "medium"

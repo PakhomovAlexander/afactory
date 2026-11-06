@@ -1,7 +1,7 @@
 name = "design-sol"
-version = "1.0.0"
+version = "1.0.1"
 subjects = ["diff", "whole-tree"]
 
 [runner]
 program = "codex"
-args = [{ value = "--model" }, { value = "gpt-6-sol" }, { value = "-c" }, { value = "model_reasoning_effort=\"high\"" }]
+args = [{ value = "--model" }, { value = "gpt-6.1-terra" }, { value = "-c" }, { value = "model_reasoning_effort=\"high\"" }]

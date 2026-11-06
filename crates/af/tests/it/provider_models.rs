@@ -379,16 +379,16 @@ fn resolve_on_the_claude_provider() {
 #[test]
 fn resolve_on_the_codex_provider() {
     let machine = Machine::new();
-    let output = machine.af(&["codex-main", "--resolve", "GPT-6 Sol/ultra"]);
+    let output = machine.af(&["codex-main", "--resolve", "GPT-6.1 Sol/ultra"]);
     assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     let text = out(&output);
     for part in [
-        "`GPT-6 Sol` names the exact ID gpt-6-sol",
-        "ultra: confirmed, gpt-6-sol lists low, medium, high, xhigh, max, ultra",
+        "`GPT-6.1 Sol` names the exact ID gpt-6.1-sol",
+        "ultra: confirmed, gpt-6.1-sol lists low, medium, high, xhigh, max, ultra",
     ] {
         assert!(text.contains(part), "{part}:\n{text}");
     }
-    let output = machine.af(&["codex-main", "--json", "--resolve", "GPT-6 Sol/ultra"]);
+    let output = machine.af(&["codex-main", "--json", "--resolve", "GPT-6.1 Sol/ultra"]);
     assert_both_configurations(
         &text,
         &document(&output)["providers"][0]["resolution"]["configuration"],
@@ -397,11 +397,11 @@ fn resolve_on_the_codex_provider() {
             kind: "codex",
             args: [
                 "--model",
-                "gpt-6-sol",
+                "gpt-6.1-sol",
                 "-c",
                 "model_reasoning_effort=\"ultra\"",
             ],
-            model: "gpt-6-sol",
+            model: "gpt-6.1-sol",
             effort: "ultra",
         },
     );
@@ -443,7 +443,7 @@ fn an_unavailable_catalog_exits_7_and_prints_the_static_rules() {
         "nothing invented: {text}"
     );
     // The other Provider is still listed.
-    assert!(text.contains("gpt-6-sol"), "{text}");
+    assert!(text.contains("gpt-6.1-sol"), "{text}");
     assert!(
         err(&output).contains(
             "af provider models: claude-work: claude exited 1 before answering `list_models`"

@@ -232,13 +232,14 @@ packages they reference; it drops a pin whose `.af/workers/NAME` package or \
 `.af/pipelines/NAME.toml` file no longer exists.\n\n\
 With --tasks, preview the exact files and [task.defaults] text for model-driven Tasks; \
 --tasks --apply creates a combined bundle in a new repository or adds only absent Task files \
-and the absent table to an existing `.af/` directory. With --tasks, a registered Claude and Codex \
-use the mixed profile: Claude implements and Codex reviews; one registered kind is used for all \
+and the absent table to an existing `.af/` directory. Task Workers use Codex: GPT-6.1 Sol/high \
+implements and GPT-6.1 Terra/high reviews and evaluates, all bound to codex-main. --runner \
+selects the review-authority profile and does not change these Task \
 Workers. Review and commit the result before a Task can plan.\n\n\
 The command never calls a model, runs a Gate, reads credentials, creates Campaign state, fetches \
 a pull request, commits, pushes, comments, or overwrites existing authority files. Notes for \
 agents and automation close this page.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6.1 Terra/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6.1 Terra/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
 # needs: a repository without .af/\n  af onboard --gate 'check=make check' --apply\n  \
 # needs: a repository with an acceptance Gate\n  af onboard --tasks\n  # needs: a repository with review authority and an acceptance Gate\n  af onboard --tasks --apply\n  \
@@ -1435,7 +1436,7 @@ and its effort levels with the default marked, and a sentence saying what the li
 recognises these spellings for this Provider. It is not every ID the API accepts, and whether \
 this account can run one is proven only by the charged `af provider doctor`.\n\n\
 --resolve reads a human spelling (an alias, a display name, an exact ID, or a family and \
-version such as `Fable 5.1` or `GPT-6 Sol`) with an optional /EFFORT, says what it resolves to \
+version such as `Fable 5.1` or `GPT-6.1 Sol`) with an optional /EFFORT, says what it resolves to \
 and whether the effort level is listed, and prints the configuration to copy: the reviewer.toml \
 [runner] args, the worker.toml [runner] block and the bindings line. af binds exact IDs: an alias \
 is never bound, and an effort level a model does not list is never substituted.\n\n\
@@ -1446,7 +1447,7 @@ catalog is unavailable (the static rules are printed and nothing is invented).",
         after_long_help = "Examples:\n  af provider models\n  \
 # needs: Provider claude-work (af provider setup)\n  af provider models claude-work --json\n  \
 # needs: Provider claude-work\n  af provider models claude-work --resolve 'Fable 5.1/xhigh'\n  \
-# needs: Provider codex-main\n  af provider models codex-main --resolve 'GPT-6 Sol/ultra'"
+# needs: Provider codex-main\n  af provider models codex-main --resolve 'GPT-6.1 Sol/ultra'"
     )]
     Models {
         /// Provider IDs to list (default: every registered Provider)

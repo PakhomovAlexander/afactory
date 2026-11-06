@@ -63,12 +63,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
             RunnerProfile::Codex
         }
     });
-    let kind = match profile {
-        RunnerProfile::Claude => "claude",
-        RunnerProfile::Codex => "codex",
-        RunnerProfile::Mixed => "mixed",
-    };
-    let task_files = files(&gates, profile)?;
+    let task_files = files(&gates)?;
     let mut command = format!(
         "af onboard --repo {} --tasks --runner {}",
         shell_words::quote(repo.to_str().ok_or("repository path is not UTF-8")?),
@@ -94,7 +89,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
         files: Vec::new(),
         append_text: DEFAULTS,
         gate: gates.clone(),
-        provider_kind: kind.into(),
+        provider_kind: "codex".into(),
         warnings: Vec::new(),
         next_steps: vec![
             format!("Review the preview, then run {command}"),
@@ -139,14 +134,8 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
     if options.apply {
         report.next_steps.remove(0);
     }
-    for needed in match profile {
-        RunnerProfile::Mixed => &["claude", "codex"][..],
-        RunnerProfile::Claude => &["claude"][..],
-        RunnerProfile::Codex => &["codex"][..],
-    } {
-        if registry.ids_of(needed).is_empty() {
-            report.next_steps.insert(0, format!("No {needed} Provider is registered; run af provider detect or af provider setup {needed}-main --kind {needed} --login"));
-        }
+    if registry.ids_of("codex").is_empty() {
+        report.next_steps.insert(0, "No codex Provider is registered; run af provider detect or af provider setup codex-main --kind codex --login".into());
     }
     if options.json {
         println!(
@@ -177,7 +166,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn files(gates: &[Gate], profile: RunnerProfile) -> Result<BTreeMap<String, Vec<u8>>, String> {
+fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
     let names = ["implementer", "bugs", "correctness", "evaluator"];
     let manifests = [
@@ -204,25 +193,13 @@ fn files(gates: &[Gate], profile: RunnerProfile) -> Result<BTreeMap<String, Vec<
     );
     let mut provider_lines = String::from("\n[providers]\n");
     for (index, name) in names.iter().enumerate() {
-        let kind = match profile {
-            RunnerProfile::Claude => "claude",
-            RunnerProfile::Codex => "codex",
-            RunnerProfile::Mixed if index == 0 => "claude",
-            RunnerProfile::Mixed => "codex",
-        };
         let model = if index == 0 {
-            if kind == "codex" {
-                "gpt-6-sol"
-            } else {
-                "claude-opus-5-5"
-            }
-        } else if kind == "codex" {
-            "gpt-6-astra"
+            "gpt-6.1-sol"
         } else {
-            "claude-sonnet-5-5"
+            "gpt-6.1-terra"
         };
         let manifest = manifests[index]
-            .replace("{{PROVIDER_KIND}}", kind)
+            .replace("{{PROVIDER_KIND}}", "codex")
             .replace("{{MODEL}}", model);
         let root = format!(".af/task-packages/onboard/{name}");
         files.insert(format!("{root}/worker.toml"), manifest.into_bytes());
@@ -238,7 +215,7 @@ fn files(gates: &[Gate], profile: RunnerProfile) -> Result<BTreeMap<String, Vec<
             ),
             outputs[index].to_vec(),
         );
-        provider_lines.push_str(&format!("\"onboard/{name}\" = \"{kind}-main\"\n"));
+        provider_lines.push_str(&format!("\"onboard/{name}\" = \"codex-main\"\n"));
     }
     let checks = gates
         .iter()

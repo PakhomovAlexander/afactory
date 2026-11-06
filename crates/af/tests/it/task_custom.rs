@@ -224,7 +224,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         )
         .unwrap();
         let binding = &planned["plan"]["bindings"];
-        assert!(binding.to_string().contains("gpt-6-astra"), "{binding}");
+        assert!(binding.to_string().contains("gpt-6.1-sol"), "{binding}");
         assert!(binding.to_string().contains("medium"), "{binding}");
         assert!(binding.to_string().contains("codex-personal"), "{binding}");
         assert_eq!(binding.as_object().unwrap().len(), 1);
