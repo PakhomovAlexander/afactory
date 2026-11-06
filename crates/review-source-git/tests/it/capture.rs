@@ -793,3 +793,47 @@ fn a_committed_blob_larger_than_the_buffer_is_stored_byte_identical() {
     let dirty = Capture::new(&repo, &cas).dirty().unwrap();
     assert_eq!(dirty.content_digest, snapshot.content_digest);
 }
+
+/// The monitor covers ignored directories too, with a constant descriptor count.
+#[cfg(target_os = "macos")]
+#[test]
+fn native_capture_exceeds_descriptor_limit_without_raising_it() {
+    const CHILD: &str = "AF_CAPTURE_LARGE_TREE_LOW_FD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -n 64 || exit 90; exec \"$1\" --exact capture::native_capture_exceeds_descriptor_limit_without_raising_it --nocapture", "sh"])
+            .arg(std::env::current_exe().unwrap())
+            .env(CHILD, "1")
+            .status().unwrap();
+        assert!(status.success(), "descriptor-limit child: {status}");
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture.write(".gitignore", b"ignored/\n");
+    for index in 0..256 {
+        fixture.write(&format!("source-{index}"), b"included\n");
+        fixture.write(&format!("ignored/dir-{index}/file"), b"excluded\n");
+    }
+    // Depth also exceeds the descriptor limit: no stack of live parent handles.
+    fixture.write(&format!("ignored/{}leaf", "d/".repeat(80)), b"deep\n");
+    fixture.commit_all("large tree");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let snapshot = Capture::new(&repo, &cas).dirty().unwrap();
+    assert_eq!(snapshot.attempts, 1);
+    for index in 0..256 {
+        assert!(snapshot.manifest.get(&format!("source-{index}")).is_some());
+        assert!(
+            snapshot
+                .manifest
+                .get(&format!("ignored/dir-{index}/file"))
+                .is_none()
+        );
+    }
+    let limit = std::process::Command::new("/bin/sh")
+        .args(["-c", "ulimit -n"])
+        .output()
+        .unwrap();
+    assert!(limit.status.success());
+    assert_eq!(String::from_utf8(limit.stdout).unwrap().trim(), "64");
+}

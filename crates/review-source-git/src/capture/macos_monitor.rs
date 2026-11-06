@@ -1,22 +1,30 @@
-//! Attempt-local vnode watches: FSEvents can deliver pre-attempt activity after `SinceNow`.
-//! Register parents before enumerating children, then keep every descriptor until the read
-//! boundary closes. A creation, removal or replacement during enumeration dirties its parent;
-//! no dynamic rewatching (and no asynchronous rewatch failure) is needed within one attempt.
+//! Attempt-local root vnode watch plus complete no-follow metadata observations.
+//! Descendant ctime/mtime stamps retain mutation and ABA evidence without holding one
+//! descriptor per path. Every directory lookup is anchored to the held root descriptor.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use nix::dir::Dir;
+use nix::fcntl::{OFlag, openat};
 use nix::libc;
 use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
+use nix::sys::stat::Mode;
 
-use super::CaptureError;
+use super::{CaptureError, ChangeStamp};
+
+type Observation = (ChangeStamp, u32, u32, u32, u64, u64);
+type Observations = BTreeMap<PathBuf, Observation>;
 
 pub(super) struct WorktreeMonitor {
     queue: Kqueue,
-    files: std::collections::BTreeMap<usize, (File, std::fs::Metadata)>,
+    root: File,
+    before: Observations,
 }
 
 fn watch_error(error: impl std::fmt::Display) -> CaptureError {
@@ -25,27 +33,111 @@ fn watch_error(error: impl std::fmt::Display) -> CaptureError {
     }
 }
 
+fn observation(metadata: &std::fs::Metadata) -> Observation {
+    (
+        super::metadata_change_stamp(metadata),
+        metadata.mode(),
+        metadata.uid(),
+        metadata.gid(),
+        metadata.nlink(),
+        metadata.len(),
+    )
+}
+
+fn directory_flags() -> OFlag {
+    OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObservePoint {
+    BeforeComponent,
+    OpenedDirectory,
+    Entry,
+}
+
+fn observe(root: &File) -> Result<Observations, CaptureError> {
+    observe_with(root, &mut |_, _| {})
+}
+
+fn observe_with(
+    root: &File,
+    hook: &mut impl FnMut(&Path, ObservePoint),
+) -> Result<Observations, CaptureError> {
+    let mut result = BTreeMap::new();
+    result.insert(
+        PathBuf::new(),
+        observation(&root.metadata().map_err(watch_error)?),
+    );
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        // Reopen one component at a time: neither path depth nor tree size increases
+        // the live descriptor count. NOFOLLOW applies to *every* component.
+        let mut parent = root.try_clone().map_err(watch_error)?;
+        let mut prefix = PathBuf::new();
+        for component in relative.components() {
+            prefix.push(component.as_os_str());
+            hook(&prefix, ObservePoint::BeforeComponent);
+            parent = File::from(
+                openat(
+                    &parent,
+                    Path::new(component.as_os_str()),
+                    directory_flags(),
+                    Mode::empty(),
+                )
+                .map_err(watch_error)?,
+            );
+        }
+        // A directory replaced since it was queued cannot quietly change this scan.
+        if result.get(&relative) != Some(&observation(&parent.metadata().map_err(watch_error)?)) {
+            return Err(watch_error("directory changed during observation"));
+        }
+        hook(&relative, ObservePoint::OpenedDirectory);
+        // Independent directory offset; cloning an fd would share readdir's offset.
+        let mut entries = Dir::from_fd(
+            openat(&parent, ".", directory_flags(), Mode::empty()).map_err(watch_error)?,
+        )
+        .map_err(watch_error)?;
+        for entry in entries.iter() {
+            let entry = entry.map_err(watch_error)?;
+            let name = entry.file_name().to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            let name = Path::new(std::ffi::OsStr::from_bytes(name));
+            // Event-only opens cannot block on a FIFO; O_SYMLINK observes the link
+            // itself, including dangling links, rather than its external target.
+            let child = File::from(
+                openat(
+                    &parent,
+                    name,
+                    OFlag::from_bits_retain(libc::O_EVTONLY | libc::O_SYMLINK | libc::O_CLOEXEC),
+                    Mode::empty(),
+                )
+                .map_err(watch_error)?,
+            );
+            let metadata = child.metadata().map_err(watch_error)?;
+            drop(child);
+            let path = relative.join(name);
+            hook(&path, ObservePoint::Entry);
+            result.insert(path.clone(), observation(&metadata));
+            if metadata.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(result)
+}
+
 impl WorktreeMonitor {
     pub(super) fn start(root: &Path) -> Result<Self, CaptureError> {
-        let mut monitor = Self {
-            queue: Kqueue::new().map_err(watch_error)?,
-            files: std::collections::BTreeMap::new(),
-        };
-        monitor.register(root)?;
-        Ok(monitor)
-    }
-
-    fn register(&mut self, path: &Path) -> Result<(), CaptureError> {
-        // O_SYMLINK watches the link itself, including dangling/non-UTF-8 targets. O_EVTONLY
-        // needs no read permission and cannot block opening a FIFO. Never follow links out
-        // of the worktree while enumerating the watch set.
-        let file = OpenOptions::new()
+        let root = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_EVTONLY | libc::O_SYMLINK)
-            .open(path)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(root)
             .map_err(watch_error)?;
+        let queue = Kqueue::new().map_err(watch_error)?;
         let change = KEvent::new(
-            file.as_raw_fd() as usize,
+            root.as_raw_fd() as usize,
             EventFilter::EVFILT_VNODE,
             EvFlags::EV_ADD | EvFlags::EV_CLEAR | EvFlags::EV_RECEIPT,
             FilterFlag::NOTE_DELETE
@@ -59,8 +151,7 @@ impl WorktreeMonitor {
             0,
         );
         let mut receipt = [change];
-        let count = self
-            .queue
+        let count = queue
             .kevent(
                 &[change],
                 &mut receipt,
@@ -78,16 +169,12 @@ impl WorktreeMonitor {
                 receipt[0].data() as i32
             )));
         }
-        let metadata = file.metadata().map_err(watch_error)?;
-        let directory = metadata.is_dir();
-        self.files
-            .insert(file.as_raw_fd() as usize, (file, metadata));
-        if directory {
-            for entry in std::fs::read_dir(path).map_err(watch_error)? {
-                self.register(&entry.map_err(watch_error)?.path())?;
-            }
-        }
-        Ok(())
+        let before = observe(&root)?;
+        Ok(Self {
+            queue,
+            root,
+            before,
+        })
     }
 
     pub(super) fn changed(&self) -> Result<bool, CaptureError> {
@@ -115,7 +202,7 @@ impl WorktreeMonitor {
                 )
                 .map_err(watch_error)?;
             if count == 0 {
-                return Ok(false);
+                break;
             }
             let event = events[0];
             if event.flags().contains(EvFlags::EV_ERROR) {
@@ -123,41 +210,24 @@ impl WorktreeMonitor {
                     nix::errno::Errno::from_raw(event.data() as i32),
                 ));
             }
-            // macOS also emits NOTE_ATTRIB when git reads the index and updates its atime.
-            // Access alone is not a mutation. Check the watched vnode's change stamp and
-            // ownership/mode/link count before dismissing an attribute-only notification.
-            // Every other flag, or any metadata disagreement, invalidates the attempt.
+            if event.ident() != self.root.as_raw_fd() as usize {
+                return Err(watch_error("event for an unregistered vnode"));
+            }
             if event.fflags() != FilterFlag::NOTE_ATTRIB {
                 return Ok(true);
             }
-            let Some((file, before)) = self.files.get(&event.ident()) else {
-                return Err(watch_error("event for an unregistered vnode"));
-            };
-            let metadata = file.metadata().map_err(watch_error)?;
-            if super::metadata_change_stamp(&metadata) != super::metadata_change_stamp(before)
-                || (
-                    metadata.mode(),
-                    metadata.uid(),
-                    metadata.gid(),
-                    metadata.nlink(),
-                    metadata.len(),
-                ) != (
-                    before.mode(),
-                    before.uid(),
-                    before.gid(),
-                    before.nlink(),
-                    before.len(),
-                )
+            if self.before.get(Path::new(""))
+                != Some(&observation(&self.root.metadata().map_err(watch_error)?))
             {
                 return Ok(true);
             }
             if Instant::now() >= deadline {
-                // An access storm cannot extend the boundary or hide queued mutations.
                 return Err(watch_error(
                     "vnode events did not settle within the boundary",
                 ));
             }
         }
+        Ok(observe(&self.root)? != self.before)
     }
 }
 
@@ -177,16 +247,16 @@ mod tests {
     }
 
     #[test]
-    fn a_transient_creation_survives_later_watch_registration() {
+    fn a_transient_creation_survives_an_intermediate_observation() {
         let root = tempfile::tempdir().unwrap();
         let nested = root.path().join("nested");
         std::fs::create_dir(&nested).unwrap();
-        let mut monitor = WorktreeMonitor::start(root.path()).unwrap();
+        let monitor = WorktreeMonitor::start(root.path()).unwrap();
         let transient = nested.join("transient");
         std::fs::write(&transient, b"never present in either scan").unwrap();
         std::fs::remove_file(&transient).unwrap();
-        // Registration receipts must not consume an older directory mutation.
-        monitor.register(&nested).unwrap();
+        // A complete second observation retains the parent directory change stamp.
+        observe(&monitor.root).unwrap();
         assert!(monitor.changed().unwrap());
         assert!(
             !WorktreeMonitor::start(root.path())
@@ -224,6 +294,86 @@ mod tests {
     }
 
     #[test]
+    fn ignored_descendant_content_aba_is_detected() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("ignored")).unwrap();
+        let file = root.path().join("ignored/file");
+        std::fs::write(&file, b"before").unwrap();
+        let monitor = WorktreeMonitor::start(root.path()).unwrap();
+        std::fs::write(&file, b"during").unwrap();
+        std::fs::write(&file, b"before").unwrap();
+        assert!(monitor.changed().unwrap());
+    }
+
+    #[test]
+    fn root_replacement_invalidates_the_held_root() {
+        let container = tempfile::tempdir().unwrap();
+        let root = container.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let monitor = WorktreeMonitor::start(&root).unwrap();
+        std::fs::rename(&root, container.path().join("old")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        assert!(monitor.changed().unwrap());
+    }
+
+    #[test]
+    fn replacement_after_directory_open_cannot_redirect_enumeration() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("nested/deeper")).unwrap();
+        std::fs::write(root.path().join("nested/local-only"), b"local").unwrap();
+        std::fs::write(outside.path().join("outside-only"), b"private").unwrap();
+        let monitor = WorktreeMonitor::start(root.path()).unwrap();
+        let mut replaced = false;
+        let mut local_seen = false;
+        let result = observe_with(&monitor.root, &mut |path, point| {
+            assert_ne!(path.file_name(), Some(std::ffi::OsStr::new("outside-only")));
+            if path == Path::new("nested") && point == ObservePoint::OpenedDirectory {
+                std::fs::rename(root.path().join("nested"), root.path().join("saved")).unwrap();
+                symlink(outside.path(), root.path().join("nested")).unwrap();
+                replaced = true;
+            }
+            if path == Path::new("nested/local-only") && point == ObservePoint::Entry {
+                local_seen = true;
+            }
+        });
+        assert!(
+            replaced && local_seen,
+            "the held directory must actually be enumerated"
+        );
+        // Reopening nested/deeper must refuse the substituted intermediate symlink.
+        assert!(matches!(result, Err(CaptureError::Watch { .. })));
+        assert!(monitor.changed().unwrap());
+    }
+
+    #[test]
+    fn replacement_during_component_resolution_cannot_follow_external_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("nested/deeper")).unwrap();
+        std::fs::create_dir(outside.path().join("deeper")).unwrap();
+        std::fs::write(outside.path().join("deeper/outside-only"), b"private").unwrap();
+        let monitor = WorktreeMonitor::start(root.path()).unwrap();
+        let mut nested_lookups = 0;
+        let result = observe_with(&monitor.root, &mut |path, point| {
+            assert_ne!(path.file_name(), Some(std::ffi::OsStr::new("outside-only")));
+            if path == Path::new("nested") && point == ObservePoint::BeforeComponent {
+                nested_lookups += 1;
+                if nested_lookups == 2 {
+                    std::fs::rename(root.path().join("nested"), root.path().join("saved")).unwrap();
+                    symlink(outside.path(), root.path().join("nested")).unwrap();
+                }
+            }
+        });
+        assert_eq!(
+            nested_lookups, 2,
+            "exercise reopening an intermediate component"
+        );
+        assert!(matches!(result, Err(CaptureError::Watch { .. })));
+        assert!(monitor.changed().unwrap());
+    }
+
+    #[test]
     fn missing_watch_roots_fail_closed() {
         let root = tempfile::tempdir().unwrap();
         assert!(matches!(
@@ -246,13 +396,27 @@ mod tests {
             return;
         }
         let root = tempfile::tempdir().unwrap();
-        for index in 0..128 {
-            std::fs::write(root.path().join(index.to_string()), b"file").unwrap();
+        let mut held = Vec::new();
+        while let Ok(file) = File::open(root.path()) {
+            held.push(file);
         }
         assert!(matches!(
             WorktreeMonitor::start(root.path()),
             Err(CaptureError::Watch { .. })
         ));
+        // Allow the root and kqueue to open, but exhaust the first observation's
+        // lookup handle. A partial start must also fail closed and release both.
+        drop(held.pop().unwrap());
+        drop(held.pop().unwrap());
+        assert!(matches!(
+            WorktreeMonitor::start(root.path()),
+            Err(CaptureError::Watch { .. })
+        ));
+        let released_root = File::open(root.path()).unwrap();
+        let released_queue = File::open(root.path()).unwrap();
+        assert!(File::open(root.path()).is_err());
+        drop((released_root, released_queue));
+        drop(held);
         let small = tempfile::tempdir().unwrap();
         assert!(
             !WorktreeMonitor::start(small.path())
