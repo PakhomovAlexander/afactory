@@ -363,3 +363,30 @@ version = "1.0.0"
 digest = "sha256:9ba9f8679258a49277f0797c9a5d2bd396b08ebebfee1f65bb35b7381b65139b"
 path = ".af/task-packages/kernel/verification-ux"
 
+
+# Owner-selected performance authority. Inert examples in fixtures/scenarios select these
+# packages and codex-personal explicitly; generic defaults and Provider aliases stay unchanged.
+[packages."owner-default/implementer"]
+version = "1.0.0"
+digest = "sha256:9aed8b01432ad4abc2e895af45832b7c96954ab9cd528cd8213645547edc6911"
+path = ".af/task-packages/owner-default/implementer"
+
+[packages."owner-default/bugs"]
+version = "1.0.0"
+digest = "sha256:2394748ca96ea2aa9349c9d1d8a2d76445e7bc06def379768a0c0f975fda60c3"
+path = ".af/task-packages/owner-default/bugs"
+
+[packages."owner-default/correctness"]
+version = "1.0.0"
+digest = "sha256:d64aa0a75f42e13cc0840c42558a964e70e9bede16529c04966ef7c9af0014cf"
+path = ".af/task-packages/owner-default/correctness"
+
+[packages."owner-default/evaluator"]
+version = "1.0.0"
+digest = "sha256:5e882fdc6a89c6e75f4021e3914b515f34143c44d14ce73bcf253e5d6893a1f7"
+path = ".af/task-packages/owner-default/evaluator"
+
+[packages."owner-default/report-author"]
+version = "1.0.0"
+digest = "sha256:8bebfbe02a5abf15165680d0f8dfefc0c32670ff0778e2e2f5a3196ea8288717"
+path = ".af/task-packages/owner-default/report-author"
