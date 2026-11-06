@@ -217,3 +217,86 @@ impl VerificationResultV1 {
         )
     }
 }
+
+pub const IMPLEMENTATION_EVALUATION_INPUT_V1: &str = "af/ImplementationEvaluationInput@1";
+
+/// Public executable-review evidence, beside the unchanged flat ReviewerResult@2.
+pub const IMPLEMENTATION_TEST_EVIDENCE_V1: &str = "af/ImplementationTestEvidence@1";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImplementationTestPurposeV1 {
+    Build,
+    Install,
+    Test,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImplementationTestStatusV1 {
+    Passed,
+    Failed,
+    Unavailable,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImplementationTestCommandV1 {
+    pub purpose: ImplementationTestPurposeV1,
+    pub command: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub exit_code: Option<u8>,
+    pub evidence: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImplementationTestEvidenceV1 {
+    pub schema: String,
+    pub snapshot_id: String,
+    pub status: ImplementationTestStatusV1,
+    pub reason: String,
+    pub commands: Vec<ImplementationTestCommandV1>,
+}
+impl ImplementationTestEvidenceV1 {
+    pub fn permits_evaluation(
+        &self,
+        snapshot: &str,
+        outcome: ReceiptOutcomeV1,
+    ) -> Result<(), String> {
+        self.validate()?;
+        require(
+            self.snapshot_id == snapshot
+                && (outcome != ReceiptOutcomeV1::Passed
+                    || self.status == ImplementationTestStatusV1::Passed),
+            "Acceptance cannot pass missing, failed, unavailable or stale executable-review evidence",
+        )
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        let bounded =
+            |s: &str| !s.trim().is_empty() && s.chars().count() <= 4096 && !s.contains('\0');
+        require(
+            self.schema == "af/implementation-test-evidence@1"
+                && is_digest(&self.snapshot_id)
+                && bounded(&self.reason)
+                && self.commands.len() <= 32,
+            "Invalid executable-review evidence",
+        )?;
+        for command in &self.commands {
+            require(
+                bounded(&command.command) && bounded(&command.evidence),
+                "Test command requires bounded public execution evidence",
+            )?;
+        }
+        if self.status == ImplementationTestStatusV1::Passed {
+            require(
+                self.commands.iter().all(|c| c.exit_code == Some(0))
+                    && [
+                        ImplementationTestPurposeV1::Build,
+                        ImplementationTestPurposeV1::Install,
+                        ImplementationTestPurposeV1::Test,
+                    ]
+                    .iter()
+                    .all(|purpose| self.commands.iter().any(|c| &c.purpose == purpose)),
+                "Executable review cannot pass without successful build, private install and test commands",
+            )?;
+        }
+        Ok(())
+    }
+}

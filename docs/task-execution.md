@@ -254,3 +254,5 @@ authorized fresh Task templates through ordinary native planning and execution,
 without replacing Task acceptance, sandboxing or local delivery. A Scenario Run also retains
 signed decisions, bounded adapter actions, observations and child Scenario progress across waits
 and restarts. An Ant schedules a pinned Scenario through local `af ant tick` admission.
+
+Executable reviewer evidence is an opt-in [typed reviewer-to-evaluator edge](task-execution/executable-review.md), independent of publication and CI.
