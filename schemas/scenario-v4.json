@@ -534,6 +534,18 @@
               "const": "workspace_receipt"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "checks_state"
+            }
+          }
         }
       ]
     },

@@ -94,6 +94,42 @@ condition. It lets a consuming Scenario choose an original preparation or a cond
 without reading skipped outputs. Both arms are statically checked; Decision selection is refused
 to retain static signed-Decision ownership. It is ordinary data selection, not a workflow engine.
 
+For bounded CI repair, use the production `checks_completed` Wait on the preparation's exact
+subject/revision. It completes only after **all** configured required identities have completed
+with success or an explicitly recognized failure (`failure`, `cancelled`, `timed_out`,
+`action_required`, `startup_failure`; status contexts use `failure`/`error`). Queued/in-progress,
+missing, neutral, skipped or unknown conclusions stay pending. Incomplete listings refuse;
+stale heads, untrusted producers and closed-unmerged PRs never route repair. Timeout supplies
+no failure evidence and must not start a repair.
+
+The observation's evidence is the independently reusable
+[`af/github-check-outcome@1`](../schemas/github-check-outcome-v1.json) document. It binds the
+publication subject and exact head to up to 32 configured check/status identities, their latest
+run/status IDs, suite IDs (null for status contexts), and `pending`, `ready` or `repairable`
+outcomes. The typed `checks_state` projection requires this condition, parses the bounded
+contract, checks its outer subject/revision and terminal consistency, and returns its state.
+`observation_satisfied` means completed here; it does **not** mean checks passed. Existing
+`checks_passed` retains its successful-only meaning and stronger locked-head installations
+still perform their protection checks.
+
+An ordinary Scenario compares `checks_state` to `repairable`, conditionally invokes a bounded
+`fresh_task`, and supplies `source` (the accepted Task), `scenario_evidence` (the completed Wait)
+and `publication` (the **preparation Action**, not a PR Action). The fresh Task template declares
+`bindings.source` with the candidate Snapshot port/type. Native admission verifies the pinned
+accepted predecessor and the preparation's Task/result/Snapshot identities, subject and exact
+commit against the observation. Only completed failing evidence is inserted into the fresh
+Task's `requirements.scenario_evidence`; source bytes still come solely from the admitted Task
+Snapshot. A repair is another ordinary accepted Task, prepared with `previous` set to the
+original preparation. It needs a fresh exact signed Decision before same-PR `publish_pr`.
+Use lazy `select` to choose the original or repaired preparation; subsequent checks, actual
+merge and cleanup consume that selected head. A finite sequence of conditional repair steps
+and its Task/dispatch/token bounds belong to the consuming Scenario.
+
+This interface covers CI outcomes. It does not admit review-comment bodies, change requests,
+remote base trees or conflict resolution as Task source authority; those remain unavailable
+without a separate bounded source contract. `ready` describes required CI only, not human
+approval, mergeability or actual merge.
+
 `cleanup_workspace_v1` takes the preparation Action as `prepared`, its document as `body`, the
 publication subject/SHA, and an exact `merged` observation as `evidence`. Its Action must declare
 `required_condition: merged`. The adapter independently re-observes the production publication
@@ -104,7 +140,12 @@ local/remote ref leases. Raw blob hashes, types, modes and link bytes must also 
 commit: attributes, index flags and disabled Git filemode detection cannot conceal modifications.
 Projects do not need an ignore rule for the owned build directory.
 Dirty, foreign, replaced, attached or changed-head objects remain. Cleanup retains progress before
-effects; lost responses cannot authorize deleting a replacement path or recreated ref. Build
+effects. Before each local/remote ref deletion it persists a deletion intent. A fresh dispatch
+may delete under its exact SHA lease; reconciliation accepts absence but **retains every present
+ref after that intent**, including an unchanged SHA. The process may have deleted the original
+and another actor may have recreated the same SHA. A crash before dispatch is deliberately
+indistinguishable from a lost successful response: an unresolved retained ref requires operator
+inspection, never another automatic deletion. Commit equality alone is not renewed ownership. Build
 contents inside the exact owned build directory belong to that reservation. Task Stores are kept.
 
 ## Recovery and bounds
@@ -139,3 +180,9 @@ including both reservation crash matrices, signed input checks, same-PR continua
 POSTs and merge-gated cleanup. The native `task_delivery::workspace` integration test executes an
 ordinary accepted command-backed Task and checks object bytes and forged-receipt refusals. No
 live GitHub account, model, remote gate or scheduler is used or claimed by these tests.
+
+The native `ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_same_pr`
+regression composes ordinary accepted command-backed Tasks, completed outcomes, conditional
+fresh repair, exact signed Decisions and lazy receipt selection in `documentation-maintenance`.
+Its inert adapter models PR identity; the separate production-adapter real-Git tests exercise
+actual publication/recovery code and stale-head refusal. Neither uses services or models.

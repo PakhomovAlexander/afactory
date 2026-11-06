@@ -49,7 +49,9 @@ and differently named Scenarios need these without implementation recipes or mod
    publication, then fsync and journal publication. Never infer ownership from emptiness/null
    state. Four fixed slots bound uncertain staging; unknown directories remain. Cleanup checks
    exact owned identities, clean state and local/remote commit leases, journals progress before
-   effects and preserves changed/replaced/foreign objects after interruption.
+   effects and preserves changed/replaced/foreign objects after interruption. A persisted ref
+   deletion intent makes every subsequently present ref uncertain, even at the original SHA;
+   reconciliation retains it and accepts only absence. Fresh dispatch alone may use the lease.
 6. Added enum discriminators change the Scenario typed shape: version Scenario/bundle/policy/
    pin/run/list and embedding Ant documents to 4, Store to 5, adapter request and embedding
    GitHub state to 3. Update current readers/writers/schemas/fixtures together. Refuse earlier
@@ -58,6 +60,17 @@ and differently named Scenarios need these without implementation recipes or mod
    consuming skipped outputs: both arms have equal non-Decision types and the condition is
    boolean. Signed Decision ownership remains static. No new recovery method, reviewer evidence feature
    or build-cache policy is introduced.
+
+7. Reuse one production exact-head check enumerator for successful-only gates and the
+   `checks_completed` Wait. Its independent `af/github-check-outcome@1` evidence records bounded
+   required identities, latest IDs and ready/repairable/pending state. `checks_state` parses and
+   binds it to the outer Observation. Pending/missing/incomplete/unknown results never become
+   repair evidence. A fresh repair Task requires a matching accepted source Task and preparation
+   Action (`publication` input); current-head evidence is captured in requirements, never source
+   authority. Review requests, remote base/conflict sources remain unavailable. Consuming
+   Scenarios own finite conditional repairs, new signatures, lazy selection and actual merge.
+   These additions complete the unreleased generation-4 capability vocabulary; no established
+   Observation, Task result, operation payload or reviewer evidence shape changes.
 
 ## Consequences
 

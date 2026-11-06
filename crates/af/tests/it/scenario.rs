@@ -1993,3 +1993,161 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
 
 #[path = "scenario_performance.rs"]
 mod performance;
+#[test]
+fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_same_pr() {
+    for mode in ["ready", "repairable", "pending", "stale"] {
+        let f = Fixture::bare();
+        std::fs::remove_dir(&f.repo).unwrap();
+        let task_root = f._root.path().join("task-fixture");
+        std::fs::create_dir(&task_root).unwrap();
+        let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "pagination");
+        std::fs::rename(repo, &f.repo).unwrap();
+        let commit = std::process::Command::new("git")
+            .current_dir(&f.repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit = String::from_utf8(commit.stdout).unwrap();
+        let file = f.machine.join("template.json");
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+        document["verification"] = json!("evaluation");
+        write(&file, &document);
+        let pinned = cli(
+            &f.repo,
+            &f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                f.repo.to_str().unwrap(),
+                "--task-state",
+                task_state.to_str().unwrap(),
+                "--authority-commit",
+                commit.trim(),
+            ],
+        );
+        let adapter = f.machine.join("outcome-service.py");
+        std::fs::copy(
+            workspace().join("fixtures/scenarios/workspace/outcome-service.py"),
+            &adapter,
+        )
+        .unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(f.machine.join("mode"), mode).unwrap();
+        let digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
+        );
+        let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+        policy["task_templates"] = json!([pinned["template_id"]]);
+        policy["adapters"] = json!({"workspace":{"executable":adapter,"digest":digest,
+            "operations":["prepare_candidate_v1","publish_pr","observe"],"destinations":["github:octo/project"],
+            "max_wall_ms":30000,"max_output_bytes":65536}});
+        write(&f.policy, &policy);
+        let binding = |id: &str| json!({"source":"step","step":id,"port":"result"});
+        let project = |id: &str, kind: &str| json!({"source":"project","value":binding(id),"projection":{"kind":kind}});
+        let grant = |op: &str| json!({"adapter":"workspace","operation":op,"destination":"github:octo/project"});
+        let action = |op: &str, signed: bool| json!({"kind":"action","grant":grant(op),"requires_decision":signed,"required_condition":null});
+        let prepare = |id: &str, candidate: &str| {
+            step(
+                id,
+                action("prepare_candidate_v1", false),
+                json!({"candidate":binding(candidate),"subject":project(candidate,"task_result_id"),
+            "revision":{"source":"project","value":binding(candidate),"projection":{"kind":"task_output_snapshot","port":"snapshot"}},
+            "body":literal("text",json!("{\"schema\":\"af/git-workspace-content@1\",\"title\":\"Documentation\",\"body\":\"Exact accepted candidate\"}"))}),
+                "action",
+            )
+        };
+        let decision = |id: &str, prepared: &str| {
+            step(
+                id,
+                json!({"kind":"decision","owner":"owner"}),
+                json!({"subject":project(prepared,"workspace_subject"),"revision":project(prepared,"workspace_revision")}),
+                "decision",
+            )
+        };
+        let publish = |id: &str, prepared: &str, approval: &str| {
+            step(
+                id,
+                action("publish_pr", true),
+                json!({"subject":project(prepared,"workspace_subject"),"revision":project(prepared,"workspace_revision"),
+            "body":project(prepared,"workspace_publication"),"decision":binding(approval)}),
+                "action",
+            )
+        };
+        let repair_if = json!({"source":"equals","left":project("checks","checks_state"),"right":literal("text",json!("repairable"))});
+        let mut repair = step(
+            "repair",
+            json!({"kind":"fresh_task","template":pinned["template"],
+            "bindings":{"source":{"port":"snapshot","artifact_type":"af/SourceTree@1"}}}),
+            json!({"source":binding("edit"),"scenario_evidence":binding("checks"),"publication":binding("prepare")}),
+            "task",
+        );
+        repair["when"] = repair_if.clone();
+        let mut repaired = prepare("repaired", "repair");
+        repaired["inputs"]["previous"] = binding("prepare");
+        repaired["when"] = repair_if.clone();
+        let mut approve_repair = decision("approve-repair", "repaired");
+        approve_repair["when"] = repair_if.clone();
+        let mut publish_repair = publish("publish-repair", "repaired", "approve-repair");
+        publish_repair["when"] = repair_if.clone();
+        let selected = json!({"source":"select","condition":repair_if,"when_true":binding("repaired"),"when_false":binding("prepare")});
+        let bundle = json!({"schema":"af/scenario-bundle@4","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@4","admission":null,"inputs":{},"outputs":{"selected":"action"},
+            "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
+                prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
+                step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
+                    json!({"subject":project("prepare","workspace_subject"),"revision":project("prepare","workspace_revision")}),"observation"),
+                repair,repaired,approve_repair,publish_repair],
+            "result":{"selected":selected},"completion":[literal("boolean",json!(true))],
+            "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
+                "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe")],"decision_owners":["owner"]},
+            "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":16}}}});
+        valid("scenario-bundle-v4.json", &bundle);
+        write(&f.bundle, &bundle);
+        assert_eq!(f.start("documentation")["status"], "waiting");
+        f.approve("documentation");
+        let mut run = cli(&f.repo, &f.state, &["scenario", "resume", "documentation"]);
+        if mode == "stale" {
+            assert_eq!(run["status"], "failed", "{run}");
+            assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 1);
+        } else if mode == "pending" {
+            assert_eq!(run["status"], "waiting", "{run}");
+            assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 1);
+        } else {
+            if mode == "repairable" {
+                assert_eq!(run["status"], "waiting", "{run}");
+                assert_eq!(run["fresh_tasks"].as_object().unwrap().len(), 2);
+                f.approve("documentation");
+                run = cli(&f.repo, &f.state, &["scenario", "resume", "documentation"]);
+            }
+            assert_eq!(run["status"], "succeeded", "{run}");
+            let prepared: Value = serde_json::from_str(
+                run["frames"]["root"]["outputs"]["selected"]["value"]["evidence"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                prepared["commit"],
+                if mode == "ready" {
+                    "b".repeat(40)
+                } else {
+                    "c".repeat(40)
+                }
+            );
+        }
+        let effects: Value =
+            serde_json::from_slice(&std::fs::read(f.machine.join("effects.json")).unwrap())
+                .unwrap();
+        assert_eq!(effects["posts"], 1);
+        assert_eq!(
+            effects["publications"].as_array().unwrap().len(),
+            if mode == "repairable" { 2 } else { 1 }
+        );
+    }
+}
