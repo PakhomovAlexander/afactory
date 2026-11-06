@@ -1,5 +1,6 @@
 # Review this native catalog with the consuming repository local code policy.
 schema = "af.task-catalog/2"
+report_policy = ".af/report-policy.toml"
 code_policy = ".af/code-policy.toml"
 no_match = "refuse"
 
