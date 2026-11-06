@@ -178,10 +178,11 @@ bindings:
 These files contain no local package definitions, authentication paths or credentials. They do
 not activate a Task, Scenario, Ant or publication. All selected Workers use `codex-personal`;
 that alias must already name the operator's admitted Codex account on the capture machine.
-The Report author uses Sol medium with only `read-source`, the existing Report contract and
-unchanged author reservations. The existing independent Report verifier uses Sol high with
-only `read-source`. The generic `kernel/analyst` uses Claude and cannot be switched to Codex by
-a Provider alias alone; the separate committed owner author makes this selection feasible.
+The Report author uses Codex `gpt-6.1-sol` medium with only `read-source`, the existing Report
+contract and unchanged author reservations. The existing independent `kernel/report-verifier`
+uses Codex `gpt-6.1-terra` high with only `read-source`. The generic `kernel/analyst` uses Codex
+`gpt-6.1-sol` high with `read-source` and `execute-checks`; the separate committed owner author
+keeps the owner's medium-effort, read-only selection explicit.
 
 For a consuming repository, copy the complete pinned package/Pipeline closure into its reviewed
 catalog authority. Afactory's catalog review policy keeps `bugs = "advisory"` and

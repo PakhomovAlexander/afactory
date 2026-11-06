@@ -290,9 +290,9 @@ or attributed to this candidate.
 
 The repository pins only `pi-light/implementer`, `correctness`, `evaluator`, `review`,
 `implementation` and `verification`. The implementer is Pi `kimi-coding` K3 **high**, using
-only confined file tools. Correctness is Codex `gpt-6-sol` **high**; evaluation is Codex
-`gpt-6-astra` **medium**. There is no extra reviewer. Verification is read-only with no
-implementer. Kernel and markdownlint remain mandatory local checks; existing light-family
+only confined file tools. Both judges use Codex `gpt-6.1-terra`: correctness at **high**
+effort and evaluation at **medium** effort. There is no extra reviewer. Verification is read-only
+with no implementer. Kernel and markdownlint remain mandatory local checks; existing light-family
 budgets, Attempt allowances and acceptance remain. No remote check is selected.
 
 Register `pi-kimi`; the two Codex roles use the existing `codex-main` registration. Trusted
