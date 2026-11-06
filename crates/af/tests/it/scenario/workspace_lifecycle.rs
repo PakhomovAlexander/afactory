@@ -439,9 +439,7 @@ fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
 }
 
 fn install(f: &Fixture, task_state: &Path, pin: &Value, commit: &str, remote: &Path, mode: &str) {
-    let binary = f.machine.join("af");
-    std::fs::copy(crate::common::af().get_program(), &binary).unwrap();
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = crate::common::privately_installed_af(&f.machine);
     let git_wrapper = f.machine.join("git");
     let wrapper = format!(
         r#"#!/usr/bin/python3 -IS
