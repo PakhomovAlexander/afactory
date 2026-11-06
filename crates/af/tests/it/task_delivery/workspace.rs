@@ -155,9 +155,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     // Private installation, never an af binary inheriting the developer's real home.
-    let binary = tools.join("af");
-    std::fs::copy(crate::common::af().get_program(), &binary).unwrap();
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = crate::common::privately_installed_af(&tools);
     let hash = |path: &Path| {
         format!(
             "sha256:{}",

@@ -24,6 +24,79 @@ pub fn af_binary() -> &'static Path {
     static HELD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     HELD.get_or_init(|| executables::held(Path::new(env!("CARGO_BIN_EXE_af"))))
 }
+
+/// Install a real native executable within an already-private fixture directory.
+/// Linux debug builds can exceed the adapter's 256 MiB executable limit. Strip
+/// only this fresh copy, before callers hash/pin it; the held Cargo binary can
+/// share its inode with other tests and must never be modified.
+pub fn privately_installed_af(directory: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let digest = |path: &Path| {
+        let mut file = std::fs::File::open(path).unwrap();
+        let mut hash = Sha256::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let count = file.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            hash.update(&buffer[..count]);
+        }
+        hash.finalize()
+    };
+    let source = af_binary();
+    let original = std::fs::metadata(source).unwrap();
+    let original_digest = digest(source);
+    let binary = directory.join("af");
+    let mut copy = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&binary)
+        .unwrap();
+    std::io::copy(&mut std::fs::File::open(source).unwrap(), &mut copy).unwrap();
+    drop(copy);
+    let copied = std::fs::metadata(&binary).unwrap();
+    assert_ne!(
+        (original.dev(), original.ino()),
+        (copied.dev(), copied.ino())
+    );
+    assert_eq!(digest(&binary), original_digest);
+    // -S removes debug symbols on both GNU/ELF and Apple/Mach-O strip,
+    // preserving the native executable and its runtime symbols.
+    let stripped = Command::new("/usr/bin/strip")
+        .arg("-S")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert_eq!(digest(source), original_digest);
+    let unchanged = std::fs::metadata(source).unwrap();
+    assert_eq!(
+        (unchanged.dev(), unchanged.ino()),
+        (original.dev(), original.ino())
+    );
+    assert_eq!(
+        unchanged.permissions().mode(),
+        original.permissions().mode()
+    );
+    assert!(
+        stripped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stripped.stderr)
+    );
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let installed = std::fs::metadata(&binary).unwrap();
+    assert!(
+        installed.len() <= 256 * 1024 * 1024,
+        "private executable still exceeds 256 MiB after stripping: {} bytes",
+        installed.len()
+    );
+    assert_eq!(installed.permissions().mode() & 0o777, 0o500);
+    binary
+}
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const TARGET: &str = env!("AF_TARGET");
 /// The commit every fake nightly's `af --version --json` reports.
