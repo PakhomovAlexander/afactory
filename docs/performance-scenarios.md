@@ -158,14 +158,39 @@ research report proving that branch with evidence and costs; it skips candidate/
 and returns that report. It fails acceptance when that claim cannot be established. Select the
 variant explicitly when reviewing the pin; no boolean supplied by a model grants completion.
 
-Before capture, put the owner pipeline and Worker packages into the consuming repository's reviewed
-catalog authority. The examples explicitly select `kernel/implementation-reviewed`,
-`kernel/verification-reviewed` and `kernel/report`; inspect their complete compiled plans and bind
-the development team below. The current repository's ordinary Worker defaults are different and
-must not be silently reused. Commit reviewed owner manifests/pins, using `af catalog digest` for
-every changed package; select both `bugs` and `correctness` as required in the owner review
-policy. Current native checks use `af/TaskCheckReceipt@2`; copied pre-ADR-0255 package contracts
-must be corrected and re-pinned before capture. Do not hand-type package digests or use local mutable package overrides.
+The committed `.af/task-packages/owner-default/` Workers supply the exact owner development
+team below. Each reuses the current kernel public contracts and Attempt bounds. The development
+instructions follow the actual performance Task goal and requirements, without assuming a
+campaign package plan or an unconditional ADR deliverable. The implementation Worker accepts
+the optional typed
+`research_report` Document in its signature and input schema, retains it on both outputs and
+instructs the Worker to consume its recommendation. The generic Workers, defaults and Pipelines
+remain unchanged. Use the existing local `kernel/implementation-reviewed`,
+`kernel/verification-reviewed` and `kernel/report` Pipelines, with these inert slot/provider-only
+bindings:
+
+| Stage | Bindings file | Effective Workers |
+| --- | --- | --- |
+| Candidate | `fixtures/scenarios/performance-implementation-bindings.json` | Four `owner-default/` development Workers |
+| Verification | `fixtures/scenarios/performance-verification-bindings.json` | Three `owner-default/` judges; no implementer |
+| Research and final report | `fixtures/scenarios/performance-report-bindings.json` | `owner-default/report-author`, `kernel/report-verifier` |
+
+These files contain no local package definitions, authentication paths or credentials. They do
+not activate a Task, Scenario, Ant or publication. All selected Workers use `codex-personal`;
+that alias must already name the operator's admitted Codex account on the capture machine.
+The Report author uses Sol medium with only `read-source`, the existing Report contract and
+unchanged author reservations. The existing independent Report verifier uses Sol high with
+only `read-source`. The generic `kernel/analyst` uses Claude and cannot be switched to Codex by
+a Provider alias alone; the separate committed owner author makes this selection feasible.
+
+For a consuming repository, copy the complete pinned package/Pipeline closure into its reviewed
+catalog authority. Afactory's catalog review policy keeps `bugs = "advisory"` and
+`correctness = "required"`; these bindings do not change that policy or its benchmark-Demand
+reduction. The selected production `bugs`, `correctness` and `evaluator` slots and results are
+mandatory under native performance role and publication checks. That complete team obligation
+does not rewrite the catalog's reviewer requirement. Inspect the complete compiled plans. New package pins are generated with `af catalog digest`, never
+hand-typed. Current code check contracts use `af/TaskCheckReceipt@2`; mutable local package
+overrides and silent old-role fallback are refused by native performance template admission.
 
 | Development role | Model | Effort | Provider |
 | --- | --- | --- | --- |
@@ -175,8 +200,8 @@ must be corrected and re-pinned before capture. Do not hand-type package digests
 | Evaluator | `gpt-6-astra` | medium | `codex-personal` |
 
 There is no advisory role or default-light pipeline. Verification has no implementer. Native
-performance roadmap admission checks these model bindings before dispatch. Research/report author
-and independent verifier are explicitly pinned read-only Report Tasks on `codex-personal`.
+performance roadmap admission checks these model bindings before dispatch. Research and final
+reporting use the explicit read-only Report bindings above.
 
 The example allowances account for the shipped package reservations, including bounded retries and
 Provider admission; they are authorization bounds, not expected spend:
@@ -202,11 +227,24 @@ Active/unknown reservations remain held regardless of age. Smaller production li
 new native plans and a new Scenario pin; the illustrative 10,000-token admission fixture is not a
 production model-loop budget. Inspect native plan reservations and refuse if any no longer fit.
 
-Export each stage's `operation.template.document` to an external Task file and capture it with
-`af scenario template-pin --file FILE --repo REPO --task-state STORE --authority-commit COMMIT
---bindings BINDINGS --json`. Preserve its goal, mode, explicit limits and `facts.standard = true` on the candidate and
+Export each stage's `operation.template.document` to an external Task file. For example, from
+the reviewed repository, capture the candidate using its committed owner packages:
+
+```sh
+af scenario template-pin --file /private/perf/candidate.json --repo /project \
+  --task-state /private/perf/tasks --authority-commit EXACT_COMMITTED_AUTHORITY \
+  --bindings fixtures/scenarios/performance-implementation-bindings.json --json
+```
+
+Use `performance-verification-bindings.json` for verification and
+`performance-report-bindings.json` for both research and final reporting in the same command.
+The authority commit must already contain these packages and their generated catalog pins;
+an unmerged authority-only commit cannot satisfy standing publication's remote-main equality.
+Capture and planning do not merge, install, activate or publish anything. Preserve each stage's
+goal, mode, explicit limits and `facts.standard = true` on the candidate and
 verification templates. Token-free native planning must succeed for all four stages before the
-operator approves execution. Template capture itself runs no Provider inference. Collect the four returned
+operator approves execution. Template capture and planning run no Provider inference; planning retains token-free CLI
+installation, capability and account-identity checks. Collect the four returned
 envelopes under `research`, `candidate`, `verification` and `report` in `pins.json`. Capture the
 exact committed owner authority; review model bindings and contracts before any execution.
 
