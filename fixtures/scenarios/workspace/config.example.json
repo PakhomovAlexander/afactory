@@ -1,0 +1,41 @@
+{
+  "schema": "af/git-workspace-config@1",
+  "repository": "octo/documentation",
+  "repository_id": 17,
+  "actor": {
+    "id": 7,
+    "login": "automation"
+  },
+  "token_file": "/private/machine/token",
+  "state_dir": "/private/machine/state",
+  "repo": "/private/project",
+  "task_store": "/private/tasks",
+  "worktree_root": "/private/worktrees",
+  "base": "main",
+  "branch_prefix": "accepted",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "af": "/private/tools/af",
+  "af_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "git": "/usr/bin/git",
+  "git_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "ssh_config": "/private/machine/ssh-config",
+  "ssh_config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "author_name": "Automation",
+  "author_email": "automation@example.invalid",
+  "required_checks": [
+    {
+      "kind": "check",
+      "name": "CI",
+      "app_id": 4
+    }
+  ],
+  "reviewers": [],
+  "publication_mode": "exclusive_owned_writer",
+  "operations": [
+    "prepare_candidate_v1",
+    "publish_pr",
+    "observe",
+    "cleanup_workspace_v1"
+  ]
+}

@@ -913,3 +913,5 @@ fn generated_files_the_ignore_rules_exclude_are_left_out_of_the_candidate_unless
     assert_eq!(record["ignored_count"], 2);
     assert_eq!(record["manifest_id"], envelope["payload"]["manifest_id"]);
 }
+
+mod workspace;

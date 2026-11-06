@@ -20,7 +20,7 @@ fn lit(value: Datum) -> Binding {
 pub(super) fn simple() -> (Bundle, Policy) {
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let policy = Policy {
-        schema: "af/scenario-policy@3".into(),
+        schema: "af/scenario-policy@4".into(),
         adapters: BTreeMap::new(),
         task_plans: Default::default(),
         task_templates: Default::default(),
@@ -43,7 +43,7 @@ pub(super) fn simple() -> (Bundle, Policy) {
         },
     };
     let def = Scenario {
-        schema: "af/scenario@3".into(),
+        schema: "af/scenario@4".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::from([("ok".into(), Port::Boolean)]),
         steps: vec![step],
@@ -60,7 +60,7 @@ pub(super) fn simple() -> (Bundle, Policy) {
     };
     (
         Bundle {
-            schema: "af/scenario-bundle@3".into(),
+            schema: "af/scenario-bundle@4".into(),
             root: "main".into(),
             definitions: BTreeMap::from([("main".into(), def)]),
         },
@@ -123,7 +123,7 @@ fn publication() -> (Bundle, Policy) {
 pub(super) fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@3".into(),
+        schema: "af/ant@4".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
@@ -156,7 +156,7 @@ pub(super) fn schema(name: &str) -> jsonschema::Validator {
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
     for file in [
-        "scenario-v3.json",
+        "scenario-v4.json",
         "task-contracts-v2.json",
         "scenario-roadmap-proposal-v2.json",
     ] {
@@ -204,7 +204,7 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
     }))
     .unwrap();
     Datum::Task(receipt.clone()).validate().unwrap();
-    let validator = schema("scenario-v3.json#/$defs/TaskReceipt");
+    let validator = schema("scenario-v4.json#/$defs/TaskReceipt");
     let mut wire = serde_json::to_value(&receipt).unwrap();
     let errors: Vec<_> = validator
         .iter_errors(&wire)
@@ -238,27 +238,27 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let ant = ant("UTC", 12, 0);
     for (file, value) in [
         (
-            "scenario-v3.json",
+            "scenario-v4.json",
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
-        ("scenario-bundle-v3.json", json!(bundle)),
-        ("scenario-policy-v3.json", json!(policy)),
-        ("scenario-pin-v3.json", json!(pin)),
-        ("scenario-run-v3.json", json!(run)),
-        ("ant-v3.json", json!(ant.pin.definition)),
-        ("ant-pin-v3.json", json!(ant.pin)),
-        ("ant-state-v3.json", json!(ant)),
+        ("scenario-bundle-v4.json", json!(bundle)),
+        ("scenario-policy-v4.json", json!(policy)),
+        ("scenario-pin-v4.json", json!(pin)),
+        ("scenario-run-v4.json", json!(run)),
+        ("ant-v4.json", json!(ant.pin.definition)),
+        ("ant-pin-v4.json", json!(ant.pin)),
+        ("ant-state-v4.json", json!(ant)),
         (
-            "scenario-list-v3.json",
-            json!({"schema":"af/scenario-list@3","runs":{"run":run}}),
+            "scenario-list-v4.json",
+            json!({"schema":"af/scenario-list@4","runs":{"run":run}}),
         ),
         (
-            "ant-list-v3.json",
-            json!({"schema":"af/ant-list@3","ants":{"daily":ant}}),
+            "ant-list-v4.json",
+            json!({"schema":"af/ant-list@4","ants":{"daily":ant}}),
         ),
         (
-            "ant-tick-v3.json",
-            json!({"schema":"af/ant-tick@3","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v4.json",
+            json!({"schema":"af/ant-tick@4","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
@@ -276,7 +276,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     wrong["extra"] = json!(true);
     assert!(serde_json::from_value::<Bundle>(wrong).is_err());
     let request = Request {
-        schema: "af/scenario-adapter-request@2".into(),
+        schema: "af/scenario-adapter-request@3".into(),
         method: Method::Reconcile,
         intent_id: digest(b"intent"),
         input_digest: digest(b"inputs"),
@@ -292,7 +292,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         evidence: "no prior effect".into(),
         observation: None,
     };
-    valid("scenario-adapter-request-v2.json", &request);
+    valid("scenario-adapter-request-v3.json", &request);
     valid("scenario-adapter-response-v1.json", &response);
     valid(
         "scenario-owned-file-v1.json",
@@ -1106,7 +1106,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v4.json", &world);
+    valid("scenario-store-v5.json", &world);
 }
 
 #[test]
@@ -1554,7 +1554,7 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             &std::fs::read(root.join("fixtures/scenarios").join(file)).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v3.json", &value);
+        valid("scenario-bundle-v4.json", &value);
         let bundle: Bundle = serde_json::from_value(value).unwrap();
         bundle.validate().unwrap();
         let definition = &bundle.definitions["performance"];
@@ -1575,4 +1575,80 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             Operation::Observe | Operation::ExperimentSubmitV1
         )));
     }
+}
+
+#[test]
+fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
+    let (mut bundle, policy) = simple();
+    let def = bundle.definitions.get_mut("main").unwrap();
+    def.steps[0].when = Some(lit(Datum::Boolean(false)));
+    let skipped = Binding::Project {
+        value: Box::new(Binding::Step {
+            step: "review".into(),
+            port: "result".into(),
+        }),
+        projection: Projection::DecisionApproved,
+    };
+    let selection = Binding::Select {
+        condition: Box::new(lit(Datum::Boolean(false))),
+        when_true: Box::new(skipped),
+        when_false: Box::new(lit(Datum::Boolean(true))),
+    };
+    def.result.insert("ok".into(), selection.clone());
+    def.completion = vec![selection];
+    bundle.validate().unwrap();
+    valid("scenario-bundle-v4.json", &bundle);
+    let mut run = Run::new(
+        "selection".into(),
+        Pin::new(bundle.clone(), policy).unwrap(),
+        BTreeMap::new(),
+        limits(),
+        START,
+        None,
+    )
+    .unwrap();
+    for _ in 0..3 {
+        run.prepare(START).unwrap();
+    }
+    run.validate().unwrap();
+    assert_eq!(run.status, Status::Succeeded);
+    assert_eq!(
+        run.frames["root"].outputs.as_ref().unwrap()["ok"],
+        Datum::Boolean(true)
+    );
+    let def = bundle.definitions.get_mut("main").unwrap();
+    let Binding::Select { condition, .. } = def.result.get_mut("ok").unwrap() else {
+        panic!()
+    };
+    *condition = Box::new(lit(Datum::Text("truthy".into())));
+    assert!(bundle.validate().is_err());
+    let def = bundle.definitions.get_mut("main").unwrap();
+    let Binding::Select {
+        condition,
+        when_true,
+        ..
+    } = def.result.get_mut("ok").unwrap()
+    else {
+        panic!()
+    };
+    *condition = Box::new(lit(Datum::Boolean(true)));
+    *when_true = Box::new(lit(Datum::Text("different type".into())));
+    assert!(bundle.validate().is_err());
+    let def = bundle.definitions.get_mut("main").unwrap();
+    def.outputs.insert("ok".into(), Port::Decision);
+    def.result.insert(
+        "ok".into(),
+        Binding::Select {
+            condition: Box::new(lit(Datum::Boolean(true))),
+            when_true: Box::new(Binding::Step {
+                step: "review".into(),
+                port: "result".into(),
+            }),
+            when_false: Box::new(Binding::Step {
+                step: "review".into(),
+                port: "result".into(),
+            }),
+        },
+    );
+    assert!(bundle.validate().unwrap_err().contains("non-Decision"));
 }

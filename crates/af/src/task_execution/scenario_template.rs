@@ -253,7 +253,11 @@ pub(crate) fn check_experiment_source(
     experiment_source_matches(&opened.cas, &snapshot, expected)
 }
 
-fn experiment_source_matches(cas: &Cas, source: &str, expected: &str) -> Result<(), String> {
+pub(crate) fn experiment_source_matches(
+    cas: &Cas,
+    source: &str,
+    expected: &str,
+) -> Result<(), String> {
     if !review_core::is_digest(expected) {
         return Err("Native experiment evidence revision is not an exact Snapshot".into());
     }

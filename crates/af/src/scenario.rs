@@ -2,6 +2,7 @@
 mod adapter;
 #[cfg(test)]
 mod admission_tests;
+mod checks;
 pub(crate) mod contract;
 mod roadmap;
 mod runtime;
@@ -12,6 +13,7 @@ mod store;
 pub(crate) mod template;
 #[cfg(test)]
 mod tests;
+pub(crate) mod workspace;
 
 use clap::{Args, Subcommand};
 use contract::*;
@@ -61,6 +63,27 @@ pub(crate) enum ScenarioCommand {
         /// Private native Task Store containing the artifact and source receipts
         #[arg(long)]
         task_state: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Export an ordinary accepted Task candidate as private, provenance-checked Git objects
+    #[command(
+        override_usage = "af scenario candidate-source --file FILE --repo REPO\n                             --task-state STORE --into DIR [OPTIONS]",
+        after_long_help = "Examples:\n  # needs: an exact accepted Task receipt in a versioned request\n  af scenario candidate-source --file request.json --repo /project \\\n    --task-state /private/tasks --into /private/captures/candidate --json"
+    )]
+    CandidateSource {
+        /// af/git-candidate-source-request@1 JSON containing the exact accepted Task receipt
+        #[arg(long)]
+        file: PathBuf,
+        /// Repository whose Git history anchors the Task source
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store holding the accepted result and Snapshots
+        #[arg(long)]
+        task_state: PathBuf,
+        /// Private capture directory outside the repository and Task Store
+        #[arg(long)]
+        into: PathBuf,
         #[command(flatten)]
         inspect: Inspect,
     },
@@ -325,6 +348,25 @@ fn at(inspect: &Inspect) -> Result<u64> {
 }
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
+        ScenarioCommand::CandidateSource {
+            file,
+            repo,
+            task_state,
+            into,
+            inspect,
+        } => {
+            let request: workspace::SourceRequest =
+                serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
+                    .map_err(|e| e.to_string())?;
+            request.validate()?;
+            let receipt = crate::task_execution::candidate::candidate_source(
+                &request,
+                &repo,
+                &task_state,
+                &into,
+            )?;
+            print(&receipt, &inspect)
+        }
         ScenarioCommand::ExperimentSource {
             file,
             repo,
@@ -438,7 +480,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@3","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@4","runs":world.runs}),
                 &inspect,
             )
         }
@@ -538,7 +580,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@3","ants":world.ants}),
+                &serde_json::json!({"schema":"af/ant-list@4","ants":world.ants}),
                 &inspect,
             )
         }
@@ -580,7 +622,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 }
             }
             print(
-                &serde_json::json!({"schema":"af/ant-tick@3","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@4","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }

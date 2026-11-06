@@ -52,7 +52,7 @@ def request(operation="publish_pr", intent="a", publication=None):
     inputs = {"subject": {"type": "text", "value": subject}, "revision": {"type": "text", "value": SHA},
               "body": {"type": "text", "value": A.canonical(p).decode()},
               "decision": {"type": "decision", "value": decision}}
-    return {"schema": "af/scenario-adapter-request@2", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
+    return {"schema": "af/scenario-adapter-request@3", "method": "reconcile", "intent_id": "sha256:" + intent * 64,
             "input_digest": "sha256:" + "b" * 64, "operation": operation, "destination": "github:octo/project", "inputs": inputs}
 
 
@@ -136,7 +136,7 @@ class AdapterTests(unittest.TestCase):
         return req["inputs"]["subject"]["value"]
 
     def observe(self, publication, condition="checks_passed"):
-        req = {"schema": "af/scenario-adapter-request@2", "method": "observe", "operation": "observe",
+        req = {"schema": "af/scenario-adapter-request@3", "method": "observe", "operation": "observe",
                "intent_id": "sha256:" + "e" * 64, "input_digest": "sha256:" + "f" * 64,
                "destination": "github:octo/project", "inputs": {
                    "subject": {"type": "text", "value": publication}, "revision": {"type": "text", "value": SHA},

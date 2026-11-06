@@ -1037,3 +1037,6 @@ mod tests {
         assert_eq!(mode, ["tool"]);
     }
 }
+
+mod workspace;
+pub(crate) use workspace::candidate_source;

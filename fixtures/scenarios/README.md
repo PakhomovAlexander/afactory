@@ -47,3 +47,6 @@ Task templates and use `configure-performance.py` to render external authoring f
 receipts. It never runs or confirms a plan. Follow the
 [manual-first runbook](../../docs/performance-scenarios.md); a real complete Claw run precedes
 separate Ant enablement. No example grants publication.
+
+The inert [workspace example](workspace/README.md) composes an ordinary accepted Task with
+owned preparation, exact signed publication, actual merge waiting and safe cleanup.
