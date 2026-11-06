@@ -154,7 +154,7 @@ pub(super) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@3".into(),
+                schema: "af/scenario-adapter-request@4".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -192,12 +192,68 @@ pub(super) fn dispatch(
         }
         Kind::Action { grant, .. } if grant.adapter == "builtin" => file_action(dispatch, grant),
         Kind::Action { grant, .. } => {
+            let started = Instant::now();
+            let remaining = || {
+                dispatch.timeout_ms.saturating_sub(
+                    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                )
+            };
             let a = policy
                 .adapters
                 .get(&grant.adapter)
                 .ok_or("Action adapter not in machine policy")?;
+            if grant.operation == Operation::PublishPerformancePrV1 {
+                let scope = policy
+                    .performance_publications
+                    .get(&grant.adapter)
+                    .ok_or("Missing standing publication machine scope")?;
+                require(
+                    grant.destination == format!("github:{}", scope.repository),
+                    "Publication destination differs from machine scope",
+                )?;
+                let proof = super::performance::ProofRequest::inputs(&dispatch.inputs, scope)?;
+                crate::task_execution::candidate::performance::proof(
+                    &proof,
+                    &scope.repo,
+                    &scope.task_state,
+                )?;
+                let evidence_adapter = policy
+                    .adapters
+                    .get(&scope.evidence_adapter)
+                    .ok_or("Missing pinned native evidence adapter")?;
+                let observation_request = Request {
+                    schema: "af/scenario-adapter-request@4".into(),
+                    method: Method::Observe,
+                    intent_id: dispatch.intent.id.clone(),
+                    input_digest: dispatch.intent.input_digest.clone(),
+                    operation: Operation::Observe,
+                    destination: scope.evidence_destination.clone(),
+                    inputs: BTreeMap::from([
+                        (
+                            "subject".into(),
+                            Datum::Text(proof.evidence.subject.clone()),
+                        ),
+                        (
+                            "revision".into(),
+                            Datum::Text(proof.evidence.revision.clone()),
+                        ),
+                        ("condition".into(), Datum::Text("native_verified".into())),
+                    ]),
+                };
+                let left = remaining();
+                require(
+                    left > 0,
+                    "Step deadline reached during native publication validation",
+                )?;
+                let observed = call(evidence_adapter, &observation_request, left, cancellation)?;
+                require(
+                    observed.outcome == Outcome::Done
+                        && observed.observation.as_ref() == Some(&proof.evidence),
+                    "Publication evidence differs from retained native report",
+                )?;
+            }
             let mut request = Request {
-                schema: "af/scenario-adapter-request@3".into(),
+                schema: "af/scenario-adapter-request@4".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -205,10 +261,21 @@ pub(super) fn dispatch(
                 destination: grant.destination.clone(),
                 inputs: dispatch.inputs.clone(),
             };
+            if grant.operation == Operation::PublishPerformancePrV1 {
+                let scope = &policy.performance_publications[&grant.adapter];
+                request.inputs.insert(
+                    "machine_scope".into(),
+                    Datum::Text(serde_json::to_string(scope).map_err(|e| e.to_string())?),
+                );
+            }
             // Reconciliation is mandatory even for a fresh intent. An absent response is a
             // positive, authoritative no-effect result, not a timeout or a missing response.
-            let started = Instant::now();
-            let mut r = match call(a, &request, dispatch.timeout_ms, cancellation) {
+            let left = remaining();
+            require(
+                left > 0,
+                "Step deadline reached before adapter reconciliation",
+            )?;
+            let mut r = match call(a, &request, left, cancellation) {
                 Ok(r) => r,
                 Err(why) => return Ok(Settlement::Uncertain(why)),
             };

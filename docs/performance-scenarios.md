@@ -1,7 +1,8 @@
 # Performance Scenarios: manual proof, then a pinned Ant
 
 The native bridge submits durable experiments to the existing Performance Executor. It creates no
-benchmark runner, arbitrary command grant, remote publication or scheduler. GitHub Actions remains
+benchmark runner, arbitrary command grant or scheduler. Remote publication is a separate opt-in
+workspace capability described below. GitHub Actions remains
 a separate executor backend. This bridge requires `backend = "local"` and runs on Claw, after the
 implementation Task, local native gate, both reviewers and evaluator have passed. Nothing in this
 runbook has been installed or live-tested by a Worker.
@@ -276,8 +277,9 @@ them. A new evidence selection also requires a reviewed launcher and Scenario pi
    one-goal example subsequently skips roadmap admission until the owner reviews genuinely new
    eligible goal scope and updates the pin.
 5. Ant enablement authorizes neither a PR nor a merge. Publication still requires a separately
-   granted publication Action and an exact signed human Decision for that Run/pin/object/revision.
-   These examples carry no publication adapter, grant, credential or Decision key.
+   granted publication Action. Generic `publish_pr` requires an exact signed human Decision for
+   that Run/pin/object/revision. The optional performance operation below uses scoped standing owner
+   authority. The default examples carry no publication grant, credential or Decision key.
 
 Live Claw proof, installation and Ant enablement are operator acceptance, not Worker work. Do not
 mark them complete from hermetic fake adapter results or a successful local Task gate.
@@ -285,3 +287,93 @@ mark them complete from hermetic fake adapter results or a successful local Task
 The binding integration decision is
 [ADR-2026-11-03-native-performance-scenario-loops](adr/2026-11-03-native-performance-scenario-loops.md).
 Evidence index and packet documents use generation 2; old generation 1 evidence fails closed.
+
+## Opt-in standing performance PR publication
+
+The separate `publish_performance_pr_v1` operation implements the owner's scoped standing
+publication authorization in
+[the decision](adr/2026-11-06-publish-verified-performance-under-standing-owner-authority.md).
+Generic `publish_pr` and `followup` still require their exact signed Decisions. Human merge is
+required. Task delivery and Remote Checks retain their existing authority.
+
+Prepare the installed [workspace/GitHub adapter](scenario-git-workspace.md) outside every checkout.
+Start from the inert `fixtures/scenarios/performance-workspace.example.json`.
+Its owner-only `af/git-workspace-config@2` pins the exact repository numeric identity, native
+repository and Task Store, reviewed source commit/content, base, branch namespace, native tools,
+SSH config and author. Set `operations` to `["publish_performance_pr_v1"]` and add:
+
+```json
+{
+  "performance": {
+    "executable": "/replace/private/native-lab-adapter",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "destination": "native:claw"
+  }
+}
+```
+
+This is an inert fragment, not a complete configuration. Use the exact lab launcher receipt from
+this runbook and populate the other fields from native reviewed receipts. Install only after
+reviewing the complete config, credentials and exclusive writer scope:
+
+```sh
+python3 -IS scripts/install-scenario-git-workspace.py \
+  --config /replace/private/performance-workspace.json \
+  --output /replace/private/performance-workspace
+```
+
+The installer prints the executable digest. Copy its path/digest into a private copy of
+`fixtures/scenarios/performance-publication.example.json`. Its `scope` repeats the exact installed
+repository name and numeric ID, native repository/Task Store, source commit/content, base and
+branch prefix. Keep `evidence_adapter: lab` and `evidence_destination: native:claw`. This file
+contains no signing key. Validate it against `af/performance-publication-activation@1` and review
+all values before supplying it to the authoring command:
+
+```text
+# Add to the configure-performance.py command above, for the candidate bundle only:
+ --publication /replace/private/reviewed-performance-publication.json
+```
+
+The generated bundle adds a final typed Action after implementation, native comparison,
+independent verification and accepted final reporting. Its inputs are `candidate`, `verification`
+and `report` native Task receipts, `measurement` from `native_verified`, the candidate result as
+`subject`, its exact Snapshot as `revision`, and `body` with `af/performance-pr-content@1` and a
+single `title`. The body of the PR is generated from native records. The machine policy contains
+an explicit `performance_publications` scope keyed by the installed publication adapter. The
+native runtime injects that scope into the adapter request; Scenario/model text cannot supply it.
+The generated Ant remains inert until the existing separately confirmed enablement procedure.
+The no-worthwhile bundle has no candidate publication step; asking to add one refuses authoring.
+
+Before any candidate commit, push or POST, native acceptance/provenance is checked again and the
+pinned lab adapter re-observes its retained offline-verified evidence. The independent verification
+must reference the implementation's exact accepted result and leave its Snapshot unchanged. The
+accepted final report must reference that verification and consume this exact native comparison.
+Local and remote base must equal the installed source commit. A `.github/` change refuses.
+The existing workspace export limit remains 32768 entries and 64 MiB per candidate; unsupported
+sources refuse before commit.
+Only passing, complete, measured local core comparisons with at least one non-exploratory native
+improvement and no failing/inconclusive case qualify. Telemetry, regression, diagnostic, synthetic,
+unsupported and within-tolerance-only evidence produces no PR. Local partial/bootstrap scope is
+stated explicitly and never claims a remote required-check pass.
+
+The default is a normal open PR. It carries the accepted report, the actual `af task report` block
+for implementation, independent verification and final report, and the exact native comparison
+including before/after medians, rational change and intervals, sources, producer/configuration and
+scope. No Worker-supplied body or boolean replaces those receipts.
+
+The operation creates a deterministic commit and only a new branch under the pinned namespace.
+An empty expected-ref lease requires atomic remote absence; it grants no force-update of an
+existing ref. Existing or foreign refs are retained. This operation has no continuation, merge or
+cleanup permission. After a lost response, resume the same Run/intent: deterministic commit bytes
+recover the same object, exact remote ref readback avoids a second push, and retained GitHub markers
+recover the single PR. An uncertain POST with an empty listing stays uncertain and never repeats.
+Do not delete the private journals, reuse an intent, widen the scope or start another Run to
+resolve an ambiguous effect. Inspect retained receipts and the remote first.
+
+`af scenario performance-proof --file REQUEST --repo REPO --task-state STORE --json` exposes the
+read-only native checks and report rendering as `af/performance-pr-proof@1` from an
+`af/performance-pr-proof-request@1`. It grants no publication authority by itself. The installed
+adapter independently checks the retained lab evidence and machine scope before effects. Changed
+Scope/Scenario and adapter contracts use their current versions; finish or discard older Runs
+under their own release. No compatibility migration, live install, Mac remote Gate or benchmark
+is part of this change.

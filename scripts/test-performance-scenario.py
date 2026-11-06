@@ -58,13 +58,13 @@ class SourceCapture(unittest.TestCase):
             baseline_sha="2" * 40, candidate_sha="3" * 40,
             repository=os.path.join(self.path, "source/repository.git"))
         schema = json.loads((ROOT / "schemas/scenario-experiment-source-v1.json").read_text())
-        scenario = json.loads((ROOT / "schemas/scenario-v4.json").read_text())
+        scenario = json.loads((ROOT / "schemas/scenario-v5.json").read_text())
         # The existing subset validator accepts local refs: inline the shipped digest
         # definition without changing any receipt assertions or requiring a new dependency.
         schema["$defs"] = dict(digest=scenario["$defs"]["digest"])
         for node in schema["properties"].values():
             if "$ref" in node:
-                self.assertEqual(node["$ref"], "urn:af:schema:scenario:4#/$defs/digest")
+                self.assertEqual(node["$ref"], "urn:af:schema:scenario:5#/$defs/digest")
                 node["$ref"] = "#/$defs/digest"
         return jsonsubset.Schema(schema, "scenario-experiment-source-v1.json").validate(receipt)
 
@@ -323,7 +323,7 @@ class ScenarioLab(ExecutorFixture):
         self.adapter = scenarioadapter.Adapter(self.config)
         self.experiment = dict(schema="af.perf-scenario-experiment/1", work="core",
             configuration_digest=canonical_digest(self.c), producer_digest=PRODUCER)
-        self.request = dict(schema="af/scenario-adapter-request@3", method="execute", intent_id=D,
+        self.request = dict(schema="af/scenario-adapter-request@4", method="execute", intent_id=D,
             input_digest=BASE, operation="experiment_submit_v1", destination="native:claw",
             inputs=dict(subject=datum(D), revision=datum(HEAD),
                         body=datum(document_bytes(self.experiment).decode()),
@@ -864,6 +864,30 @@ class Evidence(unittest.TestCase):
             before = (root / "authored/ant.json").read_bytes()
             self.assertNotEqual(subprocess.run(argv, capture_output=True, timeout=10).returncode, 0)
             self.assertEqual((root / "authored/ant.json").read_bytes(), before)
+            self.assertEqual(policy["performance_publications"], {})
+            activation = json.loads((ROOT / "fixtures/scenarios/performance-publication.example.json").read_text())
+            path = root / "publication.json"
+            path.write_text(json.dumps(activation))
+            opted = argv[:-1] + [str(root / "with-publication"), "--publication", str(path)]
+            result = subprocess.run(opted, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            authored = json.loads((root / "with-publication/bundle.json").read_text())
+            publisher = authored["definitions"]["performance"]["steps"][-1]
+            self.assertEqual(publisher["operation"]["grant"]["operation"], "publish_performance_pr_v1")
+            self.assertFalse(publisher["operation"]["requires_decision"])
+            self.assertEqual(set(publisher["inputs"]), {"subject", "revision", "body", "candidate", "verification", "report", "measurement"})
+            opted_policy = json.loads((root / "with-publication/policy.json").read_text())
+            self.assertEqual(opted_policy["performance_publications"]["performance-publication"], activation["scope"])
+            self.assertEqual(opted_policy["decision_keys"], {})
+            ant = json.loads((root / "with-publication/ant.json").read_text())
+            self.assertEqual(ant["scenario"], authored)
+            refused = opted.copy()
+            refused[refused.index("--bundle") + 1] = str(ROOT / "fixtures/scenarios/performance-no-worthwhile.json")
+            refused[refused.index("--output") + 1] = str(root / "no-worthwhile")
+            result = subprocess.run(refused, capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "no-worthwhile").exists())
+
 
 
 if __name__ == "__main__":

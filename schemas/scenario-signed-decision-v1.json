@@ -15,10 +15,10 @@
       "const": "af/scenario-signed-decision@1"
     },
     "request": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/DecisionRequest"
+      "$ref": "urn:af:schema:scenario:5#/$defs/DecisionRequest"
     },
     "signature": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/text",
+      "$ref": "urn:af:schema:scenario:5#/$defs/text",
       "maxLength": 4096
     }
   }

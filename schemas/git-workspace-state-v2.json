@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:git-workspace-state:1",
+  "$id": "urn:af:schema:git-workspace-state:2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -282,7 +282,7 @@
               },
               "inputs": {
                 "additionalProperties": {
-                  "$ref": "urn:af:schema:scenario:4#/$defs/Datum"
+                  "$ref": "urn:af:schema:scenario:5#/$defs/Datum"
                 },
                 "type": "object"
               },
@@ -295,11 +295,12 @@
               "operation": {
                 "enum": [
                   "cleanup_workspace_v1",
-                  "prepare_candidate_v1"
+                  "prepare_candidate_v1",
+                  "publish_performance_pr_v1"
                 ]
               },
               "schema": {
-                "const": "af/scenario-adapter-request@3"
+                "const": "af/scenario-adapter-request@4"
               }
             },
             "required": [
@@ -383,7 +384,7 @@
       "type": "object"
     },
     "schema": {
-      "const": "af/git-workspace-state@1"
+      "const": "af/git-workspace-state@2"
     }
   },
   "required": [
@@ -392,6 +393,6 @@
     "checksum",
     "records"
   ],
-  "title": "git-workspace-state v1",
+  "title": "git-workspace-state v2",
   "type": "object"
 }

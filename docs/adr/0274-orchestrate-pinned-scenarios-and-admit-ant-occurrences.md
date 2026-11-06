@@ -3,6 +3,8 @@
 **Status:** accepted (2026-11-02). Extends the publication boundary of
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) only through a separately
 confirmed Scenario action. Task delivery and Remote Checks are unchanged.
+Partially superseded for the new performance publication operation by
+[ADR-2026-11-06-publish-verified-performance-under-standing-owner-authority](2026-11-06-publish-verified-performance-under-standing-owner-authority.md).
 
 ## Context
 

@@ -145,8 +145,12 @@ review corpora belong in consuming repositories, not here.
   candidate on the other Task's committed source, recording both Tasks; `af task materialize`
   writes an unverified candidate only under `--allow-unverified`
   ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
-- Scenario publication Actions require separate machine operation/destination authority and an
-  exact signed human decision (ADR-0274); they do not change Task delivery or Remote Checks.
+- Scenario publication Actions require separate machine operation/destination authority. Generic
+  `publish_pr` and `followup` also require an exact signed human decision (ADR-0274).
+  `publish_performance_pr_v1` alone accepts scoped standing owner authority after native Task and
+  measured evidence validation
+  ([decision](docs/adr/2026-11-06-publish-verified-performance-under-standing-owner-authority.md));
+  neither path changes Task delivery or Remote Checks.
   The existing Remote Check exception remains: for a check a Task
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one

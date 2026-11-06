@@ -204,7 +204,10 @@ the guide.
   repository only on a machine where every Task may push its gate branches
   ([docs/task-execution/remote-checks.md](docs/task-execution/remote-checks.md)). A Scenario
   Action can invoke an installed, pinned publication adapter only for a separately authorized
-  operation and destination, with a signed human decision on the exact object and revision.
+  operation and destination. Generic `publish_pr` and `followup` require a signed human decision
+  on the exact object and revision. The opt-in performance operation accepts narrowly pinned
+  standing owner authority after native implementation, independent verification, final report
+  and measured improvement checks ([runbook](docs/performance-scenarios.md)).
   [Scenarios and Ants](docs/scenarios.md) coordinate these steps and pinned or fresh Tasks; daily Ants
   are driven by local `af ant tick`. No active instances or publication grants ship enabled.
 - **No stored credentials.** A Provider is the official `claude` or `codex` CLI's own login:

@@ -10,7 +10,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@4`. A bundle (`af/scenario-bundle@4`) names its
+`af/scenario@5`. A bundle (`af/scenario-bundle@5`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -102,6 +102,14 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   signed human decision. No Task delivery, commit, push, merge or blanket shell grant follows.
   The native `experiment_submit_v1` Action additionally takes an accepted `candidate` Task receipt;
   its separate verified-report Wait is described in the performance runbook.
+  The opt-in `publish_performance_pr_v1` Action also takes exact `candidate`, `verification` and
+  `report` Task receipts plus a native `measurement` observation. It uses separately pinned standing
+  owner machine scope, validates native acceptance and positive core evidence, and reuses the
+  installed workspace/GitHub adapter to create a deterministic commit, new scoped branch and normal
+  PR. Its `body` supplies only a title; native records generate the PR report. See the
+  [publication runbook](performance-scenarios.md#opt-in-standing-performance-pr-publication).
+  This capability does not grant merge, continuation, cleanup, Task delivery or
+  Remote Check authority.
 
 A [structured Task example](../fixtures/custom-tasks/README.md) projects the exact typed output
 of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
@@ -130,7 +138,7 @@ pausing its Ant are separate operations.
 
 ## Machine policy and bounded adapters
 
-`af/scenario-policy@4` is an explicit, owner-only machine file outside every Git checkout.
+`af/scenario-policy@5` is an explicit, owner-only machine file outside every Git checkout.
 Author it as TOML; its captured JSON wire form is also accepted. The filename selects the format
 (`.toml` or JSON); a parse failure never selects a fallback format or an earlier version.
 It contains
@@ -145,7 +153,7 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@3`) carry `method` (`reconcile`, `execute`, `observe`),
+Requests (`af/scenario-adapter-request@4`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
@@ -191,7 +199,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Daily Ant scheduling
 
-An `af/ant@4` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@5` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
 `notify` action with its own authorized adapter.
@@ -324,7 +332,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@5`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@6`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
 collects revisions or resets a ledger. No second registry or storage budget exists.

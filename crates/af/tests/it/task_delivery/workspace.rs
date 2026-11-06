@@ -166,7 +166,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     std::fs::write(&ssh, "Host github.com\n  BatchMode yes\n").unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o600)).unwrap();
     let git = std::fs::canonicalize("/usr/bin/git").unwrap();
-    let config = json!({"schema":"af/git-workspace-config@1", "repository":"octo/documentation","repository_id":17,
+    let config = json!({"schema":"af/git-workspace-config@2", "repository":"octo/documentation","repository_id":17,
         "actor":{"id":7,"login":"automation"}, "token_file":machine.join("absent-token"),"state_dir":machine.join("receipts"),
         "repo":repo,"task_store":state,"worktree_root":worktrees,"base":"main","branch_prefix":"accepted",
         "source_commit":origin.source_revision().unwrap(),"source_content_digest":source.content_digest,
@@ -197,7 +197,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     let receipt = json!({"task_id":task.task_id,"plan_id":task.plan_id,"revision_id":task.revision_id,"result_id":result_id,
         "charged_tokens":0,"result":outcome["result"]});
     let text = |value: Value| json!({"type":"text","value":value});
-    let request = json!({"schema":"af/scenario-adapter-request@3","method":"execute","intent_id":format!("sha256:{}","a".repeat(64)),
+    let request = json!({"schema":"af/scenario-adapter-request@4","method":"execute","intent_id":format!("sha256:{}","a".repeat(64)),
         "input_digest":format!("sha256:{}","b".repeat(64)),"operation":"prepare_candidate_v1","destination":"github:octo/documentation",
         "inputs":{"subject":text(json!(result_id)),"revision":text(outcome["result"]["outputs"]["snapshot"]["snapshot_id"].clone()),
             "body":text(json!("{\"schema\":\"af/git-workspace-content@1\",\"title\":\"Accepted pagination\",\"body\":\"Exact candidate\"}")),

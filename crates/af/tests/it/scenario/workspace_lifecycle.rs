@@ -211,8 +211,8 @@ fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
                 "evidence":binding("merge")}),
             "action",
         );
-        let bundle = json!({"schema":"af/scenario-bundle@4","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
-            "schema":"af/scenario@4","admission":null,"inputs":{},"outputs":{"selected":"action"},
+        let bundle = json!({"schema":"af/scenario-bundle@5","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@5","admission":null,"inputs":{},"outputs":{"selected":"action"},
             "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
                 prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
                 step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
@@ -222,7 +222,7 @@ fn production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge() {
             "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
                 "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe"),grant("cleanup_workspace_v1")],"decision_owners":["owner"]},
             "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":24}}}});
-        valid("scenario-bundle-v4.json", &bundle);
+        valid("scenario-bundle-v5.json", &bundle);
         write(&f.bundle, &bundle);
         let initial = f.start("documentation");
         assert_eq!(initial["status"], "waiting", "{initial}");
@@ -469,7 +469,7 @@ os.execve("/usr/bin/git", ["/usr/bin/git"] + args, os.environ)
         .mode(0o700)
         .create(&worktrees)
         .unwrap();
-    let config = json!({"schema":"af/git-workspace-config@1", "repository":"octo/project","repository_id":17,
+    let config = json!({"schema":"af/git-workspace-config@2", "repository":"octo/project","repository_id":17,
         "actor":{"id":7,"login":"machine-bot"},"token_file":token,"state_dir":f.machine.join("receipts"),
         "repo":f.repo,"task_store":task_state,"worktree_root":worktrees,"base":"main","branch_prefix":"accepted",
         "source_commit":commit,"source_content_digest":pin["template"]["source_content_digest"],
@@ -477,7 +477,7 @@ os.execve("/usr/bin/git", ["/usr/bin/git"] + args, os.environ)
         "ssh_config":ssh,"ssh_config_digest":hash(&ssh),"author_name":"Fixture","author_email":"fixture@example.invalid",
         "required_checks":[{"kind":"check","name":"CI","app_id":4}],"reviewers":[],
         "publication_mode":"exclusive_owned_writer","operations":["prepare_candidate_v1","publish_pr","observe","cleanup_workspace_v1"]});
-    valid("git-workspace-config-v1.json", &config);
+    valid("git-workspace-config-v2.json", &config);
     let config_path = f.machine.join("config.json");
     write(&config_path, &config);
     std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();

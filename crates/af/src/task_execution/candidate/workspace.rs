@@ -1,7 +1,8 @@
 use super::*;
 /// Scenario lifecycle staging uses the exact native accepted candidate, never a Worker's
 /// filesystem claim. This is an isolated object export; only the separately installed adapter
-/// can create a source-repository branch/worktree or publish it under signed authority.
+/// can create a source-repository branch/worktree or publish it under separately granted
+/// machine and publication authority.
 pub(crate) fn candidate_source(
     request: &crate::scenario::workspace::SourceRequest,
     repo: &Path,

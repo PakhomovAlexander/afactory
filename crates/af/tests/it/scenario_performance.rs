@@ -479,8 +479,7 @@ print(json.dumps(o))
 }
 
 #[test]
-fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_without_duplicate_work()
- {
+fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement_with_recovery() {
     // Reproduce a native Gate's read-only source without changing the sealed checkout.
     // Keep every copied input's bytes and mode to prove only disposable consumer files change.
     let source = tempfile::tempdir().unwrap();
@@ -529,7 +528,7 @@ fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_wi
     let history = &mut bundle["definitions"]["performance"]["steps"][0];
     history["inputs"]["subject"]["value"]["value"] = packet["index_digest"].clone();
     history["inputs"]["revision"]["value"]["value"] = packet["compatibility"].clone();
-    valid("scenario-bundle-v4.json", &bundle);
+    valid("scenario-bundle-v5.json", &bundle);
     write(&p.f.bundle, &bundle);
     let pin = p.cli(
         &p.f.state,
@@ -629,12 +628,11 @@ fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_wi
     )
     .unwrap();
     let mut verdict: Value = serde_json::from_slice(
-        &std::fs::read(
-            workspace().join("fixtures/performance/compare/synthetic-regression/verdict.json"),
-        )
-        .unwrap(),
+        &std::fs::read(workspace().join("fixtures/scenarios/performance-positive-completion.json"))
+            .unwrap(),
     )
     .unwrap();
+    verdict = verdict["verdict"].take();
     verdict["provenance"] = json!("measured");
     verdict["run_id"] = json!("local_synthetic");
     completion["verdict"] = verdict;
@@ -677,7 +675,7 @@ fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_wi
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v4.json", &done);
+    valid("scenario-run-v5.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]
@@ -753,6 +751,7 @@ fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_wi
             .len(),
         4
     );
+    performance_publication_proof_and_installed_adapter(&p, &done, &binary);
     let mut refused_bundle = bundle.clone();
     let definition = &mut refused_bundle["definitions"]["performance"];
     definition["admission"] = Value::Null;
@@ -966,7 +965,7 @@ def observe(records):
     a.config['evidence_index'] = researchevidence.retain(evidence, current, 'evidence-index')
     a.config['evidence_index_digest'] = canonical_digest(current)
     text = lambda v: dict(type='text', value=v)
-    return a.request(dict(schema='af/scenario-adapter-request@3', method='observe',
+    return a.request(dict(schema='af/scenario-adapter-request@4', method='observe',
         operation='observe', destination='native:claw', intent_id=digest, input_digest=digest,
         inputs=dict(subject=text(canonical_digest(current)), revision=text(records[0]['compatibility']),
                     condition=text('bounded_evidence'))))
@@ -1140,4 +1139,132 @@ fn oversized_accepted_research_report_refuses_before_candidate_dispatch() {
     );
     assert_eq!(failed["fresh_tasks"].as_object().unwrap().len(), 1);
     assert!(!p.f.machine.join("submission.json").exists());
+}
+
+/// Reuse the already accepted real four-Task loop; the only simulated evidence is its native
+/// lab service response. No additional Provider calls, benchmark, capture or copy of authority.
+fn performance_publication_proof_and_installed_adapter(
+    p: &Performance,
+    done: &Value,
+    binary: &Path,
+) {
+    let steps = done["frames"]["root"]["steps"].as_array().unwrap();
+    let receipt = |name: &str| {
+        steps.iter().find(|s| s["step"] == name).unwrap()["outputs"]["result"]["value"].clone()
+    };
+    let candidate = receipt("candidate");
+    let cas = Cas::open_existing(p.task_state.join("cas")).unwrap();
+    let revision = cas
+        .get_artifact(candidate["revision_id"].as_str().unwrap())
+        .unwrap();
+    let baseline = review_source_git::task::read_snapshot(
+        &cas,
+        revision.payload["inputs"]["source"]["snapshot_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap()
+    .0;
+    let request = json!({"schema":"af/performance-pr-proof-request@1", "candidate":candidate,
+        "verification":receipt("verification"),"report":receipt("report"),"evidence":receipt("comparison"),
+        "source_commit":p.commit,"source_content_digest":baseline.content_digest});
+    valid("performance-pr-proof-request-v1.json", &request);
+    let file = p.f.machine.join("performance-proof.json");
+    write(&file, &request);
+    let args = [
+        "scenario",
+        "performance-proof",
+        "--file",
+        file.to_str().unwrap(),
+        "--repo",
+        p.f.repo.to_str().unwrap(),
+        "--task-state",
+        p.task_state.to_str().unwrap(),
+    ];
+    let proof = p.cli(&p.f.state, &args);
+    valid("performance-pr-proof-v1.json", &proof);
+    let body = proof["body"].as_str().unwrap();
+    assert_eq!(body.matches("<!-- af-task-report:v1 -->").count(), 1);
+    assert_eq!(body.matches("<!-- /af-task-report -->").count(), 1);
+    for name in ["candidate", "verification", "report"] {
+        assert!(body.contains(receipt(name)["task_id"].as_str().unwrap()));
+    }
+    assert!(body.contains("improvement") && body.contains("100") && body.contains("80"));
+    for fault in [
+        "unaccepted",
+        "candidate",
+        "source",
+        "verification",
+        "report",
+        "base",
+        "baseline",
+        "non-improving",
+        "diagnostic",
+        "unsupported",
+        "inconclusive",
+        "report-evidence",
+    ] {
+        let mut wrong = request.clone();
+        match fault {
+            "unaccepted" => wrong["candidate"]["result"]["acceptance"] = json!("unsatisfied"),
+            "candidate" => {
+                wrong["candidate"]["result"]["outputs"]["snapshot"]["snapshot_id"] =
+                    json!(format!("sha256:{}", "0".repeat(64)))
+            }
+            "source" => {
+                wrong["source_content_digest"] = json!(format!("sha256:{}", "0".repeat(64)))
+            }
+            "verification" => wrong["verification"] = wrong["candidate"].clone(),
+            "report" => wrong["report"] = wrong["verification"].clone(),
+            "base" => wrong["source_commit"] = json!("0".repeat(40)),
+            other => {
+                let mut c: Value =
+                    serde_json::from_str(wrong["evidence"]["evidence"].as_str().unwrap()).unwrap();
+                match other {
+                    "baseline" => {
+                        c["baseline_snapshot_id"] = json!(format!("sha256:{}", "0".repeat(64)))
+                    }
+                    "non-improving" => {
+                        for case in c["verdict"]["cases"].as_array_mut().unwrap() {
+                            case["statistical_classification"] = json!("within_tolerance");
+                        }
+                    }
+                    "diagnostic" => c["experiment"]["work"] = json!("telemetry"),
+                    "unsupported" => c["verdict"]["provenance"] = json!("synthetic"),
+                    "inconclusive" => c["verdict"]["aggregate"]["result"] = json!("incomplete"),
+                    _ => c["result_sha256"] = json!(format!("sha256:{}", "0".repeat(64))),
+                }
+                wrong["evidence"]["evidence"] = json!(serde_json::to_string(&c).unwrap());
+            }
+        }
+        write(&file, &wrong);
+        let out = p.output(&p.f.state, &args);
+        assert!(
+            !out.status.success(),
+            "accepted {fault}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    write(&file, &request);
+    let policy: Value = serde_json::from_slice(&std::fs::read(&p.f.policy).unwrap()).unwrap();
+    let integration = json!({"request":request,"repo":p.f.repo,"task_state":p.task_state,"af":binary,
+        "lab":policy["adapters"]["lab"],"targets":done["fresh_tasks"],"source_commit":p.commit,"source_content_digest":baseline.content_digest});
+    let fixture = p.f.machine.join("performance-publication-integration.json");
+    write(&fixture, &integration);
+    let out = std::process::Command::new("/usr/bin/python3")
+        .arg("-I")
+        .arg(workspace().join("scripts/test-scenario-git-workspace.py"))
+        .arg("--native-performance-fixture")
+        .arg(&fixture)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &p.f.machine)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

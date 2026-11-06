@@ -4,6 +4,7 @@ mod adapter;
 mod admission_tests;
 mod checks;
 pub(crate) mod contract;
+pub(crate) mod performance;
 mod roadmap;
 mod runtime;
 mod schedule;
@@ -61,6 +62,23 @@ pub(crate) enum ScenarioCommand {
         #[arg(long)]
         repo: PathBuf,
         /// Private native Task Store containing the artifact and source receipts
+        #[arg(long)]
+        task_state: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Validate native performance publication Tasks and render their exact report block
+    #[command(
+        long_about = "Read exact accepted implementation, independent verification and final report Tasks, check their source and measured comparison bindings, and render native publication reports. This read-only command grants no publication authority; the installed publication Action additionally re-observes the pinned native lab and enforces machine scope."
+    )]
+    PerformanceProof {
+        /// af/performance-pr-proof-request@1 JSON naming exact Task and comparison receipts
+        #[arg(long)]
+        file: PathBuf,
+        /// Repository whose native Task source and candidate provenance are checked
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store holding accepted Tasks, Snapshots and report receipts
         #[arg(long)]
         task_state: PathBuf,
         #[command(flatten)]
@@ -348,6 +366,19 @@ fn at(inspect: &Inspect) -> Result<u64> {
 }
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
+        ScenarioCommand::PerformanceProof {
+            file,
+            repo,
+            task_state,
+            inspect,
+        } => {
+            let request: performance::ProofRequest =
+                serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
+                    .map_err(|e| e.to_string())?;
+            let proof =
+                crate::task_execution::candidate::performance::proof(&request, &repo, &task_state)?;
+            print(&proof, &inspect)
+        }
         ScenarioCommand::CandidateSource {
             file,
             repo,
@@ -480,7 +511,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@4","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@5","runs":world.runs}),
                 &inspect,
             )
         }
@@ -580,7 +611,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::List { inspect } => {
             let world = Store::open(inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@4","ants":world.ants}),
+                &serde_json::json!({"schema":"af/ant-list@5","ants":world.ants}),
                 &inspect,
             )
         }
@@ -622,7 +653,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 }
             }
             print(
-                &serde_json::json!({"schema":"af/ant-tick@4","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@5","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }

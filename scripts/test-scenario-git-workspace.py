@@ -221,7 +221,7 @@ print(json.dumps(source))
         return dict(type="text", value=value)
 
     def request(self, op, key, inputs, method="execute"):
-        return dict(schema="af/scenario-adapter-request@3", operation=op, intent_id="sha256:" + key * 64,
+        return dict(schema="af/scenario-adapter-request@4", operation=op, intent_id="sha256:" + key * 64,
                     input_digest=D, destination="github:octo/project", method=method, inputs=inputs)
 
     def adapter(self):
@@ -876,9 +876,12 @@ print(json.dumps(source))
         for name, value in A.workspace_schema_documents().items():
             self.assertEqual(json.loads((ROOT / "schemas" / name).read_text()), value)
         old = copy.deepcopy(self.prepare_req)
-        old["schema"] = "af/scenario-adapter-request@2"
+        old["schema"] = "af/scenario-adapter-request@3"
         with self.assertRaises(A.Refused):
             self.call(old)
+        old_config = dict(self.config, schema="af/git-workspace-config@1")
+        with self.assertRaises(A.Refused):
+            A.workspace_validate_config(old_config)
         state = Path(self.config["state_dir"]) / "state.json"
         raw = A.decode(state.read_bytes(), A.STATE_LIMIT)
         raw["checksum"] = D
@@ -1082,5 +1085,344 @@ for _kind in ("worktree", "build"):
         self.uncertain_symlink(kind)
     setattr(LifecycleTests, "test_uncertain_symlink_" + _kind, _symlink)
 
+
+def performance_integration(native=None):
+    """Installed code + native CLI handoff + a real Git remote and controlled HTTP service.
+
+    The Rust fixture supplies accepted real Task receipts. The standalone script uses the
+    existing fake native CLI seam; neither variant runs a benchmark or contacts GitHub.
+    """
+    import http.client
+    import http.server
+    import threading
+    import types
+    from urllib.parse import urlsplit
+    test = LifecycleTests(methodName="test_independent_schemas_match_the_installed_writer")
+    test.setUp()
+    try:
+        c = copy.deepcopy(test.config)
+        c.update(state_dir=str(test.root / "performance-state"), branch_prefix="af-performance",
+                 operations=[A.PERFORMANCE_OP])
+        if native is not None:
+            c.update(repo=native["repo"], task_store=native["task_state"], af=native["af"],
+                     source_commit=native["source_commit"], source_content_digest=native["source_content_digest"])
+            c["af_digest"] = A.file_digest(c["af"])
+            proof_request = native["request"]
+            candidate, verification, report, observation = (proof_request[k] for k in ("candidate", "verification", "report", "evidence"))
+            c["performance"] = {k: native["lab"][k] for k in ("executable", "digest")}
+            c["performance"]["destination"] = "native:claw"
+        else:
+            candidate = test.candidate
+            verification = dict(candidate, task_id="verification", result_id=A.digest(b"verification"))
+            report = dict(candidate, task_id="report", result_id=A.digest(b"report"))
+            completion = json.loads((ROOT / "fixtures/scenarios/performance-positive-completion.json").read_text())
+            completion.update(baseline_snapshot_id=S, candidate_snapshot_id=R)
+            observation = dict(subject=D, revision=R, condition="native_verified", satisfied=True,
+                               evidence=A.canonical(completion).decode())
+            # Fake only the native read-only proof receipt, just as candidate-source in the
+            # existing lifecycle fixture. The Rust caller uses the real pinned native CLI.
+            binary = Path(c["af"])
+            source = binary.read_text()
+            marker = 'assert args[:2] == ["scenario", "candidate-source"]'
+            proof_body = "Accepted final report\n<!-- af-task-report:v1 -->\n" + " ".join(t["task_id"] for t in (candidate, verification, report)) + "\n<!-- /af-task-report -->\n" + observation["evidence"]
+            source = source.replace(marker, '''if args[:2] == ["scenario", "performance-proof"]:
+ request=json.loads(pathlib.Path(args[args.index("--file")+1]).read_text())
+ assert request['source_commit']==''' + repr(c["source_commit"]) + '''
+ assert request['source_content_digest']==''' + repr(c["source_content_digest"]) + '''
+ print(json.dumps(dict(schema='af/performance-pr-proof@1',request_digest='sha256:'+hashlib.sha256(json.dumps(request,sort_keys=True,separators=(',', ':'),ensure_ascii=False).encode()).hexdigest(),source_snapshot=''' + repr(S) + ''',candidate_snapshot=request['candidate']['result']['outputs']['snapshot']['snapshot_id'],body=''' + repr(proof_body) + ''')))
+ sys.exit(0)
+''' + marker)
+            binary.write_text(source)
+            c["af_digest"] = A.file_digest(binary)
+            lab = test.root / "lab"
+            lab.write_text("#!/usr/bin/python3 -IS\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n")
+            lab.chmod(0o700)
+            c["performance"] = dict(executable=str(lab), digest=A.file_digest(lab), destination="native:claw")
+        if native is None:
+            test.git("branch", "-M", "main")
+        remote = test.root / "performance.git"
+        subprocess.run([c["git"], "init", "--bare", "-q", str(remote)], env=test.env, check=True)
+        subprocess.run([c["git"], "-C", c["repo"], "push", "-q", str(remote), c["source_commit"] + ":refs/heads/main"], env=test.env, check=True)
+        git = c["git"]
+        calls = test.root / "pushes"
+        wrapper = test.root / "performance-git"
+        wrapper.write_text('''#!/usr/bin/python3 -IS
+import os,pathlib,subprocess,sys
+args=sys.argv[1:]
+url='ssh://git@github.com/octo/project.git'
+if url in args:
+ assert 'push' in args or 'ls-remote' in args
+ args=[''' + repr(str(remote)) + ''' if v==url else 'protocol.file.allow=always' if v=='protocol.file.allow=never' else v for v in args]
+if 'commit-tree' in args and ''' + repr(native is not None) + ''':
+ result=subprocess.run([''' + repr(git) + ''']+args,env=os.environ,capture_output=True)
+ if result.returncode: sys.exit(result.returncode)
+ marker=pathlib.Path(''' + repr(str(test.root / "commits")) + ''')
+ with marker.open('a') as out: out.write(result.stdout.decode())
+ if len(marker.read_text().splitlines())==1: sys.exit(2)
+ sys.stdout.buffer.write(result.stdout)
+ sys.exit(0)
+if 'push' in args:
+ assert '--force' not in args
+ assert any(v.startswith('--force-with-lease=refs/heads/af-performance/') and v.endswith(':') for v in args)
+ with open(''' + repr(str(calls)) + ''','a') as out: out.write('push\\n')
+ result=subprocess.run([''' + repr(git) + ''']+args,env=os.environ)
+ if result.returncode: sys.exit(result.returncode)
+ if pathlib.Path(''' + repr(str(calls)) + ''').read_text().count('push')==1: sys.exit(2) # response lost after real push
+ sys.exit(0)
+os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
+''')
+        wrapper.chmod(0o700)
+        c.update(git=str(wrapper), git_digest=A.file_digest(wrapper))
+        absent_scope = dict(c)
+        del absent_scope["performance"]
+        try:
+            A.workspace_validate_config(absent_scope)
+            raise AssertionError("standing operation installed without native evidence scope")
+        except A.Refused:
+            pass
+        config = test.root / "performance-config.json"
+        config.write_bytes(A.canonical(c))
+        config.chmod(0o600)
+        installed_path = test.root / "performance-adapter"
+        with contextlib.redirect_stdout(io.StringIO()):
+            I.install(config, installed_path)
+        installed = types.ModuleType("installed_performance")
+        exec(compile(installed_path.read_text(), str(installed_path), "exec"), installed.__dict__)
+        # Pins and config validation execute on the installed bytes, including native tools.
+        installed.workspace_load_config()
+        scope = dict(repository=c["repository"], repository_id=c["repository_id"], repo=c["repo"], task_state=c["task_store"],
+            base=c["base"], branch_prefix=c["branch_prefix"], source_commit=c["source_commit"], source_content_digest=c["source_content_digest"],
+            evidence_adapter="lab", evidence_destination="native:claw")
+        req = test.request(A.PERFORMANCE_OP, "b", dict(subject=test.text(candidate["result_id"]),
+            revision=test.text(candidate["result"]["outputs"]["snapshot"]["snapshot_id"]),
+            body=test.text(A.canonical(dict(schema="af/performance-pr-content@1", title="Improve measured performance")).decode()),
+            candidate=dict(type="task", value=candidate), verification=dict(type="task", value=verification),
+            report=dict(type="task", value=report), measurement=dict(type="observation", value=observation), machine_scope=test.text(A.canonical(scope).decode())))
+        # Strict installed request scope fails before native export, commit or publication.
+        for field in ["repository_id", "base", "branch_prefix", "source_commit", "repo", "task_state"]:
+            wrong = copy.deepcopy(req)
+            changed = dict(scope)
+            changed[field] = 99 if field == "repository_id" else "/foreign" if field in ("repo", "task_state") else "foreign"
+            wrong["inputs"]["machine_scope"] = test.text(A.canonical(changed).decode())
+            try:
+                installed.workspace_validate_request(wrong, c)
+                raise AssertionError("accepted wrong machine " + field)
+            except installed.Refused:
+                pass
+        wrong = copy.deepcopy(req)
+        del wrong["inputs"]["machine_scope"]
+        try:
+            installed.workspace_validate_request(wrong, c)
+            raise AssertionError("accepted absent standing scope")
+        except installed.Refused:
+            pass
+        state = {"prs": [], "posts": 0, "lose_post": True, "base": c["source_commit"]}
+        def tip(branch):
+            return subprocess.check_output([git, "--git-dir", str(remote), "rev-parse", "refs/heads/" + branch], env=test.env).decode().strip()
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+            def do_GET(self):
+                path = urlsplit(self.path).path
+                if path == "/user": data = dict(id=7, login="owner")
+                elif path == "/repos/octo/project": data = dict(id=17, full_name="octo/project")
+                elif path == "/repos/octo/project/git/ref/heads/main": data = dict(ref="refs/heads/main", object=dict(type="commit", sha=state["base"]))
+                elif path == "/repos/octo/project/pulls": data = state["prs"]
+                else:
+                    assert path == "/repos/octo/project/pulls/1", path
+                    data = state["prs"][0]
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(A.canonical(data))
+            def do_POST(self):
+                assert self.path == "/repos/octo/project/pulls"
+                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                assert data["draft"] is False and data["maintainer_can_modify"] is False
+                state["posts"] += 1
+                assert state["posts"] == 1
+                p = dict(id=101, number=1, user=dict(id=7, login="owner"), title=data["title"], body=data["body"],
+                    url="https://api.github.com/repos/octo/project/pulls/1", html_url="https://github.com/octo/project/pull/1",
+                    head=dict(ref=data["head"], sha=tip(data["head"]), repo=dict(id=17, full_name="octo/project")),
+                    base=dict(ref=data["base"], repo=dict(id=17, full_name="octo/project")), state="open", merged=False)
+                state["prs"].append(p)
+                if state["lose_post"]:
+                    self.close_connection = True
+                    return
+                self.send_response(201)
+                self.end_headers()
+                self.wfile.write(A.canonical(p))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        class HTTP:
+            def request(self, method, path, body=None):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                try:
+                    connection.request(method, path, body=None if body is None else A.canonical(body), headers={"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    assert response.status in (200, 201)
+                    return json.loads(response.read())
+                finally:
+                    connection.close()
+            def pages(self, path, key=None, params=None):
+                assert key is None
+                return self.request("GET", path)
+        service = HTTP()
+        adapter = installed.WorkspaceAdapter(c, A.digest(config.read_bytes()), service)
+        original_git = adapter.git
+        commits = []
+        def lost_commit(*args, **kwargs):
+            result = original_git(*args, **kwargs)
+            if args[0] == "commit-tree":
+                commits.append(result)
+                if len(commits) == 1:
+                    raise RuntimeError("lost commit response")
+            return result
+        adapter.git = lost_commit
+        try:
+            if native is None:
+                # Refuse stale base and forged supplied evidence before the first commit/push.
+                state["base"] = "f" * 40
+                try:
+                    adapter.handle(req)
+                    raise AssertionError("accepted stale base before commit")
+                except installed.Refused:
+                    pass
+                state["base"] = c["source_commit"]
+                forged = copy.deepcopy(req)
+                altered = json.loads(forged["inputs"]["measurement"]["value"]["evidence"])
+                altered["result_sha256"] = S
+                forged["inputs"]["measurement"]["value"]["evidence"] = A.canonical(altered).decode()
+                # A distinct intent isolates the retained failed proof request.
+                forged["intent_id"] = "sha256:" + "c" * 64
+                forged["inputs"]["subject"] = test.text(A.digest(b"other result"))
+                forged["inputs"]["candidate"]["value"]["result_id"] = A.digest(b"other result")
+                other_snapshot = A.digest(b"other candidate")
+                forged["inputs"]["revision"] = test.text(other_snapshot)
+                forged["inputs"]["candidate"]["value"]["result"]["outputs"]["snapshot"]["snapshot_id"] = other_snapshot
+                forged["inputs"]["measurement"]["value"]["revision"] = other_snapshot
+                altered["candidate_snapshot_id"] = other_snapshot
+                forged["inputs"]["measurement"]["value"]["evidence"] = A.canonical(altered).decode()
+
+                try:
+                    adapter.handle(forged)
+                    raise AssertionError("accepted supplied evidence differing from native lab")
+                except installed.Refused as error:
+                    assert "measurement differs from retained native lab evidence" in str(error), str(error)
+                duplicate = copy.deepcopy(req)
+                duplicate["intent_id"] = "sha256:" + "d" * 64
+                duplicate["inputs"]["subject"] = test.text(A.digest(b"duplicate result"))
+                duplicate["inputs"]["candidate"]["value"]["result_id"] = A.digest(b"duplicate result")
+                try:
+                    adapter.handle(duplicate)
+                    raise AssertionError("same candidate admitted under a different intent/result")
+                except installed.Refused as error:
+                    assert "candidate Snapshot already reserved" in str(error), str(error)
+                assert commits == [] and not calls.exists() and state["posts"] == 0
+            if native is not None:
+                # Pin the installed application with only its HTTPS connection mapped to the
+                # controlled HTTP server. Production has no configurable endpoint or proxy.
+                controlled = test.root / "controlled-installed-adapter"
+                controlled.write_text("#!/usr/bin/python3 -IS\nimport http.client\ndef _fixture_connection(host, timeout, context):\n assert host == 'api.github.com'\n return http.client.HTTPConnection('127.0.0.1', " + str(server.server_port) + ", timeout=timeout)\nhttp.client.HTTPSConnection = _fixture_connection\n" + installed_path.read_text())
+                controlled.chmod(0o700)
+                def literal(value):
+                    return dict(source="literal", value=dict(type="text", value=value))
+                def ref(name):
+                    return dict(source="step", step=name, port="result")
+                targets = {t["task_id"]:t for t in native["targets"].values()}
+                stages = [dict(id=name, operation=dict(kind="task", target=targets[t["task_id"]]), inputs={},
+                    outputs=dict(result="task"), when=None, max_attempts=1, timeout_ms=30000, on_timeout="fail")
+                    for name, t in (("candidate",candidate),("verification",verification),("report",report))]
+                observed = dict(adapter="lab", operation="observe", destination="native:claw")
+                grant = dict(adapter="publication", operation=A.PERFORMANCE_OP, destination=req["destination"])
+                stages.append(dict(id="measurement", operation=dict(kind="wait", grant=observed, condition="native_verified"),
+                    inputs=dict(subject=literal(observation["subject"]), revision=literal(observation["revision"])),
+                    outputs=dict(result="observation"),when=None,max_attempts=1,timeout_ms=30000,on_timeout="fail"))
+                stages.append(dict(id="publish", operation=dict(kind="action", grant=grant, requires_decision=False, required_condition=None),
+                    inputs=dict(subject=literal(candidate["result_id"]), revision=literal(observation["revision"]), body=literal(req["inputs"]["body"]["value"]),
+                        candidate=ref("candidate"),verification=ref("verification"),report=ref("report"),measurement=ref("measurement")),
+                    outputs=dict(result="action"),when=None,max_attempts=1,timeout_ms=30000,on_timeout="fail"))
+                limits = dict(max_tokens=32000000,max_wall_ms=691200000,max_dispatches=16)
+                definition = dict(schema="af/scenario@5",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
+                    result=dict(publication=ref("publish")),completion=[dict(source="literal",value=dict(type="boolean",value=True))],
+                    authority=dict(task_plans=sorted({t["plan_id"] for t in (candidate,verification,report)}),task_templates=[],grants=[grant,observed],decision_owners=[]),limits=limits)
+                bundle = dict(schema="af/scenario-bundle@5",root="publish",definitions=dict(publish=definition))
+                policy = dict(schema="af/scenario-policy@5",adapters=dict(publication=dict(executable=str(controlled),digest=A.file_digest(controlled),
+                    operations=[A.PERFORMANCE_OP],destinations=[req["destination"]],max_wall_ms=30000,max_output_bytes=65536),lab=native["lab"]),
+                    task_plans=definition["authority"]["task_plans"],task_templates=[],decision_keys={},file_roots=[],performance_publications=dict(publication=scope))
+                for name, doc in (("bundle",bundle),("policy",policy),("inputs",{})):
+                    path = test.root / (name + ".json")
+                    path.write_bytes(A.canonical(doc))
+                    path.chmod(0o600)
+                env = dict(PATH="/usr/bin:/bin",HOME=c["state_dir"]+"/home",AF_SELF_OFFLINE="1",TMPDIR=c["state_dir"],
+                    XDG_DATA_HOME=c["state_dir"]+"/home",XDG_STATE_HOME=c["state_dir"]+"/home",XDG_CONFIG_HOME=c["state_dir"]+"/home",XDG_CACHE_HOME=c["state_dir"]+"/home")
+                def cli(*args):
+                    out = subprocess.run([c["af"],*args,"--state",str(test.root / "coordinator"),"--json"],env=env,capture_output=True)
+                    assert out.returncode == 0, out.stderr.decode()
+                    return json.loads(out.stdout)
+                validate = cli("scenario","validate","--file",str(test.root / "bundle.json"),"--authority",str(test.root / "policy.json"))
+                response = cli("scenario","start","publication","--file",str(test.root / "bundle.json"),"--authority",str(test.root / "policy.json"),
+                    "--inputs",str(test.root / "inputs.json"),"--confirm-pin",validate["revision"],"--execute")
+                intent = response["waiting"]["intent_id"]
+                for _ in range(3):
+                    assert response["status"] == "waiting" and response["waiting"]["kind"] == "reconcile", response
+                    assert response["waiting"]["intent_id"] == intent
+                    response = cli("scenario","resume","publication")
+                assert response["status"] == "succeeded", response
+                assert cli("scenario","resume","publication") == response
+                commits = [line.encode() for line in (test.root / "commits").read_text().splitlines()]
+            else:
+                assert adapter.handle(dict(req, method="reconcile"))["outcome"] == "absent"
+
+                for expected in ("lost commit response", "bounded native operation failed", "Remote end closed"):
+                    try:
+                        adapter.handle(req)
+                        raise AssertionError("expected ambiguous outcome: " + expected)
+                    except (RuntimeError, http.client.RemoteDisconnected) as error:
+                        assert expected in str(error), (expected, str(error))
+                response = adapter.handle(dict(req, method="reconcile"))
+                assert response["outcome"] == "done", response
+                assert adapter.handle(req)["outcome"] == "done"
+            assert len(commits) == 2 and commits[0] == commits[1]
+            assert calls.read_text() == "push\n" and state["posts"] == 1 and len(state["prs"]) == 1
+            pr = state["prs"][0]
+            assert tip(pr["head"]["ref"]) == pr["head"]["sha"] == commits[0].decode()
+            assert tip("main") == c["source_commit"]
+            assert pr["body"].count("<!-- af-task-report:v1 -->") == 1
+            assert pr["body"].count("<!-- /af-task-report -->") == 1
+            assert "improvement" in pr["body"] and "100" in pr["body"] and "80" in pr["body"]
+            for receipt in (candidate, verification, report):
+                assert receipt["task_id"] in pr["body"]
+            if native is None:
+                # Current base drift fails even after a successful response, without another effect.
+                state["base"] = "f" * 40
+                try:
+                    adapter.handle(req)
+                    raise AssertionError("accepted drifted base")
+                except installed.Refused:
+                    pass
+                assert state["posts"] == 1 and calls.read_text() == "push\n"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+    finally:
+        test.doCleanups()
+
+
+class PerformancePublicationTests(unittest.TestCase):
+    def test_installed_performance_publication_recovers_commit_push_and_http_response_without_duplicates(self):
+        performance_integration()
+
+    def test_standing_operation_cannot_be_enabled_in_generic_github_installation(self):
+        config = dict(schema=A.CONFIG_SCHEMA, repository="octo/project", repository_id=17, actor=dict(id=7, login="owner"),
+            token_file="/private/token", state_dir="/private/state", heads={"head":"main"},
+            required_checks=[dict(kind="check", name="CI", app_id=4)], reviewers=[], operations=[A.PERFORMANCE_OP])
+        with self.assertRaises(A.Refused):
+            A.validate_config(config)
+
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--native-performance-fixture":
+        performance_integration(json.loads(Path(sys.argv[2]).read_text()))
+    else:
+        unittest.main()

@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--evidence-index", required=True)
     parser.add_argument("--compatibility", required=True)
     parser.add_argument("--admission", required=True, help="exact roadmap/identity/revision object")
+    parser.add_argument("--publication", help="optional reviewed af/performance-publication-activation@1; requires installed workspace scope")
     parser.add_argument("--output", required=True, help="absent authoring directory")
     args = parser.parse_args()
     bundle = read(args.bundle)
@@ -64,11 +65,44 @@ def main():
     root["admission"] = read(args.admission)
     if set(root["admission"]) != {"roadmap", "identity", "revision"}:
         raise ValueError("admission must be the exact native roadmap identity and revision")
-    policy = dict(schema="af/scenario-policy@4", adapters={"lab":dict(executable=launcher["executable"],
+    policy = dict(schema="af/scenario-policy@5", adapters={"lab":dict(executable=launcher["executable"],
         digest=launcher["digest"], operations=["experiment_submit_v1", "observe"], destinations=["native:claw"],
         max_wall_ms=30000, max_output_bytes=65536)}, task_plans=[], task_templates=sorted(set(digests)),
         decision_keys={}, file_roots=[])
-    ant = dict(schema="af/ant@4", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
+    policy["performance_publications"] = {}
+    if args.publication:
+        activation = read(args.publication)
+        if set(activation) != {"schema", "adapter", "scope", "title"} or activation["schema"] != "af/performance-publication-activation@1":
+            raise ValueError("expected exact performance publication activation")
+        stages = {s["id"]: s for s in root["steps"]}
+        if not {"candidate", "verification", "report", "comparison"} <= stages.keys():
+            raise ValueError("no-worthwhile loop has no candidate publication authority")
+        scope, adapter = activation["scope"], activation["adapter"]
+        destination = "github:" + scope["repository"]
+        if (scope["evidence_adapter"] != "lab" or scope["evidence_destination"] != "native:claw"
+                or adapter["operations"] != ["publish_performance_pr_v1"] or adapter["destinations"] != [destination]
+                or not pathlib.Path(adapter["executable"]).is_absolute()
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", adapter["digest"]) is None):
+            raise ValueError("publication activation must pin only the exact workspace operation/destination")
+        template = stages["candidate"]["operation"]["template"]
+        if (scope["repo"], scope["task_state"], scope["source_commit"], scope["source_content_digest"]) != (
+                template["repo"], template["state"], template["authority_commit"], template["source_content_digest"]):
+            raise ValueError("publication source differs from native candidate template")
+        grant = dict(adapter="performance-publication", operation="publish_performance_pr_v1", destination=destination)
+        step_ref = lambda name: dict(source="step", step=name, port="result")
+        project = lambda kind: dict(source="project", value=step_ref("candidate"), projection=dict(kind=kind, **({"port":"snapshot"} if kind == "task_output_snapshot" else {})))
+        root["steps"].append(dict(id="publish-performance", operation=dict(kind="action", grant=grant,
+            requires_decision=False, required_condition=None),
+            inputs=dict(subject=project("task_result_id"), revision=project("task_output_snapshot"),
+                body=dict(source="literal", value=dict(type="text", value=json.dumps(dict(schema="af/performance-pr-content@1", title=activation["title"]), sort_keys=True, separators=(",", ":")))),
+                candidate=step_ref("candidate"), verification=step_ref("verification"), report=step_ref("report"), measurement=step_ref("comparison")),
+            outputs=dict(result="action"), when=None, max_attempts=1, timeout_ms=30000, on_timeout="fail"))
+        root["authority"]["grants"].append(grant)
+        root["outputs"]["publication"] = "action"
+        root["result"]["publication"] = step_ref("publish-performance")
+        policy["adapters"]["performance-publication"] = adapter
+        policy["performance_publications"]["performance-publication"] = scope
+    ant = dict(schema="af/ant@5", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
         schedule=dict(timezone="UTC", hour=3, minute=0, start_unix_ms=1793664000000),
         owner="performance-owner", notification="local:performance-owner",
         execution=dict(overlap="skip", missed="skip", lateness_ms=60000, per_run=root["limits"],

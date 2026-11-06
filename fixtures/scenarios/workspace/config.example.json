@@ -1,5 +1,5 @@
 {
-  "schema": "af/git-workspace-config@1",
+  "schema": "af/git-workspace-config@2",
   "repository": "octo/documentation",
   "repository_id": 17,
   "actor": {
