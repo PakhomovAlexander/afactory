@@ -1403,24 +1403,42 @@ class ContainedSample(TempDir):
     def test_a_late_confirmation_in_real_time_is_unconfirmed(self):
         # The real-time form: 0.2 s of allowance, and the confirming client's start takes
         # 0.3 s. The stand-in is a shell script that lists nothing, so only time can refuse.
+        # The clock is fully controlled: it stands still until the real `rm` invocation has
+        # completed and then reads 0.1 s, so `ps` always starts however slow the scheduling
+        # was, and its real 0.3 s start leaves the clock at 0.3 s, past the 0.2 s deadline
+        # (issue #582).
         docker = self.path("bin", "quiet-docker")
         with open(docker, "w") as stream:
             stream.write("#!/bin/sh\nexit 0\n")
         os.chmod(docker, 0o755)
-        real, started = subprocess.Popen, []
+        real_run, started = subprocess.run, []
+        now = [0.0]
+        deadline = 0.2
 
-        def popen(argv, *args, **kwargs):
+        def clock():
+            return now[0]
+
+        def run(argv, *args, **kwargs):
             if argv[0] == docker:
                 started.append(argv[1])
-                if argv[1] == "ps":
-                    time.sleep(0.3)
-            return real(argv, *args, **kwargs)
-        with mock.patch.object(supervise.subprocess, "Popen", popen):
-            removal = supervise.remove_container(docker, "c", deadline=time.monotonic() + 0.2)
+                kwargs["timeout"] = None
+                if argv[1] == "rm":
+                    result = real_run(argv, *args, **kwargs)
+                    now[0] = 0.1
+                    return result
+                time.sleep(0.3)
+                result = real_run(argv, *args, **kwargs)
+                now[0] = 0.3
+                return result
+            return real_run(argv, *args, **kwargs)
+        with mock.patch.object(supervise.subprocess, "run", run):
+            removal = supervise.remove_container(docker, "c", deadline=deadline, clock=clock)
         self.assertEqual(started, ["rm", "ps"])
         self.assertFalse(removal.confirmed, removal.detail)
-        self.assertIn("container c removal unconfirmed: confirming it ended", removal.detail)
-        with mock.patch.object(supervise.subprocess, "Popen", real):
+        self.assertEqual(removal.detail,
+                         "container c removal unconfirmed: confirming it ended 0.100 s after "
+                         "its 0.200 s allowance")
+        with mock.patch.object(supervise.subprocess, "run", real_run):
             removal = supervise.remove_container(docker, "c", deadline=time.monotonic() + 5.0)
         self.assertEqual(removal, (True, "container c removed"))
 
