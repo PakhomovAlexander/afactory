@@ -25,6 +25,8 @@ and is private. Repository, Task Store, workspace root and state cannot overlap.
 native af and Git executable bytes, SSH configuration bytes, initial source commit/content,
 repository numeric identity, actor, base, branch prefix, author, permitted operations and required
 check identities.
+Pinned executables must remain regular, non-symlink files without group/world write permission
+and at most 256 MiB.
 The fixed SSH destination is GitHub.com for that repository, with batch mode and strict host-key
 checking. Git hooks, global/system config, filters, executable local config and URL rewriting
 cannot add authority. The installer creates no token, remote ref, service object or schedule.
@@ -203,3 +205,10 @@ not production publication proof. Run the new regression with:
 ```sh
 cargo test -p af --test it scenario::workspace_lifecycle
 ```
+
+The native integration fixtures use a shared helper to copy the held Cargo executable into a
+new private file, strip only that copy's debug symbols with `strip -S`, then hash/pin the resulting
+bytes. The helper checks that the shared executable's identity, permissions and digest remain
+unchanged. A local Rust 1.88 Linux container reproduced both installation refusals at the size
+check: its 288,451,120-byte debug executable exceeded the 268,435,456-byte bound. This is local
+reproduction evidence; hosted Linux CI must independently confirm the fix.
