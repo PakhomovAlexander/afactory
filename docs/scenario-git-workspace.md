@@ -185,4 +185,21 @@ The native `ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_
 regression composes ordinary accepted command-backed Tasks, completed outcomes, conditional
 fresh repair, exact signed Decisions and lazy receipt selection in `documentation-maintenance`.
 Its inert adapter models PR identity; the separate production-adapter real-Git tests exercise
-actual publication/recovery code and stale-head refusal. Neither uses services or models.
+actual publication/recovery code and stale-head refusal. Neither uses live services or models.
+
+The native `scenario::workspace_lifecycle::production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge`
+regression closes the production composition boundary. It privately installs the complete production
+workspace/GitHub adapter and native executable, runs accepted command-backed Tasks and native signed
+Decisions, and uses real Git commits, worktrees and a bare remote. Only HTTPS transport and the fixed
+GitHub Git destination are inert. It covers ready, pending, stale-head refusal and completed failing CI
+with fresh repair admission, predecessor/source provenance, a second signature and a fast-forward of
+the same PR with exactly one creation POST. This exposed and fixed the installed entry point's
+missing GitHub transport during continuation preparation; initial preparation remains offline.
+A real no-ff merge supplies the merge commit reported by the HTTP fixture; cleanup removes actual
+owned worktrees, build roots and local/remote refs while
+retaining the merged base. The focused `outcome-service.py` test above remains a composition model,
+not production publication proof. Run the new regression with:
+
+```sh
+cargo test -p af --test it scenario::workspace_lifecycle
+```
