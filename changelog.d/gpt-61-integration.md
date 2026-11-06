@@ -5,3 +5,6 @@
   triage admission order for the new models.
 - Correct current performance Report, pi-light and triage setup guidance to match the
   pinned GPT-6.1 models, Providers and effort levels. Preserve historical execution records.
+- State the light pipeline's Sol/high implementer and Terra/high correctness reviewer and
+  evaluator explicitly in every current size/S rubric and staged example input. Check those
+  roles against the selected Worker manifests and refresh the triage package versions and pins.

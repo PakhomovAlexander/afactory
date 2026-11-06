@@ -217,6 +217,77 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
     );
 }
 
+/// All current size/S rubrics and the staged example's input describe the Workers selected
+/// by the light implementation pipeline, including model family, effort and role.
+#[test]
+fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and_roles() {
+    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+
+    let root = workspace();
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    let package = |name: &str| root.join(catalog["packages"][name]["path"].as_str().unwrap());
+    let pipeline = review_config::task::parse_task_pipeline(
+        &std::fs::read_to_string(package("default-light/implementation").join("pipeline.toml"))
+            .unwrap(),
+    )
+    .unwrap();
+    let expected = [
+        ("implementer", "Implementer"),
+        ("correctness", "correctness reviewer"),
+        ("evaluator", "evaluator"),
+    ]
+    .map(|(slot, role)| {
+        let worker: TaskWorkerManifest = toml::from_str(
+            &std::fs::read_to_string(package(&pipeline.slots[slot].worker).join("worker.toml"))
+                .unwrap(),
+        )
+        .unwrap();
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = worker.runner
+        else {
+            panic!("{slot} must select a model Worker");
+        };
+        assert_eq!(provider_kind, "codex", "{slot}");
+        format!("{role}: `{model}` {effort}")
+    })
+    .join("; ");
+    for path in [
+        ".af/task-packages/backlog/triage-author/instructions.md",
+        ".af/task-packages/backlog/triage-verifier/instructions.md",
+        "fixtures/issue-triage/task-packages/backlog/triage-author/instructions.md",
+        "fixtures/issue-triage/task-packages/backlog/triage-verifier/instructions.md",
+        "fixtures/custom-tasks/triage/worker/instructions.md",
+        "docs/design/issue-triage.md",
+        "fixtures/issue-triage/example/task.json",
+    ] {
+        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        let text = if path.ends_with(".json") {
+            let task: serde_json::Value = serde_json::from_str(&text).unwrap();
+            task["requirements"]["rubric"].as_str().unwrap().to_owned()
+        } else {
+            text
+        };
+        let rows: Vec<_> = text
+            .lines()
+            .filter(|line| line.starts_with("| `S` |"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{path}: exactly one size/S rubric");
+        let cells: Vec<_> = rows[0].split('|').map(str::trim).collect();
+        assert_eq!(cells.len(), 6, "{path}: size/S rubric columns");
+        assert_eq!(
+            cells[3],
+            format!("`light` (`{}`, ADR-0262)", pipeline.name),
+            "{path}: selected pipeline"
+        );
+        assert_eq!(cells[4], expected, "{path}: size/S Worker guidance");
+    }
+}
+
 /// Legacy Review pipelines use the same current judges. Resolve every locked package through
 /// the real parser and validate each declared pipeline's byte pin and referenced Workers.
 #[test]

@@ -44,7 +44,12 @@ impl Fixture {
             for part in ["kind", "worker", "pipeline"] {
                 let name = format!("custom/{kind}-{part}");
                 let path = format!("custom-tasks/{kind}/{part}");
-                let version = if part == "worker" { "1.0.1" } else { "1.0.0" };
+                let manifest: Value = toml::from_str(
+                    &std::fs::read_to_string(repo.join(&path).join(format!("{part}.toml")))
+                        .unwrap(),
+                )
+                .unwrap();
+                let version = manifest["version"].as_str().unwrap();
                 catalog["packages"][&name] = json!({"version":version,"path":path,"digest":review_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
             }
             catalog["kinds"][kind] = json!(format!("custom/{kind}-kind"));

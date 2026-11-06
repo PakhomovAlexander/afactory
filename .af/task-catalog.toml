@@ -177,8 +177,8 @@ digest = "sha256:94a2f61753351b021749bc11282dfcfcce0c60bf2be77b6dd06ad9df81a44eb
 path = ".af/task-packages/backlog/triage"
 
 [packages."backlog/triage-author"]
-version = "1.0.1"
-digest = "sha256:79f829c68b58b8facbeb5418a4c1fa790cc949f24fec204e31648719f5f49f77"
+version = "1.0.2"
+digest = "sha256:0be9262b5180c97630dfbead3494081b7ee41252f02737c8079acb2faca22f3b"
 path = ".af/task-packages/backlog/triage-author"
 
 [packages."backlog/triage-kind"]
@@ -187,8 +187,8 @@ digest = "sha256:1321c04198a9a30c54207aac2ae494aaffc803388ede24663eeedaa1f10e03d
 path = ".af/task-packages/backlog/triage-kind"
 
 [packages."backlog/triage-verifier"]
-version = "1.0.1"
-digest = "sha256:480df5f37cd9738b04d1671c028b1ec47744529e15e6240d9c69aa9df324552f"
+version = "1.0.2"
+digest = "sha256:c040156a030229389a5396c9ec8f955e91095359f539eb885fa8193b274af391"
 path = ".af/task-packages/backlog/triage-verifier"
 
 # Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
