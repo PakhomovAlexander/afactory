@@ -1,0 +1,59 @@
+# Review this native catalog with the consuming repository local code policy.
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+no_match = "refuse"
+
+[review]
+generation = 2
+gate = "major"
+clean_rounds = 1
+max_rounds = 2
+allow_targeted_repairs = false
+
+[independence]
+"command_workers_by_package" = true
+"distinct_principals" = false
+"distinct_providers" = false
+"distinct_models" = true
+
+
+[packages."impl/bugs"]
+version = "1.0.0"
+digest = "sha256:8b5a3dabfb4d9a60ffb83514ce7c3a6e9ce3560d79557734de5778a19c4ee0ed"
+path = ".af/task-packages/devrec-impl-bootstrap/bugs"
+
+[packages."impl/correctness"]
+version = "1.0.0"
+digest = "sha256:a90e74371f1bb1c78ccc15b18f57c8c2fa21a3f2d3f10117a39517574a29faca"
+path = ".af/task-packages/devrec-impl-bootstrap/correctness"
+
+[packages."impl/evaluator"]
+version = "1.0.0"
+digest = "sha256:376b1388b4ea59199ec2ed4d64bbf77c1b5b8a3a4498b4746a26024cd6093731"
+path = ".af/task-packages/devrec-impl-bootstrap/evaluator"
+
+[packages."impl/implementation"]
+version = "1.0.0"
+digest = "sha256:2932ffba4a64ba6331865e3d0c672a36da88b533c388b5718a3c909b4ab88424"
+path = ".af/task-packages/devrec-impl-bootstrap/implementation"
+
+[packages."impl/implementer"]
+version = "1.0.0"
+digest = "sha256:d31259f1114522a8a3f3af87fd01f696d4c5f331c11e67a7d39d1d1b9b253ea6"
+path = ".af/task-packages/devrec-impl-bootstrap/implementer"
+
+[packages."impl/review"]
+version = "1.0.0"
+digest = "sha256:e7c9d8f0e83d6006221d966c0b5efa09745166b5c18e06676469f21383b3df8f"
+path = ".af/task-packages/devrec-impl-bootstrap/review"
+
+[providers]
+"impl/implementer" = "codex-personal"
+"impl/correctness" = "codex-personal"
+"impl/bugs" = "codex-personal"
+"impl/evaluator" = "codex-personal"
+
+# Both are required; no default-light pipeline is selected.
+[review.reviewers]
+bugs = "required"
+correctness = "required"
