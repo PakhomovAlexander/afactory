@@ -1,12 +1,12 @@
 {
-  "schema": "af/ant@3",
+  "schema": "af/ant@4",
   "id": "issue-fix-example",
   "scenario": {
-    "schema": "af/scenario-bundle@3",
+    "schema": "af/scenario-bundle@4",
     "root": "issue-fix",
     "definitions": {
       "issue-fix": {
-        "schema": "af/scenario@3",
+        "schema": "af/scenario@4",
         "inputs": {
           "file": "text",
           "content": "text",
@@ -301,7 +301,7 @@
         "admission": null
       },
       "owned-change": {
-        "schema": "af/scenario@3",
+        "schema": "af/scenario@4",
         "inputs": {
           "implementation": "task",
           "file": "text",

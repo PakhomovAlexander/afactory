@@ -1,12 +1,12 @@
 {
-  "schema": "af/ant@3",
+  "schema": "af/ant@4",
   "id": "performance-native",
   "scenario": {
-    "schema": "af/scenario-bundle@3",
+    "schema": "af/scenario-bundle@4",
     "root": "performance",
     "definitions": {
       "performance": {
-        "schema": "af/scenario@3",
+        "schema": "af/scenario@4",
         "admission": null,
         "inputs": {},
         "outputs": {

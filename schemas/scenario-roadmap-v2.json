@@ -17,7 +17,7 @@
       "const": "af/scenario-roadmap@2"
     },
     "id": {
-      "$ref": "urn:af:schema:scenario:3#/$defs/name"
+      "$ref": "urn:af:schema:scenario:4#/$defs/name"
     },
     "identity": {
       "type": "string",
@@ -33,7 +33,7 @@
     "progress": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:3#/$defs/name"
+        "$ref": "urn:af:schema:scenario:4#/$defs/name"
       },
       "additionalProperties": {
         "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Progress"

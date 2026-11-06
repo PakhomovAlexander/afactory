@@ -252,7 +252,7 @@ pub(super) struct Ant {
 }
 impl Ant {
     pub fn validate(&self) -> Result<()> {
-        require(self.schema == "af/ant@3", "Unsupported Ant version")?;
+        require(self.schema == "af/ant@4", "Unsupported Ant version")?;
         name(&self.id)?;
         name(&self.owner)?;
         text(&self.notification)?;
@@ -298,7 +298,7 @@ impl AntPin {
         let zone = Zone::load(&definition.schedule.timezone)?;
         let revision = hash(&(&definition, &scenario, &zone))?;
         Ok(Self {
-            schema: "af/ant-pin@3".into(),
+            schema: "af/ant-pin@4".into(),
             definition,
             scenario,
             zone,
@@ -310,7 +310,7 @@ impl AntPin {
         self.scenario.validate()?;
         self.zone.validate()?;
         require(
-            self.schema == "af/ant-pin@3"
+            self.schema == "af/ant-pin@4"
                 && self.definition.scenario == self.scenario.bundle
                 && self.definition.schedule.timezone == self.zone.name
                 && self.revision == hash(&(&self.definition, &self.scenario, &self.zone))?,
@@ -368,7 +368,7 @@ impl AntState {
                 .map_err(|e| e.to_string())?,
         )?;
         Ok(Self {
-            schema: "af/ant-state@3".into(),
+            schema: "af/ant-state@4".into(),
             pin,
             state: AntMode::Disabled,
             changes: vec![(now, AntMode::Disabled)],
@@ -380,7 +380,7 @@ impl AntState {
     pub fn validate(&self, runs: &BTreeMap<String, Run>) -> Result<()> {
         self.pin.validate()?;
         require(
-            self.schema == "af/ant-state@3"
+            self.schema == "af/ant-state@4"
                 && (-1..=100_001).contains(&self.next_day)
                 && self.last_tick_unix_ms > 0
                 && self.last_tick_unix_ms <= MAX_TIME

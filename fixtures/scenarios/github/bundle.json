@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@3",
+  "schema": "af/scenario-bundle@4",
   "root": "main",
   "definitions": {
     "main": {
-      "schema": "af/scenario@3",
+      "schema": "af/scenario@4",
       "inputs": {},
       "outputs": {
         "publication": "action",

@@ -700,7 +700,7 @@ if mode == 'malformed':
                      'test-classes', 'test-catalog', 'performance-schemas',
                      'performance-kernel-harness']
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
-        tests = ['test', 'scenario-github-adapter', 'scenario-merge-watch', 'performance-lab',
+        tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab',
                  'test-perf-trace', 'test-perf-calibration']
         release = ['release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin']
@@ -719,7 +719,7 @@ if mode == 'malformed':
             payloads = ['test-ci-disk.py', 'test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
-                        'test-provider-auth-host.py', 'test-scenario-github-adapter.py',
+                        'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-scenario-git-workspace.py',
                         'test-scenario-merge-watch.py', 'test-pi-host.py', 'test-check-pr-report.py',
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
                         'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
