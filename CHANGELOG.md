@@ -19,6 +19,82 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.0] - 2026-11-06
+
+### Authority compatibility
+
+Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.0. Existing non-opting-in Task packages retain their contracts; regenerate Scenario/Ant definitions and machine adapters for the new schema generations and start fresh runtime state. Older structured-contract and Scenario/Ant state generations are refused; see the linked release decisions.
+
+### Changes
+
+- release: v0.14.0-rc.7 (#659)
+- Enforce one model call per structured Worker attempt (#669)
+- feat: bind reusable executable-review evidence to implementation acceptance (#682)
+- test: stabilize late-confirmation boundary (#582) (#677)
+- feat: add configurable impl Scenario recipe through human merge and cleanup (#672)
+- feat: publish verified performance PRs under scoped owner authority (#706)
+
+- Isolate core collection in the disposable Linux cancellation-test owner while preserving
+  real SIGQUIT delivery, exact signal exit status and existing cleanup deadlines. Hosted
+  timeout confirmation remains pending; see the
+  [decision](../docs/adr/2026-11-05-isolate-signal-test-owner-core-collection.md).
+
+- Structured packages now require `af.structured-contract/2`, identifying one model call per
+  Worker Attempt. Upgrade the AF client, review and repin consuming packages; v1 contracts are
+  refused without fallback. Older clients reject v2 during digest/planning before model calls.
+  See [the decision](../docs/adr/2026-11-05-version-the-single-call-structured-contract.md).
+
+- Structured Task Workers now make one model call per declared Attempt. Invalid replies and
+  transient failures settle that Attempt; further calls require the scheduler's explicit retry
+  allowance. Exact schema and provenance checks remain enforced. See
+  [the decision](../docs/adr/2026-11-05-limit-structured-worker-attempts-to-one-model-call.md).
+
+- Packages can opt into Snapshot-bound build/private-install/test evidence beside the unchanged
+  Reviewer Result. Evaluators retain the exact evidence and cannot pass failed, unavailable,
+  missing or stale testing. Existing pipelines keep their contracts; packages choose their own
+  providers/models. This adds no CI, publication or merge authority. See
+  [usage](../docs/task-execution/executable-review.md) and
+  [decision](../docs/adr/2026-11-06-bind-executable-review-evidence-to-evaluation.md).
+
+- Made the performance supervision test for a late container-removal confirmation
+  deterministic (issue #582):
+  `tests.test_supervise.ContainedSample.test_a_late_confirmation_in_real_time_is_unconfirmed`
+  now drives `remove_container` with a fully controlled clock that stands still until the
+  real `rm` invocation has completed and then reads 0.1 s, so the confirming `ps` client
+  always starts, and its real 0.3 s start leaves the clock at 0.3 s, past the 0.2 s
+  allowance, on hosts however slow or however scheduled.
+
+- Add an optional accepted-candidate Git workspace capability that composes ordinary Tasks with
+  existing signed Scenario publication and exact-head waits, including same-PR continuations and
+  merge-gated owned cleanup. Dynamic publication requires explicit exclusive writer machine
+  authority; the original server-locked adapter remains unchanged. Current Scenario/request/Store
+  generations change and old state fails closed. See the
+  [decision](../docs/adr/2026-11-06-compose-owned-git-workspaces-with-scenario-publication.md).
+- Retain all present refs after an uncertain deletion, including same-SHA recreations. Add
+  bounded exact-head completed-check outcomes and typed ordinary fresh-Task repair composition;
+  pending checks and timeouts never trigger repair.
+- Add native Scenario production-path integration coverage using a privately installed workspace
+  and GitHub adapter, real Git and an inert transport. Verify accepted repair provenance, native
+  signed continuation, one same-PR publication POST, ready/pending/stale outcomes and cleanup after
+  a real merge. Retain the separate modeled composition and Python lifecycle crash regressions.
+- Fix the installed adapter's continuation entry point to initialize GitHub transport for
+  preparation that must read back its prior publication. Initial preparation remains offline.
+
+- Add an offline configurable `impl` package/Scenario recipe using executable review evidence,
+  up to two admitted CI repair Tasks, signed same-PR publication, actual human merge waiting and
+  owned workspace cleanup. Teams and project checks stay in consuming repositories.
+
+- Declare `af scenario performance-proof` as token-free and read-only in the generated command
+  catalog, and describe its required request, repository and native Task Store flags.
+
+- Keep the performance publication link and authority limits in `af help scenarios` within
+  100 columns, preserving the runbook destination and publication scope.
+
+- Add opt-in publication of measured, accepted performance candidates as normal PRs under pinned
+  owner machine scope, with independent verification, native reports and retained recovery intents.
+  Generic publication still requires exact signed Decisions. See
+  [the decision](../docs/adr/2026-11-06-publish-verified-performance-under-standing-owner-authority.md).
+
 ## [0.14.0-rc.7] - 2026-11-04
 
 ### Authority compatibility
