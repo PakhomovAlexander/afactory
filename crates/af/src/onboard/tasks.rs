@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn dotted_gate_name_stays_one_policy_check_and_a_review_result_keeps_its_domain_type() {
         let gate = Gate::detected("project.check", "make", &["check"], "Makefile");
-        let generated = files(&[gate], RunnerProfile::Codex).unwrap();
+        let generated = files(&[gate]).unwrap();
         let policy: toml::Value =
             toml::from_str(std::str::from_utf8(&generated[".af/code-policy.toml"]).unwrap())
                 .unwrap();

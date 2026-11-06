@@ -623,6 +623,7 @@ mod tests {
         check(&verification, "verification").unwrap();
         assert!(check(&verification, "implement").is_err());
         for (slot, field, value) in [
+            ("implementer", "effort", "high"),
             ("bugs", "effort", "medium"),
             ("evaluator", "model", "gpt-6-sol"),
             ("correctness", "model", "gpt-6-sol"),

@@ -737,7 +737,12 @@ sys.exit(99)
                     "gpt-6.1-sol",
                     "medium",
                 ),
-                ("verifier", "kernel/report-verifier", "gpt-6-sol", "high"),
+                (
+                    "verifier",
+                    "kernel/report-verifier",
+                    "gpt-6.1-terra",
+                    "high",
+                ),
             ]
         } else {
             let mut roles = vec![

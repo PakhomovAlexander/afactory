@@ -177,7 +177,18 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             .iter()
             .any(|role| role == "implement")
         {
-            assert_eq!(effort, "high", "{}", worker.name);
+            // Owner performance authority already uses Sol/medium; only the replaced
+            // Claude implementers require high effort.
+            assert_eq!(
+                effort,
+                if worker.name == "owner-default/implementer" {
+                    "medium"
+                } else {
+                    "high"
+                },
+                "{}",
+                worker.name
+            );
         }
         if let Some(provider) = catalog["providers"].get(worker.name.as_str()) {
             assert_eq!(provider.as_str(), Some("codex-main"), "{}", worker.name);

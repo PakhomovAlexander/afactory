@@ -168,7 +168,8 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         json!({"kind": "selected", "pipeline": "backlog/triage"})
     );
 
-    // The report shape: both Provider admissions, then author, seal, check, verify, accept.
+    // The report shape: each Provider admission precedes its Worker; author, seal, check,
+    // verify and accept retain their order.
     let graph = &planned["graph"];
     let operators: Vec<&Value> = graph["order"]
         .as_array()
@@ -180,7 +181,6 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         operators,
         [
             &json!({"kind": "root_inputs"}),
-            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
             &json!({"kind": "provider_admission", "bindings": ["root.slots.author"]}),
             &json!({"kind": "primitive", "operator": {"op": "worker", "slot": "root.slots.author"},
                     "signature": "worker/backlog/triage-author"}),
@@ -188,6 +188,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
                     "signature": "operator/report-seal"}),
             &json!({"kind": "primitive", "operator": {"op": "report_check"},
                     "signature": "operator/report-check"}),
+            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
             &json!({"kind": "primitive", "operator": {"op": "verify", "slot": "root.slots.verifier"},
                     "signature": "worker/backlog/triage-verifier"}),
             &json!({"kind": "primitive", "operator": {"op": "report_accept"},
