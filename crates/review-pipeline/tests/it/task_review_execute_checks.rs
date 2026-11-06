@@ -1,7 +1,7 @@
 //! A review Worker declaring `execute-checks` runs in an ephemeral-write clone of its source,
 //! with the adapter access the same captured effects derive, and seals nothing back. The
-//! reviewer is an in-process model adapter; no Provider or Worker command runs, and the only
-//! process is the fixture's `/usr/bin/true` check Gate the reviewer waits on.
+//! reviewer/evaluator adapters run in-process without Provider calls. Opt-in evidence cases
+//! really compile, privately install and execute a small captured C program after the local gate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -15,7 +15,7 @@ use review_core::task::pipeline::*;
 use review_core::task::plan::*;
 use review_core::task::review::*;
 use review_core::task::usage::TaskTokenUsageV3;
-use review_core::task::verification::TASK_CHECK_RECEIPT_V2;
+use review_core::task::verification::*;
 use review_core::task::*;
 use review_core::{DemandRequirement, PortCardinality, Producer, Severity};
 use review_graph::task::{OperatorAttemptCost, OperatorSignature};
@@ -99,6 +99,26 @@ impl WorkerModelAdapter for Uix {
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
+        if request["inputs"]["testing"].is_array() {
+            assert_eq!(access, WorkerAccess::ReadOnly);
+            let testing = &request["inputs"]["testing"][0];
+            assert_eq!(
+                testing["snapshot_id"],
+                request["inputs"]["source"][0]["snapshot_id"]
+            );
+            assert_eq!(testing["payload"]["snapshot_id"], testing["snapshot_id"]);
+            let reply = serde_json::to_vec(&json!({"schema":"af.worker-reply/1",
+                "outputs":{"result":[{"outcome":"passed","reason":"Judged exact retained test evidence"}]}})).unwrap();
+            return ModelWorkerReturn {
+                notes: Default::default(),
+                usage_observation: None,
+                raw_artifact_ids: vec![cas.put(&reply).unwrap()],
+                message: Ok(reply),
+                usage: Some(TaskTokenUsageV3::charge_only(1)),
+                native_failure: None,
+            };
+        }
         assert_eq!(access, WorkerAccess::ExecuteChecks);
         assert!(environment.is_empty());
         let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
@@ -115,7 +135,7 @@ impl WorkerModelAdapter for Uix {
         std::fs::write(harness.join("drive.py"), "import pty\n").unwrap();
         std::fs::write(harness.join("screen-100x30.txt"), "PROVIDERS\n").unwrap();
         let edited = match self.case {
-            "edit" => Some(("lib.rs", "pub fn changed() {}\n")),
+            "edit" | "evidence_edit" => Some(("lib.rs", "pub fn changed() {}\n")),
             // Added beside the source — a new top-level file, a root dotfile — the clone is
             // discarded, never a source edit; added under a name the source holds, it is one.
             "add" => Some(("NOTES.md", "notes\n")),
@@ -129,8 +149,46 @@ impl WorkerModelAdapter for Uix {
         if self.case == "delete" {
             std::fs::remove_file(workdir.join("lib.rs")).unwrap();
         }
-        let reply = json!({"schema":"af.worker-reply/1",
+        let mut reply = json!({"schema":"af.worker-reply/1",
             "outputs":{"result":[{"reports":[],"benchmark_demands":[],"dispositions":[]}]}});
+        if self.case.starts_with("evidence_") && self.case != "evidence_missing" {
+            let mut commands = Vec::new();
+            if self.case != "evidence_unavailable" {
+                for (purpose, command) in [
+                    ("build", "cc program.c -o target/program"),
+                    (
+                        "install",
+                        "mkdir -p target/private/bin && cp target/program target/private/bin/program",
+                    ),
+                    (
+                        "test",
+                        if self.case == "evidence_failed" {
+                            "target/private/bin/program wrong"
+                        } else {
+                            "target/private/bin/program exact"
+                        },
+                    ),
+                ] {
+                    let output = std::process::Command::new("/bin/sh")
+                        .args(["-c", command])
+                        .current_dir(workdir)
+                        .output()
+                        .unwrap();
+                    commands.push(json!({"purpose":purpose,"command":command,
+                        "exit_code":output.status.code(),
+                        "evidence":format!("stdout={} stderr={} exit={}",
+                            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr), output.status)}));
+                }
+            }
+            reply["outputs"]["testing"] = json!([{
+                "schema":"af/implementation-test-evidence@1",
+                "snapshot_id":if self.case == "evidence_stale" { json!(format!("sha256:{}", "f".repeat(64))) }
+                    else { request["inputs"]["source"][0]["snapshot_id"].clone() },
+                "status":match self.case { "evidence_failed"=>"failed", "evidence_unavailable"=>"unavailable", _=>"passed" },
+                "reason":"Private candidate build/install/execution results; unavailable means no commands ran",
+                "commands":commands
+            }]);
+        }
         let reply = serde_json::to_vec(&reply).unwrap();
         ModelWorkerReturn {
             notes: Default::default(),
@@ -149,6 +207,30 @@ struct Outcome {
     /// Every failed Attempt's recorded diagnostic, in log order.
     diagnostics: Vec<String>,
     calls: usize,
+}
+
+// Worker schemas are local-only: standalone public schema metadata is not captured.
+fn local_schema(bytes: &[u8]) -> Vec<u8> {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("$id");
+                map.remove("$schema");
+                for value in map.values_mut() {
+                    strip(value);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    strip(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut value = serde_json::from_slice(bytes).unwrap();
+    strip(&mut value);
+    serde_json::to_vec(&value).unwrap()
 }
 
 fn run(case: &'static str) -> Outcome {
@@ -185,15 +267,22 @@ fn run(case: &'static str) -> Outcome {
     let policy_id = cas
         .put_json(&serde_json::to_value(&policy).unwrap())
         .unwrap();
-    let entries: Vec<Entry> = [("lib.rs", LIBRARY), ("src/main.rs", MAIN)]
-        .into_iter()
-        .map(|(path, text)| Entry {
-            path: path.into(),
-            kind: EntryKind::File,
-            content: cas.put(text.as_bytes()).unwrap(),
-            size: text.len() as u64,
-        })
-        .collect();
+    let entries: Vec<Entry> = [
+        ("lib.rs", LIBRARY),
+        ("src/main.rs", MAIN),
+        (
+            "program.c",
+            include_str!("../../../../fixtures/executable-review/program.c"),
+        ),
+    ]
+    .into_iter()
+    .map(|(path, text)| Entry {
+        path: path.into(),
+        kind: EntryKind::File,
+        content: cas.put(text.as_bytes()).unwrap(),
+        size: text.len() as u64,
+    })
+    .collect();
     let manifest = Manifest::new(entries).unwrap();
     let origin = cas.put(b"fixture origin").unwrap();
     let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
@@ -215,7 +304,7 @@ fn run(case: &'static str) -> Outcome {
         snapshot_id: None,
     };
     let result_type = review_core::contract::REVIEWER_RESULT_V2;
-    let signature = OperatorSignature {
+    let mut signature = OperatorSignature {
         unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::from([
@@ -254,6 +343,26 @@ fn run(case: &'static str) -> Outcome {
             wall_ms: 5000,
         }),
     };
+    let executable = case.starts_with("evidence_");
+    if executable {
+        signature.contract.inputs.insert(
+            "requirements".into(),
+            port("af/Requirements@1", PortAffinityV1::Unbound {}),
+        );
+        signature
+            .retains
+            .get_mut("result")
+            .unwrap()
+            .insert("requirements".into());
+        signature.contract.outputs.insert(
+            "testing".into(),
+            port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()),
+        );
+        signature.retains.insert(
+            "testing".into(),
+            BTreeSet::from(["source".into(), "checks".into()]),
+        );
+    }
     assert_eq!(worker_access(&signature), WorkerAccess::ExecuteChecks);
     let mut public_result = port(TASK_REVIEW_ROUND_V1, same());
     public_result.covers.insert("reviewed".into());
@@ -274,7 +383,7 @@ fn run(case: &'static str) -> Outcome {
         node: "check".into(),
         outcome: ReceiptOutcomeV1::Passed,
     });
-    let pipeline = PipelineDefinitionV1 {
+    let mut pipeline = PipelineDefinitionV1 {
         schema: PipelineSchema::V1,
         name: "fixture/review".into(),
         version: "1.0.0".into(),
@@ -350,6 +459,83 @@ fn run(case: &'static str) -> Outcome {
         max_attempts: 3,
         max_parallel: 2,
     };
+    let mut evaluator = signature.clone();
+    evaluator.effects = BTreeSet::from(["read-source".into()]);
+    evaluator.roles = BTreeSet::from(["evaluate".into()]);
+    evaluator.worker_input_type = Some(IMPLEMENTATION_EVALUATION_INPUT_V1.into());
+    evaluator.worker_output_type = Some(TASK_EVALUATION_V1.into());
+    evaluator
+        .contract
+        .inputs
+        .retain(|name, _| ["source", "checks"].contains(&name.as_str()));
+    evaluator.contract.inputs.insert(
+        "testing".into(),
+        port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()),
+    );
+    evaluator.contract.inputs.insert(
+        "requirements".into(),
+        port("af/Requirements@1", PortAffinityV1::Unbound {}),
+    );
+    evaluator.contract.outputs =
+        BTreeMap::from([("result".into(), port(TASK_EVALUATION_V1, same()))]);
+    evaluator.retains = BTreeMap::from([(
+        "result".into(),
+        BTreeSet::from(["testing".into(), "checks".into(), "requirements".into()]),
+    )]);
+    evaluator.outcome_port = Some("result".into());
+    if executable {
+        pipeline
+            .contract
+            .outputs
+            .insert("evaluation".into(), port(VERIFICATION_RESULT_V1, same()));
+        pipeline
+            .outputs
+            .insert("evaluation".into(), from("accept", "result"));
+        pipeline
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == "uix")
+            .unwrap()
+            .inputs
+            .insert("requirements".into(), root("requirements"));
+        pipeline.max_attempts = 4;
+        let mut slot = pipeline.slots["uix"].clone();
+        slot.worker = "fixture/evaluator".into();
+        slot.role = "evaluate".into();
+        slot.input_type = IMPLEMENTATION_EVALUATION_INPUT_V1.into();
+        slot.output_type = TASK_EVALUATION_V1.into();
+        pipeline.slots.insert("judge".into(), slot);
+        pipeline.contract.inputs.insert(
+            "requirements".into(),
+            port("af/Requirements@1", PortAffinityV1::Unbound {}),
+        );
+        let mut evaluate = node(
+            "evaluate",
+            TaskOperatorV1::Verify {
+                slot: "judge".into(),
+            },
+            BTreeMap::from([
+                ("source".into(), root("source")),
+                ("checks".into(), from("check", "result")),
+                ("requirements".into(), root("requirements")),
+                ("testing".into(), from("uix", "testing")),
+            ]),
+        );
+        evaluate.when = Some(NodeConditionV1 {
+            node: "check".into(),
+            outcome: ReceiptOutcomeV1::Passed,
+        });
+        pipeline.nodes.push(evaluate);
+        pipeline.nodes.push(node(
+            "accept",
+            TaskOperatorV1::Accept {},
+            BTreeMap::from([
+                ("source".into(), root("source")),
+                ("checks".into(), from("check", "result")),
+                ("evaluation".into(), from("evaluate", "result")),
+            ]),
+        ));
+    }
     let worker = TaskWorkerManifest {
         schema: "af.worker/1".into(),
         name: "fixture/uix".into(),
@@ -365,7 +551,7 @@ fn run(case: &'static str) -> Outcome {
         "additionalProperties":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object"}}});
     let output_schema = json!({"type":"object","required":["reports","benchmark_demands","dispositions"],"additionalProperties":false,
         "properties":{"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"dispositions":{"type":"array"}}});
-    let packages: [(String, BTreeMap<String, Vec<u8>>); 2] = [
+    let mut packages: Vec<(String, BTreeMap<String, Vec<u8>>)> = vec![
         (
             pipeline.name.clone(),
             BTreeMap::from([(
@@ -395,17 +581,101 @@ fn run(case: &'static str) -> Outcome {
             ]),
         ),
     ];
+    if executable {
+        packages[1].1.insert(
+            "outputs/testing.schema.json".into(),
+            local_schema(include_bytes!(
+                "../../../../schemas/implementation-test-evidence-v1.json"
+            )),
+        );
+        let mut judge = worker.clone();
+        judge.name = "fixture/evaluator".into();
+        judge.signature = evaluator;
+        packages.push((
+            judge.name.clone(),
+            BTreeMap::from([
+                (
+                    "worker.toml".into(),
+                    toml::to_string(&judge).unwrap().into_bytes(),
+                ),
+                (
+                    "input.schema.json".into(),
+                    local_schema(include_bytes!(
+                        "../../../../schemas/implementation-evaluation-input-v1.json"
+                    )),
+                ),
+                (
+                    "outputs/result.schema.json".into(),
+                    br#"{"type":"object","required":["outcome","reason"]}"#.to_vec(),
+                ),
+                (
+                    "instructions.md".into(),
+                    b"Judge the exact testing evidence".to_vec(),
+                ),
+            ]),
+        ));
+    }
+    if case == "evidence_passed" {
+        let mut missing = pipeline.clone();
+        missing.name = "fixture/missing-testing".into();
+        missing
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == "evaluate")
+            .unwrap()
+            .inputs
+            .remove("testing");
+        packages.push((
+            missing.name.clone(),
+            BTreeMap::from([(
+                "pipeline.toml".into(),
+                toml::to_string(&missing).unwrap().into_bytes(),
+            )]),
+        ));
+    }
     let deadline = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
         + 60_000;
-    let task:TaskRevisionV1=serde_json::from_value(json!({"task_id":format!("uix-{case}"),"revision":1,"kind":"review","goal":"Review the captured source by running it",
+    let mut task:TaskRevisionV1=serde_json::from_value(json!({"task_id":format!("uix-{case}"),"revision":1,"kind":"review","goal":"Review the captured source by running it",
         "inputs":{"source":source,"history":history},"required_outputs":{"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}},
         "acceptance":{"reviewed":{"evidence_type":TASK_REVIEW_ROUND_V1,"verifier_policy":policy_id}},"provenance":{"adapter_id":origin,"input_artifact_ids":[]},
         "authority":{"policy_id":policy_id,"allowed_effects":["execute-checks","read-source"],"data_destinations":[]},
         "limits":{"tokens":200000,"max_attempts":3,"deadline_unix_ms":deadline,"verification":{"tokens":100000,"attempts":3,"wall_ms":15000}},
         "strategy":"light","pipeline":{"name":pipeline.name,"fallback":"refuse"},"facts":{}})).unwrap();
+    if executable {
+        task.required_outputs.insert(
+            "evaluation".into(),
+            serde_json::from_value(
+                json!({"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}),
+            )
+            .unwrap(),
+        );
+        task.limits.max_attempts = 4;
+        task.limits.verification.attempts = 4;
+        task.limits.verification.tokens = 200000;
+        task.limits.verification.wall_ms = 20000;
+        let requirements = cas
+            .put_artifact(
+                "af/Requirements@1",
+                producer(),
+                vec![],
+                None,
+                json!({"text":"Build/install/test the candidate"}),
+            )
+            .unwrap()
+            .0;
+        task.inputs.insert(
+            "requirements".into(),
+            ArtifactInputV1 {
+                artifact_ids: vec![requirements],
+                artifact_type: "af/Requirements@1".into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: None,
+            },
+        );
+    }
     let mut signatures = code_signatures(&code_id, &code).unwrap();
     signatures.extend(review_signatures(&policy_id, &policy).unwrap());
     let mut compiler = TaskPlanCompiler::new(
@@ -435,22 +705,28 @@ fn run(case: &'static str) -> Outcome {
             )
             .unwrap();
     }
-    compiler
-        .bind_worker(
-            "fixture/uix",
-            AdmittedWorkerSettings {
-                execution: WorkerExecutionV3::Model {
-                    provider: "personal".into(),
-                    provider_kind: "fixture".into(),
-                    principal_id: Some(policy_id.clone()),
-                    model: "uix-model".into(),
-                    pi: None,
-                    effort: "high".into(),
+    for worker_name in if executable {
+        vec!["fixture/uix", "fixture/evaluator"]
+    } else {
+        vec!["fixture/uix"]
+    } {
+        compiler
+            .bind_worker(
+                worker_name,
+                AdmittedWorkerSettings {
+                    execution: WorkerExecutionV3::Model {
+                        provider: "personal".into(),
+                        provider_kind: "fixture".into(),
+                        principal_id: Some(policy_id.clone()),
+                        model: "uix-model".into(),
+                        pi: None,
+                        effort: "high".into(),
+                    },
+                    invocation_policy_id: policy_id.clone(),
                 },
-                invocation_policy_id: policy_id.clone(),
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+    }
     let revision = cas
         .put_artifact(
             TASK_REVISION_V1,
@@ -462,6 +738,12 @@ fn run(case: &'static str) -> Outcome {
         .unwrap()
         .0;
     // So does the plan compiler, within the Task's captured effect authority.
+    if case == "evidence_passed" {
+        let error = compiler
+            .candidate_structure(&cas, &task, "fixture/missing-testing")
+            .unwrap_err();
+        assert!(error.contains("lacks testing"), "{error}");
+    }
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
@@ -524,7 +806,7 @@ fn run(case: &'static str) -> Outcome {
             .clone(),
     )
     .unwrap();
-    // Nothing is sealed back: the declared source Snapshot still holds exactly its two files.
+    // Nothing is sealed back: the declared source Snapshot still holds exactly its captured files.
     let (_, sealed) = read_snapshot(&cas, &snapshot).unwrap();
     assert_eq!(sealed, manifest);
     let reader = EventStore::open_read_only(directory.path().join("events.sqlite")).unwrap();
@@ -662,5 +944,40 @@ fn a_source_edit_by_an_execute_checks_reviewer_fails_its_attempt_naming_the_path
             outcome.review.missing_reviewers,
             BTreeSet::from(["uix".into()])
         );
+    }
+}
+
+#[test]
+fn executable_review_evidence_reaches_the_native_evaluator_and_refuses_negative_or_missing_results()
+{
+    for case in [
+        "evidence_passed",
+        "evidence_failed",
+        "evidence_unavailable",
+        "evidence_stale",
+        "evidence_missing",
+        "evidence_edit",
+    ] {
+        let outcome = run(case);
+        if case == "evidence_passed" {
+            assert_eq!(outcome.calls, 2);
+            assert_eq!(outcome.result.acceptance, TaskAcceptanceV1::Satisfied);
+            assert!(outcome.result.outputs.contains_key("evaluation"));
+            assert!(outcome.diagnostics.is_empty(), "{:?}", outcome.diagnostics);
+        } else {
+            assert!(!outcome.diagnostics.is_empty(), "{case}");
+            assert_ne!(
+                outcome.result.acceptance,
+                TaskAcceptanceV1::Satisfied,
+                "{case}"
+            );
+
+            if matches!(
+                case,
+                "evidence_stale" | "evidence_missing" | "evidence_edit"
+            ) {
+                assert_eq!(outcome.calls, 1, "{case}");
+            }
+        }
     }
 }
