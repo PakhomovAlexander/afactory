@@ -247,6 +247,7 @@ pub(super) enum Projection {
     TaskOutputId { port: String },
     TaskOutputSnapshot { port: String },
     ObservationSatisfied,
+    ChecksState,
     DecisionApproved,
 }
 impl Projection {
@@ -262,6 +263,7 @@ impl Projection {
                 name(port)?;
                 (Port::Task, Port::Text)
             }
+            Self::ChecksState => (Port::Observation, Port::Text),
             Self::ObservationSatisfied => (Port::Observation, Port::Boolean),
             Self::DecisionApproved => (Port::Decision, Port::Boolean),
         })
@@ -310,6 +312,9 @@ impl Projection {
                         .clone()
                         .ok_or("Task output has no exact Snapshot identity")?,
                 )
+            }
+            (Self::ChecksState, Datum::Observation(o)) => {
+                Datum::Text(super::checks::Outcome::parse(&o)?.state)
             }
             (Self::ObservationSatisfied, Datum::Observation(o)) => Datum::Boolean(o.satisfied),
             (Self::DecisionApproved, Datum::Decision(d)) => Datum::Boolean(d.request.approve),
@@ -797,6 +802,13 @@ impl Scenario {
                     expected = bindings.keys().map(|k| (k.clone(), Port::Task)).collect();
                     if step.inputs.contains_key("scenario_evidence") {
                         expected.insert("scenario_evidence".into(), Port::Observation);
+                    }
+                    if step.inputs.contains_key("publication") {
+                        require(
+                            step.inputs.contains_key("scenario_evidence"),
+                            "Repair publication requires check evidence",
+                        )?;
+                        expected.insert("publication".into(), Port::Action);
                     }
                     output = Port::Task;
                 }

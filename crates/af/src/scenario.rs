@@ -2,6 +2,7 @@
 mod adapter;
 #[cfg(test)]
 mod admission_tests;
+mod checks;
 pub(crate) mod contract;
 mod roadmap;
 mod runtime;

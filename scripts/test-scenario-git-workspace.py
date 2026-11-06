@@ -972,6 +972,88 @@ print(json.dumps(source))
         shutil.rmtree(path)
         self.assertEqual(self.call(request, "reconcile")["outcome"], "done")
 
+    def deletion_crash(self, kind, when, replacement):
+        p = self.prepare()
+        self.publish(p)
+        self.merge()
+        request = self.action(p, "cleanup_workspace_v1", "d")
+        original = LocalAdapter.git
+        def crash(adapter, *args, **kwargs):
+            deleting = (args[:2] == ("update-ref", "-d")) if kind == "branch" else args[0] == "push"
+            if deleting and when == "before":
+                raise RuntimeError("deletion interrupted")
+            result = original(adapter, *args, **kwargs)
+            if deleting:
+                raise RuntimeError("deletion interrupted")
+            return result
+        with patch.object(LocalAdapter, "git", crash):
+            with self.assertRaisesRegex(RuntimeError, "deletion interrupted"):
+                self.call(request)
+        ref = "refs/heads/" + p["branch"]
+        if kind == "branch":
+            self.git("update-ref", "-d", ref)
+        else:
+            self.service.refs.pop(p["branch"], None)
+        if replacement != "absent":
+            sha = self.config["source_commit"] if replacement == "changed" else p["commit"]
+            if kind == "branch":
+                self.git("update-ref", ref, sha)
+            else:
+                self.service.refs[p["branch"]] = sha
+            with self.assertRaises(A.Refused):
+                self.call(request, "reconcile")
+            actual = self.git("rev-parse", ref) if kind == "branch" else self.service.refs[p["branch"]]
+            self.assertEqual(actual, sha)
+        else:
+            self.assertEqual(self.call(request, "reconcile")["outcome"], "done")
+
+    def test_completed_checks_route_failure_and_preserve_pending_and_stale(self):
+        p = self.prepare()
+        self.publish(p)
+        ready = self.observe(p, "checks_completed")["observation"]
+        self.assertTrue(ready["satisfied"])
+        self.assertEqual(json.loads(ready["evidence"])["state"], "ready")
+        self.service.green = False
+        failed = self.observe(p, "checks_completed")["observation"]
+        self.assertTrue(failed["satisfied"])
+        packet = json.loads(failed["evidence"])
+        self.assertEqual(packet["state"], "repairable")
+        self.assertEqual(packet["revision"], p["commit"])
+        self.assertEqual(packet["checks"][0]["identity"], self.config["required_checks"][0])
+        self.assertFalse(self.observe(p, "checks_passed")["observation"]["satisfied"])
+        pages = self.service.pages
+        def pending(path, **kwargs):
+            rows = pages(path, **kwargs)
+            if path.endswith("/check-runs"):
+                rows[0].update(status="in_progress", conclusion=None)
+            return rows
+        with patch.object(self.service, "pages", pending):
+            observation = self.observe(p, "checks_completed")["observation"]
+            self.assertFalse(observation["satisfied"])
+            self.assertEqual(json.loads(observation["evidence"])["state"], "pending")
+        def stale(path, **kwargs):
+            rows = pages(path, **kwargs)
+            if path.endswith("/check-runs"):
+                rows[0]["head_sha"] = "0" * 40
+            return rows
+        with patch.object(self.service, "pages", stale):
+            with self.assertRaises(A.Refused):
+                self.observe(p, "checks_completed")
+        repaired = self.repair(p)
+        self.assertEqual(self.call(self.action(repaired, key="8"))["outcome"], "done")
+        self.assertEqual(self.service.posts, 1)
+        with self.assertRaises(A.Refused):
+            self.observe(p, "checks_completed")
+        self.service.green = True
+        self.assertEqual(json.loads(self.observe(repaired, "checks_completed")["observation"]["evidence"])["state"], "ready")
+
+for _ref in ("branch", "remote"):
+    for _when in ("before", "after"):
+        for _replacement in ("absent", "unchanged", "changed", "same_sha_recreated"):
+            def _deletion(self, kind=_ref, when=_when, replacement=_replacement):
+                self.deletion_crash(kind, when, replacement)
+            setattr(LifecycleTests, "test_delete_" + _ref + "_" + _when + "_" + _replacement, _deletion)
+
 
 # Every boundary runs with a fresh machine journal and real local Git. Restart drops
 # all in-memory state, including mutations made before an interrupted journal save.

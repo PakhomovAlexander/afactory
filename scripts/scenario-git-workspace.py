@@ -622,6 +622,10 @@ class WorkspaceAdapter:
         need((refs.decode() == p["commit"]) or (not refs and "branch" in rec["progress"]), "changed local branch retained")
         remote = self.remote_ref(p)
         need(remote is None or remote == p["commit"], "changed remote branch retained")
+        # A persisted deletion intent may have dispatched, even if no reply was saved.
+        # Commit equality is not ownership: another actor can recreate the same SHA.
+        need(not refs or "branch" not in rec["progress"], "uncertain local deletion; present ref retained")
+        need(remote is None or "remote" not in rec["progress"], "uncertain remote deletion; present ref retained")
         worktrees = self.git("worktree", "list", "--porcelain")
         need(("branch refs/heads/" + p["branch"]).encode() not in worktrees.splitlines(), "foreign attached branch retained")
         for item in chain:
