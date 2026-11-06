@@ -38,6 +38,8 @@ def install(config_path, output):
     for key in ("af", "git"):
         a.need(a.file_digest(c[key]) == c[key + "_digest"], "tool digest differs")
     a.need(a.digest(a.read_private(Path(c["ssh_config"]), a.LIMIT)) == c["ssh_config_digest"], "SSH config differs")
+    if c.get("performance") is not None:
+        a.need(a.file_digest(c["performance"]["executable"]) == c["performance"]["digest"], "native evidence adapter digest differs")
     pin = a.digest(raw)
     rendered = source().replace("CONFIG_PATH = None\n", "CONFIG_PATH = " + repr(str(config_path)) + "\n")
     rendered = rendered.replace("CONFIG_DIGEST = None\n", "CONFIG_DIGEST = " + repr(pin) + "\n")

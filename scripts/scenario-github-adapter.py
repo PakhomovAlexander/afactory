@@ -36,8 +36,10 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@3"
+STATE_SCHEMA = "af/github-adapter-state@4"
+PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1")
 PAYLOAD_SCHEMAS = {
+    "publish_performance_pr_v1": "af/github-performance-pr@1",
     "publish_pr": "af/github-publish-pr@1",
     "followup": "af/github-followup@1",
     "notify": "af/github-notify@1",
@@ -205,12 +207,12 @@ def load_config():
 
 
 def subject(operation, payload):
-    prefix = {"publish_pr": "github-pr:", "followup": "github-followup:", "notify": "github-notify:"}
+    prefix = {"publish_pr": "github-pr:", "publish_performance_pr_v1": "github-pr:", "followup": "github-followup:", "notify": "github-notify:"}
     return prefix[operation] + digest(canonical(payload))
 
 
 def validate_payload(operation, value, config):
-    if operation == "publish_pr":
+    if operation in PR_OPERATIONS:
         fields(value, ("schema", "head", "base", "title", "body"))
         branch(value["head"])
         branch(value["base"])
@@ -239,7 +241,7 @@ def validate_payload(operation, value, config):
 
 def validate_request(request, config):
     fields(request, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(request["schema"] == "af/scenario-adapter-request@3", "unsupported request version")
+    need(request["schema"] == "af/scenario-adapter-request@4", "unsupported request version")
     for key in ("intent_id", "input_digest"):
         string(request[key], DIGEST)
     op = request["operation"]
@@ -427,7 +429,7 @@ class Journal:
 
     def publication(self, subject_value, revision):
         candidates = [r for r in self.state["records"].values()
-                      if r["request"]["operation"] == "publish_pr" and r["phase"] != "failed"
+                      if r["request"]["operation"] in PR_OPERATIONS and r["phase"] != "failed"
                       and r["request"]["inputs"]["subject"]["value"] == subject_value
                       and r["request"]["inputs"]["revision"]["value"] == revision]
         need(len(candidates) == 1 and candidates[0]["phase"] == "done",
@@ -571,7 +573,7 @@ class Adapter:
         obj = self.object_id(remote)
         if record["object"] is not None:
             need(record["object"] == obj, "foreign remote object receipt")
-        pr = req["operation"] in ("publish_pr", "notify")
+        pr = req["operation"] in (*PR_OPERATIONS, "notify")
         kind, html_kind = ("pulls", "pull") if pr else ("issues", "issues")
         number = str(obj["number"])
         need(remote.get("url") == "https://api.github.com" + self.repo + "/" + kind + "/" + number
@@ -603,7 +605,7 @@ class Adapter:
 
     def read_object(self, record):
         need(record["object"] is not None, "remote receipt absent")
-        kind = "pulls" if record["request"]["operation"] in ("publish_pr", "notify") else "issues"
+        kind = "pulls" if record["request"]["operation"] in (*PR_OPERATIONS, "notify") else "issues"
         remote = self.service.request("GET", self.repo + "/" + kind + "/" + str(record["object"]["number"]))
         self.validate_remote(record, remote)
         return remote
@@ -700,7 +702,7 @@ class Adapter:
         if record["object"] is not None:
             remote = self.read_object(record)
         else:
-            pr = req["operation"] == "publish_pr"
+            pr = req["operation"] in PR_OPERATIONS
             path = self.repo + ("/pulls" if pr else "/issues")
             params = {"state": "all"}
             if pr:
@@ -719,7 +721,7 @@ class Adapter:
             record["object"] = self.object_id(matches[0])
             self.journal.save()
             remote = self.read_object(record)
-        if req["operation"] == "publish_pr":
+        if req["operation"] in PR_OPERATIONS:
             self.locked_head(p, req["inputs"]["revision"]["value"])
         else:
             self.publication(p["publication"], req["inputs"]["revision"]["value"])
@@ -731,7 +733,7 @@ class Adapter:
         req, p = record["request"], self.payload(record)
         op, revision = req["operation"], req["inputs"]["revision"]["value"]
         source = None
-        if op == "publish_pr":
+        if op in PR_OPERATIONS:
             self.locked_head(p, revision)
             path = self.repo + "/pulls"
             body = {"head": p["head"], "base": p["base"], "title": p["title"],
@@ -789,7 +791,7 @@ class Adapter:
             self.journal.save()
             self.validate_remote(record, remote)
             self.read_object(record)
-            if op == "publish_pr":
+            if op in PR_OPERATIONS:
                 self.locked_head(p, revision)
             else:
                 self.read_object(source)
@@ -875,7 +877,9 @@ def schema_documents():
     documents = {}
 
     def document(name, value):
-        version = 3 if name == "github-adapter-state" else 1
+        if name == "github-performance-pr":
+            value = dict(title="Performance pull request v1", **value)
+        version = 4 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -893,7 +897,7 @@ def schema_documents():
         "operations": array({"enum": ["publish_pr", "followup", "notify", "observe"]}, minimum=1, maximum=4)}))
     for op, schema in PAYLOAD_SCHEMAS.items():
         props = {"schema": {"const": schema}}
-        if op == "publish_pr":
+        if op in PR_OPERATIONS:
             props.update(head=text(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,199}"),
                          base=text(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,199}"))
         else:
@@ -903,11 +907,11 @@ def schema_documents():
         else:
             props.update(title=text(maximum=200), body=text(maximum=48000))
         document(schema.split("/")[1].split("@")[0], obj(props))
-    request = obj({"schema": {"const": "af/scenario-adapter-request@3"},
+    request = obj({"schema": {"const": "af/scenario-adapter-request@4"},
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:4#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:5#/$defs/Datum"}}})
     record = obj({"request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},

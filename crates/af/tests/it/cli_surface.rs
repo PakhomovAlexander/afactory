@@ -2368,6 +2368,7 @@ fn help_json_prints_the_generated_command_catalog() {
         "af task wait",
         "af task events",
         "af task findings",
+        "af scenario performance-proof",
         "af schema show",
         "af help",
     ] {
@@ -2376,6 +2377,10 @@ fn help_json_prints_the_generated_command_catalog() {
     assert!(named("af task")["effects"].is_null());
     assert_eq!(named("af task")["runnable"], false);
     assert_eq!(named("af review plan")["effects"]["tokens"], "free");
+    assert_eq!(
+        named("af scenario performance-proof")["effects"],
+        serde_json::json!({"tokens": "free", "charges_when": null, "writes": [], "human": []})
+    );
     assert_eq!(
         named("af task start")["effects"]["charges_when"],
         "--execute"
@@ -2403,6 +2408,17 @@ fn help_json_prints_the_generated_command_catalog() {
     assert_eq!(run["scope"], "af task run");
     assert_eq!(run["commands"].as_array().unwrap().len(), 1);
     assert_eq!(run["commands"][0], *named("af task run"));
+
+    let proof = af(&["help", "scenario", "performance-proof", "--json"]);
+    assert!(proof.status.success(), "{}", err(&proof));
+    let proof: serde_json::Value = serde_json::from_slice(&proof.stdout).unwrap();
+    crate::schemas::valid(&catalog, &proof);
+    assert_eq!(proof["scope"], "af scenario performance-proof");
+    assert_eq!(proof["commands"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        proof["commands"][0],
+        *named("af scenario performance-proof")
+    );
 
     let alias = af(&["help", "providers", "--json"]);
     let alias: serde_json::Value = serde_json::from_slice(&alias.stdout).unwrap();

@@ -10,11 +10,12 @@ import tempfile
 import ctypes
 
 WORKSPACE_MAX_RECORDS = 32
-WORKSPACE_CONFIG = "af/git-workspace-config@1"
-WORKSPACE_STATE = "af/git-workspace-state@1"
+WORKSPACE_CONFIG = "af/git-workspace-config@2"
+WORKSPACE_STATE = "af/git-workspace-state@2"
 RESERVATION_SLOTS = 4
 PREPARED = "af/git-workspace-prepared@1"
-OPS = {"prepare_candidate_v1", "cleanup_workspace_v1"}
+PERFORMANCE_OP = "publish_performance_pr_v1"
+OPS = {"prepare_candidate_v1", "cleanup_workspace_v1", PERFORMANCE_OP}
 
 
 def sync_directory(path):
@@ -47,7 +48,7 @@ def workspace_validate_config(c):
     fields(c, ("schema", "repository", "repository_id", "actor", "token_file", "state_dir",
                "repo", "task_store", "worktree_root", "base", "branch_prefix", "source_commit",
                "source_content_digest", "af", "af_digest", "git", "git_digest", "ssh_config",
-               "ssh_config_digest", "author_name", "author_email", "required_checks", "reviewers", "publication_mode", "operations"))
+               "ssh_config_digest", "author_name", "author_email", "required_checks", "reviewers", "publication_mode", "operations"), ("performance",))
     need(c["schema"] == WORKSPACE_CONFIG, "unsupported workspace machine configuration")
     string(c["repository"], REPO)
     integer(c["repository_id"])
@@ -76,6 +77,15 @@ def workspace_validate_config(c):
     operations = c["operations"]
     need(isinstance(operations, list) and operations and len(set(operations)) == len(operations)
          and set(operations) <= OPS | set(PAYLOAD_SCHEMAS) | {"observe"}, "invalid machine workspace operations")
+    performance = c.get("performance")
+    need((PERFORMANCE_OP in operations) == (performance is not None), "standing publication requires narrow opt-in lab authority")
+    if performance is not None:
+        fields(performance, ("executable", "digest", "destination"))
+        lab = Path(string(performance["executable"]))
+        need(lab.is_absolute() and lab.resolve() == lab, "native evidence adapter must be canonical")
+        outside_checkout(lab)
+        string(performance["digest"], DIGEST)
+        string(performance["destination"])
     # Reuse the established check/person schema and validators without its fixed branch map.
     validate_config({"schema": "af/github-adapter-config@1", "repository": c["repository"],
         "repository_id": c["repository_id"], "actor": c["actor"], "token_file": c["token_file"],
@@ -190,15 +200,45 @@ def publication_payload(p):
     return dict(schema="af/github-publish-pr@1", head=p["branch"], base=p["base"], title=p["title"], body=p["body"])
 
 
+def performance_payload(p):
+    return dict(publication_payload(p), schema="af/github-performance-pr@1")
+
+
+def performance_subject(p):
+    return subject(PERFORMANCE_OP, performance_payload(p))
+
+
 def workspace_validate_request(r, c):
     fields(r, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(r["schema"] == "af/scenario-adapter-request@3", "unsupported workspace request")
+    need(r["schema"] == "af/scenario-adapter-request@4", "unsupported workspace request")
     for key in ("intent_id", "input_digest"):
         string(r[key], DIGEST)
     op, i = r["operation"], r["inputs"]
-    need(op in {"prepare_candidate_v1", "cleanup_workspace_v1"}
+    need(op in OPS
          and r["destination"] == "github:" + c["repository"]
          and r["method"] in ("execute", "reconcile"), "unauthorized workspace operation")
+    if op == PERFORMANCE_OP:
+        fields(i, ("subject", "revision", "body", "candidate", "verification", "report", "measurement", "machine_scope"))
+        scope = decode(string(datum(i, "machine_scope")).encode())
+        fields(scope, ("repository", "repository_id", "repo", "task_state", "base", "branch_prefix", "source_commit", "source_content_digest", "evidence_adapter", "evidence_destination"))
+        for key in ("repository", "repository_id", "repo", "base", "branch_prefix", "source_commit", "source_content_digest"):
+            need(scope[key] == c[key], "performance publication machine scope differs")
+        need(scope["task_state"] == c["task_store"] and c.get("performance") is not None
+             and scope["evidence_destination"] == c["performance"]["destination"], "performance native evidence scope differs")
+        content = decode(string(datum(i, "body")).encode())
+        fields(content, ("schema", "title"))
+        need(content["schema"] == "af/performance-pr-content@1", "unsupported performance publication content")
+        string(content["title"], limit=200)
+        need("\n" not in content["title"] and "\r" not in content["title"], "multiline title")
+        for key in ("candidate", "verification", "report"):
+            t = datum(i, key, "task")
+            fields(t, ("task_id", "plan_id", "revision_id", "result_id", "charged_tokens", "result"))
+            need(t["result"]["execution"] == "completed" and t["result"]["acceptance"] == "satisfied", "publication requires accepted Tasks")
+        t = datum(i, "candidate", "task")
+        need(t["result_id"] == datum(i, "subject") and t["result"]["outputs"]["snapshot"]["snapshot_id"] == datum(i, "revision"), "publication candidate selectors differ")
+        o = datum(i, "measurement", "observation")
+        need(o["satisfied"] is True and o["condition"] == "native_verified" and o["revision"] == datum(i, "revision"), "publication needs exact native measurement")
+        return content
     expected = ["subject", "revision", "body", "candidate"] if op == "prepare_candidate_v1" else ["subject", "revision", "body", "prepared", "evidence"]
     fields(i, expected, ["previous"] if op == "prepare_candidate_v1" else [])
     string(datum(i, "subject"))
@@ -272,7 +312,7 @@ class WorkspaceJournal(Journal):
                 fields(rec["build"], ("inode", "device"))
                 integer(rec["build"]["inode"])
                 integer(rec["build"]["device"])
-            if rec["request"]["operation"] == "prepare_candidate_v1" and rec["phase"] == "done":
+            if rec["request"]["operation"] in ("prepare_candidate_v1", PERFORMANCE_OP) and rec["phase"] == "done":
                 need(rec["prepared"] is not None and rec["inode"] is not None and rec["device"] is not None and rec["build"] is not None
                      and all(r["published"] for r in rec["reservations"].values()), "completed preparation lacks owned artifacts")
             if rec["request"]["operation"] != "cleanup_workspace_v1":
@@ -291,6 +331,9 @@ class WorkspaceJournal(Journal):
         need(len(records) < WORKSPACE_MAX_RECORDS, "lifecycle receipt budget exhausted")
         for rec in records.values():
             a, b = rec["request"], exact
+            if b["operation"] == PERFORMANCE_OP and a["operation"] in ("prepare_candidate_v1", PERFORMANCE_OP):
+                need(a["inputs"]["revision"] != b["inputs"]["revision"],
+                     "candidate Snapshot already reserved; reconcile its original workspace intent")
             need((a["operation"], a["inputs"]["subject"], a["inputs"]["revision"]) !=
                  (b["operation"], b["inputs"]["subject"], b["inputs"]["revision"]), "lifecycle object has another reserved intent")
         rec = dict(request=exact, phase="reserved", prepared=None, inode=None, device=None, build=None, cleaned=[], cleanup_pending=None, progress=[],
@@ -307,6 +350,7 @@ class WorkspaceAdapter:
         self.journal = WorkspaceJournal(config, config_digest)
         self.repo = "/repos/" + config["repository"]
         self.common = None
+        self.performance_checked = {}
 
     def git(self, *args, cwd=None, data=None, extra=None):
         c = self.config
@@ -320,6 +364,64 @@ class WorkspaceAdapter:
                    "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=never",
                    "-c", "protocol.ext.allow=never", "-c", "core.attributesFile=/dev/null", *args]
         return bounded_command(command, cwd or c["repo"], env, data, 15, c["state_dir"]).rstrip(b"\n")
+
+    def performance_base(self):
+        c = self.config
+        need(self.git("rev-parse", "refs/heads/" + c["base"]).decode() == c["source_commit"], "local publication base drifted")
+        remote = self.service.request("GET", self.repo + "/git/ref/heads/" + quote(c["base"], safe=""))
+        need(remote.get("ref") == "refs/heads/" + c["base"]
+             and remote.get("object", {}).get("type") == "commit"
+             and remote["object"].get("sha") == c["source_commit"], "remote publication base drifted")
+        self.common.actor()  # Revalidate the exact numeric repository and installed actor.
+
+    def performance_content(self, request):
+        c, inputs = self.config, request["inputs"]
+        need(PERFORMANCE_OP in c["operations"] and c.get("performance") is not None,
+             "standing publication is not installed")
+        content = workspace_validate_request(dict(request, method="reconcile"), c)
+        key = digest(canonical(identity(request)))
+        if key in self.performance_checked:
+            self.performance_base()
+            return self.performance_checked[key]
+        lab = c["performance"]
+        need(file_digest(lab["executable"]) == lab["digest"], "pinned native evidence adapter changed")
+        observation = datum(inputs, "measurement", "observation")
+        native_request = dict(schema="af/performance-pr-proof-request@1",
+            candidate=datum(inputs, "candidate", "task"), verification=datum(inputs, "verification", "task"),
+            report=datum(inputs, "report", "task"), evidence=observation,
+            source_commit=c["source_commit"], source_content_digest=c["source_content_digest"])
+        # This exact request is retained before any commit, branch, push or PR effect.
+        path = Path(c["state_dir"]) / (request["intent_id"].split(":")[1] + ".performance.json")
+        if path.exists() or path.is_symlink():
+            need(decode(read_private(path, LIMIT)) == native_request, "performance proof intent changed")
+        else:
+            atomic_write(path, canonical(native_request))
+        home = str(Path(c["state_dir"]) / "home")
+        env = {"PATH": "/usr/bin:/bin", "AF_SELF_OFFLINE": "1", "HOME": home, "XDG_CONFIG_HOME": home,
+               "XDG_DATA_HOME": home, "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home, "TMPDIR": c["state_dir"]}
+        proof = decode(bounded_command([c["af"], "scenario", "performance-proof", "--file", str(path),
+            "--repo", c["repo"], "--task-state", c["task_store"], "--json"], c["state_dir"], env, None,
+            18, c["state_dir"], LIMIT), LIMIT)
+        fields(proof, ("schema", "request_digest", "source_snapshot", "candidate_snapshot", "body"))
+        need(proof["schema"] == "af/performance-pr-proof@1" and proof["request_digest"] == digest(canonical(native_request))
+             and proof["candidate_snapshot"] == datum(inputs, "revision"), "native publication proof differs")
+        lab_request = dict(schema="af/scenario-adapter-request@4", method="observe", intent_id=request["intent_id"],
+            input_digest=request["input_digest"], operation="observe", destination=lab["destination"],
+            inputs={key: dict(type="text", value=value) for key, value in
+                dict(subject=observation["subject"], revision=observation["revision"], condition="native_verified").items()})
+        observed = decode(bounded_command([lab["executable"]], c["state_dir"], env, canonical(lab_request),
+            18, c["state_dir"], 65536), 65536)
+        fields(observed, ("schema", "intent_id", "input_digest", "outcome", "evidence", "observation"))
+        need(observed["schema"] == "af/scenario-adapter-response@1" and observed["intent_id"] == request["intent_id"]
+             and observed["input_digest"] == request["input_digest"] and observed["outcome"] == "done"
+             and observed["observation"] == observation, "measurement differs from retained native lab evidence")
+        completion = decode(observation["evidence"].encode())
+        need(completion["baseline_snapshot_id"] == proof["source_snapshot"]
+             and completion["candidate_snapshot_id"] == proof["candidate_snapshot"], "measured sources differ from accepted native sources")
+        self.performance_base()
+        content = dict(schema="af/git-workspace-content@1", title=content["title"], body=proof["body"])
+        self.performance_checked[key] = content
+        return content
 
     def native_source(self, t, owner, previous=None):
         c = self.config
@@ -368,6 +470,7 @@ class WorkspaceAdapter:
     def prepare(self, rec):
         c, r = self.config, rec["request"]
         i = r["inputs"]
+        performance_content = self.performance_content(r) if r["operation"] == PERFORMANCE_OP else None
         t = datum(i, "candidate", "task")
         owner = r["intent_id"]
         suffix = owner.split(":")[1]
@@ -380,6 +483,9 @@ class WorkspaceAdapter:
             need(len(chain) < WORKSPACE_MAX_RECORDS, "workspace lineage bound exceeded")
             self.publication(prepared_subject(previous), previous["commit"])
         ref = previous["branch"] if previous else c["branch_prefix"] + "/" + suffix
+        if performance_content is not None and rec["prepared"] is not None:
+            need((rec["prepared"]["title"], rec["prepared"]["body"]) == (performance_content["title"], performance_content["body"]),
+                 "native performance publication report changed; retain the original intent")
         if rec["phase"] == "done":
             return "done", canonical(rec["prepared"]).decode()
         if rec["prepared"] is None:
@@ -396,18 +502,21 @@ class WorkspaceAdapter:
                      source["repository"], "refs/heads/af-candidate")
             tree = source["candidate_tree"]
             need(self.git("rev-parse", source["transport_commit"] + "^{tree}").decode() == tree, "native candidate tree changed")
-            content = decode(datum(i, "body").encode())
+            content = performance_content or decode(datum(i, "body").encode())
             need(previous is None or (content["title"], content["body"]) == (previous["title"], previous["body"]), "continuation changed publication identity")
             message = content["title"] + "\n\nIntent: " + owner + "\nTask: " + t["task_id"] + "\nResult: " + t["result_id"] + "\nSnapshot: " + datum(i, "revision") + "\n"
             commit_env = {"GIT_AUTHOR_NAME": c["author_name"], "GIT_AUTHOR_EMAIL": c["author_email"],
                           "GIT_COMMITTER_NAME": c["author_name"], "GIT_COMMITTER_EMAIL": c["author_email"],
                           "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000"}
-            commit = self.git("commit-tree", tree, "-p", source["source_commit"], data=message.encode(), extra=commit_env).decode()
+            commit = "0" * 40
             p = dict(schema=PREPARED, owner=owner, previous_owner=previous["owner"] if previous else None, config_digest=self.config_digest, repository=c["repository"],
                      repository_id=c["repository_id"], task_id=t["task_id"], result_id=t["result_id"],
                      snapshot_id=datum(i, "revision"), source_snapshot=source["source_snapshot"], source_predecessor=source["predecessor_snapshot"], source_commit=source["source_commit"],
                      branch=ref, base=c["base"], commit=commit, tree=tree, worktree=str(worktree), title=content["title"], body=content["body"])
             validate_prepared(p, c, self.config_digest)
+            if r["operation"] == PERFORMANCE_OP:
+                self.performance_base()
+            p["commit"] = self.git("commit-tree", tree, "-p", source["source_commit"], data=message.encode(), extra=commit_env).decode()
             # Commit bytes and ownership intent are durable before creating any branch/worktree.
             rec["prepared"], rec["phase"] = p, "started"
             self.journal.save()
@@ -502,7 +611,7 @@ class WorkspaceAdapter:
     def preparation(self, p):
         rec = self.journal.state["records"].get(p["owner"])
         need(rec is not None and rec["phase"] == "done" and rec["prepared"] == p
-             and rec["request"]["operation"] == "prepare_candidate_v1", "no local completed preparation provenance")
+             and rec["request"]["operation"] in ("prepare_candidate_v1", PERFORMANCE_OP), "no local completed preparation provenance")
         return rec
 
     def lineage(self, p):
@@ -685,10 +794,11 @@ class WorkspaceAdapter:
         return self.common.publication(subject_value, revision)
 
     def handle(self, r):
+        self.performance_checked = {}  # Native acceptance/evidence reopens on every call, including replay.
         need(r.get("operation") in self.config["operations"], "operation outside installed machine scope")
         with self.journal.locked():
             self.configure_github()
-            if r["operation"] in PAYLOAD_SCHEMAS or r["operation"] == "observe":
+            if (r["operation"] in PAYLOAD_SCHEMAS and r["operation"] != PERFORMANCE_OP) or r["operation"] == "observe":
                 texts, _ = validate_request(r, self.common.config)
                 self.common.actor()
                 if r["method"] == "observe":
@@ -699,12 +809,27 @@ class WorkspaceAdapter:
                     obs = None
             else:
                 p = workspace_validate_request(r, self.config)
-                rec = self.journal.record(r)
+                rec = self.journal.record(r)  # Bound all retained proof files by the existing intent budget.
+                if r["operation"] == PERFORMANCE_OP:
+                    self.performance_content(r)
                 if rec["phase"] == "reserved" and r["method"] == "reconcile":
                     outcome, evidence = "absent", "Local intent has never dispatched"
-                elif r["operation"] == "prepare_candidate_v1":
+                elif r["operation"] in ("prepare_candidate_v1", PERFORMANCE_OP):
                     # Local operations are idempotent and resume from exact journaled leases.
                     outcome, evidence = self.prepare(rec)
+                    if r["operation"] == PERFORMANCE_OP:
+                        p = rec["prepared"]
+                        self.configure_github()
+                        self.common.actor()
+                        publication = dict(schema="af/scenario-adapter-request@4", method=r["method"],
+                            intent_id=r["intent_id"], input_digest=r["input_digest"], operation=PERFORMANCE_OP,
+                            destination=r["destination"], inputs={key: dict(type="text", value=value) for key, value in
+                                dict(subject=performance_subject(p), revision=p["commit"], body=canonical(performance_payload(p)).decode()).items()})
+                        validate_request(publication, self.common.config)
+                        held = self.common.journal.record(publication)
+                        outcome, evidence = self.common.reconcile(held)
+                        if outcome == "absent" and r["method"] == "execute":
+                            outcome, evidence = self.common.execute(held)
                 else:
                     outcome, evidence = self.cleanup(rec, p)
                 obs = None
@@ -729,15 +854,21 @@ class WorkspaceGitHub(Adapter):
     def prepared(self, record):
         payload, revision = self.payload(record), datum(record["request"]["inputs"], "revision")
         matches = [r["prepared"] for r in self.workspace.journal.state["records"].values()
-                   if r["request"]["operation"] == "prepare_candidate_v1" and r["phase"] == "done"
-                   and r["prepared"]["commit"] == revision and publication_payload(r["prepared"]) == payload]
+                   if r["request"]["operation"] in ("prepare_candidate_v1", PERFORMANCE_OP) and r["phase"] == "done"
+                   and r["prepared"]["commit"] == revision and (performance_payload(r["prepared"]) if record["request"]["operation"] == PERFORMANCE_OP else publication_payload(r["prepared"])) == payload]
         need(len(matches) == 1, "publication requires one exact local accepted-candidate preparation")
+        if record["request"]["operation"] == PERFORMANCE_OP:
+            need(matches[0]["owner"] == record["request"]["intent_id"]
+                 and self.workspace.preparation(matches[0])["request"]["operation"] == PERFORMANCE_OP,
+                 "performance publication lacks its exact native preparation intent")
         return matches[0]
 
     def locked_head(self, payload, revision):
+        if payload.get("schema") == "af/github-performance-pr@1":
+            self.workspace.performance_base()
         # An explicit alternative to production locked_head, never a fallback after refusal.
         matches = [r["prepared"] for r in self.workspace.journal.state["records"].values()
-                   if r["prepared"] is not None and publication_payload(r["prepared"]) == payload
+                   if r["prepared"] is not None and (performance_payload(r["prepared"]) if payload.get("schema") == "af/github-performance-pr@1" else publication_payload(r["prepared"])) == payload
                    and r["prepared"]["commit"] == revision and r["phase"] == "done"]
         need(len(matches) == 1 and self.workspace.remote_ref(matches[0]) == revision,
              "exclusive owned publication head changed")
@@ -764,14 +895,25 @@ class WorkspaceGitHub(Adapter):
         need(w.git("rev-parse", p["commit"] + "^").decode() == p["source_commit"], "prepared parent changed")
         if remote != p["commit"]:
             url = "ssh://git@github.com/" + w.config["repository"] + ".git"
-            w.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":" + (parent or ""),
-                  url, p["commit"] + ":refs/heads/" + p["branch"])
-        self.locked_head(publication_payload(p), p["commit"])
+            if w.preparation(p)["request"]["operation"] == PERFORMANCE_OP:
+                w.performance_content(w.preparation(p)["request"])
+                need(parent is None and remote is None, "performance publication only creates new scoped branches")
+                # A push of a pre-existing ref could fast-forward it. Receive-pack's exact
+                # absence lease is mandatory; it cannot update an existing branch.
+                w.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":",
+                      url, p["commit"] + ":refs/heads/" + p["branch"])
+            else:
+                w.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":" + (parent or ""),
+                      url, p["commit"] + ":refs/heads/" + p["branch"])
+        self.locked_head(performance_payload(p) if w.preparation(p)["request"]["operation"] == PERFORMANCE_OP else publication_payload(p), p["commit"])
 
     def execute(self, record):
-        if record["request"]["operation"] != "publish_pr":
+        if record["request"]["operation"] not in PR_OPERATIONS:
             return super().execute(record)
         p = self.prepared(record)
+        if record["request"]["operation"] == PERFORMANCE_OP:
+            self.workspace.performance_content(self.workspace.preparation(p)["request"])
+            self.workspace.performance_base()
         self.workspace.lineage(p)
         previous = self.prior(p)
         if previous is None:
@@ -847,7 +989,8 @@ def workspace_schema_documents():
         title=text(maximum=200), body=text(maximum=48000))
     doc("git-workspace-prepared", prepared)
     doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
-    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:4#/$defs/TaskReceipt"},
+    doc("performance-pr-content", dict(title=text(maximum=200)))
+    doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"},
         source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])))
     doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig,
         candidate_snapshot=dig, predecessor_snapshot=dict(anyOf=[dict(type="null"), dig]), source_content_digest=dig, source_commit=sha, candidate_tree=sha,
@@ -862,10 +1005,13 @@ def workspace_schema_documents():
         ssh_config_digest=dig, author_name=text(maximum=200), author_email=text(maximum=200),
         required_checks=required_checks, reviewers=array(who, 15), publication_mode={"const": "exclusive_owned_writer"},
         operations={"type":"array", "items":{"enum":sorted(OPS | set(PAYLOAD_SCHEMAS) | {"observe"})}, "minItems":1, "maxItems":6, "uniqueItems":True})
-    doc("git-workspace-config", config)
-    request = obj(dict(schema={"const": "af/scenario-adapter-request@3"}, intent_id=dig, input_digest=dig,
+    config["operations"]["maxItems"] = 7
+    config["performance"] = obj(dict(executable=path, digest=dig, destination=text()))
+    doc("git-workspace-config", config, version=2)
+    schemas["git-workspace-config-v2.json"]["required"].remove("performance")
+    request = obj(dict(schema={"const": "af/scenario-adapter-request@4"}, intent_id=dig, input_digest=dig,
         operation={"enum": sorted(OPS - {"observe"})}, destination=text(), inputs={"type": "object",
-            "additionalProperties": {"$ref": "urn:af:schema:scenario:4#/$defs/Datum"}}))
+            "additionalProperties": {"$ref": "urn:af:schema:scenario:5#/$defs/Datum"}}))
     rec = obj(dict(request=request, phase={"enum": ["reserved", "started", "done"]},
         prepared=dict(anyOf=[dict(type="null"), obj(dict(schema={"const": PREPARED}, **prepared))]),
         inode=nullable_int, device=nullable_int,
@@ -875,6 +1021,6 @@ def workspace_schema_documents():
         cleaned=array(dig, WORKSPACE_MAX_RECORDS), cleanup_pending=dict(anyOf=[dict(type="null"), dig]),
         progress=array({"enum": ["branch", "remote"]}, 2)))
     doc("git-workspace-state", dict(config_digest=dig, checksum=dig, records={"type": "object", "maxProperties": WORKSPACE_MAX_RECORDS,
-        "propertyNames": dig, "additionalProperties": rec}), version=1)
+        "propertyNames": dig, "additionalProperties": rec}), version=2)
     return schemas
 

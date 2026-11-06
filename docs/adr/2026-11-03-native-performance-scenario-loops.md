@@ -4,6 +4,8 @@
 orchestration contract, and ADR-0275's journal generation. Their accepted bodies remain
 immutable; signed publication, local Task
 delivery and Remote Check boundaries remain binding.
+Partially superseded for the new performance publication operation by
+[ADR-2026-11-06-publish-verified-performance-under-standing-owner-authority](2026-11-06-publish-verified-performance-under-standing-owner-authority.md).
 
 ## Context
 

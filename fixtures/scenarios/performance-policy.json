@@ -1,5 +1,5 @@
 {
-  "schema": "af/scenario-policy@4",
+  "schema": "af/scenario-policy@5",
   "adapters": {
     "lab": {
       "executable": "/opt/af-perf/scenario-adapter",

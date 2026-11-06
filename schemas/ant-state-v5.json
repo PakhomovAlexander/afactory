@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant-state:4",
-  "title": "ant-state v4",
+  "$id": "urn:af:schema:ant-state:5",
+  "title": "ant-state v5",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -16,13 +16,13 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant-state@4"
+      "const": "af/ant-state@5"
     },
     "pin": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/AntPin"
+      "$ref": "urn:af:schema:scenario:5#/$defs/AntPin"
     },
     "state": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/Enabled"
+      "$ref": "urn:af:schema:scenario:5#/$defs/Enabled"
     },
     "changes": {
       "type": "array",
@@ -35,7 +35,7 @@
             "maximum": 9007199254740991
           },
           {
-            "$ref": "urn:af:schema:scenario:4#/$defs/Enabled"
+            "$ref": "urn:af:schema:scenario:5#/$defs/Enabled"
           }
         ],
         "items": false,
@@ -55,7 +55,7 @@
     "occurrences": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:4#/$defs/Occurrence"
+        "$ref": "urn:af:schema:scenario:5#/$defs/Occurrence"
       }
     }
   }

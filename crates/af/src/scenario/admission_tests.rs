@@ -131,7 +131,7 @@ fn concurrent_manual_admission_reserves_complete_loops_once_and_restart_keeps_cl
         .unwrap()
         .unwrap();
     assert_eq!(again, *c);
-    valid("scenario-store-v5.json", &store.read().unwrap());
+    valid("scenario-store-v6.json", &store.read().unwrap());
 }
 #[test]
 fn unknown_charge_and_midnight_never_release_a_complete_loop_or_enable_a_revision_reset() {
@@ -453,8 +453,8 @@ fn shipped_fresh_task_example_has_narrow_digest_grants_and_versioned_schema_pari
         .task_templates
         .clone();
     let pin = Pin::new(bundle.clone(), policy).unwrap();
-    valid("scenario-bundle-v4.json", &bundle);
-    valid("scenario-pin-v4.json", &pin);
+    valid("scenario-bundle-v5.json", &bundle);
+    valid("scenario-pin-v5.json", &pin);
     let Kind::FreshTask { template, .. } = &bundle.definitions[&bundle.root].steps[0].operation
     else {
         unreachable!()

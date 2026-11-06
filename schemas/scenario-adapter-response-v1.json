@@ -18,10 +18,10 @@
       "const": "af/scenario-adapter-response@1"
     },
     "intent_id": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
     },
     "input_digest": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
     },
     "outcome": {
       "enum": [
@@ -32,12 +32,12 @@
       ]
     },
     "evidence": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/text"
+      "$ref": "urn:af:schema:scenario:5#/$defs/text"
     },
     "observation": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:4#/$defs/Observation"
+          "$ref": "urn:af:schema:scenario:5#/$defs/Observation"
         },
         {
           "type": "null"

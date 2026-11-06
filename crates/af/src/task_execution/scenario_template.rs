@@ -473,7 +473,7 @@ fn performance_wall(total: u64, verification: u64) -> Result<(), String> {
 }
 
 /// Production performance development requires the complete exact model team.
-fn performance_roles(plan: &ExecutionPlanV3, kind: &str) -> Result<(), String> {
+pub(super) fn performance_roles(plan: &ExecutionPlanV3, kind: &str) -> Result<(), String> {
     performance_executions(
         plan.bindings
             .iter()

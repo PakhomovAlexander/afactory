@@ -26,6 +26,14 @@ policy. It retains progress, child frames, dispatch intents and receipts across 
 Its completion evidence is separate from a Task's acceptance and a PR's checks. Waiting remains
 active and consumes elapsed time; cancellation stops future dispatch and never means rollback.
 
+**Performance publication**:
+The opt-in `publish_performance_pr_v1` Scenario Action uses pinned standing owner machine scope
+for one accepted, independently verified, positively measured candidate. It creates a deterministic
+commit, a new scoped branch and a normal PR carrying native Task and measurement reports. Generic
+`publish_pr` and `followup` retain exact signed human Decisions; Task delivery and Remote Checks
+retain their own authority. See the
+[decision](docs/adr/2026-11-06-publish-verified-performance-under-standing-owner-authority.md).
+
 **Ant**:
 An accountable owner's scheduled binding of a Scenario pin and typed inputs, with an explicit
 pinned daily timezone, notification route, overlap and missed-occurrence policies and per-run and

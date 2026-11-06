@@ -15,10 +15,10 @@
       "const": "af/scenario-owned-file@1"
     },
     "owner": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
     },
     "content": {
-      "$ref": "urn:af:schema:scenario:4#/$defs/text"
+      "$ref": "urn:af:schema:scenario:5#/$defs/text"
     }
   }
 }

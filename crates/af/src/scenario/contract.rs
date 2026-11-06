@@ -176,7 +176,7 @@ pub(super) struct ActionReceipt {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Observation {
+pub(crate) struct Observation {
     pub subject: String,
     pub revision: String,
     pub condition: String,
@@ -408,6 +408,7 @@ impl Limits {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Operation {
     PublishPr,
+    PublishPerformancePrV1,
     Followup,
     Notify,
     ExperimentSubmitV1,
@@ -564,7 +565,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@4"
+            self.schema == "af/scenario-bundle@5"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -708,7 +709,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle) -> Result<()> {
         require(
-            self.schema == "af/scenario@4"
+            self.schema == "af/scenario@5"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -883,6 +884,20 @@ impl Scenario {
                         "Publication requires an exact human decision",
                     )?;
                     match grant.operation {
+                        Operation::PublishPerformancePrV1 => {
+                            require(
+                                !requires_decision && required_condition.is_none(),
+                                "Standing performance publication has its own exact evidence contract",
+                            )?;
+                            for key in ["subject", "revision", "body"] {
+                                expected.insert(key.into(), Port::Text);
+                            }
+                            for key in ["candidate", "verification", "report"] {
+                                expected.insert(key.into(), Port::Task);
+                            }
+                            expected.insert("measurement".into(), Port::Observation);
+                            output = Port::Action;
+                        }
                         Operation::PrepareCandidateV1 => {
                             expected.insert("subject".into(), Port::Text);
                             expected.insert("revision".into(), Port::Text);
@@ -988,13 +1003,15 @@ pub(super) struct Policy {
     #[serde(deserialize_with = "unique")]
     pub task_templates: BTreeSet<String>,
     pub decision_keys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub performance_publications: BTreeMap<String, super::performance::Scope>,
     #[serde(deserialize_with = "unique")]
     pub file_roots: BTreeSet<PathBuf>,
 }
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@4"
+            self.schema == "af/scenario-policy@5"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1028,6 +1045,41 @@ impl Policy {
             for d in &a.destinations {
                 text(d)?;
             }
+        }
+        require(
+            self.performance_publications.len() <= 32,
+            "Too many performance publication scopes",
+        )?;
+        for (adapter, scope) in &self.performance_publications {
+            scope.validate()?;
+            let a = self
+                .adapters
+                .get(adapter)
+                .ok_or("Publication scope lacks installed adapter")?;
+            require(
+                a.operations.contains(&Operation::PublishPerformancePrV1)
+                    && a.destinations
+                        .contains(&format!("github:{}", scope.repository)),
+                "Publication scope differs from adapter authority",
+            )?;
+            let evidence = self
+                .adapters
+                .get(&scope.evidence_adapter)
+                .ok_or("Publication lacks pinned native evidence adapter")?;
+            require(
+                evidence.operations.contains(&Operation::Observe)
+                    && evidence.destinations.contains(&scope.evidence_destination),
+                "Publication evidence authority differs",
+            )?;
+        }
+        for (id, adapter) in &self.adapters {
+            require(
+                !adapter
+                    .operations
+                    .contains(&Operation::PublishPerformancePrV1)
+                    || self.performance_publications.contains_key(id),
+                "Performance publication needs explicit machine standing scope",
+            )?;
         }
         for (owner, key) in &self.decision_keys {
             name(owner)?;
@@ -1113,7 +1165,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@4".into(),
+            schema: "af/scenario-pin@5".into(),
             bundle,
             policy,
             revision,

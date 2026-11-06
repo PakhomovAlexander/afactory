@@ -100,7 +100,7 @@ class Adapter:
         require(isinstance(request, dict) and set(request) == {
             "schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"},
             "invalid Scenario adapter request fields")
-        require(request["schema"] == "af/scenario-adapter-request@3"
+        require(request["schema"] == "af/scenario-adapter-request@4"
                 and request["destination"] == self.config["destination"],
                 "unsupported Scenario adapter version or destination")
         for key in ("intent_id", "input_digest"):

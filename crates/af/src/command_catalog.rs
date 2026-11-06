@@ -252,6 +252,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af scenario validate", READS),
     ("af scenario template-pin", writes(&[(Store, None)])),
     ("af scenario evidence-source", READS),
+    ("af scenario performance-proof", READS),
     ("af scenario experiment-source", writes(&[(Files, None)])),
     ("af scenario candidate-source", writes(&[(Files, None)])),
     (
@@ -716,6 +717,36 @@ mod tests {
             .iter()
             .any(|command| command["command"] == "af self man");
         assert!(!hidden, "a hidden command is not in the catalog");
+    }
+
+    #[test]
+    fn performance_proof_is_read_only_and_describes_its_required_inputs() {
+        let document = document(&["scenario".into(), "performance-proof".into()]).unwrap();
+        assert_eq!(document["scope"], "af scenario performance-proof");
+        let commands = document["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 1);
+        let proof = &commands[0];
+        assert_eq!(proof["runnable"], true);
+        assert_eq!(
+            proof["effects"],
+            json!({"tokens": "free", "charges_when": null, "writes": [], "human": []})
+        );
+        for flag in ["--file", "--repo", "--task-state"] {
+            let argument = proof["arguments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|argument| argument["long"] == flag)
+                .unwrap();
+            assert_eq!(argument["required"], true, "{flag}");
+            assert_eq!(argument["takes_value"], true, "{flag}");
+            assert!(
+                argument["help"]
+                    .as_str()
+                    .is_some_and(|help| !help.is_empty()),
+                "{flag}"
+            );
+        }
     }
 
     /// The `writes` of one command as the catalog prints them: `(state, when)` pairs.
