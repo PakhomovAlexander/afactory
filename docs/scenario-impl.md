@@ -97,15 +97,30 @@ merge remain external actions; CI readiness proves neither. Handle conflicts thr
 captured source and explicit operator action. Task Stores are retained; cleanup removes only the
 workspace capability's explicitly owned resources after its independent actual-merge readback.
 
-Run the focused native tests without services or models:
+Run the focused native tests without live services or models:
 
 ```sh
 cargo test --locked -p af --test it generated_impl
-cargo test --locked -p af --test it ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_same_pr
+cargo test --locked -p af --test it production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge
 ```
 
-The tests use private homes, local Git, command Workers and a fake service. They cover package
-pins/planning, another configured team without execution, actual findings delivery, zero/one/two
-CI repairs, fresh signatures, lazy skipped receipts, same-PR publication, real-merge waiting and
-cleanup. Production adapter transport/recovery and dirty/foreign cleanup refusals remain covered
-by `python3 -I scripts/test-scenario-git-workspace.py`. These are inert proofs, not live publication.
+The focused generated recipe tests use private homes, command Workers and an inert workspace
+outcome service. They cover package pins/planning, another configured team without execution,
+native continuation with actual findings delivery, and zero/one/two CI repairs with fresh
+signatures, lazy skipped receipts, same-PR identity, separate merge waiting and cleanup. This
+outcome fixture models the lifecycle; it does not prove production adapter composition.
+
+The installed production adapter regression
+`production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge` independently
+exercises that boundary with real Git commits, worktrees and bare remote refs, real accepted
+command-backed Tasks and native signed Decisions. Only external HTTPS/GitHub transport is mocked.
+It covers ready and pending CI, stale-head refusal, completed failing CI admitting a fresh repair
+with predecessor/source provenance, a second signature and the same PR with exactly one creation
+POST. An actual local merge precedes removal of owned worktrees, build roots and local/remote
+refs; the merged base remains. It uses the reusable capabilities directly, separately from the
+generated recipe fixture.
+
+See [generic capability coverage](scenario-git-workspace.md#recovery-and-bounds) for production
+transport/recovery, dirty/foreign cleanup refusals and the ordinary native repair regression,
+including `python3 -I scripts/test-scenario-git-workspace.py`. None of these tests claims live
+publication.
