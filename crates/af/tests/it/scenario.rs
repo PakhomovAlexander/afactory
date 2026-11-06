@@ -2259,7 +2259,7 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
             ])
             .arg(f.machine.join("body.md"))
             .args(["--repairs", &repairs.to_string(), "--output"])
-            .arg(&f.bundle.with_extension("generated.json"))
+            .arg(f.bundle.with_extension("generated.json"))
             .output()
             .unwrap();
         assert!(

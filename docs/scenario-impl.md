@@ -55,7 +55,8 @@ implementer. `af task run NEW --from OLD` uses the consumer's `[task.defaults]` 
 carries native findings and candidate provenance. The focused regression actually plans and
 executes this continuation with inert Workers; a bundle's structure alone proves no such support.
 The correctness reviewer has `read-source` and `execute-checks`, returns required exact-Snapshot
-`ImplementationTestEvidence@1`, and must build, privately install and execute meaningful tests.
+`ImplementationTestEvidence@1`, and must build, privately install or stage the candidate in the
+project's appropriate isolated test environment, and execute meaningful tests and acceptance cases.
 The evaluator receives that evidence, local checks, requirements and the reduced Review Round
 through explicit typed edges. Failed or unavailable execution cannot become passing acceptance.
 

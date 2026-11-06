@@ -164,10 +164,10 @@ def packages(output, af, checks, team, namespace="impl"):
     instructions = {
         "implementer": """# Implement one bounded change
 
-Implement the Task requirements in the captured source. This is a standalone CLI/project;
-its name does not authorize adding an af subcommand. Use the repository guidance and tests.
+Implement the Task requirements in the captured source. Follow the actual Task scope,
+project type, repository guidance and tests.
 The required local Gate and two required reviewers check the sealed candidate, and the
-independent correctness reviewer builds, privately installs and executes it. Address every
+independent correctness reviewer builds, privately installs or stages it, and tests it. Address every
 acceptance item. Report all failed or unavailable checks exactly. Never publish or use
 credentials. Keep the declared Attempt and Task budgets; unfinished work is not complete.
 """,
@@ -175,10 +175,12 @@ credentials. Keep the declared Attempt and Task budgets; unfinished work is not 
 
 Independently verify the complete candidate against the requirements and base. You have the
 native execute-checks capability in a private disposable sandbox. The candidate is already
-applied; do not edit its source. Build the standalone CLI with the pinned toolchain, install
-it under a private sandbox directory (for Rust, cargo install --path . --root PATH), and
-execute meaningful focused tests and installed-binary acceptance cases. Keep every build and
-install artifact inside your sandbox. Inspect and exercise error paths and lifecycle behavior.
+applied; do not edit its source. Build the candidate using the project's toolchain and
+repository guidance, respecting pinned versions. Privately install or stage it in the project's
+appropriate isolated test environment, then run meaningful focused tests and acceptance cases
+for its actual Task scope and project type, including libraries and non-CLI projects. Keep every
+build, install and staging artifact inside your sandbox. Inspect and exercise relevant error
+paths and lifecycle behavior.
 
 Return both declared ports: the unchanged flat Reviewer Result in result, and
 ImplementationTestEvidence@1 in testing. The testing artifact names the exact candidate Snapshot,
@@ -204,7 +206,7 @@ summary as evidence. Missing acceptance work blocks acceptance. Never publish or
 
 Judge the entire requirements contract on the exact candidate, local Gate receipts and the
 public testing artifact from the required correctness reviewer. The correctness reviewer must have independently built, privately
-installed and executed meaningful tests of the candidate. Missing executable evidence or
+installed or staged and executed meaningful tests of the candidate. Missing executable evidence or
 unresolved requirements means acceptance is not satisfied. Task acceptance permits preparation;
 it does not establish publication, PR checks, human merge or Scenario completion.
 """}
