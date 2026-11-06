@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:ant:4",
+  "title": "ant v4",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "scenario",
+    "inputs",
+    "schedule",
+    "owner",
+    "notification",
+    "execution"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ant@4"
+    },
+    "id": {
+      "$ref": "urn:af:schema:scenario:4#/$defs/name"
+    },
+    "scenario": {
+      "$ref": "urn:af:schema:scenario:4#/$defs/Bundle"
+    },
+    "inputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/Datum"
+      }
+    },
+    "schedule": {
+      "$ref": "urn:af:schema:scenario:4#/$defs/Daily"
+    },
+    "owner": {
+      "$ref": "urn:af:schema:scenario:4#/$defs/name"
+    },
+    "notification": {
+      "$ref": "urn:af:schema:scenario:4#/$defs/text"
+    },
+    "execution": {
+      "$ref": "urn:af:schema:scenario:4#/$defs/Execution"
+    }
+  }
+}

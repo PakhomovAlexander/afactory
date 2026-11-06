@@ -10,7 +10,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@3`. A bundle (`af/scenario-bundle@3`) names its
+`af/scenario@4`. A bundle (`af/scenario-bundle@4`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -24,7 +24,9 @@ name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`
 another binding and its `projection` is an object with `kind`. An `equals` binding compares scalar
 `left` and `right` bindings of the same type and returns a boolean. This allows a Task's evidenced
 `no_worthwhile_optimization` conclusion to skip implementation and still complete successfully.
-Root inputs and literals are scalar data; they
+A `select` binding has boolean `condition` and equal-type `when_true`/`when_false` bindings;
+it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
+are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
 
 Each step declares `id`, `operation`, `inputs`, `outputs`, `when` (null or boolean binding),
@@ -128,7 +130,7 @@ pausing its Ant are separate operations.
 
 ## Machine policy and bounded adapters
 
-`af/scenario-policy@3` is an explicit, owner-only machine file outside every Git checkout.
+`af/scenario-policy@4` is an explicit, owner-only machine file outside every Git checkout.
 Author it as TOML; its captured JSON wire form is also accepted. The filename selects the format
 (`.toml` or JSON); a parse failure never selects a fallback format or an earlier version.
 It contains
@@ -143,7 +145,7 @@ environment plus sanitized PATH, HOME and XDG_CONFIG_HOME,
 and supervised process-tree termination. It must own its credential access and enforce its
 operation/destination scope. This is a trusted machine extension, not isolation of hostile code.
 
-Requests (`af/scenario-adapter-request@2`) carry `method` (`reconcile`, `execute`, `observe`),
+Requests (`af/scenario-adapter-request@3`) carry `method` (`reconcile`, `execute`, `observe`),
 `intent_id`, `input_digest`, `operation`, `destination`, and typed `inputs`. Observations also
 carry an injected text `condition` input. Responses (`af/scenario-adapter-response@1`) must echo
 both identities and supply `outcome`, bounded `evidence`, and `observation` (null for actions).
@@ -171,7 +173,9 @@ wrapper atomically without replacing an existing file, and returns an `owned_fil
 `cleanup_owned_file` takes that receipt as `owned`, checks device, inode, owner and complete
 content digest, and removes only that file. Unowned and modified content is preserved; conflicting
 recovery content remains in a named cleanup claim. Neither operation recursively removes a user's
-workspace. Whole-workspace removal is outside the built-in cleanup scope.
+workspace. Whole-workspace removal is outside the built-in cleanup scope. The optional
+[Git workspace capability](scenario-git-workspace.md) supplies independently owned worktree/build
+preparation and merge-gated cleanup through installed Actions.
 
 ## Manual bugfix workflow merge watcher
 
@@ -184,7 +188,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Daily Ant scheduling
 
-An `af/ant@3` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@4` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
 `notify` action with its own authorized adapter.
@@ -317,7 +321,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@4`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@5`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
 collects revisions or resets a ledger. No second registry or storage budget exists.

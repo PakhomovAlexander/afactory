@@ -154,7 +154,7 @@ pub(super) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@2".into(),
+                schema: "af/scenario-adapter-request@3".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -197,7 +197,7 @@ pub(super) fn dispatch(
                 .get(&grant.adapter)
                 .ok_or("Action adapter not in machine policy")?;
             let mut request = Request {
-                schema: "af/scenario-adapter-request@2".into(),
+                schema: "af/scenario-adapter-request@3".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -230,17 +230,23 @@ pub(super) fn dispatch(
                 require(r.outcome != Outcome::Absent, "Execute cannot return absent")?;
             }
             match r.outcome {
-                Outcome::Done => Ok(Settlement::Done(BTreeMap::from([(
-                    "result".into(),
-                    Datum::Action(ActionReceipt {
+                Outcome::Done => {
+                    let receipt = ActionReceipt {
                         intent_id: dispatch.intent.id.clone(),
                         operation: grant.operation,
                         destination: grant.destination.clone(),
                         subject: dispatch.inputs["subject"].as_text()?.into(),
                         revision: dispatch.inputs["revision"].as_text()?.into(),
                         evidence: r.evidence,
-                    }),
-                )]))),
+                    };
+                    if grant.operation == Operation::PrepareCandidateV1 {
+                        super::workspace::validate_preparation(&receipt, &dispatch.inputs)?;
+                    }
+                    Ok(Settlement::Done(BTreeMap::from([(
+                        "result".into(),
+                        Datum::Action(receipt),
+                    )])))
+                }
                 Outcome::Failed => Ok(Settlement::Failed(r.evidence)),
                 _ => Ok(Settlement::Waiting(r.evidence)),
             }

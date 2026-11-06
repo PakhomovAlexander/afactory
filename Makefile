@@ -132,6 +132,7 @@ preflight-check:
 .PHONY: scenario-python-tests
 scenario-python-tests: test
 	$(CI_STEP) --stage tests scenario-github-adapter python3 scripts/test-scenario-github-adapter.py
+	$(CI_STEP) --stage tests scenario-git-workspace python3 scripts/test-scenario-git-workspace.py
 	$(CI_STEP) --stage tests scenario-merge-watch python3 scripts/test-scenario-merge-watch.py
 
 # The laboratory suite executes tests, so it belongs after the real Rust build receipt,

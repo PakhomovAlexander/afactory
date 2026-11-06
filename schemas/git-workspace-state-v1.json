@@ -1,0 +1,397 @@
+{
+  "$id": "urn:af:schema:git-workspace-state:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checksum": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "config_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "records": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "build": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "device": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "inode": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "device",
+                  "inode"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "cleaned": {
+            "items": {
+              "maxLength": 65536,
+              "minLength": 1,
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "cleanup_pending": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "maxLength": 65536,
+                "minLength": 1,
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              }
+            ]
+          },
+          "device": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              }
+            ]
+          },
+          "inode": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              }
+            ]
+          },
+          "phase": {
+            "enum": [
+              "reserved",
+              "started",
+              "done"
+            ]
+          },
+          "prepared": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "base": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "body": {
+                    "maxLength": 48000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "branch": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "commit": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{40}$",
+                    "type": "string"
+                  },
+                  "config_digest": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "owner": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "previous_owner": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "minLength": 1,
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "repository": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$",
+                    "type": "string"
+                  },
+                  "repository_id": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "result_id": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "schema": {
+                    "const": "af/git-workspace-prepared@1"
+                  },
+                  "snapshot_id": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "source_commit": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{40}$",
+                    "type": "string"
+                  },
+                  "source_predecessor": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "maxLength": 65536,
+                        "minLength": 1,
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "source_snapshot": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+                    "type": "string"
+                  },
+                  "title": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "tree": {
+                    "maxLength": 65536,
+                    "minLength": 1,
+                    "pattern": "^[0-9a-f]{40}$",
+                    "type": "string"
+                  },
+                  "worktree": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "pattern": "^/[^\\x00]+$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "owner",
+                  "previous_owner",
+                  "config_digest",
+                  "repository",
+                  "repository_id",
+                  "task_id",
+                  "result_id",
+                  "snapshot_id",
+                  "source_snapshot",
+                  "source_predecessor",
+                  "source_commit",
+                  "branch",
+                  "base",
+                  "commit",
+                  "tree",
+                  "worktree",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "progress": {
+            "items": {
+              "enum": [
+                "branch",
+                "remote"
+              ]
+            },
+            "maxItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "request": {
+            "additionalProperties": false,
+            "properties": {
+              "destination": {
+                "maxLength": 65536,
+                "minLength": 1,
+                "type": "string"
+              },
+              "input_digest": {
+                "maxLength": 65536,
+                "minLength": 1,
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "inputs": {
+                "additionalProperties": {
+                  "$ref": "urn:af:schema:scenario:4#/$defs/Datum"
+                },
+                "type": "object"
+              },
+              "intent_id": {
+                "maxLength": 65536,
+                "minLength": 1,
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "operation": {
+                "enum": [
+                  "cleanup_workspace_v1",
+                  "prepare_candidate_v1"
+                ]
+              },
+              "schema": {
+                "const": "af/scenario-adapter-request@3"
+              }
+            },
+            "required": [
+              "schema",
+              "intent_id",
+              "input_digest",
+              "operation",
+              "destination",
+              "inputs"
+            ],
+            "type": "object"
+          },
+          "reservations": {
+            "additionalProperties": false,
+            "properties": {
+              "build": {
+                "additionalProperties": false,
+                "properties": {
+                  "published": {
+                    "type": "boolean"
+                  },
+                  "slot": {
+                    "maximum": 3,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "slot",
+                  "published"
+                ],
+                "type": "object"
+              },
+              "worktree": {
+                "additionalProperties": false,
+                "properties": {
+                  "published": {
+                    "type": "boolean"
+                  },
+                  "slot": {
+                    "maximum": 3,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "slot",
+                  "published"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "worktree",
+              "build"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "request",
+          "phase",
+          "prepared",
+          "inode",
+          "device",
+          "build",
+          "reservations",
+          "cleaned",
+          "cleanup_pending",
+          "progress"
+        ],
+        "type": "object"
+      },
+      "maxProperties": 32,
+      "propertyNames": {
+        "maxLength": 65536,
+        "minLength": 1,
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "schema": {
+      "const": "af/git-workspace-state@1"
+    }
+  },
+  "required": [
+    "schema",
+    "config_digest",
+    "checksum",
+    "records"
+  ],
+  "title": "git-workspace-state v1",
+  "type": "object"
+}

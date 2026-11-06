@@ -622,7 +622,7 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     )
     .unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-bundle-v3.json"),
+        &crate::schemas::validator("scenario-bundle-v4.json"),
         &bundle,
     );
     bundle["definitions"]["triage"]["steps"][0]["operation"]["target"] = json!({"repo":f.repo,"state":f.state,"task_id":"triage-one","plan_id":planned["plan_id"],"revision_id":planned["revision_id"],"max_tokens":150000});
@@ -632,10 +632,10 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     let policy = f.root.path().join("policy.json");
     write(
         &policy,
-        &json!({"schema":"af/scenario-policy@3","adapters":{},"task_plans":[planned["plan_id"]],"task_templates":[],"decision_keys":{},"file_roots":[]}),
+        &json!({"schema":"af/scenario-policy@4","adapters":{},"task_plans":[planned["plan_id"]],"task_templates":[],"decision_keys":{},"file_roots":[]}),
     );
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-policy-v3.json"),
+        &crate::schemas::validator("scenario-policy-v4.json"),
         &serde_json::from_slice(&std::fs::read(&policy).unwrap()).unwrap(),
     );
     std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();

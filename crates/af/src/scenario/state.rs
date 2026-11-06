@@ -195,7 +195,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@3".into(),
+            schema: "af/scenario-run@4".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -237,7 +237,7 @@ impl Run {
     }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@3" && review_core::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@4" && review_core::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;
@@ -638,6 +638,9 @@ impl Run {
                             "Action receipt has stale object identity",
                         )?;
                     }
+                    if grant.operation == Operation::PrepareCandidateV1 {
+                        super::workspace::validate_preparation(receipt, &inputs)?;
+                    }
                     Ok(())
                 }
             }
@@ -648,6 +651,17 @@ impl Run {
         let value = match binding {
             Binding::Project { value, projection } => {
                 return projection.apply(self.resolve(path, value)?);
+            }
+            Binding::Select {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                // Only the selected arm is resolved: a skipped step has no receipt to read.
+                let Datum::Boolean(choice) = self.resolve(path, condition)? else {
+                    return Err("Selection requires a boolean condition".into());
+                };
+                return self.resolve(path, if choice { when_true } else { when_false });
             }
             Binding::Equals { left, right } => {
                 return Ok(Datum::Boolean(

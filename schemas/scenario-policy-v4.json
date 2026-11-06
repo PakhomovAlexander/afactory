@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-policy:4",
+  "title": "scenario-policy v4",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "adapters",
+    "task_plans",
+    "decision_keys",
+    "file_roots",
+    "task_templates"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-policy@4"
+    },
+    "adapters": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/Adapter"
+      },
+      "maxProperties": 32
+    },
+    "task_plans": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/digest"
+      },
+      "uniqueItems": true,
+      "maxItems": 256
+    },
+    "decision_keys": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/text"
+      },
+      "maxProperties": 32
+    },
+    "file_roots": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/path"
+      },
+      "uniqueItems": true,
+      "maxItems": 32
+    },
+    "task_templates": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 256,
+      "items": {
+        "$ref": "urn:af:schema:scenario:4#/$defs/digest"
+      }
+    }
+  }
+}

@@ -224,6 +224,11 @@ pub(super) enum Binding {
         value: Box<Binding>,
         projection: Projection,
     },
+    Select {
+        condition: Box<Binding>,
+        when_true: Box<Binding>,
+        when_false: Box<Binding>,
+    },
     Equals {
         left: Box<Binding>,
         right: Box<Binding>,
@@ -233,6 +238,10 @@ pub(super) enum Binding {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Projection {
     ActionIntent,
+    WorkspaceSubject,
+    WorkspaceRevision,
+    WorkspacePublication,
+    WorkspaceReceipt,
     TaskConclusion,
     TaskResultId,
     TaskOutputId { port: String },
@@ -243,7 +252,11 @@ pub(super) enum Projection {
 impl Projection {
     fn types(&self) -> Result<(Port, Port)> {
         Ok(match self {
-            Self::ActionIntent => (Port::Action, Port::Text),
+            Self::ActionIntent
+            | Self::WorkspaceSubject
+            | Self::WorkspaceRevision
+            | Self::WorkspacePublication
+            | Self::WorkspaceReceipt => (Port::Action, Port::Text),
             Self::TaskConclusion | Self::TaskResultId => (Port::Task, Port::Text),
             Self::TaskOutputId { port } | Self::TaskOutputSnapshot { port } => {
                 name(port)?;
@@ -255,6 +268,20 @@ impl Projection {
     }
     pub fn apply(&self, value: Datum) -> Result<Datum> {
         Ok(match (self, value) {
+            (Self::WorkspaceSubject, Datum::Action(a)) => {
+                Datum::Text(super::workspace::Prepared::parse(&a)?.subject()?)
+            }
+            (Self::WorkspaceRevision, Datum::Action(a)) => {
+                Datum::Text(super::workspace::Prepared::parse(&a)?.commit)
+            }
+            (Self::WorkspacePublication, Datum::Action(a)) => Datum::Text(
+                serde_json::to_string(&super::workspace::Prepared::parse(&a)?.publication())
+                    .map_err(|e| e.to_string())?,
+            ),
+            (Self::WorkspaceReceipt, Datum::Action(a)) => {
+                super::workspace::Prepared::parse(&a)?;
+                Datum::Text(a.evidence)
+            }
             (Self::ActionIntent, Datum::Action(a)) => Datum::Text(a.intent_id),
             (Self::TaskConclusion, Datum::Task(t)) => Datum::Text(t.result.domain_conclusion),
             (Self::TaskResultId, Datum::Task(t)) => Datum::Text(t.result_id),
@@ -304,6 +331,22 @@ impl Binding {
                     "Projection input port type mismatch",
                 )?;
                 Ok(output)
+            }
+            Self::Select {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                require(
+                    condition.port(inputs, previous)? == Port::Boolean,
+                    "Selection requires a boolean condition",
+                )?;
+                let port = when_true.port(inputs, previous)?;
+                require(
+                    port == when_false.port(inputs, previous)? && port != Port::Decision,
+                    "Selection requires equal non-Decision branch types",
+                )?;
+                Ok(port)
             }
             Self::Equals { left, right } => {
                 let p = left.port(inputs, previous)?;
@@ -363,6 +406,8 @@ pub(super) enum Operation {
     Followup,
     Notify,
     ExperimentSubmitV1,
+    PrepareCandidateV1,
+    CleanupWorkspaceV1,
     WriteOwnedFile,
     CleanupOwnedFile,
     Observe,
@@ -514,7 +559,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@3"
+            self.schema == "af/scenario-bundle@4"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -658,7 +703,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle) -> Result<()> {
         require(
-            self.schema == "af/scenario@3"
+            self.schema == "af/scenario@4"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -826,6 +871,27 @@ impl Scenario {
                         "Publication requires an exact human decision",
                     )?;
                     match grant.operation {
+                        Operation::PrepareCandidateV1 => {
+                            expected.insert("subject".into(), Port::Text);
+                            expected.insert("revision".into(), Port::Text);
+                            expected.insert("body".into(), Port::Text);
+                            expected.insert("candidate".into(), Port::Task);
+                            if step.inputs.contains_key("previous") {
+                                expected.insert("previous".into(), Port::Action);
+                            }
+                            output = Port::Action;
+                        }
+                        Operation::CleanupWorkspaceV1 => {
+                            require(
+                                required_condition.as_deref() == Some("merged"),
+                                "Workspace cleanup requires exact merge evidence",
+                            )?;
+                            expected.insert("subject".into(), Port::Text);
+                            expected.insert("revision".into(), Port::Text);
+                            expected.insert("body".into(), Port::Text);
+                            expected.insert("prepared".into(), Port::Action);
+                            output = Port::Action;
+                        }
                         Operation::ExperimentSubmitV1 => {
                             expected.insert("subject".into(), Port::Text);
                             expected.insert("revision".into(), Port::Text);
@@ -916,7 +982,7 @@ pub(super) struct Policy {
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@3"
+            self.schema == "af/scenario-policy@4"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1035,7 +1101,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@3".into(),
+            schema: "af/scenario-pin@4".into(),
             bundle,
             policy,
             revision,
