@@ -769,6 +769,30 @@ impl<'a> CapturedTaskHost<'a> {
                         }
                     }
                 }
+                if artifact.artifact_type == review_core::task::verification::TASK_EVALUATION_V1
+                    && worker.signature.contract.inputs.values().any(|port| {
+                        port.artifact_type
+                            == review_core::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1
+                    })
+                {
+                    let contexts = artifact
+                        .input_artifacts
+                        .iter()
+                        .filter_map(|id| {
+                            envelope(cas, id)
+                                .ok()
+                                .filter(|e| e.artifact_type == review_runner::task::TASK_CONTEXT_V1)
+                                .map(|_| id)
+                        })
+                        .collect::<Vec<_>>();
+                    let [context_id] = contexts.as_slice() else {
+                        return Err("Evaluation lost its exact Worker context".into());
+                    };
+                    let (context, _) = worker.contract.read_context(cas, context_id)?;
+                    if context.invocation != *input {
+                        return Err("Evaluation retained another invocation's context".into());
+                    }
+                }
                 if artifact.artifact_type == review_core::task::knowledge::QUERY_TYPE {
                     let refs = super::knowledge::query_references(cas, input, &artifact.payload)?;
                     if !refs.iter().all(|id| artifact.input_artifacts.contains(id)) {
@@ -1235,6 +1259,16 @@ impl<'a> CapturedTaskHost<'a> {
                 review_core::task::project_brief::refuse_worker_authored(
                     &declaration.artifact_type,
                 )?;
+                // Preserve exact port provenance for terminal executable-evidence checks.
+                // The prepared context is kernel-recorded and already admitted for this Attempt.
+                if declaration.artifact_type == review_core::task::verification::TASK_EVALUATION_V1
+                    && worker.signature.contract.inputs.values().any(|port| {
+                        port.artifact_type
+                            == review_core::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1
+                    })
+                {
+                    retained.insert(attempt.context_id().into());
+                }
                 let mut ids = Vec::new();
                 for value in values {
                     if declaration.artifact_type == review_core::task::knowledge::QUERY_TYPE {

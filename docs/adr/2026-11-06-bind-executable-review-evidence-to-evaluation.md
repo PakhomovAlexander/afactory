@@ -29,12 +29,17 @@ output, and retains its source and checks. The flat Reviewer Result is unchanged
 admission validates evidence independently and refuses stale payload/envelope identities. Existing
 source immutability enforcement still discards scratch and rejects declared-source changes.
 
-An opting-in evaluator declares one required `testing` input of that evidence type with
-`same_as source` affinity, and retains it in its evaluation output. The compiler refuses missing,
+An opting-in evaluator declares required evidence inputs (including `testing`) of that evidence
+type with `same_as source` affinity, and retains each in its evaluation output. The compiler refuses missing,
 optional, unbound or unretained evidence contracts. Native evaluation admission checks the exact
 input artifact, envelope and payload against the evaluator source. A pass requires passed evidence;
 missing, failed, unavailable or stale evidence cannot support it. Final implementation acceptance
-rechecks retained testing evidence. Ordinary pipelines declaring neither contract retain their
+rechecks each exact testing input from the evaluator's admitted Worker context. The host retains
+that existing context artifact beside the declared receipts in opted-in evaluation envelopes and
+checks its invocation at output admission. Terminal validation checks its plan, node and source
+Snapshot, then uses its port bindings rather than pooling artifacts by type. Missing, ambiguous
+or foreign context fails closed; two distinct evidence inputs remain distinct. Ordinary pipelines
+declaring neither contract retain their
 current behavior. No persisted existing shape changes and no compatibility readers are added.
 
 Packages choose reviewer/evaluator slots, independence, instructions, model and Provider bindings

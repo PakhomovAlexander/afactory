@@ -108,6 +108,10 @@ impl WorkerModelAdapter for Uix {
                 request["inputs"]["source"][0]["snapshot_id"]
             );
             assert_eq!(testing["payload"]["snapshot_id"], testing["snapshot_id"]);
+            assert_ne!(
+                testing["artifact_id"],
+                request["inputs"]["secondary"][0]["artifact_id"]
+            );
             let reply = serde_json::to_vec(&json!({"schema":"af.worker-reply/1",
                 "outputs":{"result":[{"outcome":"passed","reason":"Judged exact retained test evidence"}]}})).unwrap();
             return ModelWorkerReturn {
@@ -189,6 +193,12 @@ impl WorkerModelAdapter for Uix {
                 "commands":commands
             }]);
         }
+        if let Some(testing) = reply["outputs"].get("testing").cloned() {
+            let mut secondary = testing;
+            secondary[0]["reason"] =
+                json!("Second distinct execution receipt for the same candidate");
+            reply["outputs"]["secondary"] = secondary;
+        }
         let reply = serde_json::to_vec(&reply).unwrap();
         ModelWorkerReturn {
             notes: Default::default(),
@@ -204,6 +214,7 @@ impl WorkerModelAdapter for Uix {
 struct Outcome {
     result: TaskResultV1,
     review: TaskReviewRoundV1,
+    verification: Option<VerificationResultV1>,
     /// Every failed Attempt's recorded diagnostic, in log order.
     diagnostics: Vec<String>,
     calls: usize,
@@ -358,6 +369,14 @@ fn run(case: &'static str) -> Outcome {
             "testing".into(),
             port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()),
         );
+        signature.contract.outputs.insert(
+            "secondary".into(),
+            port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()),
+        );
+        signature.retains.insert(
+            "secondary".into(),
+            BTreeSet::from(["source".into(), "checks".into()]),
+        );
         signature.retains.insert(
             "testing".into(),
             BTreeSet::from(["source".into(), "checks".into()]),
@@ -473,6 +492,10 @@ fn run(case: &'static str) -> Outcome {
         port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()),
     );
     evaluator.contract.inputs.insert(
+        "secondary".into(),
+        port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()),
+    );
+    evaluator.contract.inputs.insert(
         "requirements".into(),
         port("af/Requirements@1", PortAffinityV1::Unbound {}),
     );
@@ -480,17 +503,61 @@ fn run(case: &'static str) -> Outcome {
         BTreeMap::from([("result".into(), port(TASK_EVALUATION_V1, same()))]);
     evaluator.retains = BTreeMap::from([(
         "result".into(),
-        BTreeSet::from(["testing".into(), "checks".into(), "requirements".into()]),
+        BTreeSet::from([
+            "testing".into(),
+            "secondary".into(),
+            "checks".into(),
+            "requirements".into(),
+        ]),
     )]);
     evaluator.outcome_port = Some("result".into());
     if executable {
+        pipeline.accepts.kinds = BTreeSet::from(["implement".into()]);
+        let mut reviewed = port(REVIEWED_IMPLEMENTATION_V1, same());
+        reviewed.covers.insert("reviewed".into());
         pipeline
             .contract
             .outputs
-            .insert("evaluation".into(), port(VERIFICATION_RESULT_V1, same()));
+            .insert("reviewed".into(), reviewed);
         pipeline
             .outputs
-            .insert("evaluation".into(), from("accept", "result"));
+            .insert("reviewed".into(), from("review_accept", "result"));
+        pipeline.nodes.push(node(
+            "review_accept",
+            TaskOperatorV1::ReviewAccept {},
+            BTreeMap::from([
+                ("source".into(), root("source")),
+                ("checks".into(), from("check", "result")),
+                ("review".into(), from("reduce", "result")),
+            ]),
+        ));
+        pipeline
+            .contract
+            .outputs
+            .get_mut("review")
+            .unwrap()
+            .covers
+            .clear();
+        pipeline.coverage = BTreeMap::from([
+            ("verified".into(), from("accept", "result")),
+            ("reviewed".into(), from("review_accept", "result")),
+        ]);
+        let mut verification = port(VERIFICATION_RESULT_V1, same());
+        verification.covers.insert("verified".into());
+        pipeline
+            .contract
+            .outputs
+            .insert("verification".into(), verification);
+        pipeline
+            .outputs
+            .insert("verification".into(), from("accept", "result"));
+        pipeline
+            .contract
+            .outputs
+            .insert("snapshot".into(), port(SOURCE_TREE_V1, same()));
+        pipeline
+            .outputs
+            .insert("snapshot".into(), from("accept", "snapshot"));
         pipeline
             .nodes
             .iter_mut()
@@ -519,6 +586,7 @@ fn run(case: &'static str) -> Outcome {
                 ("checks".into(), from("check", "result")),
                 ("requirements".into(), root("requirements")),
                 ("testing".into(), from("uix", "testing")),
+                ("secondary".into(), from("uix", "secondary")),
             ]),
         );
         evaluate.when = Some(NodeConditionV1 {
@@ -536,6 +604,99 @@ fn run(case: &'static str) -> Outcome {
             ]),
         ));
     }
+    // Keep Review's authoritative public coverage at a child boundary, as native
+    // implementation acceptance requires. Export each evidence edge explicitly.
+    let review_child = if executable {
+        let mut child = pipeline.clone();
+        child.name = "fixture/executable-review".into();
+        child.accepts.kinds = BTreeSet::from(["review".into()]);
+        child
+            .nodes
+            .retain(|n| ["bind", "check", "uix", "reduce"].contains(&n.id.as_str()));
+        child.slots.retain(|name, _| name == "uix");
+        child.nodes.retain(|n| n.id != "check");
+        child
+            .contract
+            .inputs
+            .insert("checks".into(), port(TASK_CHECK_RECEIPT_V2, same()));
+        for n in &mut child.nodes {
+            if n.inputs.contains_key("checks") {
+                n.inputs.insert("checks".into(), root("checks"));
+            }
+        }
+        // The check receipt is a required dependency; native context admission refuses
+        // reviewer dispatch unless it passed. Export required evidence on every graph path.
+        child.nodes.iter_mut().find(|n| n.id == "uix").unwrap().when = None;
+        child
+            .contract
+            .outputs
+            .retain(|name, _| ["review", "history"].contains(&name.as_str()));
+        child
+            .outputs
+            .retain(|name, _| ["review", "history"].contains(&name.as_str()));
+        child
+            .contract
+            .outputs
+            .get_mut("review")
+            .unwrap()
+            .covers
+            .insert("reviewed".into());
+        child.coverage = BTreeMap::from([("reviewed".into(), from("reduce", "result"))]);
+        for name in ["testing", "secondary"] {
+            child
+                .contract
+                .outputs
+                .insert(name.into(), port(IMPLEMENTATION_TEST_EVIDENCE_V1, same()));
+            child.outputs.insert(name.into(), from("uix", name));
+        }
+        child.max_attempts = 1;
+        pipeline.name = "fixture/implementation".into();
+        pipeline
+            .nodes
+            .retain(|n| !["bind", "uix", "reduce"].contains(&n.id.as_str()));
+        pipeline.slots.retain(|name, _| name != "uix");
+        pipeline.nodes.push(node(
+            "review_child",
+            TaskOperatorV1::Call {
+                pipeline: child.name.clone(),
+                bindings: BTreeMap::new(),
+            },
+            BTreeMap::from([
+                ("source".into(), root("source")),
+                ("history".into(), root("history")),
+                ("requirements".into(), root("requirements")),
+                ("checks".into(), from("check", "result")),
+            ]),
+        ));
+        pipeline
+            .outputs
+            .insert("snapshot".into(), from("review_accept", "snapshot"));
+        for name in ["review", "history"] {
+            pipeline
+                .outputs
+                .insert(name.into(), from("review_child", name));
+        }
+        pipeline
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == "review_accept")
+            .unwrap()
+            .inputs
+            .insert("review".into(), from("review_child", "review"));
+        let evaluate = pipeline
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == "evaluate")
+            .unwrap();
+        for name in ["testing", "secondary"] {
+            evaluate
+                .inputs
+                .insert(name.into(), from("review_child", name));
+        }
+        Some(child)
+    } else {
+        None
+    };
     let worker = TaskWorkerManifest {
         schema: "af.worker/1".into(),
         name: "fixture/uix".into(),
@@ -581,6 +742,15 @@ fn run(case: &'static str) -> Outcome {
             ]),
         ),
     ];
+    if let Some(child) = review_child {
+        packages.push((
+            child.name.clone(),
+            BTreeMap::from([(
+                "pipeline.toml".into(),
+                toml::to_string(&child).unwrap().into_bytes(),
+            )]),
+        ));
+    }
     if executable {
         packages[1].1.insert(
             "outputs/testing.schema.json".into(),
@@ -588,6 +758,10 @@ fn run(case: &'static str) -> Outcome {
                 "../../../../schemas/implementation-test-evidence-v1.json"
             )),
         );
+        let secondary_schema = packages[1].1["outputs/testing.schema.json"].clone();
+        packages[1]
+            .1
+            .insert("outputs/secondary.schema.json".into(), secondary_schema);
         let mut judge = worker.clone();
         judge.name = "fixture/evaluator".into();
         judge.signature = evaluator;
@@ -598,12 +772,19 @@ fn run(case: &'static str) -> Outcome {
                     "worker.toml".into(),
                     toml::to_string(&judge).unwrap().into_bytes(),
                 ),
-                (
-                    "input.schema.json".into(),
-                    local_schema(include_bytes!(
-                        "../../../../schemas/implementation-evaluation-input-v1.json"
-                    )),
-                ),
+                ("input.schema.json".into(), {
+                    let mut schema: serde_json::Value =
+                        serde_json::from_slice(&local_schema(include_bytes!(
+                            "../../../../schemas/implementation-evaluation-input-v1.json"
+                        )))
+                        .unwrap();
+                    schema["properties"]["secondary"] = schema["properties"]["testing"].clone();
+                    schema["required"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!("secondary"));
+                    serde_json::to_vec(&schema).unwrap()
+                }),
                 (
                     "outputs/result.schema.json".into(),
                     br#"{"type":"object","required":["outcome","reason"]}"#.to_vec(),
@@ -645,13 +826,31 @@ fn run(case: &'static str) -> Outcome {
         "limits":{"tokens":200000,"max_attempts":3,"deadline_unix_ms":deadline,"verification":{"tokens":100000,"attempts":3,"wall_ms":15000}},
         "strategy":"light","pipeline":{"name":pipeline.name,"fallback":"refuse"},"facts":{}})).unwrap();
     if executable {
-        task.required_outputs.insert(
-            "evaluation".into(),
-            serde_json::from_value(
-                json!({"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}),
-            )
+        task.kind = "implement".into();
+        task.goal = "Evaluate implementation against exact executable evidence".into();
+        task.acceptance = serde_json::from_value(
+            json!({"verified":{"evidence_type":VERIFICATION_RESULT_V1,"verifier_policy":code_id}}),
+        )
+        .unwrap();
+        task.acceptance.insert(
+            "reviewed".into(),
+            serde_json::from_value(json!({
+                "evidence_type":REVIEWED_IMPLEMENTATION_V1,"verifier_policy":policy_id
+            }))
             .unwrap(),
         );
+        task.required_outputs.insert(
+            "reviewed".into(),
+            serde_json::from_value(json!({
+                "artifact_type":REVIEWED_IMPLEMENTATION_V1,"cardinality":"one"
+            }))
+            .unwrap(),
+        );
+        for name in ["snapshot", "verification"] {
+            task.required_outputs.insert(name.into(), serde_json::from_value(json!({
+                "artifact_type":if name == "snapshot" {SOURCE_TREE_V1} else {VERIFICATION_RESULT_V1}, "cardinality":"one"
+            })).unwrap());
+        }
         task.limits.max_attempts = 4;
         task.limits.verification.attempts = 4;
         task.limits.verification.tokens = 200000;
@@ -682,7 +881,14 @@ fn run(case: &'static str) -> Outcome {
         policy_id.clone(),
         policy_id.clone(),
         signatures,
-        BTreeMap::from([("reviewed".into(), "review".into())]),
+        if executable {
+            BTreeMap::from([
+                ("verified".into(), "snapshot".into()),
+                ("reviewed".into(), "snapshot".into()),
+            ])
+        } else {
+            BTreeMap::from([("reviewed".into(), "review".into())])
+        },
         IndependencePolicyV1::default(),
     )
     .unwrap();
@@ -755,7 +961,9 @@ fn run(case: &'static str) -> Outcome {
         )
         .unwrap()
         .0;
-    let domain = ReviewTaskDomain::captured(&cas, &policy_id, graph.clone()).unwrap();
+    let domain = ReviewTaskDomain::captured(&cas, &policy_id, graph.clone())
+        .unwrap()
+        .with_review_task(!executable);
     let environment = SnapshotTaskEnvironment {
         policy: code.isolation(),
     };
@@ -781,7 +989,7 @@ fn run(case: &'static str) -> Outcome {
         &compiler,
         &task,
         &plan,
-        graph,
+        graph.clone(),
         &environment,
         &domain,
         &models,
@@ -800,6 +1008,22 @@ fn run(case: &'static str) -> Outcome {
     let state = runtime.projection().unwrap();
     let result = domain.result(&cas, &state, &report).unwrap();
     domain.validate_result(&cas, &task, &result).unwrap();
+    if case == "evidence_passed" {
+        assert_eq!(
+            result.acceptance,
+            TaskAcceptanceV1::Satisfied,
+            "{result:?} {report:?}"
+        );
+        let code_domain =
+            review_pipeline::task::code::CodeTaskDomain::captured(&cas, &code_id, graph).unwrap();
+        let mut goal_task = task.clone();
+        goal_task.acceptance.retain(|name, _| name == "verified");
+        let mut goal_result = result.clone();
+        goal_result
+            .evidence
+            .retain(|id| cas.get_artifact(id).unwrap().artifact_type == VERIFICATION_RESULT_V1);
+        terminal_evidence_regressions(&cas, &code_domain, &goal_task, &goal_result);
+    }
     let review: TaskReviewRoundV1 = serde_json::from_value(
         cas.get_json(&result.outputs["review"].artifact_ids[0])
             .unwrap()["payload"]
@@ -833,11 +1057,150 @@ fn run(case: &'static str) -> Outcome {
             diagnostics.push(diagnostic["error"].as_str().unwrap().to_owned());
         }
     }
+    let verification = result.outputs.get("verification").map(|port| {
+        serde_json::from_value(cas.get_json(&port.artifact_ids[0]).unwrap()["payload"].clone())
+            .unwrap()
+    });
     Outcome {
         result,
         review,
+        verification,
         diagnostics,
         calls: model.calls.load(Ordering::SeqCst),
+    }
+}
+
+/// Rebuild content-addressed descendants to challenge terminal validation itself, after a
+/// valid implementation has already passed admission. Keep the first evidence input valid.
+fn terminal_evidence_regressions(
+    cas: &Cas,
+    domain: &review_pipeline::task::code::CodeTaskDomain,
+    task: &TaskRevisionV1,
+    result: &TaskResultV1,
+) {
+    fn read(cas: &Cas, id: &str) -> review_core::ArtifactEnvelope {
+        serde_json::from_value(cas.get_json(id).unwrap()).unwrap()
+    }
+    fn write(cas: &Cas, artifact: review_core::ArtifactEnvelope) -> String {
+        cas.put_artifact(
+            &artifact.artifact_type,
+            artifact.producer,
+            artifact.input_artifacts,
+            artifact.subject_snapshot_id,
+            artifact.payload,
+        )
+        .unwrap()
+        .0
+    }
+    domain.validate_result(cas, task, result).unwrap();
+    let verification_id = &result.outputs["verification"].artifact_ids[0];
+    let verification = read(cas, verification_id);
+    let evaluation_id = verification.payload["evaluation_id"].as_str().unwrap();
+    let evaluation = read(cas, evaluation_id);
+    let context_id = evaluation
+        .input_artifacts
+        .iter()
+        .find(|id| read(cas, id).artifact_type == review_runner::task::TASK_CONTEXT_V1)
+        .unwrap();
+    let context = read(cas, context_id);
+    let invocation: review_core::task::execution::TaskInvocationV1 =
+        serde_json::from_value(context.payload["invocation"].clone()).unwrap();
+    let primary = &invocation.inputs["testing"].artifact_ids[0];
+    let secondary = &invocation.inputs["secondary"].artifact_ids[0];
+    assert_ne!(primary, secondary);
+    assert!(evaluation.input_artifacts.contains(primary));
+    assert!(evaluation.input_artifacts.contains(secondary));
+    for (case, expected) in [
+        ("failed", "Acceptance cannot pass"),
+        ("unavailable", "Acceptance cannot pass"),
+        ("stale_payload", "Acceptance cannot pass"),
+        ("stale_envelope", "stale type or Snapshot"),
+        ("wrong_type", "stale type or Snapshot"),
+        ("wrong_cardinality", "stale type or Snapshot"),
+        (
+            "missing_port",
+            "Missing required executable-review evidence",
+        ),
+        ("many", "Task input requires an exact artifact ID"),
+        ("lost_retained", "lost its exact testing input"),
+        ("missing_context", "one exact recorded Worker context"),
+        ("foreign_context", "another invocation"),
+    ] {
+        let mut context = context.clone();
+        let mut evaluation = evaluation.clone();
+        let mut invocation = invocation.clone();
+        if matches!(
+            case,
+            "failed" | "unavailable" | "stale_payload" | "stale_envelope" | "wrong_type"
+        ) {
+            let mut evidence = read(cas, secondary);
+            match case {
+                "failed" => {
+                    evidence.payload["status"] = json!("failed");
+                    evidence.payload["commands"][2]["exit_code"] = json!(1);
+                }
+                "unavailable" => {
+                    evidence.payload["status"] = json!("unavailable");
+                    evidence.payload["commands"] = json!([]);
+                }
+                "stale_payload" => {
+                    evidence.payload["snapshot_id"] = json!(format!("sha256:{}", "f".repeat(64)))
+                }
+                "stale_envelope" => {
+                    evidence.subject_snapshot_id = Some(format!("sha256:{}", "f".repeat(64)))
+                }
+                "wrong_type" => evidence.artifact_type = "af/Requirements@1".into(),
+                _ => unreachable!(),
+            }
+            let changed = write(cas, evidence);
+            invocation.inputs.get_mut("secondary").unwrap().artifact_ids = vec![changed.clone()];
+            evaluation.input_artifacts.retain(|id| id != secondary);
+            evaluation.input_artifacts.push(changed);
+        }
+        match case {
+            "missing_port" => {
+                invocation.inputs.remove("secondary");
+            }
+            "many" => invocation
+                .inputs
+                .get_mut("secondary")
+                .unwrap()
+                .artifact_ids
+                .push(primary.clone()),
+            "lost_retained" => evaluation.input_artifacts.retain(|id| id != secondary),
+            "wrong_cardinality" => {
+                invocation.inputs.get_mut("secondary").unwrap().cardinality = PortCardinality::Many
+            }
+            "foreign_context" => invocation.node = "foreign".into(),
+            _ => {}
+        }
+        context.payload["invocation"] = serde_json::to_value(invocation).unwrap();
+        let changed_context = write(cas, context);
+        evaluation.input_artifacts.retain(|id| id != context_id);
+        if case != "missing_context" {
+            evaluation.input_artifacts.push(changed_context);
+        }
+        let changed_evaluation = write(cas, evaluation);
+        let mut verification = verification.clone();
+        verification.payload["evaluation_id"] = json!(changed_evaluation);
+        verification
+            .input_artifacts
+            .retain(|id| id != evaluation_id);
+        verification.input_artifacts.push(changed_evaluation);
+        let changed_verification = write(cas, verification);
+        let mut challenged = result.clone();
+        for output in challenged.outputs.values_mut() {
+            for id in &mut output.artifact_ids {
+                if id == verification_id {
+                    *id = changed_verification.clone();
+                }
+            }
+        }
+        if challenged.evidence.remove(verification_id) {
+            challenged.evidence.insert(changed_verification);
+        }
+        let error = domain.validate_result(cas, task, &challenged).unwrap_err();
+        assert!(error.contains(expected), "{case}: {error}");
     }
 }
 
@@ -948,8 +1311,7 @@ fn a_source_edit_by_an_execute_checks_reviewer_fails_its_attempt_naming_the_path
 }
 
 #[test]
-fn executable_review_evidence_reaches_the_native_evaluator_and_refuses_negative_or_missing_results()
-{
+fn executable_review_evidence_drives_implementation_acceptance_and_terminal_revalidation() {
     for case in [
         "evidence_passed",
         "evidence_failed",
@@ -962,10 +1324,22 @@ fn executable_review_evidence_reaches_the_native_evaluator_and_refuses_negative_
         if case == "evidence_passed" {
             assert_eq!(outcome.calls, 2);
             assert_eq!(outcome.result.acceptance, TaskAcceptanceV1::Satisfied);
-            assert!(outcome.result.outputs.contains_key("evaluation"));
+            assert!(outcome.result.outputs.contains_key("verification"));
+            assert_eq!(
+                outcome.verification.as_ref().unwrap().outcome,
+                ReceiptOutcomeV1::Passed
+            );
+            assert!(outcome.result.missing_obligations.is_empty());
             assert!(outcome.diagnostics.is_empty(), "{:?}", outcome.diagnostics);
         } else {
             assert!(!outcome.diagnostics.is_empty(), "{case}");
+            assert!(
+                outcome.result.missing_obligations.contains("verified"),
+                "{case}"
+            );
+            if let Some(verification) = &outcome.verification {
+                assert_ne!(verification.outcome, ReceiptOutcomeV1::Passed, "{case}");
+            }
             assert_ne!(
                 outcome.result.acceptance,
                 TaskAcceptanceV1::Satisfied,

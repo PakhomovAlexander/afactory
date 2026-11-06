@@ -1241,7 +1241,8 @@ impl CodeTaskDomain {
                 .and_then(|p| p.snapshot_id.as_deref())
                 .ok_or("Evaluation has no source Snapshot")?;
             let recorded = envelope(cas, id)?;
-            if testing.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1
+            if testing.cardinality != PortCardinality::One
+                || testing.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1
                 || recorded.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1
                 || testing.snapshot_id.as_deref() != Some(source)
                 || recorded.subject_snapshot_id.as_deref() != Some(source)
@@ -2715,39 +2716,62 @@ AF_TOOLCHAIN_SNAPSHOT ",
             };
             if evaluator {
                 let definition = self.graph.nodes.get(upstream).ok_or("Unknown evaluator")?;
-                let mut evaluation_inputs = BTreeMap::from([("source".into(), source.clone())]);
-                for (name, declaration) in &definition.contract.inputs {
-                    if declaration.artifact_type != IMPLEMENTATION_TEST_EVIDENCE_V1 {
-                        continue;
+                if definition
+                    .contract
+                    .inputs
+                    .values()
+                    .any(|port| port.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1)
+                {
+                    let contexts = evidence
+                        .input_artifacts
+                        .iter()
+                        .map(|id| envelope(cas, id))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .filter(|artifact| {
+                            artifact.artifact_type == review_runner::task::TASK_CONTEXT_V1
+                        })
+                        .collect::<Vec<_>>();
+                    let [context] = contexts.as_slice() else {
+                        return Err("Evaluation lacks one exact recorded Worker context".into());
+                    };
+                    let context: review_runner::task::TaskContext =
+                        serde_json::from_value(context.payload.clone())
+                            .map_err(|e| e.to_string())?;
+                    context.validate()?;
+                    let invocation = &context.invocation;
+                    if invocation.plan_id != receipt.plan_id
+                        || invocation.node != *upstream
+                        || source_input(
+                            cas,
+                            invocation
+                                .inputs
+                                .get("source")
+                                .ok_or("Evaluation context lacks its source")?,
+                        )? != receipt.snapshot_id
+                    {
+                        return Err("Evaluation context belongs to another invocation".into());
                     }
-                    let mut ids = Vec::new();
-                    for retained in &evidence.input_artifacts {
-                        if envelope(cas, retained)?.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1
-                        {
-                            ids.push(retained.clone());
+                    for (name, declaration) in &definition.contract.inputs {
+                        if declaration.artifact_type == IMPLEMENTATION_TEST_EVIDENCE_V1 {
+                            let bound = invocation
+                                .inputs
+                                .get(name)
+                                .ok_or("Missing required executable-review evidence")?;
+                            if bound
+                                .artifact_ids
+                                .iter()
+                                .any(|id| !evidence.input_artifacts.contains(id))
+                            {
+                                return Err("Evaluation lost its exact testing input".into());
+                            }
                         }
                     }
-                    evaluation_inputs.insert(
-                        name.clone(),
-                        ArtifactInputV1 {
-                            artifact_ids: ids,
-                            artifact_type: IMPLEMENTATION_TEST_EVIDENCE_V1.into(),
-                            cardinality: PortCardinality::One,
-                            snapshot_id: Some(receipt.snapshot_id.clone()),
-                        },
-                    );
+                    let evaluation: TaskEvaluationV1 =
+                        serde_json::from_value(evidence.payload.clone())
+                            .map_err(|e| e.to_string())?;
+                    self.validate_testing(cas, invocation, evaluation.outcome)?;
                 }
-                let evaluation: TaskEvaluationV1 =
-                    serde_json::from_value(evidence.payload.clone()).map_err(|e| e.to_string())?;
-                self.validate_testing(
-                    cas,
-                    &TaskInvocationV1 {
-                        plan_id: receipt.plan_id.clone(),
-                        node: upstream.clone(),
-                        inputs: evaluation_inputs,
-                    },
-                    evaluation.outcome,
-                )?;
             }
             let operator = self.graph.nodes.get(upstream).map(|n| &n.operator);
             if if evaluator {
