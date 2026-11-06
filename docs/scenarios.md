@@ -177,6 +177,9 @@ workspace. Whole-workspace removal is outside the built-in cleanup scope. The op
 [Git workspace capability](scenario-git-workspace.md) supplies independently owned worktree/build
 preparation and merge-gated cleanup through installed Actions.
 
+The offline [`impl` recipe](scenario-impl.md) generates configurable consuming packages and
+a finite implementation-to-human-merge Scenario using these ordinary capabilities.
+
 ## Manual bugfix workflow merge watcher
 
 For a manually published bugfix/easy PR, the supported local

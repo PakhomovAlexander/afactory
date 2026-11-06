@@ -23,7 +23,7 @@ elif operation == "prepare_candidate_v1":
         snapshot_id=candidate["result"]["outputs"]["snapshot"]["snapshot_id"], source_snapshot="sha256:" + "d" * 64,
         source_predecessor=previous["snapshot_id"] if previous else None,
         source_commit=previous["commit"] if previous else "a" * 40, branch="owned/documentation", base="main",
-        commit=("c" if previous else "b") * 40, tree="d" * 40, worktree=str(root / candidate["task_id"]),
+        commit=(chr(ord(previous["commit"][0]) + 1) if previous else "b") * 40, tree="d" * 40, worktree=str(root / candidate["task_id"]),
         title="Documentation", body="Exact accepted candidate")
     response["evidence"] = json.dumps(prepared, sort_keys=True, separators=(",", ":"))
 elif operation == "publish_pr":
@@ -36,14 +36,33 @@ elif operation == "publish_pr":
 elif operation == "observe":
     assert state["publications"][-1] == dict(subject=inputs["subject"], revision=inputs["revision"])
     mode = (root / "mode").read_text()
-    outcome = "ready" if inputs["revision"] == "c" * 40 else mode
+    if mode.startswith("repairs-"):
+        count = int(mode.split("-")[1])
+        outcome = "repairable" if len(state["publications"]) <= count else "ready"
+    else:
+        outcome = "ready" if inputs["revision"] == "c" * 40 else mode
     outcome = "repairable" if mode == "stale" else outcome
     packet = dict(schema="af/github-check-outcome@1", subject=inputs["subject"], revision=inputs["revision"],
         state=outcome, checks=[dict(identity=dict(kind="check", name="CI", app_id=4), id=50, suite_id=40, outcome=outcome)])
     if mode == "stale":
         packet["revision"] = "a" * 40
-    response["observation"] = dict(subject=inputs["subject"], revision=inputs["revision"], condition="checks_completed",
-        satisfied=outcome != "pending", evidence=json.dumps(packet, sort_keys=True, separators=(",", ":")))
+    condition = inputs.get("condition", "checks_completed")
+    satisfied = outcome != "pending"
+    evidence = json.dumps(packet, sort_keys=True, separators=(",", ":"))
+    if condition == "checks_passed":
+        satisfied = outcome == "ready"
+    if condition == "merged":
+        satisfied = (root / "human-state").read_text() == "merged"
+        evidence = "Exact inert PR head merged by human" if satisfied else "Not actually merged"
+    response["observation"] = dict(subject=inputs["subject"], revision=inputs["revision"], condition=condition,
+        satisfied=satisfied, evidence=evidence)
+elif operation == "cleanup_workspace_v1":
+    assert (root / "human-state").read_text() == "merged"
+    assert inputs["evidence"]["condition"] == "merged"
+    assert inputs["evidence"]["satisfied"] is True
+    assert json.loads(inputs["body"]) == json.loads(inputs["prepared"]["evidence"])
+    state["cleaned"] = inputs["revision"]
+    state_path.write_text(json.dumps(state))
 else:
     raise AssertionError(operation)
 json.dump(response, sys.stdout)
