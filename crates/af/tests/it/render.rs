@@ -466,7 +466,7 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
     assert!(planned.status.success(), "{}", stderr(&planned));
     let text = String::from_utf8_lossy(&planned.stdout);
     for node in ["correctness", "architecture"] {
-        let line = format!("model {node} gpt-6-sol high  unverified against the catalog");
+        let line = format!("model {node} gpt-6.1-terra high  unverified against the catalog");
         assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
     }
 

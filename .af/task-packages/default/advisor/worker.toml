@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "default/advisor"
-version = "1.1.1"
+version = "1.1.2"
 
 [signature]
 effects = ["read-source"]
@@ -97,5 +97,5 @@ wall_ms = 1800000
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-6-astra"
+model = "gpt-6.1-terra"
 effort = "medium"

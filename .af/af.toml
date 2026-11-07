@@ -26,9 +26,9 @@ wall_ms = 43200000
 [task.defaults.limits.verification]
 # The reviewers, the evaluator and the repository Gate needed at least 1600000 tokens and
 # 16200000 ms in the same measurement, and five hours protects their declared upper bounds.
-# 9 Attempts is the least that plans: the planner reserves one for each judging node
-# (checks, bugs, correctness, uix, evaluator) and one for each of the four Provider
-# admissions it protects, and refuses default/implementation with 8.
+# 9 Attempts covers every judging node (checks, bugs, correctness, uix, evaluator)
+# and its protected Provider admissions. Judges sharing the same exact Terra model/effort
+# and invocation policy share an admission; this allowance is not a measured minimum.
 tokens = 2000000
 attempts = 9
 wall_ms = 18000000

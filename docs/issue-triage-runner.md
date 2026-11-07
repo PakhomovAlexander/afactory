@@ -13,8 +13,8 @@ Use the reviewed control checkout at `/opt/af-perf/control`, Python 3.9 or newer
 release, and the owner's already reviewed `backlog/triage` packages and report policy. The
 [package README](../fixtures/issue-triage/README.md) describes their installation and catalog
 check. Do not regenerate authority, widen a budget or add a remote check to make admission
-pass. `codex-main` and `claude-main` must resolve to the intended registered personal logins
-on claw-3; use the installation's reviewed bindings, never a token in a Task file.
+pass. `codex-main` must resolve to the intended registered Codex login on claw-3 for both
+triagers; use the installation's reviewed bindings, never a token in a Task file.
 
 Provision a local Git repository at `/opt/af-triage/repo` whose `refs/heads/main` is refreshed
 by the operator's trusted source-refresh process. The runner never fetches, pulls, checks out,

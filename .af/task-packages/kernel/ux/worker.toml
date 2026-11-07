@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "kernel/ux"
-version = "1.2.0"
+version = "1.2.1"
 
 [signature]
 effects = ["read-source", "execute-checks"]
@@ -97,5 +97,5 @@ wall_ms = 7200000
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-6-sol"
+model = "gpt-6.1-terra"
 effort = "high"

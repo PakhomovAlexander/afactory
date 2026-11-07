@@ -428,7 +428,7 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
         architecture_args,
         [
             "--model",
-            "gpt-6-sol",
+            "gpt-6.1-terra",
             "-c",
             "model_reasoning_effort=\"high\""
         ],
@@ -956,12 +956,9 @@ fn commit(repo: &Path) {
 }
 
 fn task_onboard(repo: &Path, registry: &Path, args: &[&str]) -> Output {
-    crate::common::af()
-        .args(["onboard", "--repo", repo.to_str().unwrap(), "--tasks"])
-        .args(args)
-        .env("AF_PROVIDERS_FILE", registry)
-        .output()
-        .unwrap()
+    let mut arguments = vec!["--tasks"];
+    arguments.extend_from_slice(args);
+    onboard_with(repo, registry, &arguments)
 }
 
 #[test]
@@ -1298,63 +1295,170 @@ fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
 }
 
 #[test]
-fn task_onboarding_uses_a_registered_claude_kind_with_distinct_models() {
+fn combined_task_preview_reports_missing_review_and_task_providers_in_json_and_text() {
     let root = tempfile::tempdir().unwrap();
-    let repo = committed_repo(root.path());
-    let provider = registry(&root.path().join("provider"), &[("claude-main", "claude")]);
-    let applied = task_onboard(&repo, &provider, &["--apply", "--json"]);
-    assert!(applied.status.success(), "{}", stderr(&applied));
-    let report: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
-    assert_eq!(report["provider_kind"], "claude");
-    let implementer =
-        std::fs::read_to_string(repo.join(".af/task-packages/onboard/implementer/worker.toml"))
-            .unwrap();
-    let reviewer =
-        std::fs::read_to_string(repo.join(".af/task-packages/onboard/bugs/worker.toml")).unwrap();
-    assert!(implementer.contains("model = \"claude-opus-5-5\""));
-    assert!(reviewer.contains("model = \"claude-sonnet-5-5\""));
-    commit(&repo);
-
-    let ticket = root.path().join("claude-ticket.json");
-    std::fs::write(
-        &ticket,
-        r#"{"task_id":"claude-task","kind":"implement","goal":"Document the check command"}"#,
-    )
-    .unwrap();
-    let bin = root.path().join("bin");
-    let auth = root.path().join("provider/auth-claude-main");
-    crate::fake_models::install("claude", &bin, &auth);
-    let path = std::env::join_paths(
-        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
-    let plan = crate::common::af()
-        .current_dir(&repo)
-        .args([
-            "task",
-            "plan",
-            "--file",
-            ticket.to_str().unwrap(),
-            "--json",
-            "--state",
-        ])
-        .arg(root.path().join("state"))
-        .env("AF_PROVIDERS_FILE", &provider)
-        .env("USER", "fixture")
-        .env("PATH", path)
-        .output()
-        .unwrap();
-    assert!(
-        plan.status.success(),
-        "{}\n{}",
-        stdout(&plan),
-        stderr(&plan)
-    );
-    assert!(!auth.join("turns").exists());
+    let repo = repo(root.path());
+    let schema = crate::schemas::validator("onboard-tasks-v1.json");
+    for (name, providers, profile, missing_claude, missing_codex) in [
+        (
+            "codex-mixed",
+            &[("codex-main", "codex")][..],
+            "mixed",
+            true,
+            false,
+        ),
+        (
+            "codex-claude",
+            &[("codex-main", "codex")][..],
+            "claude",
+            true,
+            false,
+        ),
+        (
+            "codex-codex",
+            &[("codex-main", "codex")][..],
+            "codex",
+            false,
+            false,
+        ),
+        (
+            "claude-mixed",
+            &[("claude-main", "claude")][..],
+            "mixed",
+            false,
+            true,
+        ),
+        (
+            "claude-claude",
+            &[("claude-main", "claude")][..],
+            "claude",
+            false,
+            true,
+        ),
+        ("none-mixed", &[][..], "mixed", true, true),
+        (
+            "both-mixed",
+            &[("codex-main", "codex"), ("claude-main", "claude")][..],
+            "mixed",
+            false,
+            false,
+        ),
+    ] {
+        let provider = registry(&root.path().join(name), providers);
+        let args = ["--runner", profile, "--gate", "check=true"];
+        let mut json_args = args.to_vec();
+        json_args.push("--json");
+        let preview = task_onboard(&repo, &provider, &json_args);
+        assert!(preview.status.success(), "{name}: {}", stderr(&preview));
+        let report: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+        crate::schemas::valid(&schema, &report);
+        let steps: Vec<_> = report["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step.as_str().unwrap().to_owned())
+            .collect();
+        let text = task_onboard(&repo, &provider, &args);
+        assert!(text.status.success(), "{name}: {}", stderr(&text));
+        assert_eq!(steps, block(&stdout(&text), "next"), "{name}");
+        for (kind, missing) in [("claude", missing_claude), ("codex", missing_codex)] {
+            let setup = format!("af provider setup {kind}-main --kind {kind} --login");
+            assert_eq!(
+                steps.iter().any(|step| step.contains(&setup)),
+                missing,
+                "{name}: {steps:?}"
+            );
+        }
+        assert!(!repo.join(".af").exists());
+    }
 }
 
 #[test]
-fn task_onboarding_uses_both_registered_provider_aliases_in_mixed_profile() {
+fn additive_task_preview_does_not_request_claude_for_a_review_runner_option() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    std::fs::create_dir(repo.join(".af")).unwrap();
+    let authority = "version = 1\n";
+    std::fs::write(repo.join(".af/af.toml"), authority).unwrap();
+    for (name, providers, missing_codex) in [
+        ("codex", &[("codex-main", "codex")][..], false),
+        ("none", &[][..], true),
+    ] {
+        let provider = registry(&root.path().join(name), providers);
+        let args = ["--runner", "mixed", "--gate", "check=true"];
+        let mut json_args = args.to_vec();
+        json_args.push("--json");
+        let preview = task_onboard(&repo, &provider, &json_args);
+        assert!(preview.status.success(), "{}", stderr(&preview));
+        let report: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+        let steps: Vec<_> = report["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step.as_str().unwrap().to_owned())
+            .collect();
+        let text = task_onboard(&repo, &provider, &args);
+        assert!(text.status.success(), "{}", stderr(&text));
+        assert_eq!(steps, block(&stdout(&text), "next"));
+        assert!(
+            !steps.iter().any(|step| step.contains("--kind claude")),
+            "{steps:?}"
+        );
+        assert_eq!(
+            steps.iter().any(|step| step.contains("--kind codex")),
+            missing_codex,
+            "{steps:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".af/af.toml")).unwrap(),
+            authority
+        );
+        assert!(!repo.join(".af/task-catalog.toml").exists());
+    }
+}
+
+#[test]
+fn task_onboarding_requires_codex_even_with_only_claude_registered() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let provider = registry(&root.path().join("provider"), &[("claude-main", "claude")]);
+    for profile in ["claude", "mixed", "codex"] {
+        let preview = task_onboard(&repo, &provider, &["--runner", profile, "--json"]);
+        assert!(preview.status.success(), "{}", stderr(&preview));
+        let report: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+        assert_eq!(report["provider_kind"], "codex");
+        assert!(
+            report["next_steps"][0]
+                .as_str()
+                .unwrap()
+                .contains("No codex Provider")
+        );
+    }
+    let applied = task_onboard(&repo, &provider, &["--apply", "--json"]);
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    let catalog = std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap();
+    for (worker, model) in [
+        ("implementer", "gpt-6.1-sol"),
+        ("bugs", "gpt-6.1-terra"),
+        ("correctness", "gpt-6.1-terra"),
+        ("evaluator", "gpt-6.1-terra"),
+    ] {
+        let manifest: toml::Value = toml::from_str(
+            &std::fs::read_to_string(
+                repo.join(format!(".af/task-packages/onboard/{worker}/worker.toml")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["runner"]["provider_kind"].as_str(), Some("codex"));
+        assert_eq!(manifest["runner"]["model"].as_str(), Some(model));
+        assert_eq!(manifest["runner"]["effort"].as_str(), Some("high"));
+        assert!(catalog.contains(&format!("\"onboard/{worker}\" = \"codex-main\"")));
+    }
+}
+
+#[test]
+fn task_onboarding_uses_codex_task_workers_with_a_mixed_review_profile() {
     let root = tempfile::tempdir().unwrap();
     let repo = committed_repo(root.path());
     let provider = registry(
@@ -1365,16 +1469,16 @@ fn task_onboarding_uses_both_registered_provider_aliases_in_mixed_profile() {
     assert!(applied.status.success(), "{}", stderr(&applied));
     let report: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
     crate::schemas::valid(&crate::schemas::validator("onboard-tasks-v1.json"), &report);
-    assert_eq!(report["provider_kind"], "mixed");
+    assert_eq!(report["provider_kind"], "codex");
     let catalog = std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap();
-    assert!(catalog.contains("\"onboard/implementer\" = \"claude-main\""));
+    assert!(catalog.contains("\"onboard/implementer\" = \"codex-main\""));
     assert!(catalog.contains("\"onboard/bugs\" = \"codex-main\""));
     let implementer =
         std::fs::read_to_string(repo.join(".af/task-packages/onboard/implementer/worker.toml"))
             .unwrap();
     let reviewer =
         std::fs::read_to_string(repo.join(".af/task-packages/onboard/bugs/worker.toml")).unwrap();
-    assert!(implementer.contains("provider_kind = \"claude\""));
+    assert!(implementer.contains("provider_kind = \"codex\""));
     assert!(reviewer.contains("provider_kind = \"codex\""));
 }
 

@@ -1,7 +1,7 @@
-# Diff review for this repository: a correctness and architecture reviewer (Opus 5.5/high),
-# a performance reviewer (Opus 5.5/xhigh) and a bug-bounty reviewer (GPT-6-Sol/high).
+# Diff review for this repository: a correctness and architecture reviewer (GPT-6.1 Terra/high),
+# a performance reviewer (GPT-6.1 Terra/xhigh) and a bug-bounty reviewer (GPT-6.1 Terra/high).
 # Bind the three Workers to admitted Providers at run time, for example
-# `--provider correctness=claude-main --provider performance=claude-main --provider bugs=codex-main`.
+# `--provider correctness=codex-main --provider performance=codex-main --provider bugs=codex-main`.
 # One light Round per change, then fixes and the project Gates.
 
 version = 2

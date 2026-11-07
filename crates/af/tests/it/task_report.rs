@@ -871,7 +871,7 @@ pub(crate) fn workspace() -> PathBuf {
 
 const KERNEL_PACKAGES: [(&str, Option<&str>); 3] = [
     ("kernel/report", None),
-    ("kernel/analyst", Some("claude-main")),
+    ("kernel/analyst", Some("codex-main")),
     ("kernel/report-verifier", Some("codex-main")),
 ];
 
@@ -981,7 +981,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
     let installed: toml::Value = toml::from_str(&catalog).unwrap();
     assert_eq!(
         installed["providers"]["kernel/analyst"],
-        "claude-main".into()
+        "codex-main".into()
     );
     assert_eq!(
         installed["providers"]["kernel/report-verifier"],
@@ -1030,7 +1030,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         analyst["signature"]["effects"],
         toml::Value::try_from(["execute-checks", "read-source"]).unwrap()
     );
-    assert_eq!(analyst["runner"]["model"], "claude-opus-5-5".into());
+    assert_eq!(analyst["runner"]["model"], "gpt-6.1-sol".into());
     assert_eq!(analyst["signature"]["attempt"]["tokens"], 1_500_000.into());
     assert_eq!(
         analyst["signature"]["attempt"]["wall_ms"],
@@ -1041,7 +1041,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         verifier["signature"]["effects"],
         toml::Value::try_from(["read-source"]).unwrap()
     );
-    assert_eq!(verifier["runner"]["model"], "gpt-6-sol".into());
+    assert_eq!(verifier["runner"]["model"], "gpt-6.1-terra".into());
     let local = root.join("local");
     std::fs::create_dir_all(&local).unwrap();
     let mut packages = toml::map::Map::new();

@@ -15,16 +15,16 @@ policy that install names as `report_policy = ".af/report-policy.toml"`.
 2. Add the four packages to `.af/task-catalog.toml` with the versions and digests in
    `catalog.toml` and the paths under `.af/task-packages/backlog/`.
 3. Add `triage = "backlog/triage-kind"` under `[kinds]`, and the `[providers]` entries
-   `"backlog/triage-author" = "codex-main"` and `"backlog/triage-verifier" = "claude-main"`, so
-   the two triagers run on different Providers and models.
+   `"backlog/triage-author" = "codex-main"` and `"backlog/triage-verifier" = "codex-main"`, so
+   the two triagers use distinct models on one admitted Codex Provider.
 4. Commit the authority.
 
 | Package | What it is |
 |---|---|
 | `backlog/triage-kind` | `af.task-kind/1`: the kind `triage` on the `report` profile |
 | `backlog/triage` | `af.pipeline/1`: the shape of `kernel/report` (author, `report_seal`, `report_check`, verifier, `report_accept`), accepting the kind `triage` |
-| `backlog/triage-author` | Codex `gpt-6-astra`, effort medium, `read-source` only: no shell |
-| `backlog/triage-verifier` | Claude Opus 5.5, effort medium, `read-source` only, independent of the author |
+| `backlog/triage-author` | Codex `gpt-6.1-sol`, effort medium, `read-source` only: no shell |
+| `backlog/triage-verifier` | Codex `gpt-6.1-terra`, effort medium, `read-source` only, independent of the author |
 
 Each triager has 40,000 tokens and 500,000 ms per Attempt. The author returns its
 `af/issue-triage@1` document as the one fenced `json` block of its report's `Triage` section,
@@ -64,7 +64,7 @@ Workers bound and the six captured sources of §6.2.
 `example/` holds a Task for issue #432 and its sources, built by hand from this tree and the
 issue on 2026-10-30 in the `af.document-sources/1` shape §6.2 gives: `issue`, `citations`,
 `pulls`, `neighbours`, `excerpts` and `rubric`. Once the packages are installed, on a machine
-whose Provider bindings admit `codex-main` and `claude-main`:
+whose Provider bindings admit `codex-main`:
 
 ```sh
 af task plan --file fixtures/issue-triage/example/task.json --json

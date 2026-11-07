@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "pi-light/evaluator"
-version = "1.1.0"
+version = "1.1.1"
 
 [signature]
 effects = ["read-source"]
@@ -70,5 +70,5 @@ wall_ms = 1200000
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-6-astra"
+model = "gpt-6.1-terra"
 effort = "medium"

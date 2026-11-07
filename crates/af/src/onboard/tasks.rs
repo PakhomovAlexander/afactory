@@ -63,12 +63,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
             RunnerProfile::Codex
         }
     });
-    let kind = match profile {
-        RunnerProfile::Claude => "claude",
-        RunnerProfile::Codex => "codex",
-        RunnerProfile::Mixed => "mixed",
-    };
-    let task_files = files(&gates, profile)?;
+    let task_files = files(&gates)?;
     let mut command = format!(
         "af onboard --repo {} --tasks --runner {}",
         shell_words::quote(repo.to_str().ok_or("repository path is not UTF-8")?),
@@ -94,7 +89,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
         files: Vec::new(),
         append_text: DEFAULTS,
         gate: gates.clone(),
-        provider_kind: kind.into(),
+        provider_kind: "codex".into(),
         warnings: Vec::new(),
         next_steps: vec![
             format!("Review the preview, then run {command}"),
@@ -104,6 +99,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
             "After committing, plan a Task: af task plan --file ticket.json".into(),
         ],
     };
+    let mut required_provider_kinds = BTreeSet::from(["codex"]);
     if existing {
         let original = preflight(&repo, &task_files)?;
         report.files = task_files.keys().cloned().collect();
@@ -116,6 +112,13 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
         let review_profile = options.runner.unwrap_or(profile);
         let mut bundle = build_bundle(&repo, review_profile, gates, options.af.as_deref())?;
         validate_bundle(&bundle)?;
+        required_provider_kinds.extend(
+            bundle
+                .report
+                .reviewers
+                .iter()
+                .filter_map(|reviewer| provider_kind(&reviewer.runner)),
+        );
         report.warnings = bundle.report.warnings.clone();
         for (path, bytes) in task_files {
             bundle.files.insert(path, bytes);
@@ -139,13 +142,9 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
     if options.apply {
         report.next_steps.remove(0);
     }
-    for needed in match profile {
-        RunnerProfile::Mixed => &["claude", "codex"][..],
-        RunnerProfile::Claude => &["claude"][..],
-        RunnerProfile::Codex => &["codex"][..],
-    } {
-        if registry.ids_of(needed).is_empty() {
-            report.next_steps.insert(0, format!("No {needed} Provider is registered; run af provider detect or af provider setup {needed}-main --kind {needed} --login"));
+    for kind in required_provider_kinds {
+        if registry.ids_of(kind).is_empty() {
+            report.next_steps.insert(0, format!("No {kind} Provider is registered; run af provider detect or af provider setup {kind}-main --kind {kind} --login"));
         }
     }
     if options.json {
@@ -177,7 +176,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn files(gates: &[Gate], profile: RunnerProfile) -> Result<BTreeMap<String, Vec<u8>>, String> {
+fn files(gates: &[Gate]) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
     let names = ["implementer", "bugs", "correctness", "evaluator"];
     let manifests = [
@@ -204,25 +203,13 @@ fn files(gates: &[Gate], profile: RunnerProfile) -> Result<BTreeMap<String, Vec<
     );
     let mut provider_lines = String::from("\n[providers]\n");
     for (index, name) in names.iter().enumerate() {
-        let kind = match profile {
-            RunnerProfile::Claude => "claude",
-            RunnerProfile::Codex => "codex",
-            RunnerProfile::Mixed if index == 0 => "claude",
-            RunnerProfile::Mixed => "codex",
-        };
         let model = if index == 0 {
-            if kind == "codex" {
-                "gpt-6-sol"
-            } else {
-                "claude-opus-5-5"
-            }
-        } else if kind == "codex" {
-            "gpt-6-astra"
+            "gpt-6.1-sol"
         } else {
-            "claude-sonnet-5-5"
+            "gpt-6.1-terra"
         };
         let manifest = manifests[index]
-            .replace("{{PROVIDER_KIND}}", kind)
+            .replace("{{PROVIDER_KIND}}", "codex")
             .replace("{{MODEL}}", model);
         let root = format!(".af/task-packages/onboard/{name}");
         files.insert(format!("{root}/worker.toml"), manifest.into_bytes());
@@ -238,7 +225,7 @@ fn files(gates: &[Gate], profile: RunnerProfile) -> Result<BTreeMap<String, Vec<
             ),
             outputs[index].to_vec(),
         );
-        provider_lines.push_str(&format!("\"onboard/{name}\" = \"{kind}-main\"\n"));
+        provider_lines.push_str(&format!("\"onboard/{name}\" = \"codex-main\"\n"));
     }
     let checks = gates
         .iter()
@@ -592,7 +579,7 @@ mod tests {
     #[test]
     fn dotted_gate_name_stays_one_policy_check_and_a_review_result_keeps_its_domain_type() {
         let gate = Gate::detected("project.check", "make", &["check"], "Makefile");
-        let generated = files(&[gate], RunnerProfile::Codex).unwrap();
+        let generated = files(&[gate]).unwrap();
         let policy: toml::Value =
             toml::from_str(std::str::from_utf8(&generated[".af/code-policy.toml"]).unwrap())
                 .unwrap();

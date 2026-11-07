@@ -20,7 +20,7 @@ const PACKAGES: [(&str, Option<&str>); 4] = [
     ("backlog/triage-kind", None),
     ("backlog/triage", None),
     ("backlog/triage-author", Some("codex-main")),
-    ("backlog/triage-verifier", Some("claude-main")),
+    ("backlog/triage-verifier", Some("codex-main")),
 ];
 
 /// Perform the install steps of `fixtures/issue-triage/README.md` on `repo`'s `.af/`, or, where
@@ -140,7 +140,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         &bindings,
         "schema = \"af.task-bindings/1\"\n\n[providers]\n\
          \"backlog/triage-author\" = \"fixture-codex\"\n\
-         \"backlog/triage-verifier\" = \"fixture-claude\"\n",
+         \"backlog/triage-verifier\" = \"fixture-codex\"\n",
     )
     .unwrap();
     let state = root.join("state");
@@ -168,7 +168,8 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         json!({"kind": "selected", "pipeline": "backlog/triage"})
     );
 
-    // The report shape: both Provider admissions, then author, seal, check, verify, accept.
+    // The report shape: each Provider admission precedes its Worker; author, seal, check,
+    // verify and accept retain their order.
     let graph = &planned["graph"];
     let operators: Vec<&Value> = graph["order"]
         .as_array()
@@ -180,7 +181,6 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         operators,
         [
             &json!({"kind": "root_inputs"}),
-            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
             &json!({"kind": "provider_admission", "bindings": ["root.slots.author"]}),
             &json!({"kind": "primitive", "operator": {"op": "worker", "slot": "root.slots.author"},
                     "signature": "worker/backlog/triage-author"}),
@@ -188,6 +188,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
                     "signature": "operator/report-seal"}),
             &json!({"kind": "primitive", "operator": {"op": "report_check"},
                     "signature": "operator/report-check"}),
+            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
             &json!({"kind": "primitive", "operator": {"op": "verify", "slot": "root.slots.verifier"},
                     "signature": "worker/backlog/triage-verifier"}),
             &json!({"kind": "primitive", "operator": {"op": "report_accept"},
@@ -203,12 +204,12 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         toml::from_str(&std::fs::read_to_string(repo.join(STAGED).join("catalog.toml")).unwrap())
             .unwrap();
     for (slot, worker, provider_kind, model) in [
-        ("author", "backlog/triage-author", "codex", "gpt-6-astra"),
+        ("author", "backlog/triage-author", "codex", "gpt-6.1-sol"),
         (
             "verifier",
             "backlog/triage-verifier",
-            "claude",
-            "claude-opus-5-5",
+            "codex",
+            "gpt-6.1-terra",
         ),
     ] {
         let slot = format!("root.slots.{slot}");

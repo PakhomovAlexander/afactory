@@ -737,7 +737,12 @@ sys.exit(99)
                     "gpt-6.1-sol",
                     "medium",
                 ),
-                ("verifier", "kernel/report-verifier", "gpt-6-sol", "high"),
+                (
+                    "verifier",
+                    "kernel/report-verifier",
+                    "gpt-6.1-terra",
+                    "high",
+                ),
             ]
         } else {
             let mut roles = vec![
@@ -745,13 +750,13 @@ sys.exit(99)
                 (
                     "correctness",
                     "owner-default/correctness",
-                    "gpt-6-sol",
+                    "gpt-6.1-terra",
                     "high",
                 ),
                 (
                     "evaluator",
                     "owner-default/evaluator",
-                    "gpt-6-astra",
+                    "gpt-6.1-terra",
                     "medium",
                 ),
             ];

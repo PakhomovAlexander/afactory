@@ -23,23 +23,23 @@ correctness = "required"
 uix = "advisory"
 
 [packages."warm/implementer"]
-version = "1.3.0"
-digest = "sha256:0e8261d7c2de8e95b7b2eeb3d7d50235f84b466738f7e6c1018be4c90cc8c181"
+version = "1.3.1"
+digest = "sha256:420b174da9a7192fd75d16aaa468c3a621cf9956e15fd10263a2ce6330d343d6"
 path = ".af/task-packages/warm/implementer"
 
 [packages."warm/correctness"]
-version = "1.0.0"
-digest = "sha256:5a3b201427f80eda13804a33b95a862a10664580cfaa874acbcab76b4db78ef3"
+version = "1.0.1"
+digest = "sha256:43d5c0e6255d21b2431942f8244f2fb9a4c921a22bbeceb0ae9c1d6804de54cb"
 path = ".af/task-packages/warm/correctness"
 
 [packages."warm/bugs"]
-version = "1.0.0"
-digest = "sha256:f61ca3295876ed2b04677f3d343eba38a8c3b49a8dabfdb7a44407a071b59400"
+version = "1.0.1"
+digest = "sha256:24d96c4ab0d5ee1169510b16864f7bc089e64e894c80defefe03c0329c87ce1a"
 path = ".af/task-packages/warm/bugs"
 
 [packages."warm/evaluator"]
-version = "1.0.0"
-digest = "sha256:44e98c5710431ad09a0149e90c190b98ee634d79bf33884254ff77624a72c38a"
+version = "1.0.1"
+digest = "sha256:44d0fef533b9868c9e4b1697cee9a68a0eee0e2ada1629d496b1aa6d2637d38c"
 path = ".af/task-packages/warm/evaluator"
 
 [packages."warm/review-light"]
@@ -63,33 +63,33 @@ digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f3
 path = ".af/task-packages/warm/verification-kind"
 
 [packages."kernel/implementer"]
-version = "1.8.2"
-digest = "sha256:4893791f671b006d166aec5647cb4810c5bc9c0ed66ba8d78abdad65f29500d7"
+version = "1.8.3"
+digest = "sha256:325df992bec17f691a52e80f758ff1879285613fac077b9006435b7401ba7648"
 path = ".af/task-packages/kernel/implementer"
 
 [packages."kernel/correctness"]
-version = "1.4.0"
-digest = "sha256:09c466783655e139aa594e65d81a9c2f7d70031256006b45be40ee692e5a86a6"
+version = "1.4.1"
+digest = "sha256:a42e75e3c345ba260da8b88cbc726188cef30d5d1373a535063fef55ba6e2ca6"
 path = ".af/task-packages/kernel/correctness"
 
 [packages."kernel/bugs"]
-version = "1.6.0"
-digest = "sha256:6a11c6a065adb6cf0e540253cdce11505cc411fe5559e07b3da4fd3b3a4c41ea"
+version = "1.6.1"
+digest = "sha256:df2d71251b0d6d016e2d5c6cd239c14e17887ad7594a9562f0d5d3dc8478232a"
 path = ".af/task-packages/kernel/bugs"
 
 [packages."kernel/evaluator"]
-version = "1.3.0"
-digest = "sha256:8327397d306195803c1ae66ed1009dc318c92ae5f670f1582f1ec9239571e040"
+version = "1.3.1"
+digest = "sha256:1d42d5c56c5ffa084254879426488af00fd138b7c22b1266479e95ab1d74336a"
 path = ".af/task-packages/kernel/evaluator"
 
 [packages."kernel/uix"]
-version = "1.6.0"
-digest = "sha256:3a6f06019545fc4ed72827fb96211161e4e9c236df2fe3ff0654e73241500ccc"
+version = "1.6.1"
+digest = "sha256:bb5745a00c59ad842b34414d6997bab65e55c9126782ecd14bf3e8f5cb161cb4"
 path = ".af/task-packages/kernel/uix"
 
 [packages."kernel/ux"]
-version = "1.2.0"
-digest = "sha256:677de94187081575a6fdbc25fb5df048efce35abafecd40cdbc1850e9efa073d"
+version = "1.2.1"
+digest = "sha256:8c1debd11bcbe20942e9ea494b639e591199054a195e84453bf32c8ca858abdf"
 path = ".af/task-packages/kernel/ux"
 
 [packages."kernel/implementation-ux"]
@@ -98,8 +98,8 @@ digest = "sha256:4da1654b4329d382aa4d43ff8378d326ec0af6f0b549a1993cac1b42764d88d
 path = ".af/task-packages/kernel/implementation-ux"
 
 [packages."kernel/implementer-long"]
-version = "1.3.2"
-digest = "sha256:5c07a7e09e0d127acf417669bb18349f573c3a6357c065494e56e697a7416189"
+version = "1.3.3"
+digest = "sha256:1857defe5d3ec2c5c7ad821e434714c4b692281a6102bc669cfaca223dd4fcbb"
 path = ".af/task-packages/kernel/implementer-long"
 
 [packages."kernel/review-light"]
@@ -147,8 +147,8 @@ digest = "sha256:d05dd7821d03ed94337f153042189802d46a025e008673e6bced30b985dd27b
 path = ".af/task-packages/kernel/experiment"
 
 [packages."kernel/experiment-evaluator"]
-version = "1.0.0"
-digest = "sha256:631331f5bc804ecd883cb95a24c0f535847bda15f74ad6a93ab8a432f22782b8"
+version = "1.0.1"
+digest = "sha256:84c6cfb422e87f25fb7d4a8e554c458c2d477af404d27e961fb704c64d0839fa"
 path = ".af/task-packages/kernel/experiment-evaluator"
 
 [packages."kernel/experiment-trial"]
@@ -162,13 +162,13 @@ digest = "sha256:7cb7328639f78d214d0dcc5f5f46917b1d696f326fc31aa1879cda60c75bf12
 path = ".af/task-packages/kernel/report"
 
 [packages."kernel/analyst"]
-version = "1.0.0"
-digest = "sha256:21d95c6d263c320a25979f818f52e56585095d23a8a58292372f9182b481b554"
+version = "1.0.1"
+digest = "sha256:6ddedff3cc2bf26bc166f44f5649adfb5b8511486b5cc9955cceda8bff24e2be"
 path = ".af/task-packages/kernel/analyst"
 
 [packages."kernel/report-verifier"]
-version = "1.0.0"
-digest = "sha256:c7176060094b777f04746ee9e66d5c178a852f0cd3356b58687f93220b39ac87"
+version = "1.0.1"
+digest = "sha256:09de80f3c990b42c6c80fab74e5170d7582e8ecd3a5232624a5510c35ee71304"
 path = ".af/task-packages/kernel/report-verifier"
 
 [packages."backlog/triage"]
@@ -177,8 +177,8 @@ digest = "sha256:94a2f61753351b021749bc11282dfcfcce0c60bf2be77b6dd06ad9df81a44eb
 path = ".af/task-packages/backlog/triage"
 
 [packages."backlog/triage-author"]
-version = "1.0.0"
-digest = "sha256:1e5e71c1dc278159477b9a5a5febf35b3a96347e201d32783078b78357300225"
+version = "1.0.2"
+digest = "sha256:0be9262b5180c97630dfbead3494081b7ee41252f02737c8079acb2faca22f3b"
 path = ".af/task-packages/backlog/triage-author"
 
 [packages."backlog/triage-kind"]
@@ -187,8 +187,8 @@ digest = "sha256:1321c04198a9a30c54207aac2ae494aaffc803388ede24663eeedaa1f10e03d
 path = ".af/task-packages/backlog/triage-kind"
 
 [packages."backlog/triage-verifier"]
-version = "1.0.0"
-digest = "sha256:8641e681d040e27e66027ae85e71bfc4c4d953eb7e5d8fcd8802ad3de8957a8a"
+version = "1.0.2"
+digest = "sha256:c040156a030229389a5396c9ec8f955e91095359f539eb885fa8193b274af391"
 path = ".af/task-packages/backlog/triage-verifier"
 
 # Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
@@ -216,33 +216,33 @@ digest = "sha256:2f587f7e9bc9f1e1167f6e173bb7a59a580f755ebea2ddc25561260d761d347
 path = ".af/task-packages/kernel/review-code-remote"
 
 # The repository's default Task pipeline (owner's decision, 27 October 2026): one implementing
-# iteration by Opus 5.5, two bound reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
-# advisory reviewer for gate time and quality in the `uix` slot (gpt-6-astra medium) and an
-# evaluator (gpt-6-astra high); `default/verification` judges an existing candidate the same way.
+# iteration by GPT-6.1 Sol/high, two bound reviewers (bugs: gpt-6.1-terra, correctness: gpt-6.1-terra), one
+# advisory reviewer for gate time and quality in the `uix` slot (gpt-6.1-terra medium) and an
+# evaluator (gpt-6.1-terra high); `default/verification` judges an existing candidate the same way.
 
 [packages."default/implementer"]
-version = "1.0.0"
-digest = "sha256:c8767d271040a23544ed200b484be94f32c906c476ce88f4f08ddb20d70fe28e"
+version = "1.0.1"
+digest = "sha256:c2df1a662b10b22797b1386da48977bafed92ffcb9c4cc49bf4403fc661e2abe"
 path = ".af/task-packages/default/implementer"
 
 [packages."default/bugs"]
-version = "1.1.1"
-digest = "sha256:a44cb609516c919291aef88dc4e40a2b0fb4e5d98f71c4ac6c30c6c0aa02271b"
+version = "1.1.2"
+digest = "sha256:5ccd389f0b1c0a780f213d7e8c184f144de8537d3255db8ff9d4fc27c07188bd"
 path = ".af/task-packages/default/bugs"
 
 [packages."default/correctness"]
-version = "1.1.1"
-digest = "sha256:7b1fbd49f777813611cda9743326118d127faeb75fd61b5c17b747a81db78740"
+version = "1.1.2"
+digest = "sha256:41c7683e68d15f78b472a7d766d3d471f5543f4784eee0b8274a7f08c3279e20"
 path = ".af/task-packages/default/correctness"
 
 [packages."default/advisor"]
-version = "1.1.1"
-digest = "sha256:2dacfe98cdd2c24ef0d7e6a87e804701a8db0e4c11ba6eb12aa0ea1d64817604"
+version = "1.1.2"
+digest = "sha256:eddffcaec382697ec65588cce84301f05c4b98d8c8fb6fe2dfa687fb09498c9a"
 path = ".af/task-packages/default/advisor"
 
 [packages."default/evaluator"]
-version = "1.1.1"
-digest = "sha256:6e60a343b92d6bc872dd80e26edb2f12eab2cb9ed9c41d548f103f5d7354b621"
+version = "1.1.2"
+digest = "sha256:d8ac68d1542eb7ffb5077f2dc14b7f338bc3da233fa285dcba7a4dc5062a7934"
 path = ".af/task-packages/default/evaluator"
 
 [packages."default/implementation"]
@@ -256,23 +256,23 @@ digest = "sha256:e5529e4450ceee77e6cdef63b77491279542bc7e9a1f351553aa5775ba98e85
 path = ".af/task-packages/default/verification"
 
 # The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
-# implementing iteration by Opus 5.5 at medium effort, the correctness reviewer and the
+# implementing iteration by GPT-6.1 Sol at high effort, the correctness reviewer and the
 # evaluator of the default pipeline with smaller Attempt allowances, no bugs or advisory reviewer.
 # The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
 
 [packages."default-light/implementer"]
-version = "1.0.2"
-digest = "sha256:b718d68cdc8222d53e9c1fb0f31e1590fce0a06127a6f127df0a90ed8716df8c"
+version = "1.0.3"
+digest = "sha256:785fc384e50620dd89d979092a377c4fe034fa22cac070d351799cf852a5b81b"
 path = ".af/task-packages/default-light/implementer"
 
 [packages."default-light/correctness"]
-version = "1.0.1"
-digest = "sha256:8d6ddb9e96eb472cf696c92d6a04c123e021147e6147809025277d6f907bdc80"
+version = "1.0.2"
+digest = "sha256:a69e6333b3cb1a2f61d4fe7ff8ad3245de16e2f302a8e7abb145845f68a18926"
 path = ".af/task-packages/default-light/correctness"
 
 [packages."default-light/evaluator"]
-version = "1.0.1"
-digest = "sha256:53eca7694e085f1abb09681080242baf848196cc981fd2d4f96d19e880af1492"
+version = "1.0.2"
+digest = "sha256:1de685745cb57ea2fd058b9389faaed05a77350f922f4c5b6bd2886c24f7e46f"
 path = ".af/task-packages/default-light/evaluator"
 
 [packages."default-light/review"]
@@ -296,13 +296,13 @@ digest = "sha256:4fbbec8c0ad4158999428d3c3557030e1301b5a17916edba08af60bd97de01c
 path = ".af/task-packages/pi-light/implementer"
 
 [packages."pi-light/correctness"]
-version = "1.1.0"
-digest = "sha256:1089ec45c645aa40350b4c1ddce3a8fe5005697f971654a4c1a52d9ebd63d5a9"
+version = "1.1.1"
+digest = "sha256:21988ecfceb1477378dc031ad9f9831f954639c88bd97d12f52978970c6b827d"
 path = ".af/task-packages/pi-light/correctness"
 
 [packages."pi-light/evaluator"]
-version = "1.1.0"
-digest = "sha256:7b22f21ab815f736019bb7591635ac36c32e98ab9c7d4ee196faeb257e8b2421"
+version = "1.1.1"
+digest = "sha256:ec4e1b0248036587789732bde354b6a2a8ed7cecfbe1e3d516a9d6fcb7b2b978"
 path = ".af/task-packages/pi-light/evaluator"
 
 [packages."pi-light/review"]
@@ -327,26 +327,26 @@ distinct_providers = false
 distinct_models = true
 
 [providers]
-"warm/implementer" = "claude-main"
+"warm/implementer" = "codex-main"
 "warm/correctness" = "codex-main"
 "warm/bugs" = "codex-main"
 "warm/evaluator" = "codex-main"
-"kernel/implementer" = "claude-main"
-"kernel/implementer-long" = "claude-main"
+"kernel/implementer" = "codex-main"
+"kernel/implementer-long" = "codex-main"
 "kernel/correctness" = "codex-main"
 "kernel/bugs" = "codex-main"
 "kernel/evaluator" = "codex-main"
 "kernel/experiment-evaluator" = "codex-main"
-"kernel/analyst" = "claude-main"
+"kernel/analyst" = "codex-main"
 "kernel/report-verifier" = "codex-main"
 "backlog/triage-author" = "codex-main"
-"backlog/triage-verifier" = "claude-main"
-"default/implementer" = "claude-main"
+"backlog/triage-verifier" = "codex-main"
+"default/implementer" = "codex-main"
 "default/bugs" = "codex-main"
 "default/correctness" = "codex-main"
 "default/advisor" = "codex-main"
 "default/evaluator" = "codex-main"
-"default-light/implementer" = "claude-main"
+"default-light/implementer" = "codex-main"
 "default-light/correctness" = "codex-main"
 "default-light/evaluator" = "codex-main"
 
@@ -377,13 +377,13 @@ digest = "sha256:2394748ca96ea2aa9349c9d1d8a2d76445e7bc06def379768a0c0f975fda60c
 path = ".af/task-packages/owner-default/bugs"
 
 [packages."owner-default/correctness"]
-version = "1.0.0"
-digest = "sha256:d64aa0a75f42e13cc0840c42558a964e70e9bede16529c04966ef7c9af0014cf"
+version = "1.0.1"
+digest = "sha256:7044e427a0ae3df16e341bd028fdfb8146d73bbfd6906e4c14c838732ca3e953"
 path = ".af/task-packages/owner-default/correctness"
 
 [packages."owner-default/evaluator"]
-version = "1.0.0"
-digest = "sha256:5e882fdc6a89c6e75f4021e3914b515f34143c44d14ce73bcf253e5d6893a1f7"
+version = "1.0.1"
+digest = "sha256:c301322bcaa3c3c99a128928cd2d8ff8058e02e7c7202b67a7aef871d08e9968"
 path = ".af/task-packages/owner-default/evaluator"
 
 [packages."owner-default/report-author"]

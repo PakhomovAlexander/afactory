@@ -11,12 +11,12 @@ staged here because a Task Worker may not edit `.af/`. Installing them is a revi
    `task-packages/kernel/report-verifier` to `.af/task-packages/kernel/`.
 3. Add the three packages to `.af/task-catalog.toml` with the versions and digests in
    `catalog.toml` and the paths under `.af/task-packages/kernel/`, and `[providers]` entries
-   `"kernel/analyst" = "claude-main"` and `"kernel/report-verifier" = "codex-main"`, so the
-   verifier runs on a principal distinct from the analyst's.
+   `"kernel/analyst" = "codex-main"` and `"kernel/report-verifier" = "codex-main"`, so the
+   verifier uses a model distinct from the analyst's on the same admitted Codex Provider.
 
-`kernel/analyst` is Claude Opus 5.5 at high effort with `read-source` and `execute-checks`
+`kernel/analyst` is Codex GPT-6.1 Sol at high effort with `read-source` and `execute-checks`
 (a shell in a clone that seals nothing back), 1.5M tokens and 3 hours per Attempt.
-`kernel/report-verifier` is GPT-6 Sol at high effort with `read-source` only. The built-in kind
+`kernel/report-verifier` is GPT-6.1 Terra at high effort with `read-source` only. The built-in kind
 `report` needs no kind package.
 
 `catalog.toml` and `contracts.json` are the shared catalog and contract fixtures of these

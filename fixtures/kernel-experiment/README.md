@@ -11,7 +11,8 @@ staged here because a Task Worker may not edit `.af/`. Installing them is a revi
    `task-packages/kernel/experiment-evaluator` to `.af/task-packages/kernel/`.
 3. Add the three packages to `.af/task-catalog.toml` with the versions and digests in
    `catalog.toml`, the paths under `.af/task-packages/kernel/`, and a `[providers]` entry for
-   `kernel/experiment-evaluator` on a principal distinct from the implementer's.
+   `kernel/experiment-evaluator` on `codex-main`; Terra judges independently of the Sol
+   implementer's model.
 
 `catalog.toml` and `contracts.json` are the shared catalog and contract fixtures of these
 packages, so the staged copies are checked as they are:

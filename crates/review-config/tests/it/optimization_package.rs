@@ -58,7 +58,14 @@ fn light_optimizer_ships_role_scoped_model_workers_with_captured_instructions() 
         let package = root.join(directory);
         let worker: TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
-        assert!(matches!(worker.runner, TaskWorkerRunner::Model { .. }));
+        assert_eq!(
+            worker.runner,
+            TaskWorkerRunner::Model {
+                provider_kind: "codex".into(),
+                model: "gpt-6.1-sol".into(),
+                effort: "high".into(),
+            }
+        );
         assert_eq!(
             worker.signature.roles,
             std::collections::BTreeSet::from([role.into()])

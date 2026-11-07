@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "builtin/optimization-light-propose-model"
-version = "1.0.0"
+version = "1.0.1"
 
 [signature]
 effects = []
@@ -68,5 +68,5 @@ wall_ms = 900000
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 effort = "high"

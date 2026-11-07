@@ -104,7 +104,7 @@ impl RunnerKind {
     fn model(self) -> &'static str {
         match self {
             Self::Claude => "claude-opus-5-5 (high effort)",
-            Self::Codex => "gpt-6-sol (high effort)",
+            Self::Codex => "gpt-6.1-terra (high effort)",
         }
     }
 
@@ -112,7 +112,7 @@ impl RunnerKind {
     fn binding(self) -> (&'static str, &'static str) {
         match self {
             Self::Claude => ("claude-opus-5-5", "high"),
-            Self::Codex => ("gpt-6-sol", "high"),
+            Self::Codex => ("gpt-6.1-terra", "high"),
         }
     }
 
@@ -2365,7 +2365,7 @@ mod tests {
         assert!(claude.contains("value = \"high\""), "{claude}");
 
         let codex = worker_manifest("architecture", RunnerKind::Codex);
-        assert!(codex.contains("value = \"gpt-6-sol\""), "{codex}");
+        assert!(codex.contains("value = \"gpt-6.1-terra\""), "{codex}");
         assert!(
             codex.contains("value = 'model_reasoning_effort=\"high\"'"),
             "{codex}"

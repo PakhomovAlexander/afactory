@@ -50,8 +50,12 @@ automatic Integration are outside this path.
   in a new repository, or adds absent Task files and appends the table to an existing
   `.af/`. It refuses an existing target or `[task]` table without writing. Review the
   diff and commit `.af/` before planning; local, uncommitted files are not authority.
-  With both Provider kinds registered, the generated implementer uses Claude and the
-  reviewers use Codex; with one kind, distinct models under that login serve all Workers.
+  The generated implementer uses Codex `gpt-6.1-sol` at high effort; independent
+  reviewers and the evaluator use `gpt-6.1-terra` at high effort, all on `codex-main`.
+  `--runner` selects Review authority; Task Workers always require a Codex Provider.
+  A combined new-repository preview reports missing Providers for both the selected Review
+  profile and the Codex Task Workers. Adding Task files to existing authority reports only
+  the Codex Task requirement; it preserves existing Review authority regardless of `--runner`.
 
 `af catalog init --profile software --destination task-demo` creates a new starter directory,
 which must not exist yet, holding a working, credential-free catalog and runnable Task files
@@ -599,8 +603,8 @@ af task run pagination-3 --from pagination-cli --execute   # starts from the par
 
 `--from` binds the partial tree as the new Task's source when TASK recorded no review round; the
 new Task runs its whole pipeline on it, and its own result is what can be delivered. `af task
-plan` prints each Worker slot's Attempt wall beside its model (`implementer: claude-opus-5/high
-via claude, Attempt wall 30 min`), and `--json` lists them as `slots`, so a wall too short for
+plan` prints each Worker slot's Attempt wall beside its model (`implementer: gpt-6.1-sol/high
+via codex-main, Attempt wall 30 min`), and `--json` lists them as `slots`, so a wall too short for
 the goal is visible before the Task runs.
 
 ## The default pipeline
@@ -619,11 +623,11 @@ existing candidate read-only.
 
 | Slot | Package | Model | Effort | What it does |
 |---|---|---|---|---|
-| `implementer` | `default/implementer` | `claude-opus-5-5` | `high` | one implementing iteration (`default/implementation` only) |
-| `bugs` | `default/bugs` | `gpt-5.6-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
-| `correctness` | `default/correctness` | `gpt-6-sol` | `high` | required reviewer: requirements, contracts and architecture |
-| `uix` | `default/advisor` | `gpt-6-astra` | `medium` | advisory reviewer: gate time and quality |
-| `evaluator` | `default/evaluator` | `gpt-6-astra` | `high` | independent evaluator of the requirements |
+| `implementer` | `default/implementer` | `gpt-6.1-sol` | `high` | one implementing iteration (`default/implementation` only) |
+| `bugs` | `default/bugs` | `gpt-6.1-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
+| `correctness` | `default/correctness` | `gpt-6.1-terra` | `high` | required reviewer: requirements, contracts and architecture |
+| `uix` | `default/advisor` | `gpt-6.1-terra` | `medium` | advisory reviewer: gate time and quality |
+| `evaluator` | `default/evaluator` | `gpt-6.1-terra` | `high` | independent evaluator of the requirements |
 
 The catalog's `[review.reviewers]` marks the `uix` slot advisory, and the `bugs` slot advisory
 so that [the light default pipeline](#the-light-default-pipeline) may leave it unbound.
@@ -660,15 +664,15 @@ allowances, and `af task plan --fit` prints the smallest that do:
 }
 ```
 
-The catalog binds `default/implementer` to the Provider label `claude-main` and the other four
-packages to `codex-main`. When your machine-local registry does not carry those labels, map them
+The catalog binds all five `default/*` model packages to the Provider label `codex-main`.
+When your machine-local registry does not carry that label, map the packages
 in a [local bindings](task-execution/local-bindings.md) file and pass it with `--bindings FILE`:
 
 ```toml
 schema = "af.task-bindings/1"
 
 [providers]
-"default/implementer" = "claude-personal"
+"default/implementer" = "codex-personal"
 "default/bugs" = "codex-personal"
 "default/correctness" = "codex-personal"
 "default/advisor" = "codex-personal"
@@ -687,9 +691,9 @@ two judging slots and no implementer.
 
 | Slot | Package | Model | Effort | Attempt allowance |
 |---|---|---|---|---|
-| `implementer` | `default-light/implementer` | `claude-opus-5-5` | `medium` | 1,000,000 tokens, 2 h (`default-light/implementation` only) |
-| `correctness` | `default-light/correctness` | `gpt-6-sol` | `high` | 300,000 tokens, 30 min |
-| `evaluator` | `default-light/evaluator` | `gpt-6-astra` | `high` | 200,000 tokens, 20 min |
+| `implementer` | `default-light/implementer` | `gpt-6.1-sol` | `high` | 1,000,000 tokens, 2 h (`default-light/implementation` only) |
+| `correctness` | `default-light/correctness` | `gpt-6.1-terra` | `high` | 300,000 tokens, 30 min |
+| `evaluator` | `default-light/evaluator` | `gpt-6.1-terra` | `high` | 200,000 tokens, 20 min |
 
 It gives up the bug-bounty reviewer (`bugs`) and the gate-time and quality reviewer (`uix`). The
 correctness reviewer's prompt makes the concrete functional defects on the paths the change
@@ -715,14 +719,14 @@ These Task limits fit it; the local gate alone reserves 2 h 10 min of the wall:
 }
 ```
 
-The catalog binds `default-light/implementer` to `claude-main` and the two judges to
-`codex-main`; map them in your local bindings file as for the default pipeline:
+The catalog binds the implementer and both judges to `codex-main`; map them in your local
+bindings file as for the default pipeline:
 
 ```toml
 schema = "af.task-bindings/1"
 
 [providers]
-"default-light/implementer" = "claude-personal"
+"default-light/implementer" = "codex-personal"
 "default-light/correctness" = "codex-personal"
 "default-light/evaluator" = "codex-personal"
 ```
@@ -1140,8 +1144,8 @@ af task report implement-x verify-x --json
 
 The block leads with one line per pipeline the Tasks ran: `**name@version**:` and its steps in
 dependency order, each named by its role with its Worker in parentheses (`codex
-gpt-6-sol/high`, or `command`), the gate with its check names, and parallel steps of one role
-grouped (`review (bugs, correctness: codex gpt-6-sol/high)`); Provider admission is left out.
+gpt-6.1-terra/high`, or `command`), the gate with its check names, and parallel steps of one role
+grouped (`review (bugs, correctness: codex gpt-6.1-terra/high)`); Provider admission is left out.
 A Task whose plan is no longer retained (it was collected) or that never reached planning names
 no pipeline, and one line `**unknown pipeline**: not retained` stands for all such Tasks.
 Then each Task is a round, numbered in the order given, with one row: its state as `task show`

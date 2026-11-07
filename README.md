@@ -294,6 +294,7 @@ tools a Gate calls, but not `gh` or its login for a Remote Check; it does not ru
 
 For model-driven implementation Tasks, `af onboard --tasks` previews a pinned Task
 catalog, code policy, Worker packages and `[task.defaults]` without spending tokens.
+Its Codex implementer uses GPT-6.1 Sol/high; independent judges use GPT-6.1 Terra/high.
 `af onboard --tasks --apply` creates review and Task authority together, or adds
 absent Task files to an existing review `.af/` and appends the defaults. It refuses an
 existing Task target or `[task]` table. Review and commit the resulting diff before

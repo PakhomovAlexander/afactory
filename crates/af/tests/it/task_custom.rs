@@ -44,7 +44,13 @@ impl Fixture {
             for part in ["kind", "worker", "pipeline"] {
                 let name = format!("custom/{kind}-{part}");
                 let path = format!("custom-tasks/{kind}/{part}");
-                catalog["packages"][&name] = json!({"version":"1.0.0","path":path,"digest":review_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
+                let manifest: Value = toml::from_str(
+                    &std::fs::read_to_string(repo.join(&path).join(format!("{part}.toml")))
+                        .unwrap(),
+                )
+                .unwrap();
+                let version = manifest["version"].as_str().unwrap();
+                catalog["packages"][&name] = json!({"version":version,"path":path,"digest":review_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
             }
             catalog["kinds"][kind] = json!(format!("custom/{kind}-kind"));
             catalog["providers"][format!("custom/{kind}-worker")] = json!("codex-personal");
@@ -224,7 +230,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         )
         .unwrap();
         let binding = &planned["plan"]["bindings"];
-        assert!(binding.to_string().contains("gpt-6-astra"), "{binding}");
+        assert!(binding.to_string().contains("gpt-6.1-sol"), "{binding}");
         assert!(binding.to_string().contains("medium"), "{binding}");
         assert!(binding.to_string().contains("codex-personal"), "{binding}");
         assert_eq!(binding.as_object().unwrap().len(), 1);
