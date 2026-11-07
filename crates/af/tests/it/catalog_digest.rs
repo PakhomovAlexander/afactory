@@ -105,6 +105,75 @@ fn every_published_package_pin_reproduces() {
     assert!(checked >= 28, "fixture catalogs held {checked} pins");
 }
 
+/// The coordinator's real token-free observation is separate from the synthetic parser
+/// fixtures. It proves harness-advertised support only; inference access needs admission.
+fn recorded_codex_models() -> Vec<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+
+    let bytes =
+        include_bytes!("../fixtures/provider-models/codex-provider-models-recorded-20261107.json");
+    let observation: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let provenance: serde_json::Value = serde_json::from_str(include_str!(
+        "../fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json"
+    ))
+    .unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("provider-models-v2.json"),
+        &observation,
+    );
+    let schema = crate::schemas::validator("codex-model-catalog-observation-v1.json");
+    crate::schemas::valid(&schema, &provenance);
+    let mut old = provenance.clone();
+    old["schema"] = "af.codex-model-catalog-observation/0".into();
+    assert!(!schema.is_valid(&old));
+    assert_eq!(
+        provenance["recorded_projection_sha256"],
+        format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(bytes))
+        )
+    );
+    assert_eq!(observation["exit_code"], 0);
+    assert_eq!(observation["token_free"], true);
+    let providers = observation["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 1);
+    let provider = &providers[0];
+    assert_eq!(provider["kind"], "codex");
+    assert_eq!(provider["state"], "listed");
+    for field in ["source", "harness_version", "freshness"] {
+        assert_eq!(provider[field], provenance[field], "{field}");
+    }
+    let models = provider["models"].as_array().unwrap();
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["gpt-6.1-sol", "gpt-6.1-terra"]
+    );
+    models.clone()
+}
+
+fn assert_recorded_codex_support(
+    models: &[serde_json::Value],
+    name: &str,
+    model: &str,
+    effort: &str,
+) {
+    let listed = models
+        .iter()
+        .find(|row| row["id"].as_str() == Some(model))
+        .unwrap_or_else(|| panic!("{name}: {model} absent from recorded observation"));
+    assert!(
+        listed["effort_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|level| level.as_str() == Some(effort)),
+        "{name}: {model}/{effort} absent from recorded observation"
+    );
+}
+
 /// Audit every shipped Task package, including packages not used by today's default, against
 /// the supported Codex catalog. Judges share Terra, while source/document authors use Sol.
 #[test]
@@ -115,10 +184,7 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
     let catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
-    let models: serde_json::Value = serde_json::from_str(include_str!(
-        "../fixtures/provider-models/codex-model-list.json",
-    ))
-    .unwrap();
+    let models = recorded_codex_models();
     let mut checked = 0;
     for (name, pin) in catalog["packages"].as_table().unwrap() {
         let package = root.join(pin["path"].as_str().unwrap());
@@ -193,21 +259,7 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
         if let Some(provider) = catalog["providers"].get(worker.name.as_str()) {
             assert_eq!(provider.as_str(), Some("codex-main"), "{}", worker.name);
         }
-        let listed = models["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"].as_str() == Some(model.as_str()))
-            .unwrap();
-        assert!(
-            listed["supportedReasoningEfforts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|level| level["reasoningEffort"].as_str() == Some(effort.as_str())),
-            "{}: {model}/{effort}",
-            worker.name
-        );
+        assert_recorded_codex_support(&models, &worker.name, model, effort);
         checked += 1;
     }
     assert!(checked >= 25, "audited only {checked} model Workers");
@@ -217,12 +269,16 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
     );
 }
 
-/// All current size/S rubrics and the staged example's input describe the Workers selected
-/// by the light implementation pipeline, including model family, effort and role.
-#[test]
-fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and_roles() {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+const LIGHT_ROLES: [(&str, &str, &str); 3] = [
+    ("implementer", "implement", "Implementer"),
+    ("correctness", "review", "correctness reviewer"),
+    ("evaluator", "evaluate", "evaluator"),
+];
 
+fn selected_light_workers() -> (
+    review_core::task::pipeline::PipelineDefinitionV1,
+    BTreeMap<String, review_config::task::catalog::TaskWorkerManifest>,
+) {
     let root = workspace();
     let catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
@@ -233,29 +289,65 @@ fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and
             .unwrap(),
     )
     .unwrap();
-    let expected = [
-        ("implementer", "Implementer"),
-        ("correctness", "correctness reviewer"),
-        ("evaluator", "evaluator"),
-    ]
-    .map(|(slot, role)| {
-        let worker: TaskWorkerManifest = toml::from_str(
-            &std::fs::read_to_string(package(&pipeline.slots[slot].worker).join("worker.toml"))
-                .unwrap(),
-        )
-        .unwrap();
+    let workers = LIGHT_ROLES
+        .into_iter()
+        .map(|(slot, _, _)| {
+            let worker = toml::from_str(
+                &std::fs::read_to_string(package(&pipeline.slots[slot].worker).join("worker.toml"))
+                    .unwrap(),
+            )
+            .unwrap();
+            (pipeline.slots[slot].worker.clone(), worker)
+        })
+        .collect();
+    (pipeline, workers)
+}
+
+/// Shared by the positive cross-artifact audit and independent role mutations below. Display
+/// labels are emitted only after the selected slot and Worker agree on the expected role.
+fn validate_small_issue_rubrics(
+    pipeline: &review_core::task::pipeline::PipelineDefinitionV1,
+    workers: &BTreeMap<String, review_config::task::catalog::TaskWorkerManifest>,
+) -> Result<(), String> {
+    use review_config::task::catalog::TaskWorkerRunner;
+
+    let mut expected = Vec::new();
+    for (slot_name, role, label) in LIGHT_ROLES {
+        let slot = &pipeline.slots[slot_name];
+        if slot.role != role {
+            return Err(format!(
+                "{slot_name}: slot.role must be {role}, got {}",
+                slot.role
+            ));
+        }
+        let worker = &workers[&slot.worker];
+        if worker.signature.roles != std::collections::BTreeSet::from([role.to_owned()]) {
+            return Err(format!(
+                "{slot_name}: Worker.signature.roles must be [{role}], got {:?}",
+                worker.signature.roles
+            ));
+        }
         let TaskWorkerRunner::Model {
             provider_kind,
             model,
             effort,
-        } = worker.runner
+        } = &worker.runner
         else {
-            panic!("{slot} must select a model Worker");
+            return Err(format!("{slot_name}: must select a model Worker"));
         };
-        assert_eq!(provider_kind, "codex", "{slot}");
-        format!("{role}: `{model}` {effort}")
-    })
-    .join("; ");
+        let expected_model = if role == "implement" {
+            "gpt-6.1-sol"
+        } else {
+            "gpt-6.1-terra"
+        };
+        if provider_kind != "codex" || model != expected_model || effort != "high" {
+            return Err(format!(
+                "{slot_name}: expected codex {expected_model}/high, got {provider_kind} {model}/{effort}"
+            ));
+        }
+        expected.push(format!("{label}: `{model}` {effort}"));
+    }
+    let expected = expected.join("; ");
     for path in [
         ".af/task-packages/backlog/triage-author/instructions.md",
         ".af/task-packages/backlog/triage-verifier/instructions.md",
@@ -265,7 +357,7 @@ fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and
         "docs/design/issue-triage.md",
         "fixtures/issue-triage/example/task.json",
     ] {
-        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        let text = std::fs::read_to_string(workspace().join(path)).unwrap();
         let text = if path.ends_with(".json") {
             let task: serde_json::Value = serde_json::from_str(&text).unwrap();
             task["requirements"]["rubric"].as_str().unwrap().to_owned()
@@ -276,15 +368,63 @@ fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and
             .lines()
             .filter(|line| line.starts_with("| `S` |"))
             .collect();
-        assert_eq!(rows.len(), 1, "{path}: exactly one size/S rubric");
+        if rows.len() != 1 {
+            return Err(format!("{path}: expected exactly one size/S rubric"));
+        }
         let cells: Vec<_> = rows[0].split('|').map(str::trim).collect();
-        assert_eq!(cells.len(), 6, "{path}: size/S rubric columns");
-        assert_eq!(
-            cells[3],
-            format!("`light` (`{}`, ADR-0262)", pipeline.name),
-            "{path}: selected pipeline"
+        if cells.len() != 6 {
+            return Err(format!("{path}: expected size/S rubric columns"));
+        }
+        if cells[3] != format!("`light` (`{}`, ADR-0262)", pipeline.name) {
+            return Err(format!("{path}: selected pipeline differs"));
+        }
+        if cells[4] != expected {
+            return Err(format!(
+                "{path}: size/S Worker guidance differs: expected {expected}, got {}",
+                cells[4]
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// All six current size/S rubrics and the staged example agree with actual selected roles,
+/// models and efforts, rather than merely matching hard-coded display labels.
+#[test]
+fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and_roles() {
+    let (pipeline, workers) = selected_light_workers();
+    validate_small_issue_rubrics(&pipeline, &workers).unwrap();
+}
+
+#[test]
+fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently() {
+    let (pipeline, workers) = selected_light_workers();
+    validate_small_issue_rubrics(&pipeline, &workers).unwrap();
+    for (slot_name, role, _) in LIGHT_ROLES {
+        let wrong_role = if role == "implement" {
+            "review"
+        } else {
+            "implement"
+        };
+        let mut wrong_pipeline = pipeline.clone();
+        wrong_pipeline.slots.get_mut(slot_name).unwrap().role = wrong_role.into();
+        let error = validate_small_issue_rubrics(&wrong_pipeline, &workers).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{slot_name}: slot.role")),
+            "{error}"
         );
-        assert_eq!(cells[4], expected, "{path}: size/S Worker guidance");
+
+        let mut wrong_workers = workers.clone();
+        wrong_workers
+            .get_mut(&pipeline.slots[slot_name].worker)
+            .unwrap()
+            .signature
+            .roles = std::collections::BTreeSet::from([wrong_role.into()]);
+        let error = validate_small_issue_rubrics(&pipeline, &wrong_workers).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{slot_name}: Worker.signature.roles")),
+            "{error}"
+        );
     }
 }
 
@@ -301,6 +441,7 @@ fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
     let lock =
         Lockfile::from_toml(&std::fs::read_to_string(root.join(".af/af.lock")).unwrap()).unwrap();
     let registry = Registry::new(root.join(".af/workers"));
+    let models = recorded_codex_models();
     for name in lock.workers.keys() {
         let worker = lock
             .resolve_for_subject(name, &registry, review_core::SubjectKind::Diff)
@@ -313,6 +454,7 @@ fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
         let settings = reviewer_runner_settings_from_manifest(&manifest).unwrap();
         assert_eq!(settings.backend, ReviewerBackend::Codex, "{name}");
         assert_eq!(settings.model, "gpt-6.1-terra", "{name}");
+        assert_recorded_codex_support(&models, name, &settings.model, &settings.effort);
         assert_eq!(
             settings.effort,
             if name.contains("xhigh") || name == "performance" {

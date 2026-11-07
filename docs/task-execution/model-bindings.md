@@ -237,3 +237,15 @@ fallback. These checks preserve observed usage on refusal.
 
 Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
 refusal, typed output and replay. Their usage figures are synthetic stub evidence, not live-model measurements.
+
+The shipped Codex Worker support audits use the real token-free harness observation in
+[`codex-provider-models-recorded-20261107.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261107.json).
+Its [versioned provenance](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json)
+records Codex 0.167.0, `codex app-server model/list`, cache freshness, the raw response digest and
+the recorded projection digest. The projection retains the two selected model objects unchanged.
+It advertises `gpt-6.1-sol` and `gpt-6.1-terra` with `low medium high xhigh max ultra`; it proves
+harness-advertised support, never inference or account access. The synthetic `codex-model-list.json`
+and `codex-models-cache.json` fixtures remain parser and fake-harness inputs, separate from this
+observation. Catalog audits check actual model/effort bindings against the observation, and the
+size/S rubric regression checks selected slot roles and Worker signature roles before comparing
+model/effort guidance across all six copies and the staged example.
