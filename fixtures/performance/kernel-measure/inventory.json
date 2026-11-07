@@ -77,7 +77,7 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:9d1e922e5248e1eeabd491a4702c3c618225aeeabd367ecf9964f279792469a3",
+   "sha256": "sha256:ca9a67b4c7d65fc6d2a326a68d2f571bc3ef5427da06f5354f1be7685a06dfbd",
    "size": 24426
   },
   {
@@ -3951,7 +3951,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:d6ee4e5fad3c5299df0760811764c30697f3e15e55514accb01372d59d1bb82c",
+ "harness_digest": "sha256:b5019e34bfa66a30980e7e77bffeb1d59838f5847e6ff379248659f003785da2",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
