@@ -956,12 +956,9 @@ fn commit(repo: &Path) {
 }
 
 fn task_onboard(repo: &Path, registry: &Path, args: &[&str]) -> Output {
-    crate::common::af()
-        .args(["onboard", "--repo", repo.to_str().unwrap(), "--tasks"])
-        .args(args)
-        .env("AF_PROVIDERS_FILE", registry)
-        .output()
-        .unwrap()
+    let mut arguments = vec!["--tasks"];
+    arguments.extend_from_slice(args);
+    onboard_with(repo, registry, &arguments)
 }
 
 #[test]
@@ -1295,6 +1292,129 @@ fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("[task]"));
     assert!(!other.join(".af/task-catalog.toml").exists());
+}
+
+#[test]
+fn combined_task_preview_reports_missing_review_and_task_providers_in_json_and_text() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    let schema = crate::schemas::validator("onboard-tasks-v1.json");
+    for (name, providers, profile, missing_claude, missing_codex) in [
+        (
+            "codex-mixed",
+            &[("codex-main", "codex")][..],
+            "mixed",
+            true,
+            false,
+        ),
+        (
+            "codex-claude",
+            &[("codex-main", "codex")][..],
+            "claude",
+            true,
+            false,
+        ),
+        (
+            "codex-codex",
+            &[("codex-main", "codex")][..],
+            "codex",
+            false,
+            false,
+        ),
+        (
+            "claude-mixed",
+            &[("claude-main", "claude")][..],
+            "mixed",
+            false,
+            true,
+        ),
+        (
+            "claude-claude",
+            &[("claude-main", "claude")][..],
+            "claude",
+            false,
+            true,
+        ),
+        ("none-mixed", &[][..], "mixed", true, true),
+        (
+            "both-mixed",
+            &[("codex-main", "codex"), ("claude-main", "claude")][..],
+            "mixed",
+            false,
+            false,
+        ),
+    ] {
+        let provider = registry(&root.path().join(name), providers);
+        let args = ["--runner", profile, "--gate", "check=true"];
+        let mut json_args = args.to_vec();
+        json_args.push("--json");
+        let preview = task_onboard(&repo, &provider, &json_args);
+        assert!(preview.status.success(), "{name}: {}", stderr(&preview));
+        let report: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+        crate::schemas::valid(&schema, &report);
+        let steps: Vec<_> = report["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step.as_str().unwrap().to_owned())
+            .collect();
+        let text = task_onboard(&repo, &provider, &args);
+        assert!(text.status.success(), "{name}: {}", stderr(&text));
+        assert_eq!(steps, block(&stdout(&text), "next"), "{name}");
+        for (kind, missing) in [("claude", missing_claude), ("codex", missing_codex)] {
+            let setup = format!("af provider setup {kind}-main --kind {kind} --login");
+            assert_eq!(
+                steps.iter().any(|step| step.contains(&setup)),
+                missing,
+                "{name}: {steps:?}"
+            );
+        }
+        assert!(!repo.join(".af").exists());
+    }
+}
+
+#[test]
+fn additive_task_preview_does_not_request_claude_for_a_review_runner_option() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    std::fs::create_dir(repo.join(".af")).unwrap();
+    let authority = "version = 1\n";
+    std::fs::write(repo.join(".af/af.toml"), authority).unwrap();
+    for (name, providers, missing_codex) in [
+        ("codex", &[("codex-main", "codex")][..], false),
+        ("none", &[][..], true),
+    ] {
+        let provider = registry(&root.path().join(name), providers);
+        let args = ["--runner", "mixed", "--gate", "check=true"];
+        let mut json_args = args.to_vec();
+        json_args.push("--json");
+        let preview = task_onboard(&repo, &provider, &json_args);
+        assert!(preview.status.success(), "{}", stderr(&preview));
+        let report: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+        let steps: Vec<_> = report["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step.as_str().unwrap().to_owned())
+            .collect();
+        let text = task_onboard(&repo, &provider, &args);
+        assert!(text.status.success(), "{}", stderr(&text));
+        assert_eq!(steps, block(&stdout(&text), "next"));
+        assert!(
+            !steps.iter().any(|step| step.contains("--kind claude")),
+            "{steps:?}"
+        );
+        assert_eq!(
+            steps.iter().any(|step| step.contains("--kind codex")),
+            missing_codex,
+            "{steps:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".af/af.toml")).unwrap(),
+            authority
+        );
+        assert!(!repo.join(".af/task-catalog.toml").exists());
+    }
 }
 
 #[test]

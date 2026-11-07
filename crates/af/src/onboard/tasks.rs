@@ -99,6 +99,7 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
             "After committing, plan a Task: af task plan --file ticket.json".into(),
         ],
     };
+    let mut required_provider_kinds = BTreeSet::from(["codex"]);
     if existing {
         let original = preflight(&repo, &task_files)?;
         report.files = task_files.keys().cloned().collect();
@@ -111,6 +112,13 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
         let review_profile = options.runner.unwrap_or(profile);
         let mut bundle = build_bundle(&repo, review_profile, gates, options.af.as_deref())?;
         validate_bundle(&bundle)?;
+        required_provider_kinds.extend(
+            bundle
+                .report
+                .reviewers
+                .iter()
+                .filter_map(|reviewer| provider_kind(&reviewer.runner)),
+        );
         report.warnings = bundle.report.warnings.clone();
         for (path, bytes) in task_files {
             bundle.files.insert(path, bytes);
@@ -134,8 +142,10 @@ pub(super) fn run(options: &Options) -> Result<(), String> {
     if options.apply {
         report.next_steps.remove(0);
     }
-    if registry.ids_of("codex").is_empty() {
-        report.next_steps.insert(0, "No codex Provider is registered; run af provider detect or af provider setup codex-main --kind codex --login".into());
+    for kind in required_provider_kinds {
+        if registry.ids_of(kind).is_empty() {
+            report.next_steps.insert(0, format!("No {kind} Provider is registered; run af provider detect or af provider setup {kind}-main --kind {kind} --login"));
+        }
     }
     if options.json {
         println!(

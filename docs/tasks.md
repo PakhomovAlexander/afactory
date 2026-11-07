@@ -52,7 +52,10 @@ automatic Integration are outside this path.
   diff and commit `.af/` before planning; local, uncommitted files are not authority.
   The generated implementer uses Codex `gpt-6.1-sol` at high effort; independent
   reviewers and the evaluator use `gpt-6.1-terra` at high effort, all on `codex-main`.
-  `--runner` selects review authority; Task Workers always require a Codex Provider.
+  `--runner` selects Review authority; Task Workers always require a Codex Provider.
+  A combined new-repository preview reports missing Providers for both the selected Review
+  profile and the Codex Task Workers. Adding Task files to existing authority reports only
+  the Codex Task requirement; it preserves existing Review authority regardless of `--runner`.
 
 `af catalog init --profile software --destination task-demo` creates a new starter directory,
 which must not exist yet, holding a working, credential-free catalog and runnable Task files

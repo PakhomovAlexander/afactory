@@ -105,33 +105,88 @@ fn every_published_package_pin_reproduces() {
     assert!(checked >= 28, "fixture catalogs held {checked} pins");
 }
 
+const RAW_CODEX_MODELS: &[u8] =
+    include_bytes!("../fixtures/provider-models/codex-provider-models-raw-20261107.json");
+const PROJECTED_CODEX_MODELS: &[u8] =
+    include_bytes!("../fixtures/provider-models/codex-provider-models-recorded-20261107.json");
+
+fn codex_observation_provenance() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json"
+    ))
+    .unwrap()
+}
+
+fn response_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    format!(
+        "sha256:{}",
+        review_core::hex::encode(&Sha256::digest(bytes))
+    )
+}
+
+/// Validate both recorded byte streams before reproducing the projection. Filtering the raw
+/// array preserves model objects, their order and every field outside that array.
+fn validate_recorded_codex_projection(
+    raw_bytes: &[u8],
+    bytes: &[u8],
+    provenance: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    static SCHEMAS: std::sync::OnceLock<(jsonschema::Validator, jsonschema::Validator)> =
+        std::sync::OnceLock::new();
+    let (schema, provider_schema) = SCHEMAS.get_or_init(|| {
+        (
+            crate::schemas::validator("codex-model-catalog-observation-v1.json"),
+            crate::schemas::validator("provider-models-v2.json"),
+        )
+    });
+    if !schema.is_valid(provenance) {
+        return Err("invalid observation provenance schema".into());
+    }
+    for (label, content, digest) in [
+        ("raw", raw_bytes, "raw_response_sha256"),
+        ("projected", bytes, "recorded_projection_sha256"),
+    ] {
+        let document: serde_json::Value =
+            serde_json::from_slice(content).map_err(|error| error.to_string())?;
+        if !provider_schema.is_valid(&document) {
+            return Err(format!("invalid {label} provider-models schema"));
+        }
+        if provenance[digest] != response_digest(content) {
+            return Err(format!("{label} response digest mismatch"));
+        }
+    }
+    let mut projected: serde_json::Value = serde_json::from_slice(raw_bytes).unwrap();
+    let providers = projected["providers"].as_array_mut().unwrap();
+    if providers.len() != 1 {
+        return Err("expected exactly one raw Provider".into());
+    }
+    providers[0]["models"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|model| matches!(model["id"].as_str(), Some("gpt-6.1-sol" | "gpt-6.1-terra")));
+    let observation: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    if projected != observation {
+        return Err("recorded projection differs from filtered raw response".into());
+    }
+    Ok(observation)
+}
+
 /// The coordinator's real token-free observation is separate from the synthetic parser
 /// fixtures. It proves harness-advertised support only; inference access needs admission.
 fn recorded_codex_models() -> Vec<serde_json::Value> {
-    use sha2::{Digest, Sha256};
-
-    let bytes =
-        include_bytes!("../fixtures/provider-models/codex-provider-models-recorded-20261107.json");
-    let observation: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    let provenance: serde_json::Value = serde_json::from_str(include_str!(
-        "../fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json"
-    ))
-    .unwrap();
-    crate::schemas::valid(
-        &crate::schemas::validator("provider-models-v2.json"),
-        &observation,
-    );
+    let provenance = codex_observation_provenance();
+    let observation =
+        validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
+            .unwrap();
     let schema = crate::schemas::validator("codex-model-catalog-observation-v1.json");
-    crate::schemas::valid(&schema, &provenance);
     let mut old = provenance.clone();
     old["schema"] = "af.codex-model-catalog-observation/0".into();
     assert!(!schema.is_valid(&old));
     assert_eq!(
-        provenance["recorded_projection_sha256"],
-        format!(
-            "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(bytes))
-        )
+        provenance["raw_response_sha256"],
+        "sha256:840e259bf064b579ff4d9362d38ef6bde3c9592e11b893b9ce5f3beb9f5d3ffe"
     );
     assert_eq!(observation["exit_code"], 0);
     assert_eq!(observation["token_free"], true);
@@ -152,6 +207,77 @@ fn recorded_codex_models() -> Vec<serde_json::Value> {
         ["gpt-6.1-sol", "gpt-6.1-terra"]
     );
     models.clone()
+}
+
+#[test]
+fn recorded_codex_projection_rejects_changed_selected_models_and_other_fields() {
+    let provenance = codex_observation_provenance();
+    validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
+        .unwrap();
+    let mut reformatted = PROJECTED_CODEX_MODELS.to_vec();
+    reformatted.push(b'\n');
+    assert_eq!(
+        validate_recorded_codex_projection(RAW_CODEX_MODELS, &reformatted, &provenance)
+            .unwrap_err(),
+        "projected response digest mismatch"
+    );
+    // Each mutation remains schema-valid. Update its digest too: the equality check must
+    // detect a rewritten selected model or unrelated field, independently of byte hashing.
+    for (pointer, replacement) in [
+        (
+            "/providers/0/models/0/display_name",
+            serde_json::json!("changed Sol"),
+        ),
+        (
+            "/providers/0/models/1/effort_levels",
+            serde_json::json!(["high"]),
+        ),
+        ("/proves", serde_json::json!("changed scope")),
+        ("/providers/0/skipped_entries", serde_json::json!(1)),
+        (
+            "/providers/0/freshness/fetched_at",
+            serde_json::json!("2026-11-06T00:00:00Z"),
+        ),
+        (
+            "/providers/0/static_rules/effort_levels",
+            serde_json::json!(["high"]),
+        ),
+    ] {
+        let mut altered: serde_json::Value =
+            serde_json::from_slice(PROJECTED_CODEX_MODELS).unwrap();
+        *altered.pointer_mut(pointer).unwrap() = replacement;
+        let bytes = serde_json::to_vec(&altered).unwrap();
+        let mut updated = provenance.clone();
+        updated["recorded_projection_sha256"] = response_digest(&bytes).into();
+        let error =
+            validate_recorded_codex_projection(RAW_CODEX_MODELS, &bytes, &updated).unwrap_err();
+        assert_eq!(
+            error, "recorded projection differs from filtered raw response",
+            "{pointer}"
+        );
+    }
+
+    let mut raw: serde_json::Value = serde_json::from_slice(RAW_CODEX_MODELS).unwrap();
+    raw["providers"][0]["models"][2]["default_effort"] = "high".into();
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    assert_eq!(
+        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &provenance)
+            .unwrap_err(),
+        "raw response digest mismatch"
+    );
+    let mut updated = provenance.clone();
+    updated["raw_response_sha256"] = response_digest(&bytes).into();
+    assert_eq!(
+        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &updated).unwrap_err(),
+        "recorded projection differs from filtered raw response"
+    );
+    raw["token_free"] = false.into();
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    updated["raw_response_sha256"] = response_digest(&bytes).into();
+    assert_eq!(
+        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &updated).unwrap_err(),
+        "invalid raw provider-models schema"
+    );
 }
 
 fn assert_recorded_codex_support(

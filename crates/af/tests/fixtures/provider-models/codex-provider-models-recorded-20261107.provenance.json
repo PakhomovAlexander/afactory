@@ -10,6 +10,6 @@
     "fetched_at": "2026-11-07T00:36:59.667166Z"
   },
   "scope": "Real token-free harness observation of advertised model IDs and effort levels, projected to the two selected models. Not a synthetic parser fixture and not proof of inference access. No credentials, account identifiers or authentication paths are included.",
-  "projection": "The original response models array was filtered to gpt-6.1-sol and gpt-6.1-terra. Selected model objects and all other fields are unchanged. The original response is retained locally; raw_response_sha256 identifies it.",
+  "projection": "Filter the models array of the adjacent in-tree codex-provider-models-raw-20261107.json to gpt-6.1-sol and gpt-6.1-terra, retaining array order, selected model objects and every other field unchanged. The raw_response_sha256 identifies its exact original bytes; recorded_projection_sha256 identifies the pretty-printed codex-provider-models-recorded-20261107.json. Other raw model entries are observational data, not configured pipeline selections.",
   "recorded_projection_sha256": "sha256:5070efd4d577f2ba0e2eb1bc7e5c5cab7f9eb989d991353a4a8bde08c51ff212"
 }

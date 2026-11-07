@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:codex-model-catalog-observation:1",
   "title": "Codex model catalog observation provenance@1",
-  "$comment": "Credential-free provenance for a captured token-free harness catalog projection. The coordinator writes this observation; it proves advertised IDs and efforts, never inference/account access. Raw response bytes remain outside the repository and are identified by their digest; the recorded projection retains the selected model objects unchanged.",
+  "$comment": "Credential-free provenance for a captured token-free harness catalog projection. The coordinator writes this observation; it proves advertised IDs and efforts, never inference/account access. The original response bytes are in crates/af/tests/fixtures/provider-models/codex-provider-models-raw-20261107.json, identified by raw_response_sha256. Filter only its models array to gpt-6.1-sol and gpt-6.1-terra to reproduce the recorded projection, retaining selected objects, their order and every other field unchanged. Other raw model entries are observations, not pipeline selections.",
   "type": "object",
   "additionalProperties": false,
   "required": [
