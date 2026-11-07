@@ -2839,9 +2839,12 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
                 providers::setup(&id, kind, auth_dir.as_deref(), login, json)
             }
         }
-        cli::ProviderCommand::Models { ids, json, resolve } => {
-            providers::models::print_models(&ids, json, resolve.as_deref())
-        }
+        cli::ProviderCommand::Models {
+            ids,
+            json,
+            resolve,
+            page,
+        } => providers::models::print_models(&ids, json, resolve.as_deref(), usize::from(page)),
         cli::ProviderCommand::Add {
             id,
             kind,

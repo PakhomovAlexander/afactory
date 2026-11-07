@@ -130,7 +130,7 @@ impl TaskProviderIdentity {
                 spec,
                 program,
                 principal_id: ready.principal.clone(),
-                auth_method: "oauth".into(),
+                auth_method: ready.auth_method.clone(),
                 pi_ready: Some(ready),
                 org: None,
                 cli_version: None,
@@ -195,6 +195,7 @@ impl TaskProviderIdentity {
                         .as_deref()
                         .ok_or("Pi auth directory missing")?,
                     model,
+                    &ready.auth_method,
                 )
             })
             .transpose()?;
@@ -349,7 +350,7 @@ impl TaskProviderIdentity {
                 deadline.saturating_duration_since(Instant::now()),
             )
             .map_err(Recheck::Unavailable)?;
-            if ready.principal != self.principal_id {
+            if ready.principal != self.principal_id || ready.auth_method != self.auth_method {
                 return Err(Recheck::NotCurrent);
             }
             return Ok(Rechecked::default());

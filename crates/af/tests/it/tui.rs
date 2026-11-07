@@ -446,7 +446,7 @@ fn registered_machine(home: &Path) -> String {
     std::fs::write(
         &registry,
         format!(
-            "version = 3\n[[providers]]\nid = \"codex-fixture\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            "version = 4\n[[providers]]\nid = \"codex-fixture\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             auth.canonicalize().unwrap().to_str().unwrap()
         ),
     )
@@ -1329,7 +1329,7 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     let config = home.join("config/af");
     std::fs::create_dir_all(&config).unwrap();
     // Two registered Codex contexts, and a `codex` that answers its login status at once.
-    let mut registry = "version = 3\n".to_owned();
+    let mut registry = "version = 4\n".to_owned();
     for id in ["codex-main", "codex-work"] {
         let auth = home.join(id);
         std::fs::create_dir(&auth).unwrap();

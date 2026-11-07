@@ -274,8 +274,8 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
 
     // Snapshot after the kill: abandoned by a lost writer, and what continues it.
     let shown = abandoned_inspection(&f);
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &shown);
-    assert_eq!(shown["schema"], "af/task-inspection@16");
+    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
+    assert_eq!(shown["schema"], "af/task-inspection@17");
     assert_eq!(
         shown["phase"]["kind"], "running",
         "the recorded phase stays"
@@ -536,7 +536,7 @@ fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows
             .output()
             .unwrap(),
     );
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &planned);
+    schemas::valid(&schemas::validator("task-inspection-v17.json"), &planned);
     assert_eq!(planned["graph"]["schema"], "af.compiled-task/2");
     schemas::valid(
         &schemas::validator("compiled-task-v2.json"),

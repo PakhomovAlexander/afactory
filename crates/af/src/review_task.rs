@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use review_config::captured_review::ReviewMode;
 use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
-use review_core::task::{EXECUTION_PLAN_V3, TASK_REVISION_V1, TaskRevisionV1};
+use review_core::task::{EXECUTION_PLAN_V4, TASK_REVISION_V1, TaskRevisionV1};
 use review_graph::NodeKind;
 use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
 use review_pipeline::task::campaign_review::plan::{
@@ -241,7 +241,7 @@ fn capture_new(
     let plan_id = persist(
         cas,
         task_id,
-        EXECUTION_PLAN_V3,
+        EXECUTION_PLAN_V4,
         vec![revision_id.clone()],
         &plan,
     )?;

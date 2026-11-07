@@ -747,7 +747,7 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(bin.join("npx"), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":3,"providers":[
+    std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[
         {"id":"pi-kimi","kind":"pi","backend":"kimi-coding","auth_dir":home,"sdk_entrypoint":sdk},
         {"id":"codex-main","kind":"codex","auth_dir":codex_auth}
     ]})).unwrap()).unwrap();
@@ -859,7 +859,7 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
         let envelope = cas.get_json(result["plan_id"].as_str().unwrap()).unwrap();
-        assert_eq!(envelope["type"], "af/ExecutionPlan@3");
+        assert_eq!(envelope["type"], "af/ExecutionPlan@4");
         let plan: review_core::task::plan::ExecutionPlanV3 =
             serde_json::from_value(envelope["payload"].clone()).unwrap();
         plan.validate().unwrap();

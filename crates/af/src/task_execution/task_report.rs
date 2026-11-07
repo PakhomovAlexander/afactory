@@ -863,7 +863,7 @@ struct Plans(BTreeMap<String, (ExecutionPlanV3, CompiledTask)>);
 impl Plans {
     fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlanV3, &CompiledTask), String> {
         if !self.0.contains_key(id) {
-            let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V3)?;
+            let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V4)?;
             let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
             self.0.insert(id.to_owned(), (plan, graph));
         }

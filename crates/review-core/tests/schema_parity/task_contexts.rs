@@ -114,7 +114,7 @@ fn builtin_and_document_contexts_keep_their_distinct_existing_shapes() {
 
 #[test]
 fn provider_context_pins_readiness_and_keeps_business_authority_out() {
-    let schema = "task-provider-context-v2.json";
+    let schema = "task-provider-context-v3.json";
     let value = json!({"invocation":invocation(),"capability":{"plan_id":id(),"bindings":["root.writer"],"execution":{"kind":"model","provider":"alias","provider_kind":"fixture","principal_id":"account","model":"resolved","effort":"high"},"invocation_policy_id":id(),"outcome":"passed"},"rendered_id":id(),"manifest":{"entries":[{"name":"capability_probe","required_by":"installed Provider admission","artifact_id":id(),"rendered_bytes":23,"estimated_tokens":6}],"rendered_bytes":23,"estimated_tokens":6}});
     assert_valid(schema, &value);
     for (path, replacement) in [

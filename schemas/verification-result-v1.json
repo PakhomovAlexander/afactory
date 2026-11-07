@@ -13,13 +13,13 @@
   ],
   "properties": {
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "policy_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "outcome": {
       "enum": [
@@ -29,10 +29,10 @@
       ]
     },
     "check_receipt_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "evaluation_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     }
   },
   "allOf": [

@@ -115,7 +115,7 @@ pub(super) fn plan_for(f: &Fixture, revision: &TaskRevisionV1) -> (String, Strin
     plan.task_revision_id = revision_id.clone();
     plan.inputs = revision.inputs.clone();
     plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
-    (revision_id, put(&f.cas, task::EXECUTION_PLAN_V3, &plan))
+    (revision_id, put(&f.cas, task::EXECUTION_PLAN_V4, &plan))
 }
 #[test]
 fn source_refresh_is_atomic_invalidates_approval_and_retains_paid_and_late_usage() {

@@ -41,16 +41,16 @@
       ],
       "properties": {
         "authority_snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "campaign_manifest_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "subject_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "head_snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "round_event_id": {
           "type": "string",
@@ -85,19 +85,19 @@
       ],
       "properties": {
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
         },
         "revision_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "plan_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "phase": {
           "$ref": "urn:af:schema:task-phase:1"
         },
         "limits": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/limits"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/limits"
         },
         "committed_tokens": {
           "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
@@ -142,7 +142,7 @@
           "execution": {
             "allOf": [
               {
-                "$ref": "urn:af:schema:task-contracts:2#/$defs/workerExecution"
+                "$ref": "urn:af:schema:task-contracts:3#/$defs/workerExecution"
               },
               {
                 "properties": {
@@ -168,14 +168,14 @@
                     "const": "completed"
                   },
                   "output_id": {
-                    "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+                    "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
                   },
                   "admission_ids": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 1,
                     "items": {
-                      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+                      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
                     }
                   }
                 }

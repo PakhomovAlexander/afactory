@@ -1411,7 +1411,7 @@ unavailable, 8 a host-denied probe.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@5` document instead of the table
+        /// Emit the versioned `af/provider-status@6` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -1428,8 +1428,9 @@ For every registered Provider, or the named ones, af reads the catalog its harne
 through the harness's own local protocol, under that Provider's auth directory and the bounded \
 probe environment `af provider status` uses, and never starts a turn: Claude Code answers the \
 `list_models` control request of a stream-json session af closes before any turn, Codex answers \
-`model/list` on a bare `codex app-server`. Pi's AF host reads the pinned SDK's static catalog \
-without model networking. Each Provider gets a header with the source, the \
+`model/list` on a bare `codex app-server`. Pi's AF host reads the effective SDK/profile chat catalog \
+without model networking. Pi catalogs use --page N (zero-based), at most 64 models per page; \
+JSON catalog_page names the total and next page. --resolve checks the complete captured catalog. Each Provider gets a header with the source, the \
 harness version and the freshness (Codex: `fetched_at` of `models_cache.json` when readable, \
 else live), one row per exact model ID with its display name, the aliases that resolve to it \
 and its effort levels with the default marked, and a sentence saying what the list proves: af \
@@ -1453,7 +1454,10 @@ catalog is unavailable (the static rules are printed and nothing is invented).",
         /// Provider IDs to list (default: every registered Provider)
         #[arg(value_name = "ID")]
         ids: Vec<String>,
-        /// Emit the versioned `af/provider-models@2` document instead of the table
+        /// Pi catalog page (zero-based, at most 64 models per page)
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..64))]
+        page: u16,
+        /// Emit the versioned `af/provider-models@3` document instead of the table
         #[arg(long)]
         json: bool,
         /// Resolve a human model spelling, with an optional /EFFORT, to an exact ID
@@ -1474,8 +1478,9 @@ stdout and stderr, because the OAuth URL and authorization code that login print
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
 --auth-dir names an existing directory; only --login creates a missing one, because a login \
 needs a home.\n\n\
-Pi requires --backend openai-codex or kimi-coding and stored OAuth. OpenAI requires accountId; \
-Kimi account identity is unavailable and distinct_principals policy refuses it. Use Node >=22.19 \
+Pi requires an exact SDK/profile --backend and explicit --auth-dir. Stored OAuth, API keys and \
+explicit af-context.json environment/cloud contexts use the SDK resolver. OpenAI Codex requires \
+accountId; unavailable native identities refuse distinct_principals policy. Use Node >=22.19 \
 and the official Pi SDK 1.4.0 outside a repository. Pass --sdk-entrypoint to its dist/index.js \
 when its installed launcher cannot resolve it. Pi uses an embedded AF SDK host and confined file \
 tools, no shell or ambient resources. Pi setup never starts login; --login is unavailable.\n\n\
@@ -1495,7 +1500,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Provider CLI family
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
-        /// Pi upstream backend (openai-codex or kimi-coding); required for --kind pi
+        /// Exact Pi SDK/profile provider ID; required for --kind pi
         #[arg(long)]
         backend: Option<String>,
         /// Absolute installed Pi 1.4.0 SDK dist/index.js (never a repository module)
@@ -1507,7 +1512,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@3`)
+        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@4`)
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },

@@ -1,5 +1,5 @@
 use super::*;
-use review_pipeline::task::campaign_review::plan::REVIEW_TASK_POLICY_V6;
+use review_pipeline::task::campaign_review::plan::REVIEW_TASK_POLICY_V7;
 
 fn definition(order: &[&str]) -> String {
     include_str!("../../../../../review-config/tests/fixtures/dynamic-v5.toml").replace(
@@ -63,7 +63,7 @@ fn integration_is_captured_only_for_heavy_rounds_with_its_original_dormant_allow
             cas.get_artifact(compiler.policy_id())
                 .unwrap()
                 .artifact_type,
-            REVIEW_TASK_POLICY_V6
+            REVIEW_TASK_POLICY_V7
         );
         if mode == "heavy" {
             let dormant = graph.review_integration.as_ref().unwrap();

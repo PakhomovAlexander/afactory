@@ -31,6 +31,26 @@ pub struct EffectiveWorkerBindingV3 {
     pub invocation_policy_id: String,
 }
 
+/// Pi catalog identifiers include cloud model versions (`:0`) and routed model IDs.
+pub fn pi_identifier(value: &str) -> bool {
+    if value.starts_with("arn:")
+        && value
+            .split(':')
+            .nth(4)
+            .is_some_and(|account| !account.is_empty())
+    {
+        return false;
+    }
+    !value.is_empty()
+        && value.len() <= 256
+        && !value.starts_with('/')
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._/:@+~".contains(&b))
+}
+pub const PI_EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /// Captured Pi SDK authority. All fields are non-secret; account identity is the Model
 /// binding's opaque principal. Native model endpoints/configuration are pinned by digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +62,7 @@ pub enum PiIdentityModeV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PiAuthorityV2 {
+pub struct PiAuthorityV3 {
     pub identity_mode: PiIdentityModeV1,
     pub backend: String,
     pub auth_method: String,
@@ -73,7 +93,7 @@ pub enum WorkerExecutionV3 {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "super::present_option"
         )]
-        pi: Option<Box<PiAuthorityV2>>,
+        pi: Option<Box<PiAuthorityV3>>,
     },
 }
 
@@ -117,17 +137,17 @@ impl WorkerExecutionV3 {
                                 && principal_id.as_deref().is_some_and(is_digest)
                         }
                         PiIdentityModeV1::Unavailable => {
-                            identity.backend == "kimi-coding"
-                                && principal_id.is_none()
-                                && model == "k3"
-                                && matches!(effort.as_str(), "low" | "high" | "max")
+                            identity.backend != "openai-codex" && principal_id.is_none()
                         }
                     },
                     "Pi binding requires an honest supported identity mode and exact model settings",
                 )?;
                 require(
-                    matches!(identity.backend.as_str(), "openai-codex" | "kimi-coding")
-                        && identity.auth_method == "oauth"
+                    pi_identifier(&identity.backend)
+                        && pi_identifier(model)
+                        && PI_EFFORTS.contains(&effort.as_str())
+                        && ["oauth", "api_key", "context"].contains(&identity.auth_method.as_str())
+                        && (identity.backend != "openai-codex" || identity.auth_method == "oauth")
                         && identity.sdk_version == "1.4.0"
                         && std::path::Path::new(&identity.node_program).is_absolute()
                         && std::path::Path::new(&identity.sdk_entrypoint).is_absolute()

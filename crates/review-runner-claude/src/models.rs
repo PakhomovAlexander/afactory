@@ -79,7 +79,7 @@ impl Kind {
     /// The effort levels af accepts for this kind before any catalog is read.
     pub fn efforts(self) -> &'static [&'static str] {
         match self {
-            Kind::Pi => &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+            Kind::Pi => review_core::task::plan::PI_EFFORTS,
             Kind::Claude => &CLAUDE_EFFORTS,
             Kind::Codex => &CODEX_EFFORTS,
         }
@@ -303,7 +303,12 @@ impl Verdict {
 /// that is a case or separator variant of a known exact ID; the versioned-ID rule; the kind's
 /// effort vocabulary. `effort` is `None` only for a package that binds no effort level.
 pub fn check_static(kind: Kind, model: &str, effort: Option<&str>) -> Result<(), Refusal> {
-    if !hint::printable(model) {
+    let printable = if kind == Kind::Pi {
+        review_core::task::plan::pi_identifier(model)
+    } else {
+        hint::printable(model)
+    };
+    if !printable {
         return Err(Refusal::new(
             Rule::NotPrintable { option: "--model" },
             vec![],

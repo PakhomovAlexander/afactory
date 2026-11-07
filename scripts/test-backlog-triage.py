@@ -1772,10 +1772,10 @@ class RealAdapter(Fixture):
                        verification=dict(snapshot_id=source, artifact_ids=[verification_id]))
         plan_id = 'sha256:' + 'a' * 64
         config = dict(key=key, task_id=gen['task_id'],
-                      plan=dict(schema='af/task-inspection@14', task_id=gen['task_id'], attempts=0, plan_id=plan_id,
+                      plan=dict(schema='af/task-inspection@17', task_id=gen['task_id'], attempts=0, plan_id=plan_id,
                                 plan=dict(inputs=dict(source=dict(snapshot_id=source),
                                                       sources=dict(artifact_ids=[sources])))),
-                      show=dict(schema='af/task-inspection@14', task_id=gen['task_id'], chargeable_tokens='1234',
+                      show=dict(schema='af/task-inspection@17', task_id=gen['task_id'], chargeable_tokens='1234',
                                 phase=dict(kind='finished'), result=dict(outputs=outputs)), report=report)
         (self.root / 'cli.json').write_bytes(R.encoded(config))
         fake = self.root / 'fake-af'

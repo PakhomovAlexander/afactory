@@ -434,7 +434,7 @@ pub(super) fn recorded_partial(
     Ok(None)
 }
 
-/// The `continues` member of `af/task-inspection@16` for a partial tree (ADR-0257): the
+/// The `continues` member of `af/task-inspection@17` for a partial tree (ADR-0257): the
 /// continued Task, the node and Attempt its wall stopped, the wall end, the partial candidate
 /// and the Snapshot of the tree the new Task reads.
 pub(super) fn partial_inspection_value(
@@ -452,7 +452,7 @@ pub(super) fn partial_inspection_value(
     })
 }
 
-/// The `continues` member of `af/task-inspection@16`: the continued Task and round, the
+/// The `continues` member of `af/task-inspection@17`: the continued Task and round, the
 /// candidate the new Task reads, and the findings artifact with its count.
 pub(super) fn inspection_value(
     findings_id: &str,

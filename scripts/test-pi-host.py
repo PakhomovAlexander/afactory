@@ -350,7 +350,539 @@ def installed_sdk():
     return None
 
 
+def fixture_sdk(root, state):
+    """Install the existing synthetic SDK fixture in a test-private directory."""
+    package = root / 'installed/node_modules/@earendil-works/pi-coding-agent'
+    (package / 'dist/core').mkdir(parents=True)
+    (package / 'dist/index.js').write_text((ROOT / 'fixtures/pi-sdk/index.mjs').read_text().replace('AF_FIXTURE_STATE', json.dumps(str(state))))
+    shutil.copyfile(ROOT / 'fixtures/pi-sdk/auth-storage.mjs', package / 'dist/core/auth-storage.js')
+    for name in ['pi-coding-agent', 'pi-ai', 'pi-agent-core']:
+        target = package.parent / name
+        target.mkdir(exist_ok=True)
+        (target / 'package.json').write_text(json.dumps({'name': '@earendil-works/'+name, 'version': '1.4.0', 'type': 'module'}))
+    (package.parent / 'pi-ai/dist').mkdir()
+    (package.parent / 'pi-ai/dist/models.js').write_text("export const getSupportedThinkingLevels=m=>Object.keys(m.thinkingLevelMap ?? (m.reasoning?{high:'high'}:{off:'off'}));")
+    return str(package / 'dist/index.js')
+
+
 class HostTests(unittest.TestCase):
+    def test_official_catalog_invariant_covers_every_chat_provider_transport_and_native_usage(self):
+        sdk = installed_sdk()
+        if not sdk:
+            print('official full catalog invariant: not run (SDK unavailable; hermetic transport invariant runs)')
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'catalog.mjs'
+            script.write_text(r'''import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const host=await import(pathToFileURL(process.argv[2]).href);
+globalThis.fetch=async()=>{throw Error('network forbidden during catalog/auth resolution');};
+globalThis.WebSocket=class{constructor(){throw Error('websocket forbidden');}};
+// Native events, not initialized AssistantMessage counters. Every official wire API is covered.
+const cases={
+ 'openai-completions':[{usage:{prompt_tokens:12,completion_tokens:3}},12,3],
+ 'mistral-conversations':[{usage:{prompt_tokens:12,completion_tokens:3}},12,3],
+ 'openai-responses':[{response:{usage:{input_tokens:12,output_tokens:3}}},12,3],
+ 'openai-codex-responses':[{response:{usage:{input_tokens:12,output_tokens:3}}},12,3],
+ 'azure-openai-responses':[{response:{usage:{input_tokens:12,output_tokens:3}}},12,3],
+ 'anthropic-messages':[{message:{usage:{input_tokens:7,cache_read_input_tokens:3,cache_creation_input_tokens:2,output_tokens:3}}},12,3],
+ 'google-generative-ai':[{usageMetadata:{promptTokenCount:12,candidatesTokenCount:2,thoughtsTokenCount:1,totalTokenCount:15}},12,3],
+ 'google-vertex':[{usageMetadata:{promptTokenCount:12,candidatesTokenCount:2,thoughtsTokenCount:1,totalTokenCount:15}},12,3],
+ 'bedrock-converse-stream':[{metadata:{usage:{inputTokens:12,outputTokens:3,cacheReadInputTokens:2}}},12,3],
+ 'pi-messages':[{usage:{input:7,output:3,cacheRead:3,cacheWrite:2}},12,3],
+};
+assert.deepEqual(Object.keys(cases).sort(),Object.keys(host.TRANSPORTS).sort());
+for(const [api,[event,input,output]] of Object.entries(cases)) {
+ const usage=host.rawUsage(api,event);assert.equal(usage.input,input,api);assert.equal(usage.output,output,api);
+ assert.equal(host.rawUsage(api,{}),undefined,api);
+ const budget=new host.InferenceBudget(20,'arbitrary-provider');
+ const first=budget.begin({maxTokens:100});Object.assign(first,{observed:usage,finished:true,complete:true});
+ assert.equal(budget.begin({maxTokens:100}).maxTokens,5,api);
+}
+// Anthropic optional caches default to zero only from native usage; mandatory fields do not.
+let invalid=0;
+for (const optional of [{},{cache_read_input_tokens:null,cache_creation_input_tokens:null},
+                        {cache_read_input_tokens:3},{cache_creation_input_tokens:2}]) {
+ const usage=host.rawUsage('anthropic-messages',{message:{usage:{input_tokens:7,output_tokens:3,...optional}}},()=>invalid++);
+ assert.deepEqual(usage,{input:7+(optional.cache_read_input_tokens??0)+(optional.cache_creation_input_tokens??0),
+  output:3,cache_read:optional.cache_read_input_tokens??0,cache_write:optional.cache_creation_input_tokens??0,reasoning:null});
+}
+assert.equal(invalid,0);
+for (const field of ['input_tokens','output_tokens']) {
+ const usage={input_tokens:7,output_tokens:3};delete usage[field];
+ const result=host.rawUsage('anthropic-messages',{usage},()=>invalid++);
+ assert(field==='input_tokens' ? invalid>0 && result.input===null : result.output===null,
+  'mandatory counters cannot become fabricated zeros');
+}
+
+const components={};
+const anthropic=usage=>host.rawUsage('anthropic-messages',{usage},()=>invalid++,components);
+invalid=0;
+assert.equal(anthropic({input_tokens:7,cache_read_input_tokens:3,cache_creation_input_tokens:2,output_tokens:0}).input,12);
+assert.equal(anthropic({input_tokens:8}).input,13);
+assert.deepEqual(anthropic({output_tokens:3,cache_read_input_tokens:null,cache_creation_input_tokens:null}),
+ {input:13,output:3,cache_read:3,cache_write:2,reasoning:null});
+assert.equal(invalid,0,'partial deltas retain known native components');
+assert.equal(anthropic({input_tokens:9,cache_read_input_tokens:2}).input,14);
+assert.equal(invalid,1,'component decrease refuses even when total input would increase');
+assert.equal(anthropic({cache_creation_input_tokens:'unsafe'}).input,14);
+assert.equal(invalid,2,'malformed component retains prior safe floor');
+invalid=0;
+assert.equal(host.rawUsage('google-generative-ai',{usageMetadata:{promptTokenCount:12,candidatesTokenCount:3}},()=>invalid++).output,3);
+assert.equal(invalid,1);
+if (process.argv[3]) {
+ const sdk=await host.loadSdk(process.argv[3]);
+ let selectedProvider,selectedCredential;
+ const credentials={read:async id=>id===selectedProvider?selectedCredential:undefined,
+  list:async()=>selectedCredential?[{providerId:selectedProvider,type:selectedCredential.type}]:[],
+  modify:async(id,fn)=>{assert.equal(id,selectedProvider);const next=await fn(selectedCredential);if(next!==undefined)selectedCredential=next;return selectedCredential;},
+  delete:async()=>{throw Error('no mutation');}};
+ const runtime=await host.createRuntime(sdk,credentials);
+ let models=0;const apis=new Set();
+ for(const provider of runtime.getProviders()) for(const model of runtime.getModels(provider.id)) {
+  assert.match(model.id,/^(?!\/)(?!.*[.][.])[A-Za-z0-9._/:@+~-]{1,256}$/);
+  assert(cases[model.api],`unaccounted SDK transport ${model.api}`);
+  assert.match(host.modelIdentity(model),/^sha256:/);
+  assert(sdk.getSupportedThinkingLevels(model).every(l=>['off','minimal','low','medium','high','xhigh','max'].includes(l)));
+  apis.add(model.api);models++;
+ }
+ assert(models>1000);assert.deepEqual([...apis].sort(),Object.keys(cases).sort());
+ const nonChat=runtime.getAllModels().filter(m=>m.type && m.type!=='chat');
+ assert(nonChat.length>0,'non-chat exclusion must exercise actual SDK catalog data');
+ for(const model of nonChat) assert.throws(()=>host.modelIdentity(model));
+ let oauth=0;
+ for(const provider of runtime.getProviders().filter(p=>p.auth.oauth)) {
+  selectedProvider=provider.id;
+  selectedCredential={type:'oauth',access:'PRIVATE_SYNTHETIC_ACCESS',refresh:provider.id==='openrouter'?'':'PRIVATE_SYNTHETIC_REFRESH',
+   expires:provider.id==='openrouter'?Number.MAX_SAFE_INTEGER:9999999999999};
+  if(provider.id==='openai-codex') {
+   selectedCredential.accountId='synthetic-account';
+   selectedCredential.access='e30.'+Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'synthetic-account'}})).toString('base64url')+'.synthetic';
+  }
+  const identity=host.principal(selectedCredential,provider.id);
+  assert.equal(identity===null,provider.id!=='openai-codex');
+  assert((await runtime.getAuth(provider.id,{env:{}}))?.auth,provider.id+' SDK OAuth credential resolution');oauth++;
+ }
+ console.log(`official catalog: ${runtime.getProviders().length} providers, ${models} chat models, ${apis.size} transports, ${oauth} OAuth resolvers; no model requests`);
+}
+''')
+            result = subprocess.run([shutil.which('node'), str(script), str(HOST), sdk or ''],
+                                    capture_output=True, text=True, timeout=30,
+                                    env={'HOME': directory, 'PI_OFFLINE': '1'}, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            print(result.stdout.strip())
+
+    def test_provider_neutral_official_auth_catalog_dispatch_and_custom_cached_kimi(self):
+        sdk = installed_sdk()
+        official = bool(sdk)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            state = root / 'state.json'
+            if not sdk:
+                sdk = fixture_sdk(root, state)
+            auth = root / 'profile'
+            auth.mkdir(mode=0o700)
+            home = root / 'host-home'
+            home.mkdir()
+            wrapper = root / 'streams.mjs'
+            wrapper.write_text(r'''import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+let calls=0;
+if(process.argv[4]) {
+ const {createRequire}=await import('node:module');
+ const require=createRequire(process.argv[4]);
+ try {
+  const {BedrockRuntimeClient}=await import(pathToFileURL(require.resolve('@aws-sdk/client-bedrock-runtime')).href);
+  BedrockRuntimeClient.prototype.send=async function(command) {
+   assert.equal(++calls,1);assert.equal(command.input.modelId,'amazon.nova-lite-v1:0');
+   assert.equal(await this.config.maxAttempts(),1,'native cloud SDK retry chain must stay disabled');
+   return {$metadata:{},stream:(async function*(){
+    yield {messageStart:{role:'assistant'}};
+    yield {contentBlockDelta:{contentBlockIndex:0,delta:{text:'OK'}}};
+    yield {contentBlockStop:{contentBlockIndex:0}};
+    yield {messageStop:{stopReason:'end_turn'}};
+    yield {metadata:{usage:{inputTokens:12,outputTokens:3,totalTokens:15}}};
+   })()};
+  };
+ } catch(error) { if(!String(process.argv[4]).includes('/installed/'))throw error; }
+}
+globalThis.WebSocket=class{constructor(){throw Error('websocket forbidden');}};
+globalThis.fetch=async(url,options)=>{
+ assert.equal(++calls,1,'retry or auxiliary inference');
+ const target=String(url),body=JSON.parse(String(options.body));
+ let events;
+ if(target.includes('/messages')) {
+  events=[{type:'message_start',message:{id:'m',role:'assistant',model:body.model,content:[],stop_reason:null,usage:{input_tokens:7,output_tokens:0,cache_read_input_tokens:3,cache_creation_input_tokens:2}}},
+   {type:'content_block_start',index:0,content_block:{type:'text',text:''}},
+   {type:'content_block_delta',index:0,delta:{type:'text_delta',text:'OK'}},
+   {type:'content_block_stop',index:0},
+   // A native input-only delta must retain previously observed cache components.
+   {type:'message_delta',delta:{},usage:{input_tokens:7}},
+   {type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null},usage:{output_tokens:3}},
+   {type:'message_stop'}];
+ } else if(target.includes('generativelanguage')) {
+  events=[{candidates:[{content:{role:'model',parts:[{text:'OK'}]},finishReason:'STOP',index:0}],
+    usageMetadata:{promptTokenCount:12,candidatesTokenCount:2,thoughtsTokenCount:1,totalTokenCount:15}}];
+ } else if(target.endsWith('/responses')) {
+  const item={type:'message',id:'msg',role:'assistant',status:'completed',content:[{type:'output_text',text:'OK',annotations:[]}]};
+  events=[{type:'response.output_item.added',output_index:0,item},{type:'response.output_item.done',output_index:0,item},
+    {type:'response.completed',response:{id:'r',status:'completed',output:[item],usage:{input_tokens:12,output_tokens:3,input_tokens_details:{cached_tokens:2}}}}];
+ } else {
+  assert(target.endsWith('/chat/completions'),target);
+  events=[{id:'c',object:'chat.completion.chunk',created:1,model:body.model,choices:[{index:0,delta:{role:'assistant',content:'OK'},finish_reason:null}]},
+   {id:'c',object:'chat.completion.chunk',created:1,model:body.model,choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:12,completion_tokens:3}}];
+ }
+ return new Response(events.map(e=>(target.includes('/messages')?'event: '+e.type+'\n':'')+'data: '+JSON.stringify(e)+'\n\n').join(''),
+  {headers:{'content-type':'text/event-stream'}});
+};
+const host=await import(pathToFileURL(process.argv[2]).href);await host.main();
+if(process.argv[3]==='invoke')assert.equal(calls,1);
+''')
+            def private_json(name, value):
+                file = auth / name
+                file.write_text(json.dumps(value))
+                file.chmod(0o600)
+            def invoke(records, turn=False):
+                return subprocess.run([shutil.which('node'), '--no-addons', str(wrapper), str(HOST),
+                                       'invoke' if turn and official else 'probe', sdk],
+                                      input=''.join(json.dumps(r)+'\n' for r in records),
+                                      capture_output=True, text=True, cwd=root, timeout=30,
+                                      env={'HOME': str(home), 'PI_OFFLINE': '1'}, check=False)
+            cases = [
+                ('anthropic', 'claude-haiku-4-5', 'off', 'stored'),
+                ('openai', 'gpt-4o-mini', 'off', 'stored'),
+                ('google', 'gemini-2.5-flash', 'off', 'context'),
+                ('amazon-bedrock', 'amazon.nova-lite-v1:0', 'off', 'cloud'),
+                ('team-compatible', 'team-code', 'off', 'stored'),
+                ('team-private', 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/team', 'off', 'private'),
+                ('registered-example', 'registered-code', 'off', 'extension'),
+                ('kimi-coding', 'k3.1-pro', 'high', 'configured'),
+                ('kimi-coding', 'k3.1-pro', 'high', 'cached'),
+            ]
+            for backend, model, effort, mode in cases:
+                with self.subTest(backend=backend, mode=mode):
+                    for name in ['models.json', 'models-store.json', 'af-context.json']:
+                        (auth / name).unlink(missing_ok=True)
+                    credential = {'type': 'api_key', 'key': 'PRIVATE_SYNTHETIC_KEY'}
+                    if backend == 'kimi-coding':
+                        credential = {'type': 'oauth', 'access': 'PRIVATE_ACCESS',
+                                      'refresh': 'PRIVATE_REFRESH', 'expires': 9999999999999}
+                    private_json('auth.json', {} if mode in ['context','cloud'] else {backend: credential})
+                    if mode == 'cloud':
+                        private_json('af-context.json', {'schema': 'af.pi-context/1', 'environment': {
+                            'AWS_ACCESS_KEY_ID': 'PRIVATE_SYNTHETIC_KEY', 'AWS_SECRET_ACCESS_KEY': 'PRIVATE_CLOUD_SECRET',
+                            'AWS_REGION': 'us-east-1'}})
+                    api = {'anthropic': 'anthropic-messages', 'openai': 'openai-responses',
+                           'google': 'google-generative-ai', 'amazon-bedrock': 'bedrock-converse-stream'}.get(backend, 'openai-completions')
+                    if not official:
+                        native = {
+                            'anthropic-messages': {'message': {'usage': {'input_tokens': 7, 'output_tokens': 3, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 2}}},
+                            'openai-responses': {'response': {'usage': {'input_tokens': 12, 'output_tokens': 3}}},
+                            'google-generative-ai': {'usageMetadata': {'promptTokenCount': 12, 'candidatesTokenCount': 2, 'thoughtsTokenCount': 1, 'totalTokenCount': 15}},
+                            'bedrock-converse-stream': {'metadata': {'usage': {'inputTokens': 12, 'outputTokens': 3}}},
+                        }.get(api, {'usage': {'prompt_tokens': 12, 'completion_tokens': 3}})
+                        state.write_text(json.dumps({'backend': backend, 'model': model, 'api': api,
+                                                    'providerEvents': [native], 'reasoning': effort != 'off'}))
+                    if mode == 'context':
+                        private_json('af-context.json', {'schema': 'af.pi-context/1',
+                                                        'environment': {'GEMINI_API_KEY': 'PRIVATE_SYNTHETIC_KEY'}})
+                    definition = {'id': model, 'name': model, 'api': 'openai-completions',
+                                  'baseUrl': 'https://custom.invalid/v1' if backend in ['team-compatible','registered-example','team-private'] else 'https://api.kimi.com/coding/v1',
+                                  'provider': backend, 'input': ['text'], 'reasoning': effort == 'high',
+                                  'thinkingLevelMap': {'low': 'low', 'high': 'high', 'max': 'max'} if effort == 'high' else {'off': 'off'},
+                                  'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+                                  'contextWindow': 32768, 'maxTokens': 1024}
+                    if mode == 'extension':
+                        extension = root / 'registered-provider.mjs'
+                        definition.pop('provider')
+                        extension.write_text('export function register(api){api.registerProvider("registered-example",'+json.dumps({
+                            'api': 'openai-completions', 'baseUrl': definition['baseUrl'], 'models': [definition]})+');}')
+                        private_json('af-context.json', {'schema': 'af.pi-context/1', 'extension': {
+                            'entrypoint': str(extension), 'sha256': 'sha256:'+hashlib.sha256(extension.read_bytes()).hexdigest()}})
+                    if mode == 'cached':
+                        private_json('models-store.json', {backend: {'models': [definition],
+                                                                    'lastModified': 9999999999999}})
+                    elif backend in ['team-compatible','team-private'] or mode == 'configured':
+                        # Pi models.json data-only definitions, interpreted by its real composer.
+                        custom = {k: v for k, v in definition.items() if k != 'provider'}
+                        private_json('models.json', {'providers': {backend: {'api': 'openai-completions',
+                                                                           'baseUrl': definition['baseUrl'], 'models': [custom]}}})
+                    init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': sdk,
+                            'backend': backend, 'principal': None, 'auth_dir': str(auth),
+                            'auth_context_id': 'sha256:'+hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
+                            'cwd': str(root), 'home': str(home), 'readable': [str(root)], 'writable': [], 'probe': True}
+                    probe = invoke([init])
+                    self.assertEqual(probe.returncode, 0, probe.stdout+probe.stderr)
+                    ready = json.loads(probe.stdout)
+                    self.assertIsNone(ready['principal'])
+                    public_model = ('af-private-model/'+hashlib.sha256(('af.pi.private-model/1\0'+backend+'\0'+model).encode()).hexdigest()) if mode == 'private' else model
+                    selected = next(m for m in ready['models'] if m['id'] == public_model)
+                    if mode == 'private':
+                        self.assertNotIn('123456789012', probe.stdout+probe.stderr)
+                    self.assertIn(effort, selected['efforts'])
+                    prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'model': public_model,
+                               'effort': effort, 'remaining_tokens': 1000, 'reply_schema': None,
+                               'model_identity': selected['identity']}
+                    prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'text': 'Reply OK',
+                              'prompt_nonce': 'sha256:'+'a'*64}
+                    result = invoke([{**init, 'probe': False}, prepare, prompt], True)
+                    self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+                    records = [json.loads(line) for line in result.stdout.splitlines()]
+                    self.assertEqual(records[-1]['type'], 'settled')
+                    final = [r for r in records if r['type'] == 'usage' and r['complete']][-1]
+                    self.assertEqual((final['input'], final['output']), (12, 3))
+                    for secret in ['PRIVATE_SYNTHETIC_KEY', 'PRIVATE_ACCESS', 'PRIVATE_REFRESH', 'PRIVATE_CLOUD_SECRET', '123456789012']:
+                        self.assertNotIn(secret, result.stdout+result.stderr)
+                    refused = invoke([{**init, 'probe': False}, {**prepare, 'model': 'absent'}, prompt])
+                    self.assertEqual(refused.returncode, 1)
+                    self.assertNotIn('accepted', refused.stdout)
+                    # Content-bound effective configuration, never a silent k3 substitution.
+                    private_json('models.json', {'providers': {backend: {'baseUrl': 'https://changed.invalid/v1'}}})
+                    drift = invoke([{**init, 'probe': False}, prepare, prompt])
+                    self.assertEqual(drift.returncode, 1)
+                    self.assertNotIn('accepted', drift.stdout)
+            print('API-family synthetic session matrix exercised with '+('official SDK' if official else 'hermetic SDK fixture')+'; see unittest result; no live requests')
+
+    def test_anthropic_optional_native_caches_settle_and_invalid_counters_keep_charge_floors(self):
+        """Use real host sessions; optional SDK coverage uses only synthetic HTTP/keys."""
+        official = installed_sdk()
+        modes = [('hermetic SDK fixture', None)]
+        if official:
+            modes.append(('official SDK', official))
+        else:
+            print('Anthropic optional caches official SDK: not run (SDK unavailable)')
+        for label, sdk in modes:
+            with self.subTest(sdk=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                state = root / 'state.json'
+                if sdk is None:
+                    sdk = fixture_sdk(root, state)
+                auth = root / 'profile'
+                auth.mkdir(mode=0o700)
+                (auth / 'auth.json').write_text(json.dumps({
+                    'anthropic': {'type': 'api_key', 'key': 'PRIVATE_SYNTHETIC_KEY'}}))
+                (auth / 'auth.json').chmod(0o600)
+                home = root / 'home'
+                home.mkdir()
+                model = 'claude-haiku-4-5'
+                def configure(events, inferences=1):
+                    state.write_text(json.dumps({'backend': 'anthropic', 'model': model,
+                                                 'api': 'anthropic-messages', 'reasoning': False,
+                                                 'providerEvents': events, 'inferences': inferences}))
+                wrapper = root / 'anthropic.mjs'
+                wrapper.write_text(r'''import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+let calls=0;
+globalThis.WebSocket=class{constructor(){throw Error('websocket forbidden');}};
+globalThis.fetch=async(url,options)=>{
+ assert.equal(++calls,1,'retry or auxiliary inference');
+ assert(String(url).includes('/messages'));
+ assert.equal(JSON.parse(options.body).model,'claude-haiku-4-5');
+ const events=JSON.parse(fs.readFileSync(process.argv[3],'utf8')).providerEvents;
+ return new Response(events.map(e=>'event: '+e.type+'\ndata: '+JSON.stringify(e)+'\n\n').join(''),
+  {headers:{'content-type':'text/event-stream'}});
+};
+const host=await import(pathToFileURL(process.argv[2]).href);await host.main();
+''')
+                def invoke(records):
+                    return subprocess.run([shutil.which('node'), '--no-addons', str(wrapper),
+                                           str(HOST), str(state)],
+                                          input=''.join(json.dumps(r)+'\n' for r in records),
+                                          capture_output=True, text=True, cwd=root, timeout=30,
+                                          env={'HOME': str(home), 'PI_OFFLINE': '1'}, check=False)
+                init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': sdk,
+                        'backend': 'anthropic', 'principal': None, 'auth_dir': str(auth),
+                        'auth_context_id': 'sha256:'+hashlib.sha256(os.fsencode(auth)).hexdigest(),
+                        'cwd': str(root), 'home': str(home), 'readable': [str(root)], 'writable': [], 'probe': True}
+                configure([])
+                probe = invoke([init])
+                self.assertEqual(probe.returncode, 0, probe.stdout+probe.stderr)
+                selected = next(m for m in json.loads(probe.stdout)['models'] if m['id'] == model)
+                prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'model': model,
+                           'effort': 'off', 'remaining_tokens': 1000, 'reply_schema': None,
+                           'model_identity': selected['identity']}
+                prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'text': 'Reply OK',
+                          'prompt_nonce': 'sha256:'+'a'*64}
+                def events(usage, delta):
+                    return [
+                        {'type': 'message_start', 'message': {'id': 'm', 'role': 'assistant',
+                         'model': model, 'content': [], 'stop_reason': None, 'usage': usage}},
+                        {'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}},
+                        {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': 'OK'}},
+                        {'type': 'content_block_stop', 'index': 0},
+                        {'type': 'message_delta', 'delta': {}, 'usage': delta},
+                        {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None},
+                         'usage': {'output_tokens': 3}},
+                        {'type': 'message_stop'}]
+                optional_cases = [{}, {'cache_read_input_tokens': None, 'cache_creation_input_tokens': None},
+                                  {'cache_read_input_tokens': 3}, {'cache_creation_input_tokens': 2},
+                                  {'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 2}]
+                for optional in optional_cases:
+                    with self.subTest(optional=optional):
+                        read = optional.get('cache_read_input_tokens') or 0
+                        write = optional.get('cache_creation_input_tokens') or 0
+                        # Increase uncached input while null/omitted cache fields retain prior components.
+                        configure(events({'input_tokens': 7, 'output_tokens': 0, **optional},
+                                         {'input_tokens': 8, 'cache_read_input_tokens': None}),
+                                  2 if label == 'hermetic SDK fixture' else 1)
+                        native = Path(str(state)+'.native')
+                        native.unlink(missing_ok=True)
+                        result = invoke([{**init, 'probe': False}, prepare, prompt])
+                        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+                        records = [json.loads(line) for line in result.stdout.splitlines()]
+                        self.assertEqual(records[-1]['type'], 'settled', records)
+                        finalized = [r for r in records if r['type'] == 'usage' and r['complete']]
+                        self.assertEqual(len(finalized), 2 if label == 'hermetic SDK fixture' else 1)
+                        for usage in finalized:
+                            self.assertEqual((usage['input'], usage['output'], usage['cache_read'], usage['cache_write']),
+                                             (8+read+write, 3, read, write))
+                            self.assertEqual(usage['input']+usage['output'], 11+read+write)
+                        observed = [r for r in records if r['type'] == 'usage' and r['observations']]
+                        self.assertTrue(all(r['cache_read'] == read and r['cache_write'] == write for r in observed))
+                        if label == 'hermetic SDK fixture':
+                            self.assertEqual([json.loads(line)['maxTokens'] for line in native.read_text().splitlines()],
+                                             [1000, 1000-(11+read+write)])
+                        self.assertNotIn('PRIVATE_SYNTHETIC_KEY', result.stdout+result.stderr)
+                # Exercise failures through the same real host observer without the official SDK
+                # aborting malformed synthetic wire data before AF can observe it.
+                if label == 'hermetic SDK fixture':
+                    invalid = []
+                    for field in ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']:
+                        for value in [-1, False, '3', 1.5, 9007199254740992]:
+                            invalid.append((field, value, [{'input_tokens': 7, 'output_tokens': 3,
+                                            'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 2, field: value}]))
+                    for field, value in [('input_tokens', 6), ('output_tokens', 2),
+                                         ('cache_read_input_tokens', 2), ('cache_creation_input_tokens', 1),
+                                         ('input_tokens', 9007199254740991)]:
+                        invalid.append((field, value, [None, {field: value}]))
+                    for field, value, updates in invalid:
+                        with self.subTest(field=field, invalid=value):
+                            baseline = {'input_tokens': 7, 'output_tokens': 3,
+                                        'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 2}
+                            configure([{'usage': baseline if u is None else u} for u in updates], 2)
+                            result = invoke([{**init, 'probe': False}, prepare, prompt])
+                            records = [json.loads(line) for line in result.stdout.splitlines()]
+                            self.assertEqual(records[-1]['type'], 'error', records)
+                            self.assertFalse(any(r['type'] == 'settled' for r in records))
+                            last = [r for r in records if r['type'] == 'usage'][-1]
+                            self.assertFalse(last['complete'])
+                            if updates[0] is None:
+                                self.assertEqual((last['input'], last['output'], last['cache_read'], last['cache_write']),
+                                                 (9007199254740991 if value == 9007199254740991 else 12, 3, 3, 2))
+                            else:
+                                expected = {'input_tokens': (5, 3, 3, 2),
+                                            'output_tokens': (12, None, 3, 2),
+                                            'cache_read_input_tokens': (9, 3, 0, 2),
+                                            'cache_creation_input_tokens': (10, 3, 3, 0)}[field]
+                                self.assertEqual((last['input'], last['output'], last['cache_read'], last['cache_write']),
+                                                 expected)
+                    for missing, explicit_null in [('input_tokens', False), ('input_tokens', True),
+                                                   ('output_tokens', False), ('output_tokens', True), ('all usage', False)]:
+                        with self.subTest(missing=missing, explicit_null=explicit_null):
+                            usage = {'input_tokens': 7, 'output_tokens': 3}
+                            if explicit_null:
+                                usage[missing] = None
+                            else:
+                                usage.pop(missing, None)
+                            configure([] if missing == 'all usage' else [{'usage': usage}])
+                            result = invoke([{**init, 'probe': False}, prepare, prompt])
+                            records = [json.loads(line) for line in result.stdout.splitlines()]
+                            self.assertEqual(records[-1]['type'], 'error', records)
+                            self.assertFalse(any(r['type'] == 'settled' for r in records))
+                            last = [r for r in records if r['type'] == 'usage'][-1]
+                            if missing != 'input_tokens':
+                                self.assertIsNone(last['output'])
+                            if missing != 'output_tokens':
+                                self.assertIsNone(last['input'])
+                print('Anthropic optional caches, exact totals/charge and partial deltas: '+label+'; no live requests')
+
+    def test_explicit_profile_rechecks_keys_cloud_files_and_pinned_modules_without_candidate_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'context.mjs'
+            script.write_text(r'''import assert from 'node:assert/strict';
+import fs from 'node:fs';import path from 'node:path';
+import {createHash} from 'node:crypto';import {pathToFileURL} from 'node:url';
+const host=await import(pathToFileURL(process.argv[2]).href);
+const root=fs.realpathSync(process.argv[3]),auth=path.join(root,'auth'),candidate=path.join(root,'candidate');
+fs.mkdirSync(auth,{mode:0o700});fs.mkdirSync(candidate);fs.mkdirSync(path.join(candidate,'.git'));
+const write=(file,value)=>{fs.writeFileSync(file,JSON.stringify(value),{mode:0o600});fs.chmodSync(file,0o600);};
+process.chdir(candidate);
+write(path.join(candidate,'models.json'),{providers:{'team-compatible':{apiKey:'!touch ESCAPE'}}});
+write(path.join(candidate,'af-context.json'),{schema:'af.pi-context/1',environment:{OPENAI_API_KEY:'UNRELATED_AMBIENT'}});
+let profile=host.loadProfile(auth,'team-compatible');assert.equal(profile.config,undefined);assert.deepEqual(profile.env,{});
+assert.throws(()=>host.loadProfile(candidate,'team-compatible'),/profile_authority/);
+const context=path.join(auth,'af-context.json');
+write(context,{schema:'af.pi-context/1',environment:{AZURE_OPENAI_DEPLOYMENT_NAME_MAP:'{"gpt-model":"deployment-one"}'}});
+const deployment=host.loadProfile(auth,'azure').identity;
+write(context,{schema:'af.pi-context/1',environment:{AZURE_OPENAI_DEPLOYMENT_NAME_MAP:'{"gpt-model":"deployment-two"}'}});
+assert.notEqual(host.loadProfile(auth,'azure').identity,deployment);
+
+for(const invalid of [
+ {schema:'af.pi-context/0'}, {schema:'af.pi-context/1',tools:['bash']},
+ {schema:'af.pi-context/1',environment:{NODE_OPTIONS:'--import=project'}},
+ {schema:'af.pi-context/1',environment:{HOME:candidate}},
+ {schema:'af.pi-context/1',environment:{AWS_PROFILE:'unselected-default-files'}},
+]) {write(context,invalid);assert.throws(()=>host.loadProfile(auth,'team-compatible'));}
+write(context,{schema:'af.pi-context/1',environment:{OPENAI_API_KEY:'EXPLICIT_PRIVATE_KEY'}});
+profile=host.loadProfile(auth,'team-compatible');assert.equal(profile.env.OPENAI_API_KEY,'EXPLICIT_PRIVATE_KEY');
+write(context,{schema:'af.pi-context/1',environment:{OPENAI_API_KEY:'REPLACED_PRIVATE_KEY'}});assert.throws(()=>profile.check());
+const cloud=path.join(root,'selected-cloud.json');write(cloud,{private_key:'SYNTHETIC_PRIVATE_FILE'});
+write(context,{schema:'af.pi-context/1',environment:{GOOGLE_APPLICATION_CREDENTIALS:cloud,GOOGLE_CLOUD_PROJECT:'synthetic-project'}});
+profile=host.loadProfile(auth,'team-compatible');profile.check();write(cloud,{private_key:'REPLACED_PRIVATE_FILE'});assert.throws(()=>profile.check());
+const tokenFile=path.join(root,'selected-token');fs.writeFileSync(tokenFile,'FIRST_PRIVATE_TOKEN',{mode:0o600});
+write(cloud,{credential_source:{file:tokenFile}});profile=host.loadProfile(auth,'team-compatible');profile.check();
+const originalContextId=profile.identity;const secondToken=path.join(root,'second-token');fs.writeFileSync(secondToken,'PRIVATE_SECOND',{mode:0o600});
+write(cloud,{credential_source:{file:secondToken}});assert.notEqual(host.loadProfile(auth,'team-compatible').identity,originalContextId);
+write(cloud,{credential_source:{file:tokenFile}});
+fs.writeFileSync(tokenFile,'REPLACED_PRIVATE_TOKEN');assert.throws(()=>profile.check());
+write(cloud,{credential_source:{file:path.join(candidate,'models.json')}});assert.throws(()=>host.loadProfile(auth,'team-compatible'));
+write(cloud,{credential_source:{executable:{command:'touch ESCAPE'}}});assert.throws(()=>host.loadProfile(auth,'team-compatible'));
+write(context,{schema:'af.pi-context/1',environment:{GOOGLE_APPLICATION_CREDENTIALS:path.join(candidate,'models.json')}});
+assert.throws(()=>host.loadProfile(auth,'team-compatible'));
+// Standard sectioned AWS INI is data, not a JSON array or executable authority.
+const awsCredentials=path.join(root,'aws-credentials'),awsConfig=path.join(root,'aws-config');
+const ini=(file,text)=>{fs.writeFileSync(file,text,{mode:0o600});fs.chmodSync(file,0o600);};
+ini(awsCredentials,'[selected]\naws_access_key_id = SYNTHETIC_AWS_KEY\naws_secret_access_key = SYNTHETIC_AWS_SECRET\n');
+ini(awsConfig,'[profile selected]\nregion = us-east-1\n');
+write(context,{schema:'af.pi-context/1',environment:{AWS_PROFILE:'selected',AWS_SHARED_CREDENTIALS_FILE:awsCredentials,AWS_CONFIG_FILE:awsConfig}});
+profile=host.loadProfile(auth,'amazon-bedrock');profile.check();
+ini(awsCredentials,'[selected]\naws_access_key_id = REPLACED_AWS_KEY\n');assert.throws(()=>profile.check(),/configuration_changed/);
+ini(awsConfig,'[profile selected]\ncredential_process = touch ESCAPE\n');
+assert.throws(()=>host.loadProfile(auth,'amazon-bedrock'),/helper_authority/);
+ini(awsConfig,'[profile selected]\nweb_identity_token_file = '+path.join(candidate,'models.json')+'\n');
+assert.throws(()=>host.loadProfile(auth,'amazon-bedrock'),/profile_authority/);
+fs.unlinkSync(context);
+write(path.join(auth,'models.json'),{providers:{'team-compatible':{apiKey:'!touch ESCAPE'}}});assert.throws(()=>host.loadProfile(auth,'team-compatible'));
+fs.unlinkSync(path.join(auth,'models.json'));
+const module=path.join(root,'installed-provider.mjs');fs.writeFileSync(module,'export function register(){}');
+const hash=file=>'sha256:'+createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+write(context,{schema:'af.pi-context/1',extension:{entrypoint:module,sha256:hash(module)}});
+profile=host.loadProfile(auth,'team-compatible');profile.check();fs.appendFileSync(module,'// changed');assert.throws(()=>profile.check());
+const projectModule=path.join(candidate,'provider.mjs');fs.writeFileSync(projectModule,'throw Error("MUST_NOT_EXECUTE")');
+write(context,{schema:'af.pi-context/1',extension:{entrypoint:projectModule,sha256:hash(projectModule)}});assert.throws(()=>host.loadProfile(auth,'team-compatible'));
+write(context,{schema:'af.pi-context/1',extension:{entrypoint:module,sha256:'sha256:'+'0'.repeat(64)}});assert.throws(()=>host.loadProfile(auth,'team-compatible'));
+// Stored literal-key drift is checked in memory, without producing a credential fingerprint.
+let current={type:'api_key',key:'PRIVATE_FIRST'};
+const storage={read:async()=>{throw Error('helper-capable read forbidden');},modify:async(id,fn)=>{const next=await fn(current);if(next!==undefined)current=next;return current;}};
+const guarded=host.guardedCredentials(storage,null,'arbitrary-provider',()=>{},current);
+await guarded.read('arbitrary-provider');current={type:'api_key',key:'PRIVATE_SECOND'};await assert.rejects(guarded.read('arbitrary-provider'));
+assert.equal(host.principal(current,'arbitrary-provider'),null);
+assert.equal(host.principal({type:'oauth',access:'PRIVATE_ACCESS',refresh:'',expires:Number.MAX_SAFE_INTEGER},'openrouter'),null);
+assert.throws(()=>host.principal({type:'oauth',access:'PRIVATE_ACCESS',refresh:'',expires:42},'arbitrary-provider'));
+assert.throws(()=>host.transportAdapter('constructor'));
+const model={provider:'arbitrary',id:'sdk-code',api:'openai-completions',baseUrl:'https://custom.invalid/v1'};
+assert.match(host.modelIdentity({...model,samplingParams:{temperature:0.2,top_p:0.9}}),/^sha256:/);
+for(const key of ['model','messages','tools','max_tokens','previous_response_id','session_id','stream_options']) {
+ assert.throws(()=>host.modelIdentity({...model,samplingParams:{[key]:'ESCAPE'}}),/unsafe_model_configuration/);
+ assert.throws(()=>host.modelIdentity({...model,samplingParamsByThinkingLevel:{high:{extra_body:{[key]:'ESCAPE'}}}}),/unsafe_model_configuration/);
+}
+
+assert(!fs.existsSync(path.join(candidate,'ESCAPE')));
+''')
+            result = subprocess.run([shutil.which('node'), str(script), str(HOST), directory],
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_sdk_discovery_is_portable_explicit_and_never_executes_a_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -414,7 +946,7 @@ class HostTests(unittest.TestCase):
                 sdk = str(package / 'dist/index.js')
             auth = root / 'auth'
             auth.mkdir()
-            request = {'schema': 'af.pi-host/4', 'type': 'init', 'backend': 'openai-codex',
+            request = {'schema': 'af.pi-host/5', 'type': 'init', 'backend': 'openai-codex',
                        'sdk': sdk, 'auth_dir': str(auth),
                        'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                        'principal': None,
@@ -499,10 +1031,10 @@ if (process.argv[3]==='official') assert.equal(calls,2);
             selected = next(model for model in ready['models'] if 'high' in model['efforts'])
             invocation = {**request, 'probe': False, 'principal': ready['principal'],
                           'readable': [directory], 'writable': [directory]}
-            prepare = {'schema': 'af.pi-host/4', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None,
+            prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None,
                        'model': selected['id'], 'effort': 'high',
                        'model_identity': selected['identity']}
-            prompt = {'schema': 'af.pi-host/4', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
+            prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
                       'text': 'Read inside, write turn-created/nested/file, then return the typed reply.'}
             result = subprocess.run([node, '--no-addons', str(wrapper), str(HOST),
                                      'official' if official else 'fixture'],
@@ -544,7 +1076,7 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(refused.returncode, 1, refused.stderr)
                 refused_records = [json.loads(line) for line in refused.stdout.splitlines()]
-                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/4',
+                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/5',
                                                        'type': 'error', 'code': 'host_refused'})
                 self.assertFalse(any(r['type'] in ['accepted', 'usage', 'message', 'settled']
                                      for r in refused_records))
@@ -565,7 +1097,7 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(invalid.returncode, 0, invalid.stderr)
                 records = [json.loads(line) for line in invalid.stdout.splitlines()]
-                self.assertEqual(records[-1], {'schema': 'af.pi-host/4', 'type': 'error',
+                self.assertEqual(records[-1], {'schema': 'af.pi-host/5', 'type': 'error',
                                                'code': 'inference_failed'})
                 self.assertFalse(any(record['type'] == 'settled' for record in records))
                 observed = [record for record in records if record['type'] == 'usage']
@@ -592,7 +1124,7 @@ for (const field of ['type','access','refresh','expires']) {
  const missing={...credential};delete missing[field];
  assert.throws(()=>host.principal(missing,'kimi-coding'));
 }
-for (const bad of [{...credential,type:'api_key'}, {...credential,access:''},
+for (const bad of [{...credential,type:'invalid'}, {...credential,access:''},
                    {...credential,refresh:''}, {...credential,access:42},
                    {...credential,refresh:null}, {...credential,expires:'later'},
                    {...credential,expires:NaN}, {...credential,expires:Infinity},
@@ -626,29 +1158,34 @@ current={...credential,type:'api_key'};
 await assert.rejects(guarded.read('kimi-coding'));
 const model={provider:'kimi-coding',id:'k3',api:'openai-completions',baseUrl:'https://api.kimi.com/coding/v1'};
 assert.match(host.modelIdentity(model),/^sha256:/);
-for(const bad of [{...model,id:'kimi-for-coding'}, {...model,baseUrl:'http://api.kimi.com/coding/v1'},
-                  {...model,baseUrl:'https://other.invalid'}, {...model,api:'anthropic-messages'},
-                  {...model,provider:'other'}]) assert.throws(()=>host.modelIdentity(bad));
+// IDs, endpoints and API capabilities belong to the admitted SDK catalog, not a Kimi branch.
+for(const accepted of [{...model,id:'k3.1-pro'}, {...model,baseUrl:'https://other.invalid'},
+                  {...model,api:'anthropic-messages'}, {...model,provider:'other'}]) {
+ assert.match(host.modelIdentity(accepted),/^sha256:/);
+ assert.notEqual(host.modelIdentity(accepted),host.modelIdentity(model));
+}
+for(const bad of [{...model,type:'image'}, {...model,baseUrl:'file:///private/secret'},
+ {...model,baseUrl:'https://secret:password@other.invalid'}, {...model,baseUrl:'https://other.invalid?api_key=SECRET'}]) assert.throws(()=>host.modelIdentity(bad));
 const aggregate={prompt_tokens:439,completion_tokens:38,completion_tokens_details:{reasoning_tokens:24}};
-assert.deepEqual(host.rawUsage('kimi-coding',{usage:aggregate}),
+assert.deepEqual(host.rawUsage('openai-completions',{usage:aggregate}),
  {input:439,output:38,cache_read:null,cache_write:null,reasoning:24});
 const usage={prompt_tokens:12,completion_tokens:5,cached_tokens:3,completion_tokens_details:{reasoning_tokens:2}};
 const expected={input:12,output:5,cache_read:3,cache_write:null,reasoning:2};
-assert.deepEqual(host.rawUsage('kimi-coding',{usage}),expected);
-assert.deepEqual(host.rawUsage('kimi-coding',{choices:[{usage}]}),expected);
-assert.deepEqual(host.rawUsage('kimi-coding',{usage,choices:[{usage}]}),expected);
+assert.deepEqual(host.rawUsage('openai-completions',{usage}),expected);
+assert.deepEqual(host.rawUsage('openai-completions',{choices:[{usage}]}),expected);
+assert.deepEqual(host.rawUsage('openai-completions',{usage,choices:[{usage}]}),expected);
 for(const cache of [{prompt_tokens_details:{cached_tokens:3}},{prompt_cache_hit_tokens:3}]) {
  const u={...usage,...cache};delete u.cached_tokens;
- assert.deepEqual(host.rawUsage('kimi-coding',{usage:u}),expected);
+ assert.deepEqual(host.rawUsage('openai-completions',{usage:u}),expected);
 }
-assert.equal(host.rawUsage('kimi-coding',{usage:null,choices:[{}]}),undefined);
-assert.deepEqual(host.rawUsage('kimi-coding',{usage:{}}),{input:null,output:null,cache_read:null,cache_write:null,reasoning:null});
+assert.equal(host.rawUsage('openai-completions',{usage:null,choices:[{}]}),undefined);
+assert.deepEqual(host.rawUsage('openai-completions',{usage:{}}),{input:null,output:null,cache_read:null,cache_write:null,reasoning:null});
 for(const value of [-1,1.2,'12',NaN,Infinity,Number.MAX_SAFE_INTEGER+1]) {
- assert.throws(()=>host.rawUsage('kimi-coding',{usage:{...usage,prompt_tokens:value}}));
+ assert.throws(()=>host.rawUsage('openai-completions',{usage:{...usage,prompt_tokens:value}}));
 }
-assert.throws(()=>host.rawUsage('kimi-coding',{usage:{...usage,prompt_cache_hit_tokens:2}}));
-assert.throws(()=>host.rawUsage('kimi-coding',{usage,choices:[{usage:{...usage,completion_tokens:6}}]}));
-assert.deepEqual(host.rawUsage('kimi-coding',{usage:{prompt_tokens:0,completion_tokens:0,cached_tokens:0}}),
+assert.throws(()=>host.rawUsage('openai-completions',{usage:{...usage,prompt_cache_hit_tokens:2}}));
+assert.throws(()=>host.rawUsage('openai-completions',{usage,choices:[{usage:{...usage,completion_tokens:6}}]}));
+assert.deepEqual(host.rawUsage('openai-completions',{usage:{prompt_tokens:0,completion_tokens:0,cached_tokens:0}}),
  {input:0,output:0,cache_read:0,cache_write:null,reasoning:null});
 // Exercise the pinned SDK's locked storage/refresh interface with synthetic in-memory data.
 if (process.argv[3]) {
@@ -708,7 +1245,7 @@ console.log('Kimi contract passed (synthetic credentials only)');
                           'helper': '!echo HELPER_MUST_NOT_RUN',
                           'accountId': 'NOT_AN_ACCOUNT_PRINCIPAL'}
             (auth / 'auth.json').write_text(json.dumps({'kimi-coding': credential}))
-            init = {'schema': 'af.pi-host/4', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
+            init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
                     'auth_dir': str(auth),
                     'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                     'principal': None, 'cwd': directory, 'home': directory,
@@ -728,7 +1265,7 @@ console.log('Kimi contract passed (synthetic credentials only)');
             self.assertIsNone(ready['principal'])
             self.assertEqual(ready['models'][0]['id'], 'k3')
             self.assertEqual(ready['models'][0]['efforts'], ['low', 'high', 'max'])
-            prepare = {'schema': 'af.pi-host/4', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None, 'model': 'k3',
+            prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None, 'model': 'k3',
                        'effort': 'high', 'model_identity': ready['models'][0]['identity']}
             for effort in ['off', 'medium', 'xhigh']:
                 refused = invoke([{**init, 'probe': False}, {**prepare, 'effort': effort}])
@@ -758,7 +1295,7 @@ globalThis.fetch=async(url,options)=>{
 };
 const host=await import(pathToFileURL(HOST_PATH).href);await host.main();
 '''.replace('HOST_PATH', json.dumps(str(HOST))))
-            prompt = {'schema': 'af.pi-host/4', 'type': 'prompt', 'text': 'Use the confined write tool.',
+            prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'text': 'Use the confined write tool.',
                       'prompt_nonce': 'sha256:' + 'e' * 64}
             result = invoke([{**init, 'probe': False}, prepare, prompt], wrapper)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -787,9 +1324,9 @@ const base = {prompt_tokens:12,completion_tokens:3,cached_tokens:2,
 const expected = {input:12,output:3,cache_read:2,cache_write:1,reasoning:1};
 function invalid(event, safe) {
   let refused = 0;
-  assert.deepEqual(rawUsage('kimi-coding',event,()=>refused++),safe);
+  assert.deepEqual(rawUsage('openai-completions',event,()=>refused++),safe);
   assert.equal(refused,1);
-  assert.throws(()=>rawUsage('kimi-coding',event));
+  assert.throws(()=>rawUsage('openai-completions',event));
 }
 for (const value of [-1,0.5,'12',true,9007199254740992,Infinity,NaN,{},[]]) {
   invalid({usage:{...base,cached_tokens:value}},{...expected,cache_read:null});
@@ -834,13 +1371,13 @@ for (const unknown of [undefined,null,-1,'PRIVATE_RAW_BODY']) {
   for (const sources of [[aggregate,{prompt_tokens:unknown}],
                          [{prompt_tokens:unknown},aggregate]]) {
     const event = {usage:sources[0],choices:[{usage:sources[1]}]};
-    if (unknown == null) assert.deepEqual(rawUsage('kimi-coding',event),totals);
+    if (unknown == null) assert.deepEqual(rawUsage('openai-completions',event),totals);
     else invalid(event,totals);
   }
 }
 for (const sources of [[{prompt_tokens:100},{completion_tokens:10}],
                        [{completion_tokens:10},{prompt_tokens:100}]]) {
-  assert.deepEqual(rawUsage('kimi-coding',
+  assert.deepEqual(rawUsage('openai-completions',
     {usage:sources[0],choices:[{usage:sources[1]}]}),totals);
 }
 // A malformed sibling must not hide valid aliases from permanent conflict detection.
@@ -866,7 +1403,7 @@ invalid({usage:[],choices:[{usage:base}]},expected);
 invalid({usage:[]},undefined);
 // A malformed optional counter also refuses OpenAI, retaining its independent raw totals.
 let refused = false;
-assert.deepEqual(rawUsage('openai-codex',{response:{usage:{input_tokens:12,output_tokens:3,
+assert.deepEqual(rawUsage('openai-codex-responses',{response:{usage:{input_tokens:12,output_tokens:3,
   input_tokens_details:{cached_tokens:2},output_tokens_details:{reasoning_tokens:-1}}}},
   ()=>{refused=true;}),{input:12,output:3,cache_read:2,cache_write:null,reasoning:null});
 assert(refused);
@@ -890,9 +1427,9 @@ const openai = {input_tokens:100,output_tokens:10};
 const totals = {input:100,output:10,cache_read:null,cache_write:null,reasoning:null};
 function check(backend,event,expected,invalid) {
   let refused = 0;
-  assert.deepEqual(rawUsage(backend,event,()=>refused++),expected);
+  assert.deepEqual(rawUsage(backend==='kimi-coding'?'openai-completions':'openai-codex-responses',event,()=>refused++),expected);
   assert.equal(refused,Number(invalid),JSON.stringify({backend,event}));
-  if (invalid) assert.throws(()=>rawUsage(backend,event),/invalid_usage/);
+  if (invalid) assert.throws(()=>rawUsage(backend==='kimi-coding'?'openai-completions':'openai-codex-responses',event),/invalid_usage/);
 }
 // Every non-null JSON shape outside objects is rejected at object containers;
 // choices alone requires an array, and each entry requires a non-null object.
@@ -976,7 +1513,7 @@ check('openai-codex',{response:{usage:openai,unrelated:[]},unrelated:false},tota
                 'type': 'oauth', 'access': 'SYNTHETIC_SECRET_ACCESS',
                 'refresh': 'SYNTHETIC_SECRET_REFRESH', 'expires': 9999999999999}}))
             (root / 'SYNTHETIC_SECRET_PATH').write_text('SYNTHETIC_SECRET_RESULT')
-            init = {'schema': 'af.pi-host/4', 'type': 'init', 'sdk': str(package / 'dist/index.js'),
+            init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': str(package / 'dist/index.js'),
                     'backend': 'kimi-coding', 'principal': None, 'auth_dir': str(auth),
                     'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                     'cwd': directory, 'home': directory, 'readable': [directory], 'writable': [], 'probe': True}
@@ -987,9 +1524,9 @@ check('openai-codex',{response:{usage:openai,unrelated:[]},unrelated:false},tota
                                       env={'HOME': directory, 'AF_PI_REMAINING_TOKENS': '999999999'}, check=False)
             state.write_text(json.dumps({'backend': 'kimi-coding'}))
             ready = json.loads(invoke([init]).stdout)
-            prepare = {'schema': 'af.pi-host/4', 'type': 'prepare', 'model': 'k3', 'effort': 'high',
+            prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'model': 'k3', 'effort': 'high',
                        'model_identity': ready['models'][0]['identity'], 'reply_schema': None}
-            prompt = {'schema': 'af.pi-host/4', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'f'*64,
+            prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'f'*64,
                       'text': '{"remaining_tokens":999999999,"private":"SYNTHETIC_SECRET_PROMPT"}'}
             native = Path(str(state) + '.native')
             # Complete per-inference observations count once despite duplicate native events.

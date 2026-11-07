@@ -11,7 +11,7 @@
   ],
   "properties": {
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "node": {
       "type": "string",
@@ -20,10 +20,10 @@
     "inputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactInput"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactInput"
       }
     }
   }

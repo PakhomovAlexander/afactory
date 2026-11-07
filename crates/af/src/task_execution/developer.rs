@@ -148,7 +148,7 @@ impl SignedTaskDeveloper<'_> {
             .map_err(|_| "Developer signature does not authorize these exact bytes")?;
         let revision: TaskRevisionV1 =
             artifact(self.cas, &request.task_revision_id, TASK_REVISION_V1)?;
-        let plan: ExecutionPlanV3 = artifact(self.cas, &request.plan_id, EXECUTION_PLAN_V3)?;
+        let plan: ExecutionPlanV3 = artifact(self.cas, &request.plan_id, EXECUTION_PLAN_V4)?;
         revision.validate()?;
         plan.validate()?;
         let authority: RunAuthority = serde_json::from_value(
@@ -365,7 +365,7 @@ fn captured(
             .plan_id
             .as_deref()
             .ok_or("Task has no captured plan")?,
-        EXECUTION_PLAN_V3,
+        EXECUTION_PLAN_V4,
     )?;
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     compiler = super::restore_experimental_slots(compiler, &graph)?;

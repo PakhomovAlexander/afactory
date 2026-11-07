@@ -2,5 +2,5 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:pipeline-definition:2",
   "title": "pipeline-definition@2",
-  "$ref": "urn:af:schema:task-contracts:2#/$defs/pipelineV2"
+  "$ref": "urn:af:schema:task-contracts:3#/$defs/pipelineV2"
 }

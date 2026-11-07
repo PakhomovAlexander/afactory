@@ -15,14 +15,14 @@
       "const": "af.task-kind/1"
     },
     "name": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
     },
     "version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$"
     },
     "kind": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
     },
     "profile": {
       "enum": [

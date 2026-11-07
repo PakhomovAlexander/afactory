@@ -912,7 +912,7 @@ pub(in crate::store) fn check_canonical_child_receipt(
     };
     let selected: TaskReviewResultSelectedV1 = serde_json::from_str(&selection)?;
     selected.validate().map_err(conflict)?;
-    let plan: ExecutionPlanV3 = payload(cas, &selected.plan_id, task::EXECUTION_PLAN_V3)?;
+    let plan: ExecutionPlanV3 = payload(cas, &selected.plan_id, task::EXECUTION_PLAN_V4)?;
     let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
     if graph.nodes.contains_key(&selected.task_node) {
         return Ok(());

@@ -26,7 +26,7 @@ use review_core::task::pipeline::ReceiptOutcomeV1;
 use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::report_task::*;
 use review_core::task::{
-    ArtifactInputV1, EXECUTION_PLAN_V3, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
+    ArtifactInputV1, EXECUTION_PLAN_V4, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
     TaskRevisionV1,
 };
 use review_core::{ArtifactEnvelope, Producer, is_digest};
@@ -240,7 +240,7 @@ impl<'a> Lineage<'a> {
         inputs: &BTreeMap<String, ArtifactInputV1>,
     ) -> Result<bool, String> {
         let plan = envelope(cas, &invocation.plan_id)?;
-        if plan.artifact_type != EXECUTION_PLAN_V3 {
+        if plan.artifact_type != EXECUTION_PLAN_V4 {
             return Ok(false);
         }
         let plan: ExecutionPlanV3 = payload(&plan)?;

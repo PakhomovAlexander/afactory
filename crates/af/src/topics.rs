@@ -391,7 +391,7 @@ before it prepares a record or touches git. The value is captured when a Task is
 const START: &str = "\
 The first run, in four steps. `af doctor` checks where you are at any point, token-free.
 
-1. Register a Provider: the Claude/Codex CLI or Pi SDK login model Workers run under.
+1. Register a Provider: a Claude/Codex CLI or Pi SDK authentication context for model Workers.
      af provider detect --apply
    finds the logins on this machine (~/.claude, ~/.codex, CLAUDE_CONFIG_DIR, CODEX_HOME) and
    registers them; without --apply it only lists them. With no login yet, run this at your own
@@ -443,7 +443,7 @@ Campaign   One logical review owning one Ledger of Findings across its Rounds; l
            one closed Round. `af review campaigns` lists them; `af review ledger` shows one.
 Store      Where af records a Task's or a Campaign's events and artifacts, outside the
            repository under XDG state. `af storage` shows every Store and its size.
-Provider   A named machine-local Claude/Codex CLI or Pi SDK login for model Workers.
+Provider   A named machine-local authentication context for Claude/Codex CLI or Pi SDK Workers.
            The Rust kernel never holds its raw credential. `af provider status` lists them.
 Gate       The checks a Pipeline declares, such as `make check`, that must pass before reviewers
            run; a check that could not run is not a pass. `af onboard` shows the Gate.
@@ -608,8 +608,8 @@ A command that classifies its own outcomes — `af provider status` and `af prov
 its own versioned document instead, carrying a classified outcome and af-authored detail;
 Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
 one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@4 (`af provider detect`), af/provider-status@5,
-af/provider-setup@2, af/pi-provider-setup@3 and af/provider-models@2; none carries an account,
+documents are af/provider-detect@4 (`af provider detect`), af/provider-status@6,
+af/provider-setup@2, af/pi-provider-setup@4 and af/provider-models@3; none carries an account,
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
@@ -656,7 +656,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@16; a collected Task:
+  af task show --json                  af/task-inspection@17; a collected Task:
                                        af/task-collected-inspection@3
   af task show --checks --json         af/task-checks@3
   af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
@@ -679,7 +679,7 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@16, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-inspection@17, af/task-collected-inspection@3, af/task-checks@3, each
 af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
 af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
 af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
@@ -1349,6 +1349,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             &["start", "concepts"]
         );
+    }
+
+    #[test]
+    fn first_run_and_concepts_copy_fits_100_columns() {
+        for (name, text) in [("start", START), ("concepts", CONCEPTS)] {
+            for line in text.lines() {
+                assert!(line.chars().count() <= 100, "{name}: `{line}`");
+            }
+            assert!(text.contains("authentication context"), "{name}");
+            assert!(text.contains("Claude/Codex CLI or Pi SDK"), "{name}");
+        }
     }
 
     /// ADR-0259: a page's `af/help-topic@1` document and its text form are one rendering: the

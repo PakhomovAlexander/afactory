@@ -231,7 +231,7 @@ pub(super) fn admit_integration_with_source(
         .unwrap();
     let revision = artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (plan, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = artifact(cas, review_core::task::EXECUTION_PLAN_V3, &plan);
+    let plan_id = artifact(cas, review_core::task::EXECUTION_PLAN_V4, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &PlanOnly, &NoTaskDeveloper);
     let lease = store.open_task(cas, &revision, "developer", 60000).unwrap();
@@ -475,7 +475,7 @@ pub fn run_integration_handoff_observed(
             .contains_key("af/review-integration-checks"),
         integrates
     );
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &plan);
+    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &plan);
     let handoff = preview.prepare_handoff(&cas, &plan_id).unwrap();
     assert_eq!(handoff.successor_revision_id, revision_id);
     assert_eq!(

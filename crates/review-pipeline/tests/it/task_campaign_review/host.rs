@@ -72,7 +72,7 @@ fn admit_with_limits(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -105,7 +105,7 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         .unwrap();
     let revision = plan::artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, mapping) = compiler.compile(&cas, &revision).unwrap();
-    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let admission = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,

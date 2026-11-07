@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-models@2` document (ADR-0148).
+//! The agent-facing `af/provider-models@3` document (ADR-0148).
 //!
 //! Like the onboarding documents it carries no Rust type: `af provider models` builds it from
 //! what each harness's own protocol answered. The schema is the contract, and these cases pin
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-models-v2.json";
+const SCHEMA: &str = "provider-models-v3.json";
 
 fn fable() -> Value {
     json!({
@@ -24,7 +24,7 @@ fn fable() -> Value {
 
 fn listed() -> Value {
     json!({
-        "schema": "af/provider-models@2",
+        "schema": "af/provider-models@3",
         "exit_code": 0,
         "token_free": true,
         "proves": "af recognises these spellings for this Provider",
@@ -139,4 +139,50 @@ fn what_af_never_reports_is_unrepresentable() {
     let mut code = listed();
     code["exit_code"] = json!(3);
     assert_invalid(SCHEMA, &code, "an exit code outside 0, 4 and 7");
+}
+
+#[test]
+fn pi_model_pages_keep_the_row_bound_and_allow_exact_sdk_routed_ids() {
+    let mut document = listed();
+    let provider = &mut document["providers"][0];
+    provider["kind"] = json!("pi");
+    provider["source"] = json!("AF Pi SDK host catalog");
+    provider["harness_version"] = json!("1.4.0");
+    provider["freshness"] = json!({"source":"sdk_profile","fetched_at":null});
+    provider["models"][0]["id"] = json!("~vendor/model-69");
+    provider["catalog_page"] = json!({"number":1,"next":null,"total":70});
+    let mut resolution = resolved();
+    resolution["spelling"] = json!("~vendor/model-69");
+    resolution["id"] = json!("~vendor/model-69");
+    resolution["outcome"] = json!("exact");
+    provider["resolution"] = resolution;
+    assert_valid(SCHEMA, &document);
+    let mut missing = document.clone();
+    missing["providers"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("catalog_page");
+    assert_invalid(SCHEMA, &missing, "Pi page metadata is required");
+    let mut oversized = document.clone();
+    oversized["providers"][0]["models"] =
+        json!(vec![document["providers"][0]["models"][0].clone(); 65]);
+    assert_invalid(
+        SCHEMA,
+        &oversized,
+        "a display page still holds at most 64 models",
+    );
+    let mut old = document.clone();
+    old["schema"] = json!("af/provider-models@2");
+    assert_invalid(SCHEMA, &old, "old report version");
+    let mut native = listed();
+    native["providers"][0]["models"][0]["id"] = json!("~vendor/model-69");
+    assert_invalid(SCHEMA, &native, "native CLI model grammar stays strict");
+    for (pointer, value) in [
+        ("/providers/0/catalog_page/next", json!(64)),
+        ("/providers/0/catalog_page/total", json!(4097)),
+    ] {
+        let mut bad = document.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert_invalid(SCHEMA, &bad, pointer);
+    }
 }

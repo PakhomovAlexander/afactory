@@ -1208,7 +1208,7 @@ pub(crate) fn claude_run(
     std::fs::write(
         &providers,
         format!(
-            "version = 3\n\n[[providers]]\nid = \"claude-bench\"\nkind = \"claude\"\nauth_dir = \"{}\"\n",
+            "version = 4\n\n[[providers]]\nid = \"claude-bench\"\nkind = \"claude\"\nauth_dir = \"{}\"\n",
             auth.display()
         ),
     )

@@ -22,24 +22,24 @@
       "const": "af.pipeline/4"
     },
     "name": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
     },
     "version": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/text"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/text"
     },
     "contract": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/contractV3"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/contractV3"
     },
     "accepts": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/applicability"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/applicability"
     },
     "slots": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/slotV3"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/slotV3"
       },
       "minProperties": 0
     },
@@ -55,7 +55,7 @@
         ],
         "properties": {
           "id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
           },
           "operator": {
             "oneOf": [
@@ -83,7 +83,7 @@
                     "const": "worker"
                   },
                   "slot": {
-                    "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+                    "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
                   }
                 }
               }
@@ -92,15 +92,15 @@
           "inputs": {
             "type": "object",
             "propertyNames": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
             },
             "additionalProperties": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/valueRef"
+              "$ref": "urn:af:schema:task-contracts:3#/$defs/valueRef"
             },
             "minProperties": 0
           },
           "when": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/condition"
+            "$ref": "urn:af:schema:task-contracts:3#/$defs/condition"
           }
         }
       },
@@ -122,20 +122,20 @@
     "outputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/valueRef"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/valueRef"
       },
       "minProperties": 1
     },
     "coverage": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/valueRef"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/valueRef"
       },
       "minProperties": 0
     },

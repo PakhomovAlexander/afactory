@@ -1,5 +1,5 @@
 //! `af provider models` against fake CLIs serving the two recorded catalogs (issue #258,
-//! ADR-0148): the table, the `af/provider-models@2` document, every `--resolve` case, and exits
+//! ADR-0148): the table, the `af/provider-models@3` document, every `--resolve` case, and exits
 //! 4 and 7. No catalog read starts a turn.
 
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ impl Machine {
         };
         fake_models::install("claude", &machine.bin(), &machine.auth("claude"));
         fake_models::install("codex", &machine.bin(), &machine.auth("codex"));
-        let registry = serde_json::json!({"version": 3, "providers": [
+        let registry = serde_json::json!({"version": 4, "providers": [
             {"id": "claude-work", "kind": "claude", "auth_dir": machine.auth("claude")},
             {"id": "codex-main", "kind": "codex", "auth_dir": machine.auth("codex")},
         ]});
@@ -81,7 +81,7 @@ fn document(output: &Output) -> Value {
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-models-v2.json"),
+        &crate::schemas::validator("provider-models-v3.json"),
         &document,
     );
     document
@@ -289,7 +289,7 @@ fn the_document_validates_and_carries_every_row() {
     let output = machine.af(&["--json"]);
     assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     let document = document(&output);
-    assert_eq!(document["schema"], "af/provider-models@2");
+    assert_eq!(document["schema"], "af/provider-models@3");
     assert_eq!(document["exit_code"], 0);
     assert_eq!(document["token_free"], true);
     let providers = document["providers"].as_array().unwrap();

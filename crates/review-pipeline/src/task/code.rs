@@ -2629,7 +2629,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
         receipt: &VerificationResultV1,
     ) -> Result<(), String> {
         let plan_envelope = envelope(cas, &receipt.plan_id)?;
-        if plan_envelope.artifact_type != EXECUTION_PLAN_V3 {
+        if plan_envelope.artifact_type != EXECUTION_PLAN_V4 {
             return Err("Verification result has no exact ExecutionPlan".into());
         }
         let plan: ExecutionPlanV3 =

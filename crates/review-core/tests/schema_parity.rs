@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 260] = [
+const SCHEMAS: [&str; 261] = [
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
@@ -50,11 +50,12 @@ const SCHEMAS: [&str; 260] = [
     "compiled-task-v3.json",
     "custom-issue-input-v1.json",
     "custom-issue-triage-v2.json",
-    "pi-host-v4.json",
-    "pi-inference-evidence-v1.json",
+    "pi-host-v5.json",
+    "pi-context-v1.json",
+    "pi-inference-evidence-v2.json",
     "pi-validation-claim-v1.json",
-    "pi-provider-setup-v3.json",
-    "provider-registry-v3.json",
+    "pi-provider-setup-v4.json",
+    "provider-registry-v4.json",
     "error-v2.json",
     "findings-sarif-v1.json",
     "task-attempt-wall-end-v1.json",
@@ -109,7 +110,7 @@ const SCHEMAS: [&str; 260] = [
     "project-v1.json",
     "project-workspaces-v1.json",
     "task-report-v3.json",
-    "provider-models-v2.json",
+    "provider-models-v3.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
     "measurement-v1.json",
@@ -117,7 +118,7 @@ const SCHEMAS: [&str; 260] = [
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
     "provider-status-v3.json",
-    "provider-status-v5.json",
+    "provider-status-v6.json",
     "provider-disables-v1.json",
     "provider-setup-v1.json",
     "provider-setup-v2.json",
@@ -137,7 +138,7 @@ const SCHEMAS: [&str; 260] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v16.json",
+    "task-inspection-v17.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -153,14 +154,14 @@ const SCHEMAS: [&str; 260] = [
     "optimization-verification-v1.json",
     "optimization-package-repin-v1.json",
     "harness-materialization-v1.json",
-    "provider-doctor-v4.json",
+    "provider-doctor-v5.json",
     "review-outcome-v3.json",
     "review-report-v5.json",
     "task-context-v1.json",
     "task-builtin-context-v1.json",
-    "task-provider-context-v2.json",
+    "task-provider-context-v3.json",
     "document-context-v1.json",
-    "task-plan-inspection-v2.json",
+    "task-plan-inspection-v3.json",
     "task-file-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
@@ -195,7 +196,7 @@ const SCHEMAS: [&str; 260] = [
     "task-planner-settings-v1.json",
     "task-operator-signature-v1.json",
     "pipeline-proposal-v1.json",
-    "task-provider-admission-v3.json",
+    "task-provider-admission-v4.json",
     "task-review-subject-v2.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -204,7 +205,7 @@ const SCHEMAS: [&str; 260] = [
     "task-review-gate-facts-v1.json",
     "legacy-review-round-v1.json",
     "legacy-review-dependency-v1.json",
-    "legacy-review-invocation-policy-v3.json",
+    "legacy-review-invocation-policy-v4.json",
     "legacy-review-gate-outcome-v1.json",
     "task-review-result-selected-v1.json",
     "task-check-receipt-v2.json",
@@ -226,7 +227,7 @@ const SCHEMAS: [&str; 260] = [
     "task-retry-feedback-v1.json",
     "worker-reply-reask-v1.json",
     "artifact-envelope-v1.json",
-    "task-contracts-v2.json",
+    "task-contracts-v3.json",
     "task-transition-v5.json",
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
@@ -235,7 +236,7 @@ const SCHEMAS: [&str; 260] = [
     "task-provider-event-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
-    "legacy-review-task-policy-v6.json",
+    "legacy-review-task-policy-v7.json",
     "task-review-handoff-v2.json",
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
@@ -249,7 +250,7 @@ const SCHEMAS: [&str; 260] = [
     "pipeline-definition-v1.json",
     "pipeline-definition-v2.json",
     "pipeline-definition-v3.json",
-    "execution-plan-v3.json",
+    "execution-plan-v4.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
     "verification-continuation-v1.json",
@@ -665,7 +666,7 @@ fn provider_admission_contract_requires_exact_model_capability() {
     let id = format!("sha256:{}", "b".repeat(64));
     let value = json!({"plan_id":id,"invocation_policy_id":id,"outcome":"passed","bindings":["root.slots.reviewer"],
         "execution":{"kind":"model","provider":"personal","provider_kind":"claude","principal_id":id,"model":"claude-fixture-1","effort":"high"}});
-    assert_valid("task-provider-admission-v3.json", &value);
+    assert_valid("task-provider-admission-v4.json", &value);
     serde_json::from_value::<TaskProviderAdmissionV3>(value.clone())
         .unwrap()
         .validate()
@@ -678,7 +679,7 @@ fn provider_admission_contract_requires_exact_model_capability() {
         let mut changed = value.clone();
         changed[field] = replacement;
         assert_invalid(
-            "task-provider-admission-v3.json",
+            "task-provider-admission-v4.json",
             &changed,
             "invalid capability proof",
         );
@@ -711,7 +712,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .into_iter()
                     .chain([
                         "finding-report-v1.json",
-                        "task-contracts-v2.json",
+                        "task-contracts-v3.json",
                         "task-review-accounting-v1.json",
                         "task-operator-signature-v1.json",
                         "task-kind-v1.json",

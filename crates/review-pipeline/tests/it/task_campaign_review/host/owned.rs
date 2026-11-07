@@ -65,7 +65,7 @@ fn admit_owned_with_limits(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(cas, &revision).unwrap().0;
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -363,7 +363,7 @@ fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
         .unwrap();
     let revision = plan::artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(&cas, &revision).unwrap().0;
-    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let admission = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,

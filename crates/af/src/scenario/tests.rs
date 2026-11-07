@@ -158,7 +158,7 @@ pub(super) fn schema(name: &str) -> jsonschema::Validator {
     let mut registry = jsonschema::Registry::new();
     for file in [
         "scenario-v5.json",
-        "task-contracts-v2.json",
+        "task-contracts-v3.json",
         "scenario-roadmap-proposal-v2.json",
     ] {
         let value: Value = serde_json::from_slice(&std::fs::read(dir.join(file)).unwrap()).unwrap();

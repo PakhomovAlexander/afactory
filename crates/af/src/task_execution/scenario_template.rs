@@ -352,7 +352,7 @@ pub(crate) fn plan(
             .plan_id
             .as_deref()
             .ok_or("Template Task has no native plan")?;
-        let plan: ExecutionPlanV3 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V3)?;
+        let plan: ExecutionPlanV3 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V4)?;
         let file: TaskFile = serde_json::from_value(document.clone()).map_err(|e| e.to_string())?;
         let limits = file
             .limits

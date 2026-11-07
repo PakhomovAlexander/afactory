@@ -411,10 +411,10 @@
           "maxLength": 1024
         },
         "diagnostic_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         },
         "stderr_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
         }
       }
     }

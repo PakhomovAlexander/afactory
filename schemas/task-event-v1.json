@@ -20,7 +20,7 @@
       "const": "af/task-event@1"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
     }
   },
   "oneOf": [
@@ -76,7 +76,7 @@
           "const": "af/task-event@1"
         },
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
         },
         "sequence": {
           "$ref": "#/$defs/sequence"
@@ -340,7 +340,7 @@
           "const": "af/task-event@1"
         },
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
         },
         "last_sequence": {
           "$ref": "#/$defs/sequence"

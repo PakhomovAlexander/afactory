@@ -19,7 +19,7 @@
       "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     }
   }
 }

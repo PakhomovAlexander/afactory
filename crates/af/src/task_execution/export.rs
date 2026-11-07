@@ -56,7 +56,7 @@ pub(crate) fn run(
         .plan_id
         .as_deref()
         .ok_or("Task has no compiled plan to export")?;
-    let plan: ExecutionPlanV3 = artifact(&cas, plan_id, EXECUTION_PLAN_V3)?;
+    let plan: ExecutionPlanV3 = artifact(&cas, plan_id, EXECUTION_PLAN_V4)?;
     if plan.preparation.is_some() {
         return Err("Planning has not produced an executable definition to export".into());
     }
@@ -84,7 +84,7 @@ pub(crate) fn run(
                 .ok_or("Captured Planner setting is absent")?,
         )?;
         let bootstrap: ExecutionPlanV3 =
-            artifact(&cas, proof.bootstrap_plan_id(), EXECUTION_PLAN_V3)?;
+            artifact(&cas, proof.bootstrap_plan_id(), EXECUTION_PLAN_V4)?;
         recorded_bindings(&mut compiler, &authority, &bootstrap)?;
         compiler.install_selected_proposal(&cas, &proof)?;
         private_values.extend([

@@ -25,7 +25,7 @@ fn accepted(
         ));
     }
     if kind != "report" {
-        let plan: ExecutionPlanV3 = artifact(&opened.cas, &receipt.plan_id, EXECUTION_PLAN_V3)?;
+        let plan: ExecutionPlanV3 = artifact(&opened.cas, &receipt.plan_id, EXECUTION_PLAN_V4)?;
         super::super::scenario_template::performance_roles(&plan, kind)?;
         let selected = select(&opened, None)?;
         let findings = super::super::findings::document(&opened, None)?;

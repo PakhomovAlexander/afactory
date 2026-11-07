@@ -185,7 +185,7 @@ fn continue_on_head(
         .unwrap();
     let revision_id = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &revision);
     let (plan, _) = successor.compile(cas, &revision_id).unwrap();
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &plan);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V4, &plan);
     let handoff = TaskReviewHandoffV1 {
         task_id: lease.task_id().into(),
         predecessor_revision_id: state.revision_id.clone(),

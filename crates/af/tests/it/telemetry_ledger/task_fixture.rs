@@ -11,7 +11,7 @@ use review_core::task::plan::*;
 use review_core::task::usage::{
     TASK_TOKEN_USAGE_V3, TASK_USAGE_OBSERVATION_V1, TaskTokenUsageV3, TaskUsageObservationV1,
 };
-use review_core::task::{self, ArtifactInputV1, EXECUTION_PLAN_V3, TaskResultV1, TaskRevisionV1};
+use review_core::task::{self, ArtifactInputV1, EXECUTION_PLAN_V4, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{
     CompileContext, CompiledOperator, OperatorAttemptCost, OperatorSignature, ReviewOperation,
     compile_task,
@@ -428,7 +428,7 @@ impl TaskFixture {
                 artifact_id: pipeline_id,
             },
         )]);
-        let plan_id = put(&cas, EXECUTION_PLAN_V3, &plan);
+        let plan_id = put(&cas, EXECUTION_PLAN_V4, &plan);
         let lease = store
             .open_task(&cas, &revision_id, "fixture", LEASE_MS)
             .unwrap();

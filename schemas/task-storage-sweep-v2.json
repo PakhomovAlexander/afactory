@@ -163,7 +163,7 @@
         },
         "task_id": {
           "description": "The collected Task, for a `task` removal and only for one.",
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
         },
         "bytes": {
           "$ref": "#/$defs/count"

@@ -14,9 +14,9 @@ use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewO
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const REVIEW_TASK_POLICY_V6: &str = "af/LegacyReviewTaskPolicy@6";
+pub const REVIEW_TASK_POLICY_V7: &str = "af/LegacyReviewTaskPolicy@7";
 pub const REVIEW_DEPENDENCY_V1: &str = "af/LegacyReviewDependency@1";
-pub const REVIEW_INVOCATION_POLICY_V3: &str = "af/LegacyReviewInvocationPolicy@3";
+pub const REVIEW_INVOCATION_POLICY_V4: &str = "af/LegacyReviewInvocationPolicy@4";
 const ROOT: &str = "af/legacy-review";
 
 mod continuation;
@@ -82,7 +82,7 @@ impl ReviewPlanSettings {
     }
 }
 
-/// The `af/LegacyReviewTaskPolicy@6` payload. Its bytes are Task authority: resume and later
+/// The `af/LegacyReviewTaskPolicy@7` payload. Its bytes are Task authority: resume and later
 /// Rounds recheck them exactly, so the shape and field names must not change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,7 +176,7 @@ impl CampaignReviewPlanCompiler {
         };
         let envelope = capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V6,
+            REVIEW_TASK_POLICY_V7,
             "policy",
             vec![
                 policy.engine_id.clone(),
@@ -197,7 +197,7 @@ impl CampaignReviewPlanCompiler {
         policy_id: &str,
     ) -> Result<Self, String> {
         let envelope = cas.get_artifact(policy_id).map_err(|e| e.to_string())?;
-        if envelope.artifact_type != REVIEW_TASK_POLICY_V6 {
+        if envelope.artifact_type != REVIEW_TASK_POLICY_V7 {
             return Err("Expected a captured Review Task policy".into());
         }
         let policy: ReviewTaskPolicy =
@@ -212,7 +212,7 @@ impl CampaignReviewPlanCompiler {
         }
         capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V6,
+            REVIEW_TASK_POLICY_V7,
             "policy",
             vec![
                 policy.engine_id.clone(),
@@ -474,7 +474,7 @@ impl CampaignReviewPlanCompiler {
         // Check policy bytes on every admission/resume, even when the compiler stays in memory.
         capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V6,
+            REVIEW_TASK_POLICY_V7,
             "policy",
             vec![
                 self.policy.engine_id.clone(),
@@ -604,7 +604,7 @@ impl CampaignReviewPlanCompiler {
                 .transpose()?;
             let policy = capture_or_read(
                 cas,
-                REVIEW_INVOCATION_POLICY_V3,
+                REVIEW_INVOCATION_POLICY_V4,
                 "invocation",
                 vec![self.policy_id.clone(), package.artifact_id.clone()],
                 &policy,

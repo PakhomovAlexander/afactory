@@ -116,8 +116,11 @@ pub(super) fn probe(
         .as_deref()
         .ok_or("Pi requires an explicit auth directory")?;
     validate_private_auth_directory(auth).map_err(|_| "Pi auth directory must be an existing private, owned directory without unsafe links or permissions")?;
-    if !auth.join("auth.json").is_file() {
-        return Err("Pi requires an existing supported stored OAuth login; log in with Pi at a private terminal".into());
+    if auth
+        .ancestors()
+        .any(|path| path.join(".git").exists() || path.join(".af").is_dir())
+    {
+        return Err("Pi profile must be machine-local and outside repository-owned paths; select an external --auth-dir".into());
     }
     let node = node()?;
     let ready = review_runner_pi::probe(&node, config, auth, timeout, Some(cancelled))?;
@@ -147,10 +150,11 @@ pub(super) fn status(
     match probe(spec, cancelled, PROBE_TIMEOUT) {
         Ok((_, ready)) => {
             status.status = "authenticated".into();
-            status.auth_type = "OAuth".into();
+            status.auth_type = ready.auth_method.clone();
             status.detail = format!(
-                "Pi SDK 1.4.0; {} stored OAuth; {}; confined file tools; quota unsupported",
+                "Pi SDK 1.4.0; {} {}; {}; confined file tools; quota unsupported",
                 ready.backend,
+                ready.auth_method,
                 if ready.principal.is_some() {
                     "account principal checked"
                 } else {
@@ -181,20 +185,27 @@ fn setup_outcome(
     validate_explicit_id(id).map_err(|_| "Pi setup requires a valid, non-reserved Provider ID")?;
     availability::check_id(id).map_err(|_| "Pi Provider is disabled or its availability state is invalid; inspect af provider status")?;
     if login {
-        return Err("Pi login is human-driven: register an existing supported OAuth profile with --auth-dir".into());
+        return Err("Pi login is human-driven: register an existing explicitly configured Pi profile with --auth-dir".into());
     }
-    let backend = backend.ok_or("Pi setup requires --backend openai-codex or kimi-coding")?;
-    if !matches!(backend, "openai-codex" | "kimi-coding") {
-        return Err("Pi supports openai-codex and kimi-coding with stored OAuth".into());
+    let backend =
+        backend.ok_or("Pi setup requires --backend with an exact SDK/profile provider ID")?;
+    if !review_runner_pi::exact_id(backend) {
+        return Err("Pi requires an exact SDK/profile provider ID".into());
     }
     let auth = auth
-        .ok_or("Pi setup requires an absolute --auth-dir holding an existing stored OAuth login")?;
+        .ok_or("Pi setup requires an absolute --auth-dir naming the private Pi credential/configuration profile")?;
     if !auth.is_absolute() {
         return Err("Pi auth directory must be absolute".into());
     }
     validate_utf8_destination(auth)
         .map_err(|_| "Pi auth directory must be a valid UTF-8 destination")?;
     validate_private_auth_directory(auth).map_err(|_| "Pi auth directory must be an existing private, owned directory without unsafe links or permissions")?;
+    if auth
+        .ancestors()
+        .any(|path| path.join(".git").exists() || path.join(".af").is_dir())
+    {
+        return Err("Pi profile must be machine-local and outside repository-owned paths; select an external --auth-dir".into());
+    }
     let auth = fs::canonicalize(auth).map_err(|_| "Pi auth directory is missing")?;
     let resolved = match sdk {
         Some(path) => path.to_path_buf(),
@@ -220,9 +231,9 @@ fn setup_outcome(
     };
     let cancelled = AtomicBool::new(false);
     // Probe diagnostics are a closed AF-authored vocabulary; no native stderr escapes.
-    probe(&spec, &cancelled, PROBE_TIMEOUT)?;
+    let (_, ready) = probe(&spec, &cancelled, PROBE_TIMEOUT)?;
     let _lock = registry_lock(&registry).map_err(|_| "Cannot lock Pi Provider registry")?;
-    let identity_detail = if backend == "kimi-coding" {
+    let identity_detail = if ready.principal.is_none() {
         "account identity unavailable; auth context only; account substitution cannot be detected"
     } else {
         "account principal checked"
@@ -230,7 +241,7 @@ fn setup_outcome(
     match add_to_registry_with_pi(&registry, id, ProviderKind::Pi, &auth, true, Some(&config))
         .map_err(|_| "Cannot update Pi Provider registry; inspect its configuration and permissions")?
     {
-        RegistryAdd::Added(_) => Ok((EXIT_OK, "registered", format!("Pi SDK 1.4.0 {backend} stored OAuth registered; {identity_detail}"))),
+        RegistryAdd::Added(_) => Ok((EXIT_OK, "registered", format!("Pi SDK 1.4.0 {backend} {} registered; {identity_detail}", ready.auth_method))),
         RegistryAdd::AlreadyPresent => Ok((EXIT_OK, "already_registered", format!("Pi registration already present; {identity_detail}"))),
         RegistryAdd::Conflict(_) => Ok((EXIT_REGISTRY_CONFLICT, "registry_conflict", "Pi Provider ID or auth directory conflicts with an existing registration or registry limit".into())),
     }
@@ -248,11 +259,11 @@ pub fn setup(
         .unwrap_or_else(|detail| (EXIT_HUMAN_ACTION_REQUIRED, "human_action_required", detail));
     // Never fabricate a supported identity for an invalid request, or echo raw invalid input.
     let id = validate_explicit_id(id).is_ok().then_some(id);
-    let backend = backend.filter(|value| matches!(*value, "openai-codex" | "kimi-coding"));
+    let backend = backend.filter(|value| review_runner_pi::exact_id(value));
     if json {
         println!(
             "{}",
-            serde_json::json!({"schema":"af/pi-provider-setup@3","id":id,"kind":"pi","backend":backend,"outcome":state,"detail":detail})
+            serde_json::json!({"schema":"af/pi-provider-setup@4","id":id,"kind":"pi","backend":backend,"outcome":state,"detail":detail})
         );
     } else {
         println!("provider {}: {detail}", id.unwrap_or("pi (invalid ID)"));
@@ -271,7 +282,7 @@ mod tests {
     fn pi_setup_login_refusal_precedes_discovery_and_authentication() {
         assert_eq!(
             setup_outcome("pi-one", None, None, None, true).unwrap_err(),
-            "Pi login is human-driven: register an existing supported OAuth profile with --auth-dir"
+            "Pi login is human-driven: register an existing explicitly configured Pi profile with --auth-dir"
         );
     }
 

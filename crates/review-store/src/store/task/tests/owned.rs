@@ -221,7 +221,7 @@ fn with_owned_graph(mut f: Fixture) -> Fixture {
     f.plan_id = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V3,
+            task::EXECUTION_PLAN_V4,
             producer(),
             vec![f.revision_id.clone()],
             None,
@@ -862,7 +862,7 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
         payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
     let next = source::next(&f);
     let (next_id, next_plan) = source::plan_for(&f, &next);
-    let mut plan: ExecutionPlanV3 = payload(&f.cas, &next_plan, task::EXECUTION_PLAN_V3).unwrap();
+    let mut plan: ExecutionPlanV3 = payload(&f.cas, &next_plan, task::EXECUTION_PLAN_V4).unwrap();
     let mut graph: CompiledTask =
         payload(&f.cas, &plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
     let scope = graph.token_scopes.remove("review.round1.scatter").unwrap();
@@ -883,7 +883,7 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
     let next_plan = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V3,
+            task::EXECUTION_PLAN_V4,
             producer(),
             vec![next_id.clone()],
             None,
@@ -980,7 +980,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
         f.plan_id = f
             .cas
             .put_artifact(
-                task::EXECUTION_PLAN_V3,
+                task::EXECUTION_PLAN_V4,
                 producer(),
                 vec![f.revision_id.clone()],
                 None,

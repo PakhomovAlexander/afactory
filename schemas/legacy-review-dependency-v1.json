@@ -13,26 +13,26 @@
   ],
   "properties": {
     "name": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
     },
     "campaign_manifest_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "pipeline_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "lock_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "review_node": {
       "type": "string",
       "minLength": 1
     },
     "original_package_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "original_package_digest": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "files": {
       "type": "object",
@@ -41,7 +41,7 @@
         "minLength": 1
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
       }
     }
   }

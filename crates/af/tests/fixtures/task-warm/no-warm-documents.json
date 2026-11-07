@@ -239,10 +239,10 @@
       "operation_id": "capture@1",
       "run_id": "task-file-adapter-v1"
     },
-    "type": "af/ExecutionPlan@3"
+    "type": "af/ExecutionPlan@4"
   },
   "inspection": {
-    "schema": "af/task-inspection@16",
+    "schema": "af/task-inspection@17",
     "task_id": "cold-only",
     "revision_id": "<run:1>",
     "phase": {

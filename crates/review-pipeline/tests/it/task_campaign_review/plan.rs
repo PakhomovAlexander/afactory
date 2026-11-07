@@ -240,7 +240,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
             compiler.round().binding().campaign_manifest_id
         );
     }
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &plan);
+    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &RefuseExecution, &NoTaskDeveloper);
     let lease = store
@@ -412,13 +412,13 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
         let common: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(root.join("schemas/task-contracts-v2.json")).unwrap(),
+            &std::fs::read(root.join("schemas/task-contracts-v3.json")).unwrap(),
         )
         .unwrap();
         [
             (
-                "af/LegacyReviewTaskPolicy@6",
-                "legacy-review-task-policy-v6.json",
+                "af/LegacyReviewTaskPolicy@7",
+                "legacy-review-task-policy-v7.json",
             ),
             ("af/CompiledTask@1", "compiled-task-v1.json"),
             (
@@ -426,8 +426,8 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
                 "legacy-review-dependency-v1.json",
             ),
             (
-                "af/LegacyReviewInvocationPolicy@3",
-                "legacy-review-invocation-policy-v3.json",
+                "af/LegacyReviewInvocationPolicy@4",
+                "legacy-review-invocation-policy-v4.json",
             ),
         ]
         .into_iter()
@@ -482,7 +482,7 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
 
 #[test]
 fn installed_review_without_context_only_policy_refuses_unavailable_account_identity() {
-    use review_core::task::plan::{PiAuthorityV2, PiIdentityModeV1};
+    use review_core::task::plan::{PiAuthorityV3, PiIdentityModeV1};
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -497,7 +497,7 @@ fn installed_review_without_context_only_policy_refuses_unavailable_account_iden
             principal_id: None,
             model: "k3".into(),
             effort: "high".into(),
-            pi: Some(Box::new(PiAuthorityV2 {
+            pi: Some(Box::new(PiAuthorityV3 {
                 identity_mode: PiIdentityModeV1::Unavailable,
                 backend: "kimi-coding".into(),
                 auth_method: "oauth".into(),

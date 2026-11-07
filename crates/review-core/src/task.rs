@@ -60,7 +60,7 @@ use crate::{PortCardinality, is_artifact_type, is_digest};
 
 pub const TASK_REVISION_V1: &str = "af/TaskRevision@1";
 pub const TASK_RESULT_V1: &str = "af/TaskResult@1";
-pub const EXECUTION_PLAN_V3: &str = "af/ExecutionPlan@3";
+pub const EXECUTION_PLAN_V4: &str = "af/ExecutionPlan@4";
 pub const PLAN_DECISION_V1: &str = "af/PlanDecision@1";
 pub const REVIEW_HISTORY_V1: &str = "af/ReviewHistory@1";
 pub const VERIFICATION_CONTINUATION_V1: &str = "af/VerificationContinuation@1";

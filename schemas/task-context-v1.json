@@ -20,14 +20,14 @@
       "maxItems": 16,
       "uniqueItems": true,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
       }
     },
     "rendered_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "contract_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "manifest": {
       "type": "object",
@@ -62,7 +62,7 @@
               "artifact_id": {
                 "anyOf": [
                   {
-                    "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+                    "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
                   },
                   {
                     "type": "null"
@@ -72,7 +72,7 @@
               "artifact_type": {
                 "anyOf": [
                   {
-                    "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactType"
+                    "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactType"
                   },
                   {
                     "type": "null"

@@ -167,7 +167,7 @@ fn doctor_account_change_before_probe_refuses_known_zero_without_business_or_rep
         String::from_utf8_lossy(&output.stderr)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    contracts::valid("provider-doctor-v4.json", &value);
+    contracts::valid("provider-doctor-v5.json", &value);
     assert_eq!(value["ready"], false);
     assert_eq!(value["gates_run"], false);
     assert_eq!(value["workers_dispatched"], false);
@@ -277,7 +277,7 @@ args=[{value="--model"},{value="o3"},{value="--effort"},{value="high"}]
             review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
         );
         std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
-        std::fs::write(home.join(".config/af/providers.toml"),toml::to_string(&serde_json::json!({"version":3,"providers":[{"id":"test-pi","kind":"pi","backend":"openai-codex","auth_dir":auth,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+        std::fs::write(home.join(".config/af/providers.toml"),toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":"test-pi","kind":"pi","backend":"openai-codex","auth_dir":auth,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
         git(&repo, &home, &["add", "-A"]);
         git(&repo, &home, &["commit", "-qm", "bind Pi fixture"]);
         let out = crate::common::af()
@@ -322,7 +322,7 @@ args=[{value="--model"},{value="o3"},{value="--effort"},{value="high"}]
         let value: Value = serde_json::from_slice(&out.stdout).unwrap();
         if doctor {
             assert_eq!(value["ready"], true);
-            contracts::valid("provider-doctor-v4.json", &value);
+            contracts::valid("provider-doctor-v5.json", &value);
         }
         assert_eq!(
             std::fs::read_to_string(trace.with_extension("json.calls")).unwrap(),

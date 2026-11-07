@@ -15,13 +15,13 @@
       "$ref": "urn:af:schema:task-invocation:1"
     },
     "original_round_report_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "prior_history_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "assessment": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/repairAssessment"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/repairAssessment"
     }
   }
 }

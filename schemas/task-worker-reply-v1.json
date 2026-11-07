@@ -16,7 +16,7 @@
       "type": "object",
       "maxProperties": 32,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
       },
       "additionalProperties": {
         "type": "array",

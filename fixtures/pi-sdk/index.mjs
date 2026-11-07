@@ -4,24 +4,31 @@ const statePath = AF_FIXTURE_STATE;
 const state = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
 const token = (account,nonce='original') => 'e30.' + Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:account},nonce})).toString('base64url') + '.synthetic';
 const backend = () => state().backend ?? 'openai-codex';
-const model = () => backend() === 'kimi-coding'
+const model = () => state().model ? {id:state().model,api:state().api ?? 'openai-completions',provider:backend(),baseUrl:state().endpoint ?? 'https://custom.invalid/v1',reasoning:state().reasoning ?? true,maxTokens:32768} : backend() === 'kimi-coding'
   ? { id: 'k3', api: 'openai-completions', provider: backend(), baseUrl: state().endpoint ?? 'https://api.kimi.com/coding/v1', reasoning: true, maxTokens: 32768 }
   : { id: 'o3', api: 'openai-codex-responses', provider: backend(), baseUrl: state().endpoint ?? 'https://chatgpt.com/backend-api', reasoning: true, maxTokens: 32768 };
 export const createExtensionRuntime = () => ({});
 export class ModelRuntime {
   static async create(options) {
-    if (options.modelsPath !== null || options.allowModelNetwork || options.refreshOnCreate) throw Error('ambient runtime');
+    if (options.allowModelNetwork || options.refreshOnCreate) throw Error('ambient runtime');
+    const configured = options.modelsPath ? JSON.parse(fs.readFileSync(options.modelsPath,'utf8')).providers[backend()] : undefined;
+    let catalog = configured?.models?.map(m => ({...model(),...m,provider:backend(),api:m.api ?? configured.api ?? model().api,baseUrl:m.baseUrl ?? configured.baseUrl ?? model().baseUrl})) ?? [model()];
     return {
-      getModels: () => [model()], getModel: (provider,id) => provider === backend() && id === model().id ? model() : undefined,
+      registerProvider: (id,config) => { if(id!==backend())throw Error("provider scope"); catalog=config.models.map(m=>({...model(),...m,provider:id,api:m.api ?? config.api,baseUrl:m.baseUrl ?? config.baseUrl})); },
+      getProviders: () => [{id:backend(),auth:{oauth:{toAuth:async()=>({apiKey:'synthetic'})}}}],
+      getAuth: async (selected,config) => { const id=typeof selected==='string'?selected:selected.provider; return (id === backend() && ((await options.credentials.read(id)) || configured?.apiKey || Object.keys(config?.env ?? {}).length)) ? {auth:{apiKey:'synthetic'}} : undefined; },
+      getError: () => undefined,
+      refresh: async () => { const cached=await options.modelsStore?.read(backend()); if(cached?.models)catalog=[...catalog,...cached.models]; return {errors:new Map()}; },
+      getModels: () => catalog.filter(m=>!m.type || m.type==='chat'), getModel: (provider,id) => provider === backend() ? catalog.find(m=>m.id===id) : undefined,
       async streamSimple(selected,_context,options) {
         fs.appendFileSync(statePath+'.native',JSON.stringify({maxTokens:options.maxTokens})+'\n');
-        if (Object.keys(options.env).length || options.maxRetries !== 0) throw Error('ambient auth/retry');
+        if (options.maxRetries !== 0) throw Error('ambient auth/retry');
         await options.credentials?.read?.(backend());
         if (state().providerEvents) {
           for (const event of state().providerEvents) await options.onProviderStreamEvent(event, selected);
           return;
         }
-        if (backend() === 'kimi-coding') {
+        if (backend() !== 'openai-codex') {
           const usage = state().usage ?? {prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
           for (let n=0;n<(state().usageEvents ?? 2);n++) await options.onProviderStreamEvent(n%2 ? {choices:[{usage}]} : {choices:[],usage}, selected);
           return;
@@ -71,7 +78,7 @@ export async function createAgentSession(options) {
       if (mode === 'kimi-tool') {
         await options.customTools.find(t=>t.name==='write').execute('tool',{path:'kimi-edited',content:'confined Kimi edit'});
       }
-      const message={role:'assistant',provider:backend(),model:model().id,stopReason:'stop',content:[{type:'text',text:answer}]};
+      const message={role:'assistant',provider:backend(),model:options.model.id,stopReason:'stop',content:[{type:'text',text:answer}]};
       for (let i=0;i<(state().inferences ?? 1);i++) {
         emit({type:'message_start',message});
         try { await options.modelRuntime.streamSimple(options.model,{},{}); }

@@ -40,7 +40,7 @@ impl Fixture {
         let registry = home.join("providers.toml");
         std::fs::write(
             &registry,
-            toml::to_string(&serde_json::json!({"version":3,"providers":[{"id":provider,"kind":kind,"auth_dir":auth}]}))
+            toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":provider,"kind":kind,"auth_dir":auth}]}))
                 .unwrap(),
         )
         .unwrap();
