@@ -1330,10 +1330,14 @@ fn the_checked_in_fixture_is_what_the_renderer_prints_for_its_document() {
 }
 
 #[test]
-fn an_adr_file_is_named_by_its_four_digit_number() {
+fn an_adr_file_is_named_by_its_legacy_number_or_date_topic_identity() {
     assert_eq!(
-        adr_number("docs/adr/0205-rerun.md").as_deref(),
+        adr_identity("docs/adr/0205-rerun.md").as_deref(),
         Some("0205")
+    );
+    assert_eq!(
+        adr_identity("docs/adr/2026-11-05-rerun.md").as_deref(),
+        Some("2026-11-05-rerun")
     );
     for other in [
         "docs/adr/README.md",
@@ -1341,9 +1345,11 @@ fn an_adr_file_is_named_by_its_four_digit_number() {
         "docs/adr/0205.md",
         "docs/adr/0205-x/y.md",
         "docs/adr/0205-rerun.txt",
+        "docs/adr/2026-11-05-rerun/x.md",
         "docs/design/0205-rerun.md",
+        "docs/design/2026-11-05-rerun.md",
         "crates/docs/adr/0205-rerun.md",
     ] {
-        assert_eq!(adr_number(other), None, "{other}");
+        assert_eq!(adr_identity(other), None, "{other}");
     }
 }
