@@ -2121,9 +2121,8 @@ fn a_report_distinguishes_dated_adr_identities_and_warns_on_real_collisions() {
             String::from_utf8_lossy(&alone.stderr)
         );
         if let Some(identity) = collision {
-            let prefix = format!(
-                "af task report: warning: ADR {identity} is added by 2 Tasks: gc-older ("
-            );
+            let prefix =
+                format!("af task report: warning: ADR {identity} is added by 2 Tasks: gc-older (");
             assert!(flat.contains(&prefix), "{label}: {said}");
             assert!(flat.contains("gc-newer"), "{label}: {said}");
             if identity == "0205" {
@@ -2157,10 +2156,7 @@ fn a_report_distinguishes_dated_adr_identities_and_warns_on_real_collisions() {
             }
         } else {
             assert!(!said.contains("warning: ADR"), "{label}: {said}");
-            assert!(
-                !json_said.contains("warning: ADR"),
-                "{label}: {json_said}"
-            );
+            assert!(!json_said.contains("warning: ADR"), "{label}: {json_said}");
         }
         for line in said.lines().chain(json_said.lines()) {
             assert!(line.chars().count() <= 100, "{label}: {line}");
