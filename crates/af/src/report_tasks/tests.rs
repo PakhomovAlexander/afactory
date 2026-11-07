@@ -78,7 +78,7 @@ fn report_validator() -> jsonschema::Validator {
         serde_json::from_str(include_str!("../../../../schemas/review-report-v5.json")).unwrap();
     let mut registry = jsonschema::Registry::new();
     for raw in [
-        include_str!("../../../../schemas/task-contracts-v2.json"),
+        include_str!("../../../../schemas/task-contracts-v3.json"),
         include_str!("../../../../schemas/task-token-usage-v3.json"),
         include_str!("../../../../schemas/task-review-accounting-v1.json"),
         include_str!("../../../../schemas/task-findings-v2.json"),
@@ -395,7 +395,7 @@ impl Fixture {
                 artifact_id: pipeline_id,
             },
         )]);
-        let plan_id = put(&cas, EXECUTION_PLAN_V3, &plan);
+        let plan_id = put(&cas, EXECUTION_PLAN_V4, &plan);
         let lease = store
             .open_task(&cas, &revision_id, "fixture", 60000)
             .unwrap();
@@ -867,7 +867,7 @@ fn retired_attempt_classification_uses_its_original_plan_after_replacement() {
     plan.task_revision_id = revision_id.clone();
     plan.inputs = next.inputs;
     plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", graph);
-    let replacement = put(&f.cas, EXECUTION_PLAN_V3, plan);
+    let replacement = put(&f.cas, EXECUTION_PLAN_V4, plan);
     f.store
         .refresh_task_source(
             &f.cas,

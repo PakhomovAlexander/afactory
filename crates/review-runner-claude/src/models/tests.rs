@@ -294,3 +294,26 @@ fn nearest_spellings_share_a_family_or_are_two_edits_away() {
     assert_eq!(distance("kitten", "sitting"), 3);
     assert_eq!(distance("", "abc"), 3);
 }
+
+#[test]
+fn pi_static_rules_accept_sdk_cloud_and_routed_ids_without_widening_native_cli_grammar() {
+    for model in [
+        "amazon.nova-lite-v1:0",
+        "~anthropic/claude-fable-latest",
+        "team/model@version",
+        "k3.1-pro",
+    ] {
+        assert!(
+            check_static(Kind::Pi, model, Some("high")).is_ok(),
+            "{model}"
+        );
+    }
+    for model in ["~anthropic/claude-fable-latest", "team/model@version"] {
+        assert!(check_static(Kind::Codex, model, Some("high")).is_err());
+        assert!(check_static(Kind::Claude, model, Some("high")).is_err());
+    }
+    for model in ["../secret", "/absolute/model", "model;command", ""] {
+        assert!(check_static(Kind::Pi, model, Some("high")).is_err());
+    }
+    assert!(check_static(Kind::Pi, "k3.1-pro", Some("unsupported")).is_err());
+}

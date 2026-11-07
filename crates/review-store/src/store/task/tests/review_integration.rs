@@ -59,7 +59,7 @@ fn fixture() -> Fixture {
     f.plan_id = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V3,
+            task::EXECUTION_PLAN_V4,
             producer(),
             vec![f.revision_id.clone()],
             None,

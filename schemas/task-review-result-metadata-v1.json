@@ -15,10 +15,10 @@
       "const": "review.kernel/ReviewerResult@2"
     },
     "result_artifact_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "provenance_artifact_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "proposal": {
       "oneOf": [
@@ -46,7 +46,7 @@
               "const": "prepared"
             },
             "candidate_artifact_id": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
             }
           }
         },

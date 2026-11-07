@@ -7,7 +7,7 @@ use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignRevie
 use review_core::task::execution::TaskAttemptResultV1;
 use review_core::task::plan::ExecutionPlanV3;
 use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV3};
-use review_core::task::{ArtifactInputV1, EXECUTION_PLAN_V3};
+use review_core::task::{ArtifactInputV1, EXECUTION_PLAN_V4};
 use review_graph::task::{CompiledOperator, CompiledTask, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
 use review_store::store::task::task_run_id;
@@ -224,7 +224,7 @@ pub(super) fn read(
         let mut plans = BTreeMap::new();
         for attempt in &attempts {
             if !plans.contains_key(&attempt.plan_id) {
-                let plan: ExecutionPlanV3 = artifact(cas, &attempt.plan_id, EXECUTION_PLAN_V3)?;
+                let plan: ExecutionPlanV3 = artifact(cas, &attempt.plan_id, EXECUTION_PLAN_V4)?;
                 let graph = artifact(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
                 plans.insert(
                     attempt.plan_id.clone(),

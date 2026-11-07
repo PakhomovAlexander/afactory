@@ -190,7 +190,7 @@ fn admitted_plan_with_provider(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -702,7 +702,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let (compiler, lease, compiled) = admitted_plan(&cas, &mut store, "trusted_unsafe");
-    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let graph: CompiledTask = serde_json::from_value(
         cas.get_artifact(&compiled.compiled_graph_id)
             .unwrap()
@@ -738,7 +738,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
     .unwrap();
     let context_id = host.unreserved_context(&input, &[]).unwrap();
     let envelope = cas.get_artifact(&context_id).unwrap();
-    assert_eq!(envelope.artifact_type, "af/TaskProviderContext@2");
+    assert_eq!(envelope.artifact_type, "af/TaskProviderContext@3");
     let binding = compiled.bindings.values().next().unwrap();
     let context = &envelope.payload;
     assert_eq!(context["invocation"], serde_json::to_value(&input).unwrap());

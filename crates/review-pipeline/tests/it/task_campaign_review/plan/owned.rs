@@ -1,5 +1,5 @@
 use super::*;
-use review_pipeline::task::campaign_review::plan::REVIEW_TASK_POLICY_V6;
+use review_pipeline::task::campaign_review::plan::REVIEW_TASK_POLICY_V7;
 
 #[test]
 fn owned_scatter_children_are_captured_in_the_plan_and_reopen_exactly() {
@@ -30,7 +30,7 @@ fn owned_scatter_children_are_captured_in_the_plan_and_reopen_exactly() {
         cas.get_artifact(compiler.policy_id())
             .unwrap()
             .artifact_type,
-        REVIEW_TASK_POLICY_V6
+        REVIEW_TASK_POLICY_V7
     );
     let task = compiler
         .prepare_revision(&cas, "owned-review", capture::limits())

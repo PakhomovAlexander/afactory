@@ -29,7 +29,7 @@ fn fixture_with_tokens(tokens: Option<u64>) -> (Fixture, TaskLease) {
         f.plan_id = f
             .cas
             .put_artifact(
-                task::EXECUTION_PLAN_V3,
+                task::EXECUTION_PLAN_V4,
                 producer(),
                 vec![],
                 None,
@@ -158,7 +158,7 @@ fn prepare_handoff(
     plan.task_revision_id = revision_id;
     plan.inputs = next.inputs;
     plan.compiled_graph_id = put("af/CompiledTask@1", serde_json::to_value(graph).unwrap());
-    let plan_id = put(task::EXECUTION_PLAN_V3, serde_json::to_value(plan).unwrap());
+    let plan_id = put(task::EXECUTION_PLAN_V4, serde_json::to_value(plan).unwrap());
     let handoff = preview.prepare_handoff(&f.cas, &plan_id).unwrap();
     crate::store::task::review_handoff::capture_task_review_handoff(&f.cas, &handoff).unwrap()
 }

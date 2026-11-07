@@ -895,10 +895,11 @@ _Avoid_: a second full patch in the prompt; the marks exist to keep context mini
 - Every executable node resolves one **Execution Binding** before dispatch. A reviewer that can
   read reusable credentials is `trusted_unsafe` and cannot authorize `auto_apply`.
 - A configured **Provider** dispatches a Worker only after its Task's **Provider Admission**
-  succeeded, and the native account is rechecked before every private send. Pi Kimi explicitly
-  records unavailable account identity, rechecks auth context and OAuth mode instead, and refuses
-  trusted principal-independence policy; account substitution within that context is undetectable
-  ([ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
+  succeeded, and the native account is rechecked before every private send. Pi contexts without an admitted native account identity explicitly
+  record unavailable identity, recheck the selected auth context and credential mode, and refuse
+  trusted principal-independence policy; account substitution across invocations within that context is undetectable
+  ([Pi integration decision](docs/adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md),
+  [ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
   [ADR-0091](docs/adr/0091-capture-explicit-task-provider-admission-costs.md)).
 - **Convergence** reads only the Round's exact final Finding Set and Demand Set plus recorded graph,
   gate, closure, and budget state; it never queries ambient latest projections.

@@ -47,7 +47,7 @@
       },
       "$comment": "The last recorded run: its place among the runs, its Round and that Round's head Snapshot; each reviewer and scatter node of the pinned plan reviewed or not_run with why, and each path of the Round's Subject (then any path a finding of that Round names outside it) by state."
     },
-    "digest": {"$ref": "urn:af:schema:task-contracts:2#/$defs/digest"},
+    "digest": {"$ref": "urn:af:schema:task-contracts:3#/$defs/digest"},
     "decimalU64": {"$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"},
     "decimalU128": {"$ref": "urn:af:schema:task-review-accounting:1#/$defs/decimalU128"},
     "round": {
@@ -66,7 +66,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["task_id", "through_sequence", "chargeable_tokens", "reserved_tokens", "attempts_started", "provider_attempts_started", "business_attempts_started", "other_attempts_started", "attempts"],
       "properties": {
-        "task_id": {"$ref": "urn:af:schema:task-contracts:2#/$defs/name"},
+        "task_id": {"$ref": "urn:af:schema:task-contracts:3#/$defs/name"},
         "through_sequence": {"$ref": "#/$defs/count"},
         "chargeable_tokens": {"$ref": "#/$defs/decimalU128"},
         "reserved_tokens": {"$ref": "#/$defs/decimalU128"},

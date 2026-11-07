@@ -154,7 +154,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v17.json"), &done);
     done
 }
 
@@ -635,7 +635,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
     let providers = home.join("providers.toml");
     std::fs::write(
         &providers,
-        toml::to_string(&json!({"version":3,"providers":[{
+        toml::to_string(&json!({"version":4,"providers":[{
             "id":"codex-fixture","kind":"codex","auth_dir":home
         }]}))
         .unwrap(),
@@ -688,7 +688,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let done = cli(&["task", "start", "--execute", "--file", "report.json"]);
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v17.json"), &done);
     assert_eq!(done["state"]["phase"], "finished", "{done}");
     assert_eq!(done["state"]["outcome"], "exhausted");
     assert_eq!(done["state"]["cause"], "budget");

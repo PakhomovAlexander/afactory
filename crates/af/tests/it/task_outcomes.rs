@@ -152,7 +152,7 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
 /// (`listing`), so that a test that read it for an assertion of its own reads it once.
 fn agreed_state_in(fixture: &Fixture, listing: Option<&str>) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
     schemas::valid(&schemas::validator("task-list-v4.json"), &listed);
     let reported = fixture.json(&["task", "report", TASK]);

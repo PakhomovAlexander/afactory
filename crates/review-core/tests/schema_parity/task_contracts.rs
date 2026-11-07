@@ -302,7 +302,7 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
     // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
-        json!({"schema":"af/task-inspection@16","task_id":"chain-history","revision_id":id('1'),
+        json!({"schema":"af/task-inspection@17","task_id":"chain-history","revision_id":id('1'),
             "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
             "history":[],"run_reports":[],
             "execution_records":[{"artifact_id":id('3'),
@@ -310,17 +310,17 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
             "input_bindings":bindings})
     };
     assert_valid(
-        "task-inspection-v16.json",
+        "task-inspection-v17.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a')}}})),
     );
     assert_invalid(
-        "task-inspection-v16.json",
+        "task-inspection-v17.json",
         &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
         "a binding record with no bindings",
     );
     assert_invalid(
-        "task-inspection-v16.json",
+        "task-inspection-v17.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
         "an unknown binding field",
@@ -719,7 +719,7 @@ fn task_contract_positive_and_negative_fixtures() {
     let schema = |contract: &str| {
         format!(
             "{contract}-v{}.json",
-            if contract == "execution-plan" { 3 } else { 1 }
+            if contract == "execution-plan" { 4 } else { 1 }
         )
     };
     let manifest = fixture("content-ids");
@@ -1254,11 +1254,11 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     plan.generated_origins.clear();
     plan.validate().unwrap();
     let valid = serde_json::to_value(&plan).unwrap();
-    assert_valid("execution-plan-v3.json", &valid);
+    assert_valid("execution-plan-v4.json", &valid);
     let mut invalid = valid.clone();
     invalid["preparation"] = Value::Null;
     assert_invalid(
-        "execution-plan-v3.json",
+        "execution-plan-v4.json",
         &invalid,
         "Present preparation cannot be null",
     );
@@ -1266,7 +1266,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     let mut invalid = valid;
     invalid["preparation"]["auto_approved"] = json!(true);
     assert_invalid(
-        "execution-plan-v3.json",
+        "execution-plan-v4.json",
         &invalid,
         "Preparation cannot smuggle approval",
     );
@@ -1274,7 +1274,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     plan.acceptance = original_coverage;
     assert!(plan.validate().is_err());
     assert_invalid(
-        "execution-plan-v3.json",
+        "execution-plan-v4.json",
         &serde_json::to_value(&plan).unwrap(),
         "Preparation cannot certify business acceptance",
     );
@@ -1283,7 +1283,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     assert!(!plan.generated_origins.is_empty());
     assert!(plan.validate().is_err());
     assert_invalid(
-        "execution-plan-v3.json",
+        "execution-plan-v4.json",
         &serde_json::to_value(&plan).unwrap(),
         "Bootstrap is fixed, never generated",
     );
@@ -1339,8 +1339,8 @@ fn proposals_are_bounded_pipeline_toml_and_never_worker_installation_or_approval
 
 #[test]
 fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
-    use review_core::task::plan::{PiAuthorityV2, WorkerExecutionV3};
-    let authority = PiAuthorityV2 {
+    use review_core::task::plan::{PiAuthorityV3, WorkerExecutionV3};
+    let authority = PiAuthorityV3 {
         identity_mode: review_core::task::plan::PiIdentityModeV1::Account,
         backend: "openai-codex".into(),
         auth_method: "oauth".into(),
@@ -1362,7 +1362,7 @@ fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
     execution.validate().unwrap();
     let value = serde_json::to_value(execution).unwrap();
     let valid = |v: &Value| {
-        super::validator("task-provider-admission-v3.json").is_valid(&json!({
+        super::validator("task-provider-admission-v4.json").is_valid(&json!({
         "plan_id":format!("sha256:{}","e".repeat(64)),"invocation_policy_id":format!("sha256:{}","f".repeat(64)),
         "bindings":["root.pi"],"execution":v,"outcome":"passed"}))
     };
@@ -1414,36 +1414,36 @@ fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
 
 #[test]
 fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
-    let ready = json!({"schema":"af.pi-host/4","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
-        "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
-    assert_valid("pi-host-v4.json", &ready);
+    let ready = json!({"schema":"af.pi-host/5","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
+        "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","catalog_id":format!("sha256:{}","c".repeat(64)),"models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
+    assert_valid("pi-host-v5.json", &ready);
     let mut kimi_ready = ready.clone();
     kimi_ready["backend"] = json!("kimi-coding");
     kimi_ready["principal"] = Value::Null;
     kimi_ready["models"][0]["id"] = json!("k3");
     kimi_ready["models"][0]["efforts"] = json!(["low", "high", "max"]);
-    assert_valid("pi-host-v4.json", &kimi_ready);
+    assert_valid("pi-host-v5.json", &kimi_ready);
     for (pointer, wrong) in [
         ("/principal", ready["principal"].clone()),
-        ("/models/0/id", json!("k3-256k")),
-        ("/models/0/efforts", json!(["medium"])),
+        ("/models/0/id", json!("../invalid")),
+        ("/models/0/efforts", json!(["ultra"])),
     ] {
         let mut bad = kimi_ready.clone();
         *bad.pointer_mut(pointer).unwrap() = wrong;
-        assert_invalid("pi-host-v4.json", &bad, pointer);
+        assert_invalid("pi-host-v5.json", &bad, pointer);
     }
-    let init = json!({"schema":"af.pi-host/4","type":"init","backend":"kimi-coding",
+    let init = json!({"schema":"af.pi-host/5","type":"init","backend":"kimi-coding",
         "sdk":"/installed/sdk/dist/index.js","auth_dir":"/private/auth",
         "auth_context_id":format!("sha256:{}","c".repeat(64)),"principal":null,
         "cwd":"/sandbox","home":"/private/home","readable":["/sandbox"],"writable":[],"probe":false});
-    assert_valid("pi-host-v4.json", &init);
+    assert_valid("pi-host-v5.json", &init);
     let mut missing_context = init;
     missing_context
         .as_object_mut()
         .unwrap()
         .remove("auth_context_id");
     assert_invalid(
-        "pi-host-v4.json",
+        "pi-host-v5.json",
         &missing_context,
         "missing captured auth context",
     );
@@ -1451,24 +1451,35 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
         ("schema", json!("af.pi-host/0")),
         ("schema", json!("af.pi-host/2")),
         ("schema", json!("af.pi-host/3")),
+        ("schema", json!("af.pi-host/4")),
         ("version", json!("1.5.0")),
         ("backend", json!("anthropic")),
         ("access", json!("secret")),
     ] {
         let mut bad = ready.clone();
         bad[field] = wrong;
-        assert_invalid("pi-host-v4.json", &bad, field);
+        assert_invalid("pi-host-v5.json", &bad, field);
     }
-    let usage = json!({"schema":"af.pi-host/4","type":"usage","observations":1,"inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
-    assert_valid("pi-host-v4.json", &usage);
+    let usage = json!({"schema":"af.pi-host/5","type":"usage","observations":1,"inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
+    assert_valid("pi-host-v5.json", &usage);
     let mut missing = usage;
     missing.as_object_mut().unwrap().remove("input");
-    assert_invalid("pi-host-v4.json", &missing, "missing counter");
-    let setup = json!({"schema":"af/pi-provider-setup@3","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
-    assert_valid("pi-provider-setup-v3.json", &setup);
+    assert_invalid("pi-host-v5.json", &missing, "missing counter");
+    let setup = json!({"schema":"af/pi-provider-setup@4","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
+    assert_valid("pi-provider-setup-v4.json", &setup);
     let mut kimi_setup = setup.clone();
     kimi_setup["backend"] = json!("kimi-coding");
-    assert_valid("pi-provider-setup-v3.json", &kimi_setup);
+    assert_valid("pi-provider-setup-v4.json", &kimi_setup);
+    for backend in [
+        "anthropic",
+        "openai",
+        "amazon-bedrock",
+        "operator-compatible",
+    ] {
+        let mut setup = setup.clone();
+        setup["backend"] = json!(backend);
+        assert_valid("pi-provider-setup-v4.json", &setup);
+    }
     for (id, backend) in [
         (Value::Null, Value::Null),
         (json!("pi-personal"), Value::Null),
@@ -1479,48 +1490,49 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
         refusal["outcome"] = json!("human_action_required");
         refusal["id"] = id;
         refusal["backend"] = backend;
-        assert_valid("pi-provider-setup-v3.json", &refusal);
+        assert_valid("pi-provider-setup-v4.json", &refusal);
     }
     for (field, wrong) in [
         ("schema", json!("af/pi-provider-setup@1")),
         ("schema", json!("af/pi-provider-setup@2")),
+        ("schema", json!("af/pi-provider-setup@3")),
         ("id", json!("../unsafe")),
         ("id", json!("codex-ambient")),
-        ("backend", json!("unsupported")),
+        ("backend", json!("../unsupported")),
         ("access", json!("secret")),
         ("id", Value::Null),
     ] {
         let mut bad = setup.clone();
         bad[field] = wrong;
-        assert_invalid("pi-provider-setup-v3.json", &bad, field);
+        assert_invalid("pi-provider-setup-v4.json", &bad, field);
     }
     for kind in ["prompt", "accepted"] {
-        let mut ack = json!({"schema":"af.pi-host/4","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
+        let mut ack = json!({"schema":"af.pi-host/5","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
         if kind == "prompt" {
             ack["text"] = json!("private");
         }
-        assert_valid("pi-host-v4.json", &ack);
+        assert_valid("pi-host-v5.json", &ack);
         for wrong in [Value::Null, json!(""), json!("sha256:wrong")] {
             let mut bad = ack.clone();
             bad["prompt_nonce"] = wrong;
-            assert_invalid("pi-host-v4.json", &bad, "invalid challenge");
+            assert_invalid("pi-host-v5.json", &bad, "invalid challenge");
         }
         let mut old = ack.clone();
         old["schema"] = json!("af.pi-host/1");
-        assert_invalid("pi-host-v4.json", &old, "old protocol");
+        assert_invalid("pi-host-v5.json", &old, "old protocol");
         ack.as_object_mut().unwrap().remove("prompt_nonce");
-        assert_invalid("pi-host-v4.json", &ack, "missing challenge");
+        assert_invalid("pi-host-v5.json", &ack, "missing challenge");
     }
-    let registry = json!({"version":3,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
-    assert_valid("provider-registry-v3.json", &registry);
-    for version in [1, 2] {
+    let registry = json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
+    assert_valid("provider-registry-v4.json", &registry);
+    for version in [1, 2, 3] {
         let mut old = registry.clone();
         old["version"] = json!(version);
-        assert_invalid("provider-registry-v3.json", &old, "old registry");
+        assert_invalid("provider-registry-v4.json", &old, "old registry");
     }
     let mut kimi_registry = registry;
     kimi_registry["providers"][0]["backend"] = json!("kimi-coding");
-    assert_valid("provider-registry-v3.json", &kimi_registry);
+    assert_valid("provider-registry-v4.json", &kimi_registry);
 }
 
 #[test]
@@ -1567,7 +1579,7 @@ fn pi_validation_historical_claim_is_versioned_and_closed() {
 
 #[test]
 fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence() {
-    use review_core::task::plan::{PiAuthorityV2, PiIdentityModeV1};
+    use review_core::task::plan::{PiAuthorityV3, PiIdentityModeV1};
     let plan: ExecutionPlanV3 = serde_json::from_value(fixture("execution-plan")).unwrap();
     let mut kimi = plan.bindings["author"].clone();
     kimi.execution = WorkerExecutionV3::Model {
@@ -1576,7 +1588,7 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
         principal_id: None,
         model: "k3".into(),
         effort: "high".into(),
-        pi: Some(Box::new(PiAuthorityV2 {
+        pi: Some(Box::new(PiAuthorityV3 {
             identity_mode: PiIdentityModeV1::Unavailable,
             backend: "kimi-coding".into(),
             auth_method: "oauth".into(),
@@ -1594,14 +1606,14 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
     assert_eq!(value["pi"]["identity_mode"], "unavailable");
     let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
         "execution":value,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
-    assert_valid("task-provider-admission-v3.json", &admission);
+    assert_valid("task-provider-admission-v4.json", &admission);
     for (pointer, wrong) in [
         ("/execution/principal_id", json!(plan.engine_id)),
         ("/execution/pi/identity_mode", json!("account")),
     ] {
         let mut bad = admission.clone();
         *bad.pointer_mut(pointer).unwrap() = wrong;
-        assert_invalid("task-provider-admission-v3.json", &bad, pointer);
+        assert_invalid("task-provider-admission-v4.json", &bad, pointer);
         assert!(
             serde_json::from_value::<review_core::task::provider::TaskProviderAdmissionV3>(bad)
                 .unwrap()
@@ -1615,7 +1627,7 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
         .unwrap()
         .remove("principal_id");
     assert_invalid(
-        "task-provider-admission-v3.json",
+        "task-provider-admission-v4.json",
         &missing,
         "missing principal field",
     );
@@ -1665,10 +1677,88 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
 }
 
 #[test]
+fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_independence() {
+    use review_core::task::plan::{PiAuthorityV3, PiIdentityModeV1};
+    let plan: ExecutionPlanV3 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    for (backend, method, model) in [
+        ("anthropic", "api_key", "claude-haiku-4-5"),
+        ("openai", "api_key", "gpt-4o-mini"),
+        ("amazon-bedrock", "context", "amazon.nova-lite-v1:0"),
+        ("team-compatible", "api_key", "team-code"),
+        ("kimi-coding", "oauth", "k3.1-pro"),
+    ] {
+        let mut binding = plan.bindings["author"].clone();
+        binding.execution = WorkerExecutionV3::Model {
+            provider: "pi-explicit".into(),
+            provider_kind: "pi".into(),
+            principal_id: None,
+            model: model.into(),
+            effort: "high".into(),
+            pi: Some(Box::new(PiAuthorityV3 {
+                identity_mode: PiIdentityModeV1::Unavailable,
+                backend: backend.into(),
+                auth_method: method.into(),
+                sdk_version: "1.4.0".into(),
+                sdk_entrypoint: "/installed/sdk/dist/index.js".into(),
+                node_program: "/installed/node".into(),
+                auth_context_id: plan.engine_id.clone(),
+                model_config_id: plan.engine_id.clone(),
+                adapter_policy_id: plan.engine_id.clone(),
+            })),
+        };
+        binding.validate().unwrap();
+        let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
+            "execution":binding.execution,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
+        assert_valid("task-provider-admission-v4.json", &admission);
+        serde_json::from_value::<review_core::task::provider::TaskProviderAdmissionV3>(
+            admission.clone(),
+        )
+        .unwrap()
+        .validate()
+        .unwrap();
+        assert!(
+            validate_independent_bindings(
+                &binding,
+                &plan.bindings["author"],
+                IndependencePolicyV1::default()
+            )
+            .is_err()
+        );
+        for (pointer, wrong) in [
+            ("/execution/principal_id", json!(plan.engine_id)),
+            ("/execution/effort", json!("unrecognized")),
+            ("/execution/model", json!("../model")),
+            ("/execution/pi/auth_method", json!("ambient")),
+        ] {
+            let mut bad = admission.clone();
+            *bad.pointer_mut(pointer).unwrap() = wrong;
+            assert_invalid("task-provider-admission-v4.json", &bad, pointer);
+            assert!(
+                serde_json::from_value::<review_core::task::provider::TaskProviderAdmissionV3>(bad)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
+    let context = json!({"schema":"af.pi-context/1","environment":{"GEMINI_API_KEY":"synthetic"}});
+    assert_valid("pi-context-v1.json", &context);
+    for (field, wrong) in [
+        ("schema", json!("af.pi-context/0")),
+        ("environment", json!({"NODE_OPTIONS":"--import=project"})),
+        ("tools", json!(["bash"])),
+    ] {
+        let mut bad = context.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-context-v1.json", &bad, field);
+    }
+}
+
+#[test]
 fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
-    let prepare = json!({"schema":"af.pi-host/4","type":"prepare","model":"k3","effort":"high",
+    let prepare = json!({"schema":"af.pi-host/5","type":"prepare","model":"k3","effort":"high",
         "model_identity":format!("sha256:{}","a".repeat(64)),"remaining_tokens":37,"reply_schema":{"type":"object"}});
-    assert_valid("pi-host-v4.json", &prepare);
+    assert_valid("pi-host-v5.json", &prepare);
     for tokens in [
         Value::Null,
         json!(0),
@@ -1679,22 +1769,22 @@ fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
     ] {
         let mut bad = prepare.clone();
         bad["remaining_tokens"] = tokens;
-        assert_invalid("pi-host-v4.json", &bad, "invalid trusted allowance");
+        assert_invalid("pi-host-v5.json", &bad, "invalid trusted allowance");
     }
     for field in ["remaining_tokens", "reply_schema"] {
         let mut bad = prepare.clone();
         bad.as_object_mut().unwrap().remove(field);
-        assert_invalid("pi-host-v4.json", &bad, "missing authority or contract");
+        assert_invalid("pi-host-v5.json", &bad, "missing authority or contract");
     }
     let usage = json!({"inference":1,"complete":true,"observations":2,"input":439,"output":38,
         "cache_read":null,"cache_write":null,"reasoning":24});
-    let evidence = json!({"schema":"af/pi-inference-evidence@1","backend":"kimi-coding",
+    let evidence = json!({"schema":"af/pi-inference-evidence@2","backend":"kimi-coding",
         "remaining_tokens":100,"request_nonce":format!("sha256:{}","c".repeat(64)),"adapter_policy_id":format!("sha256:{}","a".repeat(64)),
         "provenance":"native-per-inference-cumulative;aggregate-af-charge","inferences":[usage],
         "started_inferences":1,"completed_inferences":1,"tool_counts":{"read":2,"edit":1},
         "settled":false,"successful":false,"aggregate":{"charge_complete":false,"reported_usage":{
             "input_tokens":"439","output_tokens":"38","reasoning_tokens":"24","chargeable_tokens":"477"}}});
-    assert_valid("pi-inference-evidence-v1.json", &evidence);
+    assert_valid("pi-inference-evidence-v2.json", &evidence);
     for (pointer, value) in [
         ("/inferences/0/observations", json!(129)),
         ("/inferences/0/inference", json!(257)),
@@ -1704,7 +1794,7 @@ fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
     ] {
         let mut bad = evidence.clone();
         *bad.pointer_mut(pointer).unwrap() = value;
-        assert_invalid("pi-inference-evidence-v1.json", &bad, pointer);
+        assert_invalid("pi-inference-evidence-v2.json", &bad, pointer);
     }
     for field in [
         "prompt",
@@ -1718,23 +1808,23 @@ fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
         let mut bad = evidence.clone();
         bad[field] = json!("secret");
         assert_invalid(
-            "pi-inference-evidence-v1.json",
+            "pi-inference-evidence-v2.json",
             &bad,
             "sensitive extra field",
         );
         let mut bad = evidence.clone();
         bad["inferences"][0][field] = json!("secret");
         assert_invalid(
-            "pi-inference-evidence-v1.json",
+            "pi-inference-evidence-v2.json",
             &bad,
             "sensitive inference field",
         );
     }
-    let count = json!({"schema":"af.pi-host/4","type":"tool_count","name":"read","count":2});
-    assert_valid("pi-host-v4.json", &count);
+    let count = json!({"schema":"af.pi-host/5","type":"tool_count","name":"read","count":2});
+    assert_valid("pi-host-v5.json", &count);
     let mut bad = count;
     bad["name"] = json!("shell");
-    assert_invalid("pi-host-v4.json", &bad, "undeclared tool");
+    assert_invalid("pi-host-v5.json", &bad, "undeclared tool");
 }
 
 #[test]

@@ -254,7 +254,7 @@ pub(super) fn admit_heavy_definition_with_limits(
         .unwrap();
     let revision_id = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(cas, &revision_id).unwrap().0;
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V3, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V4, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
@@ -582,7 +582,7 @@ pub fn run_numeric_rounds(
             .prepare_continuation_revision(&cas, &next_id, &next)
             .is_err()
     );
-    let next_plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &next_plan);
+    let next_plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &next_plan);
     let handoff = review_core::task::review_handoff::TaskReviewHandoffV1 {
         task_id: lease.task_id().into(),
         predecessor_revision_id: state.revision_id.clone(),
@@ -813,7 +813,7 @@ pub fn run_numeric_rounds(
         let third_revision_id =
             plan::artifact(&cas, review_core::task::TASK_REVISION_V1, &third_revision);
         let third_plan = third_compiler.compile(&cas, &third_revision_id).unwrap().0;
-        let third_plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V3, &third_plan);
+        let third_plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &third_plan);
         let third_handoff = review_core::task::review_handoff::TaskReviewHandoffV1 {
             task_id: lease.task_id().into(),
             predecessor_revision_id: second_state.revision_id.clone(),

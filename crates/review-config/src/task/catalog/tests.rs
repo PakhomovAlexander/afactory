@@ -370,7 +370,7 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
     };
     let mut registry = jsonschema::Registry::new();
     for name in [
-        "task-contracts-v2.json",
+        "task-contracts-v3.json",
         "task-operator-signature-v1.json",
         "task-kind-v1.json",
     ] {
@@ -1478,7 +1478,7 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
             serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap())
                 .unwrap()
         };
-        for name in ["task-contracts-v2.json", "task-operator-signature-v1.json"] {
+        for name in ["task-contracts-v3.json", "task-operator-signature-v1.json"] {
             let value = schema(name);
             let id = value["$id"].as_str().unwrap().to_owned();
             registry = registry

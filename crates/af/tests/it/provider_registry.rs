@@ -82,13 +82,13 @@ fn pi_registration_requires_explicit_authority_before_starting_or_changing_a_pro
         let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         if verb == "setup" {
             crate::schemas::valid(
-                &crate::schemas::validator("pi-provider-setup-v3.json"),
+                &crate::schemas::validator("pi-provider-setup-v4.json"),
                 &document,
             );
             assert_eq!(document["outcome"], "human_action_required");
             assert_eq!(document["id"], "pi-personal");
             assert!(document["backend"].is_null());
-            assert!(stderr(&output).contains("--backend openai-codex"));
+            assert!(stderr(&output).contains("--backend with an exact"));
         } else {
             crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
             assert_eq!(document["exit_code"], 2);
@@ -1115,7 +1115,7 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
     let path = root.path().join("config/af/providers.toml");
     let registry = std::fs::read_to_string(&path).unwrap();
     let value: toml::Value = toml::from_str(&registry).unwrap();
-    assert_eq!(value["version"].as_integer(), Some(3));
+    assert_eq!(value["version"].as_integer(), Some(4));
     assert_eq!(value["providers"][0]["id"].as_str(), Some("codex-main"));
     assert_eq!(value["providers"][0]["kind"].as_str(), Some("codex"));
     assert_eq!(
@@ -1247,7 +1247,7 @@ fn add_rejects_registry_state_writable_by_other_users() {
         let registry = directory.join("providers.toml");
         std::fs::create_dir(&auth).unwrap();
         std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(&registry, "version = 3\nproviders = []\n").unwrap();
+        std::fs::write(&registry, "version = 4\nproviders = []\n").unwrap();
         let target = if unsafe_target == "directory" {
             &directory
         } else {
@@ -1432,11 +1432,11 @@ fn add_normalizes_valid_inline_and_empty_provider_arrays() {
         std::fs::create_dir(&second).unwrap();
         let registry = if existing {
             format!(
-                "version = 3\nproviders = [{{ id = \"codex-first\", kind = \"codex\", auth_dir = {:?} }}]\n",
+                "version = 4\nproviders = [{{ id = \"codex-first\", kind = \"codex\", auth_dir = {:?} }}]\n",
                 first.canonicalize().unwrap().to_str().unwrap()
             )
         } else {
-            "version = 3\nproviders = []\n".to_string()
+            "version = 4\nproviders = []\n".to_string()
         };
         std::fs::write(config.join("providers.toml"), registry).unwrap();
         let output = af(
@@ -1475,7 +1475,7 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join("config/af");
     std::fs::create_dir_all(&config).unwrap();
-    let mut registry = "version = 3\n".to_string();
+    let mut registry = "version = 4\n".to_string();
     for index in 0..LIMIT {
         let auth = root.path().join(format!("auth-{index}"));
         std::fs::create_dir(&auth).unwrap();
@@ -1511,7 +1511,7 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
 fn commented_registry(root: &Path, ids: &[&str]) -> (std::path::PathBuf, String) {
     let config = root.join("config/af");
     std::fs::create_dir_all(&config).unwrap();
-    let mut registry = "# machine-local\nversion = 3\n".to_string();
+    let mut registry = "# machine-local\nversion = 4\n".to_string();
     for id in ids {
         let auth = root.join(format!("{id}-auth"));
         std::fs::create_dir(&auth).unwrap();
@@ -1528,7 +1528,7 @@ fn commented_registry(root: &Path, ids: &[&str]) -> (std::path::PathBuf, String)
 fn registered_ids(path: &Path) -> Vec<String> {
     let registry = std::fs::read_to_string(path).unwrap();
     let value: toml::Value = toml::from_str(&registry).unwrap();
-    assert_eq!(value["version"].as_integer(), Some(3), "{registry}");
+    assert_eq!(value["version"].as_integer(), Some(4), "{registry}");
     let providers = value.get("providers").and_then(toml::Value::as_array);
     let ids = providers.into_iter().flatten();
     ids.map(|provider| provider["id"].as_str().unwrap().to_owned())

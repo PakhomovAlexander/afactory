@@ -310,7 +310,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
     f.plan_id = f
         .cas
         .put_artifact(
-            EXECUTION_PLAN_V3,
+            EXECUTION_PLAN_V4,
             producer(),
             vec![f.revision_id.clone()],
             None,
@@ -1110,7 +1110,7 @@ impl Fixture {
             .unwrap();
         let plan_id = cas
             .put_artifact(
-                EXECUTION_PLAN_V3,
+                EXECUTION_PLAN_V4,
                 producer(),
                 vec![revision_id.clone()],
                 None,
@@ -1441,7 +1441,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
         f.plan_id = f
             .cas
             .put_artifact(
-                EXECUTION_PLAN_V3,
+                EXECUTION_PLAN_V4,
                 producer(),
                 vec![],
                 None,

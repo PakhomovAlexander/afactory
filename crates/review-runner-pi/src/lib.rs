@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use review_core::task::plan::{PiAuthorityV2, PiIdentityModeV1};
+use review_core::task::plan::{PiAuthorityV3, PiIdentityModeV1};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_process::{ExitPolicy, SupervisedError};
 use review_runner::task::{
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub const HOST: &str = include_str!("host.mjs");
-pub const PROTOCOL: &str = "af.pi-host/4";
+pub const PROTOCOL: &str = "af.pi-host/5";
 pub const SDK_VERSION: &str = "1.4.0";
 const MAX_RECORD: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
@@ -32,8 +32,8 @@ pub struct PiConfig {
 
 impl PiConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.backend.as_str(), "openai-codex" | "kimi-coding") {
-            return Err("Pi supports openai-codex and kimi-coding with stored OAuth".into());
+        if !exact_id(&self.backend) {
+            return Err("Pi requires an exact SDK/profile provider ID".into());
         }
         if !self.sdk_entrypoint.is_absolute() {
             return Err("Pi SDK entrypoint must be an absolute installed dist/index.js".into());
@@ -55,32 +55,35 @@ pub struct Model {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ready {
+    pub catalog_id: String,
     #[serde(deserialize_with = "Option::deserialize")]
     pub principal: Option<String>,
     pub auth_method: String,
     pub backend: String,
     pub version: String,
     pub models: Vec<Model>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub next_offset: Option<usize>,
 }
 impl Ready {
     fn validate(&self) -> Result<(), String> {
-        if !match self.backend.as_str() {
-            "openai-codex" => self
-                .principal
-                .as_deref()
-                .is_some_and(review_core::is_digest),
-            "kimi-coding" => {
-                self.principal.is_none()
-                    && self.models.iter().all(|model| {
-                        model.id == "k3"
-                            && model
-                                .efforts
-                                .iter()
-                                .all(|level| ["low", "high", "max"].contains(&level.as_str()))
-                    })
-            }
-            _ => false,
-        } || self.auth_method != "oauth"
+        if !review_core::is_digest(&self.catalog_id)
+            || !exact_id(&self.backend)
+            || (self.backend == "openai-codex"
+                && !self
+                    .principal
+                    .as_deref()
+                    .is_some_and(review_core::is_digest))
+            || (self.backend != "openai-codex" && self.principal.is_some())
+            || !["oauth", "api_key", "context"].contains(&self.auth_method.as_str())
+            || (self.backend == "openai-codex" && self.auth_method != "oauth")
+            || self
+                .next_offset
+                .is_some_and(|offset| offset == 0 || offset >= 4096)
             || self.version != SDK_VERSION
             || self.models.is_empty()
             || self.models.len() > 64
@@ -115,16 +118,7 @@ impl Ready {
             .ok_or_else(|| "Pi requires an exact catalog model and supported thinking level; run `af provider models ID` (token-free)".into())
     }
 }
-pub const EFFORTS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-pub fn exact_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-._/".contains(&b))
-        && !value.contains("..")
-        && !value.starts_with('/')
-}
+pub use review_core::task::plan::{PI_EFFORTS as EFFORTS, pi_identifier as exact_id};
 pub fn static_rules(model: &str, effort: &str) -> Result<(), String> {
     if !exact_id(model) || !EFFORTS.contains(&effort) {
         return Err("Pi requires an exact catalog model ID and thinking level off, minimal, low, medium, high, xhigh or max".into());
@@ -139,7 +133,7 @@ fn digest(value: &[u8]) -> String {
 #[derive(Clone, Copy)]
 enum Accounting {
     OpenAi,
-    Kimi,
+    Total,
 }
 impl Accounting {
     fn identity(self) -> &'static str {
@@ -147,25 +141,26 @@ impl Accounting {
             Self::OpenAi => {
                 "af.pi-budget/openai-input-minus-cache-read-plus-output@1;required=input,output,cache_read;reasoning-and-cache-write-included"
             }
-            Self::Kimi => {
-                "af.pi-budget/kimi-total-input-plus-output@1;required=input,output;no-cache-discount;reasoning-and-cache-write-included"
+            Self::Total => {
+                "af.pi-budget/native-total-input-plus-output@1;required=input,output;no-cache-discount;reasoning-and-cache-write-included"
             }
         }
     }
 }
-const BACKEND_ACCOUNTING: &[(&str, Accounting)] = &[
-    ("openai-codex", Accounting::OpenAi),
-    ("kimi-coding", Accounting::Kimi),
-];
 fn accounting(backend: &str) -> Option<Accounting> {
-    BACKEND_ACCOUNTING
-        .iter()
-        .find_map(|(id, convention)| (*id == backend).then_some(*convention))
+    exact_id(backend).then_some(if backend == "openai-codex" {
+        Accounting::OpenAi
+    } else {
+        Accounting::Total
+    })
 }
 pub fn policy_id() -> String {
-    let mut policy = b"af.pi-adapter-policy@3\0".to_vec();
-    for (backend, convention) in BACKEND_ACCOUNTING {
-        policy.extend_from_slice(backend.as_bytes());
+    let mut policy = b"af.pi-adapter-policy@4\0".to_vec();
+    for (scope, convention) in [
+        ("openai-codex", Accounting::OpenAi),
+        ("all-other-sdk-chat", Accounting::Total),
+    ] {
+        policy.extend_from_slice(scope.as_bytes());
         policy.push(0);
         policy.extend_from_slice(convention.identity().as_bytes());
         policy.push(0);
@@ -224,6 +219,47 @@ pub fn probe(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
 ) -> Result<Ready, String> {
+    let start = Instant::now();
+    let mut ready = probe_page(node, config, auth, timeout, cancellation, 0)?;
+    let mut seen = ready
+        .models
+        .iter()
+        .map(|m| m.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    while let Some(offset) = ready.next_offset {
+        if offset != ready.models.len() || offset >= 4096 || start.elapsed() >= timeout {
+            return Err("Pi catalog pagination exceeds its bound or deadline".into());
+        }
+        let page = probe_page(
+            node,
+            config,
+            auth,
+            timeout.saturating_sub(start.elapsed()),
+            cancellation,
+            offset,
+        )?;
+        if page.catalog_id != ready.catalog_id
+            || page.backend != ready.backend
+            || page.auth_method != ready.auth_method
+            || page.principal != ready.principal
+            || page.models.iter().any(|m| !seen.insert(m.id.clone()))
+        {
+            return Err("Pi identity/catalog changed during pagination".into());
+        }
+        ready.next_offset = page.next_offset;
+        ready.models.extend(page.models);
+    }
+    Ok(ready)
+}
+
+fn probe_page(
+    node: &Path,
+    config: &PiConfig,
+    auth: &Path,
+    timeout: Duration,
+    cancellation: Option<&AtomicBool>,
+    offset: usize,
+) -> Result<Ready, String> {
     let started = Instant::now();
     config.validate()?;
     let auth = std::fs::canonicalize(auth).map_err(|_| "Cannot resolve Pi auth context")?;
@@ -231,7 +267,7 @@ pub fn probe(
     let auth_context = digest(auth.as_os_str().as_encoded_bytes());
     let staging = tempfile::tempdir().map_err(|_| "Cannot create Pi probe runtime")?;
     let mut command = command(node, staging.path())?;
-    let request = init(
+    let mut request = init(
         config,
         &auth,
         &auth_context,
@@ -242,6 +278,7 @@ pub fn probe(
         true,
         &[],
     );
+    request["catalog_offset"] = json!(offset);
     let input = format!("{request}\n").into_bytes();
     let capture = review_process::run_supervised_captured_bounded_observed(
         &mut command,
@@ -264,7 +301,7 @@ pub fn probe(
         || capture.truncation.is_truncated()
         || capture.stderr_held
     {
-        return Err(state.error.unwrap_or_else(|| "Pi host could not establish compatibility/authentication; requires Node >=22.19, installed Pi SDK 1.4.0 and supported stored OAuth".into()));
+        return Err(state.error.unwrap_or_else(|| "Pi host could not establish compatibility/authentication; requires Node >=22.19, installed Pi SDK 1.4.0 and explicitly configured credentials".into()));
     }
     if state.error.is_some() || !capture.stdout.ends_with(b"\n") {
         return Err(state.error.unwrap_or_else(|| "Pi host probe failed".into()));
@@ -283,18 +320,19 @@ pub fn authority(
     config: &PiConfig,
     auth: &Path,
     model: &Model,
-) -> Result<PiAuthorityV2, String> {
+    auth_method: &str,
+) -> Result<PiAuthorityV3, String> {
     config.validate()?;
     let auth = std::fs::canonicalize(auth).map_err(|_| "Cannot resolve Pi auth context")?;
     auth.to_str().ok_or("Pi auth context must be UTF-8")?;
-    Ok(PiAuthorityV2 {
-        identity_mode: if config.backend == "kimi-coding" {
+    Ok(PiAuthorityV3 {
+        identity_mode: if config.backend != "openai-codex" {
             PiIdentityModeV1::Unavailable
         } else {
             PiIdentityModeV1::Account
         },
         backend: config.backend.clone(),
-        auth_method: "oauth".into(),
+        auth_method: auth_method.into(),
         sdk_version: SDK_VERSION.into(),
         sdk_entrypoint: config.sdk_entrypoint.to_string_lossy().into(),
         node_program: node.to_string_lossy().into(),
@@ -348,7 +386,7 @@ fn counter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u
 /// Its closed reader accepts only this release's evidence version, never raw SDK bodies.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PiInferenceEvidenceV1 {
+pub struct PiInferenceEvidenceV2 {
     schema: String,
     backend: String,
     remaining_tokens: u64,
@@ -364,14 +402,14 @@ pub struct PiInferenceEvidenceV1 {
     successful: bool,
     aggregate: TaskUsageObservationV1,
 }
-impl PiInferenceEvidenceV1 {
+impl PiInferenceEvidenceV2 {
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > 256 * 1024 {
             return Err("Pi safe evidence exceeds its byte bound".into());
         }
         let evidence: Self =
             serde_json::from_slice(bytes).map_err(|_| "Invalid Pi safe evidence")?;
-        if evidence.schema != "af/pi-inference-evidence@1"
+        if evidence.schema != "af/pi-inference-evidence@2"
             || accounting(&evidence.backend).is_none()
             || RemainingTokenAllowance::new(evidence.remaining_tokens).is_err()
             || evidence.remaining_tokens > 9_007_199_254_740_991
@@ -567,14 +605,43 @@ impl State {
                     }
                     "inference_failed" => "Pi inference failed before successful settlement",
                     "unsupported_auth" => {
-                        "Pi requires supported stored OAuth; OpenAI requires stable accountId; Kimi account identity is unavailable"
+                        "Pi credential mode or fields are invalid; use stored OAuth, a literal API key or an explicit credential context; OpenAI Codex requires a routing-checked accountId"
                     }
                     "identity_changed" => {
                         "Pi account differs from the captured principal; replan with the intended login"
                     }
                     "sdk_version" => "Pi requires the official SDK exactly 1.4.0",
                     "node_version" => "Pi requires Node >=22.19",
-                    "unsupported_backend" => "Pi supports only backend openai-codex or kimi-coding",
+                    "unsupported_backend" => {
+                        "Pi credential access differs from the explicitly selected SDK provider"
+                    }
+                    "unsafe_model_configuration" => {
+                        "Pi sampling configuration cannot override model, context/session, tools, transport or token allowance; remove controlled fields from models.json"
+                    }
+                    "unsupported_transport" => {
+                        "Pi model uses a transport without safe native usage accounting"
+                    }
+                    "profile_authority" => {
+                        "Pi profile files must be private owned regular files; check af-context.json and its explicit environment"
+                    }
+                    "helper_authority" => {
+                        "Pi command-valued keys/headers require an explicitly pinned installed provider extension; commands are never evaluated from data"
+                    }
+                    "extension_authority" => {
+                        "Pi extension requires an installed external entrypoint and exact sha256 in af-context.json"
+                    }
+                    "configuration_changed" => {
+                        "Pi explicit profile configuration changed before inference; replan"
+                    }
+                    "provider_configuration" => {
+                        "Pi provider is absent or its profile catalog/configuration is invalid; configure models.json or a pinned installed extension"
+                    }
+                    "no_chat_models" => {
+                        "Pi selected provider has no chat models; image and classifier models cannot run coding Workers"
+                    }
+                    "missing_credentials" => {
+                        "Pi selected provider has no usable credentials; configure its stored key/OAuth or explicit af-context.json credential environment"
+                    }
                     "model_changed" => "Pi exact model or endpoint configuration changed",
                     "settings_changed" => {
                         "Pi effective model, thinking or tool policy differs from captured authority"
@@ -627,7 +694,7 @@ impl State {
         // Unknown counters remain unknown; only observed contributions form the floor.
         let charge = self.usage.values().fold(0u128, |sum, u| {
             sum + u128::from(match convention {
-                Some(Accounting::Kimi) => u.input.unwrap_or(0),
+                Some(Accounting::Total) => u.input.unwrap_or(0),
                 Some(Accounting::OpenAi) => u
                     .input
                     .zip(u.cache_read)
@@ -642,7 +709,7 @@ impl State {
                     && u.input.is_some()
                     && u.output.is_some()
                     && match convention {
-                        Some(Accounting::Kimi) => true,
+                        Some(Accounting::Total) => true,
                         Some(Accounting::OpenAi) => u.cache_read.is_some(),
                         None => false,
                     }
@@ -668,7 +735,7 @@ pub struct PiTaskAdapter {
     pub principal: Option<String>,
     pub model: String,
     pub effort: String,
-    pub captured: PiAuthorityV2,
+    pub captured: PiAuthorityV3,
 }
 impl WorkerModelAdapter for PiTaskAdapter {
     fn provider_kind(&self) -> &'static str {
@@ -768,7 +835,7 @@ impl PiTaskAdapter {
                     readable.push(PathBuf::from(value));
                 }
             }
-            let request = init(
+            let mut request = init(
                 &self.config,
                 &self.auth_dir,
                 &self.captured.auth_context_id,
@@ -782,6 +849,7 @@ impl PiTaskAdapter {
                 false,
                 &readable,
             );
+            request["model"] = json!(self.model);
             let (send, receive) = mpsc::channel::<Value>();
             let writer = |writer: &mut dyn Write| -> std::io::Result<()> {
                 write_record(writer, &request)?;
@@ -867,8 +935,14 @@ impl PiTaskAdapter {
                         let valid = ready.backend == self.config.backend
                             && ready.principal == self.principal
                             && ready.model(&self.model, &self.effort).is_ok_and(|model| {
-                                authority(&self.node, &self.config, &self.auth_dir, model)
-                                    .is_ok_and(|authority| authority == self.captured)
+                                authority(
+                                    &self.node,
+                                    &self.config,
+                                    &self.auth_dir,
+                                    model,
+                                    &ready.auth_method,
+                                )
+                                .is_ok_and(|authority| authority == self.captured)
                             });
                         if !valid {
                             state.error =
@@ -939,8 +1013,8 @@ impl PiTaskAdapter {
         let observation = state.observation();
         // Safe, bounded snapshots, not a second source of spend. Repeated observations
         // replace each inference above; only observation() supplies aggregate AF charge.
-        let evidence = PiInferenceEvidenceV1 {
-            schema: "af/pi-inference-evidence@1".into(),
+        let evidence = PiInferenceEvidenceV2 {
+            schema: "af/pi-inference-evidence@2".into(),
             backend: self.config.backend.clone(),
             remaining_tokens: allowance.tokens(),
             request_nonce: state.prompt_nonce.clone(),

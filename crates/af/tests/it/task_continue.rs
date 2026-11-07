@@ -171,11 +171,11 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     // Without --execute it plans and waits for the plan's confirmation.
     let plan = ["task", "run", "second", "--from", "first"];
     let (planned, _) = json(&repo, &state, &plan, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@16");
+    assert_eq!(planned["schema"], "af/task-inspection@17");
     assert_eq!(planned["continues"]["task_id"], "first");
     assert_eq!(planned["continues"]["round"], 1);
     assert_eq!(planned["continues"]["findings"], 1);
-    valid("task-inspection-v16.json", &planned);
+    valid("task-inspection-v17.json", &planned);
 
     let plan_id = planned["plan_id"].as_str().unwrap().to_owned();
     let confirm = ["task", "run", "second", "--confirm-plan", &plan_id];
@@ -262,7 +262,7 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     // The lineage is shown, in the document and as text.
     let (shown, _) = json(&repo, &state, &["task", "show", "second"], 0);
     assert_eq!(shown["continues"], planned["continues"]);
-    valid("task-inspection-v16.json", &shown);
+    valid("task-inspection-v17.json", &shown);
     let text = run(&repo, &state, &["task", "show", "second"], false);
     let text = String::from_utf8_lossy(&text.stdout).into_owned();
     assert!(

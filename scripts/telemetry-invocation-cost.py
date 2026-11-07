@@ -252,7 +252,7 @@ def run_once(af, fixture, size, pristine, work, name, shape, level):
     (run / 'auth' / 'bench.json').write_text(json.dumps({'harness': {
         'shape': shape, 'tool_output_bytes': size, 'chunk_bytes': CHUNK_BYTES}}) + '\n')
     (run / 'providers.toml').write_text(
-        f'version = 2\n\n[[providers]]\nid = "{PROVIDER}"\nkind = "claude"\n'
+        f'version = 4\n\n[[providers]]\nid = "{PROVIDER}"\nkind = "claude"\n'
         f'auth_dir = "{run / "auth"}"\n')
     env = overhead.private_env(run, level)
     env['PATH'] = f"{run / 'bin'}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}"

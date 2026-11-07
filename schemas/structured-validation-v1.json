@@ -36,14 +36,14 @@
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactInput"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactInput"
       }
     },
     "outputs": {
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactInput"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactInput"
       }
     },
     "conclusion": {

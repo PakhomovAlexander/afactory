@@ -1003,7 +1003,7 @@ class Task:
         journal.save()
         planned = strict_json(self.command('plan', '--file', str(directory / 'task.json'),
                                           '--authority', identity['main_commit'], '--json'))
-        require(planned.get('schema') == 'af/task-inspection@14', 'Task plan schema refused')
+        require(planned.get('schema') == 'af/task-inspection@17', 'Task plan schema refused')
         require(planned['task_id'] == generation['task_id'] and planned['attempts'] == 0, 'plan identity refused')
         plan = planned['plan']
         source = plan['inputs']['source']['snapshot_id']
@@ -1021,7 +1021,7 @@ class Task:
 
     def collect(self, generation, journal, key):
         show = strict_json(self.command('show', generation['task_id'], '--json'))
-        require(show.get('schema') == 'af/task-inspection@14', 'Task show schema refused')
+        require(show.get('schema') == 'af/task-inspection@17', 'Task show schema refused')
         require(show['task_id'] == generation['task_id'], 'Task show identity refused')
         journal.settle(key, show)
         require(show.get('phase', {}).get('kind') == 'finished', 'Task did not finish; no guessed triage')

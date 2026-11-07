@@ -511,7 +511,7 @@ fn run_knowledge_task(model: bool, private_notes: bool) {
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V3,
+            EXECUTION_PLAN_V4,
             producer(),
             vec![revision.clone()],
             None,

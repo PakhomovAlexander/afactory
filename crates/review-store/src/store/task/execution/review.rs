@@ -573,7 +573,7 @@ fn validate_report_gate_failures(
             continue;
         };
         if !plans.contains_key(&attempt.plan_id) {
-            let plan: ExecutionPlanV3 = payload(cas, &attempt.plan_id, task::EXECUTION_PLAN_V3)?;
+            let plan: ExecutionPlanV3 = payload(cas, &attempt.plan_id, task::EXECUTION_PLAN_V4)?;
             let Some(input) = plan
                 .inputs
                 .values()

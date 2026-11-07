@@ -69,7 +69,7 @@ sys.stdout.write(open(home+'/result').read())
         std::fs::write(&installed, crate::provider_cli::with_probe(stub)).unwrap();
         std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
         let registry = home.join("providers.toml");
-        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":3,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();

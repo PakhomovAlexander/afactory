@@ -13,7 +13,7 @@ use review_config::lock::package_digest_from_files;
 use review_config::task::catalog::{AdmittedWorkerSettings, TaskPackagePin, TaskPlanCompiler};
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::plan::{ExecutionPlanV3, IndependencePolicyV1, WorkerExecutionV3};
-use review_core::task::{EXECUTION_PLAN_V3, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
+use review_core::task::{EXECUTION_PLAN_V4, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompiledNode, CompiledTask};
 use review_pipeline::task::host::{CapturedTaskAuthority, TaskDomain};
 use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
@@ -235,7 +235,7 @@ pub fn build_then<T>(
         .map_err(fixture)?;
     let (plan_id, _) = cas
         .put_artifact(
-            EXECUTION_PLAN_V3,
+            EXECUTION_PLAN_V4,
             fixtures::producer(),
             vec![revision_id.clone()],
             None,

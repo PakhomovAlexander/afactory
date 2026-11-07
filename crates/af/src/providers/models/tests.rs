@@ -46,7 +46,7 @@ fn listed(id: &str, kind: Kind, report: CatalogReport) -> ProviderCatalog {
 
 fn resolve(catalog: &ProviderCatalog, spelling: &str) -> Vec<String> {
     let request = parse_resolve(spelling).unwrap();
-    table(std::slice::from_ref(catalog), Some(&request))
+    table(std::slice::from_ref(catalog), Some(&request), 0)
         .into_iter()
         .skip_while(|line| !line.starts_with("  resolve"))
         .collect()
@@ -137,6 +137,7 @@ fn the_table_prints_the_header_the_rows_and_what_the_list_proves() {
             listed("codex-main", Kind::Codex, codex()),
         ],
         None,
+        0,
     );
     let text = lines.join("\n");
     for part in [
@@ -165,7 +166,7 @@ fn an_unavailable_catalog_prints_the_static_rules_and_invents_nothing() {
         outcome: CatalogOutcome::Unavailable("claude exited 1".into()),
     }];
     assert_eq!(exit_code(&catalogs), EXIT_USAGE_UNAVAILABLE);
-    let text = table(&catalogs, None).join("\n");
+    let text = table(&catalogs, None, 0).join("\n");
     assert!(text.contains("catalog unavailable"), "{text}");
     assert!(text.contains("low, medium, high, xhigh, max"), "{text}");
     assert!(text.contains("fable → claude-fable-5-1"), "{text}");
@@ -175,7 +176,7 @@ fn an_unavailable_catalog_prints_the_static_rules_and_invents_nothing() {
         ..catalogs[0].clone()
     }];
     assert_eq!(exit_code(&refused), EXIT_PROVIDER_CLI_MISSING);
-    let document = document(&catalogs, None, 7);
+    let document = document(&catalogs, None, 7, 0);
     assert_eq!(document["providers"][0]["state"], "unavailable");
     assert_eq!(document["providers"][0]["models"], serde_json::json!([]));
 }
@@ -324,4 +325,75 @@ fn a_control_response_is_found_by_its_request_id() {
         ))
     );
     assert_eq!(control_response(captured.as_bytes(), VERSION_REQUEST), None);
+}
+
+#[test]
+fn pi_catalog_pages_keep_sixty_four_rows_and_resolve_exact_routed_ids_across_pages() {
+    let report = CatalogReport {
+        source: "AF Pi SDK host catalog",
+        version: Some("1.4.0".into()),
+        fetched_at: None,
+        skipped: 0,
+        catalog: Catalog {
+            models: (0..70)
+                .map(|index| CatalogModel {
+                    id: format!("~vendor/model-{index}"),
+                    display_name: format!("Model {index}"),
+                    other_names: vec![],
+                    aliases: vec![],
+                    efforts: vec!["high".into()],
+                    default_effort: None,
+                    hidden: false,
+                })
+                .collect(),
+        },
+    };
+    let catalog = listed("pi-explicit", Kind::Pi, report);
+    let request = parse_pi_resolve("~vendor/model-69/high").unwrap();
+    let first = document(std::slice::from_ref(&catalog), Some(&request), 0, 0);
+    let second = document(std::slice::from_ref(&catalog), Some(&request), 0, 1);
+    assert_eq!(
+        first["providers"][0]["models"].as_array().unwrap().len(),
+        64
+    );
+    assert_eq!(
+        second["providers"][0]["models"].as_array().unwrap().len(),
+        6
+    );
+    assert_eq!(
+        first["providers"][0]["catalog_page"],
+        serde_json::json!({"number":0,"next":1,"total":70})
+    );
+    assert_eq!(
+        second["providers"][0]["catalog_page"],
+        serde_json::json!({"number":1,"next":null,"total":70})
+    );
+    assert_eq!(
+        first["providers"][0]["resolution"]["id"],
+        "~vendor/model-69"
+    );
+    assert!(first["providers"][0]["resolution"]["configuration"].is_object());
+    assert_eq!(first["providers"][0]["freshness"]["source"], "sdk_profile");
+    let exact = parse_pi_resolve("~vendor/model-69").unwrap();
+    let output = resolution_document(&catalog, &exact);
+    assert_eq!(output["spelling"], "~vendor/model-69");
+    assert!(output["effort"].is_null());
+    assert_eq!(output["outcome"], "exact");
+    assert!(
+        table(&[catalog], Some(&request), 0)
+            .join("\n")
+            .contains("next: af provider models pi-explicit --page 1")
+    );
+    assert!(
+        parse_resolve("~vendor/model-69/high").is_err(),
+        "native CLI query grammar stays unchanged"
+    );
+    for invalid in [
+        "../model/high",
+        "/absolute/model/high",
+        "~vendor/model;command/high",
+        "~vendor/model\n/high",
+    ] {
+        assert!(parse_pi_resolve(invalid).is_err(), "{invalid:?}");
+    }
 }

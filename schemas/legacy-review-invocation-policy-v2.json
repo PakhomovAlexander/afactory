@@ -16,26 +16,26 @@
   ],
   "properties": {
     "task_policy_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "dependency_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "review_node": {
       "type": "string",
       "minLength": 1
     },
     "runner_digest": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "execution_policy_digest": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "execution": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/workerExecution"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/workerExecution"
     },
     "result_type": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactType"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/artifactType"
     },
     "timeout_ms": {
       "type": "integer",

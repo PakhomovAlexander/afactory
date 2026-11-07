@@ -276,7 +276,7 @@ impl Fixture {
         };
         let plan_id = cas
             .put_artifact(
-                task::EXECUTION_PLAN_V3,
+                task::EXECUTION_PLAN_V4,
                 producer(),
                 vec![revision_id.clone()],
                 None,
@@ -408,7 +408,7 @@ impl Fixture {
         self.plan_id = self
             .cas
             .put_artifact(
-                task::EXECUTION_PLAN_V3,
+                task::EXECUTION_PLAN_V4,
                 producer(),
                 vec![self.revision_id.clone()],
                 None,
@@ -619,7 +619,7 @@ fn stripping_generated_origin_is_rejected_against_trusted_dependency_provenance(
     let forged = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V3,
+            task::EXECUTION_PLAN_V4,
             producer(),
             vec![],
             None,
@@ -1913,7 +1913,7 @@ fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
     let fixture = Fixture::new(false);
     let value = serde_json::to_value(&fixture.plan).unwrap();
     let current: ExecutionPlanV3 =
-        payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V3).unwrap();
+        payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V4).unwrap();
     assert_eq!(serde_json::to_value(current).unwrap(), value);
     for old_type in ["af/ExecutionPlan@1", "af/ExecutionPlan@2"] {
         let old = fixture
@@ -1922,11 +1922,11 @@ fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
             .unwrap()
             .0;
         let error =
-            payload::<ExecutionPlanV3>(&fixture.cas, &old, task::EXECUTION_PLAN_V3).unwrap_err();
+            payload::<ExecutionPlanV3>(&fixture.cas, &old, task::EXECUTION_PLAN_V4).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("Expected exact af/ExecutionPlan@3")
+                .contains("Expected exact af/ExecutionPlan@4")
         );
     }
 }

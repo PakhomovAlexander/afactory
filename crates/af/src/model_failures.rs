@@ -5,7 +5,7 @@
 //! Provider ID and kind, the bound model and effort, then the hint its diagnostic starts with,
 //! which names the classification and the next step. `af task show` keeps the full diagnostic.
 
-use review_core::task::EXECUTION_PLAN_V3;
+use review_core::task::EXECUTION_PLAN_V4;
 use review_core::task::execution::TaskAttemptResultV1;
 use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
 use review_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
@@ -34,7 +34,7 @@ pub(crate) fn lines(cas: &Cas, state: &TaskProjection, since_unix_ms: u64) -> Ve
     };
     let plan = state.plan_id.as_deref().and_then(|id| {
         let frame = cas.get_artifact(id).ok()?;
-        (frame.artifact_type == EXECUTION_PLAN_V3)
+        (frame.artifact_type == EXECUTION_PLAN_V4)
             .then(|| serde_json::from_value::<ExecutionPlanV3>(frame.payload).ok())
             .flatten()
     });

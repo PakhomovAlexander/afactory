@@ -15,7 +15,7 @@
       "const": "af.task-kind/2"
     },
     "name": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
     },
     "version": {
       "type": "string",
@@ -24,7 +24,7 @@
     "kind": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
         },
         {
           "not": {

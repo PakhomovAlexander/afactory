@@ -3,8 +3,10 @@ use std::os::unix::fs::PermissionsExt;
 
 fn ready() -> Ready {
     Ready {
+        catalog_id: digest(b"catalog"),
         principal: Some(digest(b"account")),
         auth_method: "oauth".into(),
+        next_offset: None,
         backend: "openai-codex".into(),
         version: SDK_VERSION.into(),
         models: vec![Model {
@@ -62,6 +64,33 @@ fn cumulative_usage_replaces_snapshots_and_final_echoes_count_once() {
     assert!(usage.cache_write_tokens.is_none());
     assert!(usage.reasoning_tokens.is_none());
 }
+#[test]
+fn anthropic_normalized_optional_caches_settle_with_exact_total_charge() {
+    for (read, write) in [(0, 0), (3, 0), (0, 2), (3, 2)] {
+        let mut state = accepted();
+        state.ready.as_mut().unwrap().backend = "anthropic".into();
+        for (input, output, complete) in [(7, 0, false), (8, 3, true)] {
+            record(
+                &mut state,
+                "usage",
+                json!({"inference":1,"complete":complete,"observations":2,
+                    "input":input + read + write,"output":output,
+                    "cache_read":read,"cache_write":write,"reasoning":null}),
+            )
+            .unwrap();
+        }
+        record(&mut state, "settled", json!({})).unwrap();
+        let observed = state.observation();
+        assert!(observed.charge_complete);
+        let usage = observed.reported_usage.unwrap();
+        assert_eq!(usage.input_tokens.unwrap().get(), 8 + read + write);
+        assert_eq!(usage.output_tokens.unwrap().get(), 3);
+        assert_eq!(usage.cache_read_tokens.unwrap().get(), read);
+        assert_eq!(usage.cache_write_tokens.unwrap().get(), write);
+        assert_eq!(usage.chargeable_tokens.get(), 11 + read + write);
+    }
+}
+
 #[test]
 fn errors_unknown_and_partial_usage_retain_the_observed_floor() {
     let mut state = accepted();
@@ -198,6 +227,12 @@ mod process {
             identity.principal = None;
             identity.models[0].id = "k3".into();
         }
+        if mode.starts_with("pages-") {
+            identity.backend = "team-compatible".into();
+            identity.auth_method = "api_key".into();
+            identity.principal = None;
+            identity.models[0].id = "~vendor/model-69".into();
+        }
         let mut response = serde_json::to_value(&identity).unwrap();
         response["schema"] = json!(PROTOCOL);
         response["type"] = json!("ready");
@@ -208,9 +243,10 @@ open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
 def emit(v):
  if v.get('type')=='usage': v.setdefault('observations',1)
- v['schema']='af.pi-host/4'
+ v['schema']='af.pi-host/5'
  data=(json.dumps(v,ensure_ascii=False)+'\n').encode()
  # Split inside a UTF-8 sequence too: LF is the only record separator.
+ if mode.startswith('pages-'): os.write(1,data); return
  for at in range(0,len(data),len(data) if mode=='immediate' else 7): os.write(1,data[at:at+7] if mode!='immediate' else data)
 r=json.loads(sys.stdin.readline())
 assert 'NODE_OPTIONS' not in os.environ and 'OPENAI_API_KEY' not in os.environ
@@ -219,6 +255,18 @@ if mode=='writable': assert r['writable']==[r['cwd']]
 if mode=='identity': ready['principal']='sha256:'+'b'*64
 if mode=='backend': ready['backend']='anthropic'
 if mode=='version': ready['version']='1.5.0'
+if mode.startswith('pages-'):
+ offset=r.get('catalog_offset',0)
+ catalog=[dict(ready['models'][0],id='~vendor/model-'+str(i)) for i in range(70)]
+ if r.get('model'): catalog=[m for m in catalog if m['id']==r['model']]
+ ready['models']=catalog[offset:offset+64]
+ if offset+64<len(catalog):ready['next_offset']=offset+64
+ if mode=='pages-offset':ready['next_offset']=63
+ if mode=='pages-limit':ready['next_offset']=4096
+ if mode=='pages-null':ready['next_offset']=None
+ if offset and mode=='pages-duplicate':ready['models'][0]['id']='~vendor/model-0'
+ if offset and mode=='pages-catalog':ready['catalog_id']='sha256:'+'c'*64
+ if offset and mode=='pages-auth':ready['auth_method']='context'
 emit(ready)
 if r['probe']: sys.exit(0)
 p=json.loads(sys.stdin.readline())
@@ -294,7 +342,14 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             backend: identity.backend.clone(),
             sdk_entrypoint: root.join("sdk/dist/index.js"),
         };
-        let captured = authority(&node, &config, root, &identity.models[0]).unwrap();
+        let captured = authority(
+            &node,
+            &config,
+            root,
+            &identity.models[0],
+            &identity.auth_method,
+        )
+        .unwrap();
         PiTaskAdapter {
             node,
             config,
@@ -365,7 +420,7 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             assert!(returned.message.is_ok());
             let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
             assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE_PROMPT_SENTINEL"));
-            evidence.push(PiInferenceEvidenceV1::decode(&bytes).unwrap());
+            evidence.push(PiInferenceEvidenceV2::decode(&bytes).unwrap());
         }
         assert_ne!(evidence[0].request_nonce, evidence[1].request_nonce);
         assert_eq!(evidence[0].aggregate, evidence[1].aggregate);
@@ -409,15 +464,15 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             );
             assert_eq!(returned.raw_artifact_ids.len(), 1);
             let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
-            PiInferenceEvidenceV1::decode(&bytes).unwrap();
+            PiInferenceEvidenceV2::decode(&bytes).unwrap();
             let evidence: Value = serde_json::from_slice(&bytes).unwrap();
             let mut old = evidence.clone();
             old["schema"] = json!("af/pi-inference-evidence@0");
-            assert!(PiInferenceEvidenceV1::decode(&serde_json::to_vec(&old).unwrap()).is_err());
+            assert!(PiInferenceEvidenceV2::decode(&serde_json::to_vec(&old).unwrap()).is_err());
             let mut secret = evidence.clone();
             secret["tool_arguments"] = json!("PRIVATE");
-            assert!(PiInferenceEvidenceV1::decode(&serde_json::to_vec(&secret).unwrap()).is_err());
-            assert_eq!(evidence["schema"], "af/pi-inference-evidence@1");
+            assert!(PiInferenceEvidenceV2::decode(&serde_json::to_vec(&secret).unwrap()).is_err());
+            assert_eq!(evidence["schema"], "af/pi-inference-evidence@2");
             assert_eq!(evidence["remaining_tokens"], 1_000_000);
             assert_eq!(
                 evidence["started_inferences"],
@@ -716,6 +771,65 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
     }
 
     #[test]
+    fn sdk_catalog_pages_preserve_record_bounds_and_select_models_beyond_the_first_page() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = fixture("pages-valid", root.path(), None);
+        let catalog = probe(
+            &adapter.node,
+            &adapter.config,
+            &adapter.auth_dir,
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
+        assert_eq!(catalog.models.len(), 70);
+        assert!(catalog.next_offset.is_none());
+        assert_eq!(
+            catalog.model("~vendor/model-69", "high").unwrap().id,
+            "~vendor/model-69"
+        );
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let returned = invoke_test(
+            &adapter,
+            &cas,
+            root.path(),
+            b"PRIVATE".to_vec(),
+            Duration::from_secs(30),
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert!(returned.message.is_ok(), "{:?}", returned.message);
+        assert_eq!(
+            std::fs::read(root.path().join("prompt")).unwrap(),
+            b"PRIVATE"
+        );
+        for mode in [
+            "pages-offset",
+            "pages-limit",
+            "pages-null",
+            "pages-duplicate",
+            "pages-catalog",
+            "pages-auth",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let adapter = fixture(mode, root.path(), None);
+            assert!(
+                probe(
+                    &adapter.node,
+                    &adapter.config,
+                    &adapter.auth_dir,
+                    Duration::from_secs(30),
+                    None
+                )
+                .is_err(),
+                "{mode}"
+            );
+            assert!(!root.path().join("prompt").exists());
+        }
+    }
+
+    #[test]
     fn identity_auth_context_backend_model_effort_and_version_drift_refuse_before_private_input() {
         for mode in [
             "identity",
@@ -868,7 +982,7 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             assert!(returned.message.is_err());
             assert_eq!(returned.raw_artifact_ids.len(), 1);
             let evidence =
-                PiInferenceEvidenceV1::decode(&cas.get(&returned.raw_artifact_ids[0]).unwrap())
+                PiInferenceEvidenceV2::decode(&cas.get(&returned.raw_artifact_ids[0]).unwrap())
                     .unwrap();
             assert!(!evidence.successful && !evidence.settled);
             assert_eq!(evidence.started_inferences, 1);
@@ -915,25 +1029,43 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
 }
 
 #[test]
-fn kimi_catalog_requires_unavailable_identity_k3_and_exact_supported_efforts() {
-    let mut kimi = ready();
-    kimi.backend = "kimi-coding".into();
-    kimi.principal = None;
-    kimi.models[0].id = "k3".into();
-    kimi.models[0].efforts = vec!["low".into(), "high".into(), "max".into()];
-    kimi.validate().unwrap();
-    assert!(kimi.model("k3", "medium").is_err());
-    for effort in ["off", "minimal", "medium", "xhigh"] {
-        let mut bad = kimi.clone();
-        bad.models[0].efforts.push(effort.into());
-        assert!(bad.validate().is_err());
+fn sdk_catalog_accepts_arbitrary_provider_models_but_only_honest_principals_and_declared_efforts() {
+    for backend in [
+        "kimi-coding",
+        "anthropic",
+        "openai",
+        "amazon-bedrock",
+        "team-compatible",
+    ] {
+        let mut catalog = ready();
+        catalog.backend = backend.into();
+        catalog.principal = None;
+        catalog.auth_method = if backend == "kimi-coding" {
+            "oauth"
+        } else {
+            "api_key"
+        }
+        .into();
+        catalog.models[0].id = if backend == "kimi-coding" {
+            "k3.1-pro"
+        } else {
+            "anthropic.claude-v1:0"
+        }
+        .into();
+        catalog.models[0].efforts = vec!["low".into(), "high".into(), "max".into()];
+        catalog.validate().unwrap();
+        assert!(catalog.model(&catalog.models[0].id, "high").is_ok());
+        assert!(catalog.model(&catalog.models[0].id, "medium").is_err());
+        assert!(catalog.model("unknown", "high").is_err());
+        let mut invented = catalog.clone();
+        invented.principal = Some(digest(b"profile-name"));
+        assert!(invented.validate().is_err());
+        for invalid in ["ultra", "invalid"] {
+            let mut bad = catalog.clone();
+            bad.models[0].efforts.push(invalid.into());
+            assert!(bad.validate().is_err());
+        }
     }
-    let mut invented = kimi.clone();
-    invented.principal = Some(digest(b"profile-name"));
-    assert!(invented.validate().is_err());
-    let mut bad_model = kimi.clone();
-    bad_model.models[0].id = "k3-256k".into();
-    assert!(bad_model.validate().is_err());
     let mut openai = ready();
     openai.principal = None;
     assert!(openai.validate().is_err());

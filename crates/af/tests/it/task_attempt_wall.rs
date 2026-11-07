@@ -182,7 +182,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
         "{preview}"
     );
     let (planned, _) = json(&repo, &state, &["task", "plan", "--file", "first.json"], 0);
-    valid("task-inspection-v16.json", &planned);
+    valid("task-inspection-v17.json", &planned);
     let implementer = planned["slots"]
         .as_array()
         .unwrap()
@@ -198,7 +198,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
     let plan_id = planned["plan_id"].as_str().unwrap().to_owned();
     let start = ["task", "run", "first", "--confirm-plan", &plan_id];
     let (first, err) = json(&repo, &state, &start, 4);
-    valid("task-inspection-v16.json", &first);
+    valid("task-inspection-v17.json", &first);
     assert_eq!(first["state"]["phase"], "finished", "{first:#}");
     assert_eq!(first["state"]["outcome"], "exhausted", "{first:#}");
     assert_eq!(first["state"]["cause"], "attempt_wall", "{first:#}");
@@ -340,7 +340,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
     );
     let plan = ["task", "run", "second", "--from", "first"];
     let (planned, _) = json(&repo, &state, &plan, 0);
-    valid("task-inspection-v16.json", &planned);
+    valid("task-inspection-v17.json", &planned);
     let continues = &planned["continues"];
     assert_eq!(continues["task_id"], "first", "{planned:#}");
     assert_eq!(continues["node"], "root.nodes.implement");

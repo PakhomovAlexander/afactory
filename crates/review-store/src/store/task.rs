@@ -639,7 +639,7 @@ fn revision(cas: &Cas, id: &str) -> Result<TaskRevisionV1, StoreError> {
 }
 
 fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlanV3, StoreError> {
-    let plan: ExecutionPlanV3 = payload(cas, id, task::EXECUTION_PLAN_V3)?;
+    let plan: ExecutionPlanV3 = payload(cas, id, task::EXECUTION_PLAN_V4)?;
     plan.validate().map_err(conflict)?;
     if plan.task_revision_id != state.revision_id
         || plan.authority != state.revision.authority

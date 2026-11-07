@@ -13,13 +13,13 @@
   ],
   "properties": {
     "subject_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "prior_history_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "round": {
       "type": "integer",
@@ -33,7 +33,7 @@
       "$ref": "#/$defs/scope"
     },
     "continuation_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     }
   },
   "allOf": [
@@ -131,7 +131,7 @@
               "pattern": "^\\.af-review-inputs/[0-9a-f]{64}\\.patch$"
             },
             "content_id": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
             },
             "bytes": {
               "type": "integer",

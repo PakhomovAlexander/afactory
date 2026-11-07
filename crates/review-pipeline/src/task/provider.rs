@@ -197,7 +197,7 @@ impl ProviderTaskDomain<'_> {
             ];
             let id = cas
                 .put_artifact(
-                    TASK_PROVIDER_ADMISSION_V3,
+                    TASK_PROVIDER_ADMISSION_V4,
                     invocation_producer(cas, input, attempt)?,
                     refs,
                     None,
@@ -209,7 +209,7 @@ impl ProviderTaskDomain<'_> {
                 "result".into(),
                 ArtifactInputV1 {
                     artifact_ids: vec![id],
-                    artifact_type: TASK_PROVIDER_ADMISSION_V3.into(),
+                    artifact_type: TASK_PROVIDER_ADMISSION_V4.into(),
                     cardinality: review_core::PortCardinality::One,
                     snapshot_id: None,
                 },
@@ -472,7 +472,7 @@ impl ProviderTaskDomain<'_> {
             return Err("Provider probe exceeds its captured reservation".into());
         }
         cas.put_artifact(
-            "af/TaskProviderContext@2",
+            "af/TaskProviderContext@3",
             invocation_producer(cas, input, None)?,
             vec![input.plan_id.clone(), rendered.clone()],
             None,
@@ -644,7 +644,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
             .ok_or("Provider admission lacks a result")?;
         let artifact = envelope(cas, id)?;
         let receipt = self.receipt(cas, input)?;
-        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V3
+        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V4
             || artifact.payload != serde_json::to_value(&receipt).map_err(|e| e.to_string())?
         {
             return Err("Provider receipt changed its exact capability".into());

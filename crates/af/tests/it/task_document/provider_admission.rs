@@ -72,7 +72,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
             }
         };
         std::fs::write(home.join("usage.json"), serde_json::to_vec(&usage).unwrap()).unwrap();
-        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":3,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -389,7 +389,7 @@ fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch
 
 fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     let contracts: Value = serde_json::from_str(include_str!(
-        "../../../../../schemas/task-contracts-v2.json"
+        "../../../../../schemas/task-contracts-v3.json"
     ))
     .unwrap();
     let planner: Value = serde_json::from_str(include_str!(
@@ -398,7 +398,7 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     .unwrap();
     let registry = jsonschema::Registry::new()
         .add(
-            "urn:af:schema:task-contracts:2",
+            "urn:af:schema:task-contracts:3",
             jsonschema::Resource::from_contents(contracts),
         )
         .unwrap()
@@ -604,6 +604,9 @@ fn captured_task_rechecks_disable_on_fresh_run_and_enable_restores_the_same_plan
 fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() {
     for mode in [
         "document",
+        "api-key-document",
+        "custom-document",
+        "cloud-document",
         "kimi-document",
         "kimi-replace-auth-after-admission",
         "retry",
@@ -624,14 +627,43 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
                 "completion_tokens_details":{"reasoning_tokens":24}});
             std::fs::write(&state, serde_json::to_vec(&fixture).unwrap()).unwrap();
         }
-        let backend = if kimi { "kimi-coding" } else { "openai-codex" };
-        if kimi {
+        let backend = match mode {
+            "api-key-document" => "anthropic",
+            "custom-document" => "team-compatible",
+            "cloud-document" => "google-vertex",
+            _ if kimi => "kimi-coding",
+            _ => "openai-codex",
+        };
+        let generic = backend != "openai-codex" && !kimi;
+        if generic {
+            let mut data: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+            data["backend"] = json!(backend);
+            data["model"] = json!("sdk-code");
+            data["mode"] = json!("document");
+            data["api"] = json!("openai-completions");
+            std::fs::write(&state, serde_json::to_vec(&data).unwrap()).unwrap();
+            std::fs::write(
+                f.home.join("auth.json"),
+                serde_json::to_vec(
+                    &json!({(backend):{"type":"api_key","key":"SYNTHETIC_CONTEXT_SECRET"}}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            if mode == "cloud-document" {
+                std::fs::write(f.home.join("auth.json"), "{}").unwrap();
+                let context = f.home.join("af-context.json");
+                std::fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
+                std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        if kimi || generic {
             // Successful context-only admission requires explicit trusted policy. The
             // pi-light compile fixture separately proves strict principal-policy refusal.
             f.catalog["independence"] = json!({"command_workers_by_package":true,
                 "distinct_principals":false,"distinct_providers":false,"distinct_models":false});
         }
-        std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":3,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+        std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
         f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
         let package = f.repo.join(
             f.catalog["packages"]["builtin/document-author"]["path"]
@@ -642,7 +674,14 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
             toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
         worker.runner = TaskWorkerRunner::Model {
             provider_kind: "pi".into(),
-            model: if kimi { "k3" } else { "o3" }.into(),
+            model: if kimi {
+                "k3"
+            } else if generic {
+                "sdk-code"
+            } else {
+                "o3"
+            }
+            .into(),
             effort: "high".into(),
         };
         std::fs::write(
@@ -667,7 +706,9 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
         let text = envelope.to_string();
         assert!(text.contains(backend), "{binding}\n{text}");
-        if kimi {
+        assert!(!text.contains("SYNTHETIC_CONTEXT_SECRET"));
+        assert!(!text.contains("SYNTHETIC_CLOUD_SECRET"));
+        if kimi || generic {
             let execution = &envelope["payload"]["bindings"]["root.slots.author"]["execution"];
             assert!(execution["principal_id"].is_null(), "{execution}");
             assert_eq!(execution["pi"]["identity_mode"], "unavailable");
@@ -715,6 +756,8 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
                 done["chargeable_tokens"],
                 if mode == "retry" {
                     "15"
+                } else if generic {
+                    "30"
                 } else if kimi {
                     "954"
                 } else {

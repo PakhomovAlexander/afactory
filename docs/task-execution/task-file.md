@@ -85,7 +85,7 @@ The branch and worktree must be absent. Delivery records its preparation before 
 verifies the materialized result, and supports retry/recovery with the same command. It makes
 no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
-JSON inspection uses [`af/task-inspection@16`](../../schemas/task-inspection-v16.json) and list
+JSON inspection uses [`af/task-inspection@17`](../../schemas/task-inspection-v17.json) and list
 entries use [`af/task-list-entry@4`](../../schemas/task-list-entry-v4.json); their
 `chargeable_tokens` values are exact unsigned decimal strings. `explain` includes the captured
 [`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and
@@ -99,7 +99,7 @@ to read first with `context` ([Continue a reviewed Task](../tasks.md#continue-a-
 [ADR-0212](../adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 
 Exact plan inspection accepts only a plan recorded in the selected Task's history. It emits
-`af/task-plan-inspection@2`, including the original revision, compiled graph, bindings and
+`af/task-plan-inspection@3`, including the original revision, compiled graph, bindings and
 recording event IDs; `current_plan` distinguishes the active plan from an earlier one.
 Inspecting an earlier generated plan leaves the current revision and approval state unchanged.
 

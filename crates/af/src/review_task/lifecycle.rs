@@ -219,7 +219,7 @@ fn restore(
     )?;
     let (plan, captured, plan_id) = if let Some(id) = &state.plan_id {
         let frame = cas.get_artifact(id).map_err(|e| e.to_string())?;
-        if frame.artifact_type != EXECUTION_PLAN_V3 {
+        if frame.artifact_type != EXECUTION_PLAN_V4 {
             return Err("Review Task plan has the wrong contract".into());
         }
         let plan: ExecutionPlanV3 =
@@ -231,7 +231,7 @@ fn restore(
         let id = persist(
             cas,
             &state.task_id,
-            EXECUTION_PLAN_V3,
+            EXECUTION_PLAN_V4,
             vec![state.revision_id.clone()],
             &plan,
         )?;
@@ -467,7 +467,7 @@ fn successor(
     let plan_id = persist(
         cas,
         &revision.task_id,
-        EXECUTION_PLAN_V3,
+        EXECUTION_PLAN_V4,
         vec![revision_id.clone()],
         &plan,
     )?;

@@ -140,7 +140,7 @@ impl TaskPlanCompiler {
         let bootstrap = read_envelope(
             cas,
             proof.bootstrap_plan_id(),
-            review_core::task::EXECUTION_PLAN_V3,
+            review_core::task::EXECUTION_PLAN_V4,
         )?;
         let bootstrap: ExecutionPlanV3 =
             serde_json::from_value(bootstrap.payload).map_err(|e| e.to_string())?;

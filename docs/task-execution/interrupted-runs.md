@@ -143,7 +143,7 @@ next: af task run pagination-cli
 ```
 
 `af task list` prints the same state and `run` as its next command. Their `--json` documents,
-`af/task-inspection@16` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
+`af/task-inspection@17` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
 `outcome` `cancelled`, `cause` `writer_lost` or `host_cancelled`, and `next_action`; the
 top-level `phase` keeps the phase the Task recorded. A node past its allowance makes
 `next_action` `af task start --file TASK_FILE`.

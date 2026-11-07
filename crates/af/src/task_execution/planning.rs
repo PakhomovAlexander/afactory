@@ -13,7 +13,7 @@ pub(super) fn restore(
     let plan: Option<ExecutionPlanV3> = state
         .plan_id
         .as_deref()
-        .map(|id| artifact(cas, id, EXECUTION_PLAN_V3))
+        .map(|id| artifact(cas, id, EXECUTION_PLAN_V4))
         .transpose()?;
     if state.planning.is_some() {
         let proof = state.planning_proof(cas).map_err(|e| e.to_string())?;
@@ -214,7 +214,7 @@ pub(super) fn resume(
 
 pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV3) -> Result<String, String> {
     cas.put_artifact(
-        EXECUTION_PLAN_V3,
+        EXECUTION_PLAN_V4,
         producer(),
         vec![plan.task_revision_id.clone()],
         None,

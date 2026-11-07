@@ -20,13 +20,13 @@
       "const": "af/task-plan-inspection@1"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
     },
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "task_revision_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
     },
     "current_plan": {
       "type": "boolean"
@@ -41,7 +41,7 @@
       }
     },
     "revision": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/taskRevision"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/taskRevision"
     },
     "plan": {
       "$ref": "urn:af:schema:task-inspection:15#/properties/plan"

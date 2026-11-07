@@ -35,12 +35,12 @@
     "selection": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
       },
       "additionalProperties": {
         "type": "object",
         "propertyNames": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
         },
         "additionalProperties": {
           "type": "integer",
@@ -71,7 +71,7 @@
         "keys": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
           },
           "additionalProperties": {
             "type": "string",
@@ -133,7 +133,7 @@
     "packages": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
       },
       "additionalProperties": {
         "type": "object",
@@ -149,7 +149,7 @@
             "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
           },
           "digest": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
           },
           "path": {
             "type": "string",
@@ -163,10 +163,10 @@
     "kinds": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+        "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
       },
       "maxProperties": 128
     },
@@ -181,7 +181,7 @@
       "maxItems": 32
     },
     "independence": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/independence"
+      "$ref": "urn:af:schema:task-contracts:3#/$defs/independence"
     },
     "providers": {
       "type": "object",

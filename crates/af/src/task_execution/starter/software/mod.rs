@@ -823,7 +823,7 @@ pub(super) fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     object.remove("$id");
     object.remove("$schema");
     let contracts: Value = serde_json::from_slice(include_bytes!(
-        "../../../../../../schemas/task-contracts-v2.json"
+        "../../../../../../schemas/task-contracts-v3.json"
     ))
     .map_err(|e| e.to_string())?;
     fn localize(
@@ -834,7 +834,7 @@ pub(super) fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
         match value {
             Value::Object(object) => {
                 if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-                    if reference == "urn:af:schema:task-contracts:2#/$defs/digest" {
+                    if reference == "urn:af:schema:task-contracts:3#/$defs/digest" {
                         *value = digest.clone();
                         return Ok(());
                     }

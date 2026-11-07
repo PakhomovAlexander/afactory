@@ -1,5 +1,5 @@
 {
-  "schema": "af/task-inspection@16",
+  "schema": "af/task-inspection@17",
   "task_id": "chain-history",
   "revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
   "phase": {

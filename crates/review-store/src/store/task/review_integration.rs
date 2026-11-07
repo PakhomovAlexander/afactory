@@ -1323,7 +1323,7 @@ pub(super) fn validate_cached(
         }
         let evidence = store.integration_evidence_with_replays(cas, &phase.phase, replays)?;
         let original_plan: ExecutionPlanV3 =
-            payload(cas, &phase.phase.plan_id, task::EXECUTION_PLAN_V3)?;
+            payload(cas, &phase.phase.plan_id, task::EXECUTION_PLAN_V4)?;
         let original_graph: CompiledTask =
             payload(cas, &original_plan.compiled_graph_id, "af/CompiledTask@1")?;
         if original_graph.review_integration.as_ref() != Some(&phase.compiled) {

@@ -76,7 +76,7 @@
         ],
         "properties": {
           "task_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
           },
           "until_unix_ms": {
             "$ref": "#/$defs/count"
@@ -114,7 +114,7 @@
             "tombstoned": {
               "type": "array",
               "items": {
-                "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
               }
             },
             "swept": {
@@ -173,15 +173,15 @@
       ],
       "properties": {
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
         },
         "kind": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+          "$ref": "urn:af:schema:task-contracts:3#/$defs/package"
         },
         "outcome": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/text"
+              "$ref": "urn:af:schema:task-contracts:3#/$defs/text"
             },
             {
               "type": "null"
@@ -253,7 +253,7 @@
                   "type": "array",
                   "minItems": 1,
                   "items": {
-                    "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+                    "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
                   }
                 }
               }

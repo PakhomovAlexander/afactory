@@ -1,28 +1,19 @@
 # Pi coding agent Provider
 
-Status: implemented SDK host architecture and Kimi backend, 2026-11-03. See proposed
-[Pi SDK host decision](../adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
+Status: implemented provider-neutral SDK host. The
+[provider integration decision](../adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md)
+supersedes the earlier two-backend admission restriction.
 
 AF supports **Node >=22.19** and the installed official
 `@earendil-works/pi-coding-agent` **1.4.0** SDK, release
 [`4a080252f06caf63a525d7873c5d94d3c23887e0`](https://github.com/earendil-works/pi/tree/4a080252f06caf63a525d7873c5d94d3c23887e0).
-The stock Pi CLI's readiness response has no stable principal, and its built-in file tools
-are not confined. AF therefore embeds its own ES-module host in `review-runner-pi`; it does
-not attribute an invented identity protocol or filesystem boundary to the stock CLI.
-No npm install, SDK update, model refresh or paid probe runs during registration or status.
+The stock CLI has neither AF's principal protocol nor confined file tools. AF embeds its
+own ES-module host in `review-runner-pi`. Registration/status/catalog never install, update,
+refresh a remote model catalog, log in, or run a model inference.
 
-## Supported matrix and setup
+## Registration and effective catalog
 
-| Backend | Authentication | Support |
-|---|---|---|
-| `openai-codex` | Stored Pi OAuth with canonical nonempty `accountId` | Supported SDK host path; paid live smoke not run |
-| `kimi-coding` | Stored Pi OAuth; no account principal | K3 low/high/max; context-only identity; paid live smoke not run |
-| `openai`, `anthropic`, any other backend | Any | Refused |
-| Any | API key, environment/cloud auth, executable helper | Refused |
-| Any | Custom endpoint, `models.json`, extensions, MCP, warm session | Refused |
-
-Install Node and the official SDK outside a repository. Complete Pi's OAuth login at a
-private terminal, then register that existing private profile:
+Register an existing private profile and installed SDK explicitly:
 
 ```sh
 af provider setup pi-personal --kind pi --backend openai-codex \
@@ -33,258 +24,221 @@ af provider status --json
 af provider models pi-personal --json
 ```
 
-`--sdk-entrypoint` may be omitted when the installed Pi launcher safely resolves to its
-SDK `dist/index.js`. For the standard managed `<agent>/bin/pi` launcher, AF reads
-`<agent>/install/current-version` as exactly supported version `1.4.0` and resolves
-`install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/index.js`.
-It never executes the launcher. Malformed/unsupported versions, symlinked version files,
-release/entrypoint escapes and repository-owned installations refuse. Explicit entrypoints
-and safely resolved SDK CLI layouts remain supported. Both Node and the SDK must resolve
-outside repository-owned paths: every ancestor is checked for `.git` (directory or worktree
-marker file) and `.af`, even when CWD is nested and PATH names an absolute external directory.
-A package-manager prefix containing `.git` also refuses; AF does not exempt ignored installation
-subdirectories from this path boundary. `NODE_OPTIONS`, `NODE_PATH`, proxy,
-cloud and API-key environment variables are absent from the host. `--login` and
-`af provider auth` are unavailable for Pi; login stays human-driven in Pi's own terminal.
-`provider detect` scans the existing Codex/Claude contexts; Pi uses explicit setup.
+`--backend` is the exact SDK provider ID, including operator-registered IDs. Anthropic,
+OpenAI, Google, Vertex, Bedrock and compatible custom endpoints use this same registration
+and host path. AF does not maintain a backend or model allowlist. `ModelRuntime.getProviders`,
+`getModels`, `getAuth` and explicit provider registration own provider/model/auth resolution.
+Only chat models are Worker models; image/classifier catalogs are excluded. An empty chat
+catalog refuses precisely. Status proves configured authentication, never paid usability.
 
-The machine-local registry is version **3**, retaining the auth-directory uniqueness rule.
-Pi entries require `kind = "pi"`, `backend = "openai-codex"` or `"kimi-coding"`, `auth_dir` and
-`sdk_entrypoint`. Versions 1 and 2 are refused; recreate registrations with this release rather
-than migrating an older registry (ADR-0145). Existing Codex and Claude entries use the
-same fields in version 3, and their adapters and default assignments are unchanged.
-A Pi setup result is `af/pi-provider-setup@3`; status is `af/provider-status@5` and
-model discovery is `af/provider-models@2`. Setup emits that Pi report for every internal
-refusal after Pi setup is invoked, including discovery, invalid configuration, installation,
-authentication and registry failures. In setup reports, `id` is null for an invalid/reserved
-requested ID and `backend` is null for an absent/unsupported requested backend; AF never
-invents a supported identity or echoes invalid raw request values. Registered/conflict outcomes
-require both validated values. Failures print the same safe AF-authored detail and outcome on
-stderr, including with `--json`; early refusals exit 3 and registry conflicts exit 5.
-CLI parser errors before invocation remain ordinary usage errors. Earlier setup reports and host
-protocols fail closed under ADR-0145. Status proves authentication, never paid
-usability. Subscription quota probing is unsupported.
+The host reads only the selected backend's data from the explicit profile's `models.json`
+and `models-store.json`. Pi's real composer applies data-only model declarations and
+configuration; its offline refresh restores admitted cached overlays. No model network runs.
+Configured or sufficiently recent cached `kimi-coding/k3.1-pro` is selected exactly when
+present. The baked-in `k3` catalog is not a replacement for a requested ID. Model IDs include
+SDK cloud/routed spellings such as `:0` and `~provider/model`. Account-qualified resource
+ARNs are represented by deterministic `af-private-model/<digest>` selectors: their exact native
+SDK IDs stay inside the host and are bound by the effective model digest. Bind the selector
+printed by `af provider models`; it is a model identity, never an account principal. The
+`af-private-model/` prefix is reserved for these generated selectors. Unsupported IDs or thinking
+levels refuse before private prompt delivery. The catalog supplies thinking levels; session
+construction must preserve the exact requested model and effort, without fallback or clamping.
+SDK sampling parameters that override model, context/session, tools, transport or token allowance
+refuse before private input. Pi applies these parameters after named request fields, so those
+overrides would bypass the captured Worker authority. Ordinary sampling parameters remain supported.
 
-## Account, model and captured authority
+Catalog pages retain the existing **64 models per ready record** and **64 KiB probe-output**
+bounds. Each page carries a common full effective catalog identity. Rust checks identities,
+contiguous offsets and duplicate IDs, within one shared probe deadline and a bounded 4,096-entry
+pagination space. `af provider models ID --page N` selects a zero-based display page, also
+bounded to 64 rows; JSON `catalog_page` carries `number`, `next` and `total`. Freshness is
+`sdk_profile` (human: offline SDK/profile). `--resolve` checks the complete captured catalog,
+including routed IDs with or without an effort suffix. Worker initialization requests its exact
+selected model, independently of its
+catalog position. Large SDK catalogs do not require a larger protocol record or a longer wall.
 
-The host alone opens Pi `AuthStorage` for the explicit profile's `auth.json`. It accepts
-only supported stored OAuth credentials. For OpenAI it hashes **only** non-secret `accountId`,
-with domain `af.pi.account/openai-codex\0`. Access and refresh tokens never leave that
-process or become artifacts, diagnostics or a principal hash. Registrations for the same
-account produce the same opaque principal, so aliases cannot establish independence.
+`--sdk-entrypoint` may be omitted when an installed launcher safely resolves to the supported
+SDK. Managed `<agent>/bin/pi` discovery reads `install/current-version` as exactly `1.4.0`,
+then resolves that release's `node_modules/@earendil-works/pi-coding-agent/dist/index.js`.
+It never executes the launcher. Symlinked/malformed version files, unsupported versions and
+release escapes refuse. Node, SDK and admitted provider modules must be installed outside
+repository-owned paths: every ancestor is checked for `.git` and `.af`. Homebrew's `.git`
+ancestor receives no exemption. Existing installation/path boundaries remain binding.
 
-The host uses AuthStorage's locked `modify` callback returning `undefined` (no write) to
-inspect raw credentials: `AuthStorage.read` can execute API-key helpers before returning,
-so AF never calls that helper-capable method. The restricted credential store validates
-the expected account on **every** read and inside **every** refresh transaction, before and
-after the SDK's update callback. The host also compares `accountId` to the non-secret routing
-account claim inside the access token, which Pi's inference adapter uses, so a stale field cannot conceal token replacement.
-Only that account identifier is hashed; the token and other claims stay inside the host. Token
-rotation for that account remains supported. OpenAI missing identity, an API key, or account
-replacement fails closed. The same guarded store is supplied to `ModelRuntime`; no
-environment or helper can supply another inference credential.
+## Explicit credentials and installed provider capabilities
 
-Kimi's SDK credential exposes only `type/access/refresh/expires`; no stable account identity
-is available. Its principal is `null`, with typed Pi `identity_mode = "unavailable"`.
-The canonical auth-context digest stays separate. No profile, alias, label or credential hash
-is an account. Trusted `distinct_principals` policy refuses unavailable identities, even
-across different backends and profiles. Before private invocation and refresh the host checks
-context and credential mode; **account substitution within that context cannot be detected**.
-Catalog Task pipelines explicitly select this policy. Installed native Review has no context-only
-policy and continues to require known account principals; Kimi Review uses a catalog Task pipeline.
-This narrow exception is recorded in the
-[Kimi identity decision](../adr/2026-11-03-admit-pi-kimi-with-explicit-unavailable-account-identity.md).
+The selected profile must be outside repository-owned paths and owns `auth.json`; Rust never
+reads its raw credentials. The host inspects
+raw records using `AuthStorage.modify` with a no-write callback, never the helper-capable
+`AuthStorage.read`. Stored OAuth and literal API-key records are admitted through the SDK's
+provider-neutral resolver. Optional stored provider-scoped `env` remains confined to that
+registration. Command-valued API keys or headers in data are refused before they can execute.
 
-Workers keep `--provider NODE=ID`. Their `provider_kind` is `pi`; their `model` is the
-exact SDK backend model ID, and `effort` is a supported Pi thinking level. Pi accepts
-`off minimal low medium high xhigh max`, narrowed by the selected model's catalog.
-The SDK's model-specific clamping is checked after session construction: AF refuses a
-changed effective setting. Pi does not apply the Codex/Claude hyphen-and-digit heuristic;
-unknown IDs and unsupported efforts refuse before private prompt delivery. Kimi is restricted
-to `k3`, `openai-completions`, official HTTPS `https://api.kimi.com/coding/v1` and precisely
-`low`, `high`, `max`; `medium` and `off` are unsupported.
+The optional private `af-context.json` selects environment/cloud credentials explicitly:
 
-`WorkerExecutionV3::Model.pi` captures backend, OAuth method, exact SDK version, SDK and
-Node paths, auth-context identity, static model-configuration digest (including endpoint)
-and adapter-policy digest binding the embedded host and versioned backend accounting map. The optional account principal, typed identity mode, model and effort remain separate
-fields. Changed configuration requires normal plan revision/admission. Changed contracts
-are `af/ExecutionPlan@3`, `af/TaskProviderAdmission@3`,
-`af/TaskProviderContext@2`, `af/LegacyReviewTaskPolicy@6`, `af/LegacyReviewInvocationPolicy@3` and
-`af/provider-doctor@4`, `af/task-plan-inspection@2` and `af/task-inspection@16`, with closed schemas and parity tests. Unsupported prior types
-are not readers or fallback paths.
+```json
+{
+  "schema": "af.pi-context/1",
+  "environment": {
+    "GOOGLE_APPLICATION_CREDENTIALS": "/private/selected-service-account.json",
+    "GOOGLE_CLOUD_PROJECT": "selected-project",
+    "GOOGLE_CLOUD_LOCATION": "selected-location"
+  }
+}
+```
 
-## SDK construction and exposed tools
+These are selected values, not names authorizing a copy of the developer's environment.
+The Rust launcher clears its environment and creates a private HOME/XDG context. Only the
+explicit selected provider environment is supplied to inference and exported inside that
+host for official cloud SDK credential chains. HOME, PATH, XDG, Node/module injection and
+loader environment overrides refuse. Credential-file paths must be absolute, canonical,
+private owned regular files outside repositories. Explicit ADC/INI file references are captured
+and checked recursively, within 32 files and a shared 4 MiB byte bound. Standard sectioned AWS
+INI files are parsed as credential data; `credential_process` remains refused. Non-secret credential
+selectors bind that closure separately from secret values. AWS profile selection also requires explicit
+credential/config files. Command-bearing INI/ADC files refuse; installed provider code is the
+separate executable capability boundary. No unrelated default developer profile is available.
 
-The host uses `ModelRuntime.create` with the guarded credential store, `modelsPath: null`,
-`allowModelNetwork: false`, and `refreshOnCreate: false`. `PI_OFFLINE=1` also disables
-native catalog networking. It uses `createAgentSession` with the explicit model/runtime,
-`SessionManager.inMemory(cwd)`, `SettingsManager.inMemory`, an empty `ResourceLoader`,
-`noTools: "all"`, an exact tools allowlist and AF tool definitions that replace built-ins.
-No project/global settings, packages, context files, skills, themes, prompt templates,
-extensions or MCP resources are discovered. Prompt-template/command expansion is disabled.
+Profile configuration files are bounded private owned regular files (mode 0600); context
+and selected credential-file bytes are compared in memory before prepare, private prompt
+acceptance, credential access/refresh and each inference. Literal API-key changes inside a
+host refuse; OAuth token rotation remains supported under the guarded native identity/mode.
+Secrets and credential-file contents never become emitted metadata or principal hashes.
+Missing provider configuration or credentials produces a safe actionable AF refusal, without
+claiming that the backend is globally unsupported.
 
-Read-only Workers receive `read`, `grep`, `find`, `ls`. Writable Workers also receive
-`write`, `edit`. No bash, PowerShell, arbitrary tool, subagent or codemode is exposed,
-including for a Worker whose effects permit checks. Such a Worker must use a separate
-check node for commands. Only the materialized source and explicitly attached base are
-readable; only a writable source is writable. Relative or absolute paths outside those
-roots, symlink traversal and writes into the base refuse. Parent spelling can reach an
-explicitly granted base, never an arbitrary parent directory. File opens use `O_NOFOLLOW`
-and file-type checks; traversal, file sizes and tool results are bounded. Grep and find
-use literal substrings, with no external process or regular-expression engine.
-Write creates missing parent directories only inside its writable root, checking every component.
+An operator custom provider requiring executable SDK registration uses an explicitly installed,
+reviewed provider module with a content pin, in the same private context:
 
-This confines the actual model-visible operations; it does **not** turn `trusted_local`
-into OS isolation against unrelated host processes or a compromised installed SDK.
-Native credential-bearing execution remains `trusted_unsafe`. No delivery, publication,
-remote gate or `auto_apply` authority is granted.
+```json
+{
+  "schema": "af.pi-context/1",
+  "extension": {
+    "entrypoint": "/installed/af-provider/bundle.mjs",
+    "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}
+```
 
-## Protocol, lifecycle and accounting
+The entrypoint must be an external installed regular file with exactly those bytes; the pin
+is rechecked before private inference. The host imports the verified bundle bytes, avoiding a
+path reread between verification and execution. Bare/relative dependencies must be bundled.
+Its exported `register` receives only a frozen facade
+with `registerProvider(id, config)` and `registerNativeProvider(provider)`, restricted to the
+selected backend. It receives no extension resource/tool registration API. Review and bundle
+its executable dependencies as part of this trusted installed capability. No candidate module,
+project hook, executable data helper or general Pi extension discovery runs. As with the
+installed official SDK, this is trusted credential-bearing code, not OS isolation against a
+compromised installation. It cannot widen the model-visible AF tool allowlist.
 
-`af.pi-host/4` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v4.json`:
+## Identity and captured authority
 
-1. Rust sends `init`, containing no private Worker prompt. The host returns `ready` with
-   safe opaque identity and a bounded static catalog. The host compares the canonical auth
-   directory against the captured `auth_context_id` before opening credential storage, including
-   on the first invocation check. A token-free probe ends here.
-2. Rust compares captured identity/configuration, then sends `prepare` with exact model,
-   effort, model digest, trusted remaining-token allowance and actual reply schema. Only after `prepared` matches does Rust send `prompt`.
-3. Rust generates a fresh 256-bit random `prompt_nonce` challenge in the prompt writer and
-   includes it only in the delivered `prompt` record. The host rechecks the guarded credential
-   and echoes that exact challenge in `accepted` before inference. Rust requires this echo
-   before accepting usage, messages or settlement: a speculative reply after `prepared`
-   cannot answer a prompt the host has not consumed. The expected challenge is published
-   before writing so an immediate legitimate reply cannot race the writer's completion.
-   A failed or partial prompt write retains unknown usage conservatively. This acknowledgement
-   is never a result. One SDK session runs in this one process.
-4. Usage observations name an inference sequence; cumulative snapshots replace that
-   inference's earlier observation. Completed duplicates do not count twice. Successful
-   settlement requires at least one sequentially numbered observed inference and a final
-   `complete: true` snapshot for every observed inference. Missing or unfinished observations
-   refuse the reply while retaining partial/unknown accounting. Individual counters may stay
-   unknown even in a complete snapshot; lifecycle completion does not invent usage values.
-5. The host requires actual `agent_settled`, successful final assistant text and the return
-   of `session.prompt`. `agent_end`, EOF and exit zero cannot establish success.
+OpenAI Codex retains mandatory canonical `accountId` validation and agreement with the routing
+account in the access token. Only that non-secret account identifier is hashed under
+`af.pi.account/openai-codex\0`; neither tokens nor other credential fields become principals.
+The guarded credential store rechecks that account on reads and both sides of refresh.
 
-Every native `streamSimple` call checks the trusted remaining allowance before inference and
-receives SDK `maxTokens` capped by remaining AF tokens and the native output limit. All preceding
-inferences must have complete, safe required usage; observed exhaustion or unsafe accounting
-refuses another call. Prompt cost arrives afterward, so one inference can overshoot; the full
-observed charge is retained. No character-based estimate claims exact enforcement. Admission
-and format re-asks receive their actual remaining reservation through typed kernel dispatch;
-model input and environment cannot grant tokens. Unbudgeted Pi entrypoints refuse before spawn.
+Other SDK authentication contexts expose no admitted stable native account identity. Their
+principal is `null`, with typed `identity_mode = "unavailable"`; a profile, key, token, alias,
+cloud project or Provider label never becomes a principal. Trusted `distinct_principals` policy
+refuses every unavailable binding, across backends and profiles. Installed native Review still
+requires known principals; catalog Task pipelines can explicitly permit context-only identity.
+Account substitution across invocations within an unavailable context cannot be detected.
 
-Safe raw CAS `af/pi-inference-evidence@1` records per-inference sequence, native cumulative
-counters, usage-observation counts and completion flags, aggregate started/completed counts,
-counts of declared tool names, a fresh non-secret request nonce, allowance/policy identity and the
-separately labeled aggregate
-AF charge observation. It excludes sensitive payloads and is retained on failure/cancellation
-when available. It is diagnostic, never charged again. Calls stop at 256 inferences, 128 native
-usage observations per inference or 4,096 file-tool executions; reaching observation capacity
-retains the last counters and fails. An unsuccessful or unsettled trace does not establish
-complete accounting. The system prompt includes file-only guidance, the actual reply schema
-and an exact array-envelope example; common typed validation and ADR-0208 remain unchanged.
-See the [allowance decision](../adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
+The captured authority separates backend, `auth_method` (`oauth`, `api_key`, or `context`),
+SDK/Node paths and pin, canonical auth-context identity, exact model/effort and effective model
+configuration identity. The latter binds the selected public profile/catalog configuration,
+credential-context selectors, effective auth-supplied endpoint and installed module pin; key and
+header values stay private. The adapter policy binds the embedded host and versioned native
+accounting conventions. Rust compares this authority before sending a private prompt.
 
-Kimi's callback receives the actual ChatCompletions chunk, with `chunk.usage` or
-`chunk.choices[].usage`. AF reads `prompt_tokens`, `completion_tokens`, cache reads from
-`prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens` or `cached_tokens`, and
-optional cache-write/reasoning details. Conflicting alternatives or malformed counters refuse.
-Initialized SDK counters are never observations. Kimi's captured AF token-budget convention
-`af.pi-budget/kimi-total-input-plus-output@1` charges total `prompt_tokens + completion_tokens`,
-with no cache discount even when cache counters are present. Complete Kimi reporting requires
-valid input/output aggregates for every settled inference; absent cache/reasoning counters
-remain unknown. Cache writes and reasoning are already included, never added again.
-Repeated cumulative/final records count once. This is a conservative AF budget charge,
-not an invoice, uncached-token count or provider cost estimate. The
-[Kimi caching reference](https://platform.kimi.com/docs/guide/context-caching) documents total
-prompt input and final streaming usage; it does not establish absent cache as zero.
+Current contracts are Provider registry **4**, `af/pi-provider-setup@4`,
+`af/provider-status@6`, `af/provider-models@3`, `af/provider-doctor@5`,
+`af/ExecutionPlan@4`, `af/TaskProviderAdmission@4`, `af/TaskProviderContext@3`,
+`af/LegacyReviewTaskPolicy@7`, `af/LegacyReviewInvocationPolicy@4`,
+`af/task-plan-inspection@3`, `af/task-inspection@17`, `af.pi-host/5`,
+`af/pi-inference-evidence@2` and `af.pi-context/1`. Writers, readers, closed schemas and parity
+fixtures change together; incompatible earlier versions fail closed without migration.
 
-`adapter_policy_id` uses domain `af.pi-adapter-policy@3` and binds the embedded host plus
-both backend convention identities and their map. A preceding host-only policy cannot
-silently adopt this accounting: it refuses before private input, without adding persisted
-fields. Missing, malformed, unsafe, conflicting or failed observations refuse complete
-accounting and retain independently valid counters from the same native observation as well as
-preceding observed floors under ADR-0088. Inconsistent optional components are excluded from
-incomplete safe evidence; conflicting aggregate counters remain unknown. Invalid accounting
-prevents any subsequent native inference.
+## Session, tools, supervision and accounting
 
-LF alone frames records; CRLF is accepted and U+2028/U+2029 remain string content. Partial
-records, incompatible versions, invalid state transitions, changed identities/settings,
-trailing events after settlement, oversized output and native errors refuse. Only typed
-safe error codes cross the host boundary; stderr and raw credential responses never become
-Worker evidence. `review-process` supervises the bidirectional pipes, original Attempt
-deadline, cancellation and owned process group; no adapter-owned process manager exists.
-A protocol/output failure also signals that supervisor. Already observed usage survives
-cancellation, EOF, errors, invalid output and transport failure.
+Every Attempt creates an explicit SDK model/runtime, in-memory settings/session and an empty
+resource loader. No project/global settings, skills, context files, themes, templates, packages,
+MCP resources or warm session are loaded. Retries, compaction, cache warming and prompt expansion
+are disabled. Provider HTTP retries are zero; transport remains SSE.
 
-Agent retry and compaction are disabled; provider HTTP retries are zero, transport is SSE,
-and cache warming is off. No auxiliary inference, session persistence or automatic restart
-is enabled. Retries for malformed typed output remain the existing common Task handling,
-with the first call's spend retained. The local Worker schema still validates results;
-Pi is not assumed to provide native constrained JSON generation.
+Read-only Workers get AF-owned `read`, `grep`, `find`, `ls`; writable Workers additionally get
+`write`, `edit`. No shell, arbitrary tool or subagent exists, including for Workers allowed to
+request checks. Only exact materialized source/base roots are readable; only a writable source
+is writable. Symlink traversal and external/parent escapes refuse. Opens use `O_NOFOLLOW`,
+file-type checks and bounded file/result/traversal sizes. Missing write parents are created
+only beneath a checked writable grant. Native execution remains `trusted_unsafe`.
 
-Pi initializes its assistant counters to zero even when the server has not reported usage.
-AF instead observes native response events through `onProviderStreamEvent`. OpenAI's
-unchanged convention `af.pi-budget/openai-input-minus-cache-read-plus-output@1` is:
+Rust sends init, compares ready identity/catalog, then sends prepare with exact model/effort,
+configuration digest, trusted remaining allowance and reply schema. A matching prepared response
+precedes private input. A fresh random 256-bit prompt nonce, first sent with that prompt, must be
+echoed in accepted before usage or results can be admitted. Session success requires actual
+`agent_settled`, successful final assistant text and return of `session.prompt`; `agent_end`,
+EOF and exit zero are insufficient. Common `review-process` supervision owns cancellation,
+the original Attempt wall, pipes and owned process group cleanup. Partial charges survive failure.
 
-| AF counter | Native field | Treatment |
-|---|---|---|
-| input | `response.usage.input_tokens` | Total, includes cache components |
-| output | `response.usage.output_tokens` | Includes reasoning |
-| cache read | `input_tokens_details.cached_tokens` | Separate component, excluded from charge |
-| cache write | `input_tokens_details.cache_write_tokens` | Separate component, already in input |
-| reasoning | `output_tokens_details.reasoning_tokens` | Separate component, already in output |
-| charge | input minus cache read plus output | Each inference once |
+Native accounting is selected by **transport**, not backend. The pinned SDK's complete chat
+transport catalog is covered:
 
-Missing counters stay unknown. A partial report retains its known budget floor; a complete
-OpenAI charge requires known input, output and cache read for every inference and successful
-settlement. Cache write and reasoning may remain unknown without inventing zero or double
-charging them. AF budget charges are not monetary invoices or provider cost estimates. The
-Attempt's reservation and deadline bound the whole invocation; AF promises no unimplemented
-provider-side hard token cap.
+| Wire contract | Observations normalized to AF counters |
+|---|---|
+| OpenAI Responses, Codex Responses, Azure Responses | `response.usage` input/output and observed cache/reasoning details |
+| ChatCompletions, Mistral Conversations | Native usage aggregates and documented cached-token alternatives |
+| Anthropic Messages | Uncached input plus native cache-read/cache-write components (omitted/null caches initially mean zero); output includes thinking |
+| Google Generative AI, Vertex | Prompt total and total minus prompt, or observed candidate plus thought output |
+| Bedrock Converse Stream | Native metadata usage input/output and optional cache components |
+| Pi Messages | Native wire input/cache components and output, never initialized assistant counters |
 
-## Evidence and remaining live smoke
+OpenAI Codex preserves input minus observed cache read plus output, including its missing-cache
+refusal. Other contexts use the conservative total-input-plus-output convention: no cache discount
+and no duplicate charge for reasoning/cache writes already included. Additive components must follow
+their native transport contract for complete accounting. Missing required components retain safe
+partial floors and refuse success. Optional counters remain unknown unless the native contract
+specifies an initial default. Malformed/conflicting counters prevent further inference.
+No SDK-initialized assistant counters, estimates or service invoice claims substitute for native usage.
+A custom transport lacking a native accounting contract refuses before private delivery.
 
-`scripts/test-pi-host.py` instantiates the installed **real** SDK without real credentials or a
-service call when available. It exercises the session's actual wrapped AF tools against
-synthetic absolute/parent/symlink markers, read-only/writable/base permissions, cancellation,
-empty resources, disabled retries/compaction and account rotation/replacement. CI runs the
-hermetic SDK-signature equivalent when the external SDK is absent. With the official SDK,
-the host also consumes synthetic SSE responses through its real provider adapter, dispatches a
-confined read and nested write through the SDK's tool-parameter validator, returns a structured
-`af.worker-reply/1`, observes two inferences with native input/output/cache/reasoning counters
-and reaches actual session settlement, with HTTP replaced in process and no service call.
-The Rust runner tests use
-faithful **AF host** processes for JSONL fragmentation, Unicode, terminal ordering, identity
-and setting drift, limits, malformed events and cancellation with preserved usage/reaping.
-A bounded manual transport regression captures the complete early response before delivering
-any prompt, then delivers the exact private prompt, asserts its read marker and observes the
-child's successful exit. Replaying those ordered wire records through the production state
-validator refuses the premature acknowledgement. The adapter-level refusal and immediate
-valid-response tests remain separate; production cancellation is unchanged.
-CLI fixtures exercise setup/status/catalog, common Task admission and typed-result recovery,
-plus doctor and captured Review. Existing-provider regression selections remain required.
+Anthropic native `message_start` usage initializes omitted or explicit-null cache-read/cache-write
+components to zero, matching the pinned SDK's transport contract. Subsequent deltas update only
+non-null components, retaining previously observed cache values in both total input and the reported
+cache breakdown. Mandatory uncached input and output still require native evidence; absent usage
+never creates a successful zero-token inference. Negative, malformed, unsafe or decreasing counters
+refuse while preserving safe observed charge floors, including when an additive total overflows.
+The focused optional-cache regression runs real host sessions against both hermetic SDK signatures
+and, when available, the installed official SDK's synthetic HTTP transport, without live requests.
 
-Run `python3 -I scripts/test-pi-host.py` for portable discovery of the pinned installation
-under `~/.pi/agent/install/releases/1.4.0` or beside a resolved `pi` launcher. Discovery reads
-paths only; it never executes the launcher or npm. An explicit
-`AF_PI_TEST_SDK=/installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js`
-selects a trusted external installation; a missing or repository-owned explicit path fails.
-`AF_PI_TEST_HERMETIC=1` selects the CI fixture without loading an installed SDK. Both modes
-print whether official SDK construction and full agent-turn coverage actually ran; an absent
-SDK leaves that coverage explicitly **not run**, while the hermetic host protocol tests run.
+Observations replace cumulative counters per inference; identical final echoes do not double count.
+Every subsequent inference requires safe complete accounting for the preceding ones. `maxTokens`
+is capped by trusted remaining allowance and the native output limit. One inference may overshoot
+because prompt usage arrives afterward; its whole observed charge remains. Worker input cannot
+increase the allowance. Existing bounds remain 256 inferences, 128 observations per inference,
+4,096 tool executions, and the existing protocol/output/file/deadline limits. Safe raw CAS evidence
+retains counters, lifecycle, nonce and tool-name counts separately from aggregate charge, without
+prompts, answers, tool arguments/results, credential values or account IDs.
 
-**Paid live smoke: not run** for `openai-codex` OAuth. No actual login, OAuth refresh exchange,
-quota request or paid inference was used for implementation evidence. The successful
-official SDK test proves construction, tool confinement and synthetic stream handling; the
-synthetic inference fixtures prove AF's protocol/runtime behavior. They are not a live service receipt.
+## Regression evidence
 
-The [indexed validation record](pi-provider-validation.md) retains the original issue #494
-observation and historical measurement runs with their historical file bindings. A
-reproducible source-content projection separately binds the fresh manual measurement and current
-checks without including the validation record itself. No historical execution is reconstructed
-or attributed to this candidate.
+`scripts/test-pi-host.py` always exercises the real embedded host with synthetic SDK signatures
+and credentials. When an external official SDK is available it also constructs real SDK sessions
+and streams against in-process synthetic HTTP/cloud transports, with no live model requests.
+The catalog-driven invariant checks every official chat provider/model and all native transports;
+non-chat models refuse. The matrix covers OAuth, Anthropic/OpenAI API keys, explicit Google/AWS
+contexts, data-only compatible endpoints, installed registration, and configured/cached Kimi
+`k3.1-pro`, including model rejection, drift, native accounting and actual settlement.
+
+Rust runner tests cover protocol order/fragmentation, exact settings and auth drift, partial usage,
+nonce acceptance, limits and cancellation/reaping. CLI/plan fixtures cover generic setup, status,
+models, captured authority and common Task admission/typed-result execution using private HOME/XDG.
+Schema parity/replay tests cover every new auth category and strict unavailable-principal refusal.
+These synthetic tests establish no paid/live provider success. Official-SDK coverage is explicitly
+reported as not run when unavailable; `AF_PI_TEST_HERMETIC=1` selects the hermetic path.
+Historical measurement claims remain in [the validation record](pi-provider-validation.md);
+this change adds no reconstructed workflow receipts.
 
 ## Optional pi-light trial family
 
