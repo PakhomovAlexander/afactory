@@ -97,7 +97,9 @@ Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.1-rc.1. Re-register
   claim and changes no benchmark, guard, metric, threshold, repetition or installed authority
   ([ADR-0185](../docs/adr/0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)).
 
-## [0.15.0] - 2026-11-06
+## [0.15.0] - 2026-11-06 [YANKED]
+
+The tag was never published because macOS validation failed before publication (run 42260592343).
 
 ### Authority compatibility
 
