@@ -19,7 +19,87 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.15.0] - 2026-11-06
+## [0.15.1-rc.1] - 2026-11-07
+
+### Authority compatibility
+
+Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.1-rc.1. Re-register machine-local Providers for registry v4 and use fresh runtime state for changed Pi and Task/Review authority generations; older incompatible formats are refused. Review and repin changed model bindings. Unchanged package contracts remain valid.
+
+### Changes
+
+- release: v0.15.0 (#710)
+- feat: commit owner Worker authority for performance loops (#724)
+- Update all AF pipeline workers to GPT-6.1 (#725)
+- Support Pi SDK providers and explicit authentication contexts (#735)
+- Repair staged harness pins for release preflight (#739)
+
+- Keep owner performance judges within their declared delivered evidence inputs; native pipeline
+  and publication acceptance retain responsibility for complete team results. Check prompt evidence
+  declarations against Worker signatures and candidate/verification node bindings.
+
+- Add digest-pinned owner performance Workers and inert Codex bindings for implementation,
+  independent verification and read-only reporting. All four production templates can capture
+  committed authority and plan without model inference, preserving the accepted research Document
+  handoff and existing native budgets, gates and publication boundaries.
+
+- Align owner performance Worker instructions with the actual native Task goal, evidence and
+  accepted research handoff. Preserve the committed review policy in four-stage planning and
+  handoff fixtures while keeping the complete production review team mandatory.
+
+- Move declared Review and Task pipelines to GPT-6.1 Codex Workers: Sol/high implements,
+  Terra independently reviews and evaluates, with judging effort preserved. Keep the Pi
+  implementer and re-pin native packages, staged examples and legacy Review packages.
+- `af onboard --tasks` now generates Sol/high and Terra/high Workers on `codex-main` for every
+  review-authority profile. Performance Scenarios use Terra for all independent judging roles.
+- Audit the entire shipped Worker catalog and legacy pipeline pins for model and effort drift.
+
+- Use GPT-6.1 Terra for owner-default correctness review (high effort) and evaluation
+  (medium effort), with refreshed package versions and catalog pins. Owner implementation and
+  Report authoring retain GPT-6.1 Sol medium, and bug review retains GPT-6.1 Terra high;
+  development judges remain model-independent from the implementer. Other Worker families
+  are unchanged.
+
+- Integrate the GPT-6.1 Worker updates while preserving owner-default Sol/medium implementation
+  authority. Align the native performance report-verifier check with Terra/high and retain the
+  onboarding Gate and Reviewer Result regression coverage after its helper signature change.
+  Refresh custom Worker fixture versions, staged Report model/Provider expectations and the exact
+  triage admission order for the new models.
+- Correct current performance Report, pi-light and triage setup guidance to match the
+  pinned GPT-6.1 models, Providers and effort levels. Preserve historical execution records.
+- State the light pipeline's Sol/high implementer and Terra/high correctness reviewer and
+  evaluator explicitly in every current size/S rubric and staged example input. Check those
+  roles against the selected Worker manifests and refresh the triage package versions and pins.
+- Audit declared Codex model support against the recorded token-free harness observation and its
+  versioned provenance, separately from synthetic parser fixtures. Verify selected slot and Worker
+  signature roles before comparing size/S guidance, with independent negative role mutations.
+
+- Include the original credential-free, token-free Codex catalog response and verify its digest,
+  schema and unchanged two-model projection in the Worker support audit. Other advertised models
+  remain observational data; the catalog does not prove inference or account access.
+- Combined Task onboarding reports missing Providers for the selected Review profile as well as
+  Codex Task Workers. Adding Tasks to existing authority keeps its Codex-only setup guidance.
+
+- Resolve Pi Workers through the official SDK's effective chat catalog and explicit private
+  credential contexts, supporting OAuth, API keys, cloud contexts and installed custom provider
+  registration. Preserve exact configured/cached models, including Kimi `k3.1-pro`, with native
+  accounting, confined tools and honest unavailable account identity. Explicit AWS INI credential
+  contexts work. Anthropic native usage accepts omitted/null optional cache counters as initial
+  zeros and preserves observed caches on partial deltas; mandatory usage and invalid-counter
+  refusals retain safe charge floors. Earlier incompatible Pi authority/report and Provider registry
+  versions fail closed. Current triage and telemetry setup helpers use the matching inspection and
+  registry versions. See the
+  [provider integration decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md).
+- Keep first-run and concepts help within 100 columns while describing Providers as
+  authentication contexts for Claude/Codex CLI or Pi SDK Workers.
+
+- Repair release preflight by regenerating the staged protected-harness digest and inventory
+  for the existing authority adapter bytes. This metadata repair adds no measurement or performance
+  claim and changes no benchmark, guard, metric, threshold, repetition or installed authority
+  ([ADR-0185](../docs/adr/0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)).
+
+## [0.15.0] - 2026-11-06 [YANKED]
+
+The tag was never published because macOS validation failed before publication (run 42260592343).
 
 ### Authority compatibility
 
