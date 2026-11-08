@@ -19,6 +19,53 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.1-rc.2] - 2026-11-08
+
+### Authority compatibility
+
+Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.1-rc.2. Re-register machine-local Providers for registry v4 and use fresh runtime state for changed Pi and Task/Review authority generations; older incompatible formats are refused. Review and repin changed model bindings. Unchanged package contracts remain valid.
+
+### Changes
+
+- release: v0.15.1-rc.1 (#746)
+- Refactor AF naming and module boundaries (#759)
+
+- Name the shared libraries for their AF responsibilities, including `af-contracts`, `af-runtime`,
+  `af-pipeline-config` and `af-source-issue`; update source, build, test and performance references
+  and document all adapters, including Pi. Runtime behavior, CLI commands and persisted contracts
+  remain unchanged
+  ([decision](../docs/adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md)).
+
+- Clarify internal Rust module names for Project policy, Task commands and delivery, Review
+  accounting, run reports, execution summaries, Report Task domains, Warm Workspaces and
+  self-management. CLI commands, persisted contracts and runtime behavior are unchanged.
+
+- Clarify shared AF crate boundaries and internal naming. Performance tooling now separates
+  offline result evaluation from durable release comparisons and uses snake_case Python modules.
+  Public script paths, CLI commands and persisted contracts are unchanged. See the
+  [library naming decision](../docs/adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md).
+- Integrate current-main GPT-6.1 catalogs, owner-default Workers, onboarding guidance, model
+  provenance and Scenario performance coverage with the renamed libraries and Host boundaries.
+  Refresh the default implementer instruction pins without changing their upstream authority.
+
+- Extract Project identity, Stores, Workspace management, Survey and Brief services into the
+  internal `af-project` library with explicit application dependencies. CLI output, stored records
+  and authority remain unchanged. See the
+  [boundary decision](../docs/adr/2026-11-06-separate-project-services-from-cli.md).
+
+- Separate Scenario contracts, durable coordination and Ant scheduling into `af-scenario`, with
+  explicit native Task and machine Store adapters in the CLI. Commands, wire contracts and
+  publication authority remain unchanged. See the
+  [decision](../docs/adr/2026-11-06-separate-scenario-domain-from-cli.md).
+
+- Move shared model/effort validation and binding diagnostics into `af-runner`, removing
+  Codex's dependency on the Claude adapter while preserving validation and diagnostic wording.
+  Claude's native refusal and model-switch diagnostics stay in its adapter
+  ([decision](../docs/adr/2026-11-06-share-model-validation-outside-provider-adapters.md)).
+
+- Restore the historical triage captures so their recorded issue-body and owner-comment hashes
+  identify the original text, and check both hashes and the truncated comment prefix in fixture tests.
+
 ## [0.15.1-rc.1] - 2026-11-07
 
 ### Authority compatibility
