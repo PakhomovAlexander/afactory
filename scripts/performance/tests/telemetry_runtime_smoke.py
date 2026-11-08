@@ -16,7 +16,7 @@ import time
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'scripts/performance'))
-from perflab import budget, builds, hostprep, runner, telemetryexec, telemetrylab  # noqa: E402
+from perflab import budget, builds, host_prep, runner, telemetry_exec, telemetry_lab  # noqa: E402
 from tests.telemetry_measurement_smoke import IMAGE  # noqa: E402
 
 
@@ -30,26 +30,26 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         run, capture = own / label, own / (label + '-capture')
         run.mkdir(mode=0o700)
         capture.mkdir(mode=0o700)
-        home, env = telemetrylab.private_paths(str(run))
+        home, env = telemetry_lab.private_paths(str(run))
         Path(home).mkdir(mode=0o700)
         script = str(ROOT / registry['experiments'][experiment]['script'])
         if label == 'corpus':
-            argv = telemetrylab.corpus_argv(config['read_latency'], config['seed'], script,
+            argv = telemetry_lab.corpus_argv(config['read_latency'], config['seed'], script,
                                             str(run / 'corpus'), executor.python)
         else:
             if prepare:
                 prepare(run)
-            argv = telemetrylab.argv_for(experiment, config[experiment], config['seed'], script,
+            argv = telemetry_lab.argv_for(experiment, config[experiment], config['seed'], script,
                 af=af, work=str(run / 'bench'), corpus=str(run / 'corpus'), python=executor.python)
             if refuse:
                 # Retain the failed Task's public inspection document for the assertions
                 # below; this is a diagnostic reproduction, never a timed result.
                 argv += ['--keep']
-        execution = telemetryexec.Execution(argv, env, str(run), [str(run)],
-            telemetrylab._readable(registry, str(ROOT), experiment,
+        execution = telemetry_exec.Execution(argv, env, str(run), [str(run)],
+            telemetry_lab._readable(registry, str(ROOT), experiment,
                                    None if label == 'corpus' else af),
             str(capture), label, config['work_bytes'], min(time.monotonic() + 180, deadline - 30),
-            telemetrylab.FILE_BYTES_MAX, cleanup_deadline=deadline)
+            telemetry_lab.FILE_BYTES_MAX, cleanup_deadline=deadline)
         outcome = executor.run(execution)
         assert outcome.cleanup == 'confirmed', outcome.cleanup_detail
         assert outcome.failure() is None, (label, outcome.failure(), outcome.stderr)
@@ -87,7 +87,7 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
             shutil.copytree(corpus / 'corpus', run / 'corpus'))
         assert reads['corpus']['runs'] == 10 and reads['corpus']['executions'] == 20
         assert reads['corpus']['blobs'] == 200 and reads['corpus']['segments'] == 20
-        assert {item['name'] for item in reads['measurements']} == set(telemetrylab.READ_MEASUREMENTS)
+        assert {item['name'] for item in reads['measurements']} == set(telemetry_lab.READ_MEASUREMENTS)
         for fixture in overhead['fixtures']:
             for pair in fixture['pairs']:
                 assert pair['off']['exit_code'] == pair['spans']['exit_code'] == 0
@@ -108,19 +108,19 @@ def outcome_stderr(run):
 
 def contained(root, af, registry, config, capacity, refuse, deadline):
     backing, mount, control = root / 'scratch.img', root / 'scratch', root / 'owner'
-    hostprep.prepare(str(backing), str(mount), capacity)
-    with hostprep.TelemetryOwner(str(control), str(mount), create=True,
+    host_prep.prepare(str(backing), str(mount), capacity)
+    with host_prep.TelemetryOwner(str(control), str(mount), create=True,
                                 image=str(backing)) as owner:
         owner.prepare_work()
         try:
             # The low-capacity diagnostic uses the former PR capacity. The successful
             # regression uses the exact current PR registry, without environment overrides.
-            environment = telemetrylab.contained_environment(registry,
+            environment = telemetry_lab.contained_environment(registry,
                 dict(config, work_bytes=capacity))
             timing = budget.Budget(deadline, time.monotonic, 30)
             scratch, cpus, runtime = runner.contained_host('docker', IMAGE, str(mount),
                                                           environment, timing, time.monotonic)
-            executor = telemetryexec.Contained('docker', builds.BuildImage('docker', IMAGE),
+            executor = telemetry_exec.Contained('docker', builds.BuildImage('docker', IMAGE),
                 environment, scratch, os.getuid(), os.getgid(), cpus, 'real-af', runtime,
                 owner=owner)
             info = os.statvfs(mount)
@@ -149,10 +149,10 @@ def main():
     assert os.access(af, os.X_OK)
     Path(args.work_parent).mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix='af-real-telemetry-', dir=args.work_parent))
-    registry, _ = telemetrylab.load_registry()
-    config = telemetrylab.configuration(registry, 'pr', rounds=1, pairs=1, scale='smoke', corpus_runs=10)
+    registry, _ = telemetry_lab.load_registry()
+    config = telemetry_lab.configuration(registry, 'pr', rounds=1, pairs=1, scale='smoke', corpus_runs=10)
     if args.native:
-        executor = telemetryexec.TrustedLocal(sys.executable)
+        executor = telemetry_exec.TrustedLocal(sys.executable)
         executor.directory = str(root / 'native')
         exercise(executor, registry, config, af)
         print('native diagnostic only; Docker was not used')

@@ -114,7 +114,7 @@ review corpora belong in consuming repositories, not here.
   memory or diagnostic prose
   ([ADR-0066](docs/adr/0066-reserve-task-attempts-before-binding-exact-context.md),
   [ADR-0095](docs/adr/0095-bind-legacy-task-context-and-retry-output-admission.md)).
-- A source Manifest spells every path one way, with `review_core::encode_path`, and Snapshot
+- A source Manifest spells every path one way, with `af_contracts::encode_path`, and Snapshot
   content identity hashes that stored spelling; never add a second path alphabet or a spelling
   that differs by baseline ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 - Every pipeline port is an explicitly typed table in every pipeline format, and every node
@@ -123,7 +123,7 @@ review corpora belong in consuming repositories, not here.
   ([ADR-0025](docs/adr/0025-require-typed-generation-outputs-in-version-2.md),
   [ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 - Process supervision shared across architectural layers lives in the dependency-neutral
-  `review-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
+  `af-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
   adapters or fork deadline, process-group, stdin, and pipe-drain semantics per consumer
   ([ADR-0026](docs/adr/0026-share-process-supervision-through-a-leaf-crate.md)).
 - Wise token use and minimum Worker context are the first two design values. Every model call has

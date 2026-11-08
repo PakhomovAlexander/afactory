@@ -15,7 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 from fractions import Fraction
 
-from perflab import calibration, contracts, gitrefs, runner, schedule, stats, synthetic
+from perflab import calibration, contracts, git_refs, runner, schedule, stats, synthetic
 from perflab import transport
 from perflab.values import ContractError, canonical_digest, format_rational
 
@@ -282,10 +282,10 @@ class ReadyCohort(unittest.TestCase):
         power = self.lab.plan("power_01", "gh1_a1_primary", self.sealed)
         aa = self.lab.plan("aa_01", "gh2_a1_primary")
         for package, kind, name in (("af", "--bin", "af"),
-                                    ("review-pipeline", "--example", "perf-probe")):
+                                    ("af-runtime", "--example", "perf-probe")):
             self.assertIn("perf-calibration", argv(power, package, kind, name))
             self.assertNotIn("perf-calibration", " ".join(argv(aa, package, kind, name)))
-        supervisor = argv(power, "review-process", "--example", "perf-supervisor", False)
+        supervisor = argv(power, "af-process", "--example", "perf-supervisor", False)
         self.assertNotIn("perf-calibration", " ".join(supervisor))
 
     def test_the_cli_prepares_and_recomputes_readiness_from_the_evidence(self):
@@ -988,7 +988,7 @@ class Closeout(support.TempDir):
         repo.git("checkout", "-q", "-b", "scheduler", commits["head"])
         commits["changed_scheduler"] = repo.commit("scheduler", {
             "scripts/performance/perflab/ci.py": b"# another scheduler\n"})
-        return gitrefs.Git(repo.path), commits
+        return git_refs.Git(repo.path), commits
 
     def test_the_reviewed_producer_qualifies_from_another_head_and_a_changed_one_never(self):
         git, commits = self.producer_repo()

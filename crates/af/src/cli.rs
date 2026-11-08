@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::ArgValueCompleter;
 
-use crate::selfmgmt::{complete_campaign, complete_version};
+use crate::self_management::{complete_campaign, complete_version};
 
 pub(crate) const REVIEW_PIPELINE: &str = ".af/pipelines/review.toml";
 
@@ -2600,7 +2600,7 @@ fn survey_section_arg() -> clap::Arg {
         .long("section")
         .value_name("NAME")
         .help("Only these sections of the text summary, by name; repeat or separate with commas")
-        .value_parser(crate::projects::survey::SECTION_NAMES)
+        .value_parser(crate::project::survey::SECTION_NAMES)
         .value_delimiter(',')
         .action(clap::ArgAction::Append)
         .conflicts_with("json")
@@ -2861,7 +2861,7 @@ af project workspace remove spike --delete-worktree   # needs: Workspace spike"
 
 /// A Workspace label: the safe-name rule of Task IDs, refused as a usage error.
 fn workspace_label(value: &str) -> Result<String, String> {
-    if review_core::project::is_workspace_label(value) {
+    if af_contracts::project::is_workspace_label(value) {
         Ok(value.to_string())
     } else {
         Err("a label is 1 to 128 ASCII letters, digits, `-` or `_`, starting with a letter or digit".into())

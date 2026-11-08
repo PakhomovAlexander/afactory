@@ -121,7 +121,7 @@ Root commits as identity have consequences the design accepts and names:
 - Merging an unrelated history later changes `repository_id`, and so the Project ID. af reports
   the former Project beside the new one; joining them is not in v1.
 
-The Project Store reuses the `review-store` layers every other Store has (`cas/` and the
+The Project Store reuses the `af-store` layers every other Store has (`cas/` and the
 SQLite event log; architecture.md, "The store"). It lives at
 `$XDG_STATE_HOME/af/project/<hex>/`, and the Store registry records it so the Storage Budget
 sweep reaches it (ADR-0144). Beside the Store, outside every durable record, sits the
@@ -574,7 +574,8 @@ max_bytes = 8192
 ```
 
 Patterns use the semantics of the matcher the `.af/af.toml` routes already use (`glob_matches`
-in `crates/af/src/project.rs`), which PJ2 re-implements for both by dynamic programming, so a
+in `crates/af-pipeline-config/src/path_glob.rs`, shared by `project_policy` and `af_project`),
+implemented for both by dynamic programming, so a
 match costs pattern length times text length and never backtracks (the recursive form takes
 billions of steps on `*a` thirty times followed by `b` against thirty `a`s, a failing match
 inside the string limits and outside
@@ -681,7 +682,7 @@ Deliverables: the Project ID derivation; the Project Store and its registry entr
 `workspaces.toml`; lazy registration from `onboard`, `task plan|start` and `review run`
 (registration only); `af project show|workspaces|workspace new|add|remove`; `--workspace` on
 every `af task` subcommand that takes `--state` and on no review command; delivered worktrees
-registered; the `ELSEWHERE` paragraph of `review_config::layout`
+registered; the `ELSEWHERE` paragraph of `af_pipeline_config::layout`
 and `docs/task-execution/task-file.md` pointing Task files at the Workspace directory.
 ADR: *Give a repository one Project identity and register its checkouts as Workspaces.*
 

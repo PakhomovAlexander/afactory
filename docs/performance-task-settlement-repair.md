@@ -42,11 +42,11 @@ copy the declared read-only Cargo seed into `target/cargo-home` before using it;
 is never writable input to Cargo.
 
 ```sh
-cargo test --locked -p review-store --lib renewal_race
-cargo test --locked -p review-pipeline --test it cancellation_between_context_and_dispatch
+cargo test --locked -p af-store --lib renewal_race
+cargo test --locked -p af-runtime --test it cancellation_between_context_and_dispatch
 cargo nextest run --locked -p af --test it \
   -E 'test(telemetry_ledger::) or test(telemetry_bench::telemetry_overhead_smoke)'
-cargo nextest run --locked -p review-pipeline --test it \
+cargo nextest run --locked -p af-runtime --test it \
   -E 'test(cancellation_between_context_and_dispatch) or test(captured_command_review_uses_common_attempt_selection) or test(task_runtime::control::) or test(task_runtime::usage_recovery::)'
 ```
 

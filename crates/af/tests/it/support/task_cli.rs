@@ -133,7 +133,7 @@ pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
             if !package.is_dir() {
                 continue;
             }
-            let digest = review_config::lock::package_digest(name, &package).unwrap();
+            let digest = af_pipeline_config::lock::package_digest(name, &package).unwrap();
             if pin["digest"].as_str() != Some(digest.as_str()) {
                 pin["digest"] = toml::Value::String(digest);
                 changed = true;

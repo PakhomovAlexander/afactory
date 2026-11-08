@@ -122,7 +122,7 @@ fn response_digest(bytes: &[u8]) -> String {
 
     format!(
         "sha256:{}",
-        review_core::hex::encode(&Sha256::digest(bytes))
+        af_contracts::hex::encode(&Sha256::digest(bytes))
     )
 }
 
@@ -304,7 +304,7 @@ fn assert_recorded_codex_support(
 /// the supported Codex catalog. Judges share Terra, while source/document authors use Sol.
 #[test]
 fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
 
     let root = workspace();
     let catalog: toml::Value =
@@ -329,7 +329,7 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
         );
         assert_eq!(
             pin["digest"].as_str().unwrap(),
-            review_config::lock::package_digest(&worker.name, &package).unwrap(),
+            af_pipeline_config::lock::package_digest(&worker.name, &package).unwrap(),
             "{}",
             worker.name
         );
@@ -402,15 +402,15 @@ const LIGHT_ROLES: [(&str, &str, &str); 3] = [
 ];
 
 fn selected_light_workers() -> (
-    review_core::task::pipeline::PipelineDefinitionV1,
-    BTreeMap<String, review_config::task::catalog::TaskWorkerManifest>,
+    af_contracts::task::pipeline::PipelineDefinitionV1,
+    BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
 ) {
     let root = workspace();
     let catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
     let package = |name: &str| root.join(catalog["packages"][name]["path"].as_str().unwrap());
-    let pipeline = review_config::task::parse_task_pipeline(
+    let pipeline = af_pipeline_config::task::parse_task_pipeline(
         &std::fs::read_to_string(package("default-light/implementation").join("pipeline.toml"))
             .unwrap(),
     )
@@ -432,10 +432,10 @@ fn selected_light_workers() -> (
 /// Shared by the positive cross-artifact audit and independent role mutations below. Display
 /// labels are emitted only after the selected slot and Worker agree on the expected role.
 fn validate_small_issue_rubrics(
-    pipeline: &review_core::task::pipeline::PipelineDefinitionV1,
-    workers: &BTreeMap<String, review_config::task::catalog::TaskWorkerManifest>,
+    pipeline: &af_contracts::task::pipeline::PipelineDefinitionV1,
+    workers: &BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
 ) -> Result<(), String> {
-    use review_config::task::catalog::TaskWorkerRunner;
+    use af_pipeline_config::task::catalog::TaskWorkerRunner;
 
     let mut expected = Vec::new();
     for (slot_name, role, label) in LIGHT_ROLES {
@@ -558,7 +558,7 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
 /// the real parser and validate each declared pipeline's byte pin and referenced Workers.
 #[test]
 fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
-    use review_config::lock::{
+    use af_pipeline_config::lock::{
         Lockfile, PackageManifest, Registry, ReviewerBackend,
         reviewer_runner_settings_from_manifest,
     };
@@ -570,7 +570,7 @@ fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
     let models = recorded_codex_models();
     for name in lock.workers.keys() {
         let worker = lock
-            .resolve_for_subject(name, &registry, review_core::SubjectKind::Diff)
+            .resolve_for_subject(name, &registry, af_contracts::SubjectKind::Diff)
             .unwrap();
         let manifest: PackageManifest = toml::from_str(
             &std::fs::read_to_string(root.join(".af/workers").join(name).join("reviewer.toml"))
@@ -598,14 +598,15 @@ fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(
             lock.pipelines[name].digest,
-            review_store::canonical::blob_content_id(&bytes),
+            af_store::canonical::blob_content_id(&bytes),
             "{name}"
         );
         let pipeline =
-            review_config::Definition::from_toml(std::str::from_utf8(&bytes).unwrap()).unwrap();
+            af_pipeline_config::Definition::from_toml(std::str::from_utf8(&bytes).unwrap())
+                .unwrap();
         let subject = pipeline.subject.unwrap().kind;
         for node in pipeline.nodes {
-            if matches!(node.kind, review_config::NodeKindSpec::Reviewer) {
+            if matches!(node.kind, af_pipeline_config::NodeKindSpec::Reviewer) {
                 assert!(
                     node.runner.is_none(),
                     "{name}: shipped reviewers must use pinned packages"
@@ -963,12 +964,12 @@ fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
 /// than only the kernel pipelines selected by the performance Scenario.
 #[test]
 fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
-    use review_config::task::catalog::TaskPlanCompiler;
-    use review_core::task::pipeline::TaskOperatorV1;
+    use af_contracts::task::pipeline::TaskOperatorV1;
+    use af_pipeline_config::task::catalog::TaskPlanCompiler;
 
     let root = workspace();
     let temporary = tempfile::tempdir().unwrap();
-    let cas = review_store::Cas::open(temporary.path().join("cas")).unwrap();
+    let cas = af_store::Cas::open(temporary.path().join("cas")).unwrap();
     let policy = cas.put(b"catalog-contract-test").unwrap();
     let mut compiler = TaskPlanCompiler::new(
         policy.clone(),
@@ -982,7 +983,8 @@ fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
     for (name, value) in catalog["packages"].as_table().unwrap() {
-        let pin: review_config::task::catalog::TaskPackagePin = value.clone().try_into().unwrap();
+        let pin: af_pipeline_config::task::catalog::TaskPackagePin =
+            value.clone().try_into().unwrap();
         let package = root.join(&pin.path);
         let mut files = BTreeMap::new();
         for (path, (bytes, _)) in tree(&package) {
@@ -1049,15 +1051,15 @@ fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
 /// Regenerate with AF_WRITE_CATALOG_CONTRACT_FIXTURES=1; the normal gate only compares.
 #[test]
 fn staged_catalog_contract_fixtures_match_native_interfaces() {
-    use review_config::task::catalog::TaskPlanCompiler;
-    use review_config::task::catalog::export::CatalogContractFixtures;
+    use af_pipeline_config::task::catalog::TaskPlanCompiler;
+    use af_pipeline_config::task::catalog::export::CatalogContractFixtures;
 
     let root = workspace();
     let temporary = tempfile::tempdir().unwrap();
-    let cas = review_store::Cas::open(temporary.path().join("cas")).unwrap();
+    let cas = af_store::Cas::open(temporary.path().join("cas")).unwrap();
     let policy = cas.put(b"staged-catalog-contract-test").unwrap();
     for directory in ["fixtures/kernel-experiment", "fixtures/kernel-report"] {
-        let catalog: review_config::task::shared::SharedTaskCatalog = toml::from_str(
+        let catalog: af_pipeline_config::task::shared::SharedTaskCatalog = toml::from_str(
             &std::fs::read_to_string(root.join(directory).join("catalog.toml")).unwrap(),
         )
         .unwrap();
@@ -1133,7 +1135,7 @@ fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
 
     for name in ["implementer", "correctness", "evaluator"] {
         let package = workspace().join(".af/task-packages/pi-light").join(name);
-        let worker: review_config::task::catalog::TaskWorkerManifest =
+        let worker: af_pipeline_config::task::catalog::TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
         let schema: Value =
             serde_json::from_slice(&std::fs::read(package.join("input.schema.json")).unwrap())
@@ -1183,7 +1185,7 @@ fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
             } else if contract.artifact_type != "af/SourceTree@1"
                 && matches!(
                     contract.affinity,
-                    review_core::task::pipeline::PortAffinityV1::Unbound {}
+                    af_contracts::task::pipeline::PortAffinityV1::Unbound {}
                 )
             {
                 inputs[port][0]

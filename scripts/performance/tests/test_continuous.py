@@ -15,7 +15,7 @@ import sys
 import tarfile
 import zipfile
 
-from perflab import buildpack, ci, contracts, credentials, hostprep, runner, transport
+from perflab import build_pack, ci, contracts, credentials, host_prep, runner, transport
 from perflab.values import ContractError, sha256_bytes
 from tests import test_runner
 from tests.support import CLI, ROOT, TempDir, read
@@ -74,9 +74,9 @@ class BuildOnce(test_runner.ShardHarness):
         # Actions dropped every mode; the unpack restored them only after verifying bytes.
         self.assertFalse(os.stat(os.path.join(downloaded, "build.tar")).st_mode & 0o111)
         supervisor = os.path.join(unpacked, "artifacts", "supervisor", "perf-supervisor")
-        self.assertEqual(stat.S_IMODE(os.stat(supervisor).st_mode), buildpack.EXECUTABLE_MODE)
+        self.assertEqual(stat.S_IMODE(os.stat(supervisor).st_mode), build_pack.EXECUTABLE_MODE)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(unpacked, "builds.json")).st_mode),
-                         buildpack.FILE_MODE)
+                         build_pack.FILE_MODE)
         self.assertEqual(read(os.path.join(unpacked, "builds.json")),
                          read(os.path.join(build, "builds.json")))
         shards = self.path("shards")
@@ -86,7 +86,7 @@ class BuildOnce(test_runner.ShardHarness):
             self.assertEqual(doc["status"], "complete", doc["failure"])
             through_actions(staged, os.path.join(shards, ci.shard_artifact("moved", index)))
         report_doc, completeness = ci.aggregate(
-            read(plan_path), buildpack.read_member(downloaded, plan, "builds.json"), shards,
+            read(plan_path), build_pack.read_member(downloaded, plan, "builds.json"), shards,
             self.path("aggregate-run"), self.path("report"), self.path("summary.md"),
             self.path("run-transport"))
         self.assertEqual(completeness, {"planned": 2, "received": [0, 1], "missing": []})
@@ -111,7 +111,7 @@ class BuildOnce(test_runner.ShardHarness):
         # The failed shard's partial evidence and terminal manifest still travel.
         through_actions(staged, os.path.join(shards, ci.shard_artifact("partial", 0)))
         report_doc, completeness = ci.aggregate(
-            read(plan_path), buildpack.read_member(downloaded, plan, "builds.json"), shards,
+            read(plan_path), build_pack.read_member(downloaded, plan, "builds.json"), shards,
             self.path("aggregate-run"), self.path("report"), self.path("summary.md"))
         self.assertEqual(completeness["missing"], [1])
         verdict = report_doc["verdict"]
@@ -178,7 +178,7 @@ class HostilePacks(TempDir):
         with open(self.path("build", "artifacts", "tool"), "w") as stream:
             stream.write("#!/bin/sh\necho tool\n")
         os.chmod(self.path("build", "artifacts", "tool"), 0o550)
-        self.doc = buildpack.pack(self.path("build"), self.plan, self.path("pack"))
+        self.doc = build_pack.pack(self.path("build"), self.plan, self.path("pack"))
 
     def replace_archive(self, members, update_manifest=True):
         data = io.BytesIO()
@@ -193,31 +193,31 @@ class HostilePacks(TempDir):
                     info.size = len(body)
                     tar.addfile(info, io.BytesIO(body))
         raw = data.getvalue()
-        os.chmod(self.path("pack", buildpack.ARCHIVE), 0o644)
-        with open(self.path("pack", buildpack.ARCHIVE), "wb") as stream:
+        os.chmod(self.path("pack", build_pack.ARCHIVE), 0o644)
+        with open(self.path("pack", build_pack.ARCHIVE), "wb") as stream:
             stream.write(raw)
         if update_manifest:
             doc = dict(self.doc, archive={"name": "build.tar", "size": len(raw),
                                           "sha256": sha256_bytes(raw)})
-            os.chmod(self.path("pack", buildpack.MANIFEST), 0o644)
-            with open(self.path("pack", buildpack.MANIFEST), "wb") as stream:
+            os.chmod(self.path("pack", build_pack.MANIFEST), 0o644)
+            with open(self.path("pack", build_pack.MANIFEST), "wb") as stream:
                 stream.write(contracts.write_bytes(doc, "build-pack"))
 
     def refused(self, needle):
         with self.assertRaises(ContractError) as caught:
-            buildpack.unpack(self.path("pack"), self.plan, self.path("out"))
+            build_pack.unpack(self.path("pack"), self.plan, self.path("out"))
         self.assertIn(needle, str(caught.exception))
         self.assertFalse(os.path.lexists(self.path("out")), "nothing is left of a refusal")
 
     def test_the_round_trip_restores_modes_after_verifying_bytes(self):
-        buildpack.unpack(self.path("pack"), self.plan, self.path("out"))
+        build_pack.unpack(self.path("pack"), self.plan, self.path("out"))
         tool = self.path("out", "artifacts", "tool")
         self.assertEqual(stat.S_IMODE(os.stat(tool).st_mode), 0o555)
         self.assertEqual(subprocess.run([tool], stdout=subprocess.PIPE).stdout, b"tool\n")
 
     def test_another_plan_or_a_changed_archive_is_refused(self):
         with self.assertRaises(ContractError):
-            buildpack.unpack(self.path("pack"), dict(self.plan, run_id="other"), self.path("o"))
+            build_pack.unpack(self.path("pack"), dict(self.plan, run_id="other"), self.path("o"))
         tool = read(self.path("build", "artifacts", "tool"))
         self.replace_archive([("builds.json", b"{}", tarfile.REGTYPE),
                               ("artifacts/tool", tool, tarfile.REGTYPE)], update_manifest=False)
@@ -249,7 +249,7 @@ class HostilePacks(TempDir):
     def test_a_pack_never_follows_a_symlink_in_the_build(self):
         os.symlink("/etc/hosts", self.path("build", "artifacts", "link"))
         with self.assertRaises(ContractError) as caught:
-            buildpack.pack(self.path("build"), self.plan, self.path("pack-2"))
+            build_pack.pack(self.path("build"), self.plan, self.path("pack-2"))
         self.assertIn("symlink", str(caught.exception))
 
 
@@ -327,18 +327,18 @@ class HostedScratch(TempDir):
     GIB = 1 << 30
 
     def host(self, stand_in, system="linux"):
-        return hostprep.Host(run=stand_in.run, statvfs=stand_in.statvfs, system=system,
+        return host_prep.Host(run=stand_in.run, statvfs=stand_in.statvfs, system=system,
                              uid=1001, gid=118)
 
     def test_a_loop_mounted_scratch_is_prepared_and_removed(self):
         stand_in = StandInHost(13 * self.GIB)
         image, mount = self.path("scratch.img"), self.path("scratch-fs")
-        record = hostprep.prepare(image, mount, 2 * self.GIB, self.host(stand_in))
+        record = host_prep.prepare(image, mount, 2 * self.GIB, self.host(stand_in))
         self.assertEqual(record["size_bytes"], 2 * self.GIB)
         self.assertIn(["sudo", "-n", "mount", "-o", "loop,nodev,nosuid", image, mount],
                       stand_in.argv)
         self.assertIn(["sudo", "-n", "chown", "1001:118", mount], stand_in.argv)
-        self.assertEqual(hostprep.cleanup(image, mount, self.host(stand_in)), [])
+        self.assertEqual(host_prep.cleanup(image, mount, self.host(stand_in)), [])
         self.assertEqual(stand_in.argv[-3:], [["sudo", "-n", "umount", mount],
                                              ["rmdir", mount], ["rm", "-f", image]])
         self.assertFalse(os.path.lexists(image) or os.path.lexists(mount))
@@ -350,19 +350,19 @@ class HostedScratch(TempDir):
                 (StandInHost(11 * self.GIB), "linux", "insufficient_disk"),
                 (StandInHost(100 * self.GIB, fail="true"), "linux", "no_passwordless_sudo")):
             with self.subTest(reason=reason):
-                with self.assertRaises(hostprep.Refused) as caught:
-                    hostprep.prepare(image, mount, 2 * self.GIB, self.host(stand_in, system))
+                with self.assertRaises(host_prep.Refused) as caught:
+                    host_prep.prepare(image, mount, 2 * self.GIB, self.host(stand_in, system))
                 self.assertEqual(caught.exception.reason, reason)
                 self.assertFalse(os.path.lexists(image) or os.path.lexists(mount))
         with self.assertRaises(ContractError):
-            hostprep.prepare(image, mount, 2 * self.GIB, self.host(StandInHost(1 << 40)),
+            host_prep.prepare(image, mount, 2 * self.GIB, self.host(StandInHost(1 << 40)),
                              floor_bytes=self.GIB)
 
     def test_a_failed_mount_removes_what_was_created(self):
         stand_in = StandInHost(100 * self.GIB, fail="mount")
         image, mount = self.path("scratch.img"), self.path("scratch-fs")
-        with self.assertRaises(hostprep.Refused) as caught:
-            hostprep.prepare(image, mount, 2 * self.GIB, self.host(stand_in))
+        with self.assertRaises(host_prep.Refused) as caught:
+            host_prep.prepare(image, mount, 2 * self.GIB, self.host(stand_in))
         self.assertEqual(caught.exception.reason, "preparation_failed")
         self.assertFalse(os.path.lexists(image) or os.path.lexists(mount))
         self.assertNotIn(["sudo", "-n", "umount", mount], stand_in.argv)

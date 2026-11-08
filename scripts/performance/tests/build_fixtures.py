@@ -170,10 +170,10 @@ description = "The current public API."
 priority = 1
 equivalence_group = "fixture_group_v2"
 min_version = "0.12.0-rc.3"
-package = "review-pipeline"
+package = "af-runtime"
 example = "perf-probe"
 contracts = ["sentinel_canonical_v1"]
-closure = ["crates/review-pipeline/examples/perf-probe.rs", "crates/review-pipeline/examples/perf-probe/helper.rs"]
+closure = ["crates/af-runtime/examples/perf-probe.rs", "crates/af-runtime/examples/perf-probe/helper.rs"]
 
 [adapters.fixture_probe_v1]
 kind = "native_probe"
@@ -181,10 +181,10 @@ description = "An older public API bridge."
 priority = 2
 equivalence_group = "fixture_group_v1"
 min_version = "0.12.0-rc.3"
-package = "review-pipeline"
+package = "af-runtime"
 example = "perf-probe-v1"
 contracts = ["sentinel_canonical_v1"]
-closure = ["crates/review-pipeline/examples/perf-probe-v1.rs"]
+closure = ["crates/af-runtime/examples/perf-probe-v1.rs"]
 '''
 
 BASE_FILES = {
@@ -193,10 +193,10 @@ BASE_FILES = {
     "Cargo.lock": "# fixture lock\nversion = 4\n",
     "README": "fixture product\n",
     "crates/af/src/main.rs": "fn main() { /* product v1 */ }\n",
-    "crates/review-process/src/lib.rs": "pub fn supervise() {}\n",
-    "crates/review-process/examples/perf-supervisor.rs": "// supervisor v1\n",
-    "crates/review-pipeline/src/lib.rs": "pub fn answer() -> u32 { 42 }\n",
-    "crates/review-pipeline/examples/perf-probe.rs": "// the source's own old probe\n",
+    "crates/af-process/src/lib.rs": "pub fn supervise() {}\n",
+    "crates/af-process/examples/perf-supervisor.rs": "// supervisor v1\n",
+    "crates/af-runtime/src/lib.rs": "pub fn answer() -> u32 { 42 }\n",
+    "crates/af-runtime/examples/perf-probe.rs": "// the source's own old probe\n",
 }
 
 
@@ -206,14 +206,14 @@ def fixture_repo(path):
     repo = Repo(path)
     base = repo.commit("base", BASE_FILES)
     head = repo.commit("head", {
-        "crates/review-pipeline/src/lib.rs": ("pub fn answer() -> u32 { 42 }\n"
+        "crates/af-runtime/src/lib.rs": ("pub fn answer() -> u32 { 42 }\n"
                                               "pub fn answer_v2() -> u32 { 43 }\n"),
-        "crates/review-pipeline/examples/perf-probe.rs": "// CANDIDATE-EDITED probe\n",
+        "crates/af-runtime/examples/perf-probe.rs": "// CANDIDATE-EDITED probe\n",
         "crates/af/src/main.rs": "fn main() { /* product v2 */ }\n"})
     authority = repo.commit("authority", {
-        "crates/review-pipeline/examples/perf-probe.rs": PROBE_V2,
-        "crates/review-pipeline/examples/perf-probe/helper.rs": HELPER,
-        "crates/review-pipeline/examples/perf-probe-v1.rs": PROBE_V1,
+        "crates/af-runtime/examples/perf-probe.rs": PROBE_V2,
+        "crates/af-runtime/examples/perf-probe/helper.rs": HELPER,
+        "crates/af-runtime/examples/perf-probe-v1.rs": PROBE_V1,
         "fixtures/performance/adapters.toml": ADAPTERS})
     return repo, base, head, authority
 

@@ -8,8 +8,8 @@ import sys
 import tempfile
 import unittest
 
-from perflab import contracts, gitrefs, planning, schedule, stats, suite
-from perflab.gitrefs import Unavailable
+from perflab import contracts, git_refs, planning, schedule, stats, suite
+from perflab.git_refs import Unavailable
 from perflab.values import ContractError, canonical_digest, sha256_bytes
 from tests.support import CLI, SUITE, Repo, TempDir, lab_repo, read, synthetic_suite
 
@@ -52,7 +52,7 @@ class History(TempDir):
         self.repo = Repo.existing(self.path("repo"))
         for name, sha in self.shas.items():
             setattr(self, name, sha)
-        self.git = gitrefs.Git(self.repo.path)
+        self.git = git_refs.Git(self.repo.path)
         self.calls = []
         original = self.git._run
 
@@ -183,11 +183,11 @@ class Baselines(History):
     def test_semver_precedence(self):
         ordered = ["v1.0.0-alpha", "v1.0.0-alpha.1", "v1.0.0-alpha.beta", "v1.0.0-beta",
                    "v1.0.0-beta.2", "v1.0.0-beta.11", "v1.0.0-rc.1", "v1.0.0", "v1.0.1"]
-        keys = [gitrefs.version_key(gitrefs.parse_version(tag)) for tag in ordered]
+        keys = [git_refs.version_key(git_refs.parse_version(tag)) for tag in ordered]
         self.assertEqual(keys, sorted(keys))
         self.assertEqual(len(set(keys)), len(keys))
         for bad in ("v1.0", "v01.0.0", "1.0.0+build", "release-1"):
-            self.assertIsNone(gitrefs.parse_version(bad), bad)
+            self.assertIsNone(git_refs.parse_version(bad), bad)
 
 
 class Authority(History):
@@ -264,7 +264,7 @@ class Authority(History):
     def test_only_a_calibrated_cpu_image_group_satisfies_the_required_check(self):
         # The predecessor carried only the environment and recipe into the plan: a full plan
         # sampled on the explicitly uncalibrated Intel Xeon group satisfied the check (ADR-0184).
-        from perflab import compare, synthetic
+        from perflab import evaluate_results, synthetic
         from tests import activation_fixtures
         files, documents = activation_fixtures.records(
             suite.load(SUITE), self.root, groups=(("epyc", "AMD EPYC", "ubuntu-24.04"),
@@ -306,7 +306,7 @@ class Authority(History):
                     doc["host_id"] = contracts.host_id(observed)
                     doc["execution"]["sample_image"] = image
                 synthetic.reseal_shard(root, edit)
-            return compare.compare(run_dir)["aggregate"]
+            return evaluate_results.compare(run_dir)["aggregate"]
         calibrated = run("epyc", "AMD EPYC")
         self.assertEqual((calibrated["result"], calibrated["satisfies_required_check"]),
                          ("pass", True))

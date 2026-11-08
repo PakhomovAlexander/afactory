@@ -39,10 +39,10 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
-import nightlychain  # noqa: E402
-from githubrest import GitHub, Refused, https_send  # noqa: E402
-from perflab import contracts, tomlfile  # noqa: E402
-from perflab.nightlycontracts import (KEEP_NIGHTS_DEFAULT, REPORT_FILES, SIGNATURE,  # noqa: E402
+import nightly_chain  # noqa: E402
+from github_rest import GitHub, Refused, https_send  # noqa: E402
+from perflab import contracts, toml_file  # noqa: E402
+from perflab.nightly_contracts import (KEEP_NIGHTS_DEFAULT, REPORT_FILES, SIGNATURE,  # noqa: E402
                                       SUMS, TAG_PATTERN, release_assets)
 from perflab.values import ContractError  # noqa: E402
 
@@ -67,10 +67,10 @@ def load_config(path):
     """The af.nightly-config/1 TOML at `path`, validated; its `[publish]` table is required."""
     try:
         with open(path, "rb") as stream:
-            data = stream.read(tomlfile.MAX_TOML_BYTES + 1)
+            data = stream.read(toml_file.MAX_TOML_BYTES + 1)
     except OSError as error:
         raise Refused("--config %s: %s" % (path, error))
-    doc = contracts.validate_nightly_config(tomlfile.loads(data, path), path)
+    doc = contracts.validate_nightly_config(toml_file.loads(data, path), path)
     if "publish" not in doc:
         raise Refused("%s has no [publish] table: publishing needs its write token" % path)
     return doc
@@ -508,7 +508,7 @@ def parse(argv):
                                   "digest and prune old nightlies")
     command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
                          "its [publish] table")
-    nightlychain.add_night_options(command)
+    nightly_chain.add_night_options(command)
     directory = command.add_mutually_exclusive_group()
     directory.add_argument("--report", help="the report directory: daily.json, report.html and "
                            "digest.md (a skipped night reads none of them)")
@@ -522,10 +522,10 @@ def parse(argv):
 
 
 def main(argv=None, github=None, telegram_send=https_send, run=run_command,
-         clock=lambda: int(time.time() * 1000), show=nightlychain.systemctl_show):
+         clock=lambda: int(time.time() * 1000), show=nightly_chain.systemctl_show):
     args = parse(argv)
     try:
-        args.date, chosen = nightlychain.night(args, clock, show, Refused)
+        args.date, chosen = nightly_chain.night(args, clock, show, Refused)
         if chosen:
             sys.stderr.write(chosen)
         config = load_config(args.config)

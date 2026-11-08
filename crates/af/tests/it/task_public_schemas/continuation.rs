@@ -1,6 +1,6 @@
 //! Fresh CLI reads of a real Task that has executed two canonical Review Rounds.
 use super::*;
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 
 #[test]
 fn review_continuation_inspection_preserves_exact_history_and_historical_plans() {
@@ -9,7 +9,7 @@ fn review_continuation_inspection_preserves_exact_history_and_historical_plans()
     let state = directory.path();
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let task_run = review_store::store::task::task_run_id("heavy-review").unwrap();
+    let task_run = af_store::store::task::task_run_id("heavy-review").unwrap();
     let before_task = store.replay(&task_run).unwrap();
     let before_review = store.replay("review").unwrap();
     let shown = json_output(

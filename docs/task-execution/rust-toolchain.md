@@ -11,7 +11,7 @@ Cargo credentials/configuration, and never write back to the reusable seed.
 Use a trusted installed Rust toolchain containing the required components. Prepare an absent
 seed directory outside candidate trees with the bounded native helper:
 
-    cargo run --locked -p review-sandbox --example toolchain-snapshot -- /absolute/installed/toolchain /absolute/private/seed
+    cargo run --locked -p af-sandbox --example toolchain-snapshot -- /absolute/installed/toolchain /absolute/private/seed
 
 Retain the printed content pin. The helper copies at most 2 GiB/100,000 entries, refusing links,
 special files and credential/config-shaped paths. It does not access Cargo home, install Rust,

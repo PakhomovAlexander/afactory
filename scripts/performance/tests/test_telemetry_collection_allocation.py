@@ -5,7 +5,7 @@ import shutil
 import zipfile
 from unittest import mock
 
-from perflab import budget, contracts, telemetrycollect, telemetrylab, transport
+from perflab import budget, contracts, telemetry_collect, telemetry_lab, transport
 from perflab.values import ContractError
 from tests import test_telemetry_collect as collecting
 from tests.allocation_observer import observe
@@ -24,7 +24,7 @@ class AllocationCycles(TempDir):
         self.config["artifact_bytes_max"] = 4 << 20
 
     def usage(self):
-        return telemetrylab.HistoryRoot(self.config["root"], sweep=False).used_bytes()
+        return telemetry_lab.HistoryRoot(self.config["root"], sweep=False).used_bytes()
 
     def attempt(self, data, ident=701):
         return self.cycle([collecting.run_entry(ident)], {ident: [collecting.artifact_entry(
@@ -58,7 +58,7 @@ class AllocationCycles(TempDir):
             # A valid download may fit, but authority expansion must not start without room
             # for itself, retained authority and the import copy together.
             self.assertLessEqual(materialized.call_count, 1)
-        self.assertTrue(read(os.path.join(self.config["root"], telemetrylab.HISTORY_HTML)).endswith(
+        self.assertTrue(read(os.path.join(self.config["root"], telemetry_lab.HISTORY_HTML)).endswith(
             b"</html>\n"))
 
     def test_small_files_and_directories_are_charged_before_materialization(self):
@@ -80,14 +80,14 @@ class AllocationCycles(TempDir):
         self.pad(1 << 20)
         saved = os.path.join(self.disk, "saved")
         shutil.copytree(self.config["root"], saved)
-        original = telemetrylab.HistoryRoot.reserve_paths
+        original = telemetry_lab.HistoryRoot.reserve_paths
         requirements = []
 
         def reserved(kept, files, directories=(), entries=()):
             requirements.append(kept.used_bytes() + kept.allocation_for(files, directories, entries))
             return original(kept, files, directories, entries)
 
-        with self.watch() as samples, mock.patch.object(telemetrylab.HistoryRoot,
+        with self.watch() as samples, mock.patch.object(telemetry_lab.HistoryRoot,
                                                        "reserve_paths", reserved):
             doc = self.attempt(data)
         self.assertEqual(doc["runs"][0]["outcome"], "collected", doc)
@@ -114,7 +114,7 @@ class AllocationCycles(TempDir):
         self.config["bytes_max"] = 64 << 20
         saved = os.path.join(self.disk, "saved")
         shutil.copytree(self.config["root"], saved)
-        materialize, copy_members = transport._materialize, telemetrylab._write_members
+        materialize, copy_members = transport._materialize, telemetry_lab._write_members
         for kind in ("download", "authority", "retained", "import"):
             shutil.rmtree(self.config["root"])
             shutil.copytree(saved, self.config["root"])
@@ -137,7 +137,7 @@ class AllocationCycles(TempDir):
                     raise budget.Interrupted("materialization interrupted")
                 return write(target, members, *modes)
 
-            cleanup = telemetrylab.HistoryRoot.cleanup_staging
+            cleanup = telemetry_lab.HistoryRoot.cleanup_staging
             def stop_cleanup(kept):
                 if left:
                     raise budget.Interrupted("cleanup interrupted")
@@ -145,8 +145,8 @@ class AllocationCycles(TempDir):
 
             with self.subTest(kind=kind), self.watch(), \
                     mock.patch.object(transport, "_materialize", interrupted), \
-                    mock.patch.object(telemetrylab, "_write_members", interrupted), \
-                    mock.patch.object(telemetrylab.HistoryRoot, "cleanup_staging", stop_cleanup), \
+                    mock.patch.object(telemetry_lab, "_write_members", interrupted), \
+                    mock.patch.object(telemetry_lab.HistoryRoot, "cleanup_staging", stop_cleanup), \
                     mock.patch.object(shutil, "rmtree", side_effect=budget.Interrupted("cleanup interrupted")):
                 # rmtree is used only after materialization (initial cleanup is empty).
                 doc = self.attempt(data)
@@ -166,24 +166,24 @@ class AllocationCycles(TempDir):
 
     def test_retained_authority_and_import_rounding_are_admitted_together(self):
         source = self.result(701)
-        result, _, hashes = telemetrylab.verify(source)
+        result, _, hashes = telemetry_lab.verify(source)
         self.pad(1 << 20)
         # Keep a real downloaded copy under the same root while both retained copies
         # would be written. Standalone import must enforce the same peak as Cycle.
-        with telemetrylab.HistoryRoot(self.config["root"]) as kept:
-            downloaded = os.path.join(kept.results, telemetrylab.STAGING_PREFIX + "download")
-            members = telemetrylab.read_files(source, list(hashes) + ["manifest.json"],
-                                               telemetrylab.BUNDLE_BYTES_MAX)
+        with telemetry_lab.HistoryRoot(self.config["root"]) as kept:
+            downloaded = os.path.join(kept.results, telemetry_lab.STAGING_PREFIX + "download")
+            members = telemetry_lab.read_files(source, list(hashes) + ["manifest.json"],
+                                               telemetry_lab.BUNDLE_BYTES_MAX)
             kept.reserve_trees([(downloaded, members)])
             transport._materialize(downloaded, members)
             baseline = kept.used_bytes()
-            registry, _ = telemetrylab.load_registry()
+            registry, _ = telemetry_lab.load_registry()
             logical = sum(os.stat(os.path.join(ROOT, name)).st_size for name in
-                          telemetrylab.authority_files(registry))
+                          telemetry_lab.authority_files(registry))
             self.config["bytes_max"] = baseline + logical
             kept.bytes_max = self.config["bytes_max"]
-            with self.watch(), mock.patch.object(telemetrylab, "_write_members",
-                                                 wraps=telemetrylab._write_members) as copied:
+            with self.watch(), mock.patch.object(telemetry_lab, "_write_members",
+                                                 wraps=telemetry_lab._write_members) as copied:
                 with self.assertRaisesRegex(ContractError, "byte bound"):
                     kept.retain_authority(result, ROOT)
                 with self.assertRaisesRegex(ContractError, "byte bound"):
@@ -195,7 +195,7 @@ class AllocationCycles(TempDir):
     def test_parent_directory_growth_and_small_file_rounding_have_one_reservation(self):
         self.pad(1 << 20)
         self.config["bytes_max"] = 8 << 20
-        with telemetrylab.HistoryRoot(self.config["root"], bytes_max=self.config["bytes_max"]) as kept:
+        with telemetry_lab.HistoryRoot(self.config["root"], bytes_max=self.config["bytes_max"]) as kept:
             # A parent whose name table needs multiple blocks: the old logical byte sum
             # missed both this growth and 600 rounded allocations for one-byte files.
             for index in range(180):
@@ -219,15 +219,15 @@ class AllocationCycles(TempDir):
             self.assertEqual(len(os.listdir(target)), 600)
 
     def test_git_authority_is_fully_validated_and_bounded_before_mkdir(self):
-        from perflab import gitrefs
-        git = gitrefs.Git(self.repo.path)
+        from perflab import git_refs
+        git = git_refs.Git(self.repo.path)
         real_entries = git.tree_entries
-        entries = real_entries(self.authority, [telemetrylab.REGISTRY_PATH])
+        entries = real_entries(self.authority, [telemetry_lab.REGISTRY_PATH])
         target = os.path.join(self.disk, "authority")
         for mutation in ("special", "missing", "duplicate", "collision", "escape"):
             def altered(sha, prefixes):
                 rows = real_entries(sha, prefixes)
-                if prefixes == [telemetrylab.REGISTRY_PATH]: return rows
+                if prefixes == [telemetry_lab.REGISTRY_PATH]: return rows
                 if mutation == "special": rows[-1] = ("120000",) + rows[-1][1:]
                 elif mutation == "missing": rows = [r for r in rows if r[3] != "Cargo.lock"]
                 elif mutation == "duplicate": rows.append(rows[-1])
@@ -236,9 +236,9 @@ class AllocationCycles(TempDir):
                 return rows
             with self.subTest(mutation=mutation), mock.patch.object(git, "tree_entries", altered):
                 with self.assertRaises(ContractError):
-                    telemetrylab.materialize_authority(git, self.authority, target)
+                    telemetry_lab.materialize_authority(git, self.authority, target)
             self.assertFalse(os.path.lexists(target))
-        with mock.patch.object(telemetrylab, "AUTHORITY_BYTES_MAX", 10):
+        with mock.patch.object(telemetry_lab, "AUTHORITY_BYTES_MAX", 10):
             with self.assertRaises(ContractError):
-                telemetrylab.materialize_authority(git, self.authority, target)
+                telemetry_lab.materialize_authority(git, self.authority, target)
         self.assertFalse(os.path.lexists(target))

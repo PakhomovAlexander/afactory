@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::projects::{self, Located, ProjectStore};
-use crate::task_execution;
+use crate::project::{self, Located, ProjectStore};
+use crate::task_commands;
 
 /// The default Task Store of one checkout of the Project other than this one.
 pub(super) struct Checkout {
@@ -41,14 +41,14 @@ pub(super) struct Project {
 pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String> {
     let toplevel = std::fs::canonicalize(toplevel)
         .map_err(|error| format!("{}: {error}", toplevel.display()))?;
-    let own = task_execution::default_task_state(state, &toplevel)?;
+    let own = task_commands::default_task_state(state, &toplevel)?;
     let mut project = Project {
         checkouts: Vec::new(),
         named: Vec::new(),
         label: None,
         warning: None,
     };
-    let Located::Checkout(checkout) = projects::locate(&toplevel)? else {
+    let Located::Checkout(checkout) = project::locate(&toplevel)? else {
         return Ok(project);
     };
     let mut listed = vec![own.clone()];
@@ -71,7 +71,7 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
                 // The Workspace's default Store is where its checkout's Tasks go; a Store
                 // registered under another path is a `--state` one, wherever it is kept, the
                 // registry lists it and the Workspace is noted beside it.
-                let default = task_execution::default_task_state(state, &path).ok();
+                let default = task_commands::default_task_state(state, &path).ok();
                 let is_default = default
                     .as_ref()
                     .is_some_and(|default| super::same_store(default, &store));
@@ -111,7 +111,7 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
         Ok(None) => {}
         Err(warning) => project.warning = Some(warning),
     }
-    let git = projects::Git::open(&toplevel)?;
+    let git = project::Git::open(&toplevel)?;
     let output = git.run(["worktree", "list", "--porcelain"], None)?;
     if !output.status.success() {
         return Err(format!(
@@ -130,12 +130,12 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
         if path == toplevel {
             continue;
         }
-        let dir = task_execution::default_task_state(state, &path)?;
+        let dir = task_commands::default_task_state(state, &path)?;
         if !holds_tasks(&dir) || listed.iter().any(|known| super::same_store(known, &dir)) {
             continue;
         }
         listed.push(dir.clone());
-        let name = projects::label_from_name(path.file_name().unwrap_or_default());
+        let name = project::label_from_name(path.file_name().unwrap_or_default());
         worktrees.push(Checkout {
             dir,
             name,
@@ -153,8 +153,8 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
 fn workspaces(
     state: &Path,
     project_id: &str,
-) -> Result<Option<(projects::Log, Vec<projects::WorkspacePaths>)>, String> {
-    let directory = projects::store_directory(state, project_id);
+) -> Result<Option<(project::Log, Vec<project::WorkspacePaths>)>, String> {
+    let directory = project::store_directory(state, project_id);
     if !exists(&directory.join("project.lock")) {
         return Ok(None);
     }
@@ -174,5 +174,5 @@ fn exists(path: &Path) -> bool {
 /// whose database cannot be told (a link to nothing, a directory in its place) is listed, so
 /// the pane shows its refusal rather than hiding a Store.
 fn holds_tasks(path: &Path) -> bool {
-    !matches!(task_execution::store_present(path), Ok(false))
+    !matches!(task_commands::store_present(path), Ok(false))
 }

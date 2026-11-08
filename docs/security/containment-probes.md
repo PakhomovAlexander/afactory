@@ -47,10 +47,10 @@ can be treated as data.
 
 ## Status — provider boundary and live Gate routing discharged
 
-Two test files carry this case. `crates/review-sandbox/tests/malicious_check.rs` runs against
+Two test files carry this case. `crates/af-sandbox/tests/malicious_check.rs` runs against
 the `trusted_local` provider — a materialized copy of a snapshot in a temporary directory,
 **not security isolation**, and its tests do not pretend otherwise.
-`crates/review-sandbox/tests/container_probes.rs` runs the probes that need real isolation
+`crates/af-sandbox/tests/container_probes.rs` runs the probes that need real isolation
 against `ContainerProvider` with a live daemon: one bind (the sandbox), `--network=none`, no
 inherited environment, image pinned by manifest digest. The
 `make review-kernel-container-probes` target and dedicated CI job run them and the live v3 Gate
@@ -64,7 +64,7 @@ look like a passed one.
 |---|---|---|
 | review input immutability | **discharged** | a node runs against a materialized copy and capture already happened, so the snapshot being reviewed cannot be altered by anything the node does |
 | canonical checkout on disk | **discharged (container)** | the same hostile command as the `trusted_local` test, and this time the assertion is real: the absolute-path write does not reach the checkout — `worktree_state` identical before and after |
-| credentials | **discharged** | the check runner (`review_check::CheckRunner`), not the sandbox, clears the environment and rebuilds it from an allowlist, so a token in the kernel's own environment cannot leak by being forgotten in a denylist — asserted on what a real check process receives, and for a container run by `an_external_provider_gets_only_portable_and_explicit_environment` in `crates/review-check/src/runner.rs` plus the runtime's `--env-file /dev/null` |
+| credentials | **discharged** | the check runner (`af_check::CheckRunner`), not the sandbox, clears the environment and rebuilds it from an allowlist, so a token in the kernel's own environment cannot leak by being forgotten in a denylist — asserted on what a real check process receives, and for a container run by `an_external_provider_gets_only_portable_and_explicit_environment` in `crates/af-check/src/runner.rs` plus the runtime's `--env-file /dev/null` |
 | argument injection | **discharged** | typed slots refuse an untrusted value in an option position, asserted end-to-end through the check runner |
 | host marker | **discharged (container)** | a marker planted outside the sandbox is unreadable and unmodified — the absolute path names nothing inside the container |
 | undeclared network | **discharged (container)** | `--network=none` leaves no route out and no resolver, so the refusal is immediate rather than a timeout |
@@ -90,7 +90,7 @@ confirmed, the Gate reports the preserved sandbox path and returns incomplete wi
 possibly live bind. The
 lower-level probes use `CheckRunner::run_with`; the live Gate route is exercised end to end by
 `task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host` in
-`crates/review-pipeline/tests/it`, which `make review-kernel-container-probes` runs: a pipeline
+`crates/af-runtime/tests/it`, which `make review-kernel-container-probes` runs: a pipeline
 whose root Gate has a container binding is admitted, the Gate's check runs in a real container
 on the Task host, the Task's acceptance is satisfied, and the run report records the binding as
 admitted with `Container` isolation and the pinned image. The green `container-probes` job of
@@ -127,7 +127,7 @@ they cannot substitute for these containment probes.
 The local Task gate `scripts/verify.sh --profile fast` selects functional, e2e and uix.
 Its `scripts/test-classes.py execute` path checks for `e2e` in the selection and then invokes
 `make review-kernel-container-probes`. That Makefile target runs
-`cargo test --locked -p review-sandbox --test container_probes -- --ignored`, including the
+`cargo test --locked -p af-sandbox --test container_probes -- --ignored`, including the
 aggregate-disk probe above, followed by the timeout and live Task Gate routing probes.
 Thus `#[ignore]` excludes these tests from the ordinary nextest selection but does not exclude
 them from the fast gate's explicit live-probe dispatch. `.af/code-policy.toml` declares this

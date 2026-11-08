@@ -296,7 +296,7 @@ listing in the main pane is one row per Pipeline; `Enter` on one opens it, as th
 the bar's cursor follows.
 
 For now the pane is the text `af task explain --tree` prints, produced by
-`task_execution::preview::render(…, tree = true)`, verbatim:
+`task_commands::preview::render(…, tree = true)`, verbatim:
 
 ```
 PIPE  review@1.0.0 (.af/pipelines/review.toml)  [configured]

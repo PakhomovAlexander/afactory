@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use review_store::Cas;
+use af_store::Cas;
 
 use crate::task_cli;
 
@@ -74,7 +74,7 @@ pub(crate) fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     let mut catalog: toml::Value = toml::from_str(&source).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
-        let digest = review_config::lock::package_digest(name, &package);
+        let digest = af_pipeline_config::lock::package_digest(name, &package);
         pin["digest"] = toml::Value::String(digest.unwrap());
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -544,12 +544,12 @@ fn a_campaign_keeps_every_object_its_records_reach_when_its_task_is_collected() 
     // through the result's envelope, the revision it names.
     {
         let cas = Cas::open_existing(state.join("cas")).unwrap();
-        let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+        let mut store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
         store
             .append(
                 "campaign-keeps",
                 &cas,
-                review_store::NewEvent::new(review_core::EventType::SourceCapturedV1, json!({}))
+                af_store::NewEvent::new(af_contracts::EventType::SourceCapturedV1, json!({}))
                     .referencing(vec![result.clone()]),
             )
             .unwrap();
@@ -586,7 +586,7 @@ fn a_campaign_keeps_every_object_its_records_reach_when_its_task_is_collected() 
         cas.is_filed(&revision),
         "and what the result's envelope names"
     );
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     assert_eq!(store.replay("campaign-keeps").unwrap().len(), 1);
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
     assert_eq!(shown["schema"], "af/task-collected-inspection@3");

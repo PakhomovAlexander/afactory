@@ -1,6 +1,6 @@
 //! Real CLI planning, compiler repair, exact approval and restart on one Task ledger.
 use crate::task_cli;
-use review_core::task::pipeline::*;
+use af_contracts::task::pipeline::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ use std::process::Command;
 /// fixture Worker manifest and in the fixture code policy), the Attempt count, the token budget
 /// and the verification reserve are untouched and still bind exactly as before, and the
 /// deadline's own fail-closed refusal keeps its coverage in
-/// `crates/review-attempt/tests/task_budget.rs`. Do not collapse it back toward the elapsed time
+/// `crates/af-attempt/tests/task_budget.rs`. Do not collapse it back toward the elapsed time
 /// of a fast local run (ADR-0114).
 const PLANNING_WALL_MS: u64 = 600_000;
 /// Every fixture Worker manifest and the fixture code policy bound one Attempt at five seconds.
@@ -65,7 +65,7 @@ fn commit(repo: &Path) {
 }
 fn package(repo: &Path, catalog: &mut toml::Value, name: &str) {
     let path = format!(".af/task-packages/{name}");
-    let digest = review_config::lock::package_digest(name, &repo.join(&path)).unwrap();
+    let digest = af_pipeline_config::lock::package_digest(name, &repo.join(&path)).unwrap();
     catalog["packages"].as_table_mut().unwrap().insert(
         name.into(),
         toml::Value::try_from(json!({"version":"1.0.0","path":path,"digest":digest})).unwrap(),
@@ -179,7 +179,7 @@ proposal = json.loads(Path(__file__).with_name(name).read_text())
 print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'proposal':[proposal]}}}}))
 "#, repair=if repair {"True"} else {"False"})).unwrap();
     let port = |kind| json!({"artifact_type":kind,"cardinality":"one","optional":false,"affinity":{"kind":"unbound"},"covers":[]});
-    let manifest: review_config::task::catalog::TaskWorkerManifest = serde_json::from_value(json!({
+    let manifest: af_pipeline_config::task::catalog::TaskWorkerManifest = serde_json::from_value(json!({
         "schema":"af.worker/1","name":"fixture/planner","version":"1.0.0",
         "signature":{"contract":{"inputs":{"request":port("af/PlanningRequest@1")},"outputs":{"proposal":port("af/PipelineProposal@1")}},"effects":[],"roles":["plan"],"evidence":{},"retains":{"proposal":["request"]},"worker_input_type":"af/PlannerInput@1","worker_output_type":"af/PipelineProposal@1","attempt":{"tokens":0,"wall_ms":5000}},
         "runner":{"kind":"command","command":{"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"@package/worker.py","provenance":"literal"}]}}
@@ -292,7 +292,7 @@ fn planning_fixtures_keep_the_task_deadline_off_the_load_sensitive_path() {
     let root = tempfile::tempdir().unwrap();
     let (repo, state, _) = setup(root.path(), true, true);
     let planned = run(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let revision = cas
         .get_json(planned["revision_id"].as_str().unwrap())
         .unwrap();
@@ -630,7 +630,7 @@ fn planner_repairs_once_from_durable_compiler_feedback_and_never_runs_its_propos
         .filter_map(|v| v["record"]["result"]["feedback_id"].as_str())
         .collect();
     assert_eq!(feedback.len(), 1);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let artifact = cas.get_json(feedback[0]).unwrap();
     assert_eq!(artifact["payload"]["code"], "compiler_rejected");
     approve(&repo, &state, root.path(), &key);
@@ -674,7 +674,7 @@ fn generated_implementation_embeds_review_and_adds_only_its_admitted_history_con
     );
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
     assert_eq!(waiting["attempts"], 1);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let before = cas
         .get_json(waiting["planning"]["request_revision_id"].as_str().unwrap())
         .unwrap();
@@ -811,7 +811,7 @@ fn signed_rejection_and_revocation_survive_reopen_and_block_generated_execution(
             let id = event["transition"]["change"]["revocation_id"]
                 .as_str()
                 .unwrap();
-            let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+            let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
             let proof = cas.get_json(id).unwrap();
             assert_eq!(proof["payload"]["decision"], "rejected");
             assert_eq!(proof["payload"]["plan_id"], waiting["plan_id"]);

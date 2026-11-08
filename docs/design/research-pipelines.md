@@ -21,7 +21,7 @@ every research shape breaks one of its invariants:
   such artifacts. The only comparison machinery is the self-optimizer's `optimization_experiment`,
   whose cases, recipes and writable target are fixed to `.af/` configuration and harness files
   (`docs/task-execution/self-optimizer.md`).
-- **Nothing accepts a report.** Seven installed profiles exist (`review_config::task::kind`), and
+- **Nothing accepts a report.** Seven installed profiles exist (`af_pipeline_config::task::kind`), and
   a package cannot add one. The Document profile has no `source` port, so its author cannot read
   the repository; the Optimization profiles accept only the optimizer's own economics. An implement
   Task must end in a `SourceTree` a code policy verified.
@@ -33,7 +33,7 @@ every research shape breaks one of its invariants:
   16.0M tokens and reached `satisfied` twice; each verification Task cost about 500k tokens and
   its check stage a median 15.6 minutes, because every Task check builds cold: `code.rs` gives
   each check a fresh `HOME`, `XDG_CACHE_HOME` and `CARGO_TARGET_DIR`
-  (`crates/review-pipeline/src/task/code.rs`, `checks`), so `scripts/verify.sh`'s external target
+  (`crates/af-runtime/src/task/code.rs`, `checks`), so `scripts/verify.sh`'s external target
   directory is never warm inside a Task. Thirty-five gates spent 8.6 hours compiling the same
   workspace. The Store under `$XDG_STATE_HOME/af` holds 22 GB with no `af task gc`, and about
   14 GB of stray `cargo` targets sit under `/private/tmp`.
@@ -368,7 +368,7 @@ Deliverables:
    plus `execute-checks` without `write-source`, exactly as ADR-0118 grants it to the `review`
    role. The effects table in `docs/task-execution.md` gains the row.
 4. `af/DocumentDraft@2`: `af/DocumentDraft@1` plus an optional repository citation of
-   `{ path, line? }`, where `path` is spelled exactly as `review_core::encode_path` spells the
+   `{ path, line? }`, where `path` is spelled exactly as `af_contracts::encode_path` spells the
    Manifest entry it names, that entry is a regular or executable file (not a symlink or a
    directory) whose first 8 KiB hold no NUL byte, and `line`, when present, is at least 1 and
    at most the file's line count. The renderer prints such a citation as `path` or `path:line`.

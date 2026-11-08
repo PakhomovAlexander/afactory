@@ -26,7 +26,7 @@
         }
       }
     },
-    "review-core::schema_parity": {
+    "af-contracts::schema_parity": {
       "status": "listed",
       "testcases": {
         "a_gate_cleanup_is_one_closed_transition_referencing_no_artifact": {
@@ -38,7 +38,7 @@
         }
       }
     },
-    "review-process::cancellation": {
+    "af-process::cancellation": {
       "status": "listed",
       "testcases": {
         "cancellation_before_spawn_cannot_execute_the_command": {

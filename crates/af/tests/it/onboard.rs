@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use review_config::lock::{Lockfile, Pin};
+use af_pipeline_config::lock::{Lockfile, Pin};
 
 fn repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
@@ -1156,8 +1156,11 @@ fn task_preview_and_new_bundle_have_exact_pins_and_plan_after_commit() {
     for (name, pin) in catalog["packages"].as_table().unwrap() {
         assert_eq!(
             pin["digest"].as_str().unwrap(),
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap()
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap())
+            )
+            .unwrap()
         );
     }
     commit(&repo);
@@ -1211,7 +1214,7 @@ fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
     assert!(review.status.success(), "{}", stderr(&review));
     let project = std::fs::read(repo.join(".af/af.toml")).unwrap();
     let lock = std::fs::read(repo.join(".af/af.lock")).unwrap();
-    let review_pipeline = std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap();
+    let af_runtime = std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap();
 
     std::fs::write(repo.join(".af/code-policy.toml"), "occupied\n").unwrap();
     let refused = task_onboard(&repo, &provider, &["--apply"]);
@@ -1241,7 +1244,7 @@ fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
     assert_eq!(std::fs::read(repo.join(".af/af.lock")).unwrap(), lock);
     assert_eq!(
         std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap(),
-        review_pipeline
+        af_runtime
     );
     let refused = task_onboard(&repo, &provider, &["--apply"]);
     assert!(!refused.status.success());

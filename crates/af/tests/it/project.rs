@@ -150,7 +150,7 @@ fn expected_project_id(repo: &Path) -> String {
     bytes.extend_from_slice(roots.join(",").as_bytes());
     format!(
         "sha256:{}",
-        review_core::hex::encode(&Sha256::digest(&bytes))
+        af_contracts::hex::encode(&Sha256::digest(&bytes))
     )
 }
 
@@ -161,7 +161,7 @@ fn default_store(machine: &Machine, checkout: &Path) -> PathBuf {
     machine
         .state_home()
         .join("af/task/local")
-        .join(&review_core::hex::encode(&digest)[..16])
+        .join(&af_contracts::hex::encode(&digest)[..16])
 }
 
 /// Every file below `root` except git's own directory, with its bytes.
@@ -444,7 +444,7 @@ fn a_task_planned_with_a_workspace_equals_one_planned_with_the_explicit_flags() 
         ],
     );
     let recorded = |state: &Path, document: &Value| -> (Value, Value) {
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let revision = cas
             .get_json(document["revision_id"].as_str().unwrap())
             .unwrap()["payload"]

@@ -20,7 +20,7 @@ introduced or that removing it alone resolves the regression.
 ## Source explanation
 
 In `crates/af/src/main.rs`, startup previously called `Af::try_parse_from(&argv)` to recognize
-`catalog digest`, discarded every other result, called `selfmgmt::maybe_dispatch`, then called
+`catalog digest`, discarded every other result, called `self_management::maybe_dispatch`, then called
 `try_parse_from` again. Each parse constructs the complete derived clap command tree. For a
 help flag, clap also renders the requested help into its display error each time. The first
 rendered help was thrown away.

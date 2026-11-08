@@ -40,7 +40,7 @@
     "calibrated_activation_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "calibrated_authority_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
     "changed_paths": [
-      "crates/review-pipeline/examples/perf-probe/cases.rs"
+      "crates/af-runtime/examples/perf-probe/cases.rs"
     ],
     "evidence_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
     "golden": {

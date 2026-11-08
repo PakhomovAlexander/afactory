@@ -25,9 +25,9 @@ installs it on the first `cargo` invocation, so there is nothing to choose. Edit
 workspace version in `Cargo.toml`. The container probes need Docker; nothing else needs a
 daemon.
 
-`af` supports Linux and macOS only. A `compile_error!` at the root of `review-core` and
-`review-process` refuses every other target: every crate with platform-specific code is one of
-them or depends on `review-core`, so the guard fails the build before any unix-only call does.
+`af` supports Linux and macOS only. A `compile_error!` at the root of `af-contracts` and
+`af-process` refuses every other target: every crate with platform-specific code is one of
+them or depends on `af-contracts`, so the guard fails the build before any unix-only call does.
 Write unix code directly: do not add `#[cfg(unix)]` gates or `#[cfg(not(unix))]` fallbacks.
 Where Linux and macOS differ, split on `target_os`.
 
@@ -78,7 +78,7 @@ The runner is the pinned, checksum-verified binary that `scripts/install-nextest
 into a temporary tools directory (CI) or `cargo install cargo-nextest --locked` (a developer
 machine). `make check TEST_RUNNER=cargo` keeps the sequential libtest path for comparison.
 
-If you touch `crates/review-sandbox`, also run the live probes:
+If you touch `crates/af-sandbox`, also run the live probes:
 
 ```sh
 make review-kernel-container-probes
@@ -169,7 +169,7 @@ that `af` holds); a fixture it does not hold ends by itself, a Worker or a parke
 process that started it is gone, a fixture's escaped child when the test asks it to; and what the
 test recorded is only watched through `crate::common::recorded` (`Recorded::now`,
 `Recorded::from_marker`, `Recorded::ended_within`, the `Leftovers` guard, which reports what is
-still running and signals nothing; `crates/review-process/tests/support/recorded.rs`), or in the
+still running and signals nothing; `crates/af-process/tests/support/recorded.rs`), or in the
 performance laboratory's Python tests `tests.support.held_child_argv` and
 `tests.support.release_recorded`. The laboratory's docker stand-in ends a container from the
 init process that started it, never from `docker rm` by a recorded ID. A holder's signal can
@@ -407,8 +407,8 @@ them after 50 runs under load (`docs/test-quarantine-claw.md`).
 The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
 Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored
 manual measurement: run `make perf-kernel-measure` before a pull request changing
-`scripts/performance/`, `crates/review-pipeline/examples/perf-probe/`,
-`crates/review-pipeline/build.rs`, the experiment runtime or kernel receipts
+`scripts/performance/`, `crates/af-runtime/examples/perf-probe/`,
+`crates/af-runtime/build.rs`, the experiment runtime or kernel receipts
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
 `make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;

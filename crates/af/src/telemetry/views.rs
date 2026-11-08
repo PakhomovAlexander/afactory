@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use review_telemetry::view::{self, Resolved, Run, Runs, Show, ShowSelection, Tailed};
+use af_telemetry::view::{self, Resolved, Run, Runs, Show, ShowSelection, Tailed};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,7 +27,7 @@ pub(super) fn root_of(
         Err(refusal) => return Ok(Err(super::refused(command, json, &refusal))),
     };
     // Every ingest of this command keeps the full-text index as the machine says.
-    review_telemetry::index::set_content_index(settings.content_index);
+    af_telemetry::index::set_content_index(settings.content_index);
     Ok(Ok(super::chosen(dir, &settings)?))
 }
 
@@ -43,7 +43,7 @@ pub(super) fn print_json(value: &impl Serialize) -> Result<(), String> {
 pub(crate) fn iso_ns(text: &str) -> String {
     let nanos: u128 = text.parse().unwrap_or(0);
     let millis = u64::try_from(nanos / 1_000_000).unwrap_or(u64::MAX);
-    let seconds = review_core::task::collection::collected_time(millis);
+    let seconds = af_contracts::task::collection::collected_time(millis);
     format!("{}.{:03}Z", seconds.trim_end_matches('Z'), millis % 1_000)
 }
 
@@ -81,7 +81,7 @@ pub(crate) fn runs(
         Some(text) => {
             let window = view::parse_since(text)
                 .ok_or_else(|| format!("--since {text}: a duration such as 30m, 12h, 14d or 2w"))?;
-            let now = review_telemetry::layout::unix_ns_now();
+            let now = af_telemetry::layout::unix_ns_now();
             Some(i64::try_from(now.saturating_sub(window.as_nanos())).unwrap_or(i64::MAX))
         }
         None => None,
@@ -224,7 +224,7 @@ pub(super) type Found = (String, String, Option<String>);
 /// unknown run, 2 when two Stores share it and `--store` does not say which.
 pub(super) fn resolve(
     command: &str,
-    index: &review_telemetry::index::Index,
+    index: &af_telemetry::index::Index,
     run: &str,
     store: Option<&str>,
 ) -> Result<Result<Found, i32>, String> {
@@ -533,7 +533,7 @@ pub(crate) fn ledger(
         Ok(found) => found,
         Err(code) => return Ok(code),
     };
-    let document = review_telemetry::ledger::ledger(
+    let document = af_telemetry::ledger::ledger(
         &index,
         &root,
         read,
@@ -548,7 +548,7 @@ pub(crate) fn ledger(
     Ok(0)
 }
 
-fn counters_text(counters: &review_telemetry::accounting::Counters) -> String {
+fn counters_text(counters: &af_telemetry::accounting::Counters) -> String {
     let mut parts = Vec::new();
     for (name, value) in [
         ("input", &counters.input_tokens),
@@ -564,7 +564,7 @@ fn counters_text(counters: &review_telemetry::accounting::Counters) -> String {
     parts.join(", ")
 }
 
-pub(crate) fn render_ledger(document: &review_telemetry::ledger::Ledger) -> String {
+pub(crate) fn render_ledger(document: &af_telemetry::ledger::Ledger) -> String {
     let mut out = String::new();
     let run = &document.run;
     let _ = writeln!(

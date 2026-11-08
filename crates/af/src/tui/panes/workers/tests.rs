@@ -1547,7 +1547,7 @@ fn a_workers_state_counts_the_attempts_of_every_checkout_of_the_project() {
     ];
     git(&repo, &args).unwrap();
     let branch_state =
-        crate::task_execution::default_task_state(&root.join("state"), &worktree).unwrap();
+        crate::task_commands::default_task_state(&root.join("state"), &worktree).unwrap();
     crate::tui::tests::copy_store(&state, &branch_state);
     let scope = crate::tui::tests::hub_scope(&root, &repo);
     let id = ".af/task-packages/fixture/implementer/worker.toml";

@@ -90,7 +90,7 @@ components for symlinks and non-directories before any source is mounted, includ
 and helper mount points. GNU `readlink` resolves helper and declared tool programs in the image;
 programs resolving into dynamic mounts are refused before input copies or harness dispatch.
 It executes only a kernel-owned test script against the immutable image; an unavailable shell or unsafe layout
-is refused. The existing container provider and `review-process` supervisor
+is refused. The existing container provider and `af-process` supervisor
 run the harness; there is no new scheduler, retry loop or process executor.
 
 Each invocation uses a new private source clone and the existing `CheckRuntime` lifecycle for
@@ -138,7 +138,7 @@ read-only and exports only declared writable roots. The shared process superviso
 archive under the same Attempt deadline and cancellation signal. The host accepts only regular
 files and directories in a private staging directory, with aggregate logical file bytes at most
 `disk_bytes`, at most 16,384 entries, depth 64 and bounded canonical paths. GNU tar framing supports bounded long-name records through 4096 bytes and preserves the
-filesystem bytes that the Manifest scanner spells with `review_core::encode_path`. Links, devices, malformed/duplicate paths and oversized sparse
+filesystem bytes that the Manifest scanner spells with `af_contracts::encode_path`. Links, devices, malformed/duplicate paths and oversized sparse
 files fail closed before publication. No host archive extractor follows Worker-controlled paths.
 All roots validate before any source/cache root is replaced, and a failed replacement cannot
 admit the Attempt. The final Manifest and cache captures describe the exported bytes. Export
@@ -212,10 +212,10 @@ Manifest. Worker-built outputs and caches remain development evidence, never a G
 
 ### Checks and cost
 
-`review-core`'s `worker_development` schema-parity tests check versions, strict fields,
-unsupported quotas, paths and authority widening. `review-config` tests no-follow machine
+`af-contracts`'s `worker_development` schema-parity tests check versions, strict fields,
+unsupported quotas, paths and authority widening. `af-pipeline-config` tests no-follow machine
 reads, optional companions and real package admission, including model-adapter refusal.
-`review-pipeline`'s `task::development::tests` exercises the actual invocation, supervision,
+`af-runtime`'s `task::development::tests` exercises the actual invocation, supervision,
 state, experiment isolation and receipts with a recording runtime. That runtime is a transport
 fixture, not proof of container isolation.
 

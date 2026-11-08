@@ -5,7 +5,7 @@ import signal
 import time
 from unittest import mock
 
-from perflab import budget, hostlock, runner, telemetrylab
+from perflab import budget, host_lock, runner, telemetry_lab
 from tests import telemetry_fixtures as fx
 from tests.support import TempDir
 
@@ -21,7 +21,7 @@ class Handoff(TempDir):
                            lock_directory=self.tmp, **kwargs)
 
     def independent_holder(self):
-        fd = os.open(os.path.join(self.tmp, hostlock.MACHINE_LOCK_NAME), os.O_RDONLY)
+        fd = os.open(os.path.join(self.tmp, host_lock.MACHINE_LOCK_NAME), os.O_RDONLY)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         finally:
@@ -35,9 +35,9 @@ class Handoff(TempDir):
             now[0] = 240 * 60
             return held
         with mock.patch.object(runner, "machine_lock", acquire), \
-                mock.patch.object(telemetrylab, "_executor") as executor:
+                mock.patch.object(telemetry_lab, "_executor") as executor:
             with self.assertRaises(budget.Expired):
-                telemetrylab.run(self.settings(clock=lambda: now[0]))
+                telemetry_lab.run(self.settings(clock=lambda: now[0]))
             executor.assert_not_called()
         self.independent_holder()
         self.assertEqual(self.executor.calls, [])
@@ -50,17 +50,17 @@ class Handoff(TempDir):
             self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 0)
             time.sleep(30)  # An actual alarm between construction and caller assignment.
             return held
-        real_sync = telemetrylab._sync
+        real_sync = telemetry_lab._sync
         def sync(allowance, step, function, *args, **kwargs):
             if step == "acquiring telemetry machine lock":
                 offset[0] = allowance.deadline - allowance.reserve - time.monotonic() - .08
             return real_sync(allowance, step, function, *args, **kwargs)
         started = time.monotonic()
         with mock.patch.object(runner, "machine_lock", acquire), \
-                mock.patch.object(telemetrylab, "_sync", sync), \
-                mock.patch.object(telemetrylab, "_executor") as executor:
+                mock.patch.object(telemetry_lab, "_sync", sync), \
+                mock.patch.object(telemetry_lab, "_executor") as executor:
             with self.assertRaises(budget.Interrupted):
-                telemetrylab.run(self.settings(clock=lambda: time.monotonic() + offset[0]))
+                telemetry_lab.run(self.settings(clock=lambda: time.monotonic() + offset[0]))
             executor.assert_not_called()
         self.assertLess(time.monotonic() - started, 1)
         self.independent_holder()
@@ -82,17 +82,17 @@ class Handoff(TempDir):
                     raise RuntimeError("validation failed")
                 with mock.patch.object(os, "open", opened), \
                         mock.patch.object(fcntl, "flock", flock), \
-                        mock.patch.object(hostlock.MachineLock, "_check_file", validation) \
+                        mock.patch.object(host_lock.MachineLock, "_check_file", validation) \
                             if boundary == "validation" else mock.patch.object(
-                                hostlock, "LOCK_MODE", hostlock.LOCK_MODE):
+                                host_lock, "LOCK_MODE", host_lock.LOCK_MODE):
                     with self.assertRaises((RuntimeError, budget.Interrupted)):
                         with budget.Budget(time.monotonic() + 1, time.monotonic, 0).enforce("lock"):
-                            hostlock.MachineLock(self.tmp, register=held.append)
+                            host_lock.MachineLock(self.tmp, register=held.append)
                 self.assertIsNone(held[0].fd)
                 self.independent_holder()
 
     def test_normal_run_releases_and_a_subsequent_run_remains_usable(self):
         for output in ("one", "two"):
-            result = telemetrylab.run(self.settings(output=output))
+            result = telemetry_lab.run(self.settings(output=output))
             self.assertEqual(result["status"], "complete")
             self.independent_holder()

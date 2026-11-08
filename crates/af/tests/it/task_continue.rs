@@ -105,7 +105,7 @@ fn fixture_with(root: &Path, edit: impl FnOnce(&Path)) -> (PathBuf, PathBuf) {
     let mut catalog: toml::Value = toml::from_str(&source).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
-        let digest = review_config::lock::package_digest(name, &package);
+        let digest = af_pipeline_config::lock::package_digest(name, &package);
         pin["digest"] = toml::Value::String(digest.unwrap());
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -114,15 +114,15 @@ fn fixture_with(root: &Path, edit: impl FnOnce(&Path)) -> (PathBuf, PathBuf) {
 }
 
 /// The payload of one recorded artifact.
-fn payload(cas: &review_store::Cas, id: &Value) -> Value {
+fn payload(cas: &af_store::Cas, id: &Value) -> Value {
     cas.get_json(id.as_str().unwrap()).unwrap()["payload"].clone()
 }
 
 /// The bytes of `path` in the Snapshot an `af/SourceTree@1` artifact names.
-fn file_in(cas: &review_store::Cas, source_tree: &Value, path: &str) -> Option<Vec<u8>> {
+fn file_in(cas: &af_store::Cas, source_tree: &Value, path: &str) -> Option<Vec<u8>> {
     let snapshot = payload(cas, source_tree)["snapshot_id"].clone();
     let (_, manifest) =
-        review_source_git::task::read_snapshot(cas, snapshot.as_str().unwrap()).unwrap();
+        af_source_git::task::read_snapshot(cas, snapshot.as_str().unwrap()).unwrap();
     let entry = manifest.get(path)?;
     Some(cas.get(&entry.content).unwrap())
 }
@@ -137,7 +137,7 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     let (first, _) = json(&repo, &state, &start, 3);
     assert_eq!(first["state"]["outcome"], "changes_requested", "{first}");
     let first_revision_id = first["revision_id"].clone();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let first_revision = payload(&cas, &first_revision_id);
     assert!(
         first_revision["inputs"].get("findings").is_none(),
@@ -293,7 +293,7 @@ fn a_task_file_with_only_an_id_a_kind_and_a_goal_plans_with_the_project_defaults
         ),
         "{err}"
     );
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let revision = payload(&cas, &planned["revision_id"]);
     assert_eq!(revision["limits"]["tokens"], 1000);
     assert_eq!(revision["limits"]["max_attempts"], 5);
@@ -327,7 +327,7 @@ fn a_task_file_with_only_an_id_a_kind_and_a_goal_plans_with_the_project_defaults
     let again = root.path().join("again");
     let (unchanged, _) = json(&repo, &again, &plan, 0);
     let unchanged = payload(
-        &review_store::Cas::open_existing(again.join("cas")).unwrap(),
+        &af_store::Cas::open_existing(again.join("cas")).unwrap(),
         &unchanged["revision_id"],
     );
     assert_eq!(
@@ -342,7 +342,7 @@ fn a_task_file_with_only_an_id_a_kind_and_a_goal_plans_with_the_project_defaults
     commit(&repo, "design changed");
     let changed_state = root.path().join("changed");
     let (changed, _) = json(&repo, &changed_state, &plan, 0);
-    let changed_cas = review_store::Cas::open_existing(changed_state.join("cas")).unwrap();
+    let changed_cas = af_store::Cas::open_existing(changed_state.join("cas")).unwrap();
     let changed_revision = payload(&changed_cas, &changed["revision_id"]);
     assert_ne!(
         changed_revision["inputs"]["requirements"]["artifact_ids"][0],
@@ -387,7 +387,7 @@ fn a_declared_base_is_the_tree_the_reviewers_read_beside_their_own() {
 
     let start = ["task", "start", "--execute", "--file", "based.json"];
     let (based, _) = json(&repo, &state, &start, 3);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let revision = payload(&cas, &based["revision_id"]);
     let record = revision["provenance"]["input_artifact_ids"]
         .as_array()
@@ -652,7 +652,7 @@ fn each_round_carries_its_own_evaluator_verdict() {
     let plan = ["task", "run", "next", "--from", "twice", "--round", "1"];
     let (planned, _) = json(&repo, &state, &plan, 0);
     assert_eq!(planned["continues"]["round"], 1, "{planned}");
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let findings = payload(&cas, &planned["continues"]["findings_id"]);
     valid("task-review-findings-v1.json", &findings);
     let evaluator: Vec<&Value> = findings["findings"]
@@ -809,12 +809,12 @@ inputs.requirements = { kind = "input", port = "requirements" }"#,
 
 /// The `bound_from` a bound source's re-rooted Snapshot records: the derived Snapshot it was
 /// bound from and the Task output it names.
-fn bound_from(cas: &review_store::Cas, revision: &Value) -> (String, Value) {
+fn bound_from(cas: &af_store::Cas, revision: &Value) -> (String, Value) {
     let snapshot = revision["inputs"]["source"]["snapshot_id"]
         .as_str()
         .unwrap();
-    let (snapshot, _) = review_source_git::task::read_snapshot(cas, snapshot).unwrap();
-    let origin = review_source_git::task::read_origin(cas, &snapshot.origin_id).unwrap();
+    let (snapshot, _) = af_source_git::task::read_snapshot(cas, snapshot).unwrap();
+    let origin = af_source_git::task::read_origin(cas, &snapshot.origin_id).unwrap();
     let from = origin
         .bound_from()
         .expect("a continuation re-roots its source");
@@ -837,7 +837,7 @@ fn a_continuation_from_an_earlier_round_names_the_output_that_holds_its_candidat
         redone["state"]["outcome"], "changes_requested",
         "{redone}\n{err}"
     );
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let result_id = redone["phase"]["result_id"]
         .as_str()
         .unwrap_or_else(|| panic!("{redone}"));
@@ -939,7 +939,7 @@ fn a_continuation_whose_candidate_changed_its_rules_gives_the_worker_the_candida
     let start = ["task", "start", "--execute", "--file", "first.json"];
     let (first, _) = json(&repo, &state, &start, 3);
     assert_eq!(first["state"]["outcome"], "changes_requested", "{first}");
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let read_first = |revision: &Value| -> Value {
         revision["provenance"]["input_artifact_ids"]
             .as_array()
@@ -950,7 +950,7 @@ fn a_continuation_whose_candidate_changed_its_rules_gives_the_worker_the_candida
             .expect("the read-first record is provenance")["payload"]
             .clone()
     };
-    let digest = |bytes: &[u8]| review_source_git::digest_bytes(bytes);
+    let digest = |bytes: &[u8]| af_source_git::digest_bytes(bytes);
     let first_revision = payload(&cas, &first["revision_id"]);
     let base = &first_revision["inputs"]["source"];
     let was = read_first(&first_revision);
@@ -1116,7 +1116,7 @@ fn generated_impl_packages_continue_with_native_findings_and_configurable_team()
             0,
         );
         assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let sealed = &done["result"]["outputs"]["snapshot"]["artifact_ids"][0];
         let seen: Value =
             serde_json::from_slice(&file_in(&cas, sealed, "seen-findings.json").unwrap()).unwrap();

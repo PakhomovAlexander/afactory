@@ -203,7 +203,7 @@ run and the teardown, with 90 seconds kept for the last teardown and the result.
 
 ### Where each execution runs
 
-Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215): each side's
+Every execution goes through one executor (`perflab/telemetry_exec.py`, ADR-0215): each side's
 `--version` query, the corpus generator and every script run.
 
 - **`--mode linux_container`** runs each execution in its own container of the pinned sample
@@ -275,7 +275,7 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215)
   another thread may still execute even when that leader is a zombie. A failed or
   incomplete observation, a missing reserved leader or a live survivor makes cleanup uncertain;
   a later successful observation does not erase the error. macOS uses kqueue exit observation
-  and its group signal probe, following the shared `review-process` lifecycle semantics; it
+  and its group signal probe, following the shared `af-process` lifecycle semantics; it
   does not claim Linux process enumeration. Other host platforms are refused before launch.
 
 The perf-supervisor is not PID 1 here. Its request bounds a child at the verdict sample's 120
@@ -303,7 +303,7 @@ and their stored bytes) and requires one segment per planned execution. Each rea
 copy of the corpus, counted in its room. An index one side builds is never another read's, and
 the master corpus is never bound.
 
-A script's stdout is admitted only as the run it was planned as (`telemetrylab.admit`):
+A script's stdout is admitted only as the run it was planned as (`telemetry_lab.admit`):
 
 - **Every document.** It names exactly this side's binary version, from the same contained
   `--version` query.
@@ -476,7 +476,7 @@ checks or a local environment without Docker establish neither.
 ## Collection: the telemetry history lane
 
 `cli.py telemetry-collect --config FILE` is one bounded, idempotent collection cycle of the
-workflow's result artifacts into a durable telemetry history root (`perflab/telemetrycollect.py`,
+workflow's result artifacts into a durable telemetry history root (`perflab/telemetry_collect.py`,
 ADR-0215). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
 before, never reads these artifacts, and stays pinned to the frozen cohort's control (below);
 the only code the lanes share is the bounded ZIP reader, `transport.read_zip`.
@@ -529,7 +529,7 @@ bytes and results, and retention. A cycle does this:
    lock and capacity, rechecked when history is read, and pruned with its result.
 6. **Authority.** It requires the authority commit to be reachable from a trusted ref. It
    writes that commit's authority files from the mirror's Git objects
-   (`telemetrylab.materialize_authority`).
+   (`telemetry_lab.materialize_authority`).
 7. **Keep.** It imports the result verified under exactly that authority, then writes
    `history.json`, `history.html` and `collection.json` (`af.perf-telemetry-collection/2`):
    every run attempted, with what was collected, already collected, missing, expired or refused

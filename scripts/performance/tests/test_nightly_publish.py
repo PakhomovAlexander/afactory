@@ -22,7 +22,7 @@ from tests.support import ROOT, TempDir, read
 from tests.test_nightly_build import nightly as build
 
 sys.path.insert(0, os.path.join(ROOT, "scripts", "nightly"))
-import githubrest  # noqa: E402
+import github_rest  # noqa: E402
 
 PUBLISH = os.path.join(ROOT, "scripts", "nightly", "publish.py")
 _spec = importlib.util.spec_from_file_location("nightly_publish", PUBLISH)
@@ -174,7 +174,7 @@ class FakeGitHub:
         raise AssertionError("unexpected GitHub request %s %s" % (method, path))
 
     def client(self):
-        return githubrest.GitHub(REPO, WRITE_TOKEN, send=self.send)
+        return github_rest.GitHub(REPO, WRITE_TOKEN, send=self.send)
 
 
 class FakeTelegram:
@@ -374,23 +374,23 @@ class FirstPublish(Night):
         self.assertFalse(any(WRITE_TOKEN in word or BOT_TOKEN in word
                              for argv, _ in self.runner.calls for word in argv))
         client = self.github.client()
-        with self.assertRaises(githubrest.Refused) as caught:
+        with self.assertRaises(github_rest.Refused) as caught:
             client.upload("https://evil.example/repos/owner/af/releases/1/assets{?name}", "x",
                           b"x", "text/plain")
         self.assertIn("not an asset upload of owner/af", str(caught.exception))
-        with self.assertRaises(githubrest.Refused):
-            githubrest.GitHub(REPO, None, send=self.github.send).release_by_tag(TAG)
+        with self.assertRaises(github_rest.Refused):
+            github_rest.GitHub(REPO, None, send=self.github.send).release_by_tag(TAG)
 
     def test_authenticated_writes_never_use_environment_proxies(self):
         with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:8080",
                                           "https_proxy": "http://proxy.invalid:8080"}):
-            proxies = [handler for handler in githubrest._OPENER.handlers
+            proxies = [handler for handler in github_rest._OPENER.handlers
                        if isinstance(handler, urllib.request.ProxyHandler)]
             # Some Python versions omit a default ProxyHandler whose map is empty; others
             # retain it. Either shape proves no environment-derived proxy is installed.
             self.assertTrue(all(handler.proxies == {} for handler in proxies))
-            self.assertIs(publish.https_send, githubrest.https_send)
-            self.assertIs(publish.Telegram(BOT_TOKEN, "1").send, githubrest.https_send)
+            self.assertIs(publish.https_send, github_rest.https_send)
+            self.assertIs(publish.Telegram(BOT_TOKEN, "1").send, github_rest.https_send)
 
     def test_a_tag_already_naming_another_commit_refuses_before_any_write(self):
         self.build()

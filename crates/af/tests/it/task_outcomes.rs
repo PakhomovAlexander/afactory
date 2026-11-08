@@ -1093,7 +1093,7 @@ fn a_task_file_takes_its_kind_s_defaults_and_a_contradiction_names_both_values()
     let explained = fixture.json(&["task", "explain", TASK]);
     let revision: Value = {
         let id = explained["revision_id"].as_str().unwrap();
-        let cas = review_store::Cas::open_existing(fixture.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(fixture.state.join("cas")).unwrap();
         cas.get_json(id).unwrap()["payload"].clone()
     };
     assert_eq!(revision["strategy"], "reviewed");
@@ -1369,7 +1369,7 @@ fn task_list_prints_a_header_and_one_row_per_task() {
 /// every phase, outcome and cause with its meaning.
 #[test]
 fn the_documentation_states_every_phase_outcome_cause_and_attention_group_as_the_binary_does() {
-    use review_core::task::state::*;
+    use af_contracts::task::state::*;
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));

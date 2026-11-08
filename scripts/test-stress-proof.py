@@ -103,7 +103,7 @@ class Table(unittest.TestCase):
     <testcase name="b::fails" classname="af::it" timestamp="2026-10-27T03:00:05.000+00:00"
               time="2.5"><failure message="test failure">panicked</failure>
       <system-err>left: None</system-err></testcase>
-    <testcase name="c::other" classname="review-process::x" time="1.0"></testcase>
+    <testcase name="c::other" classname="af-process::x" time="1.0"></testcase>
   </testsuite>
 </testsuites>
 '''

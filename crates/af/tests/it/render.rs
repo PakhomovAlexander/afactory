@@ -74,14 +74,14 @@ fn repin(repo: &Path, name: &str) {
     let lock_path = repo.join(".af/af.lock");
     let mut lock = std::fs::read_to_string(&lock_path)
         .ok()
-        .map(|text| review_config::lock::Lockfile::from_toml(&text).unwrap())
-        .unwrap_or_else(review_config::lock::Lockfile::empty);
+        .map(|text| af_pipeline_config::lock::Lockfile::from_toml(&text).unwrap())
+        .unwrap_or_else(af_pipeline_config::lock::Lockfile::empty);
     let bytes = std::fs::read(repo.join(format!(".af/pipelines/{name}.toml"))).unwrap();
     lock.pipelines.insert(
         name.into(),
-        review_config::lock::Pin {
+        af_pipeline_config::lock::Pin {
             version: "1.0.0".into(),
-            digest: review_store::canonical::blob_content_id(&bytes),
+            digest: af_store::canonical::blob_content_id(&bytes),
         },
     );
     std::fs::write(lock_path, lock.to_toml()).unwrap();
@@ -154,7 +154,7 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     assert_eq!(view["reply_schema"]["option"], "--output-schema");
     assert_eq!(
         view["reply_schema"]["schema"],
-        review_runner::task::reply_schema::ReplyContract::ReviewerResult
+        af_runner::task::reply_schema::ReplyContract::ReviewerResult
             .strict(&[])
             .unwrap()
             .unwrap()
@@ -479,13 +479,14 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
     assert_ne!(edited, declared);
     std::fs::write(&manifest, edited).unwrap();
     let lock_path = repo.join(".af/af.lock");
-    let mut lock =
-        review_config::lock::Lockfile::from_toml(&std::fs::read_to_string(&lock_path).unwrap())
-            .unwrap();
-    let registry = review_config::lock::Registry::new(repo.join(".af/workers"));
+    let mut lock = af_pipeline_config::lock::Lockfile::from_toml(
+        &std::fs::read_to_string(&lock_path).unwrap(),
+    )
+    .unwrap();
+    let registry = af_pipeline_config::lock::Registry::new(repo.join(".af/workers"));
     lock.workers.insert(
         "correctness".into(),
-        review_config::lock::Lockfile::pin("correctness", &registry).unwrap(),
+        af_pipeline_config::lock::Lockfile::pin("correctness", &registry).unwrap(),
     );
     std::fs::write(&lock_path, lock.to_toml()).unwrap();
     git(&repo, &["add", "-A"]);

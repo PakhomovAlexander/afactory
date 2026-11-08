@@ -1,18 +1,18 @@
 //! Real captured Review execution and fresh-process inspection of owned Task history.
 use super::*;
-use review_core::task::execution::{TASK_EXECUTION_RECORD_V5, TaskInvocationV1, TaskOutputV1};
-use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
-use review_core::task::{TaskLimitsV1, TaskResultV1, TaskRevisionV1, VerificationReserveV1};
-use review_graph::task::{Address, OperatorAttemptCost};
-use review_pipeline::task::campaign_review::{
+use af_contracts::task::execution::{TASK_EXECUTION_RECORD_V5, TaskInvocationV1, TaskOutputV1};
+use af_contracts::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
+use af_contracts::task::{TaskLimitsV1, TaskResultV1, TaskRevisionV1, VerificationReserveV1};
+use af_graph::task::{Address, OperatorAttemptCost};
+use af_runtime::task::campaign_review::{
     CapturedCampaignReviewRound,
     host::CampaignReviewTaskHost,
     plan::{CampaignReviewPlanCompiler, ReviewPlanSettings},
 };
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
-use review_store::store::task::execution::PreparedTaskAttempt;
-use review_store::{Cas, EventStore, SharedEventStore};
+use af_runtime::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
+use af_runtime::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
+use af_store::store::task::execution::PreparedTaskAttempt;
+use af_store::{Cas, EventStore, SharedEventStore};
 use std::collections::BTreeMap;
 
 const TASK: &str = "owned-inspection";
@@ -22,8 +22,8 @@ impl TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
-        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
+        _definition: &af_graph::task::CompiledNode,
+        _attempt: &af_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("admission rendered context")
     }
@@ -31,7 +31,7 @@ impl TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        _definition: &af_graph::task::CompiledNode,
         _: Option<&PreparedTaskAttempt>,
         _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
@@ -43,7 +43,7 @@ impl TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &review_store::store::task::execution::ReservedTaskAttempt,
+        _: &af_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("admission only".into())
@@ -55,7 +55,7 @@ impl TaskDomain for AdmissionOnly {
         _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        _definition: &af_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("admission only".into())
     }
@@ -66,7 +66,7 @@ impl TaskDomain for AdmissionOnly {
 fn artifact(cas: &Cas, kind: &str, value: &impl serde::Serialize) -> String {
     cas.put_artifact(
         kind,
-        review_core::Producer::KernelOperation {
+        af_contracts::Producer::KernelOperation {
             run_id: "owned-inspection-fixture".into(),
             node_id: None,
             operation_id: "capture@1".into(),
@@ -80,41 +80,41 @@ fn artifact(cas: &Cas, kind: &str, value: &impl serde::Serialize) -> String {
 }
 
 struct MissingSecond<'a> {
-    inner: &'a (dyn review_graph::Dispatch + Sync),
+    inner: &'a (dyn af_graph::Dispatch + Sync),
 }
-impl review_graph::Dispatch for MissingSecond<'_> {
-    fn coordinates_owned_children(&self, node: &review_graph::Node) -> bool {
+impl af_graph::Dispatch for MissingSecond<'_> {
+    fn coordinates_owned_children(&self, node: &af_graph::Node) -> bool {
         self.inner.coordinates_owned_children(node)
     }
     fn expand_owned_children(
         &self,
-        node: &review_graph::Node,
-        inputs: &review_graph::ArtifactMap,
-    ) -> Result<Vec<review_graph::OwnedChildDispatch>, String> {
+        node: &af_graph::Node,
+        inputs: &af_graph::ArtifactMap,
+    ) -> Result<Vec<af_graph::OwnedChildDispatch>, String> {
         self.inner.expand_owned_children(node, inputs)
     }
     fn complete_owned_children(
         &self,
-        node: &review_graph::Node,
-        inputs: &review_graph::ArtifactMap,
-        children: &[(String, review_graph::NodeOutcome)],
-    ) -> Result<review_graph::ArtifactMap, String> {
+        node: &af_graph::Node,
+        inputs: &af_graph::ArtifactMap,
+        children: &[(String, af_graph::NodeOutcome)],
+    ) -> Result<af_graph::ArtifactMap, String> {
         self.inner.complete_owned_children(node, inputs, children)
     }
-    fn requires_successful_predecessors(&self, node: &review_graph::Node) -> bool {
+    fn requires_successful_predecessors(&self, node: &af_graph::Node) -> bool {
         self.inner.requires_successful_predecessors(node)
     }
     fn task_node_selected(
         &self,
-        node: &review_graph::Node,
-        inputs: &review_graph::ArtifactMap,
+        node: &af_graph::Node,
+        inputs: &af_graph::ArtifactMap,
     ) -> Result<bool, String> {
         self.inner.task_node_selected(node, inputs)
     }
     fn record_invocation(
         &self,
-        node: &review_graph::Node,
-        inputs: &review_graph::ArtifactMap,
+        node: &af_graph::Node,
+        inputs: &af_graph::ArtifactMap,
     ) -> Result<(), String> {
         if node.id.ends_with(".slice2") {
             return Err("fixture lost admission before the second child invocation".into());
@@ -123,19 +123,19 @@ impl review_graph::Dispatch for MissingSecond<'_> {
     }
     fn run(
         &self,
-        node: &review_graph::Node,
-        inputs: &review_graph::ArtifactMap,
-    ) -> Result<review_graph::ArtifactMap, String> {
+        node: &af_graph::Node,
+        inputs: &af_graph::ArtifactMap,
+    ) -> Result<af_graph::ArtifactMap, String> {
         self.inner.run(node, inputs)
     }
     fn record_outputs(
         &self,
-        node: &review_graph::Node,
-        outputs: &review_graph::ArtifactMap,
+        node: &af_graph::Node,
+        outputs: &af_graph::ArtifactMap,
     ) -> Result<(), String> {
         self.inner.record_outputs(node, outputs)
     }
-    fn failure_class(&self, node: &str) -> Option<review_graph::NodeFailureClass> {
+    fn failure_class(&self, node: &str) -> Option<af_graph::NodeFailureClass> {
         self.inner.failure_class(node)
     }
 }
@@ -153,13 +153,13 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     let normal = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
-    let definition=include_str!("../../../../review-config/tests/fixtures/dynamic-v5.toml")
+    let definition=include_str!("../../../../af-pipeline-config/tests/fixtures/dynamic-v5.toml")
         .replace("[budgets]\nunit = \"tokens\"\nattempt = 100\nfan_out = 200\nrun = 400\n","")
         .replace("runner = { program = \"/bin/true\" }","runner = { program = \"/bin/sh\", args = [{value=\"-c\"},{value=\"cat >/dev/null; exit 1\"}] }");
     let round = captured_fixture::open_round_authority(&cas, &mut store, &definition, None);
     let settings = ReviewPlanSettings {
         mode: "light".into(),
-        resources: review_config::task::campaign_review::resources::ReviewResourcePolicy {
+        resources: af_pipeline_config::task::campaign_review::resources::ReviewResourcePolicy {
             uncapped_attempt_tokens: 1,
         },
         outputs: BTreeMap::from([(
@@ -202,9 +202,9 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
             },
         )
         .unwrap();
-    let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
+    let revision = artifact(&cas, af_contracts::task::TASK_REVISION_V1, &task);
     let (plan, _) = compiler.compile(&cas, &revision).unwrap();
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V4, &plan);
+    let plan_id = artifact(&cas, af_contracts::task::EXECUTION_PLAN_V4, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &AdmissionOnly, &NoTaskDeveloper);
     let lease = store.open_task(&cas, &revision, "fixture", 60_000).unwrap();
@@ -255,7 +255,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
             "{facts:?}"
         );
         let parent_output = &execution.outputs[parent];
-        let shards: review_core::ShardSetV1 = serde_json::from_value(
+        let shards: af_contracts::ShardSetV1 = serde_json::from_value(
             cas.get_artifact(&parent_output.1.outputs["o0"].artifact_ids[0])
                 .unwrap()
                 .payload,
@@ -263,11 +263,11 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         .unwrap();
         assert!(matches!(
             shards.shards[0].outcome,
-            review_core::ShardOutcomeV1::Failed { .. }
+            af_contracts::ShardOutcomeV1::Failed { .. }
         ));
         assert!(matches!(
             shards.shards[1].outcome,
-            review_core::ShardOutcomeV1::Missing { .. }
+            af_contracts::ShardOutcomeV1::Missing { .. }
         ));
         assert!(
             execution
@@ -283,7 +283,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
             shards,
             execution.budget.begun_attempts(),
             locked
-                .replay(&review_store::store::task::task_run_id(TASK).unwrap())
+                .replay(&af_store::store::task::task_run_id(TASK).unwrap())
                 .unwrap(),
         )
     };
@@ -297,7 +297,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         valid(&schema, value);
         assert_eq!(
             value["owned_child_sets"],
-            json!([{"artifact_id":set_id,"artifact_type":review_core::task::owned_children::TASK_OWNED_CHILD_SET_V1,"record":set}])
+            json!([{"artifact_id":set_id,"artifact_type":af_contracts::task::owned_children::TASK_OWNED_CHILD_SET_V1,"record":set}])
         );
         let records = value["execution_records"].as_array().unwrap();
         let owned: Vec<_> = records
@@ -322,7 +322,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
             value["history"].as_array().unwrap().len(),
             before
                 .iter()
-                .filter(|event| !review_store::store::task::is_execution_started(event))
+                .filter(|event| !af_store::store::task::is_execution_started(event))
                 .count()
         );
     }
@@ -354,7 +354,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     );
     assert_eq!(
         reopened
-            .replay(&review_store::store::task::task_run_id(TASK).unwrap())
+            .replay(&af_store::store::task::task_run_id(TASK).unwrap())
             .unwrap(),
         before
     );

@@ -16,7 +16,7 @@ import time
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/performance"))
-from perflab import budget, builds, hostprep, runner, telemetryexec  # noqa: E402
+from perflab import budget, builds, host_prep, runner, telemetry_exec  # noqa: E402
 
 IMAGE = ("ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:"
          "26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2")
@@ -37,17 +37,17 @@ def main():
     sentinel = root / "operator-sentinel"
     sentinel.write_bytes(b"external sentinel")
     backing, mount, control = root / "scratch.img", root / "scratch", root / "owner"
-    hostprep.prepare(str(backing), str(mount), SMALL_BYTES)
+    host_prep.prepare(str(backing), str(mount), SMALL_BYTES)
     # A crash before the owner is installed retains the image; it never authorizes a
     # measurement. All actual launches below are fenced by the trusted owner.
-    with hostprep.TelemetryOwner(str(control), str(mount), create=True,
+    with host_prep.TelemetryOwner(str(control), str(mount), create=True,
                                 image=str(backing)) as owner:
         environment = {"logical_cpus": 1, "memory_limit_bytes": 256 << 20,
                        "pid_limit": 64, "scratch_limit_bytes": SMALL_BYTES}
         timing = budget.Budget(time.monotonic() + 90, time.monotonic, 0)
         scratch, cpus, runtime = runner.contained_host("docker", IMAGE, str(mount),
                                                        environment, timing, time.monotonic)
-        executor = telemetryexec.Contained("docker", image, environment, scratch,
+        executor = telemetry_exec.Contained("docker", image, environment, scratch,
             os.getuid(), os.getgid(), cpus, "smoke", runtime, owner=owner)
 
         def execute(label, script, inspect=False, selected=executor, readable=()):
@@ -67,7 +67,7 @@ while not Path('release').exists():
     assert time.monotonic() < until, 'controller did not release fixture'
     time.sleep(.01)
 ''' + script
-            execution = telemetryexec.Execution([selected.python, "-I", "-B", "-c", script],
+            execution = telemetry_exec.Execution([selected.python, "-I", "-B", "-c", script],
                 env, str(work), [str(work)], list(readable), str(capture), label, SMALL_BYTES,
                 time.monotonic() + 30, FILE_BYTES)
             outcomes, errors = [], []
@@ -106,7 +106,7 @@ while not Path('release').exists():
             assert backing.stat().st_size == SMALL_BYTES
             info = os.statvfs(mount)
             assert info.f_blocks * info.f_frsize <= SMALL_BYTES
-            assert telemetryexec.allocated([str(capture)]) <= 2 * FILE_BYTES + 16384
+            assert telemetry_exec.allocated([str(capture)]) <= 2 * FILE_BYTES + 16384
             shutil.rmtree(own)  # Only after confirmed namespace removal.
             print("real Docker measurement:", label, "passed", flush=True)
             return outcome
@@ -165,7 +165,7 @@ else:
                                       context).decode().strip()
                 try:
                     volumes = docker("volume", "ls", "--quiet")
-                    hostile = telemetryexec.Contained("docker", builds.BuildImage("docker", volume_image),
+                    hostile = telemetry_exec.Contained("docker", builds.BuildImage("docker", volume_image),
                         environment, scratch, os.getuid(), os.getgid(), cpus, "volume", runtime,
                         owner=owner)
                     refused = execute("implicit-volume", "raise AssertionError('must not run')",

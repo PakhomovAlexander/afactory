@@ -1,6 +1,6 @@
 //! Pi's token-free setup/status/catalog boundary. Raw credentials never enter this process.
 use super::*;
-use review_runner_pi::{PiConfig, Ready};
+use af_runner_pi::{PiConfig, Ready};
 
 pub(super) fn registry_config(
     kind: ProviderKind,
@@ -79,7 +79,7 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
             .map_err(|_| invalid)?;
         let version = version.strip_suffix('\n').unwrap_or(&version);
         let version = version.strip_suffix('\r').unwrap_or(version);
-        if version != review_runner_pi::SDK_VERSION {
+        if version != af_runner_pi::SDK_VERSION {
             return Err(invalid.into());
         }
         let release = install.join("releases").join(version);
@@ -123,7 +123,7 @@ pub(super) fn probe(
         return Err("Pi profile must be machine-local and outside repository-owned paths; select an external --auth-dir".into());
     }
     let node = node()?;
-    let ready = review_runner_pi::probe(&node, config, auth, timeout, Some(cancelled))?;
+    let ready = af_runner_pi::probe(&node, config, auth, timeout, Some(cancelled))?;
     Ok((node, ready))
 }
 pub(super) fn status(
@@ -189,7 +189,7 @@ fn setup_outcome(
     }
     let backend =
         backend.ok_or("Pi setup requires --backend with an exact SDK/profile provider ID")?;
-    if !review_runner_pi::exact_id(backend) {
+    if !af_runner_pi::exact_id(backend) {
         return Err("Pi requires an exact SDK/profile provider ID".into());
     }
     let auth = auth
@@ -259,7 +259,7 @@ pub fn setup(
         .unwrap_or_else(|detail| (EXIT_HUMAN_ACTION_REQUIRED, "human_action_required", detail));
     // Never fabricate a supported identity for an invalid request, or echo raw invalid input.
     let id = validate_explicit_id(id).is_ok().then_some(id);
-    let backend = backend.filter(|value| review_runner_pi::exact_id(value));
+    let backend = backend.filter(|value| af_runner_pi::exact_id(value));
     if json {
         println!(
             "{}",

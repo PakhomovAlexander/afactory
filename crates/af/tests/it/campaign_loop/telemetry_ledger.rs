@@ -93,7 +93,7 @@ fn review_ledger(telemetry: &Path) -> Value {
 /// Every log of the Store at `state`: its events as `(sequence, type, id)`.
 fn store_logs(state: &str) -> Logs {
     let store =
-        review_store::EventStore::open_read_only(Path::new(state).join("events.sqlite")).unwrap();
+        af_store::EventStore::open_read_only(Path::new(state).join("events.sqlite")).unwrap();
     store
         .run_ids()
         .unwrap()
@@ -139,7 +139,7 @@ enum Stable {
 /// Every log of the Store at `state` in run-id order, as `Stable`.
 fn stable_logs(state: &str) -> Vec<Stable> {
     let store =
-        review_store::EventStore::open_read_only(Path::new(state).join("events.sqlite")).unwrap();
+        af_store::EventStore::open_read_only(Path::new(state).join("events.sqlite")).unwrap();
     store
         .run_ids()
         .unwrap()
@@ -302,7 +302,7 @@ fn telemetry_ledger_covers_the_campaign_and_fails_open() {
     let failing = tempfile::tempdir().unwrap();
     let (broken, _, failing_stable) = two_recorded_rounds(
         failing.path(),
-        &[(review_pipeline::telemetry::FAIL_SETTING, "1")],
+        &[(af_runtime::telemetry::FAIL_SETTING, "1")],
     );
     assert_eq!(broken["coverage"], "incomplete");
     let reasons = broken["coverage_reasons"].to_string();
@@ -515,7 +515,7 @@ fn telemetry_finding_summary_for_every_admitted_report() {
         .unwrap();
     assert_eq!(*reported.last().unwrap(), last_report);
     let store =
-        review_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite")).unwrap();
+        af_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite")).unwrap();
     let artifact = store
         .replay("campaign-telemetry-escalation")
         .unwrap()
@@ -588,16 +588,15 @@ fn telemetry_stale_demand_names_its_own_subject() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     // The Demand's own Subject and the Snapshot bound to it.
     let log = format!("campaign-{campaign}");
-    let cas = review_store::Cas::open(Path::new(&state).join("cas")).unwrap();
+    let cas = af_store::Cas::open(Path::new(&state).join("cas")).unwrap();
     let subject_of = |round: u64| {
         let store =
-            review_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite"))
-                .unwrap();
+            af_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite")).unwrap();
         let subject = store
             .replay(&log)
             .unwrap()
             .into_iter()
-            .filter(|event| event.event_type == review_core::EventType::RoundStartedV1)
+            .filter(|event| event.event_type == af_contracts::EventType::RoundStartedV1)
             .find(|event| event.payload["round"] == round)
             .unwrap()
             .payload["subject_id"]
@@ -605,7 +604,7 @@ fn telemetry_stale_demand_names_its_own_subject() {
             .unwrap()
             .to_string();
         let snapshot =
-            serde_json::from_value::<review_core::SubjectV1>(cas.get_json(&subject).unwrap())
+            serde_json::from_value::<af_contracts::SubjectV1>(cas.get_json(&subject).unwrap())
                 .unwrap()
                 .head_snapshot_id;
         (subject, snapshot)
@@ -664,7 +663,7 @@ fn telemetry_stale_demand_names_its_own_subject() {
 /// transition, wherever it occurs.
 #[test]
 fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
-    use review_store::store::observer::{Commit, CommitObserver as _};
+    use af_store::store::observer::{Commit, CommitObserver as _};
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = super::fixture(dir.path());
     std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
@@ -714,17 +713,17 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let log = format!("campaign-{campaign}");
     let store_dir = Path::new(&state);
-    let cas = review_store::Cas::open(store_dir.join("cas")).unwrap();
-    let store = review_store::EventStore::open(store_dir.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open(store_dir.join("cas")).unwrap();
+    let store = af_store::EventStore::open(store_dir.join("events.sqlite")).unwrap();
     let events = store.replay(&log).unwrap();
-    let ledger = review_store::LedgerProjection::rebuild(&store, &cas, &log)
+    let ledger = af_store::LedgerProjection::rebuild(&store, &cas, &log)
         .unwrap()
         .into_ledger();
     let satisfaction = ledger.demand(&demand_id).unwrap().satisfactions[0].clone();
     assert_eq!(satisfaction.satisfaction.evidence_id, evidence_id);
     let started = events
         .iter()
-        .find(|event| event.event_type == review_core::EventType::RoundStartedV1)
+        .find(|event| event.event_type == af_contracts::EventType::RoundStartedV1)
         .unwrap()
         .clone();
     let own_subject = started.payload["subject_id"].as_str().unwrap().to_string();
@@ -733,12 +732,12 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
     // Round 2 on another Subject, then the reuse of Round 1's satisfaction, in one commit.
     let head = cas.put(b"another head snapshot").unwrap();
     let subject = cas
-        .put_json(&serde_json::to_value(review_core::SubjectV1::whole_tree(&head)).unwrap())
+        .put_json(&serde_json::to_value(af_contracts::SubjectV1::whole_tree(&head)).unwrap())
         .unwrap();
     let mut payload = started.payload.clone();
     payload["round"] = 2.into();
     payload["subject_id"] = subject.clone().into();
-    let second_round = review_core::RunEvent {
+    let second_round = af_contracts::RunEvent {
         event_id: "01jd8m4qz9k7v3n2p6r8t0w2r2".into(),
         sequence: next,
         payload,
@@ -758,7 +757,7 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
             .collect(),
         ..started.clone()
     };
-    let admission = review_core::EvidenceReuseAdmissionV1 {
+    let admission = af_contracts::EvidenceReuseAdmissionV1 {
         demand_id: demand_id.clone(),
         satisfaction_id: satisfaction.artifact_id.clone(),
         subject_id: satisfaction.satisfaction.subject_id.clone(),
@@ -768,8 +767,8 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
     };
     let (record, _) = cas
         .put_artifact(
-            review_core::contract::EVIDENCE_REUSE_ADMISSION_V1,
-            review_core::Producer::KernelOperation {
+            af_contracts::contract::EVIDENCE_REUSE_ADMISSION_V1,
+            af_contracts::Producer::KernelOperation {
                 run_id: log.clone(),
                 node_id: None,
                 operation_id: "reuse".into(),
@@ -779,11 +778,11 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
             serde_json::to_value(&admission).unwrap(),
         )
         .unwrap();
-    let reuse = review_core::RunEvent {
+    let reuse = af_contracts::RunEvent {
         event_id: "01jd8m4qz9k7v3n2p6r8t0w2r3".into(),
         sequence: next + 1,
-        event_type: review_core::EventType::EvidenceReuseAdmittedV1,
-        payload: serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+        event_type: af_contracts::EventType::EvidenceReuseAdmittedV1,
+        payload: serde_json::to_value(af_contracts::RecordedArtifactPayloadV1 {
             artifact_id: record.clone(),
         })
         .unwrap(),
@@ -797,7 +796,7 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
     let telemetry = dir.path().join("telemetry");
     let recording = crate::telemetry_ledger::Recording::start(
         &telemetry,
-        review_telemetry::level::Level::Spans,
+        af_telemetry::level::Level::Spans,
         store_dir,
         &log,
         1,
@@ -820,7 +819,7 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
         .find(|demand| demand.demand_id == demand_id)
         .unwrap();
     assert_eq!(demand.status, "satisfied", "{demand:?}");
-    let at = |kind: review_core::EventType| {
+    let at = |kind: af_contracts::EventType| {
         events
             .iter()
             .find(|event| event.event_type == kind)
@@ -844,12 +843,12 @@ fn telemetry_demand_reuse_takes_stale_back_to_satisfied() {
             (
                 "opened",
                 None,
-                Some(at(review_core::EventType::DemandRecordedV1))
+                Some(at(af_contracts::EventType::DemandRecordedV1))
             ),
             (
                 "evidence_satisfied",
                 Some(evidence_id.as_str()),
-                Some(at(review_core::EventType::EvidenceSatisfiedV1))
+                Some(at(af_contracts::EventType::EvidenceSatisfiedV1))
             ),
             ("stale", None, Some(next)),
             (

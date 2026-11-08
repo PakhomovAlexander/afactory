@@ -48,7 +48,7 @@ schema_file = "telemetry-read-latency-v2.json"
 inputs = ["scripts/telemetry-corpus.py"]
 levels = ["content"]
 
-# Profiles: what one trigger measures, within the hard caps of perflab/telemetrylab.py. -----------
+# Profiles: what one trigger measures, within the hard caps of perflab/telemetry_lab.py. -----------
 # Bounded filesystem capacity: the former 4/8/12 GiB workload allowance plus 12 GiB for
 # AF's unchanged 10 GiB free-space admission floor and ext4 overhead/headroom. This is
 # capacity, not a reservation exemption: all writable bytes still share this hard bound.

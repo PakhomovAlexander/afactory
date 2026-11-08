@@ -40,7 +40,7 @@ import zlib
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from . import admission, archive, bundle, compare, contracts, limits
+from . import admission, archive, bundle, evaluate_results, contracts, limits
 from .values import ContractError, check_relative_path, require, sha256_bytes
 
 API_URL = "https://api.github.com"
@@ -545,7 +545,7 @@ def _from_members(members):
     files = dict((name[len(BUNDLE_PREFIX):], value) for name, value in members.items()
                  if name.startswith(BUNDLE_PREFIX))
     require(doc["content"] == "shard_bundle" or not any(
-        name.startswith(compare.SHARD_DIR + "/") for name in files),
+        name.startswith(evaluate_results.SHARD_DIR + "/") for name in files),
         "a run bundle artifact holds a shard's files; each shard travels in its own")
     views = []
     declared_views = set(doc["views"])
@@ -633,7 +633,7 @@ def fetch(store, collector, run_id, lab_run=None):
         for doc, files, shard_views, _ in transports:
             if doc["content"] != "shard_bundle":
                 continue
-            _materialize(os.path.join(run_dir, compare.SHARD_DIR, str(doc["shard"])), files)
+            _materialize(os.path.join(run_dir, evaluate_results.SHARD_DIR, str(doc["shard"])), files)
             views.extend(shard_views)
         names = [name for name, _ in views]
         require(len(names) == len(set(names)), "two artifacts carry one view name")
@@ -692,10 +692,10 @@ def _members(run_dir, content, shard=None, views=()):
     """(transport document, [(member name, bytes)]) of one bundle of a run directory."""
     if content == "run_bundle":
         root = run_dir
-        _, hashes = bundle.verify(root, limits.MAX_JSON_BYTES * 2, skip=(compare.SHARD_DIR,),
+        _, hashes = bundle.verify(root, limits.MAX_JSON_BYTES * 2, skip=(evaluate_results.SHARD_DIR,),
                                   label="run")
     else:
-        root = os.path.join(run_dir, compare.SHARD_DIR, str(shard))
+        root = os.path.join(run_dir, evaluate_results.SHARD_DIR, str(shard))
         _, hashes = bundle.verify(root, limits.SHARD_BUNDLE_BYTES_MAX, label="shard")
     plan = contracts.read_file(os.path.join(run_dir, "run.json"), "run")
     doc = {"schema": contracts.TRANSPORT_SCHEMA, "run_id": plan["run_id"], "content": content,

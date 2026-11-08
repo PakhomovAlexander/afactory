@@ -6,7 +6,7 @@
 //! model Workers. Isolated fake Providers serve only catalog and identity probes. A second test
 //! feeds the report renderer's own bytes to `scripts/backlog-check-triage.py`.
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -42,8 +42,11 @@ fn install_issue_triage(repo: &Path) {
         let mut pin = staged["packages"][name].clone();
         assert_eq!(
             pin["digest"].as_str().unwrap(),
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap())
+            )
+            .unwrap(),
             "{name}: the staged pin is the staged bytes"
         );
         let path = format!(".af/task-packages/{name}");
@@ -297,8 +300,8 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
 /// exactly, through the real renderer and the real script.
 #[test]
 fn the_check_reads_the_triage_block_from_the_report_renderers_bytes() {
-    use review_core::task::document::DocumentDraftV2;
-    use review_pipeline::task::report_task::{ReportDraft, render_report};
+    use af_contracts::task::document::DocumentDraftV2;
+    use af_runtime::task::report_domain::{ReportDraft, render_report};
 
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
@@ -326,7 +329,7 @@ fn the_check_reads_the_triage_block_from_the_report_renderers_bytes() {
             {"heading": "Recommendation", "body": "Take it on the default pipeline."},
         ],
         "citations": ["issue"],
-        "repository_citations": [{"path": "crates/review-core/src/task/state.rs", "line": 483}],
+        "repository_citations": [{"path": "crates/af-contracts/src/task/state.rs", "line": 483}],
     }))
     .unwrap();
     let sources = serde_json::from_slice(

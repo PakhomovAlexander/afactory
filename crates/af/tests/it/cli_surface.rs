@@ -279,14 +279,14 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     let topic = af(&["help", "task-states"]);
     assert!(topic.status.success(), "{}", err(&topic));
     let text = out(&topic);
-    for cause in review_core::task::state::TaskCauseV1::ALL {
+    for cause in af_contracts::task::state::TaskCauseV1::ALL {
         assert!(
             text.contains(cause.as_str()),
             "{} missing:\n{text}",
             cause.as_str()
         );
     }
-    for outcome in review_core::task::state::TaskOutcomeV1::ALL {
+    for outcome in af_contracts::task::state::TaskOutcomeV1::ALL {
         assert!(text.contains(outcome.as_str()), "{text}");
     }
     for needle in [

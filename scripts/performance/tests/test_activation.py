@@ -18,8 +18,8 @@ from urllib.parse import urlsplit
 
 from fractions import Fraction
 
-from perflab import activation, calibration, compare, contracts, equivalence, gitrefs
-from perflab import planning, stats, suite, tomlfile, transport
+from perflab import activation, calibration, evaluate_results, contracts, equivalence, git_refs
+from perflab import planning, stats, suite, toml_file, transport
 from perflab.values import ContractError
 
 from tests import activation_fixtures as records
@@ -160,7 +160,7 @@ class Verification(support.TempDir):
         files = dict(files)
         files[planning.ACTIVATION_PATH] = manifest_bytes
         control = repo.commit("activate", files)
-        return gitrefs.Git(repo.path), control
+        return git_refs.Git(repo.path), control
 
     def fetched(self, lab, git, control, **options):
         collector = transport.Collector(FakeGitHub(lab), fixtures.REPOSITORY, "token",
@@ -170,7 +170,7 @@ class Verification(support.TempDir):
         target = self.path("fetched-%d" % len(os.listdir(self.tmp)))
         evidence = activation.fetch_evidence(collector, cohort, os.path.join(target, "evidence"))
         os.makedirs(os.path.join(target, "runs"))
-        with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+        with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
             return activation.verify(git, control, evidence=evidence,
                                      scratch=os.path.join(target, "runs"), replan=lab.replan,
                                      producer=lab.producer,
@@ -281,10 +281,10 @@ class Verification(support.TempDir):
                                                                    calibrated_groups=groups)
                 control = repo.commit("activate %s" % groups, files)
                 with self.assertRaisesRegex(ContractError, why):
-                    activation.verify(gitrefs.Git(repo.path), control)
+                    activation.verify(git_refs.Git(repo.path), control)
         files[planning.ACTIVATION_PATH] = records.manifest(files, documents)
         control = repo.commit("activate a", files)
-        doc = activation.verify(gitrefs.Git(repo.path), control).doc
+        doc = activation.verify(git_refs.Git(repo.path), control).doc
         self.assertEqual(doc["calibrated_groups"], ["a"])
         critical = sorted(case["instance_id"] for case in cohort["cases"]
                           if case["criticality"] == "critical")
@@ -313,7 +313,7 @@ class Verification(support.TempDir):
         with mock.patch.object(transport, "HttpsTransport", lambda: fake), \
                 mock.patch.object(calibration, "replanner", lambda *args: lab.replan), \
                 mock.patch.object(calibration, "producer_check", lambda *args: lab.producer), \
-                mock.patch.object(compare, "evaluate", fixtures.evaluate_once), \
+                mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once), \
                 mock.patch.dict(os.environ, {"AF_PERF_TOKEN": "token"}), \
                 redirect_stderr(errors), redirect_stdout(io.StringIO()):
             code = cli.main(["activate", "--verify-proposed", "--repo", git.repo,
@@ -471,7 +471,7 @@ class Versions(support.TempDir):
                    % (Shared.cohort.authority, Shared.cohort.lab.cohort["policy_digest"],
                       "ab" * 32))
         control = repo.commit("earlier", {planning.ACTIVATION_PATH: earlier})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         with self.assertRaisesRegex(ContractError, "expected af.perf-activation/3"):
             activation.read_manifest(git, control)
         # A push after it, whose control is that revision, plans nothing from it.
@@ -487,7 +487,7 @@ class EquivalentAdapter(support.TempDir):
     measures as active only with verified execution evidence (ADR-0183, ADR-0184)."""
 
     GROUP = records.BRIDGE_ADAPTER
-    CLOSURE = "crates/review-pipeline/examples/perf-probe/cases.rs"
+    CLOSURE = "crates/af-runtime/examples/perf-probe/cases.rs"
     RETAINED = "fixtures/performance/activations/first.toml"
 
     def calibrated(self, name):
@@ -512,7 +512,7 @@ class EquivalentAdapter(support.TempDir):
         `aa` change how each run is written. (record, {role: (run directory, Actions run)})."""
         cohort = documents[0]
         admission = {"equivalence_group": self.GROUP, "adapter_files": [self.CLOSURE]}
-        ctx = equivalence.context(cohort, tomlfile.loads(base_manifest, "base"), admission,
+        ctx = equivalence.context(cohort, toml_file.loads(base_manifest, "base"), admission,
                                   bridge, activation._adapters(git, bridge))
         runs = {}
         for role, (baseline, candidate, actions_run, options) in (
@@ -525,10 +525,10 @@ class EquivalentAdapter(support.TempDir):
                                        mode=options.pop("mode", "proposed"),
                                        edit=options.pop("plan_edit", None))
             run_dir = self.path("%s-%s" % (name, role))
-            with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+            with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
                 records.measured_run(plan, run_dir, **options)
             runs[role] = (run_dir, actions_run)
-        with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+        with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
             return equivalence.compute(ctx, runs), runs
 
     def admit(self, name, bridge_files, adapter_files=None, golden=None, aa=None, edit=None):
@@ -540,7 +540,7 @@ class EquivalentAdapter(support.TempDir):
         calibrated_manifest = records.manifest(files, documents)
         bridge = repo.commit("bridge", bridge_files)
         merged = repo.commit("merged", {"README": b"after the bridge merged\n"})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         record, runs = self.evidence(name, git, documents, calibrated_manifest, bridge, merged,
                                      golden, aa)
         if edit is not None:
@@ -593,7 +593,7 @@ class EquivalentAdapter(support.TempDir):
                                         api_url=API)
         activation.fetch_bridge_runs(collector, record, target)
         os.makedirs(self.path("bridge-scratch"))
-        with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+        with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
             bound = activation._recompute_equivalence(
                 record, target, self.path("bridge-scratch"), "activation.toml", git,
                 fixtures.REPOSITORY, doc["authority_sha"])
@@ -651,7 +651,7 @@ class EquivalentAdapter(support.TempDir):
                 activation.fetch_bridge_runs(collector, record, target)
                 os.makedirs(self.path("producer-%s-scratch" % name))
                 with self.assertRaisesRegex(ContractError, why):
-                    with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+                    with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
                         activation._recompute_equivalence(
                             record, target, self.path("producer-%s-scratch" % name), "a", git,
                             fixtures.REPOSITORY, doc["authority_sha"])
@@ -672,7 +672,7 @@ class EquivalentAdapter(support.TempDir):
                                         api_url=API)
         activation.fetch_bridge_runs(collector, record, target)
         os.makedirs(self.path("%s-scratch" % name))
-        with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+        with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
             return activation._recompute_equivalence(
                 record, target, self.path("%s-scratch" % name), "a", git, fixtures.REPOSITORY,
                 doc["authority_sha"])
@@ -730,9 +730,9 @@ class EquivalentAdapter(support.TempDir):
         bridge = repo.commit("bridge", {self.CLOSURE: b"// v2\n"})
         merged = repo.commit("merged", {"README": b"merged\n"})
         later = repo.commit("later control", {"NOTES": b"unrelated\n"})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         cohort = documents[0]
-        ctx = equivalence.context(cohort, tomlfile.loads(calibrated_manifest, "base"),
+        ctx = equivalence.context(cohort, toml_file.loads(calibrated_manifest, "base"),
                                   {"equivalence_group": self.GROUP,
                                    "adapter_files": [self.CLOSURE]},
                                   bridge, activation._adapters(git, bridge))
@@ -775,7 +775,7 @@ class EquivalentAdapter(support.TempDir):
         calibrated_manifest = records.manifest(files, documents)
         bridge = repo.commit("bridge", bridge_files)
         merged = repo.commit("merged", {"README": b"merged\n"})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         if golden and "baseline" in golden and golden["baseline"] is None:
             golden["baseline"] = bridge
         record, _ = self.evidence(name, git, documents, calibrated_manifest, bridge, merged,
@@ -838,7 +838,7 @@ class EquivalentAdapter(support.TempDir):
         os.makedirs(self.path("recompute-scratch"))
         with self.assertRaisesRegex(ContractError, "differs from the reviewed record "
                                     "\\(golden\\)"):
-            with mock.patch.object(compare, "evaluate", fixtures.evaluate_once):
+            with mock.patch.object(evaluate_results, "evaluate", fixtures.evaluate_once):
                 activation._recompute_equivalence(forged, target,
                                                   self.path("recompute-scratch"), "a", git,
                                                   fixtures.REPOSITORY, doc["authority_sha"])
@@ -856,7 +856,7 @@ class EquivalentAdapter(support.TempDir):
              "fixtures/performance/suite.toml"),
             ({"scripts/performance/cli.py": b"# another instrument\n"},
              "scripts/performance/cli.py"),
-            ({"crates/review-pipeline/examples/perf-probe/fixtures.rs": b"// workload\n"},
+            ({"crates/af-runtime/examples/perf-probe/fixtures.rs": b"// workload\n"},
              "perf-probe/fixtures.rs"),
             ({"fixtures/performance/adapters.toml": adapters.replace(
                 b'equivalence_group = "native_probe_public_api_v1"',
@@ -864,20 +864,20 @@ class EquivalentAdapter(support.TempDir):
              "outside equivalence group"),
             # The predecessor's protected diff omitted the instrument helpers: a bridge that
             # changed the calibration loop's multiplier beside its adapter passed (ADR-0185).
-            ({"crates/review-core/src/perf_calibration.rs": b"// loop multiplier 3\n"},
-             "crates/review-core/src/perf_calibration.rs"),
-            ({"crates/review-core/src/perf_trace.rs": b"// another recorder\n"},
-             "crates/review-core/src/perf_trace.rs"),
+            ({"crates/af-contracts/src/perf_calibration.rs": b"// loop multiplier 3\n"},
+             "crates/af-contracts/src/perf_calibration.rs"),
+            ({"crates/af-contracts/src/perf_trace.rs": b"// another recorder\n"},
+             "crates/af-contracts/src/perf_trace.rs"),
             # The predecessor's protected diff omitted the build closure (ADR-0184).
             ({"Cargo.lock": b"# lock stand-in\nversion = 4\n# changed\n"}, "Cargo.lock"),
-            ({"crates/review-pipeline/Cargo.toml": b"[package]\n"},
-             "crates/review-pipeline/Cargo.toml"),
+            ({"crates/af-runtime/Cargo.toml": b"[package]\n"},
+             "crates/af-runtime/Cargo.toml"),
             ({"crates/af/build.rs": b"fn main() {}\n"}, "crates/af/build.rs"),
             ({"rust-toolchain.toml": b"[toolchain]\nchannel = \"1.89.0\"\n"},
              "rust-toolchain.toml"),
             ({".cargo/config.toml": b"[build]\nrustflags = []\n"}, ".cargo/config.toml"),
-            ({"crates/review-pipeline/.cargo/config": b"[build]\n"},
-             "crates/review-pipeline/.cargo/config"),
+            ({"crates/af-runtime/.cargo/config": b"[build]\n"},
+             "crates/af-runtime/.cargo/config"),
         )
         for index, (bridge, why) in enumerate(cases):
             with self.subTest(why=why):
@@ -885,8 +885,8 @@ class EquivalentAdapter(support.TempDir):
                 calibrated_manifest = records.manifest(files, documents)
                 bridged = repo.commit("bridge", dict(bridge, **{
                     self.CLOSURE: b"// v%d\n" % (index + 3)}))
-                git = gitrefs.Git(repo.path)
-                base = tomlfile.loads(calibrated_manifest, "base")
+                git = git_refs.Git(repo.path)
+                base = toml_file.loads(calibrated_manifest, "base")
                 admission = {"kind": "equivalent_adapter", "equivalence_group": self.GROUP,
                              "adapter_files": [self.CLOSURE],
                              "calibrated_activation_path": self.RETAINED}
@@ -898,27 +898,27 @@ class EquivalentAdapter(support.TempDir):
         repo, files, documents = self.calibrated("deleted-lock")
         repo.git("rm", "-q", "Cargo.lock")
         bridged = repo.commit("bridge", {self.CLOSURE: b"// v9\n"})
-        base = tomlfile.loads(records.manifest(files, documents), "base")
+        base = toml_file.loads(records.manifest(files, documents), "base")
         with self.assertRaisesRegex(ContractError, "has no Cargo.lock"):
             activation.protected_diff(
-                gitrefs.Git(repo.path), documents[0]["authority_sha"], bridged,
+                git_refs.Git(repo.path), documents[0]["authority_sha"], bridged,
                 {"equivalence_group": self.GROUP, "adapter_files": [self.CLOSURE],
                  "calibrated_activation_path": self.RETAINED}, base, base)
         # The unchanged build closure and a named adapter file alone are admitted.
         repo, files, documents = self.calibrated("unchanged")
         bridged = repo.commit("bridge", {self.CLOSURE: b"// v10\n"})
-        base = tomlfile.loads(records.manifest(files, documents), "base")
+        base = toml_file.loads(records.manifest(files, documents), "base")
         self.assertEqual(activation.protected_diff(
-            gitrefs.Git(repo.path), documents[0]["authority_sha"], bridged,
+            git_refs.Git(repo.path), documents[0]["authority_sha"], bridged,
             {"equivalence_group": self.GROUP, "adapter_files": [self.CLOSURE],
              "calibrated_activation_path": self.RETAINED}, base, base), [self.CLOSURE])
         with self.assertRaisesRegex(ContractError, "not in the closure"):
             repo, files, documents = self.calibrated("extra")
-            extra = "crates/review-pipeline/examples/perf-probe/extra.rs"
+            extra = "crates/af-runtime/examples/perf-probe/extra.rs"
             bridged = repo.commit("bridge", {extra: b"//\n"})
-            base = tomlfile.loads(records.manifest(files, documents), "base")
+            base = toml_file.loads(records.manifest(files, documents), "base")
             activation.protected_diff(
-                gitrefs.Git(repo.path), documents[0]["authority_sha"], bridged,
+                git_refs.Git(repo.path), documents[0]["authority_sha"], bridged,
                 {"equivalence_group": self.GROUP, "adapter_files": [extra],
                  "calibrated_activation_path": self.RETAINED}, base, base)
 

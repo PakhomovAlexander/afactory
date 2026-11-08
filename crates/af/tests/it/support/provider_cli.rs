@@ -128,7 +128,7 @@ pub fn with_page(kind: &str, script: &str, help: &str) -> String {
 }
 
 /// `script` with every `PROBE_INPUT` replaced by af's Provider admission probe,
-/// [`review_runner::task::provider::PROBE_INPUT`]. Under a `python` interpreter line it becomes a
+/// [`af_runner::task::provider::PROBE_INPUT`]. Under a `python` interpreter line it becomes a
 /// string literal of the whole stdin, newline included; under a shell one, a single-quoted word of
 /// the text without its newline, which `$(cat)` strips.
 pub fn with_probe(script: &str) -> String {
@@ -148,11 +148,11 @@ pub fn with_probe(script: &str) -> String {
     script
         .replace(
             "ALTERNATE_PROBE",
-            &literal(review_runner::task::provider::PROBE_INPUT_ALTERNATE),
+            &literal(af_runner::task::provider::PROBE_INPUT_ALTERNATE),
         )
         .replace(
             "PROBE_INPUT",
-            &literal(review_runner::task::provider::PROBE_INPUT),
+            &literal(af_runner::task::provider::PROBE_INPUT),
         )
 }
 

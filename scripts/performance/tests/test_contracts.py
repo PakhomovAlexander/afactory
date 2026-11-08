@@ -10,7 +10,7 @@ import os
 import re
 import unittest
 
-from perflab import adapters, clicases, contracts, diagnostics, suite, tomlfile
+from perflab import adapters, cli_cases, contracts, diagnostics, suite, toml_file
 from perflab.values import ContractError
 from tests.support import ROOT, read
 
@@ -115,7 +115,7 @@ def parse(entry):
     path = os.path.normpath(os.path.join(FIXTURES, entry["path"]))
     data = read(path)
     if entry["contract"] in TOML_CONTRACTS:
-        return tomlfile.loads(data, path), data
+        return toml_file.loads(data, path), data
     return json.loads(data.decode("utf-8")), data
 
 
@@ -126,19 +126,19 @@ def read_with_contract(entry):
     if contract == "suite":
         return suite.load_bytes(data, path).doc
     if contract == "activation":
-        return contracts.validate_activation(tomlfile.loads(data, path), path)
+        return contracts.validate_activation(toml_file.loads(data, path), path)
     if contract == "adapters":
         return adapters.load_bytes(data, path)
     if contract == "cli":
-        return clicases.load_bytes(data, path)
+        return cli_cases.load_bytes(data, path)
     if contract == "diagnostics":
         return diagnostics.load_bytes(data, path)
     if contract == "telemetry-lab":
-        return contracts.validate_telemetry_lab(tomlfile.loads(data, path), path)
+        return contracts.validate_telemetry_lab(toml_file.loads(data, path), path)
     if contract == "telemetry-collector":
-        return contracts.validate_telemetry_collector(tomlfile.loads(data, path), path)
+        return contracts.validate_telemetry_collector(toml_file.loads(data, path), path)
     if contract == "nightly-config":
-        return contracts.validate_nightly_config(tomlfile.loads(data, path), path)
+        return contracts.validate_nightly_config(toml_file.loads(data, path), path)
     doc = contracts.read_json(data, contract, path)
     if "companion" in entry:
         cohort = contracts.read_file(os.path.join(FIXTURES, entry["companion"]), "cohort")
@@ -357,7 +357,7 @@ class TelemetryLabVersion(unittest.TestCase):
         # The accepted document identities moved to @2, so the registry is af.perf-telemetry-lab/3;
         # the /2 registry, which named other documents, is refused with no adapter.
         path = os.path.join(ROOT, "fixtures/performance/telemetry.toml")
-        doc = tomlfile.loads(read(path), path)
+        doc = toml_file.loads(read(path), path)
         self.assertEqual(doc["schema"], "af.perf-telemetry-lab/3")
         contracts.validate_telemetry_lab(doc, path)
         self.assertEqual(contracts.schema_file("telemetry-lab"), "performance-telemetry-lab-v3.json")

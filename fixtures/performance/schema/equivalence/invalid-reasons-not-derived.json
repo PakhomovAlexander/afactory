@@ -1,7 +1,7 @@
 {
   "equivalence_group": "native_probe_public_api_v1",
   "adapter_files": [
-    "crates/review-pipeline/examples/perf-probe/cases.rs"
+    "crates/af-runtime/examples/perf-probe/cases.rs"
   ],
   "bridge_adapters": [
     "native_probe_public_api_v1"

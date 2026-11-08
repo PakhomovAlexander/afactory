@@ -30,19 +30,19 @@ TODAY = '2026-10-29'
 END = int(dt.datetime(2026, 10, 30, tzinfo=dt.timezone.utc).timestamp() * 1000)
 START = END - 7 * 86_400_000
 NOON = END - 12 * 3_600_000
-CAPTURE = 'review-source-git::it capture::a_settled_worktree_is_admitted_on_retry'
+CAPTURE = 'af-source-git::it capture::a_settled_worktree_is_admitted_on_retry'
 HEAVY = 'af::it task_heavy::loaded'
 IGNORED = 'af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample'
-FEATURE = 'review-core perf_trace::perf_case'
-SHARED = ('review-core shared::same_name', 'review-graph shared::same_name')
+FEATURE = 'af-contracts perf_trace::perf_case'
+SHARED = ('af-contracts shared::same_name', 'af-graph shared::same_name')
 # What crates/af/tests/it/task_gate.rs prints, and af 0.13.0 recorded as flaky (#436).
 FRAGMENTS = ('gate-store-regression', 'fails_when_crowded', 'af::it', 'many_0')
-MANY = [f'review-graph many::case_{i:02}' for i in range(25)]
+MANY = [f'af-graph many::case_{i:02}' for i in range(25)]
 
 
 def inventory():
     suites = {}
-    for identity in (CAPTURE, 'review-source-git::it capture::other', HEAVY, IGNORED, FEATURE,
+    for identity in (CAPTURE, 'af-source-git::it capture::other', HEAVY, IGNORED, FEATURE,
                      *SHARED, *MANY):
         binary, name = identity.split(' ')
         suites.setdefault(binary, {'testcases': {}})['testcases'][name] = {
@@ -312,7 +312,7 @@ class Resolution(unittest.TestCase):
     def test_ambiguous_fixture_ignored_and_feature_only_names_are_rejected(self):
         self.assertEqual(self.resolve('shared::same_name'), (None, 'ambiguous: ' + ', '.join(SHARED)))
         for name in (*FRAGMENTS, IGNORED, FEATURE, 'perf_trace::perf_case', 'capture::',
-                     'review-source-git::it capture::a_settled', 'af::it  task_heavy::loaded'):
+                     'af-source-git::it capture::a_settled', 'af::it  task_heavy::loaded'):
             with self.subTest(name=name):
                 self.assertEqual(self.resolve(name), (None, 'not a test'))
 
@@ -334,7 +334,7 @@ kind = 'load' if 'test(/^' in expression else 'confirm'
 with (logs / f'{kind}.log').open('a') as stream:
     stream.write(json.dumps(args) + '\n')
 if kind == 'load':
-    cases = {'review-graph many::case_01': 'fail'}
+    cases = {'af-graph many::case_01': 'fail'}
 else:
     index = len((logs / 'confirm.log').read_text().splitlines())
     cases = json.loads(Path(os.environ['FAKE_CARGO_PLAN']).read_text())[index - 1]
@@ -454,9 +454,10 @@ class Confirm(QuarantineFiles):
         # Five whole runs of exactly the held identities: no early stop, no retry, no rerun alone.
         runs = self.runs()
         self.assertEqual(len(runs), 5)
-        exact = ('(binary_id(=af::it) & test(=task_heavy::loaded)) | (binary_id(=review-graph) & '
-                 'test(=many::case_00)) | (binary_id(=review-source-git::it) & '
-                 'test(=capture::a_settled_worktree_is_admitted_on_retry))')
+        exact = ('(binary_id(=af-graph) & test(=many::case_00)) | '
+                 '(binary_id(=af-source-git::it) & '
+                 'test(=capture::a_settled_worktree_is_admitted_on_retry)) | '
+                 '(binary_id(=af::it) & test(=task_heavy::loaded))')
         for args in runs:
             self.assertEqual(args[:13], ['nextest', 'run', '--workspace', '--locked', '--profile', 'ci',
                                          '--no-fail-fast', '--retries', '0', '--test-threads', '3',
@@ -553,13 +554,13 @@ class Apply(QuarantineFiles):
         self.assertEqual(self.entries(), {MANY[0]: {'state': 'flaky', 'since': TODAY,
                                                     'expires': '2026-11-12', 'evidence': ['T_OLD']}})
         self.assertEqual(sorted(p.name for p in self.issues.iterdir()),
-                         ['flaky-review-graph-many-case_00.md', 'p0-af-it-task_heavy-loaded.md'])
+                         ['flaky-af-graph-many-case_00.md', 'p0-af-it-task_heavy-loaded.md'])
         self.assertIn(f'flaky: {MANY[0]} (failed in 2 of 50 runs): set state flaky, since {TODAY}, '
                       'expires 2026-11-12', result.stdout)
         self.assertIn(f'always_fails: {HEAVY} (failed in 50 of 50 runs): removed the entry', result.stdout)
         self.assertIn(f'clean: {CAPTURE} (failed in 0 of 50 runs): removed the entry', result.stdout)
         self.assertIn(f"gh issue create --title 'flaky: {MANY[0]}' --label flaky --body-file "
-                      f"'{self.issues / 'flaky-review-graph-many-case_00.md'}'", result.stdout)
+                      f"'{self.issues / 'flaky-af-graph-many-case_00.md'}'", result.stdout)
         self.assertIn(f"gh issue create --title 'P0: {HEAVY} fails in every run' --label P0",
                       result.stdout)
 
@@ -575,7 +576,7 @@ class Apply(QuarantineFiles):
             MANY[0]: {**held(MANY[0]), 'evidence': ['T_A', 'T_B']}, HEAVY: held(HEAVY)}})
         self.assertEqual(self.apply(report({MANY[0]: [2, 4], HEAVY: list(range(1, 51))},
                                            system='Linux')).returncode, 0)
-        flaky = (self.issues / 'flaky-review-graph-many-case_00.md').read_text()
+        flaky = (self.issues / 'flaky-af-graph-many-case_00.md').read_text()
         self.assertIn(f'`{MANY[0]}` failed in 2 of 50 runs', flaky)
         self.assertIn('- Failing runs: 2 of 50 (runs 2, 4).', flaky)
         self.assertIn(f'- Commit: `{COMMIT}`, confirmed on {TODAY}.', flaky)
@@ -622,7 +623,7 @@ class Apply(QuarantineFiles):
         self.assertEqual(self.file.read_bytes(), before)
         self.assertEqual(set(self.dir.iterdir()) - files, {self.dir / 'report.json'})
         self.assertIn(f'flaky: {MANY[0]} (failed in 2 of 50 runs): would set state flaky', result.stdout)
-        self.assertIn(f'would write the flaky issue body {self.issues / "flaky-review-graph-many-case_00.md"}',
+        self.assertIn(f'would write the flaky issue body {self.issues / "flaky-af-graph-many-case_00.md"}',
                       result.stdout)
         self.assertIn('nothing written; rerun with --write --issues DIR to apply it', result.stdout)
         self.assertNotIn('gh issue create', result.stdout)
@@ -740,7 +741,7 @@ elif name == 'git':
             kind = os.environ['FAKE_ARCHIVE_MEMBER']
             for member in original:
                 if (kind == 'missing-init' and member.name.endswith('/__init__.py')
-                        or kind == 'missing-hostlock' and member.name.endswith('/hostlock.py')):
+                        or kind == 'missing-host_lock' and member.name.endswith('/host_lock.py')):
                     continue
                 modified.addfile(member, original.extractfile(member) if member.isfile() else None)
             member = tarfile.TarInfo('scripts/performance/perflab/injected')
@@ -753,10 +754,10 @@ elif name == 'git':
                 member.name = 'scripts/performance/perflab/../../../../outside'
             elif kind == 'outside-directory':
                 member.name, member.type = 'outside-directory', tarfile.DIRTYPE
-            elif kind not in ('missing-init', 'missing-hostlock'):
+            elif kind not in ('missing-init', 'missing-host_lock'):
                 assert kind == 'outside-file'
                 member.name = 'scripts/performance/outside.py'
-            if kind not in ('missing-init', 'missing-hostlock'):
+            if kind not in ('missing-init', 'missing-host_lock'):
                 modified.addfile(member)
         sys.stdout.buffer.write(output.getvalue())
     else:
@@ -772,22 +773,22 @@ elif name == 'python3':
 
     def instrument_import(name, globals=None, locals=None, fromlist=(), level=0):
         package = original_import(name, globals, locals, fromlist, level)
-        if name != 'perflab' or 'hostlock' not in fromlist:
+        if name != 'perflab' or 'host_lock' not in fromlist:
             return package
-        hostlock = package.hostlock
-        imported = Path(hostlock.__file__).resolve()
+        host_lock = package.host_lock
+        imported = Path(host_lock.__file__).resolve()
         assert (work / 'run').resolve() not in imported.parents, 'mutable host import'
         assert imported.parents[3].parent == work.resolve(), 'authority must be host-only'
         assert imported.parents[3].stat().st_mode & 0o777 == 0o700
         with (home / 'imports').open('a') as output:
             output.write(str(imported) + '\n')
         anchor = home / 'anchor.json'
-        hostlock.MACHINE_LOCK_ANCHOR = str(anchor)
-        hostlock.MACHINE_LOCK_DIRECTORY = str(home)
-        read_anchor = hostlock.read_anchor
-        check_directory = hostlock._check_directory
+        host_lock.MACHINE_LOCK_ANCHOR = str(anchor)
+        host_lock.MACHINE_LOCK_DIRECTORY = str(home)
+        read_anchor = host_lock.read_anchor
+        check_directory = host_lock._check_directory
         fstat, lstat, flock = os.fstat, os.lstat, fcntl.flock
-        # hostlock.os is shared: resolve before patching its process-wide lstat.
+        # host_lock.os is shared: resolve before patching its process-wide lstat.
         resolved_home = str(home.resolve())
 
         def anchor_stat(fd):
@@ -802,7 +803,7 @@ elif name == 'python3':
         def anchored_read(required=False):
             with (home / 'anchor-reads').open('a') as output:
                 output.write(json.dumps(required) + '\n')
-            with mock.patch.object(hostlock.os, 'fstat', anchor_stat):
+            with mock.patch.object(host_lock.os, 'fstat', anchor_stat):
                 identity = read_anchor(required=required)
             if required and os.environ.get('FAKE_REMOVE_ANCHOR_LOCK'):
                 anchor.unlink()
@@ -818,7 +819,7 @@ elif name == 'python3':
 
         def system_directory(directory, system_owned):
             assert system_owned, 'production system-directory validation must remain active'
-            with mock.patch.object(hostlock.os, 'lstat', root_directory_stat):
+            with mock.patch.object(host_lock.os, 'lstat', root_directory_stat):
                 check_directory(directory, system_owned)
 
         def acquired(fd, operation):
@@ -837,9 +838,9 @@ elif name == 'python3':
                 lock.rename(home / 'held-lock')
                 lock.write_text('replacement')
 
-        hostlock.read_anchor = anchored_read
-        hostlock._check_directory = system_directory
-        hostlock.fcntl.flock = acquired
+        host_lock.read_anchor = anchored_read
+        host_lock._check_directory = system_directory
+        host_lock.fcntl.flock = acquired
         return package
 
     with mock.patch.object(builtins, '__import__', instrument_import):
@@ -884,7 +885,7 @@ elif name == 'docker':
                 assert release.read() == 'stop'
             sys.exit(0)
         if os.environ.get('FAKE_DIRTY_HOSTLOCK'):
-            (work / 'run/src/scripts/performance/perflab/hostlock.py').write_text(
+            (work / 'run/src/scripts/performance/perflab/host_lock.py').write_text(
                 'raise RuntimeError("MUTABLE AUTHORITY IMPORTED")\n')
         if os.environ.get('FAKE_AUTHORITY_LINK'):
             imported = Path((home / 'imports').read_text().splitlines()[-1])
@@ -1009,11 +1010,11 @@ class ClawRunbook(unittest.TestCase):
         self.assertFalse(self.lock.exists())
         self.assertEqual(list(self.work.glob('host-authority-*')), [])
 
-    def test_previous_confirmation_dirtying_hostlock_refuses_before_import_or_docker(self):
+    def test_previous_confirmation_dirtying_host_lock_refuses_before_import_or_docker(self):
         self.prepare()
         # Git status can be fooled by this index flag; compare actual package bytes instead.
         subprocess.run([self.git, '-C', str(self.work / 'run/src'), 'update-index',
-                        '--assume-unchanged', 'scripts/performance/perflab/hostlock.py'],
+                        '--assume-unchanged', 'scripts/performance/perflab/host_lock.py'],
                        env=self.git_env, check=True)
         result = self.run_block(self.blocks[-1], extra_env={'FAKE_DIRTY_HOSTLOCK': '1'})
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1030,7 +1031,7 @@ class ClawRunbook(unittest.TestCase):
 
     def test_executable_bit_only_authority_change_refuses_before_import_or_docker(self):
         self.prepare()
-        path = self.work / 'run/src/scripts/performance/perflab/hostlock.py'
+        path = self.work / 'run/src/scripts/performance/perflab/host_lock.py'
         before = path.read_bytes()
         mode = path.stat().st_mode
         path.chmod(mode ^ stat.S_IXUSR)
@@ -1047,7 +1048,7 @@ class ClawRunbook(unittest.TestCase):
         package = self.work / 'run/src/scripts/performance/perflab'
         for kind in ('init', 'staged', 'untracked', 'ignored', 'symlink', 'fifo', 'missing'):
             with self.subTest(kind=kind):
-                name = ('__init__.py' if kind == 'init' else 'hostlock.py'
+                name = ('__init__.py' if kind == 'init' else 'host_lock.py'
                         if kind in ('symlink', 'fifo', 'missing') else 'injected.py')
                 path = package / name
                 before = path.read_bytes() if path.exists() else None
@@ -1103,7 +1104,7 @@ class ClawRunbook(unittest.TestCase):
         outside = self.dir / 'outside'
         outside.write_text('untouched')
         for kind in ('symlink', 'hardlink', 'absolute', 'traversal',
-                     'outside-file', 'outside-directory', 'missing-init', 'missing-hostlock'):
+                     'outside-file', 'outside-directory', 'missing-init', 'missing-host_lock'):
             with self.subTest(kind=kind):
                 result = self.run_block(self.blocks[-1],
                                         extra_env={'FAKE_ARCHIVE_MEMBER': kind})

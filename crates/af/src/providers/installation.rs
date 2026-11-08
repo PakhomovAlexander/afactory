@@ -16,7 +16,7 @@
 //! document, which carries only the af-authored [`CliInstallationFailure::summary`].
 
 use super::*;
-use review_runner::cli::{bounded_cli_line, error_and_fix, exit_description};
+use af_runner::cli::{bounded_cli_line, error_and_fix, exit_description};
 
 const VERSION_ARGUMENT: &str = "--version";
 
@@ -311,11 +311,11 @@ pub(super) fn run_bounded(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = match review_process::spawn(&mut command) {
+    let mut child = match af_process::spawn(&mut command) {
         Ok(child) => child,
         Err(error) => return BoundedRun::Unstartable(error),
     };
-    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut watch = af_process::ExitWatch::new(child.id());
     let mut stdout = child.stdout.take().expect("bounded run stdout was piped");
     let mut stderr = child.stderr.take().expect("bounded run stderr was piped");
     if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
@@ -333,7 +333,7 @@ pub(super) fn run_bounded(
             stop_probe(&mut child);
             return BoundedRun::GaveUp(error);
         }
-        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+        match af_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {

@@ -1,5 +1,5 @@
 //! Tasks: every Task this scope's Task state holds (docs/design/tui.md section 5.5), read by
-//! the functions behind `af task list --json` (`task_execution::list_common`) and `af task
+//! the functions behind `af task list --json` (`task_commands::list_common`) and `af task
 //! explain --json`, which is the `af task show --json` document with the plan and its graph.
 //!
 //! The bar groups the Tasks by state, and the folder's main pane opens on what needs a person,
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use super::{Effect, Pane, Row};
-use crate::task_execution;
+use crate::task_commands;
 use crate::tui::keymap::Key;
 use crate::tui::paint::{self, Paint, Span, Tone};
 use crate::tui::scope::{Scope, ScopeKind};
@@ -598,7 +598,7 @@ pub(crate) fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked
     if let Some(invoked) = cache.nodes.get(&key) {
         return Ok(invoked.clone());
     }
-    let envelope = task_execution::recorded_artifact(dir, id)?;
+    let envelope = task_commands::recorded_artifact(dir, id)?;
     let payload = &envelope["payload"];
     let invoked = match (payload["node"].as_str(), payload["invocation_id"].as_str()) {
         (Some(node), _) => Invoked {
@@ -632,7 +632,7 @@ struct Summary {
 }
 
 fn summary(dir: &Path, task_id: &str, cache: &mut Cache) -> Result<Summary, String> {
-    let document = task_execution::inspection_document(dir, task_id, true)?
+    let document = task_commands::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("Task {task_id} is not in {}", dir.display()))?;
     let stages = stages(&document, &mut |id| node_of(dir, id, cache))?;
     Ok(summary_of(&document, &stages))
@@ -754,7 +754,7 @@ struct Store {
     /// Who wrote the Store, when its event log refused itself as another release's: set where
     /// the Store is read, from that read's own error and the Store's writer markers, never from
     /// text a path could carry.
-    release: Option<review_core::store_writer::StoreProvenance>,
+    release: Option<af_contracts::store_writer::StoreProvenance>,
 }
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
@@ -810,7 +810,7 @@ fn read_target(target: &Target, cache: &mut Cache) -> Store {
     let (tasks, release) = match not_a_store(dir) {
         Some(refusal) => (Err(refusal), None),
         None => {
-            let listed = task_execution::list_common(dir);
+            let listed = task_commands::list_common(dir);
             let release = listed
                 .as_ref()
                 .err()
@@ -879,10 +879,10 @@ struct Detail {
 
 impl Detail {
     fn read(dir: &Path, task_id: &str, cache: &mut Cache) -> Result<Detail, String> {
-        let document = task_execution::inspection_document(dir, task_id, true)?
+        let document = task_commands::inspection_document(dir, task_id, true)?
             .ok_or_else(|| format!("Task {task_id} is no longer in {}", dir.display()))?;
         let revision = text(&document["revision_id"])?;
-        let revision = task_execution::recorded_artifact(dir, revision)?;
+        let revision = task_commands::recorded_artifact(dir, revision)?;
         let stages = stages(&document, &mut |id| node_of(dir, id, cache))?;
         Ok(Detail {
             dir: dir.to_path_buf(),
@@ -1032,7 +1032,7 @@ pub(crate) fn change_artifact(change: &Value) -> Option<&str> {
     };
     change[field]
         .as_str()
-        .filter(|id| review_core::is_digest(id))
+        .filter(|id| af_contracts::is_digest(id))
 }
 
 /// ` (+N unknown)` after a charged total when N Attempts' usage is unknown, so the total never
@@ -1289,7 +1289,7 @@ pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
     };
     let repo = std::fs::canonicalize(toplevel)
         .map_err(|error| format!("{}: {error}", toplevel.display()))?;
-    let dir = task_execution::default_task_state(root, &repo)?;
+    let dir = task_commands::default_task_state(root, &repo)?;
     let shown = scope.abbreviate(&dir);
     Ok(vec![Target {
         dir,
@@ -1382,7 +1382,7 @@ impl Discovery {
                 let mut taken = Vec::new();
                 let mut own = own.clone();
                 let name = project.label.clone().unwrap_or_else(|| {
-                    crate::projects::label_from_name(toplevel.file_name().unwrap_or_default())
+                    crate::project::label_from_name(toplevel.file_name().unwrap_or_default())
                 });
                 // Other Workspaces naming this checkout's Store as theirs are noted on it, as
                 // they are on a registry Store; the Store is this checkout's all the same.
@@ -1522,7 +1522,7 @@ pub(super) fn same_store(a: &Path, b: &Path) -> bool {
 /// name. A symlink to a Store is read through it, as `af task` reads the path; a link to
 /// nothing is still listed, so the pane shows its refusal rather than skipping it.
 pub(crate) fn user_targets(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
-    let local = task_execution::local_task_states(root);
+    let local = task_commands::local_task_states(root);
     let entries = match std::fs::read_dir(&local) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2165,8 +2165,12 @@ impl TasksPane {
     /// Read from each entry's `state` alone; empty when no readable Store lists a Task. With
     /// the rows, the bar id of the Task each Task row names, by row, which `Enter` opens.
     fn attention_rows(&self) -> (Vec<Row>, BTreeMap<usize, String>) {
-        use review_core::task::state::TaskAttentionV1;
-        type Entry<'a> = (&'a Store, &'a Listed, review_core::task::state::TaskStateV1);
+        use af_contracts::task::state::TaskAttentionV1;
+        type Entry<'a> = (
+            &'a Store,
+            &'a Listed,
+            af_contracts::task::state::TaskStateV1,
+        );
         let mut groups: Vec<(TaskAttentionV1, Vec<Entry>)> = TaskAttentionV1::ALL
             .into_iter()
             .map(|group| (group, Vec::new()))
@@ -2174,7 +2178,7 @@ impl TasksPane {
         for store in self.stores.iter().filter(|store| !earlier(store)) {
             for task in store.tasks.iter().flatten() {
                 // An entry whose state does not read is left out; its folder row still lists it.
-                let Ok(state) = task_execution::attention::state_of(&task.entry) else {
+                let Ok(state) = task_commands::attention::state_of(&task.entry) else {
                     continue;
                 };
                 let group = TaskAttentionV1::of(&state);
@@ -2592,7 +2596,7 @@ impl Pane for TasksPane {
                 let Some(id) = self.history.get(&row) else {
                     return Err("Enter opens the artifact of a HISTORY row".to_owned());
                 };
-                let value = match task_execution::recorded_artifact(&detail.dir, id) {
+                let value = match task_commands::recorded_artifact(&detail.dir, id) {
                     Ok(value) => value,
                     Err(error) => {
                         // An artifact the Store records but cannot give back refuses the Store,

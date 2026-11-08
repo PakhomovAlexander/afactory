@@ -88,7 +88,7 @@ fn receive(signal: Signal) {
         );
         return;
     }
-    review_process::kill_live_process_groups();
+    af_process::kill_live_process_groups();
     eprintln!("af: {signal} received again; killed Worker process groups and exiting");
     exit(signal);
 }

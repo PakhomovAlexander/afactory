@@ -8,13 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use review_config::lock::{AfPin, Lockfile, Pin, Registry};
-use review_config::{
+use af_contracts::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
+use af_pipeline_config::lock::{AfPin, Lockfile, Pin, Registry};
+use af_pipeline_config::{
     ArgSpec, BudgetSpec, BudgetUnit, CheckSpec, CommandSpec, ConvergenceSpec, Definition, EdgeSpec,
     GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PortSpec,
     ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec, TypedPortSpec,
 };
-use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
 use serde::Serialize;
 
 mod tasks;
@@ -119,7 +119,7 @@ impl RunnerKind {
     /// The generated binding passes the static rules of the one validation authority: no
     /// alias, a versioned exact ID and an effort level the Provider kind accepts (ADR-0148).
     fn check_models(self) -> Result<(), String> {
-        use review_runner_claude::models::{Kind, ProviderRef, check_static};
+        use af_runner::models::{Kind, ProviderRef, check_static};
         let kind = match self {
             Self::Claude => Kind::Claude,
             Self::Codex => Kind::Codex,
@@ -221,8 +221,8 @@ struct Report {
 /// the ones that wrote it. A nightly pins nothing either: a nightly is never pinned (ADR-0267).
 fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
     let version = env!("CARGO_PKG_VERSION");
-    let Some(receipt) = crate::selfmgmt::self_receipt() else {
-        let receipt = crate::selfmgmt::receipt_path()
+    let Some(receipt) = crate::self_management::self_receipt() else {
+        let receipt = crate::self_management::receipt_path()
             .map(|path| format!(" at {}", path.display()))
             .unwrap_or_default();
         return Ok((
@@ -233,7 +233,7 @@ fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
             )],
         ));
     };
-    if crate::selfmgmt::is_nightly_version(&receipt.version) {
+    if crate::self_management::is_nightly_version(&receipt.version) {
         return Ok((
             None,
             vec![format!(
@@ -247,7 +247,7 @@ fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
         receipt.sha256.len() == 64 && receipt.sha256.bytes().all(|byte| byte.is_ascii_hexdigit());
     let mut pin = AfPin::version_only(&receipt.version);
     let mut warnings = Vec::new();
-    match crate::selfmgmt::release_digests(&receipt.version) {
+    match crate::self_management::release_digests(&receipt.version) {
         Ok((digests, _)) => {
             match digests.get(&receipt.target) {
                 Some(listed) if own_is_digest && *listed != own => {
@@ -818,7 +818,7 @@ fn build_bundle(
         PIPELINE_NAME.to_string(),
         Pin {
             version: PIPELINE_VERSION.to_string(),
-            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+            digest: af_store::canonical::blob_content_id(pipeline.as_bytes()),
         },
     );
 
@@ -966,7 +966,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         .map(|id| NodeSpec {
             id: id.into(),
             kind: NodeKindSpec::Reviewer,
-            demands: Some(review_core::DemandRequirement::Required),
+            demands: Some(af_contracts::DemandRequirement::Required),
             inputs: vec![
                 typed_port("gate", contract::GATE_DECISION_V1),
                 prior_finding_set_port("prior_findings"),
@@ -1675,7 +1675,7 @@ fn validated_next_steps(
 }
 
 struct ExistingAuthority {
-    project: crate::project::ProjectFile,
+    project: crate::project_policy::ProjectFile,
     selected: String,
     pipeline_path: PathBuf,
     pipeline_text: String,
@@ -1686,8 +1686,8 @@ struct ExistingAuthority {
 fn parse_existing(repo: &Path) -> Result<ExistingAuthority, String> {
     let project_path = repo.join(".af/af.toml");
     let project_text = read_authority_text(&project_path)?;
-    let project = crate::project::ProjectFile::parse(&project_text)?;
-    let selected = project.review_pipeline().to_string();
+    let project = crate::project_policy::ProjectFile::parse(&project_text)?;
+    let selected = project.af_runtime().to_string();
     let pipeline_path = repo.join(format!(".af/pipelines/{selected}.toml"));
     let pipeline_text = read_authority_text(&pipeline_path)?;
     let definition = Definition::from_toml(&pipeline_text).map_err(|error| error.to_string())?;
@@ -1770,13 +1770,13 @@ fn authority_steps(repo: &Path, af: &Path) -> Result<(), AuthorityStop> {
     let project_path = af.join("af.toml");
     let project_text = typed(
         &project_path,
-        &|text| crate::project::ProjectFile::parse(text).map(drop),
-        &located::<crate::project::ProjectFile>,
+        &|text| crate::project_policy::ProjectFile::parse(text).map(drop),
+        &located::<crate::project_policy::ProjectFile>,
     )?;
-    let project = crate::project::ProjectFile::parse(&project_text)
+    let project = crate::project_policy::ProjectFile::parse(&project_text)
         .map_err(|message| stop(&project_path, None, &message, false))?;
-    let selected = project.review_pipeline().to_string();
-    let pipeline_path = repo.join(crate::project::pipeline_path_for(&selected));
+    let selected = project.af_runtime().to_string();
+    let pipeline_path = repo.join(crate::project_policy::pipeline_path_for(&selected));
     let pipeline = |path: &Path| {
         typed(
             path,
@@ -1803,7 +1803,7 @@ fn authority_steps(repo: &Path, af: &Path) -> Result<(), AuthorityStop> {
         .map_err(|error| stop(&lock_path, None, &error.to_string(), false))?;
     validate_no_stale_pins(repo, &lock)
         .map_err(|message| stop(&lock_path, None, &message, true))?;
-    crate::project::check_lock_af_version(&lock, ".af/af.lock")
+    crate::project_policy::check_lock_af_version(&lock, ".af/af.lock")
         .map_err(|message| stop(&lock_path, None, &message, true))?;
     let registry = Registry::new(af.join("workers"));
     let load = |path: &Path, name: &str, text: &str| -> Result<(), AuthorityStop> {
@@ -1818,7 +1818,7 @@ fn authority_steps(repo: &Path, af: &Path) -> Result<(), AuthorityStop> {
             .collect();
         match definition.load_with(&lock, &registry) {
             Ok(_) => Ok(()),
-            Err(review_config::ConfigError::Lock(error)) => {
+            Err(af_pipeline_config::ConfigError::Lock(error)) => {
                 Err(package_stop(af, path, &packages, &error))
             }
             Err(error) => Err(stop(path, None, &error.to_string(), false)),
@@ -1829,7 +1829,7 @@ fn authority_steps(repo: &Path, af: &Path) -> Result<(), AuthorityStop> {
         if candidate == selected {
             continue;
         }
-        let path = repo.join(crate::project::pipeline_path_for(&candidate));
+        let path = repo.join(crate::project_policy::pipeline_path_for(&candidate));
         // The reader checks a route target's pin before it parses it.
         let text =
             read_authority_text(&path).map_err(|message| stop(&path, None, &message, false))?;
@@ -1850,9 +1850,9 @@ fn package_stop(
     af: &Path,
     pipeline: &Path,
     packages: &[String],
-    error: &review_config::lock::LockError,
+    error: &af_pipeline_config::lock::LockError,
 ) -> AuthorityStop {
-    use review_config::lock::LockError;
+    use af_pipeline_config::lock::LockError;
     let message = error.to_string();
     let stop = |file: PathBuf, line, repin| AuthorityStop {
         file,
@@ -1871,7 +1871,7 @@ fn package_stop(
     let manifest_line = |root: &Path| {
         let path = root.join("reviewer.toml");
         let text = read_authority_text(&path).ok()?;
-        let error = toml::from_str::<review_config::lock::PackageManifest>(&text).err()?;
+        let error = toml::from_str::<af_pipeline_config::lock::PackageManifest>(&text).err()?;
         let start = error.span().map(|span| span.start.min(text.len()));
         let line = start.map(|start| text[..start].matches('\n').count() + 1);
         Some((path, line, error.message().to_owned()))
@@ -1959,8 +1959,8 @@ fn package_stop(
 }
 
 fn selected_pipeline(text: &str) -> Result<String, String> {
-    Ok(crate::project::ProjectFile::parse(text)?
-        .review_pipeline()
+    Ok(crate::project_policy::ProjectFile::parse(text)?
+        .af_runtime()
         .to_string())
 }
 
@@ -1981,7 +1981,7 @@ fn read_authority_text(path: &Path) -> Result<String, String> {
             MAX_DISCOVERY_FILE_BYTES
         ));
     }
-    let bytes = review_store::local_fs::read_bounded(path, MAX_DISCOVERY_FILE_BYTES)
+    let bytes = af_store::local_fs::read_bounded(path, MAX_DISCOVERY_FILE_BYTES)
         .map_err(|error| format!("reading authority {}: {error}", path.display()))?;
     String::from_utf8(bytes)
         .map_err(|error| format!("reading authority {}: {error}", path.display()))
@@ -1992,7 +1992,7 @@ fn validate_pipeline_pin(lock: &Lockfile, name: &str, bytes: &[u8]) -> Result<()
         .pipelines
         .get(name)
         .ok_or_else(|| format!("pipeline `{name}` is not pinned in `.af/af.lock`"))?;
-    let found = review_store::canonical::blob_content_id(bytes);
+    let found = af_store::canonical::blob_content_id(bytes);
     if pin.digest != found {
         return Err(format!(
             "pipeline `{name}` does not match `.af/af.lock`: locked {}, found {found}",
@@ -2005,7 +2005,7 @@ fn validate_pipeline_pin(lock: &Lockfile, name: &str, bytes: &[u8]) -> Result<()
 fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
     let authority = parse_existing(repo)?;
     validate_no_stale_pins(repo, &authority.lock)?;
-    let lock_note = crate::project::check_lock_af_version(&authority.lock, ".af/af.lock")?;
+    let lock_note = crate::project_policy::check_lock_af_version(&authority.lock, ".af/af.lock")?;
     validate_pipeline_pin(
         &authority.lock,
         &authority.selected,
@@ -2023,7 +2023,7 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         if candidate == authority.selected {
             continue;
         }
-        let path = repo.join(crate::project::pipeline_path_for(&candidate));
+        let path = repo.join(crate::project_policy::pipeline_path_for(&candidate));
         let text = read_authority_text(&path)
             .map_err(|error| format!("route target `{candidate}`: {error}"))?;
         validate_pipeline_pin(&authority.lock, &candidate, text.as_bytes())?;
@@ -2142,7 +2142,7 @@ pub(crate) fn authority_facts(repo: &Path) -> Result<AuthorityFacts, String> {
     })
 }
 
-fn runner_model(command: &review_core::Command) -> String {
+fn runner_model(command: &af_contracts::Command) -> String {
     let values = command
         .args
         .iter()
@@ -2175,7 +2175,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         if candidate == authority.selected {
             continue;
         }
-        let path = repo.join(crate::project::pipeline_path_for(&candidate));
+        let path = repo.join(crate::project_policy::pipeline_path_for(&candidate));
         let text = read_authority_text(&path)
             .map_err(|error| format!("route target `{candidate}`: {error}"))?;
         candidates.push((candidate, text));
@@ -2226,7 +2226,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
             name.clone(),
             Pin {
                 version,
-                digest: review_store::canonical::blob_content_id(text.as_bytes()),
+                digest: af_store::canonical::blob_content_id(text.as_bytes()),
             },
         );
     }
@@ -2304,7 +2304,7 @@ mod tests {
         RunnerKind, RunnerProfile, build_definition, runner_model, validate_budget_arithmetic,
         worker_manifest,
     };
-    use review_core::{Arg, Command};
+    use af_contracts::{Arg, Command};
 
     #[test]
     fn pi_workers_name_explicit_setup_and_registered_provider_bindings() {
@@ -2384,10 +2384,11 @@ mod tests {
             for name in ["correctness", "architecture"] {
                 let runner = profile.runner(name);
                 assert_eq!(runner.check_models(), Ok(()), "{profile:?} {name}");
-                let manifest: review_config::lock::PackageManifest =
+                let manifest: af_pipeline_config::lock::PackageManifest =
                     toml::from_str(&worker_manifest(name, runner)).unwrap();
                 let settings =
-                    review_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
+                    af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest)
+                        .unwrap();
                 assert_eq!(
                     (settings.model.as_str(), settings.effort.as_str()),
                     runner.binding()
@@ -2409,7 +2410,7 @@ mod tests {
     /// the pipeline whose correction could not clear it; an unsafe `at` names the package root.
     #[test]
     fn a_package_too_large_or_unreadable_is_named_at_the_package() {
-        use review_config::lock::LockError;
+        use af_pipeline_config::lock::LockError;
         let af = std::path::Path::new("/r/.af");
         let pipeline = af.join("pipelines/review.toml");
         let packages = vec!["bugs".to_owned()];

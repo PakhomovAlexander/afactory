@@ -19,7 +19,7 @@ from .spec import (AnyOf, Arr, Bool, Const, DECIMAL, Field, ID, Int, Map, Obj, R
 from .stats import ALGORITHM, HEALTH_RULE
 from .values import (ContractError, ID_PATTERN, canonical_digest, is_id, parse_decimal,
                      require, sha256_bytes)
-from . import tomlfile
+from . import toml_file
 
 SCHEMA = "af.perf-suite/4"
 PROBE_REQUEST_SCHEMA = "af.perf-probe-request/2"
@@ -284,14 +284,14 @@ class Suite:
 
 
 def load_bytes(raw, where="suite.toml", parser=None):
-    document = tomlfile.loads(raw, where, parser)
+    document = toml_file.loads(raw, where, parser)
     validate(document, where)
     return Suite(document, raw)
 
 
 def load(path, parser=None):
     with open(path, "rb") as stream:
-        raw = stream.read(tomlfile.MAX_TOML_BYTES + 1)
+        raw = stream.read(toml_file.MAX_TOML_BYTES + 1)
     return load_bytes(raw, str(path), parser)
 
 

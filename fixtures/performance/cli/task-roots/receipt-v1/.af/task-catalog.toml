@@ -1,5 +1,5 @@
 # The fixture's catalog. Each pin is the reviewer-package@1 digest of the package beside it,
-# which perflab.clicases.package_digest computes by the independent reference encoding; a
+# which perflab.cli_cases.package_digest computes by the independent reference encoding; a
 # laboratory test requires every pin to equal it.
 schema = "af.task-catalog/2"
 code_policy = ".af/code-policy.toml"

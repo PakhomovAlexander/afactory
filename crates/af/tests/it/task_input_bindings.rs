@@ -98,7 +98,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     let mut catalog: toml::Value = toml::from_str(&source).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
-        let digest = review_config::lock::package_digest(name, &package);
+        let digest = af_pipeline_config::lock::package_digest(name, &package);
         pin["digest"] = toml::Value::String(digest.unwrap());
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -161,7 +161,7 @@ fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
     valid(&validator("task-inspection-v17.json"), &refreshed);
 
     // Read back from the revision the Store admitted, not from the one it replaced.
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let id = refreshed["revision_id"].as_str().unwrap();
     let revision = cas.get_json(id).unwrap()["payload"].clone();
     assert_eq!(revision["previous_revision_id"], planned["revision_id"]);

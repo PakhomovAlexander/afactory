@@ -139,7 +139,7 @@ full`) starts through `scripts/test-classes.py nextest-gate`, which adds
 direct `cargo nextest run` and `TEST_RUNNER=cargo` still run it.
 
 Quarantine covers the default-feature inventory only: an identity the feature builds' fixed
-selectors reach (`review-core` `perf_`, `review-pipeline::perf_probe` `calibration_build`), even
+selectors reach (`af-contracts` `perf_`, `af-runtime::perf_probe` `calibration_build`), even
 one only a feature build compiles, is refused. Fix the test, or exclude it from its feature
 selector by hand.
 

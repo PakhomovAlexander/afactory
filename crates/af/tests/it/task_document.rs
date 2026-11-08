@@ -140,8 +140,8 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
     let document_id = done["result"]["outputs"]["document"]["artifact_ids"][0]
         .as_str()
         .unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let document: review_core::ArtifactEnvelope =
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let document: af_contracts::ArtifactEnvelope =
         serde_json::from_value(cas.get_json(document_id).unwrap()).unwrap();
     assert_eq!(document.artifact_type, "af/Document@1");
     assert!(document.subject_snapshot_id.is_none());
@@ -263,10 +263,10 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
                     toml::Value::try_from(vec!["Summary", "Compatibility"]).unwrap();
                 std::fs::write(&path, toml::to_string(&policy).unwrap()).unwrap();
                 // Bind the verifier's declared evidence to the newly captured exact policy.
-                let typed: review_pipeline::task::document::DocumentTaskPolicy =
+                let typed: af_runtime::task::document::DocumentTaskPolicy =
                     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-                let id = review_store::canonical::content_id(&serde_json::to_value(typed).unwrap())
-                    .unwrap();
+                let id =
+                    af_store::canonical::content_id(&serde_json::to_value(typed).unwrap()).unwrap();
                 let path = repo
                     .join(
                         catalog["packages"]["builtin/document-verifier"]["path"]
@@ -274,7 +274,7 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
                             .unwrap(),
                     )
                     .join("worker.toml");
-                let mut worker: review_config::task::catalog::TaskWorkerManifest =
+                let mut worker: af_pipeline_config::task::catalog::TaskWorkerManifest =
                     toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
                 worker
                     .signature
@@ -312,7 +312,7 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
         }
         for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
             pin["digest"] = toml::Value::String(
-                review_config::lock::package_digest(
+                af_pipeline_config::lock::package_digest(
                     name,
                     &repo.join(pin["path"].as_str().unwrap()),
                 )

@@ -2,7 +2,7 @@
 //! authorized. Before its Task exists, `prepare` only captures, reuses or supersedes Round 1;
 //! every later Round starts here.
 use super::*;
-use review_store::store::task::review_round_publication::TaskReviewRoundPublication;
+use af_store::store::task::review_round_publication::TaskReviewRoundPublication;
 #[cfg(test)]
 mod tests;
 
@@ -16,7 +16,7 @@ pub(crate) struct PreparedRoundChange {
 pub(crate) fn prepare_next_round(
     options: &Options,
     cas: &Cas,
-    history: &[review_core::RunEvent],
+    history: &[af_contracts::RunEvent],
     repo: &Repo,
     permit: &TaskReviewRoundPublication,
 ) -> Result<PreparedRoundChange, String> {
@@ -300,8 +300,8 @@ pub(crate) fn prepare_recorded_round(
 /// The same numerical Round retains its original prior sets through each exact supersession.
 /// Their legacy raw headers therefore continue to name the first epoch's Subject.
 pub(super) fn original_prior_subject(
-    events: &[review_core::RunEvent],
-    event: &review_core::RunEvent,
+    events: &[af_contracts::RunEvent],
+    event: &af_contracts::RunEvent,
     payload: &RoundStartedPayloadV1,
 ) -> Result<String, String> {
     let mut current = event;
@@ -500,9 +500,9 @@ pub(super) fn capture_source(
                 .ok_or("diff Campaign has no pinned Base Snapshot")?;
             let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
             let value = serde_json::to_value(&change_set).map_err(|error| error.to_string())?;
-            review_core::json::admit(&value).map_err(|error| error.to_string())?;
+            af_contracts::json::admit(&value).map_err(|error| error.to_string())?;
             let encoded =
-                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
+                af_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
             if encoded.len() > MAX_CHANGE_SET_BYTES {
                 return Err(format!(
                     "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",

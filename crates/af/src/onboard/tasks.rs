@@ -1,7 +1,7 @@
 //! Token-free, additive installation of a pinned Task catalog.
 
 use super::*;
-use review_config::lock::package_digest_from_files;
+use af_pipeline_config::lock::package_digest_from_files;
 
 const DEFAULTS: &str = "\n[task.defaults]\npipeline = \"onboard/implementation-reviewed\"\nfallback = \"refuse\"\n\n[task.defaults.limits]\ntokens = 6000000\nmax_attempts = 16\nwall_ms = 22000000\n\n[task.defaults.limits.verification]\ntokens = 2000000\nattempts = 8\nwall_ms = 10800000\n";
 const IMPLEMENTER: &str = "# Implementer\n\nImplement the Task goal in the private source sandbox. Read the declared requirements and source. Make the smallest complete change, run the project's checks, and report the changed behavior and tests. Never publish or change authority outside the sandbox.\n";

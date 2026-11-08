@@ -1,6 +1,6 @@
 # Afactory — shared language
 
-The vocabulary of Afactory's Review Kernel and the `af review` command behind it. These words are
+The vocabulary of Afactory's Task runtime, Review Kernel, Scenarios and Projects. These words are
 load-bearing: the kernel's guarantees are stated in them, and several of its invariants are
 only expressible because two nearby concepts are kept apart. The mechanism itself is
 documented in [`docs/architecture.md`](docs/architecture.md); this file defines only the terms.
@@ -363,7 +363,7 @@ an unstable or missing sentinel makes its shard's cases incomplete, and sentinel
 gate family.
 
 **Performance Probe**:
-The `perf-probe` example of `review-pipeline`: one process per library Performance Sample. It
+The `perf-probe` example of `af-runtime`: one process per library Performance Sample. It
 generates the case's fixture through the product's public writers, times one production
 operation per declared repetition, reports setup separately, and writes one `af.perf-probe/1`
 message ([ADR-0163](docs/adr/0163-measure-native-workloads-through-a-public-api-probe-and-independent-golden-oracles.md)).
@@ -371,7 +371,7 @@ Its own `passed` is never the oracle.
 _Avoid_: "benchmark harness" — the probe asserts nothing about speed.
 
 **Performance Supervisor**:
-The `perf-supervisor` example of `review-process`, built once from the measuring authority and
+The `perf-supervisor` example of `af-process`, built once from the measuring authority and
 launched as the same bytes for both sides. One process supervises one sample. It brackets child
 launch through the observed exit with a monotonic clock, drains capped output and forwards
 termination signals. It establishes what its containment can about descendants: a whole Linux

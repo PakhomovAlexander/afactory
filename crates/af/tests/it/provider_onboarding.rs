@@ -1106,8 +1106,8 @@ fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invent
 
 #[test]
 fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inference() {
-    use review_runner::task::{RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter};
-    use review_runner_pi::{PiConfig, PiInferenceEvidenceV2, PiTaskAdapter};
+    use af_runner::task::{RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter};
+    use af_runner_pi::{PiConfig, PiInferenceEvidenceV2, PiTaskAdapter};
     use serde_json::json;
     use std::time::Duration;
 
@@ -1131,9 +1131,9 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
             sdk_entrypoint: sdk,
         };
         let ready =
-            review_runner_pi::probe(&node, &config, &auth, Duration::from_secs(30), None).unwrap();
+            af_runner_pi::probe(&node, &config, &auth, Duration::from_secs(30), None).unwrap();
         let adapter = PiTaskAdapter {
-            captured: review_runner_pi::authority(
+            captured: af_runner_pi::authority(
                 &node,
                 &config,
                 &auth,
@@ -1148,7 +1148,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
             model: ready.models[0].id.clone(),
             effort: "high".into(),
         };
-        let cas = review_store::Cas::open(root.path().join("cas")).unwrap();
+        let cas = af_store::Cas::open(root.path().join("cas")).unwrap();
         let event = |usage: Value| json!({"usage":usage});
         let aggregate = json!({"prompt_tokens":12,"completion_tokens":3});
         // Each case starts with no previous usage. Conflicts are per component, never a
@@ -1449,7 +1449,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                     None,
                     &[],
                     RemainingTokenAllowance::new(1000).unwrap(),
-                    review_runner::task::reply_schema::ReplyContract::Request,
+                    af_runner::task::reply_schema::ReplyContract::Request,
                 )
                 .unwrap_or_else(|unstarted| *unstarted.0);
             assert!(returned.message.is_err(), "{name}");
@@ -1558,7 +1558,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                         None,
                         &[],
                         RemainingTokenAllowance::new(1000).unwrap(),
-                        review_runner::task::reply_schema::ReplyContract::Request,
+                        af_runner::task::reply_schema::ReplyContract::Request,
                     )
                     .unwrap_or_else(|unstarted| *unstarted.0);
                 assert!(returned.message.is_ok());

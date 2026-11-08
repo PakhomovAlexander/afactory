@@ -1,5 +1,10 @@
-//! The `af` binary: it parses the command tree defined in `cli`, dispatches every namespace, and
-//! implements the `af review` Campaign loop itself.
+//! The `af` CLI and application services: command dispatch, terminal/JSON presentation,
+//! machine policy, Provider bindings, storage and self-management.
+//!
+//! `af-runtime` executes Tasks and hosts Review; `af-scenario` owns Scenario/Ant orchestration;
+//! `af-project` owns Project, Workspace, Survey and Brief services. This application implements
+//! their Host interfaces and retains the configuration ladder and `.af/af.toml` parser.
+//! The `af review` Campaign loop captures and presents Review through the common Task runtime.
 //!
 //! The review namespace's core subcommands:
 //!
@@ -25,10 +30,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use review_core::{EventType, RunFailureReasonV3, RunReportPayloadV6, RunVerdictV3, Severity};
-use review_pipeline::RunVerdict;
-use review_source_git::Repo;
-use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
+use af_contracts::{EventType, RunFailureReasonV3, RunReportPayloadV6, RunVerdictV3, Severity};
+use af_runtime::RunVerdict;
+use af_source_git::Repo;
+use af_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
 use sha2::{Digest, Sha256};
 
 mod af_paths;
@@ -47,28 +52,25 @@ mod model_failures;
 mod onboard;
 mod power;
 mod project;
-/// Project Briefs (ADR-0160), beside the Surveyor they render from.
-#[path = "projects/brief.rs"]
-mod project_brief;
-mod projects;
+mod project_policy;
 mod providers;
-mod report_tasks;
+mod review_accounting;
 mod review_handoff;
 mod review_task;
 mod sarif;
 mod scenario;
+mod self_management;
 mod self_optimizer;
-mod selfmgmt;
 mod shipped_schemas;
 mod storage;
 mod store_release;
-mod task;
-mod task_execution;
+mod task_commands;
+mod task_delivery;
 mod telemetry;
 mod topics;
 mod tui;
 
-use review_config::captured_review::ReviewMode as CampaignMode;
+use af_pipeline_config::captured_review::ReviewMode as CampaignMode;
 
 #[derive(Clone)]
 struct Options {
@@ -88,7 +90,7 @@ struct Options {
     timeout: Option<Duration>,
     git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
-    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    provider_admission: Option<af_graph::task::OperatorAttemptCost>,
     json: bool,
     /// `af review render`: the Worker whose exact input to compose.
     node: Option<String>,
@@ -164,7 +166,7 @@ fn campaign_id(campaign: &str) -> String {
     digest.update(b"af/campaign-id@1\0");
     digest.update(campaign.as_bytes());
     let digest = digest.finalize();
-    format!("c-{}", review_core::hex::encode(&digest))
+    format!("c-{}", af_contracts::hex::encode(&digest))
 }
 
 fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String> {
@@ -191,7 +193,7 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
     let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
     Ok(xdg_state_root()?
         .join("af/review/local")
-        .join(&review_core::hex::encode(&identity)[..16]))
+        .join(&af_contracts::hex::encode(&identity)[..16]))
 }
 
 /// The longest Campaign label, in bytes: listings show it whole.
@@ -413,7 +415,7 @@ struct AttestChangeOptions {
     finding_id: String,
     actor: Option<String>,
     reason: String,
-    regions: Vec<review_core::ChangedRegionV1>,
+    regions: Vec<af_contracts::ChangedRegionV1>,
     evidence_ids: Vec<String>,
 }
 
@@ -433,7 +435,7 @@ struct ChallengeResolutionOptions {
     state: Option<PathBuf>,
     campaign: String,
     finding_id: String,
-    kind: review_core::ResolutionChallengeKind,
+    kind: af_contracts::ResolutionChallengeKind,
     actor: Option<String>,
     reason: String,
     evidence_ids: Vec<String>,
@@ -499,9 +501,9 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
     }
 }
 
-fn parse_changed_region(value: &str) -> Result<review_core::ChangedRegionV1, String> {
+fn parse_changed_region(value: &str) -> Result<af_contracts::ChangedRegionV1, String> {
     let Some((path, lines)) = value.rsplit_once(':') else {
-        return Ok(review_core::ChangedRegionV1 {
+        return Ok(af_contracts::ChangedRegionV1 {
             path: value.into(),
             start_line: None,
             end_line: None,
@@ -514,7 +516,7 @@ fn parse_changed_region(value: &str) -> Result<review_core::ChangedRegionV1, Str
         text.parse::<u32>()
             .map_err(|_| format!("--region {value}: line numbers must be integers"))
     };
-    Ok(review_core::ChangedRegionV1 {
+    Ok(af_contracts::ChangedRegionV1 {
         path: path.into(),
         start_line: Some(parse(start)?),
         end_line: Some(parse(end)?),
@@ -564,10 +566,10 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
         (Some(tokens), Some(wall_ms))
             if tokens > 0
                 && wall_ms > 0
-                && tokens <= review_core::json::SAFE_INTEGER_MAX as u64
-                && wall_ms <= review_core::json::SAFE_INTEGER_MAX as u64 =>
+                && tokens <= af_contracts::json::SAFE_INTEGER_MAX as u64
+                && wall_ms <= af_contracts::json::SAFE_INTEGER_MAX as u64 =>
         {
-            Some(review_graph::task::OperatorAttemptCost { tokens, wall_ms })
+            Some(af_graph::task::OperatorAttemptCost { tokens, wall_ms })
         }
         _ => usage_error(
             command,
@@ -645,11 +647,11 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
     }
     let enumeration = enumerate_campaigns(&root, true)?;
     // Each campaign directory's identity as enumerated: only that directory is ever removed.
-    let measured: BTreeMap<String, Option<review_sandbox::Identity>> = enumeration
+    let measured: BTreeMap<String, Option<af_sandbox::Identity>> = enumeration
         .campaigns
         .iter()
         .map(|campaign| {
-            let identity = review_sandbox::Identity::of(&root.join(&campaign.state_dir)).ok();
+            let identity = af_sandbox::Identity::of(&root.join(&campaign.state_dir)).ok();
             (campaign.state_dir.clone(), identity)
         })
         .collect();
@@ -710,7 +712,7 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
                 }
                 reclaimed = reclaimed.saturating_add(removed.bytes);
             } else {
-                review_sandbox::remove_beneath(&root, &path, Some(identity))
+                af_sandbox::remove_beneath(&root, &path, Some(identity))
                     .map_err(|error| format!("removing {}: {error}", path.display()))?;
                 reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
             }
@@ -802,14 +804,14 @@ fn severity_of(arg: cli::SeverityArg) -> Severity {
     }
 }
 
-fn challenge_kind_of(arg: cli::ChallengeKindArg) -> review_core::ResolutionChallengeKind {
+fn challenge_kind_of(arg: cli::ChallengeKindArg) -> af_contracts::ResolutionChallengeKind {
     match arg {
-        cli::ChallengeKindArg::NewEvidence => review_core::ResolutionChallengeKind::NewEvidence,
+        cli::ChallengeKindArg::NewEvidence => af_contracts::ResolutionChallengeKind::NewEvidence,
         cli::ChallengeKindArg::HigherSeverity => {
-            review_core::ResolutionChallengeKind::HigherSeverity
+            af_contracts::ResolutionChallengeKind::HigherSeverity
         }
-        cli::ChallengeKindArg::OutsideScope => review_core::ResolutionChallengeKind::OutsideScope,
-        cli::ChallengeKindArg::Expired => review_core::ResolutionChallengeKind::Expired,
+        cli::ChallengeKindArg::OutsideScope => af_contracts::ResolutionChallengeKind::OutsideScope,
+        cli::ChallengeKindArg::Expired => af_contracts::ResolutionChallengeKind::Expired,
     }
 }
 
@@ -834,8 +836,8 @@ fn campaign_labels_beneath(root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::StartOptions {
-    task_execution::StartOptions {
+fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_commands::StartOptions {
+    task_commands::StartOptions {
         input_json: Vec::new(),
         file: args.task_file.expect("Task file path was checked"),
         bindings: args.bindings,
@@ -881,7 +883,7 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
     match command {
         R::Run(args) => {
             if args.task_file.is_some() {
-                return task_execution::start_review(task_review_options(args, false));
+                return task_commands::start_review(task_review_options(args, false));
             }
             let options = run_options(args, "review run");
             let verdict = run(&options)?;
@@ -899,7 +901,7 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 if long {
                     return Err("--long is for the review plan; use `af task explain TASK_ID --tree` after `af review plan --file FILE`".into());
                 }
-                return task_execution::start_review(task_review_options(args, true));
+                return task_commands::start_review(task_review_options(args, true));
             }
             let options = run_options(args, "review plan");
             review_selector_refusal(&options, "plan")?;
@@ -1221,7 +1223,7 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
         return Ok(());
     }
     let git = |args: &[&str]| -> Option<String> {
-        let output = review_process::reap::output(
+        let output = af_process::reap::output(
             std::process::Command::new("git")
                 .arg("-C")
                 .arg(&options.repo)
@@ -1308,7 +1310,7 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
             if on_default {
                 // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
                 // candidate-selected clean filter cannot run before review has a sandbox.
-                let capture = review_source_git::Capture::new(&repo, &cas);
+                let capture = af_source_git::Capture::new(&repo, &cas);
                 let dirty = capture
                     .committed("HEAD")
                     .and_then(|head| {
@@ -1672,8 +1674,8 @@ fn help_refusal(error: &str) -> i32 {
 }
 
 fn main() {
+    use af_contracts::perf_trace::{self, Phase};
     use clap::{CommandFactory as _, Parser as _};
-    use review_core::perf_trace::{self, Phase};
     // Inert outside a `perf-trace` diagnostic build (ADR-0174): startup composition, then the
     // dispatched command, exported when the command returns through here.
     let startup = perf_trace::span(Phase::CliStartup);
@@ -1692,12 +1694,12 @@ fn main() {
     };
     // The calibration loop of a laboratory slowdown trial runs inside this process, before
     // anything else (ADR-0181); a build without `perf-calibration` refuses its control.
-    if let Err(error) = review_core::perf_calibration::configure_from_env() {
+    if let Err(error) = af_contracts::perf_calibration::configure_from_env() {
         eprintln!("af: {error}");
         std::process::exit(2);
     }
-    if review_core::perf_calibration::inject().is_some()
-        && let Some(line) = review_core::perf_calibration::report_line()
+    if af_contracts::perf_calibration::inject().is_some()
+        && let Some(line) = af_contracts::perf_calibration::report_line()
     {
         eprintln!("{line}");
     }
@@ -1720,13 +1722,13 @@ fn main() {
         ..
     }) = &parsed
     {
-        if let Err(error) = task_execution::catalog::digest(package) {
+        if let Err(error) = task_commands::catalog::digest(package) {
             eprintln!("af catalog digest: {error}");
             std::process::exit(1);
         }
         return;
     }
-    selfmgmt::maybe_dispatch(&argv);
+    self_management::maybe_dispatch(&argv);
     // `parse_from`, with the trace exported before help, usage and errors exit.
     let parsed = match parsed {
         Ok(parsed) => parsed,
@@ -1755,7 +1757,7 @@ fn main() {
         }
     };
     if parsed.version {
-        if let Err(error) = selfmgmt::print_version(parsed.json) {
+        if let Err(error) = self_management::print_version(parsed.json) {
             eprintln!("af: {}", terminal_lines(&error.to_string()));
             std::process::exit(1);
         }
@@ -1780,12 +1782,12 @@ fn main() {
             eprintln!("af: {}", terminal_lines(&error.to_string()));
             1
         });
-        selfmgmt::after_command(&argv);
+        self_management::after_command(&argv);
         std::process::exit(code);
     };
     // Still the only thread: every thread started from here inherits the blocked signals. A run
     // `af task run --detach` started outlives the terminal that started it (ADR-0211).
-    if std::env::var_os(task_execution::runs::DETACHED_ENV).is_some()
+    if std::env::var_os(task_commands::runs::DETACHED_ENV).is_some()
         && matches!(
             &command,
             cli::Command::Task {
@@ -1841,11 +1843,11 @@ fn main() {
         recorded_run(&command).map(|kind| telemetry::begin(kind, telemetry::command_chain(&argv)));
     // Registered best effort (ADR-0158): `af task plan|start` before `--workspace` resolves,
     // every other command once it ran.
-    let registers = projects::lazy_target(&command);
+    let registers = project::lazy_target(&command);
     if let Some(lazy) = registers.as_ref().filter(|lazy| lazy.first) {
-        projects::register_lazily(lazy);
+        project::register_lazily(lazy);
     }
-    let delivered = projects::delivered_target(&command);
+    let delivered = project::delivered_target(&command);
     // `af onboard --apply` records the first Survey once it registered (ADR-0159).
     let surveyed = match &command {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
@@ -1875,7 +1877,7 @@ fn main() {
                 },
         } => (
             "af catalog init",
-            task_execution::starter::init(
+            task_commands::starter::init(
                 &repo,
                 &destination,
                 &profile,
@@ -1897,7 +1899,7 @@ fn main() {
                 },
         } => (
             "af catalog test",
-            task_execution::catalog::test(
+            task_commands::catalog::test(
                 &source,
                 &revision,
                 &manifest,
@@ -1912,7 +1914,7 @@ fn main() {
             command: cli::CatalogCommand::Digest { package },
         } => (
             "af catalog digest",
-            task_execution::catalog::digest(&package).map(|()| 0),
+            task_commands::catalog::digest(&package).map(|()| 0),
         ),
         cli::Command::Catalog {
             command:
@@ -1926,7 +1928,7 @@ fn main() {
                 },
         } => (
             "af catalog sync",
-            task_execution::catalog::sync(&source, &revision, &manifest, &repo, &destination, json)
+            task_commands::catalog::sync(&source, &revision, &manifest, &repo, &destination, json)
                 .map(|()| 0),
         ),
         cli::Command::Task { command } => ("af task", task_command(command)),
@@ -1939,7 +1941,7 @@ fn main() {
                     survey,
                     json,
                 },
-        } => ("af project", project_brief::command(variant, survey, json)),
+        } => ("af project", project::brief::command(variant, survey, json)),
         cli::Command::Project {
             command: cli::ProjectCli::Core(command),
         } => {
@@ -1947,7 +1949,7 @@ fn main() {
                 cli::ProjectCommand::Survey { json: false } => cli::survey_sections(&argv),
                 _ => Vec::new(),
             };
-            ("af project", projects::survey::run(command, &sections))
+            ("af project", project::survey::run(command, &sections))
         }
         cli::Command::Config { command } => (
             "af config",
@@ -1988,28 +1990,32 @@ fn main() {
                     json,
                 }),
                 cli::SelfCommand::Status { json, refresh } => {
-                    selfmgmt::status(json, refresh).map(|()| 0)
+                    self_management::status(json, refresh).map(|()| 0)
                 }
                 cli::SelfCommand::Update { check, version, rc } => {
-                    selfmgmt::update(check, version, rc).map(|()| 0)
+                    self_management::update(check, version, rc).map(|()| 0)
                 }
                 cli::SelfCommand::Channel { channel, no_update } => {
-                    selfmgmt::channel(channel.map(Into::into), no_update).map(|()| 0)
+                    self_management::channel(channel.map(Into::into), no_update).map(|()| 0)
                 }
-                cli::SelfCommand::Rollback => selfmgmt::rollback().map(|()| 0),
+                cli::SelfCommand::Rollback => self_management::rollback().map(|()| 0),
                 cli::SelfCommand::Install { version } => {
-                    selfmgmt::install_command(&version).map(|()| 0)
+                    self_management::install_command(&version).map(|()| 0)
                 }
-                cli::SelfCommand::Remove { version } => selfmgmt::remove(&version).map(|()| 0),
-                cli::SelfCommand::Prune => selfmgmt::prune().map(|()| 0),
+                cli::SelfCommand::Remove { version } => {
+                    self_management::remove(&version).map(|()| 0)
+                }
+                cli::SelfCommand::Prune => self_management::prune().map(|()| 0),
                 cli::SelfCommand::SetupShell {
                     shell,
                     write,
                     remove,
-                } => selfmgmt::setup_shell(shell, write, remove).map(|()| 0),
-                cli::SelfCommand::Uninstall { purge } => selfmgmt::uninstall(purge).map(|()| 0),
-                cli::SelfCommand::Man { out_dir } => selfmgmt::man(&out_dir).map(|()| 0),
-                cli::SelfCommand::RefreshCheck => selfmgmt::refresh_check().map(|()| 0),
+                } => self_management::setup_shell(shell, write, remove).map(|()| 0),
+                cli::SelfCommand::Uninstall { purge } => {
+                    self_management::uninstall(purge).map(|()| 0)
+                }
+                cli::SelfCommand::Man { out_dir } => self_management::man(&out_dir).map(|()| 0),
+                cli::SelfCommand::RefreshCheck => self_management::refresh_check().map(|()| 0),
             },
         ),
         cli::Command::Storage {
@@ -2134,7 +2140,7 @@ fn main() {
         },
         cli::Command::Completions { shell } => (
             "af completions",
-            selfmgmt::completion_script(shell).map(|script| {
+            self_management::completion_script(shell).map(|script| {
                 print!("{script}");
                 0
             }),
@@ -2157,23 +2163,23 @@ fn main() {
         },
     };
     if let Some(signal) = interrupt::received() {
-        task_execution::print_last_lines();
+        task_commands::print_last_lines();
         if let Some(recording) = recording.take() {
             recording.finish(
                 interrupt::exit_code(signal),
-                review_telemetry::record::SealExit::Signal,
+                af_telemetry::record::SealExit::Signal,
             );
         }
         exit_interrupted(&argv, prefix, signal, outcome.err());
     }
     if let Some(lazy) = registers.as_ref().filter(|lazy| !lazy.first) {
-        projects::register_lazily(lazy);
+        project::register_lazily(lazy);
     }
     if let Some((repo, json)) = &surveyed {
-        projects::survey::after_onboard(repo, *json);
+        project::survey::after_onboard(repo, *json);
     }
     if let (Some((worktree, task_id)), Ok(0)) = (&delivered, &outcome) {
-        projects::register_delivered(worktree, task_id);
+        project::register_delivered(worktree, task_id);
     }
     if collects_after {
         // Whatever the run's outcome; a failure here is a warning, never the exit status.
@@ -2200,9 +2206,9 @@ fn main() {
         recording.finish(
             code,
             if code == 0 {
-                review_telemetry::record::SealExit::Ok
+                af_telemetry::record::SealExit::Ok
             } else {
-                review_telemetry::record::SealExit::Error
+                af_telemetry::record::SealExit::Error
             },
         );
     }
@@ -2215,10 +2221,10 @@ fn main() {
     }
     drop(dispatched);
     perf_trace::finish();
-    selfmgmt::after_command(&argv);
+    self_management::after_command(&argv);
     // The run log's last line, the Task's state and next command, after everything the
     // command's housekeeping printed: a script reads it as stderr's last line.
-    task_execution::print_last_lines();
+    task_commands::print_last_lines();
     if code != 0 {
         std::process::exit(code);
     }
@@ -2226,7 +2232,7 @@ fn main() {
 
 /// `af task`: `--workspace` resolved first, then the subcommand.
 fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
-    let command = projects::resolve_task_workspace(command)?;
+    let command = project::resolve_task_workspace(command)?;
     match command {
         cli::TaskCommand::Start {
             file,
@@ -2242,7 +2248,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             timeout_secs,
             json,
             workspace: _,
-        } => task_execution::start(task_execution::StartOptions {
+        } => task_commands::start(task_commands::StartOptions {
             file,
             bindings,
             source_bindings,
@@ -2275,7 +2281,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             // A plan reads each bound Provider's catalog token-free and names every
             // Model binding's verdict (ADR-0148).
             model_check::enable_plan_time();
-            task_execution::start(task_execution::StartOptions {
+            task_commands::start(task_commands::StartOptions {
                 file,
                 bindings,
                 source_bindings,
@@ -2299,13 +2305,13 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             reason,
             output,
             inspect,
-        } => task_execution::developer::payload_file(
+        } => task_commands::developer::payload_file(
             &task_id,
             &developer,
             if decision == "approved" {
-                review_core::task::plan::PlanDecisionKindV1::Approved
+                af_contracts::task::plan::PlanDecisionKindV1::Approved
             } else {
-                review_core::task::plan::PlanDecisionKindV1::Rejected
+                af_contracts::task::plan::PlanDecisionKindV1::Rejected
             },
             &reason,
             &output,
@@ -2316,9 +2322,9 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             payload,
             signature,
             inspect,
-        } => task_execution::developer::apply(
+        } => task_commands::developer::apply(
             &task_id,
-            review_core::task::plan::PlanDecisionKindV1::Approved,
+            af_contracts::task::plan::PlanDecisionKindV1::Approved,
             &payload,
             &signature,
             &inspect,
@@ -2328,9 +2334,9 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             payload,
             signature,
             inspect,
-        } => task_execution::developer::apply(
+        } => task_commands::developer::apply(
             &task_id,
-            review_core::task::plan::PlanDecisionKindV1::Rejected,
+            af_contracts::task::plan::PlanDecisionKindV1::Rejected,
             &payload,
             &signature,
             &inspect,
@@ -2340,7 +2346,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             source_file,
             source_bindings,
             inspect,
-        } => task_execution::refresh::refresh(
+        } => task_commands::refresh::refresh(
             &task_id,
             source_file.as_deref(),
             source_bindings.as_deref(),
@@ -2351,7 +2357,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             detach: true,
             inspect,
             ..
-        } => task_execution::runs::detach(&task_id, &inspect),
+        } => task_commands::runs::detach(&task_id, &inspect),
         // `--from` conflicts with `--detach` at parse time (cli.rs), so the detach arm never
         // sees a `--from`; the continue arm precedes the foreground arm, which matches `..`.
         cli::TaskCommand::Run {
@@ -2363,7 +2369,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             execute,
             inspect,
             ..
-        } => task_execution::run_from(task_execution::ContinueOptions {
+        } => task_commands::run_from(task_commands::ContinueOptions {
             task_id,
             from,
             round,
@@ -2384,7 +2390,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             quiet,
             inspect,
             ..
-        } => task_execution::run(
+        } => task_commands::run(
             &task_id,
             &inspect.repo,
             inspect.state.as_deref(),
@@ -2400,25 +2406,25 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             bell,
             notify,
             inspect,
-        } => task_execution::runs::wait(&task_id, timeout, bell, notify, &inspect),
+        } => task_commands::runs::wait(&task_id, timeout, bell, notify, &inspect),
         cli::TaskCommand::Status { task_id, inspect } => {
-            task_execution::runs::status(&task_id, &inspect)
+            task_commands::runs::status(&task_id, &inspect)
         }
         cli::TaskCommand::Events {
             task_id,
             after,
             timeout,
             store,
-        } => task_execution::events::events(&task_id, after, timeout, &store),
+        } => task_commands::events::events(&task_id, after, timeout, &store),
         cli::TaskCommand::Cancel { task_id, inspect } => {
-            task_execution::runs::cancel(&task_id, &inspect)
+            task_commands::runs::cancel(&task_id, &inspect)
         }
         cli::TaskCommand::Findings {
             task_id,
             round,
             format,
             inspect,
-        } => task_execution::findings::print(&task_id, round, format, &inspect),
+        } => task_commands::findings::print(&task_id, round, format, &inspect),
         cli::TaskCommand::Materialize {
             task_id,
             snapshot,
@@ -2426,7 +2432,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             allow_unverified,
             force,
             inspect,
-        } => task_execution::candidate::materialize(
+        } => task_commands::candidate::materialize(
             &task_id,
             snapshot.as_deref(),
             &into,
@@ -2441,7 +2447,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             stat,
             name_only,
             inspect,
-        } => task_execution::candidate::diff(
+        } => task_commands::candidate::diff(
             &task_id,
             snapshot.as_deref(),
             base.as_deref(),
@@ -2455,7 +2461,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             format,
             output,
             inspect,
-        } => task_execution::domain::write_output(
+        } => task_commands::domain::write_output(
             &task_id,
             &port,
             &format,
@@ -2469,7 +2475,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             name,
             destination,
             inspect,
-        } => task_execution::export::run(
+        } => task_commands::export::run(
             &task_id,
             &name,
             &destination,
@@ -2482,7 +2488,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             tree,
             plan,
             inspect,
-        } => task_execution::explain(
+        } => task_commands::explain(
             &task_id,
             &inspect.repo,
             inspect.state.as_deref(),
@@ -2499,9 +2505,11 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             state,
             json,
             workspace: _,
-        } => task::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
-            .and_then(task::deliver)
-            .map(|()| 0),
+        } => {
+            task_delivery::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
+                .and_then(task_delivery::deliver)
+                .map(|()| 0)
+        }
         cli::TaskCommand::ObserveAdoption {
             task_id,
             commit,
@@ -2510,7 +2518,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             environment,
             evidence_task,
             inspect,
-        } => task::observe_adoption(
+        } => task_delivery::observe_adoption(
             &task_id,
             &commit,
             &workload,
@@ -2526,15 +2534,15 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             sizes,
             attention,
             inspect,
-        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-            .and_then(|options| task::list(options, sizes, attention))
+        } => task_delivery::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task_delivery::list(options, sizes, attention))
             .map(|()| 0),
         cli::TaskCommand::Gc {
             older_than,
             keep,
             apply,
             inspect,
-        } => task_execution::collection::gc(
+        } => task_commands::collection::gc(
             older_than,
             keep,
             apply,
@@ -2546,22 +2554,27 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             task_id,
             checks,
             inspect,
-        } => task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
-            .and_then(|options| task::show(options, checks))
-            .map(|()| 0),
+        } => task_delivery::inspect_from_cli(
+            Some(task_id),
+            inspect.repo,
+            inspect.state,
+            inspect.json,
+        )
+        .and_then(|options| task_delivery::show(options, checks))
+        .map(|()| 0),
         cli::TaskCommand::Report {
             task_ids,
             pr_body,
             template,
             base,
             inspect,
-        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+        } => task_delivery::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
             .and_then(|options| {
-                let body = pr_body.then_some(task::PrBody {
+                let body = pr_body.then_some(task_delivery::PrBody {
                     template: template.as_deref(),
                     base: base.as_deref(),
                 });
-                task::report(options, &task_ids, body)
+                task_delivery::report(options, &task_ids, body)
             })
             .map(|()| 0),
     }
@@ -2610,8 +2623,8 @@ fn verbose_sweeps(command: &cli::Command) -> bool {
 
 /// The kind of kernel run a command runs, when it runs one: it records Telemetry (design §6).
 /// Every other command records nothing and opens no telemetry directory.
-fn recorded_run(command: &cli::Command) -> Option<review_pipeline::telemetry::RunKind> {
-    use review_pipeline::telemetry::RunKind;
+fn recorded_run(command: &cli::Command) -> Option<af_runtime::telemetry::RunKind> {
+    use af_runtime::telemetry::RunKind;
     match command {
         cli::Command::Review(namespace) => {
             matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
@@ -2687,7 +2700,7 @@ fn exit_interrupted(
             Some(next),
         ),
         (Some(id), None) => {
-            let run = task_execution::with_selectors(&format!("af task run {id}"));
+            let run = task_commands::with_selectors(&format!("af task run {id}"));
             (
                 format!(
                     "resume it with `{run}`, which dispatches the interrupted node again without \
@@ -2939,8 +2952,8 @@ fn print_render(options: &Options) -> Result<(), String> {
     eprintln!(
         "transport {}; {} bytes; about {} tokens{}",
         match view.transport {
-            review_runner::InputTransport::Prompt => "prompt on stdin",
-            review_runner::InputTransport::Json => "typed JSON on stdin",
+            af_runner::InputTransport::Prompt => "prompt on stdin",
+            af_runner::InputTransport::Json => "typed JSON on stdin",
         },
         view.bytes,
         view.estimated_tokens,
@@ -3537,10 +3550,10 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         let open_required_demands = demands
             .iter()
             .filter(|demand| {
-                demand.requirement == review_core::DemandRequirement::Required
+                demand.requirement == af_contracts::DemandRequirement::Required
                     && matches!(
                         demand.status,
-                        review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                        af_contracts::DemandStatus::Open | af_contracts::DemandStatus::Stale
                     )
             })
             .count();
@@ -3603,18 +3616,18 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         .demand_views()
         .into_iter()
         .filter(|demand| {
-            demand.requirement == review_core::DemandRequirement::Required
+            demand.requirement == af_contracts::DemandRequirement::Required
                 && matches!(
                     demand.status,
-                    review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                    af_contracts::DemandStatus::Open | af_contracts::DemandStatus::Stale
                 )
         })
         .count();
     let summary = findings_summary(&findings);
     let task_accounting =
-        report_tasks::read(&store, &cas, &campaign_run_id(&options.campaign), &events)?;
+        review_accounting::read(&store, &cas, &campaign_run_id(&options.campaign), &events)?;
     let wall = task_accounting.wall_ms();
-    let task_summary = report_tasks::summary(&task_accounting.tasks);
+    let task_summary = review_accounting::summary(&task_accounting.tasks);
     if !task_summary.is_empty() {
         eprintln!("{}", terminal_lines(&task_summary));
     }
@@ -3640,7 +3653,7 @@ fn print_indented(label: &str, value: &str) {
 
 struct CampaignProposal {
     id: String,
-    proposal: review_core::PatchProposal,
+    proposal: af_contracts::PatchProposal,
 }
 
 fn campaign_proposals(
@@ -3655,15 +3668,15 @@ fn campaign_proposals(
         .into_iter()
         .filter(|event| event.event_type == EventType::ProposalAcceptedV1)
     {
-        let accepted: review_core::ProposalAcceptedPayloadV1 =
+        let accepted: af_contracts::ProposalAcceptedPayloadV1 =
             serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
-        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+        let envelope: af_contracts::ArtifactEnvelope = serde_json::from_value(
             cas.get_json(&accepted.proposal_artifact_id)
                 .map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        review_store::validate_envelope(&envelope)?;
-        if envelope.artifact_type != review_core::contract::PATCH_PROPOSAL_V1
+        af_store::validate_envelope(&envelope)?;
+        if envelope.artifact_type != af_contracts::contract::PATCH_PROPOSAL_V1
             || envelope.artifact_id != accepted.proposal_id
         {
             return Err(format!(
@@ -3671,7 +3684,7 @@ fn campaign_proposals(
                 accepted.proposal_id
             ));
         }
-        let proposal: review_core::PatchProposal =
+        let proposal: af_contracts::PatchProposal =
             serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
         proposal.check_shape().map_err(str::to_string)?;
         cas.verify(&proposal.patch_artifact_id)
@@ -3695,28 +3708,28 @@ fn current_campaign_head(store: &EventStore, cas: &Cas, run_id: &str) -> Result<
         .rev()
         .find(|event| event.event_type == EventType::RoundStartedV1)
         .ok_or_else(|| "Campaign has no started Round".to_string())?;
-    let payload: review_core::RoundStartedPayloadV1 =
+    let payload: af_contracts::RoundStartedPayloadV1 =
         serde_json::from_value(started.payload).map_err(|error| error.to_string())?;
-    review_store::resolve_subject(cas, &payload.subject_id)
+    af_store::resolve_subject(cas, &payload.subject_id)
         .map(|resolved| resolved.subject.head_snapshot_id)
         .map_err(|error| error.to_string())
 }
 
 fn finding_claim_ids(
-    finding: &review_store::Finding,
+    finding: &af_store::Finding,
     cas: &Cas,
 ) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
     let mut findings = BTreeSet::from([finding.key.clone()]);
     findings.extend(finding.aliases.iter().cloned());
     let mut reports = BTreeSet::new();
     for report in &finding.reports {
-        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+        let envelope: af_contracts::ArtifactEnvelope = serde_json::from_value(
             cas.get_json(&report.report_id)
                 .map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        review_store::validate_envelope(&envelope)?;
-        if envelope.artifact_type == review_core::contract::FINDING_REPORT_V1 {
+        af_store::validate_envelope(&envelope)?;
+        if envelope.artifact_type == af_contracts::contract::FINDING_REPORT_V1 {
             reports.insert(envelope.artifact_id);
         }
     }
@@ -3724,13 +3737,13 @@ fn finding_claim_ids(
 }
 
 fn proposal_links_finding(
-    proposal: &review_core::PatchProposal,
+    proposal: &af_contracts::PatchProposal,
     finding_ids: &BTreeSet<String>,
     report_ids: &BTreeSet<String>,
 ) -> bool {
     proposal.finding_refs.iter().any(|claim| match claim.kind {
-        review_core::ClaimRefKind::Finding => finding_ids.contains(&claim.id),
-        review_core::ClaimRefKind::Report => report_ids.contains(&claim.id),
+        af_contracts::ClaimRefKind::Finding => finding_ids.contains(&claim.id),
+        af_contracts::ClaimRefKind::Report => report_ids.contains(&claim.id),
     })
 }
 
@@ -3956,7 +3969,7 @@ struct CampaignProblemView {
     /// Who wrote the Campaign's Store, when another release did: the text lists such Campaigns
     /// in one row; the document keeps one problem each, its reason the named refusal.
     #[serde(skip)]
-    release: Option<review_core::store_writer::StoreProvenance>,
+    release: Option<af_contracts::store_writer::StoreProvenance>,
 }
 
 struct CampaignEnumeration {
@@ -3970,7 +3983,7 @@ struct CampaignView {
     label: String,
     authority_snapshot_id: String,
     campaign_manifest_id: String,
-    subject_kind: review_core::SubjectKind,
+    subject_kind: af_contracts::SubjectKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     base_snapshot_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3985,7 +3998,7 @@ struct CampaignView {
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     #[serde(skip)]
-    task_accounting: Vec<report_tasks::TaskAccountingView>,
+    task_accounting: Vec<review_accounting::TaskAccountingView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     findings: Option<FindingsSummaryView>,
     /// The state directory's name beneath the root, and — when asked for — what it holds.
@@ -4026,7 +4039,7 @@ impl CampaignView {
     /// What its Tasks charged in total, exactly as `af review report` counts each Task; `None`
     /// when no Task has run for it.
     fn chargeable_tokens(&self) -> Option<u128> {
-        report_tasks::chargeable_tokens(&self.task_accounting)
+        review_accounting::chargeable_tokens(&self.task_accounting)
     }
 
     /// The selector a command names it by: `--campaign LABEL`, and `--state DIR` unless its
@@ -4335,11 +4348,11 @@ fn read_campaign_view(
         .campaign_opened(run_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("campaign {label:?} has no CampaignOpened event"))?;
-    let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_value(opened.payload)
+    let opened: af_contracts::CampaignOpenedPayloadV1 = serde_json::from_value(opened.payload)
         .map_err(|error| format!("reading campaign {label:?} opening: {error}"))?;
     opened.validate()?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
-    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+    let manifest: af_contracts::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(&opened.campaign_manifest_id)
             .map_err(|error| format!("reading campaign {label:?} manifest: {error}"))?,
     )
@@ -4358,7 +4371,7 @@ fn read_campaign_view(
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
     {
-        let started: review_core::RoundStartedPayloadV1 =
+        let started: af_contracts::RoundStartedPayloadV1 =
             serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
         if started.campaign_manifest_id != opened.campaign_manifest_id {
             return Err(format!(
@@ -4381,7 +4394,7 @@ fn read_campaign_view(
             .any(|closed| closed.round == Some(round) && closed.epoch == Some(epoch))
     });
     let last = rounds.last();
-    let task_accounting = report_tasks::read(store, &cas, run_id, &events)?;
+    let task_accounting = review_accounting::read(store, &cas, run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
     // A Ledger that fails to rebuild must not hide the Campaign from the listing: the
     // summary is simply absent.
@@ -4534,7 +4547,7 @@ fn campaigns_text(
                 state.as_str(),
             ]);
             for line in
-                task_execution::runs::command_lines("  ", &terminal_text(&command), 100, "    ")
+                task_commands::runs::command_lines("  ", &terminal_text(&command), 100, "    ")
             {
                 let _ = writeln!(text, "{line}");
             }
@@ -4628,8 +4641,8 @@ struct ReviewReportView {
     final_reasons: Vec<String>,
     rounds: Vec<ReportRoundView>,
     /// Empty only for a Campaign whose first Task capture failed, which has no Rounds either.
-    task_accounting: Vec<report_tasks::TaskAccountingView>,
-    demands: Vec<review_core::DemandSetEntryV1>,
+    task_accounting: Vec<review_accounting::TaskAccountingView>,
+    demands: Vec<af_contracts::DemandSetEntryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     findings_summary: FindingsSummaryView,
@@ -4640,7 +4653,7 @@ struct ReviewReportView {
     coverage: Option<review_handoff::ReportCoverageView>,
     /// The findings' verified fixes, for the SARIF run's properties.
     #[serde(skip)]
-    verified_fixed: Vec<review_core::task::handoff::VerifiedFixV1>,
+    verified_fixed: Vec<af_contracts::task::handoff::VerifiedFixV1>,
 }
 
 #[derive(serde::Serialize)]
@@ -4651,8 +4664,8 @@ struct ReportRoundView {
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch: Option<u32>,
     verdict: String,
-    task_chargeable_tokens_at_report: review_core::task::usage::DecimalU128,
-    task_accounting: review_core::TaskReviewAccountingV1,
+    task_chargeable_tokens_at_report: af_contracts::task::usage::DecimalU128,
+    task_accounting: af_contracts::TaskReviewAccountingV1,
 }
 
 impl ReportRoundView {
@@ -4704,7 +4717,7 @@ struct FindingsSummaryView {
     contested: usize,
 }
 
-fn findings_summary(findings: &[review_store::Finding]) -> FindingsSummaryView {
+fn findings_summary(findings: &[af_store::Finding]) -> FindingsSummaryView {
     findings
         .iter()
         .fold(FindingsSummaryView::default(), |mut summary, finding| {
@@ -4734,7 +4747,7 @@ fn findings_summary_line(summary: &FindingsSummaryView) -> String {
 
 /// Wall-clock a set of Rounds took: per (round, epoch), first Attempt start to last Attempt end,
 /// summed across Rounds. `None` when nothing was recorded.
-fn wall_span_ms(rows: &[review_store::TaskAttemptWall]) -> Option<u64> {
+fn wall_span_ms(rows: &[af_store::TaskAttemptWall]) -> Option<u64> {
     wall_spans_ms(rows.iter().map(|row| {
         (
             (row.round, row.epoch),
@@ -4768,11 +4781,11 @@ fn human_duration(ms: u64) -> String {
 }
 
 /// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
-fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
+fn keeps_warm_workspace(loaded: &af_pipeline_config::Loaded) -> bool {
     loaded
         .warm_policies()
         .values()
-        .any(|policy| policy.workspace == review_config::WorkspaceSpec::Rebase)
+        .any(|policy| policy.workspace == af_pipeline_config::WorkspaceSpec::Rebase)
 }
 
 /// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
@@ -4882,7 +4895,7 @@ fn read_report_view_quietly(
         .collect();
     let round_authority = report_round_authority(&events)?;
     let rounds = report_rounds(&reports, &round_authority)?;
-    let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
+    let task_accounting = review_accounting::read(store, cas, &run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
     let findings_summary = findings_summary(&findings);
@@ -4923,7 +4936,7 @@ fn read_report_view_quietly(
 }
 
 fn report_rounds(
-    reports: &[&review_core::RunEvent],
+    reports: &[&af_contracts::RunEvent],
     round_authority: &BTreeMap<String, (u32, u32)>,
 ) -> Result<Vec<ReportRoundView>, String> {
     reports
@@ -4948,13 +4961,13 @@ fn report_rounds(
 }
 
 fn report_round_authority(
-    events: &[review_core::RunEvent],
+    events: &[af_contracts::RunEvent],
 ) -> Result<BTreeMap<String, (u32, u32)>, String> {
     events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
         .map(|event| {
-            let payload: review_core::RoundStartedPayloadV1 =
+            let payload: af_contracts::RoundStartedPayloadV1 =
                 serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
             Ok((event.event_id.clone(), (payload.round, payload.epoch)))
         })
@@ -4994,7 +5007,7 @@ fn print_report_text(report: &ReviewReportView) {
         );
     }
     // Node IDs in it are repository-authored: every line is shown through the helper.
-    for line in report_tasks::render(&report.task_accounting, false).lines() {
+    for line in review_accounting::render(&report.task_accounting, false).lines() {
         println!("{}", terminal_text(line));
     }
     println!("Demands:");
@@ -5096,7 +5109,7 @@ fn print_report_markdown(report: &ReviewReportView) {
     }
     println!();
     // Node IDs in it are repository-authored: every line is shown through the helper.
-    for line in report_tasks::render(&report.task_accounting, true).lines() {
+    for line in review_accounting::render(&report.task_accounting, true).lines() {
         println!("{}", terminal_text(line));
     }
     println!("## Demands");
@@ -5230,37 +5243,35 @@ fn severity_label(severity: Severity) -> &'static str {
     }
 }
 
-fn demand_requirement_label(requirement: review_core::DemandRequirement) -> &'static str {
+fn demand_requirement_label(requirement: af_contracts::DemandRequirement) -> &'static str {
     match requirement {
-        review_core::DemandRequirement::Required => "required",
-        review_core::DemandRequirement::Advisory => "advisory",
+        af_contracts::DemandRequirement::Required => "required",
+        af_contracts::DemandRequirement::Advisory => "advisory",
     }
 }
 
-fn demand_status_label(status: review_core::DemandStatus) -> &'static str {
+fn demand_status_label(status: af_contracts::DemandStatus) -> &'static str {
     match status {
-        review_core::DemandStatus::Open => "open",
-        review_core::DemandStatus::Satisfied => "satisfied",
-        review_core::DemandStatus::Stale => "stale",
-        review_core::DemandStatus::Waived => "waived",
+        af_contracts::DemandStatus::Open => "open",
+        af_contracts::DemandStatus::Satisfied => "satisfied",
+        af_contracts::DemandStatus::Stale => "stale",
+        af_contracts::DemandStatus::Waived => "waived",
     }
 }
 
-fn transition_label(kind: review_store::ledger::TransitionKind) -> String {
+fn transition_label(kind: af_store::ledger::TransitionKind) -> String {
     match kind {
-        review_store::ledger::TransitionKind::Reported => "reported".to_string(),
-        review_store::ledger::TransitionKind::Duplicate => "duplicate".to_string(),
-        review_store::ledger::TransitionKind::Escalated => "escalated".to_string(),
-        review_store::ledger::TransitionKind::Reopened => "reopened".to_string(),
-        review_store::ledger::TransitionKind::AdoptedWhileDeclined => {
+        af_store::ledger::TransitionKind::Reported => "reported".to_string(),
+        af_store::ledger::TransitionKind::Duplicate => "duplicate".to_string(),
+        af_store::ledger::TransitionKind::Escalated => "escalated".to_string(),
+        af_store::ledger::TransitionKind::Reopened => "reopened".to_string(),
+        af_store::ledger::TransitionKind::AdoptedWhileDeclined => {
             "adopted_while_declined".to_string()
         }
-        review_store::ledger::TransitionKind::AuthorityRecovered => {
-            "authority_recovered".to_string()
-        }
-        review_store::ledger::TransitionKind::Attested => "attested".to_string(),
-        review_store::ledger::TransitionKind::Challenged => "challenged".to_string(),
-        review_store::ledger::TransitionKind::Resolved(status) => {
+        af_store::ledger::TransitionKind::AuthorityRecovered => "authority_recovered".to_string(),
+        af_store::ledger::TransitionKind::Attested => "attested".to_string(),
+        af_store::ledger::TransitionKind::Challenged => "challenged".to_string(),
+        af_store::ledger::TransitionKind::Resolved(status) => {
             format!("resolved:{}", status.as_str())
         }
     }
@@ -5278,7 +5289,7 @@ fn one_line(value: &str) -> String {
 /// character (C0, DEL and C1, so ESC, BEL, a newline and a tab too) is shown as a visible
 /// `\u{…}` escape instead of reaching the terminal, so a changed path or a finding title can
 /// neither drive the terminal nor forge an output line. The control set is the one
-/// `review_runner::cli::bounded_cli_line` removes; unlike that line, nothing here is dropped,
+/// `af_runner::cli::bounded_cli_line` removes; unlike that line, nothing here is dropped,
 /// collapsed, bounded or withheld, so two distinct paths stay two distinct lines. `--json`
 /// documents never pass through it: JSON escapes them itself.
 pub(crate) fn terminal_text(value: &str) -> String {
@@ -5322,7 +5333,7 @@ fn error_text(prefix: &str, error: &str, detail: Option<&error_document::Detail>
         .unwrap_or_else(|| format!("{prefix}: {}", terminal_lines(error)))
 }
 
-fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
+fn run_report(event: &af_contracts::RunEvent) -> Result<RunReportPayloadV6, String> {
     if !event.event_type.is_run_report() {
         return Err(format!("{} is not a run report", event.event_type));
     }
@@ -5354,7 +5365,7 @@ fn markdown_line(value: &str) -> String {
 fn print_scope_authority_warnings(ledger: &Ledger) {
     for failure in ledger.scope_authority_failures() {
         match failure.authority {
-            review_store::ScopeAuthorityKind::RoundBinding => eprintln!(
+            af_store::ScopeAuthorityKind::RoundBinding => eprintln!(
                 "warning: round {} Report Scope is unknown: round binding disagrees for Subject {}: {}",
                 failure.round,
                 terminal_text(&failure.authority_id),
@@ -5382,8 +5393,8 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
         return Err(format!("no finding with key {}", options.key));
     }
     let outcome = match options.status.as_str() {
-        "rejected" => review_core::FindingResolutionOutcome::Rejected,
-        "wontfix-tracked" => review_core::FindingResolutionOutcome::WontfixTracked,
+        "rejected" => af_contracts::FindingResolutionOutcome::Rejected,
+        "wontfix-tracked" => af_contracts::FindingResolutionOutcome::WontfixTracked,
         other => {
             return Err(format!(
                 "unsupported direct Resolution outcome `{other}` (use rejected or wontfix-tracked; a fix is proven with `af review attest-change` then `af review verify-fix`)"
@@ -5651,7 +5662,7 @@ fn candidate_identity() -> Result<CandidateIdentity, String> {
         executable: executable.display().to_string(),
         binary_sha256: format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(bytes))
+            af_contracts::hex::encode(&Sha256::digest(bytes))
         ),
     })
 }
@@ -5731,10 +5742,10 @@ impl LatestRoundEvidence {
     }
 }
 
-fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<String, String> {
-    let round: review_core::RoundStartedPayloadV1 =
+fn ledger_node_id(round_event: &af_contracts::RunEvent, cas: &Cas) -> Result<String, String> {
+    let round: af_contracts::RoundStartedPayloadV1 =
         serde_json::from_value(round_event.payload.clone()).map_err(|error| error.to_string())?;
-    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+    let manifest: af_contracts::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(&round.campaign_manifest_id)
             .map_err(|error| error.to_string())?,
     )
@@ -5745,11 +5756,11 @@ fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<Stri
         .map_err(|error| error.to_string())?;
     let pipeline = std::str::from_utf8(&pipeline).map_err(|error| error.to_string())?;
     let definition =
-        review_config::Definition::from_toml(pipeline).map_err(|error| error.to_string())?;
+        af_pipeline_config::Definition::from_toml(pipeline).map_err(|error| error.to_string())?;
     let mut ledger_nodes = definition
         .nodes
         .iter()
-        .filter(|node| node.kind == review_config::NodeKindSpec::Ledger);
+        .filter(|node| node.kind == af_pipeline_config::NodeKindSpec::Ledger);
     let node = ledger_nodes
         .next()
         .ok_or("pinned Campaign pipeline has no Ledger node")?;
@@ -5760,7 +5771,7 @@ fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<Stri
 }
 
 fn latest_round_evidence(
-    events: &[review_core::RunEvent],
+    events: &[af_contracts::RunEvent],
     cas: &Cas,
 ) -> Result<Option<LatestRoundEvidence>, String> {
     let Some(round_event) = events
@@ -5777,7 +5788,7 @@ fn latest_round_evidence(
             && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
     });
     if let Some(receipt) = ledger_receipt {
-        let receipt: review_core::NodeOutputReceiptPayloadV1 =
+        let receipt: af_contracts::NodeOutputReceiptPayloadV1 =
             serde_json::from_value(receipt.payload.clone()).map_err(|error| error.to_string())?;
         let mut count = None;
         // Every Ledger port is typed, so the Finding Set is selected by its port's declared type
@@ -5785,19 +5796,19 @@ fn latest_round_evidence(
         for artifact_id in receipt
             .outputs
             .iter()
-            .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+            .filter(|port| port.artifact_type == af_contracts::contract::FINDING_SET_V1)
             .flat_map(|port| port.artifact_ids.iter())
         {
             let value = cas
                 .get_json(artifact_id)
                 .map_err(|error| error.to_string())?;
-            let envelope: review_core::ArtifactEnvelope =
+            let envelope: af_contracts::ArtifactEnvelope =
                 serde_json::from_value(value).map_err(|error| error.to_string())?;
-            if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+            if envelope.artifact_type != af_contracts::contract::FINDING_SET_V1 {
                 continue;
             }
-            review_store::validate_envelope(&envelope)?;
-            let set: review_core::FindingSetV1 =
+            af_store::validate_envelope(&envelope)?;
+            let set: af_contracts::FindingSetV1 =
                 serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
             set.validate()?;
             count = Some(set.findings.len());
@@ -5825,18 +5836,18 @@ fn latest_round_evidence(
         .find(|outcome| outcome.node == ledger_node_id)
         .ok_or("Run Report has no outcome for the pinned Ledger node")?;
     let ledger_production = match outcome.outcome {
-        review_core::RunNodeOutcomeV2::Suppressed {
-            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
+        af_contracts::RunNodeOutcomeV2::Suppressed {
+            reason: af_contracts::RunSuppressionReasonV2::UpstreamMissing,
         } => "not_produced_upstream_missing",
-        review_core::RunNodeOutcomeV2::Failed { .. } => "not_produced_failed",
-        review_core::RunNodeOutcomeV2::Completed { .. } => {
+        af_contracts::RunNodeOutcomeV2::Failed { .. } => "not_produced_failed",
+        af_contracts::RunNodeOutcomeV2::Completed { .. } => {
             return Err("Ledger completed without a NodeOutputReceipt".into());
         }
     };
     Ok(Some(LatestRoundEvidence { ledger_production }))
 }
 
-fn packaged_runner(command: &review_core::Command) -> String {
+fn packaged_runner(command: &af_contracts::Command) -> String {
     Path::new(&command.program)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -5875,13 +5886,13 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<Optio
     std::thread::Builder::new()
         .name("af-sandbox-sweep".into())
         .spawn(|| {
-            let report = review_sandbox::sweep_stale_sandboxes();
+            let report = af_sandbox::sweep_stale_sandboxes();
             (report.removed > 0).then(|| {
                 format!(
                     "af: removed {} stale sandbox director{} left by exited processes under {}",
                     report.removed,
                     if report.removed == 1 { "y" } else { "ies" },
-                    terminal_text(&review_sandbox::sandbox_root().display().to_string())
+                    terminal_text(&af_sandbox::sandbox_root().display().to_string())
                 )
             })
         })
@@ -6005,7 +6016,7 @@ mod terminal_text_tests {
     fn a_proposal_path_is_shown_not_sent() {
         let proposal = CampaignProposal {
             id: "sha256:proposal".into(),
-            proposal: review_core::PatchProposal {
+            proposal: af_contracts::PatchProposal {
                 base_snapshot_id: "sha256:head".into(),
                 patch_artifact_id: "sha256:patch".into(),
                 finding_refs: Vec::new(),
@@ -6212,19 +6223,19 @@ mod option_tests {
     use super::{
         CampaignListView, CampaignMode, CampaignProblemView, Options, browse_report, campaign_id,
         campaign_labels_beneath, campaign_state_beneath, campaigns_text, default_campaigns_root,
-        enumerate_campaigns, latest_round_evidence, read_campaign_dir, report_tasks,
+        enumerate_campaigns, latest_round_evidence, read_campaign_dir, review_accounting,
         validate_campaign_name,
     };
 
     fn event(
         sequence: u64,
-        event_type: review_core::EventType,
+        event_type: af_contracts::EventType,
         causation_id: Option<&str>,
         node_id: Option<&str>,
         attempt_id: Option<&str>,
         payload: serde_json::Value,
-    ) -> review_core::RunEvent {
-        review_core::RunEvent {
+    ) -> af_contracts::RunEvent {
+        af_contracts::RunEvent {
             event_id: format!("event-{sequence}"),
             run_id: "campaign-partial".into(),
             sequence,
@@ -6240,7 +6251,7 @@ mod option_tests {
     }
 
     pub(crate) fn campaign_manifest(
-        cas: &review_store::Cas,
+        cas: &af_store::Cas,
         ledger_node: &str,
     ) -> (String, String, String) {
         let pipeline = format!(
@@ -6250,22 +6261,22 @@ mod option_tests {
         let opaque = cas.put(b"pinned authority").unwrap();
         let findings = cas.put(b"finding genesis").unwrap();
         let demands = cas.put(b"demand genesis").unwrap();
-        let manifest = review_core::CampaignManifestV1 {
+        let manifest = af_contracts::CampaignManifestV1 {
             authority_snapshot_id: opaque.clone(),
-            subject_kind: review_core::SubjectKind::WholeTree,
+            subject_kind: af_contracts::SubjectKind::WholeTree,
             base_snapshot_id: None,
-            pipeline: review_core::AuthorityFileV1 {
+            pipeline: af_contracts::AuthorityFileV1 {
                 path: ".af/pipelines/review.toml".into(),
                 artifact_id: pipeline_id,
             },
-            reviewer_lock: review_core::AuthorityFileV1 {
+            reviewer_lock: af_contracts::AuthorityFileV1 {
                 path: ".af/af.lock".into(),
                 artifact_id: opaque,
             },
             reviewers: Vec::new(),
             execution_policy_ids: Vec::new(),
             project_policy_ids: Vec::new(),
-            convergence: review_core::CampaignConvergenceV1 {
+            convergence: af_contracts::CampaignConvergenceV1 {
                 clean_rounds: 1,
                 max_rounds: 2,
                 gate: "major".into(),
@@ -6275,7 +6286,7 @@ mod option_tests {
             git_timeout_seconds: 300,
             budgets: None,
             focus: None,
-            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_identity_policy: af_contracts::CANONICAL_FINDING_IDENTITY_POLICY.into(),
             finding_genesis_id: findings.clone(),
             demand_genesis_id: demands.clone(),
         };
@@ -6295,12 +6306,12 @@ mod option_tests {
         rounds: &[(u32, u32)],
     ) {
         write_campaign_opening(state, label);
-        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open(state.join("cas")).unwrap();
         let (manifest_id, findings, demands) = campaign_manifest(&cas, "ledger");
         let subject = cas.put(b"subject").unwrap();
-        let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+        let mut store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
         for (round, epoch) in rounds {
-            let started = review_core::RoundStartedPayloadV1 {
+            let started = af_contracts::RoundStartedPayloadV1 {
                 round: *round,
                 epoch: *epoch,
                 campaign_manifest_id: manifest_id.clone(),
@@ -6312,8 +6323,8 @@ mod option_tests {
                 .append(
                     &super::campaign_run_id(label),
                     &cas,
-                    review_store::NewEvent::new(
-                        review_core::EventType::RoundStartedV1,
+                    af_store::NewEvent::new(
+                        af_contracts::EventType::RoundStartedV1,
                         serde_json::to_value(started).unwrap(),
                     )
                     .referencing(vec![
@@ -6329,18 +6340,18 @@ mod option_tests {
 
     pub(crate) fn write_campaign_opening(state: &std::path::Path, label: &str) {
         std::fs::create_dir_all(state).unwrap();
-        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open(state.join("cas")).unwrap();
         let (manifest_id, _, _) = campaign_manifest(&cas, "ledger");
-        let manifest: review_core::CampaignManifestV1 =
+        let manifest: af_contracts::CampaignManifestV1 =
             serde_json::from_value(cas.get_json(&manifest_id).unwrap()).unwrap();
-        let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+        let mut store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
         store
             .append(
                 &super::campaign_run_id(label),
                 &cas,
-                review_store::NewEvent::new(
-                    review_core::EventType::CampaignOpenedV1,
-                    serde_json::to_value(review_core::CampaignOpenedPayloadV1 {
+                af_store::NewEvent::new(
+                    af_contracts::EventType::CampaignOpenedV1,
+                    serde_json::to_value(af_contracts::CampaignOpenedPayloadV1 {
                         campaign_manifest_id: manifest_id.clone(),
                         authority_snapshot_id: manifest.authority_snapshot_id.clone(),
                     })
@@ -6387,13 +6398,13 @@ mod option_tests {
         campaigns[0].verdict = Some("incomplete (2 missing nodes)".into());
         campaigns[0].latest_round = Some((2, 3));
         campaigns[0].round_open = false;
-        campaigns[0].task_accounting = vec![report_tasks::charged("review", 1_234_567)];
+        campaigns[0].task_accounting = vec![review_accounting::charged("review", 1_234_567)];
         campaigns[0].wall_ms = Some(185_000);
         campaigns[2].verdict = Some("fail (not_converged)".into());
         campaigns[2].round_open = false;
         campaigns[2].task_accounting = vec![
-            report_tasks::charged("review", 40_000),
-            report_tasks::charged("review-2", 2_345),
+            review_accounting::charged("review", 40_000),
+            review_accounting::charged("review-2", 2_345),
         ];
         campaigns[2].wall_ms = Some(4_250);
         let problems = vec![
@@ -6407,7 +6418,7 @@ mod option_tests {
             CampaignProblemView {
                 directory: "old-pr".into(),
                 reason: "Store old-pr was written by af 99.1.0".into(),
-                release: Some(review_core::store_writer::StoreProvenance::OtherReleases(
+                release: Some(af_contracts::store_writer::StoreProvenance::OtherReleases(
                     vec!["99.1.0".into()],
                 )),
             },
@@ -6741,38 +6752,38 @@ mod option_tests {
     #[test]
     fn latest_round_ledger_production_is_read_from_its_receipt_or_run_report() {
         let temp = tempfile::tempdir().unwrap();
-        let cas = review_store::Cas::open(temp.path()).unwrap();
+        let cas = af_store::Cas::open(temp.path()).unwrap();
         let (manifest_id, findings_id, demands_id) = campaign_manifest(&cas, "reduce");
-        let report = |outcome: review_core::RunNodeOutcomeV2| {
-            serde_json::to_value(review_core::RunReportPayloadV6 {
-                outcomes: vec![review_core::RunNodeReportV2 {
+        let report = |outcome: af_contracts::RunNodeOutcomeV2| {
+            serde_json::to_value(af_contracts::RunReportPayloadV6 {
+                outcomes: vec![af_contracts::RunNodeReportV2 {
                     node: "reduce".into(),
                     outcome,
                 }],
                 blocked_gates: Vec::new(),
-                verdict: review_core::RunVerdictV3::Incomplete {
+                verdict: af_contracts::RunVerdictV3::Incomplete {
                     missing_nodes: Vec::new(),
                 },
                 spent_tokens: 37_u128.into(),
-                task_accounting: review_core::TaskReviewAccountingV1 {
+                task_accounting: af_contracts::TaskReviewAccountingV1 {
                     task_id: "review".into(),
                     task_revision_id: findings_id.clone(),
                     plan_id: findings_id.clone(),
                     task_report_id: findings_id.clone(),
                     through_sequence: 1,
                 },
-                execution: review_core::RunReportExecutionV6::Unbound {},
+                execution: af_contracts::RunReportExecutionV6::Unbound {},
             })
             .unwrap()
         };
         let events = vec![
             event(
                 0,
-                review_core::EventType::RoundStartedV1,
+                af_contracts::EventType::RoundStartedV1,
                 None,
                 None,
                 None,
-                serde_json::to_value(review_core::RoundStartedPayloadV1 {
+                serde_json::to_value(af_contracts::RoundStartedPayloadV1 {
                     round: 1,
                     epoch: 1,
                     campaign_manifest_id: manifest_id,
@@ -6784,12 +6795,12 @@ mod option_tests {
             ),
             event(
                 1,
-                review_core::EventType::RunReportV6,
+                af_contracts::EventType::RunReportV6,
                 Some("event-0"),
                 None,
                 None,
-                report(review_core::RunNodeOutcomeV2::Suppressed {
-                    reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
+                report(af_contracts::RunNodeOutcomeV2::Suppressed {
+                    reason: af_contracts::RunSuppressionReasonV2::UpstreamMissing,
                 }),
             ),
         ];
@@ -6802,7 +6813,7 @@ mod option_tests {
             1,
             event(
                 1,
-                review_core::EventType::NodeOutputReceiptV1,
+                af_contracts::EventType::NodeOutputReceiptV1,
                 Some("event-0"),
                 Some("reduce"),
                 None,
@@ -6813,7 +6824,7 @@ mod option_tests {
         assert_eq!(evidence.ledger_production, "produced_with_findings");
 
         let mut failed = events;
-        failed.last_mut().unwrap().payload = report(review_core::RunNodeOutcomeV2::Failed {
+        failed.last_mut().unwrap().payload = report(af_contracts::RunNodeOutcomeV2::Failed {
             error: "invalid Ledger output".into(),
         });
         let evidence = latest_round_evidence(&failed, &cas).unwrap().unwrap();

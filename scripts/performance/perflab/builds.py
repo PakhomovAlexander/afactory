@@ -77,7 +77,7 @@ import threading
 import time
 
 from . import adapters as adapters_module
-from . import admission, budget as budget_module, bundle, contracts, images, limits, tomlfile
+from . import admission, budget as budget_module, bundle, contracts, images, limits, toml_file
 from .values import ContractError, check_id, require, sha256_bytes
 
 SYSTEM_PATH = "/usr/bin:/bin"
@@ -240,7 +240,7 @@ def ambient_cargo_configs(path):
             if os.path.isfile(candidate):
                 try:
                     with open(candidate, "rb") as stream:
-                        doc = tomlfile.loads(stream.read(tomlfile.MAX_TOML_BYTES + 1),
+                        doc = toml_file.loads(stream.read(toml_file.MAX_TOML_BYTES + 1),
                                              candidate)
                 except ContractError:
                     refused.append(candidate)
@@ -1122,7 +1122,7 @@ class Builder:
                 "--target-dir", os.path.join(worktree, "target"),
                 "--target", self.recipe["target"], "-p", package, target_kind, name]
         wanted = list(self.recipe["features"]) if features else []
-        if self.calibration_build() and package != "review-process":
+        if self.calibration_build() and package != "af-process":
             # Both sides of a preparation or slowdown member are one calibration build of the
             # same source; only the candidate's environment arms the loop (ADR-0181).
             wanted.append(contracts.CALIBRATION_FEATURE)
@@ -1299,7 +1299,7 @@ class Builder:
             started = int(self.wall() * 1000)
             steps, env = [], self.environment()
             for role in roles:
-                argv = (self.cargo(worktrees[role], "review-process", "--example",
+                argv = (self.cargo(worktrees[role], "af-process", "--example",
                                    "perf-supervisor", features=False) if role == "authority"
                         else self.cargo(worktrees[role], "af", "--bin", "af"))
                 name = "prime_" + role
@@ -1434,7 +1434,7 @@ class Builder:
 
     def _supervisor(self, worktree):
         env = self.environment()
-        argv = self.cargo(worktree, "review-process", "--example", "perf-supervisor",
+        argv = self.cargo(worktree, "af-process", "--example", "perf-supervisor",
                           features=False)
         step = self.steps.run("supervisor", argv, worktree, env)
         unchanged = not changed_paths(self.layout, worktree) and lock_digest(worktree) \

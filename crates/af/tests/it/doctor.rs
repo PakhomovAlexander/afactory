@@ -1435,7 +1435,8 @@ fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
         std::fs::write(&lock, format!("{}{digest}{}", &text[..start], &text[end..])).unwrap();
     };
     let package_digest = || {
-        review_config::lock::package_digest("correctness", &af.join("workers/correctness")).unwrap()
+        af_pipeline_config::lock::package_digest("correctness", &af.join("workers/correctness"))
+            .unwrap()
     };
 
     // Changed and malformed, the lock untouched: onboarding stops at the package's pin, and
@@ -1528,7 +1529,7 @@ fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
         std::fs::write(&pipeline, &changed).unwrap();
         repin(
             "pipelines.review",
-            review_store::canonical::blob_content_id(changed.as_bytes()),
+            af_store::canonical::blob_content_id(changed.as_bytes()),
         );
         let hint = project_hint();
         assert!(

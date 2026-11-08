@@ -639,7 +639,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
   environment: a fresh probe directory, the sanitized `PATH`, no credential read or written, and
   no model call. It reads the options the page declares and compares them with the list the
   adapter crate keeps next to the code that builds the command
-  (`review_runner_claude::CLAUDE_INVOCATION`, `review_runner_codex::CODEX_INVOCATION`); a unit test
+  (`af_runner_claude::CLAUDE_INVOCATION`, `af_runner_codex::CODEX_INVOCATION`); a unit test
   holds each list equal to what its command builder emits.
 - The decision is made on the help page, never on a version string, so a wrapper or a fork is
   judged by what it accepts. Only a refused CLI is also asked for `--version`, to report it.

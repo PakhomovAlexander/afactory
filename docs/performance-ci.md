@@ -464,7 +464,7 @@ A bridge measures as active only with verified execution evidence
    python3 scripts/performance/cli.py equivalence-evidence --repo . \
      --calibrated-activation fixtures/performance/activations/first.toml \
      --authority BRIDGE_SHA --group native_probe_public_api_v1 \
-     --adapter-file crates/review-pipeline/examples/perf-probe/cases.rs \
+     --adapter-file crates/af-runtime/examples/perf-probe/cases.rs \
      --golden GOLDEN_RUN_DIR=ACTIONS_RUN --post-merge-aa AA_RUN_DIR=ACTIONS_RUN \
      --output fixtures/performance/equivalence-bridge.json
    ```
@@ -514,7 +514,7 @@ remain pending (`af.perf-cost/3`, `af.perf-shipping/3`, ADR-0185).
 
 `fixtures/performance/kernel-measure/` stages the guarded measures of design §13 for a reviewed
 human installation into `.af/code-policy.toml` (its README, ADR-0185). Each runs the literal
-isolated bootstrap of `scripts/performance/perflab/kernelguard.py` with the protected-harness
+isolated bootstrap of `scripts/performance/perflab/kernel_guard.py` with the protected-harness
 digest it expects; the bootstrap refuses a changed, missing or extra protected file, a link or a
 special file before the driver is imported or anything is built, then `cli.py measure` supplies
 one golden-judged library sample per kernel repetition. Protected names match caselessly, a warm

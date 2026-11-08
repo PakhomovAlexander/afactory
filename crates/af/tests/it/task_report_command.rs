@@ -7,11 +7,11 @@
 //! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
-use nix::sys::signal::Signal;
-use review_core::task::task_report::{
+use af_contracts::task::execution_summary::{
     TASK_REPORT_BEGIN, TASK_REPORT_UNKNOWN_PIPELINE, is_model_identity,
 };
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
+use nix::sys::signal::Signal;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -276,7 +276,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
         .filter(|a| {
             matches!(
                 a.result,
-                Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
+                Some(af_contracts::task::execution::TaskAttemptResultV1::Abandoned { .. })
             )
         })
         .collect();
@@ -433,7 +433,7 @@ fn bind_author_model(f: &Fixture, model: &str) {
         )
         .unwrap();
         catalog["packages"]["builtin/document-author"]["digest"] = toml::Value::String(
-            review_config::lock::package_digest("builtin/document-author", &package).unwrap(),
+            af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap(),
         );
         std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
         task_document::commit(&f.repo);
@@ -503,7 +503,7 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
         .expect("the author's Attempt began");
     assert!(matches!(
         author.result,
-        Some(review_core::task::execution::TaskAttemptResultV1::Failed { .. })
+        Some(af_contracts::task::execution::TaskAttemptResultV1::Failed { .. })
     ));
     assert_eq!(task["attempts"]["failed"], 1, "{task:#}");
     assert_eq!(
@@ -635,7 +635,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     assert_eq!(author.charged_tokens, 0);
     assert_eq!(
         author.unknown_usage,
-        Some(review_core::task::usage::TaskUnknownUsageCauseV1::Capacity)
+        Some(af_contracts::task::usage::TaskUnknownUsageCauseV1::Capacity)
     );
     assert!(author.usage_id.is_none());
     // Its reservation was released: nothing of it is held or charged.
@@ -842,7 +842,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
 /// machine's home and auth directory, a `file://` URL, a drive-letter path or an email address
 /// before a model name, versioned as the kernel requires of a model ID it binds. The report's own
 /// rule, which names any recorded value outside it `unknown`, keeps its table in
-/// `review_core::task::task_report`.
+/// `af_contracts::task::execution_summary`.
 #[test]
 fn a_path_valued_model_is_refused_at_planning_and_never_printed() {
     type Spell = fn(&Path) -> String;
@@ -964,25 +964,24 @@ fn refresh_once_the_lease_expires(af: &dyn Fn(&[&str]) -> Command) {
 /// housekeeping, not a command's: it exists only when that sweep removed something, and `af task
 /// report` counts it as neither a run nor active time.
 fn writer_leases(store: &EventStore) -> Vec<(u64, u64, u64, bool, bool)> {
-    use review_core::task::event::TaskChangeV1;
-    let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
+    use af_contracts::task::event::TaskChangeV1;
+    let run_id = af_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
     let mut epochs: Vec<(u64, u64, u64, bool, bool)> = Vec::new();
     for event in store.replay(&run_id).unwrap() {
         // A lease's execution marker is an event of its epoch that neither refreshes nor
         // records an execution.
-        let (writer, epoch, time, change) =
-            if review_store::store::task::is_execution_started(&event) {
-                let marker = review_store::store::task::read_execution_started(&event).unwrap();
-                (marker.writer, marker.epoch, marker.now_unix_ms, None)
-            } else {
-                let transition = review_store::store::task::read_task_transition(&event).unwrap();
-                (
-                    transition.writer,
-                    transition.epoch,
-                    transition.now_unix_ms,
-                    Some(transition.change),
-                )
-            };
+        let (writer, epoch, time, change) = if af_store::store::task::is_execution_started(&event) {
+            let marker = af_store::store::task::read_execution_started(&event).unwrap();
+            (marker.writer, marker.epoch, marker.now_unix_ms, None)
+        } else {
+            let transition = af_store::store::task::read_task_transition(&event).unwrap();
+            (
+                transition.writer,
+                transition.epoch,
+                transition.now_unix_ms,
+                Some(transition.change),
+            )
+        };
         if writer.starts_with("af-storage-sweep-") {
             continue;
         }
@@ -1180,8 +1179,8 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
 /// finished.
 #[test]
 fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own_worker() {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
-    use review_core::task::pipeline::PipelineDefinitionV1;
+    use af_contracts::task::pipeline::PipelineDefinitionV1;
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -1358,11 +1357,11 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     assert_eq!(bound(&under_model.plan_id)["model"], "codex-fixture-1");
     assert!(matches!(
         under_model.result,
-        Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
+        Some(af_contracts::task::execution::TaskAttemptResultV1::Abandoned { .. })
     ));
     assert!(matches!(
         under_command.result,
-        Some(review_core::task::execution::TaskAttemptResultV1::Succeeded { .. })
+        Some(af_contracts::task::execution::TaskAttemptResultV1::Succeeded { .. })
     ));
     assert_eq!(
         projection.plan_id.as_deref(),
@@ -1596,21 +1595,20 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
 fn recorded_findings(state: &Path, task_id: &str) -> (u64, [u64; 3]) {
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let run_id = review_store::store::task::task_run_id(task_id).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_id).unwrap();
     let mut rounds = Vec::new();
     for event in store.replay(&run_id).unwrap() {
-        if review_store::store::task::is_execution_started(&event) {
+        if af_store::store::task::is_execution_started(&event) {
             continue;
         }
-        let transition = review_store::store::task::read_task_transition(&event).unwrap();
-        if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+        let transition = af_store::store::task::read_task_transition(&event).unwrap();
+        if let af_contracts::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             transition.change
         {
-            let record =
-                review_store::store::task::execution::read_execution_record(&cas, &record_id)
-                    .unwrap()
-                    .record;
-            if let review_core::task::execution::TaskExecutionRecordV1::Published {
+            let record = af_store::store::task::execution::read_execution_record(&cas, &record_id)
+                .unwrap()
+                .record;
+            if let af_contracts::task::execution::TaskExecutionRecordV1::Published {
                 output_id,
                 ..
             } = record
@@ -1739,7 +1737,7 @@ fn a_round_recorded_before_a_source_refresh_still_counts() {
     changed["revision"] = serde_json::json!("v2");
     changed["acceptance"]["empty"] = serde_json::json!("An empty input returns an empty list.");
     let external = root.path().join("updated.toml");
-    let data: review_core::task::source::IssueInputV1 = serde_json::from_value(changed).unwrap();
+    let data: af_contracts::task::source::IssueInputV1 = serde_json::from_value(changed).unwrap();
     std::fs::write(&external, toml::to_string(&data).unwrap()).unwrap();
     stdout(&af(&[
         "task",
@@ -1857,7 +1855,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
         pin["digest"] =
-            toml::Value::String(review_config::lock::package_digest(name, &package).unwrap());
+            toml::Value::String(af_pipeline_config::lock::package_digest(name, &package).unwrap());
     }
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
     for args in [
@@ -2040,7 +2038,7 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
         pin["digest"] =
-            toml::Value::String(review_config::lock::package_digest(name, &package).unwrap());
+            toml::Value::String(af_pipeline_config::lock::package_digest(name, &package).unwrap());
     }
     std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
     for args in [&["add", "-A"][..], &["commit", "-qm", "an ADR per Task"]] {

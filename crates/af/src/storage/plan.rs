@@ -25,12 +25,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use review_telemetry::budget;
+use af_telemetry::budget;
 
 use super::{
     Entry, Evicted, FAILED, HOUR_MS, Kind, Removal, Rule, Stop, SweepReport, TelemetryChanged,
 };
-use crate::projects::survey::collect::{self, Judged, LeftReason};
+use crate::project::survey::collect::{self, Judged, LeftReason};
 
 /// How the applied sweep removes one planned entry.
 #[derive(Debug, Clone)]
@@ -244,7 +244,7 @@ impl Model {
 
     /// The bytes and the identity of the Survey entry at `object`, as the snapshot measured
     /// them; nothing when the snapshot holds none.
-    fn survey(&self, object: &Path) -> (u64, Option<review_sandbox::Identity>) {
+    fn survey(&self, object: &Path) -> (u64, Option<af_sandbox::Identity>) {
         self.entries
             .iter()
             .find(|entry| entry.kind == Kind::Survey && entry.path == object)
@@ -327,7 +327,7 @@ fn removal(kind: Kind, path: PathBuf, task_id: Option<String>, bytes: u64, rule:
 /// What judges a Survey the plan picks: its Project Store, what the snapshot verified of it and
 /// the identity the snapshot measured for its record.
 pub(crate) type Judge<'a> =
-    dyn FnMut(&Path, &collect::Live, Option<review_sandbox::Identity>) -> Judged + 'a;
+    dyn FnMut(&Path, &collect::Live, Option<af_sandbox::Identity>) -> Judged + 'a;
 
 /// The entry of the snapshot that measured a claim's bytes as part of its own, when one did: the
 /// deepest directory entry (a Project Store, chiefly) whose path holds the claim. Its bytes are
@@ -355,7 +355,7 @@ fn too_deep(entry: &Entry) -> Left {
             detail: format!(
                 "deeper than the removal walk: a directory below it is nested more than {} \
                  levels deep, so no removal could take it whole and it is left for the operator",
-                review_sandbox::REMOVAL_MAX_DEPTH
+                af_sandbox::REMOVAL_MAX_DEPTH
             ),
         },
     }
@@ -947,8 +947,8 @@ mod tests {
         format!("sha256:{}", format!("{n:02x}").repeat(32))
     }
 
-    fn identity(inode: u64) -> review_sandbox::Identity {
-        review_sandbox::Identity {
+    fn identity(inode: u64) -> af_sandbox::Identity {
+        af_sandbox::Identity {
             device: 1,
             inode,
             born: Some(1),
@@ -1001,10 +1001,9 @@ mod tests {
             now: NOW,
             telemetry: Telemetry::default(),
         };
-        let mut judge = |_: &Path,
-                         _: &collect::Live,
-                         _: Option<review_sandbox::Identity>|
-         -> Judged { unreachable!("no Survey is picked") };
+        let mut judge = |_: &Path, _: &collect::Live, _: Option<af_sandbox::Identity>| -> Judged {
+            unreachable!("no Survey is picked")
+        };
         let plan = make(inputs(), &mut judge);
         assert_eq!(plan.total_before, 110);
         let steps: Vec<(Rule, u64, Option<u64>)> = plan

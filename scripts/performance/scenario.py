@@ -16,7 +16,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 if "perflab" not in sys.modules:
     sys.path.insert(0, str(HERE))
 
-from perflab import contracts, executor, researchevidence, scenarioadapter  # noqa: E402
+from perflab import contracts, executor, research_evidence, scenario_adapter  # noqa: E402
 from perflab.values import ContractError, canonical_digest, document_bytes, loads_strict, require  # noqa: E402
 
 
@@ -51,7 +51,7 @@ def parser():
 
 def launcher(config_path, output):
     config = pathlib.Path(config_path).resolve()
-    scenarioadapter.load_config(str(config))
+    scenario_adapter.load_config(str(config))
     # Bind every executable Python dependency before any of them is imported. Changing a
     # module or configuration requires a new launcher and new machine-policy executable pin.
     files = [pathlib.Path(__file__).resolve(), config] + sorted((HERE / "perflab").rglob("*.py"))
@@ -101,27 +101,27 @@ def main(argv=None):
         sources = loads_strict(executor.read(args.sources), "selected native sources", 1048576)
         require(not sources or all((args.af, args.af_digest, args.task_repo, args.task_state)),
                 "native sources require --af, --af-digest, --task-repo and --task-state")
-        records = researchevidence.captured(sources, dict(af=args.af, af_digest=args.af_digest,
+        records = research_evidence.captured(sources, dict(af=args.af, af_digest=args.af_digest,
             task_repo=args.task_repo, task_state=args.task_state))
         require(not args.original or args.executor, "native original selection needs --executor")
         if args.original:
             with executor.Journal(executor.load_config(args.executor), readonly=True) as journal:
-                records += researchevidence.native(journal, args.original)
-        index = researchevidence.rebuild(records)
-        packet = researchevidence.packet(index, args.cutoff, args.created, args.compatibility,
+                records += research_evidence.native(journal, args.original)
+        index = research_evidence.rebuild(records)
+        packet = research_evidence.packet(index, args.cutoff, args.created, args.compatibility,
             args.max_age_ms, args.max_items, args.max_bytes)
         result = {"schema": "af.perf-evidence-export/1",
-                  "index": researchevidence.retain(args.output_root, index, "evidence-index"),
+                  "index": research_evidence.retain(args.output_root, index, "evidence-index"),
                   "index_digest": canonical_digest(index),
-                  "packet": researchevidence.retain(args.output_root, packet, "evidence-packet")}
+                  "packet": research_evidence.retain(args.output_root, packet, "evidence-packet")}
     elif args.command == "launcher":
         result = launcher(args.config, args.output)
     else:
-        adapter = scenarioadapter.Adapter(scenarioadapter.load_config(args.config))
+        adapter = scenario_adapter.Adapter(scenario_adapter.load_config(args.config))
         if args.command == "adapter":
-            data = sys.stdin.buffer.read(scenarioadapter.MAX_REQUEST + 1)
-            require(len(data) <= scenarioadapter.MAX_REQUEST, "Scenario request exceeds adapter input bound")
-            result = adapter.request(loads_strict(data, "Scenario request", scenarioadapter.MAX_REQUEST))
+            data = sys.stdin.buffer.read(scenario_adapter.MAX_REQUEST + 1)
+            require(len(data) <= scenario_adapter.MAX_REQUEST, "Scenario request exceeds adapter input bound")
+            result = adapter.request(loads_strict(data, "Scenario request", scenario_adapter.MAX_REQUEST))
         elif args.command == "submit":
             result = {"schema": "af.perf-scenario-service/1", "status": adapter.submit_pending()}
         else:

@@ -53,7 +53,7 @@
 ## Checklist
 
 - [ ] `make check` passes locally (fmt, clippy `-D warnings`, `cargo test --locked`, release check).
-- [ ] `make review-kernel-container-probes` passes, if `crates/review-sandbox` changed (needs Docker).
+- [ ] `make review-kernel-container-probes` passes, if `crates/af-sandbox` changed (needs Docker).
 - [ ] This change was made through af Tasks (implementation and verification pipelines), and their `af task report` is included above.
 - [ ] The `Lines added` markers above are kept (CI writes the block between them).
 - [ ] A change note `changelog.d/<topic>.md`, if the change is user-visible (never an edit to `CHANGELOG.md`).

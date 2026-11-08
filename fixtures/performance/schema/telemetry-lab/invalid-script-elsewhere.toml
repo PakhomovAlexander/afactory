@@ -45,7 +45,7 @@ schema_file = "telemetry-read-latency-v2.json"
 inputs = ["scripts/telemetry-corpus.py"]
 levels = ["content"]
 
-# Profiles: what one trigger measures, within the hard caps of perflab/telemetrylab.py. -----------
+# Profiles: what one trigger measures, within the hard caps of perflab/telemetry_lab.py. -----------
 
 [profiles.pr]
 description = "Pull requests: every experiment, bounded to fit beside the comparison; descriptive, never judged at the full gate's scale."

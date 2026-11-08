@@ -24,7 +24,7 @@
       "title": "Fast kernel gate: its check report is refused (second tests record); af task show then contradicts itself",
       "state": "fixed_candidate",
       "evidence": ["PR #438", "docs/adr/0258", "CHANGELOG.md: 0.14.0-rc.1 entry crediting #346"],
-      "addressed": ["crates/review-core/src/task/check_report.rs fold_tests folds one tests record per run; the 'second tests record' refusal is gone for the fast gate", "a refused report shows as refused in af task show --checks"],
+      "addressed": ["crates/af-contracts/src/task/check_report.rs fold_tests folds one tests record per run; the 'second tests record' refusal is gone for the fast gate", "a refused report shows as refused in af task show --checks"],
       "remaining": [],
       "closed_by_owner": true
     },

@@ -6,7 +6,7 @@ import re
 import sys
 import unittest
 
-from perflab import limits, suite, tomlfile
+from perflab import limits, suite, toml_file
 from perflab.values import ContractError
 from tests.support import ROOT, SUITE, SYNTHETIC_SUITE, read, replace_once
 
@@ -177,9 +177,9 @@ class Registry(unittest.TestCase):
         self.assertIn(shipping["target"], release)
 
     def test_product_constraints_match_the_production_source(self):
-        lease = read(os.path.join(ROOT, "crates/review-pipeline/src/task/lease.rs")).decode()
-        cas = read(os.path.join(ROOT, "crates/review-store/src/cas.rs")).decode()
-        probe = read(os.path.join(ROOT, "crates/review-pipeline/examples/perf-probe/"
+        lease = read(os.path.join(ROOT, "crates/af-runtime/src/task/lease.rs")).decode()
+        cas = read(os.path.join(ROOT, "crates/af-store/src/cas.rs")).decode()
+        probe = read(os.path.join(ROOT, "crates/af-runtime/examples/perf-probe/"
                                   "fixtures.rs")).decode()
         self.assertIn("pub const TASK_LEASE_MS: u64 = 60_000;", lease)
         self.assertIn("pub const TASK_LEASE_MS: u64 = 60_000;", probe)
@@ -367,7 +367,7 @@ class TomllibParity(unittest.TestCase):
         import tomllib
         for path in (SUITE, SYNTHETIC_SUITE):
             raw = read(path)
-            self.assertEqual(tomlfile.loads(raw, path), tomlfile.loads(raw, path, tomllib))
+            self.assertEqual(toml_file.loads(raw, path), toml_file.loads(raw, path, tomllib))
             self.assertEqual(suite.load_bytes(raw, path).policy_digest,
                              suite.load_bytes(raw, path, tomllib).policy_digest)
 
@@ -375,7 +375,7 @@ class TomllibParity(unittest.TestCase):
         import tomllib
         for parser in (None, tomllib):
             with self.assertRaises(ContractError):
-                tomlfile.loads(b"a = 1.5\n", "float.toml", parser)
+                toml_file.loads(b"a = 1.5\n", "float.toml", parser)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 //! '--safe-mode'`, which af reported only as a bare exit status (issue #259). This module asks
 //! the resolved executable, token-free, for the help page of the (sub)command af invokes and
 //! compares the options it declares with the adapter crate's required list
-//! ([`review_runner_claude::CLAUDE_INVOCATION`], [`review_runner_codex::CODEX_INVOCATION`]), the
+//! ([`af_runner_claude::CLAUDE_INVOCATION`], [`af_runner_codex::CODEX_INVOCATION`]), the
 //! single source of truth that the adapters' command builders are tested against. The decision is
 //! made on the help page, never on a version string, so a wrapper or a fork is judged by what it
 //! accepts; `--version` runs only to report the detected version once a CLI is refused.
@@ -30,7 +30,7 @@
 
 use super::installation::{BoundedRun, StartFailure, VersionCheck, run_bounded, version_check};
 use super::*;
-use review_runner::cli::{CliInvocation, bounded_cli_line, error_and_fix, exit_description};
+use af_runner::cli::{CliInvocation, bounded_cli_line, error_and_fix, exit_description};
 
 /// The protocol capability the Codex identity and usage probes need of the installed CLI.
 pub(super) const APP_SERVER_PROTOCOL: &str =
@@ -40,8 +40,8 @@ pub(super) const APP_SERVER_PROTOCOL: &str =
 pub(super) fn invocation(kind: ProviderKind) -> &'static CliInvocation {
     match kind {
         ProviderKind::Pi => unreachable!("Pi compatibility uses the SDK host"),
-        ProviderKind::Claude => &review_runner_claude::CLAUDE_INVOCATION,
-        ProviderKind::Codex => &review_runner_codex::CODEX_INVOCATION,
+        ProviderKind::Claude => &af_runner_claude::CLAUDE_INVOCATION,
+        ProviderKind::Codex => &af_runner_codex::CODEX_INVOCATION,
     }
 }
 
@@ -754,7 +754,7 @@ mod tests {
     /// exit kept; an ordinary clap error line and the trusted executable path pass through.
     #[test]
     fn an_app_server_error_line_carrying_credential_material_is_withheld() {
-        use review_runner::cli::WITHHELD_LINE;
+        use af_runner::cli::WITHHELD_LINE;
         let root = tempfile::tempdir().unwrap();
         // The trusted path may contain the credential prefix (as in task-sk-parent). It is
         // not leaked stderr: check complete synthetic secrets, independently of that path.

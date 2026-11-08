@@ -1,6 +1,6 @@
 //! Plan-time validation of every Model binding's model and effort level (ADR-0148).
 //!
-//! The rules are `review_runner_claude::models`, the one validation authority; this module
+//! The rules are `af_runner::models`, the one validation authority; this module
 //! applies them where a plan is made. The first pass runs the static rules over every Model
 //! Worker before any Provider is probed (ADR-0147). At plan time (`af task plan`, `af review
 //! plan`) a second pass then reads each Provider's catalog token-free, once per Provider, and
@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use review_runner_claude::hint;
-use review_runner_claude::models::{self as rules, Kind, ProviderRef, Verdict};
+use af_runner::models::diagnostic as hint;
+use af_runner::models::{self as rules, Kind, ProviderRef, Verdict};
 
 use crate::providers::models::{CatalogReport, catalog_for};
 

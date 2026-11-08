@@ -3,11 +3,11 @@
 //! `max_attempts = 1`, as every `implementation-reviewed` slot does, so each resume here would
 //! have been refused with `exhausted its Attempt limit` before. Command Workers only.
 use crate::{schemas, task_cli, task_interrupt};
+use af_contracts::task::TaskPhaseV1;
+use af_contracts::task::execution::TaskAttemptResultV1;
+use af_store::store::task::execution::TaskAbandonCause;
+use af_store::{Cas, EventStore};
 use nix::sys::signal::Signal;
-use review_core::task::TaskPhaseV1;
-use review_core::task::execution::TaskAttemptResultV1;
-use review_store::store::task::execution::TaskAbandonCause;
-use review_store::{Cas, EventStore};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
@@ -248,7 +248,7 @@ fn assert_resumed(line: &str, rest: &str) {
     );
 }
 
-fn projection(f: &Fixture) -> review_store::store::task::TaskProjection {
+fn projection(f: &Fixture) -> af_store::store::task::TaskProjection {
     let cas = Cas::open_existing(f.state.join("cas")).unwrap();
     let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
     store.task_projection(&cas, TASK).unwrap().unwrap()
@@ -350,7 +350,7 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
     assert_eq!(lost.charged_tokens, 0, "never its reservation");
     assert_eq!(
         lost.unknown_usage,
-        Some(review_core::task::usage::TaskUnknownUsageCauseV1::LeaseExpired),
+        Some(af_contracts::task::usage::TaskUnknownUsageCauseV1::LeaseExpired),
         "nothing was reported before the loss"
     );
     assert!(
