@@ -153,7 +153,7 @@ impl Scope {
 pub(crate) fn committed_name(toplevel: &Path) -> Option<String> {
     let text = super::panes::pipelines::git(toplevel, &["show", "HEAD:.af/af.toml"]).ok()?;
     let text = String::from_utf8(text).ok()?;
-    crate::project::ProjectFile::parse(&text).ok()?;
+    crate::project_policy::ProjectFile::parse(&text).ok()?;
     let value: toml::Value = toml::from_str(&text).ok()?;
     let name = value.get("project")?.get("name")?.as_str()?;
     let line = name.lines().next()?.trim().to_owned();

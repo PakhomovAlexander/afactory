@@ -6,7 +6,7 @@
                                                [--date YYYY-MM-DD | --night-of UNIT]
 
 Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date,
-printed on stderr (scripts/nightly/nightlychain.py). `submit` reads
+printed on stderr (scripts/nightly/nightly_chain.py). `submit` reads
 builds_root/DATE/nightly.json (af.nightly-build/1). A skipped night measures nothing. For a
 built night it submits the core and then the telemetry original through the executor of the
 tree it runs from (`scripts/performance/cli.py executor --config <[report] executor_config>
@@ -38,9 +38,9 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
-import nightlychain  # noqa: E402
-from perflab import contracts, tomlfile  # noqa: E402
-from perflab.nightlycontracts import DEADLINE_MINUTES_DEFAULT, POLL_SECONDS_DEFAULT  # noqa: E402
+import nightly_chain  # noqa: E402
+from perflab import contracts, toml_file  # noqa: E402
+from perflab.nightly_contracts import DEADLINE_MINUTES_DEFAULT, POLL_SECONDS_DEFAULT  # noqa: E402
 from perflab.values import ContractError  # noqa: E402
 
 EXIT_MEASURED, EXIT_FAILED = 0, 1
@@ -86,10 +86,10 @@ def load_config(path):
     executor_config is the executor measured on) and `[measure]` defaulted."""
     try:
         with open(path, "rb") as stream:
-            data = stream.read(tomlfile.MAX_TOML_BYTES + 1)
+            data = stream.read(toml_file.MAX_TOML_BYTES + 1)
     except OSError as error:
         raise Refused("--config %s: %s" % (path, error))
-    doc = contracts.validate_nightly_config(tomlfile.loads(data, path), path)
+    doc = contracts.validate_nightly_config(toml_file.loads(data, path), path)
     if "report" not in doc:
         raise Refused("%s has no [report] table: measuring needs its executor_config "
                       "(docs/nightly.md)" % path)
@@ -275,15 +275,15 @@ def parse(argv):
                                   "originals and cycle the nightly executor until both end")
     command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
                          "its [report] table")
-    nightlychain.add_night_options(command)
+    nightly_chain.add_night_options(command)
     return parser.parse_args(argv)
 
 
 def main(argv=None, run=run_command, clock=now_ms, sleep=time.sleep,
-         show=nightlychain.systemctl_show):
+         show=nightly_chain.systemctl_show):
     args = parse(argv)
     try:
-        date, chosen = nightlychain.night(args, clock, show, Refused)
+        date, chosen = nightly_chain.night(args, clock, show, Refused)
         if chosen:
             sys.stderr.write(chosen)
         config, defaults = load_config(args.config)

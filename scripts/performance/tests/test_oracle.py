@@ -2,7 +2,7 @@
 
 Messages here are constructed by the test from golden entries to exercise the judge; they are
 not probe output and claim nothing about the product. Real probe executions are judged by the
-Rust integration test `crates/review-pipeline/tests/perf_probe.rs`.
+Rust integration test `crates/af-runtime/tests/perf_probe.rs`.
 """
 import copy
 import json

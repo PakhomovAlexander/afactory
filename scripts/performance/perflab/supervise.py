@@ -8,7 +8,7 @@ of the verified scratch filesystem is writable (ADR-0168). Its reply is one
 `af.perf-supervisor-result/5` line followed by exactly the retained bytes of the child's stdout
 and stderr; a request may add an untimed fixture setup, stdout patterns to count and selectors
 of declared fields it observes over the whole stdout as one JSON document (ADR-0172). Timing,
-draining, descendant lifecycle and kills are the supervisor's (`review_process::sample`); this
+draining, descendant lifecycle and kills are the supervisor's (`af_process::sample`); this
 module only frames, bounds and checks the reply and keeps the host-side container preparation
 and teardown apart from the child interval.
 

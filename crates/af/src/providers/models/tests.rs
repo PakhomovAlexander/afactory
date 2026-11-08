@@ -245,11 +245,11 @@ fn the_configurations_parse_as_afs_own_schemas() {
     ] {
         let configuration = configuration("p-1", kind, model, effort);
         let runner: toml::Value = toml::from_str(&configuration.worker.join("\n")).unwrap();
-        let runner: review_config::task::catalog::TaskWorkerRunner =
+        let runner: af_pipeline_config::task::catalog::TaskWorkerRunner =
             runner["runner"].clone().try_into().unwrap();
         assert_eq!(
             runner,
-            review_config::task::catalog::TaskWorkerRunner::Model {
+            af_pipeline_config::task::catalog::TaskWorkerRunner::Model {
                 provider_kind: kind.name().into(),
                 model: model.into(),
                 effort: effort.into(),
@@ -259,9 +259,10 @@ fn the_configurations_parse_as_afs_own_schemas() {
         toml::from_str::<toml::Value>(&reviewer).unwrap();
         let manifest =
             format!("name = \"x\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n{reviewer}\n");
-        let manifest: review_config::lock::PackageManifest = toml::from_str(&manifest).unwrap();
+        let manifest: af_pipeline_config::lock::PackageManifest =
+            toml::from_str(&manifest).unwrap();
         let settings =
-            review_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
+            af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
         assert_eq!(
             (settings.model.as_str(), settings.effort.as_str()),
             (model, effort)

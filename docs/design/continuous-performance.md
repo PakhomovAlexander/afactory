@@ -133,8 +133,8 @@ flowchart TD
 | --- | --- |
 | `fixtures/performance/suite.toml` | Versioned cases, parameter domains, oracles, metric policies, recipes, environments, and limits. |
 | `scripts/performance/` | Python 3.9+ planning, orchestration, exact statistics, evidence validation, reports, archive, and history. Use vendored unmodified Tomli 2.2.1 with license and digest; no runtime dependency downloads. |
-| `review-pipeline` example `perf-probe` | Call existing public Rust APIs, expose named timing regions, and produce checked results. |
-| `review-process` example `perf-supervisor` | One authority-built native timing/supervision instrument shared by both measured sides. |
+| `af-runtime` example `perf-probe` | Call existing public Rust APIs, expose named timing regions, and produce checked results. |
+| `af-process` example `perf-supervisor` | One authority-built native timing/supervision instrument shared by both measured sides. |
 | Diagnostic recipes | Feature-gated spans, Linux perf, optional macOS samply, and counter collection. |
 | CI workflows | Resolve events, prepare dependencies, build once, dispatch shards, aggregate, and retain evidence. |
 
@@ -824,7 +824,7 @@ never substitute synthetic data for empirical completion.
 | --- | --- |
 | p1 — Contracts, registry, frozen planning, and exact verdicts | Persist the accepted design and vocabulary/ADR. Implement strict versioned evidence and suite validation, stable parameter expansion, list/plan/compare CLI, exact paired_median_tolerance_v2, evidence integrity, and deterministic boundary/corruption tests. Execution and profiles are later packages. |
 | p2 — Native public-API workloads and golden oracles | Implement perf-probe and independent golden fixtures for canonical/CAS/source/state/authority, including exact package sizes and production invariants. Test the protocol and side-specific oracles. |
-| p3a — Build provenance and native supervision | Implement worktree/build/artifact/adapter orchestration and the shared review-process supervisor with exact timing, bounded logs, lifecycle and Linux containment resource contracts. |
+| p3a — Build provenance and native supervision | Implement worktree/build/artifact/adapter orchestration and the shared af-process supervisor with exact timing, bounded logs, lifecycle and Linux containment resource contracts. |
 | p3b — Paired execution, CLI fixtures, and health | Complete real CLI fixtures, fixed paired schedules, shards, sentinels, metrics, Linux/local-macOS capability handling and an actual supported same-source run. |
 | p4 — Reports, archive, and history | Implement offline report/job-summary interfaces, retained sequence/provenance/failure views, content-addressed filesystem archive/collector and compatible historical groups. |
 | p5 — Traces, CPU profiles, and optional counters | Implement default-off tracing and diagnostic recipes, real Linux perf capture path, inferno differential views, symbol retention, optional samply/allocation/Callgrind adapters and meaningful supported-host evidence. |
@@ -884,7 +884,7 @@ the probe's bracketed region, acknowledged by perf, in one process that repeats 
 and pinned inferno draws both difference directions as sanitized SVG. The default-off
 `perf-trace` feature exports metadata-only phase spans (`af.perf-trace/1`) whose overhead is
 measured against the verdict build. Callgrind, DHAT and samply are optional adapters. Every test
-builder and launcher of a workspace executable, in `review-process`, `review-pipeline` and `af`,
+builder and launcher of a workspace executable, in `af-process`, `af-runtime` and `af`,
 shares one locked boundary and starts only its own link. Its recovery closeout (ADR-0175) runs
 every diagnostic tool and candidate as a request to the authority supervisor under the machine
 lock, in an explicitly selected and recorded trusted local mode; repeats a recording as fresh

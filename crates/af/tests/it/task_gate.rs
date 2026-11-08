@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 
 use crate::task_cli;
@@ -76,8 +76,11 @@ fn repin_all(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -1145,7 +1148,7 @@ with tempfile.TemporaryDirectory() as tmp:
     classes.CATALOG = classes.ROOT / '.config/test-classes.json'
     classes.audit_source = lambda: None
     classes.catalog = lambda: {'scripts': {'test-sample.py': 'functional'}, 'always_on_scripts': []}
-    entries = [{'binary': 'review-core', 'test': 'functional_case_%03d' % n,
+    entries = [{'binary': 'af-contracts', 'test': 'functional_case_%03d' % n,
                 'class': 'functional', 'ignored': False} for n in range(100)]
     classes.partition = lambda inventory: entries
     classes.report = lambda *args, **kwargs: {}

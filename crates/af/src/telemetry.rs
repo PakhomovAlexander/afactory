@@ -10,9 +10,9 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use review_telemetry::dirs::{self, Accounted};
-use review_telemetry::level::Settings;
-use review_telemetry::status::{
+use af_telemetry::dirs::{self, Accounted};
+use af_telemetry::level::Settings;
+use af_telemetry::status::{
     self as telemetry_status, BlobVerification, OverlapCheck, Reindex, Status, StatusInput,
 };
 
@@ -128,7 +128,7 @@ pub(crate) fn status(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Ok(settings) => settings,
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
-    review_telemetry::index::set_content_index(settings.content_index);
+    af_telemetry::index::set_content_index(settings.content_index);
     let root = chosen(dir, &settings)?;
     let (accounted, accounted_unknown) = accounted()?;
     let (status, note) = telemetry_status::status(&StatusInput {
@@ -305,7 +305,7 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Ok(settings) => settings,
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
-    review_telemetry::index::set_content_index(settings.content_index);
+    af_telemetry::index::set_content_index(settings.content_index);
     let root = chosen(dir, &settings)?;
     if !root.is_dir() {
         return Err(format!(
@@ -443,10 +443,10 @@ mod tests {
     /// chain is the one [`recording::command_chain`] passes to `begin` for the same `argv`.
     #[test]
     fn the_metrics_header_records_the_subcommand_chain_its_caller_passes() {
+        use af_telemetry::level::Level;
+        use af_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
+        use af_telemetry::{Start, Telemetry};
         use clap::CommandFactory as _;
-        use review_telemetry::level::Level;
-        use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
-        use review_telemetry::{Start, Telemetry};
 
         let matches = crate::cli::Af::command()
             .try_get_matches_from(["af", "provider", "setup", "alice", "--kind", "claude"])
@@ -491,7 +491,7 @@ mod tests {
             writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
             let finished = telemetry.finish(SealExit::Ok);
             let sealed = finished.sealed.unwrap();
-            let records = review_telemetry::segment::reader::read_sealed(&sealed.path).unwrap();
+            let records = af_telemetry::segment::reader::read_sealed(&sealed.path).unwrap();
             records
                 .into_iter()
                 .find_map(|record| match record {

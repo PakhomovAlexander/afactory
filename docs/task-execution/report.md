@@ -119,7 +119,7 @@ version adds `repository_citations`, a list sorted by path and then line:
  "repository_citations": [{"path": "Makefile", "line": 12}, {"path": "scripts/verify.sh"}]}
 ```
 
-A path is spelled exactly as the Snapshot's Manifest spells it (`review_core::encode_path`),
+A path is spelled exactly as the Snapshot's Manifest spells it (`af_contracts::encode_path`),
 relative to the repository root. The verifier declares `requirements`, `document`, `checks` and
 `source`, and may declare `sources`, `comparison` and `measurements`; it returns one
 `af/ReportEvaluation@1` naming the document, sources, requirements, check receipt and source

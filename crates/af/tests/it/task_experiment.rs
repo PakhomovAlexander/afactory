@@ -9,10 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_core::task::measurement::{
+use af_contracts::task::measurement::{
     ComparisonObjective, MeasurementComparisonV1, MeasurementV1, compare_measurements,
 };
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 
 use crate::task_cli;
@@ -287,7 +287,7 @@ fn an_improving_candidate_passes_its_comparison_and_is_verified() {
     assert!(!attempted(&cas, &outcome, COMPARE));
     assert!(attempted(&cas, &outcome, "root.nodes.baseline"));
     assert!(attempted(&cas, &outcome, EVALUATE));
-    let policy: review_pipeline::task::code::CodeTaskPolicy = toml::from_str(
+    let policy: af_runtime::task::code::CodeTaskPolicy = toml::from_str(
         &std::fs::read_to_string(fixture.repo.join(".af/code-policy.toml")).unwrap(),
     )
     .unwrap();
@@ -312,8 +312,8 @@ fn an_improving_candidate_passes_its_comparison_and_is_verified() {
     let replayed = serde_json::to_value(&replayed).unwrap();
     assert_eq!(replayed, recorded_payload);
     assert_eq!(
-        review_store::canonical::content_id(&replayed).unwrap(),
-        review_store::canonical::content_id(&recorded_payload).unwrap()
+        af_store::canonical::content_id(&replayed).unwrap(),
+        af_store::canonical::content_id(&recorded_payload).unwrap()
     );
 
     // `af task output` renders the comparison as one Markdown table; JSON is the envelope.
@@ -649,7 +649,7 @@ fn package_edit(package: &str, file: &str, from: &str, to: &str) -> Vec<(&'stati
         scratch.path(),
     );
     std::fs::write(scratch.path().join(file), &edited).unwrap();
-    let digest = review_config::lock::package_digest(package, scratch.path()).unwrap();
+    let digest = af_pipeline_config::lock::package_digest(package, scratch.path()).unwrap();
     let catalog_path = workspace.join(".af/task-catalog.toml");
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(catalog_path).unwrap()).unwrap();
@@ -723,7 +723,7 @@ fn the_compiler_refuses_undeclared_measures_mixed_comparisons_and_foreign_object
     std::fs::write(scratch.path().join("pipeline.toml"), &pipeline).unwrap();
     let mut catalog: toml::Value = toml::from_str(&edits[1].1).unwrap();
     catalog["packages"]["fixture/experiment"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/experiment", scratch.path()).unwrap(),
+        af_pipeline_config::lock::package_digest("fixture/experiment", scratch.path()).unwrap(),
     );
     edits[1].1 = toml::to_string(&catalog).unwrap();
     edits.push((path, text.clone()));
@@ -1566,14 +1566,14 @@ fn the_release_measure_script_reports_its_target_directory_and_binary_bytes() {
     let declared = std::collections::BTreeMap::from([
         (
             "target_bytes".to_string(),
-            review_core::task::measurement::MetricUnitV1::Bytes,
+            af_contracts::task::measurement::MetricUnitV1::Bytes,
         ),
         (
             "binary_bytes".to_string(),
-            review_core::task::measurement::MetricUnitV1::Bytes,
+            af_contracts::task::measurement::MetricUnitV1::Bytes,
         ),
     ]);
-    let metrics = review_core::task::measurement::parse_report(&output.stdout, &declared).unwrap();
+    let metrics = af_contracts::task::measurement::parse_report(&output.stdout, &declared).unwrap();
     assert_eq!(metrics["binary_bytes"].value.to_string(), "1000");
     assert_eq!(metrics["target_bytes"].value.to_string(), "1024");
     // Without a bound target directory the script refuses to build anywhere.

@@ -35,14 +35,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 use serde::Serialize;
 use serde_json::json;
 
 use crate::config::{self, StoragePolicy};
+use af_telemetry::budget;
+use af_telemetry::dirs::{self as telemetry_dirs, Accounted};
 use registry::StoreKind;
-use review_telemetry::budget;
-use review_telemetry::dirs::{self as telemetry_dirs, Accounted};
 
 const HOUR_MS: u64 = 3_600_000;
 const DAY_MS: u64 = 86_400_000;
@@ -87,7 +87,7 @@ pub(crate) struct Roots {
     pub(crate) tasks: PathBuf,
     pub(crate) registry: PathBuf,
     /// Where installed versions, the default symlink and the pins seen live.
-    pub(crate) installs: crate::selfmgmt::Paths,
+    pub(crate) installs: crate::self_management::Paths,
     pub(crate) telemetry: TelemetryRoots,
 }
 
@@ -121,14 +121,14 @@ impl Roots {
             .and_then(|policy| policy.build_cache_root);
         Ok(Self {
             warm: build_cache_root.unwrap_or_else(|| {
-                cache.join(review_sandbox::task_build_cache::TASK_BUILD_CACHE_DIRECTORY)
+                cache.join(af_sandbox::task_build_cache::TASK_BUILD_CACHE_DIRECTORY)
             }),
             workspaces: cache.join("workspaces"),
             campaigns: state.join("review").join("campaigns"),
             local_reviews: state.join("review").join("local"),
             tasks: state.join("task").join("local"),
             registry: registry::location(&state_home),
-            installs: crate::selfmgmt::paths()?,
+            installs: crate::self_management::paths()?,
             telemetry: TelemetryRoots {
                 registry: telemetry_dirs::location(&state_home),
                 current: Some(
@@ -287,12 +287,12 @@ pub(crate) struct Entry {
     /// The directory inventory measured, by device and inode: a removal opens the entry through
     /// descriptors and refuses any other directory found under its name.
     #[serde(skip)]
-    pub(crate) identity: Option<review_sandbox::Identity>,
+    pub(crate) identity: Option<af_sandbox::Identity>,
     /// For an evictable telemetry entry: the root's and its own device and inode as inventory
     /// found them, which an applied eviction checks again before it unlinks (ADR-0144).
     #[serde(skip)]
     pub(crate) found: Option<budget::Found>,
-    /// Nested deeper than the removal walk reaches (`review_sandbox::REMOVAL_MAX_DEPTH`), as
+    /// Nested deeper than the removal walk reaches (`af_sandbox::REMOVAL_MAX_DEPTH`), as
     /// the walk that measured its bytes found it: in use, and left `too_deep` by every plan.
     #[serde(skip)]
     pub(crate) too_deep: bool,
@@ -321,13 +321,13 @@ pub(crate) struct Inventory {
     pub(crate) task_stores: Vec<PathBuf>,
     /// Each Store's directory identity as inventory reached it, opened from `/` without
     /// following a link: what collection and gate cleanup check again before they touch it.
-    pub(crate) store_identities: BTreeMap<PathBuf, (PathBuf, review_sandbox::Identity)>,
+    pub(crate) store_identities: BTreeMap<PathBuf, (PathBuf, af_sandbox::Identity)>,
     /// Every telemetry directory as measured, by its canonical root; an overlapping one has no
     /// model and is never evicted as telemetry.
     pub(crate) telemetry: BTreeMap<PathBuf, Option<budget::Directory>>,
     /// Each readable Project Store as its one read found it (ADR-0159 clause 13): what a
     /// sweep's plan needs of its Surveys, in inventory order.
-    pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
+    pub(crate) projects: Vec<(PathBuf, crate::project::survey::collect::Look)>,
     /// The removals dead processes left claimed, entries of kind `claim` with the identity and
     /// bytes listed: the sweep's plan finishes them first. `af storage` lists every one; those
     /// no entry measured as part of its own ([`Inventory::counted_claims`]) are in
@@ -411,16 +411,16 @@ impl Inventory {
 /// The identity of the directory `path` names, reached from `anchor` (opened as given: a
 /// configured root, or `/` for a Store registered elsewhere) one component at a time without
 /// following a link: `Err` when any component below the anchor is a link or no directory.
-fn plain_path(anchor: &Path, path: &Path) -> Result<review_sandbox::Identity, String> {
+fn plain_path(anchor: &Path, path: &Path) -> Result<af_sandbox::Identity, String> {
     let relative = path
         .strip_prefix(anchor)
         .map_err(|_| format!("{} is not below {}", path.display(), anchor.display()))?;
-    let anchor = review_sandbox::open_anchor(anchor)
+    let anchor = af_sandbox::open_anchor(anchor)
         .map_err(|error| format!("opening {}: {error}", anchor.display()))?;
-    let directory = review_sandbox::open_beneath(&anchor, relative).map_err(|error| {
+    let directory = af_sandbox::open_beneath(&anchor, relative).map_err(|error| {
         format!("its path cannot be followed without a link, so it is left: {error}")
     })?;
-    review_sandbox::Identity::of_descriptor(&directory)
+    af_sandbox::Identity::of_descriptor(&directory)
         .map_err(|error| format!("inspecting it: {error}"))
 }
 
@@ -590,7 +590,7 @@ pub(crate) fn hold_campaign_for_removal(
     state: &Path,
 ) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
     let path = state.join(RUNNING_LOCK);
-    let file = review_store::local_fs::private_file_options()
+    let file = af_store::local_fs::private_file_options()
         .create(true)
         .truncate(false)
         .write(true)
@@ -608,7 +608,7 @@ pub(crate) fn hold_campaign_for_removal(
 /// no `af review gc` removes the campaign's state.
 pub(crate) fn hold_running(state: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
     let path = state.join(RUNNING_LOCK);
-    let file = review_store::local_fs::private_file_options()
+    let file = af_store::local_fs::private_file_options()
         .create(true)
         .truncate(false)
         .write(true)
@@ -649,7 +649,7 @@ fn written_by_another_release(state: &Path, command: &str) -> Result<Option<Stri
             state,
             format!(
                 "unknown event type {kind}; {}",
-                review_core::event::ANOTHER_RELEASE
+                af_contracts::event::ANOTHER_RELEASE
             ),
             command,
         ))),
@@ -657,7 +657,7 @@ fn written_by_another_release(state: &Path, command: &str) -> Result<Option<Stri
         Err(error)
             if error
                 .to_string()
-                .contains(review_core::event::ANOTHER_RELEASE) =>
+                .contains(af_contracts::event::ANOTHER_RELEASE) =>
         {
             Ok(Some(named_writer(state, error.to_string(), command)))
         }
@@ -708,13 +708,13 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         if path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_none_or(|name| !review_core::is_workspace_id(name))
+            .is_none_or(|name| !af_contracts::is_warm_workspace_id(name))
         {
             continue;
         }
         measure_into(&mut inventory, roots, Kind::Workspace, &path, |path| {
-            let last = review_sandbox::storage::newest_write(path).map_or(0, unix_ms);
-            let in_use = review_sandbox::workspace_in_use(path)
+            let last = af_sandbox::storage::newest_write(path).map_or(0, unix_ms);
+            let in_use = af_sandbox::warm_workspace::workspace_in_use(path)
                 .then(|| "a run holds its workspace lock".to_string());
             (last, in_use)
         });
@@ -754,7 +754,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     inventory.delivered = delivered(roots, &projects);
     // The Surveys of at most so many Project Stores are read, in path order (the Store
     // discovery ceiling); every Project Store is measured all the same.
-    let discovery = crate::projects::survey::collect::Discovery::current();
+    let discovery = crate::project::survey::collect::Discovery::current();
     for (index, path) in projects
         .into_iter()
         .filter(|path| has_store(path))
@@ -802,7 +802,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             Err(reason) => inventory.problems.push(Problem { path, reason }),
         }
     }
-    match crate::selfmgmt::installed_for_storage(&roots.installs) {
+    match crate::self_management::installed_for_storage(&roots.installs) {
         Ok(versions) => {
             for version in versions {
                 let protected = version.protected.map(str::to_string);
@@ -864,7 +864,7 @@ fn delivered(roots: &Roots, registered: &BTreeSet<PathBuf>) -> Delivered {
         }
         let read = match written_by_another_release(&path, "af project show") {
             Ok(Some(reason)) => Err(reason),
-            Ok(None) => crate::projects::survey::collect::delivered_of(&path),
+            Ok(None) => crate::project::survey::collect::delivered_of(&path),
             Err(reason) => Err(reason),
         };
         match read {
@@ -988,7 +988,7 @@ fn telemetry_inventory(roots: &Roots, inventory: &mut Inventory) {
                     .iter()
                     .map(|entry| telemetry_dirs::canonical(&entry.path))
                     .filter(|other| other.starts_with(path) && other != path && other.exists())
-                    .map(|other| review_sandbox::storage::allocated_bytes(&other).unwrap_or(0))
+                    .map(|other| af_sandbox::storage::allocated_bytes(&other).unwrap_or(0))
                     .sum();
                 total.saturating_sub(contained)
             }
@@ -1051,7 +1051,7 @@ fn measure_into(
     {
         owned::af_bytes_and_depth(path)
     } else {
-        review_sandbox::storage::allocated_bytes_and_depth(path)
+        af_sandbox::storage::allocated_bytes_and_depth(path)
     };
     match measured {
         Ok((bytes, depth)) => {
@@ -1059,7 +1059,7 @@ fn measure_into(
             let too_deep = matches!(
                 kind,
                 Kind::Workspace | Kind::Campaign | Kind::UnreadableStore | Kind::Version
-            ) && review_sandbox::deeper_than_removal_walk(depth);
+            ) && af_sandbox::deeper_than_removal_walk(depth);
             inventory.entries.push(Entry {
                 kind,
                 path: path.to_path_buf(),
@@ -1075,7 +1075,7 @@ fn measure_into(
                 directory: None,
                 segment_id: None,
                 state: None,
-                identity: review_sandbox::Identity::of(path).ok(),
+                identity: af_sandbox::Identity::of(path).ok(),
                 found: None,
                 too_deep,
                 unmeasurable: None,
@@ -1095,7 +1095,7 @@ fn store_bytes(roots: &Roots, state: &Path) -> std::io::Result<u64> {
     if roots.outside_af_state(state) {
         owned::af_bytes(state)
     } else {
-        review_sandbox::storage::allocated_bytes(state)
+        af_sandbox::storage::allocated_bytes(state)
     }
 }
 
@@ -1163,15 +1163,15 @@ fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
         if !is_hex_key(toolchain) {
             continue;
         }
-        let lock = key.join(review_sandbox::KEY_LOCK);
+        let lock = key.join(af_sandbox::KEY_LOCK);
         let last_use_unix_ms = modified_ms(&lock)
             .or_else(|| modified_ms(&key))
             .unwrap_or(0);
         let in_use = lock_held(&lock).then(|| "a check holds its warm.lock".to_string());
-        let recorded = review_sandbox::recorded_key_size(&roots.warm, project_name, toolchain);
+        let recorded = af_sandbox::recorded_key_size(&roots.warm, project_name, toolchain);
         let bytes = match recorded {
             Some(bytes) => Ok(bytes),
-            None => review_sandbox::storage::allocated_bytes(&key),
+            None => af_sandbox::storage::allocated_bytes(&key),
         };
         match bytes {
             Ok(bytes) => inventory.entries.push(Entry {
@@ -1179,7 +1179,7 @@ fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
                 directory: None,
                 segment_id: None,
                 state: None,
-                identity: review_sandbox::Identity::of(&key).ok(),
+                identity: af_sandbox::Identity::of(&key).ok(),
                 found: None,
                 path: key,
                 task_id: None,
@@ -1210,7 +1210,7 @@ fn project_store(
     roots: &Roots,
     path: &Path,
     surveys: bool,
-    discovery: crate::projects::survey::collect::Discovery,
+    discovery: crate::project::survey::collect::Discovery,
 ) {
     let workspace_stores: Vec<PathBuf> = real_directories(&path.join("workspaces"))
         .into_iter()
@@ -1239,7 +1239,7 @@ fn project_store(
             {
                 let below = workspace_stores
                     .iter()
-                    .filter_map(|state| review_sandbox::storage::allocated_bytes(state).ok())
+                    .filter_map(|state| af_sandbox::storage::allocated_bytes(state).ok())
                     .fold(0, u64::saturating_add);
                 entry.bytes = entry.bytes.saturating_sub(below);
             }
@@ -1356,11 +1356,11 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
             continue;
         }
         let in_use = match &task.disposition {
-            review_store::store::task::collection::CollectionDisposition::Collect => None,
-            review_store::store::task::collection::CollectionDisposition::WriterLease {
-                ..
-            } => Some("a writer holds its lease".to_string()),
-            review_store::store::task::collection::CollectionDisposition::BoundBy { tasks } => {
+            af_store::store::task::collection::CollectionDisposition::Collect => None,
+            af_store::store::task::collection::CollectionDisposition::WriterLease { .. } => {
+                Some("a writer holds its lease".to_string())
+            }
+            af_store::store::task::collection::CollectionDisposition::BoundBy { tasks } => {
                 Some(format!("bound by {}", tasks.join(", ")))
             }
             other => Some(format!("{other:?}").to_lowercase()),
@@ -1472,7 +1472,7 @@ pub(crate) struct Removal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Left {
     pub(crate) kind: Kind,
-    /// Its path as text: as it is when it is UTF-8, otherwise in `review_core::encode_path`'s
+    /// Its path as text: as it is when it is UTF-8, otherwise in `af_contracts::encode_path`'s
     /// spelling with `path_encoded`.
     pub(crate) path: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -1492,7 +1492,7 @@ impl Left {
         let raw = left.left.path;
         let (path, path_encoded) = match raw.to_str() {
             Some(text) => (text.to_string(), false),
-            None => (review_core::encode_path(raw.as_os_str().as_bytes()), true),
+            None => (af_contracts::encode_path(raw.as_os_str().as_bytes()), true),
         };
         Self {
             kind: left.kind,
@@ -1747,8 +1747,8 @@ pub(crate) fn sweep(
                 only: false,
             },
         },
-        &mut |store: &Path, live: &crate::projects::survey::collect::Live, inventoried| {
-            crate::projects::survey::collect::judge(store, live, inventoried)
+        &mut |store: &Path, live: &crate::project::survey::collect::Live, inventoried| {
+            crate::project::survey::collect::judge(store, live, inventoried)
         },
     );
     report.total_before = made.total_before;
@@ -2109,7 +2109,7 @@ fn execute_planned(
             };
             let failed = |why: String| format!("{verb} {}: {why}", removal.path.display());
             stock.still_the_store(job.store()).map_err(failed)?;
-            crate::projects::survey::collect::execute(job)
+            crate::project::survey::collect::execute(job)
                 .map(|done| plan::Ran {
                     freed: done.bytes,
                     unreadable: done.unreadable,
@@ -2201,7 +2201,7 @@ fn collect_tasks(
     for task_id in task_ids {
         let failed_now = tried.iter().find(|attempted| {
             attempted.task_id == *task_id
-                && attempted.outcome != review_core::task::remote_check::GateCleanupOutcomeV1::Done
+                && attempted.outcome != af_contracts::task::remote_check::GateCleanupOutcomeV1::Done
         });
         let verdict = match failed_now {
             Some(attempted) => Err(gate::stays(task_id, &attempted.summary)),
@@ -2233,7 +2233,7 @@ fn collect_tasks(
             Err(error) => Err(failed(error.clone())),
             Ok(done) if done.tombstoned.contains(&task_id) => {
                 // A collected Task's run records and logs go with it (ADR-0211).
-                crate::task_execution::runs::forget(state, &task_id);
+                crate::task_commands::runs::forget(state, &task_id);
                 Ok(done
                     .plan
                     .tasks
@@ -2278,17 +2278,17 @@ fn abandoned_claims(roots: &Roots, registered: &[registry::Registered], inventor
     parents.sort();
     parents.dedup();
     for parent in parents {
-        for claim in review_sandbox::abandoned_claims(&parent) {
+        for claim in af_sandbox::abandoned_claims(&parent) {
             // A claim the walk cannot measure holds no bytes the plan could account for: it is
             // left, never planned, and said.
             let (bytes, too_deep, unmeasurable) = match claim.measured {
                 Ok(size) => (
                     size.bytes,
-                    review_sandbox::deeper_than_removal_walk(size.depth),
+                    af_sandbox::deeper_than_removal_walk(size.depth),
                     None,
                 ),
-                Err(review_sandbox::Unmeasured::TooDeep(_)) => (0, true, None),
-                Err(review_sandbox::Unmeasured::Unreadable(why)) => (0, false, Some(why)),
+                Err(af_sandbox::Unmeasured::TooDeep(_)) => (0, true, None),
+                Err(af_sandbox::Unmeasured::Unreadable(why)) => (0, false, Some(why)),
             };
             inventory.claims.push(Entry {
                 kind: Kind::Claim,
@@ -2415,7 +2415,7 @@ pub(crate) fn sweep_telemetry(
             },
         },
         &mut |_, _, _| {
-            crate::projects::survey::collect::Judged::Refused(
+            crate::project::survey::collect::Judged::Refused(
                 "never judged by a telemetry-only sweep".into(),
             )
         },
@@ -2557,7 +2557,7 @@ fn evict(
             let (Some(project), Some(toolchain)) = (project, toolchain) else {
                 return Err(failed("not a toolchain key".into()).into());
             };
-            match review_sandbox::lock_task_build_cache_key(
+            match af_sandbox::lock_task_build_cache_key(
                 &roots.warm,
                 project,
                 toolchain,
@@ -2578,16 +2578,16 @@ fn evict(
                         Ok(locked) if locked == measured => {
                             let bytes = key.remove_key().map_err(failed)?;
                             // The cause a check that finds this key gone reports (ADR-0207).
-                            let record = review_core::task::check_layer::WarmEvictionV1 {
-                                schema: review_core::task::check_layer::WARM_EVICTION_V1.into(),
-                                by: review_core::task::check_layer::WarmEvictorV1::StorageSweep,
+                            let record = af_contracts::task::check_layer::WarmEvictionV1 {
+                                schema: af_contracts::task::check_layer::WARM_EVICTION_V1.into(),
+                                by: af_contracts::task::check_layer::WarmEvictorV1::StorageSweep,
                                 at_unix_ms: now_unix_ms(),
                                 bytes,
                             };
                             if let Err(detail) = serde_json::to_vec(&record)
                                 .map_err(|error| error.to_string())
                                 .and_then(|bytes| {
-                                    review_sandbox::record_key_eviction(
+                                    af_sandbox::record_key_eviction(
                                         &roots.warm,
                                         project,
                                         toolchain,
@@ -2617,7 +2617,8 @@ fn evict(
             // Not even its lock file is touched unless it is still the measured directory.
             still_measured(entry).map_err(failed)?;
             // Held exclusively until it is gone: no run clones from it in between.
-            let _held = review_sandbox::hold_workspace_for_removal(&entry.path).map_err(failed)?;
+            let _held = af_sandbox::warm_workspace::hold_workspace_for_removal(&entry.path)
+                .map_err(failed)?;
             remove_entry(roots, entry).map_err(partly)
         }
         Kind::Campaign => {
@@ -2641,8 +2642,9 @@ fn evict(
             // Under the lock `af self` holds while it changes the default or a pin, the
             // protection is read again: what became the default, a pin or the running binary
             // since inventory stays.
-            let _versions = crate::selfmgmt::try_lock_versions(&roots.installs).map_err(failed)?;
-            if let Some(why) = crate::selfmgmt::protected_now(&roots.installs, version) {
+            let _versions =
+                crate::self_management::try_lock_versions(&roots.installs).map_err(failed)?;
+            if let Some(why) = crate::self_management::protected_now(&roots.installs, version) {
                 return Err(failed(format!(
                     "af {version} became {why} since it was measured, so it is kept"
                 ))
@@ -2665,14 +2667,14 @@ fn evict(
                 Cas::open_existing(entry.path.join("cas")).map_err(|e| failed(e.to_string()))?;
             let mut store = EventStore::open(entry.path.join("events.sqlite"))
                 .map_err(|e| failed(e.to_string()))?;
-            let before = review_sandbox::storage::allocated_bytes(&entry.path).ok();
+            let before = af_sandbox::storage::allocated_bytes(&entry.path).ok();
             let outcome = store
                 .apply_task_collection_of(&cas, &BTreeSet::from([task_id.clone()]))
                 .map_err(|e| failed(e.to_string()))?;
             if outcome.tombstoned.contains(&task_id) {
                 // Collection also sweeps whatever no Task reaches any more, an interrupted
                 // earlier collection's leftovers included: what the Store freed is measured.
-                let after = review_sandbox::storage::allocated_bytes(&entry.path).ok();
+                let after = af_sandbox::storage::allocated_bytes(&entry.path).ok();
                 Ok((
                     match (before, after) {
                         (Some(before), Some(after)) => {
@@ -2717,7 +2719,7 @@ fn still_measured(entry: &Entry) -> Result<(), String> {
     let measured = entry
         .identity
         .ok_or("its identity was not measured, so it is not removed")?;
-    match review_sandbox::Identity::of(&entry.path) {
+    match af_sandbox::Identity::of(&entry.path) {
         Ok(now) if now == measured => Ok(()),
         Ok(_) => {
             Err("it is not the directory that was measured; it changed since and is left".into())
@@ -2763,14 +2765,14 @@ fn remove_entry(
 fn remove_directory(
     anchor: &Path,
     path: &Path,
-    identity: Option<review_sandbox::Identity>,
+    identity: Option<af_sandbox::Identity>,
     measured: u64,
 ) -> Result<(u64, Option<u64>), plan::Failed> {
-    let error = match review_sandbox::remove_beneath_measured(anchor, path, identity) {
+    let error = match af_sandbox::remove_beneath_measured(anchor, path, identity) {
         Ok(started) => return Ok((started.unwrap_or(measured), started)),
         Err(error) => error,
     };
-    match review_sandbox::partial(&error) {
+    match af_sandbox::partial(&error) {
         None => Err(format!("{error}; it is left, and the next sweep tries again").into()),
         Some(partly) => {
             let remains = match partly.remaining {
@@ -3066,8 +3068,8 @@ fn is_run_task(state: &Path, task_id: &str) -> bool {
 /// stop `unknown` and still says what left the disk (ADR-0144 clause 4).
 pub(crate) fn observation(
     report: &SweepReport,
-) -> Option<review_core::task::storage_sweep::TaskStorageSweepV2> {
-    use review_core::task::storage_sweep::{
+) -> Option<af_contracts::task::storage_sweep::TaskStorageSweepV2> {
+    use af_contracts::task::storage_sweep::{
         MAX_SWEEP_FAILURE_BYTES, MAX_SWEEP_FAILURES, MAX_SWEEP_PATH_BYTES, MAX_SWEEP_REMOVALS,
         StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV2,
         TASK_STORAGE_SWEEP_V2, TaskStorageSweepV2,
@@ -3239,9 +3241,9 @@ pub(crate) fn after_run() {
                 span.record("af.status", "ok");
                 // What the telemetry step skipped or deferred (a locked index, a busy
                 // gc.lock) is a telemetry-only problem of this process, never the run's.
-                if let Some(writer) = review_telemetry::subscriber::current_writer() {
+                if let Some(writer) = af_telemetry::subscriber::current_writer() {
                     for note in &report.telemetry.problems {
-                        writer.problem(review_telemetry::record::ProblemWhat::Budget, note);
+                        writer.problem(af_telemetry::record::ProblemWhat::Budget, note);
                     }
                 }
             }
@@ -3269,7 +3271,7 @@ struct MachineStorage {
     roots: Roots,
 }
 
-impl review_pipeline::storage::StorageHost for MachineStorage {
+impl af_runtime::storage::StorageHost for MachineStorage {
     fn ensure_free_disk(&self) -> Result<(), String> {
         let floor = self.policy.min_free_bytes;
         if judge_floor(&volumes_of(&self.policy), floor).is_ok() {
@@ -3301,7 +3303,7 @@ pub(crate) fn refusal(volume: &Volume, free: u64, floor: u64) -> String {
         "{}: {named}: {} ({free} bytes) free, floor {} ({floor} bytes); {}; see what af holds \
          with `af storage`, reclaim it with `af storage prune --apply`, or change the floor with \
          [storage] min_free_bytes (AF_STORAGE__MIN_FREE_BYTES)",
-        review_pipeline::storage::INSUFFICIENT_DISK,
+        af_runtime::storage::INSUFFICIENT_DISK,
         human_bytes(free),
         human_bytes(floor),
         volume.role.fix(&volume.root),
@@ -3315,7 +3317,7 @@ fn unmeasured_refusal(floor: u64, errors: &[&str]) -> String {
         "{}: the free bytes af needs cannot be measured ({}), so nothing starts against the \
          free-disk floor of {} ({floor} bytes); see `af storage`, or change the floor with \
          [storage] min_free_bytes (AF_STORAGE__MIN_FREE_BYTES)",
-        review_pipeline::storage::INSUFFICIENT_DISK,
+        af_runtime::storage::INSUFFICIENT_DISK,
         errors.join("; "),
         human_bytes(floor)
     )
@@ -3463,7 +3465,7 @@ pub(crate) fn measure_volume(path: &Path) -> Volume {
     }
     let free = match faked_free_bytes() {
         Some(free) => Ok(free),
-        None => review_sandbox::storage::free_bytes(existing)
+        None => af_sandbox::storage::free_bytes(existing)
             .map_err(|error| format!("{}: {error}", existing.display())),
     };
     Volume {
@@ -3569,9 +3571,9 @@ pub(crate) fn install() -> Result<(), String> {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
         }
-        let _ = review_sandbox::set_sandbox_root(root.clone());
+        let _ = af_sandbox::set_sandbox_root(root.clone());
     }
-    review_pipeline::storage::install(Arc::new(host));
+    af_runtime::storage::install(Arc::new(host));
     Ok(())
 }
 
@@ -3602,10 +3604,10 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
     temps.dedup();
     let temp_slugs: Vec<String> = temps
         .iter()
-        .map(|path| review_runner_claude::ClaudeSessionStore::project_slug(path))
+        .map(|path| af_runner_claude::ClaudeSessionStore::project_slug(path))
         .collect();
     for directory in crate::providers::registered_claude_config_dirs() {
-        let store = review_runner_claude::ClaudeSessionStore::new(&directory);
+        let store = af_runner_claude::ClaudeSessionStore::new(&directory);
         let names = match store.project_names() {
             Ok(names) => names,
             Err(error) => {
@@ -3616,12 +3618,12 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
                 continue;
             }
         };
-        let ours: Vec<(String, Option<review_sandbox::Identity>)> = names
+        let ours: Vec<(String, Option<af_sandbox::Identity>)> = names
             .into_iter()
-            .filter(|name| review_runner_claude::session::is_af_project_slug(name, &temp_slugs))
+            .filter(|name| af_runner_claude::session::is_af_project_slug(name, &temp_slugs))
             .map(|name| {
                 let identity =
-                    review_sandbox::Identity::of(&directory.join("projects").join(&name)).ok();
+                    af_sandbox::Identity::of(&directory.join("projects").join(&name)).ok();
                 (name, identity)
             })
             .collect();
@@ -3677,7 +3679,7 @@ fn purge_registered(roots: &Roots, registered: &[registry::Registered]) -> Vec<S
         for store in stores.into_iter().filter(|path| has_store(path)) {
             // Outside every root af owns: opened from `/` one component at a time, and only
             // while it is still the directory just listed.
-            let identity = match review_sandbox::Identity::of(&store) {
+            let identity = match af_sandbox::Identity::of(&store) {
                 Ok(identity) => identity,
                 Err(error) => {
                     lines.push(format!(
@@ -3716,12 +3718,12 @@ fn purge_registered(roots: &Roots, registered: &[registry::Registered]) -> Vec<S
 /// many were removed and why each other one was left; an absent one is neither.
 pub(crate) fn remove_claude_projects(
     config: &Path,
-    projects: &[(String, Option<review_sandbox::Identity>)],
+    projects: &[(String, Option<af_sandbox::Identity>)],
 ) -> (usize, Vec<String>) {
     if projects.is_empty() {
         return (0, Vec::new());
     }
-    let anchor = match review_sandbox::open_anchor(&config.join("projects")) {
+    let anchor = match af_sandbox::open_anchor(&config.join("projects")) {
         Ok(anchor) => anchor,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (0, Vec::new()),
         Err(error) => {
@@ -3752,7 +3754,7 @@ pub(crate) fn remove_claude_projects(
             }
             continue;
         };
-        match review_sandbox::remove_tree_at(&anchor, std::ffi::OsStr::new(name), Some(*identity)) {
+        match af_sandbox::remove_tree_at(&anchor, std::ffi::OsStr::new(name), Some(*identity)) {
             Ok(()) => removed += 1,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => failures.push(format!("project directory {name}: {error}")),
@@ -4144,7 +4146,7 @@ pub(crate) fn prune(apply: bool, json_output: bool, verbose: bool) -> Result<i32
 /// event or entry names stay in the Project Store's bytes, never a Survey's. The Store's identity is recorded as a registered Task
 /// Store's is, so a Survey's collection reaches only the directory inventory measured.
 fn surveys_into(inventory: &mut Inventory, path: &Path) {
-    let look = match crate::projects::survey::collect::look(path) {
+    let look = match crate::project::survey::collect::look(path) {
         Ok(look) => look,
         Err(reason) => {
             inventory.problems.push(Problem {

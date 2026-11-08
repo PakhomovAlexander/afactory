@@ -14,7 +14,7 @@ fn a_task_awaiting_approval_needs_a_person_as_a_failed_one_does() {
 }
 
 fn document(state: &Path, task_id: &str) -> Value {
-    task_execution::inspection_document(state, task_id, true)
+    task_commands::inspection_document(state, task_id, true)
         .unwrap()
         .unwrap()
 }
@@ -266,7 +266,7 @@ fn the_pane_reads_the_show_document_with_the_plan_and_its_graph() {
     let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
     for task_id in ["pagination-cli", "pagination-unfinished"] {
         let mut explained = document(&state, task_id);
-        let show = task_execution::inspection_document(&state, task_id, false);
+        let show = task_commands::inspection_document(&state, task_id, false);
         let show = show.unwrap().unwrap();
         let object = explained.as_object_mut().unwrap();
         // The plan's members: its graph, the plan and each slot's Attempt wall (ADR-0257).
@@ -278,9 +278,9 @@ fn the_pane_reads_the_show_document_with_the_plan_and_its_graph() {
         assert_eq!(explained, show);
     }
     // A Task the Store does not hold, and a directory with no Store, are no document.
-    let missing = task_execution::inspection_document(&state, "absent", false);
+    let missing = task_commands::inspection_document(&state, "absent", false);
     assert_eq!(missing, Ok(None));
-    let nowhere = task_execution::inspection_document(&root.join("none"), "absent", false);
+    let nowhere = task_commands::inspection_document(&root.join("none"), "absent", false);
     assert_eq!(nowhere, Ok(None));
 }
 
@@ -465,10 +465,7 @@ fn only_a_missing_store_is_empty() {
     assert_eq!(not_a_store(&root.join("absent")), None);
     std::fs::create_dir_all(root.join("empty")).unwrap();
     assert_eq!(not_a_store(&root.join("empty")), None);
-    assert_eq!(
-        task_execution::store_present(&root.join("empty")),
-        Ok(false)
-    );
+    assert_eq!(task_commands::store_present(&root.join("empty")), Ok(false));
     // Present with entries in another layout: refused, never "no Tasks".
     std::fs::create_dir_all(root.join("other/cas")).unwrap();
     let refusal = not_a_store(&root.join("other")).unwrap();
@@ -487,7 +484,7 @@ fn only_a_missing_store_is_empty() {
     // A dangling `events.sqlite` link is a Store that cannot be read.
     std::fs::create_dir_all(root.join("dangling")).unwrap();
     std::os::unix::fs::symlink("missing.sqlite", root.join("dangling/events.sqlite")).unwrap();
-    let error = task_execution::store_present(&root.join("dangling")).unwrap_err();
+    let error = task_commands::store_present(&root.join("dangling")).unwrap_err();
     assert!(error.contains("link to nothing"), "{error}");
     let store = read_store(&root.join("dangling"), "dangling", None, &mut cache);
     assert!(store.tasks.is_err());
@@ -495,7 +492,7 @@ fn only_a_missing_store_is_empty() {
     let (_repo, state) = crate::tui::tests::hub_with_tasks(&root.join("hub-root"));
     let locked = std::os::unix::fs::PermissionsExt::from_mode(0o000);
     std::fs::set_permissions(&state, locked).unwrap();
-    let listed = task_execution::list_common(&state);
+    let listed = task_commands::list_common(&state);
     let open = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(&state, open).unwrap();
     let error = listed.unwrap_err();
@@ -1097,13 +1094,13 @@ fn a_collected_task_leaves_the_store_readable_and_is_not_opened() {
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
     let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
     let collected = store.apply_task_collection(&cas, 0, 1, false).unwrap();
     assert_eq!(collected.tombstoned, ["pagination-cli"]);
     drop(store);
 
-    let listed = task_execution::list_common(&state).unwrap();
+    let listed = task_commands::list_common(&state).unwrap();
     assert_eq!(listed.len(), 2, "the collected Task is still listed");
     let mut cache = Cache::default();
     let read = read_store(&state, "state", None, &mut cache);
@@ -1178,7 +1175,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
     let old = format!(
         "event store: unknown review-kernel event type: TaskTransition@1; {}; start a new \
          Campaign or Task",
-        review_core::event::ANOTHER_RELEASE
+        af_contracts::event::ANOTHER_RELEASE
     );
     let store = |name: &str, tasks: Result<Vec<Listed>, String>| Store {
         dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
@@ -1187,9 +1184,11 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         origin: Origin::Repository,
         note: None,
         release:
-            matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+            matches!(&tasks, Err(error) if error.contains(af_contracts::event::ANOTHER_RELEASE))
                 .then(|| {
-                    review_core::store_writer::StoreProvenance::OtherReleases(vec!["0.11.0".into()])
+                    af_contracts::store_writer::StoreProvenance::OtherReleases(vec![
+                        "0.11.0".into(),
+                    ])
                 }),
         tasks,
     };
@@ -1259,15 +1258,17 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         origin: Origin::Repository,
         note: None,
         release:
-            matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+            matches!(&tasks, Err(error) if error.contains(af_contracts::event::ANOTHER_RELEASE))
                 .then(|| {
-                    review_core::store_writer::StoreProvenance::OtherReleases(vec!["0.11.0".into()])
+                    af_contracts::store_writer::StoreProvenance::OtherReleases(vec![
+                        "0.11.0".into(),
+                    ])
                 }),
         tasks,
     };
     let old = format!(
         "unknown event type; {}",
-        review_core::event::ANOTHER_RELEASE
+        af_contracts::event::ANOTHER_RELEASE
     );
     let mut pane = TasksPane {
         title: "TASKS  user".to_owned(),
@@ -1306,7 +1307,7 @@ fn bounded_rows_split_at_spaces_and_inside_long_words() {
 #[test]
 fn a_path_holding_the_marker_is_not_an_old_store() {
     let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().join(review_core::event::ANOTHER_RELEASE);
+    let dir = temp.path().join(af_contracts::event::ANOTHER_RELEASE);
     std::os::unix::fs::symlink(temp.path().join("gone"), &dir).unwrap();
     let store = read_store(
         &dir,
@@ -1326,7 +1327,7 @@ fn a_path_holding_the_marker_is_not_an_old_store() {
 fn foreign_store(dir: &Path, release: Option<&str>) {
     std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
     let path = dir.join("events.sqlite");
-    drop(review_store::EventStore::open(&path).unwrap());
+    drop(af_store::EventStore::open(&path).unwrap());
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
         "DELETE FROM store_writers;
@@ -1359,14 +1360,14 @@ fn stores_other_releases_wrote_are_named_by_their_writer_marker() {
     let newer_store = read(&newer, &mut cache);
     assert_eq!(
         newer_store.release,
-        Some(review_core::store_writer::StoreProvenance::OtherReleases(
+        Some(af_contracts::store_writer::StoreProvenance::OtherReleases(
             vec!["99.1.0".into()]
         ))
     );
     let unmarked_store = read(&unmarked, &mut cache);
     assert_eq!(
         unmarked_store.release,
-        Some(review_core::store_writer::StoreProvenance::Unmarked)
+        Some(af_contracts::store_writer::StoreProvenance::Unmarked)
     );
     let mut pane = TasksPane {
         title: "TASKS  user".to_owned(),
@@ -2372,7 +2373,7 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
     pane.open(Some("pagination-cli"));
     assert!(pane.detail.as_ref().is_some_and(Result::is_ok));
     // The artifact of the first HISTORY row goes before Enter reads it.
-    let show = task_execution::inspection_document(&state, "pagination-cli", false)
+    let show = task_commands::inspection_document(&state, "pagination-cli", false)
         .unwrap()
         .unwrap();
     let first = change_artifact(&show["history"][0]["transition"]["change"])
@@ -2429,25 +2430,34 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
 /// Register `label` as a Workspace of the hub at `repo`, with `path` as its checkout and
 /// `state` as its Store, in the Project Store under `xdg`.
 fn register_workspace(xdg: &Path, repo: &Path, label: &str, path: &Path, state: &Path) {
-    use crate::projects::{self, Located, ProjectStore, WorkspacePaths};
-    let Located::Checkout(checkout) = projects::locate(repo).unwrap() else {
+    use crate::project::{self, Located, ProjectStore, WorkspacePaths};
+    let Located::Checkout(checkout) = project::locate(repo).unwrap() else {
         panic!("{} is not a checkout", repo.display());
     };
     let pin = |home: Option<PathBuf>| {
         crate::config::STATE_HOME_FOR_TESTS.with(|pinned| *pinned.borrow_mut() = home);
     };
     pin(Some(xdg.to_path_buf()));
-    let mut store = ProjectStore::open(xdg, &checkout.project_id).unwrap();
+    let mut store = ProjectStore::open(&project::Application, xdg, &checkout.project_id).unwrap();
     let paths = WorkspacePaths {
-        id: projects::workspace_id(&checkout.project_id, path),
+        id: project::workspace_id(&checkout.project_id, path),
         label: label.to_owned(),
         path: path.to_path_buf(),
         state: state.to_path_buf(),
         bindings: None,
         tasks: None,
     };
-    let origin = review_core::project::WorkspaceOriginV1::Adopted;
-    projects::register_in(&mut store, &checkout, origin, label, true, paths).unwrap();
+    let origin = af_contracts::project::WorkspaceOriginV1::Adopted;
+    project::register_in(
+        &project::Application,
+        &mut store,
+        &checkout,
+        origin,
+        label,
+        true,
+        paths,
+    )
+    .unwrap();
     drop(store);
     pin(None);
 }
@@ -2478,7 +2488,7 @@ fn the_project_scope_lists_the_default_stores_of_every_checkout_of_the_project()
         git(&repo, &args).unwrap();
     };
     add(&worktree, "branch");
-    let branch_state = task_execution::default_task_state(&xdg, &worktree).unwrap();
+    let branch_state = task_commands::default_task_state(&xdg, &worktree).unwrap();
     crate::tui::tests::record_task(&root, &worktree, &branch_state, "pagination-branch");
     let idle = root.join("hub-wt-idle");
     add(&idle, "idle");
@@ -2487,11 +2497,11 @@ fn the_project_scope_lists_the_default_stores_of_every_checkout_of_the_project()
     // Workspace names.
     let zeta = root.join("hub-wt-a");
     add(&zeta, "zeta");
-    let zeta_state = task_execution::default_task_state(&xdg, &zeta).unwrap();
+    let zeta_state = task_commands::default_task_state(&xdg, &zeta).unwrap();
     crate::tui::tests::copy_store(&state, &zeta_state);
     let alpha = root.join("hub-wt-b");
     add(&alpha, "alpha");
-    let alpha_state = task_execution::default_task_state(&xdg, &alpha).unwrap();
+    let alpha_state = task_commands::default_task_state(&xdg, &alpha).unwrap();
     crate::tui::tests::copy_store(&state, &alpha_state);
     // This checkout is the Workspace `hub` with its default Store; the idle worktree is the
     // Workspace `labelled`, whose Store is a `--state` one the registry lists.
@@ -2825,8 +2835,8 @@ fn a_shallow_checkout_lists_no_other_checkout() {
     )
     .unwrap();
     assert_eq!(
-        crate::projects::locate(&shallow).unwrap(),
-        crate::projects::Located::Shallow
+        crate::project::locate(&shallow).unwrap(),
+        crate::project::Located::Shallow
     );
     let linked = root.join("shallow-wt");
     git(
@@ -2843,10 +2853,10 @@ fn a_shallow_checkout_lists_no_other_checkout() {
     .unwrap();
     // A Store discovery would list, with its refusal, were it run: `events.sqlite` is there
     // but is not a file, so `store_present` says so rather than "no Store".
-    let linked_state = task_execution::default_task_state(&xdg, &linked).unwrap();
+    let linked_state = task_commands::default_task_state(&xdg, &linked).unwrap();
     std::fs::create_dir_all(linked_state.join("events.sqlite")).unwrap();
-    assert!(task_execution::store_present(&linked_state).is_err());
-    let own = task_execution::default_task_state(&xdg, &shallow).unwrap();
+    assert!(task_commands::store_present(&linked_state).is_err());
+    let own = task_commands::default_task_state(&xdg, &shallow).unwrap();
 
     let scope = crate::tui::tests::hub_scope(&root, &shallow);
     let mut pane = TasksPane::default();
@@ -2882,8 +2892,8 @@ fn this_checkouts_label_is_its_registered_paths_whatever_store_either_workspace_
     let root = std::fs::canonicalize(temp.path()).unwrap();
     let repo = crate::tui::tests::hub_repo(&root);
     let xdg = root.join("state");
-    let own = task_execution::default_task_state(&xdg, &repo).unwrap();
-    let explicit = task_execution::local_task_states(&xdg).join("hub-explicit");
+    let own = task_commands::default_task_state(&xdg, &repo).unwrap();
+    let explicit = task_commands::local_task_states(&xdg).join("hub-explicit");
     std::fs::create_dir_all(&explicit).unwrap();
     let registry = crate::storage::registry::location(&xdg);
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
@@ -2961,7 +2971,7 @@ fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
     let root = std::fs::canonicalize(temp.path()).unwrap();
     let repo = crate::tui::tests::hub_repo(&root);
     let xdg = root.join("state");
-    let state = task_execution::default_task_state(&xdg, &repo).unwrap();
+    let state = task_commands::default_task_state(&xdg, &repo).unwrap();
     // A clone of the Project, registered as the Workspace `clone` with a `--state` Store, with
     // a default Store of its own; the worktree `hub-wt-x` is the Workspace `x` on the same
     // `--state` Store and has no default Store.
@@ -2978,10 +2988,10 @@ fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
         ],
     )
     .unwrap();
-    let clone_default = task_execution::default_task_state(&xdg, &clone).unwrap();
+    let clone_default = task_commands::default_task_state(&xdg, &clone).unwrap();
     // The clone's default Store directory, with no Store written in it yet.
     std::fs::create_dir_all(&clone_default).unwrap();
-    let shared = task_execution::local_task_states(&xdg).join("shared-by-two");
+    let shared = task_commands::local_task_states(&xdg).join("shared-by-two");
     std::fs::create_dir_all(&shared).unwrap();
     let registry = crate::storage::registry::location(&xdg);
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
@@ -3070,17 +3080,17 @@ fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
 /// are not.
 #[test]
 fn a_project_store_that_cannot_be_read_is_a_warning_above_the_stores() {
-    use crate::projects::{self, Located};
+    use crate::project::{self, Located};
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
     let repo = crate::tui::tests::hub_repo(&root);
     let xdg = root.join("state");
-    let state = task_execution::default_task_state(&xdg, &repo).unwrap();
+    let state = task_commands::default_task_state(&xdg, &repo).unwrap();
     register_workspace(&xdg, &repo, "hub", &repo, &state);
-    let Located::Checkout(checkout) = projects::locate(&repo).unwrap() else {
+    let Located::Checkout(checkout) = project::locate(&repo).unwrap() else {
         panic!("{} is not a checkout", repo.display());
     };
-    let directory = projects::store_directory(&xdg, &checkout.project_id);
+    let directory = project::store_directory(&xdg, &checkout.project_id);
     std::fs::write(directory.join("events.sqlite"), b"not a database").unwrap();
 
     let scope = crate::tui::tests::hub_scope(&root, &repo);

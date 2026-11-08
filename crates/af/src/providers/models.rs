@@ -13,13 +13,13 @@
 //! A catalog says which spellings af recognises for a Provider: what its harness offers (Claude
 //! Code's picker leaves out exact IDs its API still accepts), never every ID the API accepts,
 //! and never whether this account can run one, which only the charged `af provider doctor`
-//! proves. The rules af applies to a binding live in `review_runner_claude::models`; this module
+//! proves. The rules af applies to a binding live in `af_runner::models`; this module
 //! only reads catalogs and prints them.
 
 use super::installation::{VersionCheck, version_check};
 use super::*;
-use review_runner_claude::hint;
-use review_runner_claude::models::{self as rules, Catalog, CatalogModel, Kind, Resolution};
+use af_runner::models::diagnostic as hint;
+use af_runner::models::{self as rules, Catalog, CatalogModel, Kind, Resolution};
 
 /// The source a Claude catalog is read from.
 pub(crate) const CLAUDE_SOURCE: &str = "claude list_models";
@@ -501,9 +501,9 @@ fn claude_catalog(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = review_process::spawn(&mut command)
+    let mut child = af_process::spawn(&mut command)
         .map_err(|error| format!("cannot start the Claude catalog session: {error}"))?;
-    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut watch = af_process::ExitWatch::new(child.id());
     let mut stdin = child.stdin.take();
     let mut stdout = child.stdout.take().expect("catalog stdout was piped");
     let mut stderr = child.stderr.take().expect("catalog stderr was piped");
@@ -551,7 +551,7 @@ fn claude_catalog(
             (Some(Ok(_)), Some(_)) => break Ok((models, version)),
             _ => {}
         }
-        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+        match af_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => {
                 reaped = true;
                 while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
@@ -563,11 +563,11 @@ fn claude_catalog(
                 if let Some(Err(error)) = models {
                     break Err(error);
                 }
-                let (line, _) = review_runner::cli::error_and_fix(&said, &captured);
+                let (line, _) = af_runner::cli::error_and_fix(&said, &captured);
                 let line = line.map(|line| format!(": {line}")).unwrap_or_default();
                 break Err(format!(
                     "claude {} before answering `list_models`{line}",
-                    review_runner::cli::exit_description(&status)
+                    af_runner::cli::exit_description(&status)
                 ));
             }
             Ok(None) => {}
@@ -593,7 +593,7 @@ fn claude_catalog(
     if !reaped {
         let grace = Instant::now() + SESSION_EXIT_GRACE;
         loop {
-            match review_process::try_reap_killing_group(&mut child, &mut watch) {
+            match af_process::try_reap_killing_group(&mut child, &mut watch) {
                 Ok(Some(_)) => break,
                 Ok(None) if Instant::now() < grace => thread::sleep(Duration::from_millis(10)),
                 Ok(None) | Err(_) => {
@@ -658,7 +658,7 @@ fn control_response(captured: &[u8], id: &str) -> Option<Result<serde_json::Valu
                     response
                         .get("error")
                         .and_then(serde_json::Value::as_str)
-                        .map(review_runner::cli::bounded_cli_line)
+                        .map(af_runner::cli::bounded_cli_line)
                         .unwrap_or_else(|| "no message".into())
                 )),
             },
@@ -730,7 +730,7 @@ fn parse_pi_resolve(value: &str) -> Result<ResolveRequest, String> {
         Some((spelling, effort)) if hint::printable(effort) => (spelling, Some(effort.to_owned())),
         _ => (value, None),
     };
-    if !review_runner_pi::exact_id(spelling) {
+    if !af_runner_pi::exact_id(spelling) {
         return Err(
             "Pi --resolve requires a bounded exact SDK model ID with an optional /EFFORT".into(),
         );

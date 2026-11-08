@@ -8,13 +8,13 @@ import sys
 from types import SimpleNamespace
 from unittest import mock
 
-from perflab import telemetrylab
+from perflab import telemetry_lab
 from tests.support import ROOT, TempDir
 
 
 class CorpusPreparation(TempDir):
     def test_serial_never_constructs_a_pool_and_matches_parallel_bytes_and_facts(self):
-        module = telemetrylab.script_module('scripts/telemetry-corpus.py')
+        module = telemetry_lab.script_module('scripts/telemetry-corpus.py')
         serial, parallel = Path(self.path('serial')), Path(self.path('parallel'))
         captured = io.StringIO()
         # The exact failure class from SemLock under --ipc none. Even entering the
@@ -42,8 +42,8 @@ class CorpusPreparation(TempDir):
         for summary in summaries:
             del summary['out'], summary['seconds']
         self.assertEqual(*summaries)
-        self.assertEqual(telemetrylab.corpus_facts(str(serial)),
-                         telemetrylab.corpus_facts(str(parallel)))
+        self.assertEqual(telemetry_lab.corpus_facts(str(serial)),
+                         telemetry_lab.corpus_facts(str(parallel)))
         files = lambda root: {str(p.relative_to(root)): p.read_bytes()
                               for p in root.rglob('*') if p.is_file()}
         self.assertEqual(files(serial), files(parallel))
@@ -51,10 +51,10 @@ class CorpusPreparation(TempDir):
         self.assertEqual(summaries[0]['blobs'], 40)
 
     def test_contained_preparation_explicitly_selects_serial_jobs(self):
-        registry, _ = telemetrylab.load_registry()
+        registry, _ = telemetry_lab.load_registry()
         for profile in registry['profiles']:
-            config = telemetrylab.configuration(registry, profile)
-            argv = telemetrylab.corpus_argv(config['read_latency'], config['seed'], 'script')
+            config = telemetry_lab.configuration(registry, profile)
+            argv = telemetry_lab.corpus_argv(config['read_latency'], config['seed'], 'script')
             self.assertEqual(argv[argv.index('--jobs') + 1], '1')
             # Gross capacity preserves the former workload allowance above the real
             # production floor, with another 2 GiB for filesystem overhead/headroom.

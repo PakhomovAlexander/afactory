@@ -8,8 +8,20 @@ AF supports **Node >=22.19** and the installed official
 `@earendil-works/pi-coding-agent` **1.4.0** SDK, release
 [`4a080252f06caf63a525d7873c5d94d3c23887e0`](https://github.com/earendil-works/pi/tree/4a080252f06caf63a525d7873c5d94d3c23887e0).
 The stock CLI has neither AF's principal protocol nor confined file tools. AF embeds its
-own ES-module host in `review-runner-pi`. Registration/status/catalog never install, update,
+own ES-module host in `af-runner-pi`. Registration/status/catalog never install, update,
 refresh a remote model catalog, log in, or run a model inference.
+
+## Library boundary
+
+`af` owns CLI presentation, machine bindings and native Task integration; `af-runtime` owns
+Task execution and receives the Pi Worker adapter. `af-runner-pi` depends on `af-contracts`
+for typed authority/usage evidence, `af-runner` for shared Worker interfaces, `af-process`
+for bounded host supervision and `af-store` for retained evidence. Its embedded `host.mjs`
+owns SDK interaction and credential access. Provider-neutral binding validation lives in
+`af_runner::models`; Pi catalog, identity, framing and native accounting checks stay in
+`af-runner-pi`. Neither the adapter nor its host depends on another Provider adapter, the CLI,
+`af-scenario` or `af-project`. The [architecture map](../architecture.md#layout) describes
+those application and library boundaries.
 
 ## Registration and effective catalog
 
@@ -179,7 +191,7 @@ configuration digest, trusted remaining allowance and reply schema. A matching p
 precedes private input. A fresh random 256-bit prompt nonce, first sent with that prompt, must be
 echoed in accepted before usage or results can be admitted. Session success requires actual
 `agent_settled`, successful final assistant text and return of `session.prompt`; `agent_end`,
-EOF and exit zero are insufficient. Common `review-process` supervision owns cancellation,
+EOF and exit zero are insufficient. Common `af-process` supervision owns cancellation,
 the original Attempt wall, pipes and owned process group cleanup. Partial charges survive failure.
 
 Native accounting is selected by **transport**, not backend. The pinned SDK's complete chat

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from unittest import mock
 
-from perflab import hostlock
+from perflab import host_lock
 from tests import telemetry_build_smoke as smoke
 from tests.support import ROOT, TempDir
 
@@ -15,17 +15,17 @@ LAB = os.path.join(ROOT, "scripts", "performance")
 CHILD = r'''
 import sys
 sys.path.insert(0, %r)
-from perflab import hostlock, telemetrybuild
+from perflab import host_lock, telemetry_build
 from perflab.values import ContractError
 from tests import telemetry_build_smoke as smoke
-class TestLock(hostlock.MachineLock):
+class TestLock(host_lock.MachineLock):
     def __init__(self):
         super().__init__(%r)
-hostlock.MachineLock = TestLock
+host_lock.MachineLock = TestLock
 def build(*args):
     if not %r:
         raise ContractError("compile failed; no binary admitted")
-telemetrybuild.run = build
+telemetry_build.run = build
 smoke.fixture_child(%r, ["telemetry-contained-build", "--source", "unused",
     "--source-sha", "a" * 40, "--output", "unused", "--image", smoke.IMAGE,
     "--scratch-fs", "unused"])
@@ -37,7 +37,7 @@ class FixtureMaintenance(TempDir):
         super().setUp()
         self.locks = self.path("locks")
         os.mkdir(self.locks)
-        self.lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+        self.lock = os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)
         self.fence = self.lock + ".fence"
 
     def child(self, root, success=False):
@@ -48,9 +48,9 @@ class FixtureMaintenance(TempDir):
         return result, json.loads(receipt.read_text())
 
     def probe(self):
-        code = ("import sys; sys.path.insert(0,%r); from perflab import hostlock\n"
-                "try: lock=hostlock.MachineLock(%r)\n"
-                "except hostlock.Refused as error: print(error.reason)\n"
+        code = ("import sys; sys.path.insert(0,%r); from perflab import host_lock\n"
+                "try: lock=host_lock.MachineLock(%r)\n"
+                "except host_lock.Refused as error: print(error.reason)\n"
                 "else: lock.release(); print('acquired')\n") % (LAB, self.locks)
         result = subprocess.run([sys.executable, "-I", "-B", "-c", code],
                                 capture_output=True, timeout=10, check=True)
@@ -134,7 +134,7 @@ class FixtureMaintenance(TempDir):
         self.assertTrue(os.path.isdir(self.fence))
 
     def test_maintenance_cannot_run_while_original_cli_lease_is_held(self):
-        with hostlock.MachineLock(self.locks) as lease:
+        with host_lock.MachineLock(self.locks) as lease:
             lease.guard()
             path = self.path("guard.json")
             smoke.record_guard(lease, path)
@@ -210,8 +210,8 @@ class FixtureMaintenance(TempDir):
             if changed_mount:
                 mount.rename(root / "scratch.original")
                 mount.mkdir()
-        with mock.patch.object(smoke.hostprep, "prepare", side_effect=prepare), \
-                mock.patch.object(smoke.hostprep, "cleanup", side_effect=cleanup) as clean, \
+        with mock.patch.object(smoke.host_prep, "prepare", side_effect=prepare), \
+                mock.patch.object(smoke.host_prep, "cleanup", side_effect=cleanup) as clean, \
                 mock.patch.object(smoke.subprocess, "check_output", return_value=live), \
                 mock.patch.object(smoke, "maintain_fixture", side_effect=maintain):
             smoke.scratch(root, action)

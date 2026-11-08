@@ -254,7 +254,7 @@ ASCII_PUNCTUATION = frozenset('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~')
 
 def canonical_text(text):
     """The authored text of a section body as the canonical renderer wrote it
-    (`markdown_text` in crates/review-pipeline/src/task/document.rs, the bytes of
+    (`markdown_text` in crates/af-runtime/src/task/document.rs, the bytes of
     `--format canonical-markdown`): it escapes every backtick, `~` and other markup character with
     a backslash, and writes a word a GFM autolink could claim (`@`, `://`, `www.`) as inert code
     spans, each backtick of the word an escaped backtick between them. So a backslash before ASCII

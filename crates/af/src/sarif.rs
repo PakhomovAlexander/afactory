@@ -10,8 +10,8 @@
 //! The run's `properties.schema` names the profile, `af/findings-sarif@1`
 //! (`schemas/findings-sarif-v1.json`).
 
-use review_core::Severity;
-use review_core::task::handoff::{CoverageV1, FindingPromptV1, VerifiedFixV1};
+use af_contracts::Severity;
+use af_contracts::task::handoff::{CoverageV1, FindingPromptV1, VerifiedFixV1};
 use serde_json::{Map, Value, json};
 
 pub(crate) const SARIF_VERSION: &str = "2.1.0";
@@ -328,7 +328,7 @@ pub(crate) fn check(log: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use review_core::task::handoff::{self, PromptSource, VerifiedBy};
+    use af_contracts::task::handoff::{self, PromptSource, VerifiedBy};
     use std::collections::BTreeMap;
 
     fn id(c: char) -> String {

@@ -22,7 +22,7 @@ import tempfile
 import unittest
 import urllib.error
 
-from perflab import contracts, gitrefs
+from perflab import contracts, git_refs
 from perflab.values import ContractError
 from tests.support import ROOT, Repo, TempDir, read
 
@@ -215,7 +215,7 @@ class GreenWalk(History):
         self.assertEqual(plan["head_sha"], self.parent)
         self.assertEqual(plan["rejected"], [{"sha": self.tip,
                                              "reason": "check / lint concluded failure"}])
-        expected = gitrefs.nightly_baseline(gitrefs.Git(self.repo.path), self.parent)
+        expected = git_refs.nightly_baseline(git_refs.Git(self.repo.path), self.parent)
         self.assertEqual((plan["baseline_tag"], plan["baseline_sha"]), expected)
         self.assertEqual(expected, ("v0.13.0", self.release))
         self.assertEqual((plan["cargo_version_on_main"], plan["version"], plan["tag"]),
@@ -474,7 +474,7 @@ class Versions(unittest.TestCase):
 
     def test_a_nightly_sorts_after_the_release_main_last_shipped(self):
         def key(version):
-            return gitrefs.version_key(gitrefs.parse_version(version))
+            return git_refs.version_key(git_refs.parse_version(version))
         self.assertGreater(key(nightly.nightly_version("0.14.0", "2026-10-29")), key("0.14.0"))
         self.assertGreater(key(nightly.nightly_version("0.14.0-rc.3", "2026-10-29")),
                            key("0.13.9"))
@@ -544,7 +544,7 @@ class CargoRewrite(TempDir):
         os.makedirs(copy)
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
             shutil.copyfile(os.path.join(ROOT, name), os.path.join(copy, name))
-        members = nightly.tomlfile.loads(read(os.path.join(ROOT, "Cargo.toml")),
+        members = nightly.toml_file.loads(read(os.path.join(ROOT, "Cargo.toml")),
                                          "Cargo.toml")["workspace"]["members"]
         for path in members:
             os.makedirs(os.path.join(copy, path, "src"))
@@ -568,7 +568,7 @@ class CargoRewrite(TempDir):
                     "--format-version", "1"]
             calls.append(argv)
             root_version = nightly.workspace_version(read(manifest_path).decode())
-            locked_doc = nightly.tomlfile.loads(read(os.path.join(copy, "Cargo.lock")),
+            locked_doc = nightly.toml_file.loads(read(os.path.join(copy, "Cargo.lock")),
                                                 "Cargo.lock")
             locked = {package["name"]: package["version"] for package in locked_doc["package"]
                       if "source" not in package}
@@ -612,7 +612,7 @@ class CargoRewrite(TempDir):
         os.makedirs(copy)
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
             shutil.copyfile(os.path.join(ROOT, name), os.path.join(copy, name))
-        members = nightly.tomlfile.loads(read(os.path.join(ROOT, "Cargo.toml")),
+        members = nightly.toml_file.loads(read(os.path.join(ROOT, "Cargo.toml")),
                                          "Cargo.toml")["workspace"]["members"]
         for path in members:
             os.makedirs(os.path.join(copy, path, "src"))
@@ -651,7 +651,7 @@ class CargoRewrite(TempDir):
                 registry, real_home = os.path.basename(os.path.dirname(src)), \
                     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(src))))
                 hosted[(package["name"], package["version"])] = (registry, real_home)
-        locked = {(p["name"], p["version"]) for p in nightly.tomlfile.loads(
+        locked = {(p["name"], p["version"]) for p in nightly.toml_file.loads(
             read(os.path.join(copy, "Cargo.lock")), "Cargo.lock")["package"] if "source" in p}
         self.assertTrue(set(hosted) < locked, "the lock names packages of other platforms")
         for (name, release), (registry, real_home) in hosted.items():
@@ -961,8 +961,8 @@ class ReleaseToolsIgnoreNightlies(TempDir):
 
     def test_the_lab_never_parses_a_nightly_tag_as_a_release(self):
         # `af self`'s own proof is the Rust test `newest_never_chooses_a_nightly_tag`.
-        self.assertIsNone(gitrefs.parse_version("nightly-2026.10.29"))
-        self.assertIsNotNone(gitrefs.parse_version("0.15.0-nightly.20261029"))
+        self.assertIsNone(git_refs.parse_version("nightly-2026.10.29"))
+        self.assertIsNotNone(git_refs.parse_version("0.15.0-nightly.20261029"))
 
     def test_pin_release_refuses_a_nightly(self):
         for argument in ("nightly-2026.10.29", "0.15.0-nightly.20261029"):

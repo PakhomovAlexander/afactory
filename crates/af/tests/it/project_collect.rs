@@ -2007,7 +2007,7 @@ fn a_survey_file_in_a_container_with_a_name_that_is_not_utf8_is_reported_and_lef
     }
     let leftover = container.join(target);
     std::fs::rename(machine.object(target), &leftover).unwrap();
-    let expected = review_core::encode_path(leftover.as_os_str().as_bytes());
+    let expected = af_contracts::encode_path(leftover.as_os_str().as_bytes());
     assert!(
         expected.ends_with(&format!(
             "/0f1e2d3c4b5a69788796a5b4c3d2e1%E9/sha256%3A{}",
@@ -2215,7 +2215,7 @@ fn a_campaign_deeper_than_the_removal_walk_is_left_and_reported() {
         .join("state/af/review/campaigns")
         .join(format!("c-{}", "d".repeat(64)));
     std::fs::create_dir_all(&campaign).unwrap();
-    review_store::EventStore::open(campaign.join("events.sqlite")).unwrap();
+    af_store::EventStore::open(campaign.join("events.sqlite")).unwrap();
     let mut deep = campaign.join("deep");
     for _ in 0..130 {
         deep = deep.join("d");
@@ -2493,7 +2493,7 @@ fn replace_born_later(path: &Path, bytes: &[u8]) {
 
 /// The digest af names the bytes `bytes` by in a CAS.
 fn digest_of(bytes: &[u8]) -> String {
-    review_store::canonical::blob_content_id(bytes)
+    af_store::canonical::blob_content_id(bytes)
 }
 
 /// Put `bytes` into the Project Store's CAS at their digest, as a writer that crashed before its

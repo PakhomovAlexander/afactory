@@ -13,29 +13,29 @@
       "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
     },
     {
-      "path": "crates/review-core/src/perf_calibration.rs",
+      "path": "crates/af-contracts/src/perf_calibration.rs",
       "size": 18,
       "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000003"
     },
     {
-      "path": "crates/review-core/src/perf_trace.rs",
+      "path": "crates/af-contracts/src/perf_trace.rs",
       "size": 19,
       "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000004"
     },
     {
-      "path": "crates/review-pipeline/Cargo.toml",
+      "path": "crates/af-process/examples/perf-supervisor.rs",
+      "size": 22,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000007"
+    },
+    {
+      "path": "crates/af-runtime/Cargo.toml",
       "size": 20,
       "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000005"
     },
     {
-      "path": "crates/review-pipeline/examples/perf-probe.rs",
+      "path": "crates/af-runtime/examples/perf-probe.rs",
       "size": 21,
       "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
-    },
-    {
-      "path": "crates/review-process/examples/perf-supervisor.rs",
-      "size": 22,
-      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000007"
     },
     {
       "path": "fixtures/performance/adapters.toml",

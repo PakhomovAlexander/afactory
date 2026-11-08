@@ -18,7 +18,7 @@ sys.dont_write_bytecode = True
 
 # Filename launches (ancestor and inner) must import this source without PYTHONPATH or cwd.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from perflab import telemetryexec
+from perflab import telemetry_exec
 
 
 def state(pid):
@@ -88,10 +88,10 @@ def inner(root, mode):
     env = {"PATH": "/usr/bin:/bin", "HOME": root, "TMPDIR": root,
            "XDG_CONFIG_HOME": root, "XDG_CACHE_HOME": root, "XDG_STATE_HOME": root,
            "XDG_DATA_HOME": root}
-    execution = telemetryexec.Execution(
+    execution = telemetry_exec.Execution(
         [sys.executable, "-c", SCRIPT, mode], env, root, [root], [], root, "capture",
         64 << 20, time.monotonic() + (1 if mode == "deadline" else 30), 1 << 30)
-    executor = telemetryexec.TrustedLocal(sys.executable)
+    executor = telemetry_exec.TrustedLocal(sys.executable)
     if mode == "cancel":
         finished, finish = [], executor.finish
         def record(*args):
@@ -112,15 +112,15 @@ def inner(root, mode):
     if mode in ("survivor", "thread_survivor"):
         # Model a signal that cannot end a genuinely live member. The real executor still
         # performs its complete scans and uses its unchanged ten-second cleanup bound.
-        with mock.patch.object(telemetryexec._LocalProcess, "signal_group"):
+        with mock.patch.object(telemetry_exec._LocalProcess, "signal_group"):
             result = executor.run(execution)
     elif mode == "repeat_kill":
-        signals, send = [], telemetryexec._LocalProcess.signal_group
+        signals, send = [], telemetry_exec._LocalProcess.signal_group
         def miss_once(process, sent):
             signals.append(sent)
             if len(signals) > 1:
                 send(process, sent)
-        with mock.patch.object(telemetryexec._LocalProcess, "signal_group", miss_once):
+        with mock.patch.object(telemetry_exec._LocalProcess, "signal_group", miss_once):
             result = executor.run(execution)
         if len(signals) < 2:
             raise AssertionError("a still-live member requires another owned group signal")

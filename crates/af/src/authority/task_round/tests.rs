@@ -14,7 +14,7 @@ fn restarted_prior_headers_follow_only_exact_adjacent_supersession() {
     let mut next = first.clone();
     next.epoch = 2;
     next.subject_id = digest('e');
-    let row = |sequence, event_type, payload, causation_id| review_core::RunEvent {
+    let row = |sequence, event_type, payload, causation_id| af_contracts::RunEvent {
         event_id: format!("event-{sequence}"),
         run_id: "campaign".into(),
         sequence,
@@ -137,9 +137,9 @@ to={node="ledger",port="reports"}
     let mut lock = Lockfile::empty();
     lock.pipelines.insert(
         "review".into(),
-        review_config::lock::Pin {
+        af_pipeline_config::lock::Pin {
             version: "1.0.0".into(),
-            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+            digest: af_store::canonical::blob_content_id(pipeline.as_bytes()),
         },
     );
     std::fs::write(repo_path.join(".af/af.lock"), lock.to_toml()).unwrap();

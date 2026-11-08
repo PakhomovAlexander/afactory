@@ -1,5 +1,5 @@
 //! Real command Workers exercise shared Task summaries through fresh read-only CLI processes.
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -117,12 +117,12 @@ gate = "major"
         "version=1\n[project]\nname='timing'\nmin_af='0.6'\n[defaults]\npipeline='review'\n",
     )
     .unwrap();
-    let mut lock = review_config::lock::Lockfile::empty();
+    let mut lock = af_pipeline_config::lock::Lockfile::empty();
     lock.pipelines.insert(
         "review".into(),
-        review_config::lock::Pin {
+        af_pipeline_config::lock::Pin {
             version: "1.0.0".into(),
-            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+            digest: af_store::canonical::blob_content_id(pipeline.as_bytes()),
         },
     );
     std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
@@ -210,7 +210,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let tasks = store.task_ids(&cas).unwrap();
     assert_eq!(tasks.len(), 1);
-    let task_run = review_store::store::task::task_run_id(&tasks[0]).unwrap();
+    let task_run = af_store::store::task::task_run_id(&tasks[0]).unwrap();
     let task = store.task_projection(&cas, &tasks[0]).unwrap().unwrap();
     let attempts = task.execution.as_ref().unwrap().attempt_accounting();
     assert_eq!(attempts.iter().filter(|a| a.started).count(), 4);
@@ -235,10 +235,10 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
             .iter()
             .find(|a| a.attempt_id == row.attempt_id)
             .unwrap();
-        let plan: review_core::task::plan::ExecutionPlanV3 =
+        let plan: af_contracts::task::plan::ExecutionPlanV3 =
             serde_json::from_value(cas.get_artifact(&attempt.plan_id).unwrap().payload).unwrap();
         let round_id = &plan.inputs["round"].artifact_ids[0];
-        let round: review_core::task::campaign_review::CampaignReviewRoundV1 =
+        let round: af_contracts::task::campaign_review::CampaignReviewRoundV1 =
             serde_json::from_value(cas.get_artifact(round_id).unwrap().payload).unwrap();
         let end = row.started_unix_ms.checked_add(row.elapsed_ms).unwrap();
         spans
@@ -393,11 +393,11 @@ fn missing_common_task_refuses_without_reopening_legacy_execution() {
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let tasks = store.task_ids(&cas).unwrap();
     assert_eq!(tasks.len(), 1);
-    let task_run = review_store::store::task::task_run_id(&tasks[0]).unwrap();
+    let task_run = af_store::store::task::task_run_id(&tasks[0]).unwrap();
     let review = store.replay("campaign-timing").unwrap();
     assert!(
         review.iter().any(|event| {
-            event.event_type == review_core::EventType::TaskReviewResultSelectedV1
+            event.event_type == af_contracts::EventType::TaskReviewResultSelectedV1
         })
     );
     drop(store);

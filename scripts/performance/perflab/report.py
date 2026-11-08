@@ -1,7 +1,7 @@
 """Offline reports of one run (package p4, ADR-0172).
 
 `report --run DIR --output OUT` recomputes the run's verdict from its retained evidence
-(`compare.evaluate`: every bundle rehashed, every planned slot matched) and writes, below a new
+(`evaluate_results.evaluate`: every bundle rehashed, every planned slot matched) and writes, below a new
 OUT, `report.html` (self-contained, `perflab.render`), the matching `report.json`
 (`af.perf-report/3`, ADR-0177, ADR-0214), the recomputed `verdict.json`, the compact GitHub job-summary table
 `summary.md` and `evidence/`, verified copies of the run's bundle members that the page links
@@ -22,7 +22,7 @@ frozen child plan must carry this run's resolved sources, selectors and authorit
 selected case's workload (ADR-0179), and the profiles' sources, recipe and its frozen kind,
 capture bounds and selection must be the child plan's own. Every view
 is then admitted against the trusted renderer: each sanitized flamegraph must be exactly what
-`svgsafe` makes of its original, each Perfetto export the export of its validated trace, and the
+`svg_safe` makes of its original, each Perfetto export the export of its validated trace, and the
 child's page exactly the page `diagnostics.page` draws from the admitted profiles and traces, so a
 page or SVG with a script, an event attribute or an external reference is refused, never linked;
 inferno's original SVG is archived evidence that no page links. A verified copy of the whole
@@ -35,9 +35,9 @@ report is a separate derived directory.
 from fractions import Fraction
 import os
 
-from . import (admission, bundle, compare, contracts, diagcontracts, diagnostics, limits,
-               perfcapture, phasetrace, render, reproduce, schedule, svgsafe, symbolarchive,
-               telemetrydiag)
+from . import (admission, bundle, evaluate_results, contracts, diag_contracts, diagnostics, limits,
+               perf_capture, phase_trace, render, reproduce, schedule, svg_safe, symbol_archive,
+               telemetry_diag)
 from .values import ContractError, document_bytes, parse_decimal, require, sha256_bytes
 
 REPORT_HTML = "report.html"
@@ -344,7 +344,7 @@ def admit_child(source, plan):
                 "%s: %s is not the verified member its profiles name" % (label,
                                                                        artifact["path"]))
     _admit_repetitions(source, label, doc, hashes)
-    symbolarchive.admit(source, doc, hashes)
+    symbol_archive.admit(source, doc, hashes)
     _admit_views(source, label, doc, hashes)
     return Child(source, doc, child_plan, identity, hashes, sha256_bytes(data))
 
@@ -491,13 +491,13 @@ def _admit_repetitions(source, label, doc, hashes):
                 own.add(artifact["path"])
             if observed and item["completed"]:
                 _admit_observed(source, label, item)
-        directory = diagcontracts.capture_directory(capture) + "/"
+        directory = diag_contracts.capture_directory(capture) + "/"
         present = set(path for path in hashes if path.startswith(directory))
         require(present == own, "%s: %s holds %s beyond its index and artifacts, and lacks %s"
                 % (label, directory, sorted(present - own)[:8], sorted(own - present)[:8]))
         listed.update(own)
     stray = sorted(path for path in hashes if path.startswith("captures/")
-                   and diagcontracts.repeated_name(path.rsplit("/", 1)[1]) and path not in listed)
+                   and diag_contracts.repeated_name(path.rsplit("/", 1)[1]) and path not in listed)
     require(not stray, "%s: repetition files no capture names: %s" % (label, ", ".join(stray[:8])))
 
 
@@ -518,10 +518,10 @@ def _admit_observed(source, label, item):
         require(info.st_size == item["recording"]["bytes"], "%s: %s changed size" % (label,
                                                                                 recording))
         try:
-            executed, exited = perfcapture.decode_lifetime(
+            executed, exited = perf_capture.decode_lifetime(
                 lambda offset, count: os.pread(fd, count, offset), info.st_size,
                 record["target"]["pid"])
-        except perfcapture.CaptureError as error:
+        except perf_capture.CaptureError as error:
             raise ContractError("%s: %s: %s" % (label, recording, error.detail))
     finally:
         os.close(fd)
@@ -543,7 +543,7 @@ def _admit_views(source, label, doc, hashes):
     for entry in doc["renders"]:
         where = "%s/%s" % (label, entry["sanitized"]["path"])
         try:
-            again = svgsafe.sanitize(member(entry["original"]["path"]))
+            again = svg_safe.sanitize(member(entry["original"]["path"]))
         except ContractError as error:
             raise ContractError("%s: its original is no SVG the sanitizer admits: %s"
                                 % (where, error))
@@ -562,16 +562,16 @@ def _admit_views(source, label, doc, hashes):
         where = "%s: the %s trace of %s" % (label, entry["side"], entry["instance_id"])
         require("trace.json" in named and "perfetto.json" in named,
                 "%s holds no trace.json and perfetto.json" % where)
-        trace = phasetrace.load(member(named["trace.json"]), "%s/%s" % (label,
+        trace = phase_trace.load(member(named["trace.json"]), "%s/%s" % (label,
                                                                        named["trace.json"]))
-        require(member(named["perfetto.json"]) == phasetrace.perfetto(
+        require(member(named["perfetto.json"]) == phase_trace.perfetto(
             trace, "%s %s" % (entry["instance_id"], entry["side"])),
             "%s: its perfetto.json is not the export of its trace" % where)
         region_spans, coverage = diagnostics.trace_coverage(trace, entry["region_phase"])
         require((entry["spans"], entry["dropped"], entry["open"], entry["async_spans"],
                  entry["region_spans"], entry["coverage"])
                 == (len(trace["spans"]), trace["dropped"], trace["open"],
-                    phasetrace.async_count(trace), region_spans, coverage),
+                    phase_trace.async_count(trace), region_spans, coverage),
                 "%s: its profiles claim other spans or coverage than its trace" % where)
         traces.append(trace)
     for entry in doc["telemetry"]["captures"]:
@@ -582,13 +582,13 @@ def _admit_views(source, label, doc, hashes):
         named = dict((artifact["path"].rsplit("/", 1)[-1], artifact["path"])
                      for artifact in entry["artifacts"])
         documents = dict((kind, member(named[kind + ".json"]))
-                         for kind in telemetrydiag.DOCUMENT_KINDS)
+                         for kind in telemetry_diag.DOCUMENT_KINDS)
         try:
-            derived = telemetrydiag.capture(documents, entry["run"]["task_id"])
-            telemetrydiag.check_capture(entry, derived)
+            derived = telemetry_diag.capture(documents, entry["run"]["task_id"])
+            telemetry_diag.check_capture(entry, derived)
         except ContractError as error:
             raise ContractError("%s: %s" % (where, error))
-        require(member(named[telemetrydiag.PERFETTO]) == telemetrydiag.perfetto(
+        require(member(named[telemetry_diag.PERFETTO]) == telemetry_diag.perfetto(
             documents["show"], "%s %s" % (entry["instance_id"], entry["side"])),
             "%s: its perfetto.json is not the export of its show.json" % where)
     require(member(PAGE) == diagnostics.page(doc, traces),
@@ -727,7 +727,7 @@ def _case_telemetry(instance_id, children):
                 entry["spans"], len(entry["executions"]))
             for artifact in entry["artifacts"]:
                 name = artifact["path"].rsplit("/", 1)[-1]
-                if name in ("show.json", telemetrydiag.PERFETTO):
+                if name in ("show.json", telemetry_diag.PERFETTO):
                     items.append({"child_run_id": run_id, "side": entry["side"],
                                   "kind": "telemetry" if name == "show.json"
                                   else "telemetry_perfetto",
@@ -805,8 +805,8 @@ def copy_evidence(run_dir, evaluation, target):
                         evaluation.verdict["inputs"]["run_bundle"]))
     for evidence in evaluation.evidence:
         if evidence.hashes is not None:
-            bundles.append((os.path.join(run_dir, compare.SHARD_DIR, str(evidence.index)),
-                            "%s/%d/" % (compare.SHARD_DIR, evidence.index), evidence.hashes,
+            bundles.append((os.path.join(run_dir, evaluate_results.SHARD_DIR, str(evidence.index)),
+                            "%s/%d/" % (evaluate_results.SHARD_DIR, evidence.index), evidence.hashes,
                             plan["limits"]["shard_bundle_bytes"], evidence.bundle))
     downloads = []
     for root, prefix, hashes, limit, identity in bundles:
@@ -1299,7 +1299,7 @@ def write(run_dir, output, job_summary=None, evidence=True, diagnostics=()):
 def write_evaluated(run_dir, output, job_summary=None, evidence=True, diagnostics=()):
     """`write`, returning (report document, the evaluation it was built from)."""
     output = prepare_output(output, run_dir)
-    evaluation = compare.evaluate(run_dir)
+    evaluation = evaluate_results.evaluate(run_dir)
     # Every child is verified before anything of the report is written.
     children = admit_children(diagnostics, evaluation.plan)
     downloads = copy_evidence(run_dir, evaluation, output) if evidence else []

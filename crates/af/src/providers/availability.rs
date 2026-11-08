@@ -34,7 +34,7 @@ impl Expiry {
     }
 
     pub(super) fn diagnostic(self, id: &str) -> String {
-        let mut at = review_core::task::collection::utc_time(self.unix_seconds);
+        let mut at = af_contracts::task::collection::utc_time(self.unix_seconds);
         if self.nanoseconds != 0 {
             at.pop(); // The shared UTC formatter always ends in Z.
             at.push_str(&format!(".{:09}Z", self.nanoseconds));

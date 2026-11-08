@@ -723,7 +723,7 @@ pub(crate) fn check_refused_below_the_floor(env: &[(&str, &str)]) {
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
     catalog["packages"]["fixture/implementer"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
+        af_pipeline_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
     );
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
     for args in [vec!["add", "-A"], vec!["commit", "-qm", "fill the disk"]] {
@@ -823,7 +823,7 @@ print(json.dumps(envelope))
 /// The `review` fixture with both reviewers on a Claude Provider whose config directory is
 /// `home/claude`; returns the repository, the Store and the config directory.
 fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     let (repo, state) = task_cli::fixture_named(&machine.root, "review");
     let config = machine.root.join("home/claude");
     let bin = machine.root.join("bin");
@@ -870,11 +870,11 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
         worker.signature.attempt.as_mut().unwrap().tokens = 1000;
         std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
         catalog["packages"][&package]["digest"] =
-            toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
+            toml::Value::String(af_pipeline_config::lock::package_digest(&package, &path).unwrap());
         providers.insert(package, toml::Value::String("claude-personal".into()));
     }
     let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-    let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
         toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
             .unwrap();
     pipeline.max_attempts = 4;
@@ -884,7 +884,7 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
     )
     .unwrap();
     catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
+        af_pipeline_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
     );
     catalog
         .as_table_mut()

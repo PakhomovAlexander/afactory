@@ -1,10 +1,10 @@
 //! Reuse one captured domain across operations, then mutate original evidence between calls.
-use review_core::task::execution::TaskInvocationV1;
-use review_core::task::plan::ExecutionPlanV3;
-use review_graph::task::CompiledTask;
-use review_pipeline::task::TaskOperatorHost;
-use review_pipeline::task::review::ReviewTaskDomain;
-use review_store::Cas;
+use af_contracts::task::execution::TaskInvocationV1;
+use af_contracts::task::plan::ExecutionPlanV3;
+use af_graph::task::CompiledTask;
+use af_runtime::task::TaskOperatorHost;
+use af_runtime::task::review::ReviewTaskDomain;
+use af_store::Cas;
 use serde_json::Value;
 use std::path::Path;
 

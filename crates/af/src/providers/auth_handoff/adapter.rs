@@ -49,7 +49,7 @@ pub(super) enum Failure {
 
 pub(super) struct NativeLogin {
     child: Child,
-    watch: review_process::ExitWatch,
+    watch: af_process::ExitWatch,
     stdin: Option<ChildStdin>,
     guarded: bool,
     stdout: ChildStdout,
@@ -125,8 +125,8 @@ impl NativeLogin {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .process_group(0);
-        let mut child = review_process::spawn(command).map_err(|_| Failure::Failed)?;
-        let watch = review_process::ExitWatch::new(child.id());
+        let mut child = af_process::spawn(command).map_err(|_| Failure::Failed)?;
+        let watch = af_process::ExitWatch::new(child.id());
         let stdin = child.stdin.take().expect("login stdin was piped");
         let stdout = child.stdout.take().expect("login stdout was piped");
         if set_nonblocking(&stdin)
@@ -135,7 +135,7 @@ impl NativeLogin {
         {
             if guarded {
                 drop(stdin);
-                let _ = review_process::reap::wait(&mut child);
+                let _ = af_process::reap::wait(&mut child);
             } else {
                 stop_probe(&mut child);
             }
@@ -178,7 +178,7 @@ impl NativeLogin {
         self.flush_input()?;
         self.read_output()?;
         if self.exit.is_none() {
-            self.exit = review_process::try_reap_killing_group(&mut self.child, &mut self.watch)
+            self.exit = af_process::try_reap_killing_group(&mut self.child, &mut self.watch)
                 .map_err(|_| Failure::Failed)?;
             if self.exit.is_some() {
                 self.stopped = true;
@@ -278,7 +278,7 @@ impl NativeLogin {
                 // EOF reaches the independent guard even after this owner's hard death.
                 // The guard keeps the context lock until native cleanup has completed.
                 self.stdin.take();
-                let _ = review_process::reap::wait(&mut self.child);
+                let _ = af_process::reap::wait(&mut self.child);
             } else {
                 stop_probe(&mut self.child);
             }

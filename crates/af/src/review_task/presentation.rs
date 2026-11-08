@@ -1,13 +1,13 @@
 //! Common Review presentation reads the original Round and the Campaign's one Task budget.
 //! Selected transport observations never stand in for retries, Provider or late usage charges.
 
-use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV3};
-use review_core::task::{
+use af_contracts::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV3};
+use af_contracts::task::{
     TaskAcceptanceV1, TaskExecutionV1, TaskLimitsV1, TaskPhaseV1, TaskResultV1,
 };
-use review_graph::{NodeOutcome, RunReport, SuppressionReason};
-use review_pipeline::{AttemptEvidence, RunVerdict};
-use review_store::{Cas, EventStore, Ledger, Verdict};
+use af_graph::{NodeOutcome, RunReport, SuppressionReason};
+use af_runtime::{AttemptEvidence, RunVerdict};
+use af_store::{Cas, EventStore, Ledger, Verdict};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,7 +91,7 @@ pub(super) fn prepare(
     let result = match &state.phase {
         TaskPhaseV1::Finished { result_id } => {
             let frame = cas.get_artifact(result_id).map_err(|e| e.to_string())?;
-            if frame.artifact_type != review_core::task::TASK_RESULT_V1 {
+            if frame.artifact_type != af_contracts::task::TASK_RESULT_V1 {
                 return Err("Finished Review Task has another result type".into());
             }
             let result: TaskResultV1 =
@@ -130,7 +130,7 @@ pub(super) fn prepare(
         .iter()
         .enumerate()
         .skip(start + 1)
-        .find(|(_, event)| event.event_type == review_core::EventType::RoundStartedV1)
+        .find(|(_, event)| event.event_type == af_contracts::EventType::RoundStartedV1)
         .map_or(events.len(), |(index, _)| index);
     let evidence = crate::latest_round_evidence(&events[..end], cas)?
         .ok_or("Review presentation has no durable Round evidence")?;
@@ -303,7 +303,7 @@ fn selected_totals(attempts: &[AttemptEvidence]) -> Result<Value, String> {
     )
 }
 
-fn manifest_value(manifest: &review_runner::ContextManifest) -> Value {
+fn manifest_value(manifest: &af_runner::ContextManifest) -> Value {
     let entries: Vec<_> = manifest.entries.iter().map(|entry| {
         let mut value = json!({"name":entry.name,"required_by":entry.required_by,
             "rendered_bytes":entry.rendered_bytes.to_string(),"estimated_tokens":entry.estimated_tokens.to_string()});
@@ -354,10 +354,10 @@ impl Presentation<'_> {
             .demand_views()
             .into_iter()
             .filter(|d| {
-                d.requirement == review_core::DemandRequirement::Required
+                d.requirement == af_contracts::DemandRequirement::Required
                     && matches!(
                         d.status,
-                        review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                        af_contracts::DemandStatus::Open | af_contracts::DemandStatus::Stale
                     )
             })
             .map(|d| d.demand_id)
@@ -525,9 +525,9 @@ fn human_lines(value: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use review_core::PortCardinality;
-    use review_core::task::{ArtifactInputV1, VerificationReserveV1};
-    use review_runner::{ContextManifest, TokenUsage};
+    use af_contracts::PortCardinality;
+    use af_contracts::task::{ArtifactInputV1, VerificationReserveV1};
+    use af_runner::{ContextManifest, TokenUsage};
     use std::sync::OnceLock;
 
     fn id() -> String {
@@ -707,7 +707,7 @@ mod tests {
                 }
                 .into(),
                 context_manifest: ContextManifest {
-                    entries: vec![review_runner::ContextEntry {
+                    entries: vec![af_runner::ContextEntry {
                         name: "worker_input".into(),
                         required_by: "typed ReviewerInputs document".into(),
                         artifact_id: Some(raw.clone()),

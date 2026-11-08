@@ -226,7 +226,7 @@ impl Fixture {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         let digest = format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(std::fs::read(&path).unwrap()))
+            af_contracts::hex::encode(&Sha256::digest(std::fs::read(&path).unwrap()))
         );
         let mut policy: Value =
             serde_json::from_slice(&std::fs::read(&self.policy).unwrap()).unwrap();
@@ -820,7 +820,7 @@ fn cancellation_requests_active_task_stop_and_retains_task_attempt_receipts() {
     assert!(pid.trim().parse::<u32>().unwrap() > 0);
     let key = format!(
         "sha256-{}-cancel.lock",
-        review_core::hex::encode(&Sha256::digest(b"active"))
+        af_contracts::hex::encode(&Sha256::digest(b"active"))
     );
     let handoff = std::fs::OpenOptions::new()
         .create(true)
@@ -978,7 +978,7 @@ impl Fixture {
         let production = std::fs::read(&executable).unwrap();
         let installed_digest = format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(&production))
+            af_contracts::hex::encode(&Sha256::digest(&production))
         );
         assert_eq!(
             String::from_utf8(installed.stdout).unwrap().trim(),
@@ -996,7 +996,7 @@ impl Fixture {
         std::fs::write(&executable, &bytes).unwrap();
         let digest = format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(&bytes))
+            af_contracts::hex::encode(&Sha256::digest(&bytes))
         );
         let mut policy: Value =
             serde_json::from_slice(&std::fs::read(&self.policy).unwrap()).unwrap();
@@ -1759,7 +1759,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     .unwrap();
     let fresh_id = format!(
         "scenario-{}",
-        review_core::hex::encode(&Sha256::digest(identity))
+        af_contracts::hex::encode(&Sha256::digest(identity))
     );
     let mut occupied = pinned["template"]["document"].clone();
     occupied["task_id"] = json!(fresh_id);
@@ -1793,7 +1793,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     .unwrap();
     let lost_id = format!(
         "scenario-{}",
-        review_core::hex::encode(&Sha256::digest(identity))
+        af_contracts::hex::encode(&Sha256::digest(identity))
     );
     let mut lost_document = pinned["template"]["document"].clone();
     lost_document["task_id"] = json!(lost_id);
@@ -1955,7 +1955,7 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
     assert_eq!(done["status"], "succeeded", "{done}");
     let receipt = &done["frames"]["root"]["steps"][1]["outputs"]["result"]["value"];
     assert_eq!(receipt["result"]["acceptance"], "satisfied");
-    let cas = review_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
     let revision = cas
         .get_artifact(receipt["revision_id"].as_str().unwrap())
         .unwrap();
@@ -2043,7 +2043,7 @@ fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_sa
         std::fs::write(f.machine.join("mode"), mode).unwrap();
         let digest = format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
+            af_contracts::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
         );
         let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
         policy["task_templates"] = json!([pinned["template_id"]]);
@@ -2237,7 +2237,7 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
         std::fs::write(f.machine.join("mode"), &mode).unwrap();
         let digest = format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
+            af_contracts::hex::encode(&Sha256::digest(std::fs::read(&adapter).unwrap()))
         );
         let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
         policy["task_templates"] = json!([pinned["template_id"]]);
@@ -2343,7 +2343,7 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
             (char::from(b'b' + repairs as u8).to_string()).repeat(40)
         );
         // Every repair has native captured completed-CI evidence and the predecessor source.
-        let cas = review_store::Cas::open_existing(task_state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
         let mut evidence_count = 0;
         for task in done["fresh_tasks"].as_object().unwrap().values() {
             let revision = cas
@@ -2373,7 +2373,7 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
                     .as_str()
                     .unwrap();
                 let source = cas.get_artifact(source_id).unwrap();
-                let (_, manifest) = review_source_git::task::read_snapshot(
+                let (_, manifest) = af_source_git::task::read_snapshot(
                     &cas,
                     source.payload["snapshot_id"].as_str().unwrap(),
                 )

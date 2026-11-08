@@ -1,6 +1,6 @@
 //! The CLI selects from exact shared definitions without creating a Planner invocation.
 use crate::task_cli;
-use review_core::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinitionV1;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Command;
@@ -59,7 +59,7 @@ fn pipeline(repo: &Path, catalog: &mut toml::Value, pipeline: &PipelineDefinitio
     catalog["packages"].as_table_mut().unwrap().insert(
         pipeline.name.clone(),
         toml::Value::try_from(json!({"version":"1.0.0","path":path,
-            "digest":review_config::lock::package_digest(&pipeline.name, &directory).unwrap()}))
+            "digest":af_pipeline_config::lock::package_digest(&pipeline.name, &directory).unwrap()}))
         .unwrap(),
     );
 }
@@ -124,7 +124,7 @@ fn incompatible_small_selects_existing_heavy_and_resume_ignores_edited_catalog()
         planned["graph"]["calls"]["root"]["pipeline"],
         "fixture/heavy"
     );
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let revision = cas
         .get_json(planned["revision_id"].as_str().unwrap())
         .unwrap();
@@ -209,25 +209,26 @@ fn selection_refusals_are_persisted_distinct_and_dispatch_nothing() {
             }
             "missing_provider" | "missing_tool" => {
                 let path = repo.join(".af/task-packages/fixture/implementer");
-                let mut worker: review_config::task::catalog::TaskWorkerManifest =
+                let mut worker: af_pipeline_config::task::catalog::TaskWorkerManifest =
                     toml::from_str(&std::fs::read_to_string(path.join("worker.toml")).unwrap())
                         .unwrap();
                 if case == "missing_provider" {
                     worker.signature.attempt.as_mut().unwrap().tokens = 100;
-                    worker.runner = review_config::task::catalog::TaskWorkerRunner::Model {
+                    worker.runner = af_pipeline_config::task::catalog::TaskWorkerRunner::Model {
                         provider_kind: "claude".into(),
                         model: "claude-fixture-1".into(),
                         effort: "high".into(),
                     };
-                } else if let review_config::task::catalog::TaskWorkerRunner::Command { command } =
-                    &mut worker.runner
+                } else if let af_pipeline_config::task::catalog::TaskWorkerRunner::Command {
+                    command,
+                } = &mut worker.runner
                 {
                     command.program = "af-no-such-tool-6cfdf0".into();
                 }
                 std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap())
                     .unwrap();
                 cat["packages"]["fixture/implementer"]["digest"] = toml::Value::String(
-                    review_config::lock::package_digest("fixture/implementer", &path).unwrap(),
+                    af_pipeline_config::lock::package_digest("fixture/implementer", &path).unwrap(),
                 );
                 "unavailable"
             }
@@ -267,10 +268,10 @@ fn selection_refusals_are_persisted_distinct_and_dispatch_nothing() {
         );
         assert_eq!(result["attempts"], 0);
         assert_eq!(result["chargeable_tokens"], 0);
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         cas.verify(result["selection_id"].as_str().unwrap())
             .unwrap();
-        let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         assert!(
             store.task_ids(&cas).unwrap().is_empty(),
             "{case} opened execution state"

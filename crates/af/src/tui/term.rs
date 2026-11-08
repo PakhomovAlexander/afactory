@@ -218,7 +218,7 @@ impl Host for Session {
             // A fast command may have ended before its group could take the foreground: its
             // group is gone, and what it did is its exit, not a failed hand-off. The browser
             // never gave the foreground away, so nothing is taken back.
-            match review_process::reap::wait_pid(pid, WaitPidFlag::empty()) {
+            match af_process::reap::wait_pid(pid, WaitPidFlag::empty()) {
                 Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
                 Ok(WaitStatus::Signaled(_, signal, _)) => {
                     return Ok(Exit::Signal(signal as i32));
@@ -328,18 +328,18 @@ fn from_the_background<T>(call: impl FnOnce() -> T) -> Result<T, Errno> {
 
 /// Wait for a handed-off child to end. A child stopped by `<C-z>` is continued: the browser
 /// has no job control, and a stopped command would hold the terminal with nobody to resume it.
-/// It is reaped through `review_process::reap`, polling, as every reap of the workspace is.
+/// It is reaped through `af_process::reap`, polling, as every reap of the workspace is.
 fn wait_for(pid: Pid) -> Result<Exit, String> {
     let mut attempt = 0;
     loop {
-        match review_process::reap::wait_pid(pid, WaitPidFlag::WUNTRACED) {
+        match af_process::reap::wait_pid(pid, WaitPidFlag::WUNTRACED) {
             Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
             Ok(WaitStatus::Signaled(_, signal, _)) => return Ok(Exit::Signal(signal as i32)),
             Ok(WaitStatus::Stopped(..)) => {
                 let _ = signal::killpg(pid, Signal::SIGCONT);
             }
             Ok(WaitStatus::StillAlive) => {
-                std::thread::sleep(review_process::reap::poll_delay(attempt));
+                std::thread::sleep(af_process::reap::poll_delay(attempt));
                 attempt = attempt.saturating_add(1);
             }
             Ok(_) | Err(Errno::EINTR) => {}

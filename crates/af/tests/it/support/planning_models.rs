@@ -100,7 +100,7 @@ pub fn pin(directory: &Path, local: &str) -> toml::Value {
         toml::from_str(&std::fs::read_to_string(target.join("worker.toml")).unwrap()).unwrap();
     toml::Value::try_from(serde_json::json!({
         "version": worker["version"].as_str().unwrap(),
-        "digest": review_config::lock::package_digest(local, &target).unwrap(),
+        "digest": af_pipeline_config::lock::package_digest(local, &target).unwrap(),
         "path": local,
     }))
     .unwrap()

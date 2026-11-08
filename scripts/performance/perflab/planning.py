@@ -7,9 +7,9 @@ rule; `freeze` is a pure function of the validated suite and those identities.
 import hashlib
 import os
 
-from . import contracts, gitrefs, images, limits, schedule, stats
+from . import contracts, git_refs, images, limits, schedule, stats
 from . import suite as suite_module
-from .gitrefs import Unavailable
+from .git_refs import Unavailable
 from .values import (ContractError, canonical_digest, format_rational, parse_decimal,
                      require, sha256_bytes)
 
@@ -23,15 +23,15 @@ FIXTURE_EXCLUDE = (ACTIVATION_PATH, "fixtures/performance/kernel-measure")
 # trace recorder and the calibration loop are instrument code, never an optimization surface
 # (ADR-0185); the product code that calls them stays free.
 INSTRUMENT_HELPER_PATHS = (
-    "crates/review-core/src/perf_calibration.rs",
-    "crates/review-core/src/perf_trace.rs",
+    "crates/af-contracts/src/perf_calibration.rs",
+    "crates/af-contracts/src/perf_trace.rs",
 )
 # Candidate changes under these paths are labeled harness_changed; the authority measures.
 HARNESS_PATHS = INSTRUMENT_PATHS + FIXTURE_PATHS + INSTRUMENT_HELPER_PATHS + (
-    "crates/review-pipeline/examples/perf-probe",
-    "crates/review-pipeline/examples/perf-probe.rs",
-    "crates/review-process/examples/perf-supervisor",
-    "crates/review-process/examples/perf-supervisor.rs",
+    "crates/af-runtime/examples/perf-probe",
+    "crates/af-runtime/examples/perf-probe.rs",
+    "crates/af-process/examples/perf-supervisor",
+    "crates/af-process/examples/perf-supervisor.rs",
     ".github/workflows/performance.yml",
     ".github/workflows/performance-release.yml",
     ".github/workflows/performance-activation.yml",
@@ -138,7 +138,7 @@ def resolve_trigger(git, request):
     elif trigger == "main_push":
         pushed = git.resolve(request.head, "--head")
         ids.candidate = pushed
-        ids.baseline = gitrefs.first_parent(git, pushed, "pushed commit")
+        ids.baseline = git_refs.first_parent(git, pushed, "pushed commit")
         _given_matches(git, request.base, ids.baseline, "--base")
         ids.control = ids.baseline
         if request.control is not None:
@@ -146,14 +146,14 @@ def resolve_trigger(git, request):
         ids.trigger = {"kind": "main_push", "pushed_sha": pushed}
     elif trigger == "nightly":
         main = git.resolve(request.head, "--head")
-        tag, sha = gitrefs.nightly_baseline(git, main)
+        tag, sha = git_refs.nightly_baseline(git, main)
         _given_matches(git, request.base, sha, "--base")
         ids.candidate, ids.baseline, ids.control = main, sha, main
         if request.control is not None:
             _given_matches(git, request.control, main, "--control")
         ids.trigger = {"kind": "nightly", "main_sha": main, "baseline_tag": tag}
     elif trigger == "release":
-        tag_sha, prerelease, base_tag, base_sha = gitrefs.release_baseline(git, request.head)
+        tag_sha, prerelease, base_tag, base_sha = git_refs.release_baseline(git, request.head)
         require(git.resolve(request.head, "--head") == tag_sha,
                 "--head: the release tag resolves inconsistently")
         _given_matches(git, request.base, base_sha, "--base")

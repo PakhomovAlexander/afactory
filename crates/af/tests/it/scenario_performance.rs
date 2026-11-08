@@ -1,6 +1,6 @@
 //! The shipped production loop, with real model bindings and deterministic fake Provider IO.
 use super::*;
-use review_store::Cas;
+use af_store::Cas;
 use std::os::unix::fs::MetadataExt;
 
 fn executable_digest(path: &Path) -> String {
@@ -15,7 +15,7 @@ fn executable_digest(path: &Path) -> String {
         }
         digest.update(&buffer[..count]);
     }
-    format!("sha256:{}", review_core::hex::encode(&digest.finalize()))
+    format!("sha256:{}", af_contracts::hex::encode(&digest.finalize()))
 }
 
 // Installed native readers are bounded at 256 MiB. Linux debug builds can exceed
@@ -402,7 +402,7 @@ print(json.dumps(o))
         );
         std::fs::write(&adapter, &text).unwrap();
         std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
-        policy["adapters"] = json!({"lab":{"executable":adapter,"digest":format!("sha256:{}", review_core::hex::encode(&Sha256::digest(text.as_bytes()))),"operations":["observe","experiment_submit_v1"],"destinations":["native:claw"],"max_wall_ms":30000,"max_output_bytes":65536}});
+        policy["adapters"] = json!({"lab":{"executable":adapter,"digest":format!("sha256:{}", af_contracts::hex::encode(&Sha256::digest(text.as_bytes()))),"operations":["observe","experiment_submit_v1"],"destinations":["native:claw"],"max_wall_ms":30000,"max_output_bytes":65536}});
         write(&self.f.policy, &policy);
         let mut proposal: Value = serde_json::from_slice(
             &std::fs::read(workspace().join("fixtures/scenarios/performance-native-roadmap.json"))
@@ -989,7 +989,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         // Exercise the shipped Python/native bridge, including its distinct request and CAS
         // digest domains. Replacing this bridge with a fake capture would miss that mismatch.
         let output = std::process::Command::new("/usr/bin/python3").arg("-I").arg("-c")
-            .arg("import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import scenariosource; from perflab.values import canonical_digest; c=json.loads(pathlib.Path(sys.argv[2]).read_text()); p=sys.argv[3]; r=json.loads((pathlib.Path(p)/'source-request.json').read_text()); print(json.dumps(scenariosource.capture(c,p,canonical_digest(r))))")
+            .arg("import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import scenario_source; from perflab.values import canonical_digest; c=json.loads(pathlib.Path(sys.argv[2]).read_text()); p=sys.argv[3]; r=json.loads((pathlib.Path(p)/'source-request.json').read_text()); print(json.dumps(scenario_source.capture(c,p,canonical_digest(r))))")
             .arg(workspace().join("scripts/performance")).arg(&source_config).arg(&source_intent)
             .output().unwrap();
         assert!(
@@ -1378,7 +1378,7 @@ fn native_prior_packet(root: &Path) -> (PathBuf, PathBuf, Value, Value) {
 import copy, json, os, sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv[1])
-from perflab import scenarioadapter, researchevidence
+from perflab import scenario_adapter, research_evidence
 from perflab.values import canonical_digest
 root, binary, digest, repo, state, index_path = sys.argv[2:]
 os.mkdir(root, 0o700)
@@ -1386,7 +1386,7 @@ spool, evidence = root+'/spool', root+'/evidence'
 os.mkdir(spool, 0o700); os.mkdir(evidence, 0o700)
 # Only observation is under test: no executor configuration or experiment is needed.
 # Retain the real writer, capacity checks, native reader and packet bounds.
-a = scenarioadapter.Adapter.__new__(scenarioadapter.Adapter)
+a = scenario_adapter.Adapter.__new__(scenario_adapter.Adapter)
 a.root = spool
 a.native_config = dict(root=root, max_bytes=1<<30)
 a.config = dict(root=spool, evidence_root=evidence, max_bytes=1<<30,
@@ -1395,8 +1395,8 @@ a.config = dict(root=spool, evidence_root=evidence, max_bytes=1<<30,
     evidence_max_items=32, evidence_max_bytes=24576)
 index = json.load(open(index_path))
 def observe(records):
-    current = researchevidence.rebuild(records)
-    a.config['evidence_index'] = researchevidence.retain(evidence, current, 'evidence-index')
+    current = research_evidence.rebuild(records)
+    a.config['evidence_index'] = research_evidence.retain(evidence, current, 'evidence-index')
     a.config['evidence_index_digest'] = canonical_digest(current)
     text = lambda v: dict(type='text', value=v)
     return a.request(dict(schema='af/scenario-adapter-request@4', method='observe',
@@ -1448,7 +1448,7 @@ fn native_findings_reach_bounded_research_packet_and_fabricated_artifacts_are_re
     let (fabricated, _) = cas
         .put_artifact(
             "af/TaskReviewFindings@1",
-            review_core::Producer::KernelOperation {
+            af_contracts::Producer::KernelOperation {
                 run_id: "fabricated".into(),
                 node_id: None,
                 operation_id: "fabricated".into(),
@@ -1480,7 +1480,7 @@ fn native_findings_reach_bounded_research_packet_and_fabricated_artifacts_are_re
     let (adoption, _) = cas
         .put_artifact(
             "af/OptimizationAdoptionObservation@1",
-            review_core::Producer::KernelOperation {
+            af_contracts::Producer::KernelOperation {
                 run_id: "fabricated".into(),
                 node_id: None,
                 operation_id: "fabricated".into(),
@@ -1591,7 +1591,7 @@ fn performance_publication_proof_and_installed_adapter(
     let revision = cas
         .get_artifact(candidate["revision_id"].as_str().unwrap())
         .unwrap();
-    let baseline = review_source_git::task::read_snapshot(
+    let baseline = af_source_git::task::read_snapshot(
         &cas,
         revision.payload["inputs"]["source"]["snapshot_id"]
             .as_str()

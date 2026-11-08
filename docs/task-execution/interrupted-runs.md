@@ -152,10 +152,10 @@ top-level `phase` keeps the phase the Task recorded. A node past its allowance m
 
 | Part | Location |
 |---|---|
-| Heartbeat cadence, the lease and writer loss | `crates/review-pipeline/src/task/lease.rs` |
-| Settling an interrupted Attempt as abandoned | `crates/review-pipeline/src/task.rs` |
-| Settling a lost writer's Attempt, the cause and the recovery count | `crates/review-store/src/store/task/execution.rs` |
-| Attempt limits, recovery allowance and the dispatch guards' refusals | `crates/review-attempt/src/task_budget.rs` |
-| The resume's first line, the wait and the abandoned view | `crates/af/src/task_execution/recovery.rs` |
+| Heartbeat cadence, the lease and writer loss | `crates/af-runtime/src/task/lease.rs` |
+| Settling an interrupted Attempt as abandoned | `crates/af-runtime/src/task.rs` |
+| Settling a lost writer's Attempt, the cause and the recovery count | `crates/af-store/src/store/task/execution.rs` |
+| Attempt limits, recovery allowance and the dispatch guards' refusals | `crates/af-attempt/src/task_budget.rs` |
+| The resume's first line, the wait and the abandoned view | `crates/af/src/task_commands/recovery.rs` |
 | The power assertion | `crates/af/src/power.rs` |
-| Tests | `crates/af/tests/it/task_recovery.rs`, `crates/review-store/src/store/task/tests/recovery.rs`, `crates/review-pipeline/tests/it/task_runtime/control.rs` |
+| Tests | `crates/af/tests/it/task_recovery.rs`, `crates/af-store/src/store/task/tests/recovery.rs`, `crates/af-runtime/tests/it/task_runtime/control.rs` |

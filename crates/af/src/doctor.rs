@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::selfmgmt;
+use crate::self_management;
 
 /// The `--json` document's kind.
 pub(crate) const SCHEMA: &str = "af/doctor@3";
@@ -465,7 +465,7 @@ fn layout(
 }
 
 fn checks(repo: &Path) -> Vec<Check> {
-    let installation = selfmgmt::installation();
+    let installation = self_management::installation();
     let mut registry = crate::providers::read_registry_entries();
     registry.registrable = crate::providers::registrable_logins();
     // The machine's own configuration, which `af self` and `af storage` read before anything
@@ -730,8 +730,8 @@ fn withhold(checks: &mut [Check], blockers: &[(Reads, &Problem)]) {
 // ------------------------------------------------------------------------------------------
 // binary · path · shell · update
 
-fn binary(installation: &Result<selfmgmt::Installation, String>) -> Check {
-    let version = selfmgmt::VERSION;
+fn binary(installation: &Result<self_management::Installation, String>) -> Check {
+    let version = self_management::VERSION;
     let installation = match installation {
         Ok(installation) => installation,
         Err(error) => {
@@ -797,7 +797,7 @@ fn binary(installation: &Result<selfmgmt::Installation, String>) -> Check {
     }
 }
 
-fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
+fn path(installation: &Result<self_management::Installation, String>) -> Check {
     let Ok(installation) = installation else {
         return Check::warn(
             "path",
@@ -893,7 +893,7 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
             format!(
                 "{} self install {}",
                 install_program(installation, fish_shell()).unwrap_or_else(|| "af".to_owned()),
-                selfmgmt::VERSION
+                self_management::VERSION
             ),
         ),
     }
@@ -906,13 +906,13 @@ fn fish_shell() -> bool {
         .as_deref()
         .and_then(|shell| Path::new(shell).file_name())
         .and_then(|name| name.to_str())
-        .and_then(selfmgmt::shell_named)
+        .and_then(self_management::shell_named)
         == Some(crate::cli::Shell::Fish)
 }
 
 /// The program an install fix runs: the `af` on PATH, or this very binary by its path, quoted
 /// for fish when `fish`, else for sh; `None` when neither can be spelled on one line.
-fn install_program(installation: &selfmgmt::Installation, fish: bool) -> Option<String> {
+fn install_program(installation: &self_management::Installation, fish: bool) -> Option<String> {
     if on_path("af") {
         return Some("af".to_owned());
     }
@@ -936,19 +936,19 @@ fn install_program(installation: &selfmgmt::Installation, fish: bool) -> Option<
 /// links the default, and then runs the line; elsewhere there is no fix and the hint orders the
 /// steps. The install runs the `af` on PATH, or this very binary by its path when none is.
 fn path_before_link(
-    installation: &selfmgmt::Installation,
+    installation: &self_management::Installation,
     dir: &Path,
     shell: Option<&str>,
     fix: Option<String>,
     hint: Option<String>,
     detail: String,
 ) -> Check {
-    let version = selfmgmt::VERSION;
+    let version = self_management::VERSION;
     let bin = installation.bin.display();
     let fish = shell
         .and_then(|shell| Path::new(shell).file_name())
         .and_then(|name| name.to_str())
-        .and_then(selfmgmt::shell_named)
+        .and_then(self_management::shell_named)
         == Some(crate::cli::Shell::Fish);
     let install = install_program(installation, fish)
         .map(|program| format!("{program} self install {version}"));
@@ -1003,12 +1003,12 @@ pub(crate) fn path_fix(
             Some(format!(
                 "no PATH entry can hold {shown}, which has a `:` or a control character; set \
                  XDG_BIN_HOME to a directory without one, then run af self install {}",
-                selfmgmt::VERSION
+                self_management::VERSION
             )),
         );
     };
     let line = |file: &str| Some(format!("add that line to {file}, then open a new shell"));
-    match (name, name.and_then(selfmgmt::shell_named)) {
+    match (name, name.and_then(self_management::shell_named)) {
         (_, Some(crate::cli::Shell::Fish)) => {
             let flag = if front { "--move " } else { "" };
             (
@@ -1291,7 +1291,7 @@ fn shell() -> Check {
         .as_deref()
         .and_then(|shell| Path::new(shell).file_name())
         .and_then(|name| name.to_str())
-        .and_then(selfmgmt::shell_named);
+        .and_then(self_management::shell_named);
     let Some(shell) = shell else {
         return Check::warn(
             "shell",
@@ -1303,7 +1303,10 @@ fn shell() -> Check {
         )
         .hint("SHELL: the shell you use, one of bash, zsh, fish, elvish, powershell");
     };
-    let (completion, man) = match (selfmgmt::completion_target(shell), selfmgmt::man_dir()) {
+    let (completion, man) = match (
+        self_management::completion_target(shell),
+        self_management::man_dir(),
+    ) {
         (Ok((completion, _)), Ok(man)) => (completion, man),
         (Err(error), _) | (_, Err(error)) => {
             return Check::warn(
@@ -1348,7 +1351,7 @@ fn shell() -> Check {
 }
 
 fn update(machine: Option<&Problem>) -> Check {
-    let facts = match selfmgmt::update_facts() {
+    let facts = match self_management::update_facts() {
         Ok(facts) => facts,
         Err(error) => {
             return Check::advise(
@@ -1381,7 +1384,7 @@ fn update(machine: Option<&Problem>) -> Check {
     let newer = facts
         .latest
         .as_deref()
-        .filter(|latest| selfmgmt::latest_is_newer(latest));
+        .filter(|latest| self_management::latest_is_newer(latest));
     // A stalled check and a failed one are said the way `af self status` says them, with the
     // same fix.
     if let Some((said, fix)) = &facts.stalled {
@@ -1390,7 +1393,7 @@ fn update(machine: Option<&Problem>) -> Check {
     // A release source that is no directory stops every release check, install and update the
     // same way, `af self update --check` and `af self status --refresh` among them: no `af`
     // command clears it, so the hint says what to change (#331 D1).
-    if let Some(root) = selfmgmt::release_source_override()
+    if let Some(root) = self_management::release_source_override()
         && !root.is_dir()
     {
         return Check::advise(
@@ -1421,9 +1424,9 @@ fn update(machine: Option<&Problem>) -> Check {
             "update",
             format!(
                 "af {latest} is available (running {}); {checked}; {policy_text}",
-                selfmgmt::VERSION
+                self_management::VERSION
             ),
-            selfmgmt::latest_update_command(latest),
+            self_management::latest_update_command(latest),
         );
     }
     if let Some(off) = &facts.off {
@@ -1432,7 +1435,7 @@ fn update(machine: Option<&Problem>) -> Check {
             format!("no release check runs ({off}); {checked}; {policy_text}"),
         );
     }
-    match selfmgmt::release_source_reachability(policy) {
+    match self_management::release_source_reachability(policy) {
         Ok(reach) => Check::ok("update", format!("{checked}; {policy_text}; {reach}")),
         Err(why) => {
             let detail = format!("{checked}; {policy_text}; {why}");
@@ -1672,7 +1675,7 @@ fn bounded_text(path: &Path) -> String {
 
 /// `git --version` as (major, minor); `None` when git is missing or says something else.
 fn git_version() -> Option<(u32, u32)> {
-    let output = review_process::reap::output(
+    let output = af_process::reap::output(
         std::process::Command::new("git")
             .arg("--version")
             .stdin(std::process::Stdio::null()),
@@ -1905,7 +1908,7 @@ fn setup_login(kind: &str) -> String {
 }
 
 fn storage(
-    installation: &Result<selfmgmt::Installation, String>,
+    installation: &Result<self_management::Installation, String>,
     machine: Option<&Problem>,
 ) -> Check {
     let policy = match crate::storage::policy() {
@@ -2045,11 +2048,11 @@ fn indexed_among(
 }
 
 /// Whether `mdutil -s PATH` reports indexing enabled, within [`MDUTIL_TIMEOUT`], supervised and
-/// reaped by `review-process` (ADR-0026).
+/// reaped by `af-process` (ADR-0026).
 fn mdutil_says_indexed(mdutil: &Path, path: &Path) -> bool {
     let mut command = std::process::Command::new(mdutil);
     command.arg("-s").arg(path);
-    review_process::run_supervised(&mut command, None, MDUTIL_TIMEOUT)
+    af_process::run_supervised(&mut command, None, MDUTIL_TIMEOUT)
         .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("Indexing enabled"))
 }
 
@@ -2148,7 +2151,7 @@ fn project(
     let mut parts = vec![format!("{repo}/.af validates")];
     // A failure's fix comes before a warning's.
     let (mut fails, mut warns) = (Fixes::default(), Fixes::default());
-    match selfmgmt::pin_here(toplevel) {
+    match self_management::pin_here(toplevel) {
         Ok(None) => parts.push("the lock pins no af release".into()),
         Ok(Some(pin)) => {
             parts.push(format!("{} pins af {}", pin.lock.display(), pin.version));
@@ -2298,7 +2301,7 @@ mod tests {
         std::fs::create_dir_all(af.join("pipelines")).unwrap();
         let project = format!(
             "version = 1\n[project]\nname = \"x\"\nmin_af = \"{}\"\n[defaults]\npipeline = \"review\"\n",
-            selfmgmt::VERSION
+            self_management::VERSION
         );
         std::fs::write(af.join("af.toml"), &project).unwrap();
         std::fs::write(af.join("af.lock"), "version = 1\nbroken = [\n").unwrap();
@@ -2689,7 +2692,7 @@ esac
     fn the_path_fix_installs_first_when_the_default_link_is_absent() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("a long home/.local/bin");
-        let installation = selfmgmt::Installation {
+        let installation = self_management::Installation {
             running: Some(root.path().join("downloads/af")),
             receipt: None,
             receipt_path: root.path().join("receipt.toml"),
@@ -2698,7 +2701,7 @@ esac
             default_status: "absent",
             abandoned_stagings: Vec::new(),
         };
-        let version = selfmgmt::VERSION;
+        let version = self_management::VERSION;
         let (line, hint) = path_fix(&dir, Some("/bin/zsh"), false);
         let detail = "the default link does not exist yet".to_owned();
         let check = path_before_link(
@@ -2796,7 +2799,7 @@ esac
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = program.to_str().unwrap();
-        let version = selfmgmt::VERSION;
+        let version = self_management::VERSION;
         let install = format!("{} self install {version}", shell_words::quote(path));
         let dir = root.path().join("bin");
         let line = sh_export(dir.to_str().unwrap());
@@ -2872,7 +2875,7 @@ esac
     #[test]
     fn an_install_fix_with_a_backslash_in_its_path_runs_as_printed_in_fish_and_sh() {
         let root = tempfile::tempdir().unwrap();
-        let version = selfmgmt::VERSION;
+        let version = self_management::VERSION;
         let fish = which("fish");
         let shells = [
             (true, fish.as_deref().and_then(Path::to_str)),

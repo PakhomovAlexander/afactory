@@ -39,7 +39,7 @@
       "since": "2026-11-01",
       "state": "flaky"
     },
-    "review-source-git::it capture::an_index_change_alone_invalidates_a_pass": {
+    "af-source-git::it capture::an_index_change_alone_invalidates_a_pass": {
       "evidence": [
         "light-459-verify-2",
         "light-466-q1-2",

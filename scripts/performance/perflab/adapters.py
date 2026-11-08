@@ -13,14 +13,14 @@ before any claim or build; the compile still chooses among the adapters at the b
 import os
 import stat
 
-from . import contracts, gitrefs, tomlfile
+from . import contracts, git_refs, toml_file
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 ADAPTERS_PATH = "fixtures/performance/adapters.toml"
 
 
 def load_bytes(data, where=ADAPTERS_PATH):
-    doc = tomlfile.loads(data, where)
+    doc = toml_file.loads(data, where)
     require(doc.get("schema") == contracts.ADAPTERS_SCHEMA,
             where + ".schema: expected %s, found %r" % (contracts.ADAPTERS_SCHEMA,
                                                          doc.get("schema")))
@@ -29,7 +29,7 @@ def load_bytes(data, where=ADAPTERS_PATH):
 
 def load(path):
     with open(path, "rb") as stream:
-        return load_bytes(stream.read(tomlfile.MAX_TOML_BYTES + 1), path)
+        return load_bytes(stream.read(toml_file.MAX_TOML_BYTES + 1), path)
 
 
 def native_contracts(suite_doc):
@@ -62,9 +62,9 @@ def coverage(doc, version, needed):
     """(adapter ID, None) of the first adapter by priority whose declared releases include AF
     `version` and that serves every contract of `needed` ({contract: what runs it}), or
     (None, why not)."""
-    key = gitrefs.version_key(gitrefs.parse_version(version))
+    key = git_refs.version_key(git_refs.parse_version(version))
     covering = [(adapter_id, entry) for adapter_id, entry in ordered(doc)
-                if key >= gitrefs.version_key(gitrefs.parse_version(entry["min_version"]))]
+                if key >= git_refs.version_key(git_refs.parse_version(entry["min_version"]))]
     if not covering:
         return None, "no declared native probe adapter covers AF %s" % version
     for adapter_id, entry in covering:

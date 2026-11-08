@@ -4,17 +4,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use review_config::Definition;
-use review_config::lock::{Lockfile, MAX_AUTHORITY_FILE_BYTES, Registry};
-use review_core::{
+use af_contracts::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
     RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1,
 };
-use review_pipeline::RoundAuthority;
-use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
-use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
-use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
+use af_pipeline_config::Definition;
+use af_pipeline_config::lock::{Lockfile, MAX_AUTHORITY_FILE_BYTES, Registry};
+use af_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
+use af_runtime::RoundAuthority;
+use af_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
+use af_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
 use crate::{Options, campaign_run_id};
 
@@ -23,7 +23,7 @@ pub(crate) use task_round::{prepare_next_round, prepare_recorded_round};
 
 pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
     configured.unwrap_or(Duration::from_secs(
-        review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS,
+        af_source_git::DEFAULT_GIT_TIMEOUT_SECONDS,
     ))
 }
 
@@ -34,7 +34,7 @@ pub(super) struct PinnedPipeline {
     pub path: String,
     pub bytes: Vec<u8>,
     pub definition: Definition,
-    pub loaded: review_config::Loaded,
+    pub loaded: af_pipeline_config::Loaded,
 }
 
 fn load_pinned_pipeline(
@@ -68,12 +68,12 @@ fn load_pinned_pipeline(
 /// is the Base: the error is then `base_refusal`, the refusal a diff pipeline without a Base
 /// gets (#363, ADR-0259).
 fn route_or_base_refusal(
-    project: &crate::project::ProjectFile,
+    project: &crate::project_policy::ProjectFile,
     changed_paths: &[String],
     has_base: bool,
     load: impl Fn(&str) -> Result<PinnedPipeline, String>,
     base_refusal: impl FnOnce() -> String,
-) -> Result<crate::project::RouteDecision, String> {
+) -> Result<crate::project_policy::RouteDecision, String> {
     project.select_route(changed_paths).map_err(|error| {
         let routes = project.route_pipeline_paths();
         let needs_base = !has_base
@@ -89,11 +89,11 @@ fn route_or_base_refusal(
 fn captured_project(
     manifest: &Manifest,
     cas: &Cas,
-) -> Result<(Vec<u8>, crate::project::ProjectFile), String> {
+) -> Result<(Vec<u8>, crate::project_policy::ProjectFile), String> {
     let bytes = authority_bytes(manifest, cas, ".af/af.toml")?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
-    let project = crate::project::ProjectFile::parse(text)?;
+    let project = crate::project_policy::ProjectFile::parse(text)?;
     Ok((bytes, project))
 }
 
@@ -161,8 +161,8 @@ fn capture_candidate(
 /// reports `fits`, run refuses before admission.
 fn apply_oversized_policy(
     cas: &Cas,
-    project: &crate::project::ProjectFile,
-    route: &mut crate::project::RouteDecision,
+    project: &crate::project_policy::ProjectFile,
+    route: &mut crate::project_policy::RouteDecision,
     pipeline: PinnedPipeline,
     change_set: Option<&ChangeSetV1>,
     focus: Option<&str>,
@@ -176,7 +176,7 @@ fn apply_oversized_policy(
     let Some(alternative) = project.oversized_pipeline() else {
         return Ok((pipeline, sizes));
     };
-    let alternative_path = crate::project::pipeline_path_for(alternative);
+    let alternative_path = crate::project_policy::pipeline_path_for(alternative);
     if alternative_path == pipeline.path {
         return Ok((pipeline, sizes));
     }
@@ -221,7 +221,7 @@ pub(super) fn resolve_plan(
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{AUTHORITY_LOCK}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
+    if let Some(note) = crate::project_policy::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
         eprintln!("af review: note: {note}");
     }
     let (project_bytes, project) = captured_project(&policy.manifest, cas)?;
@@ -278,7 +278,7 @@ pub(super) fn resolve_plan(
     };
     let load = |path: &str| load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, path);
     let mut route = if options.pipeline_explicit {
-        crate::project::RouteDecision::explicit(&requested_path)
+        crate::project_policy::RouteDecision::explicit(&requested_path)
     } else {
         route_or_base_refusal(&project, &changed_paths, base.is_some(), load, base_refusal)?
     };
@@ -360,9 +360,9 @@ pub(super) struct ResolvedPlan {
     pub pipeline_path: String,
     pub topology: serde_json::Value,
     pub definition: Definition,
-    pub loaded: review_config::Loaded,
-    pub change_set: Option<review_core::ChangeSetV1>,
-    pub route: crate::project::RouteDecision,
+    pub loaded: af_pipeline_config::Loaded,
+    pub change_set: Option<af_contracts::ChangeSetV1>,
+    pub route: crate::project_policy::RouteDecision,
     pub input_sizes: Vec<WorkerInputSize>,
 }
 
@@ -419,7 +419,7 @@ pub(super) fn plan(
         .collect::<Vec<_>>();
     let convergence = options.mode.convergence(loaded.convergence());
     let input_sizes = &plan.input_sizes;
-    let reservations = crate::project::static_reservations(loaded)
+    let reservations = crate::project_policy::static_reservations(loaded)
         .into_iter()
         .map(|reservation| {
             let mut value = serde_json::to_value(&reservation).expect("a reservation serializes");
@@ -448,7 +448,7 @@ pub(super) fn plan(
                 "gates": checks,
                 "budgets": loaded.budgets(),
                 "reservations": reservations,
-                "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
+                "max_simultaneous_reservation": crate::project_policy::max_simultaneous_reservation(loaded)?,
                 "inputs_fit": input_sizes.iter().all(|size| size.fits),
                 "convergence": {
                     "mode": options.mode.as_str(),
@@ -466,7 +466,7 @@ pub(super) fn plan(
 }
 
 /// The model Workers of a loaded pipeline and the Provider kind each runs, in node order.
-pub(super) fn model_workers(loaded: &review_config::Loaded) -> Vec<(String, String)> {
+pub(super) fn model_workers(loaded: &af_pipeline_config::Loaded) -> Vec<(String, String)> {
     loaded
         .packages()
         .iter()
@@ -486,7 +486,7 @@ pub(super) fn model_workers(loaded: &review_config::Loaded) -> Vec<(String, Stri
 /// the Worker runs. Reads the registry only; no Provider CLI starts.
 pub(super) fn check_provider_bindings(
     options: &Options,
-    loaded: &review_config::Loaded,
+    loaded: &af_pipeline_config::Loaded,
     pipeline_path: &str,
 ) -> Result<(), String> {
     if options.provider_bindings.is_empty() {
@@ -555,7 +555,10 @@ pub(super) fn check_provider_bindings(
 
 /// The `model` line of every captured Model Worker, in node order: the static rules first, over
 /// every reviewer before any catalog is read, then each bound Provider's catalog, read once.
-fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<String>, String> {
+fn model_lines(
+    options: &Options,
+    loaded: &af_pipeline_config::Loaded,
+) -> Result<Vec<String>, String> {
     let mut settings = Vec::new();
     for (node, package) in loaded.packages() {
         let runner = Path::new(&package.runner.program)
@@ -565,7 +568,7 @@ fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<
         if !matches!(runner.as_str(), "claude" | "codex" | "pi") {
             continue;
         }
-        let manifest: review_config::lock::PackageManifest = toml::from_str(
+        let manifest: af_pipeline_config::lock::PackageManifest = toml::from_str(
             std::str::from_utf8(
                 package
                     .file("reviewer.toml")
@@ -574,7 +577,7 @@ fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let read = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
+        let read = af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest)
             .map_err(|e| e.to_string())?;
         settings.push((node.clone(), runner, read));
     }
@@ -602,7 +605,7 @@ fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<
     let mut lines = Vec::new();
     for (binding, verdict) in crate::model_check::verdicts(&bindings)? {
         let text = crate::model_check::verdict_text(binding, &verdict)?;
-        if matches!(verdict, review_runner_claude::models::Verdict::Refused(_)) {
+        if matches!(verdict, af_runner::models::Verdict::Refused(_)) {
             return Err(format!(
                 "{}: {}",
                 binding.owner,
@@ -617,15 +620,15 @@ fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<
 /// Where a first Attempt's Change Set comes from: the plan's freshly computed value, a Round's
 /// validated one, or nothing for a whole-tree Subject.
 pub(super) enum ChangeSetSource<'a> {
-    Value(&'a review_core::ChangeSetV1),
-    Resolved(&'a std::sync::Arc<review_store::ResolvedChangeSet>),
+    Value(&'a af_contracts::ChangeSetV1),
+    Resolved(&'a std::sync::Arc<af_store::ResolvedChangeSet>),
     None,
 }
 
 /// One Worker's first-Attempt input, composed by the same function its adapter calls at
 /// dispatch, plus what a real Attempt adds that cannot be known before a Campaign exists.
 pub(super) struct FirstAttemptInput {
-    pub rendered: review_runner::RenderedInput,
+    pub rendered: af_runner::RenderedInput,
     pub runner: String,
     pub not_rendered: Vec<String>,
 }
@@ -636,7 +639,7 @@ pub(super) struct FirstAttemptInput {
 pub(super) fn first_attempt_input(
     cas: &Cas,
     definition: &Definition,
-    loaded: &review_config::Loaded,
+    loaded: &af_pipeline_config::Loaded,
     node: &str,
     change_set: ChangeSetSource<'_>,
     focus: Option<&str>,
@@ -646,7 +649,7 @@ pub(super) fn first_attempt_input(
         .iter()
         .find(|spec| spec.id == node)
         .ok_or_else(|| format!("pipeline has no node `{node}`"))?;
-    if !matches!(spec.kind, review_config::NodeKindSpec::Reviewer) {
+    if !matches!(spec.kind, af_pipeline_config::NodeKindSpec::Reviewer) {
         return Err(format!(
             "node `{node}` is not a reviewer Worker; only Workers receive an input"
         ));
@@ -656,26 +659,26 @@ pub(super) fn first_attempt_input(
         .get(node)
         .ok_or_else(|| format!("node `{node}` has no runner"))?;
     let result_contract = match spec.outputs.as_slice() {
-        [port] => review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type),
+        [port] => af_contracts::ReviewerResultContract::parse_artifact_type(&port.artifact_type),
         _ => None,
     }
     .ok_or_else(|| {
         format!(
             "reviewer `{node}` must declare exactly one typed {} output",
-            review_core::contract::REVIEWER_RESULT_V2
+            af_contracts::contract::REVIEWER_RESULT_V2
         )
     })?;
-    let mut inputs = review_runner::ReviewerInputs {
+    let mut inputs = af_runner::ReviewerInputs {
         result_contract,
         ..Default::default()
     };
     let mut not_rendered = Vec::new();
     for port in &spec.inputs {
         let (name, artifact_type) = (port.name.as_str(), port.artifact_type.as_str());
-        if artifact_type == review_core::contract::CHANGE_SET_V1 {
+        if artifact_type == af_contracts::contract::CHANGE_SET_V1 {
             let artifact = match &change_set {
                 ChangeSetSource::Resolved(resolved) => {
-                    review_runner::ReviewerInputArtifact::from_resolved_change_set(
+                    af_runner::ReviewerInputArtifact::from_resolved_change_set(
                         std::sync::Arc::clone(resolved),
                     )?
                 }
@@ -684,11 +687,11 @@ pub(super) fn first_attempt_input(
                     // rendered metadata is the one a Campaign on this Subject would carry.
                     let value =
                         serde_json::to_value(change_set).map_err(|error| error.to_string())?;
-                    review_core::json::admit(&value).map_err(|error| error.to_string())?;
-                    let encoded = review_store::canonical::canonicalize(&value)
+                    af_contracts::json::admit(&value).map_err(|error| error.to_string())?;
+                    let encoded = af_store::canonical::canonicalize(&value)
                         .map_err(|error| error.to_string())?;
                     let artifact_id = cas.put(&encoded).map_err(|error| error.to_string())?;
-                    review_runner::ReviewerInputArtifact::change_set_from_encoded(
+                    af_runner::ReviewerInputArtifact::change_set_from_encoded(
                         artifact_id,
                         &encoded,
                     )?
@@ -699,7 +702,7 @@ pub(super) fn first_attempt_input(
                 }
             };
             inputs.artifacts.insert(name.to_string(), vec![artifact]);
-        } else if artifact_type == review_core::contract::FINDING_SET_V1 {
+        } else if artifact_type == af_contracts::contract::FINDING_SET_V1 {
             not_rendered.push(format!(
                 "{name}: prior Findings exist only inside a Campaign; a first Attempt receives none"
             ));
@@ -715,10 +718,10 @@ pub(super) fn first_attempt_input(
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
-    let adapter: Box<dyn review_runner::ReviewerAdapter> = match loaded.packages().get(node) {
+    let adapter: Box<dyn af_runner::ReviewerAdapter> = match loaded.packages().get(node) {
         Some(package) => match runner.as_str() {
             "claude" => {
-                let mut adapter = review_runner_claude::ClaudeAdapter::from_package(package)
+                let mut adapter = af_runner_claude::ClaudeAdapter::from_package(package)
                     .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
@@ -726,7 +729,7 @@ pub(super) fn first_attempt_input(
                 Box::new(adapter)
             }
             "pi" => {
-                let mut adapter = review_runner_pi::PiAdapter::from_package(package)
+                let mut adapter = af_runner_pi::PiAdapter::from_package(package)
                     .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
@@ -734,7 +737,7 @@ pub(super) fn first_attempt_input(
                 Box::new(adapter)
             }
             "codex" => {
-                let mut adapter = review_runner_codex::CodexAdapter::from_package(package)
+                let mut adapter = af_runner_codex::CodexAdapter::from_package(package)
                     .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
@@ -747,7 +750,7 @@ pub(super) fn first_attempt_input(
                 ));
             }
         },
-        None => Box::new(review_runner::CommandAdapter),
+        None => Box::new(af_runner::CommandAdapter),
     };
     let rendered = adapter
         .render_input(&inputs)
@@ -776,7 +779,7 @@ pub(super) struct WorkerInputSize {
 pub(super) fn worker_input_sizes(
     cas: &Cas,
     definition: &Definition,
-    loaded: &review_config::Loaded,
+    loaded: &af_pipeline_config::Loaded,
     change_set: ChangeSetSource<'_>,
     focus: Option<&str>,
 ) -> Result<Vec<WorkerInputSize>, String> {
@@ -785,7 +788,7 @@ pub(super) fn worker_input_sizes(
         // A Scatter's Workers are sized per shard at run time, and a closeout reviewer sees the
         // whole Subject by design; neither has a first-Attempt input to measure here.
         let is_static_reviewer = definition.nodes.iter().any(|spec| {
-            spec.id == *node && matches!(spec.kind, review_config::NodeKindSpec::Reviewer)
+            spec.id == *node && matches!(spec.kind, af_pipeline_config::NodeKindSpec::Reviewer)
         });
         if !is_static_reviewer || loaded.closeouts().contains_key(node) {
             continue;
@@ -845,7 +848,7 @@ pub(super) struct RenderView {
     pub(super) runner: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) package: Option<serde_json::Value>,
-    pub(super) transport: review_runner::InputTransport,
+    pub(super) transport: af_runner::InputTransport,
     pub(super) bytes: usize,
     pub(super) estimated_tokens: u64,
     /// The Attempt cap this Worker's dispatch reserves, when the pipeline is capped.
@@ -854,10 +857,10 @@ pub(super) struct RenderView {
     /// Whether the input leaves room in that cap for any output; absent when uncapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) fits: Option<bool>,
-    pub(super) manifest: review_runner::ContextManifest,
+    pub(super) manifest: af_runner::ContextManifest,
     /// The Provider-native reply schema a model Worker's dispatch passes beside the input, and
     /// the option that carries it (ADR-0246); `null` for a command Worker.
-    pub(super) reply_schema: Option<review_runner::NativeReplySchema>,
+    pub(super) reply_schema: Option<af_runner::NativeReplySchema>,
     /// Campaign-bound inputs a real Attempt also receives; listed, never invented.
     pub(super) not_rendered: Vec<String>,
     pub(super) input_is_utf8: bool,
@@ -930,18 +933,18 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
 }
 
 pub(super) struct PreparedRun {
-    pub loaded: review_config::Loaded,
+    pub loaded: af_pipeline_config::Loaded,
     pub run_id: String,
     pub focus: Option<String>,
     pub timeout: Duration,
     pub check_timeout: Duration,
     pub git_timeout: Duration,
-    pub convergence: review_store::ConvergencePolicy,
+    pub convergence: af_store::ConvergencePolicy,
     pub authority: RoundAuthority,
 }
 
 struct OpenCampaign {
-    loaded: review_config::Loaded,
+    loaded: af_pipeline_config::Loaded,
     manifest: CampaignManifestV1,
     manifest_id: String,
     opened_event_id: String,
@@ -1013,7 +1016,7 @@ fn open_new(
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{AUTHORITY_LOCK}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
+    if let Some(note) = crate::project_policy::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
         eprintln!("af review: note: {note}");
     }
     let (project_bytes, project) = captured_project(&snapshot.manifest, cas)?;
@@ -1079,7 +1082,7 @@ fn open_new(
     let load =
         |path: &str| load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, path);
     let mut route = if options.pipeline_explicit {
-        crate::project::RouteDecision::explicit(pipeline_path)
+        crate::project_policy::RouteDecision::explicit(pipeline_path)
     } else {
         route_or_base_refusal(&project, &changed_paths, base.is_some(), load, base_refusal)?
     };
@@ -1246,7 +1249,7 @@ fn open_new(
         git_timeout_seconds: requested_git_timeout(options.git_timeout).as_secs(),
         budgets,
         focus: options.focus.clone(),
-        finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string(),
+        finding_identity_policy: af_contracts::CANONICAL_FINDING_IDENTITY_POLICY.to_string(),
         finding_genesis_id,
         demand_genesis_id,
     };
@@ -1301,7 +1304,7 @@ fn open_new(
 fn resume(
     options: &Options,
     cas: &Cas,
-    events: &[review_core::RunEvent],
+    events: &[af_contracts::RunEvent],
     pipeline_path: &str,
 ) -> Result<OpenCampaign, String> {
     let mut opened = events
@@ -1351,7 +1354,7 @@ fn resume(
     }
 
     let loaded =
-        review_config::captured_review::load_captured_review(cas, &manifest, options.mode)?;
+        af_pipeline_config::captured_review::load_captured_review(cas, &manifest, options.mode)?;
     super::run_progress(
         options,
         format_args!("authority {} (pinned)", manifest.authority_snapshot_id),
@@ -1369,12 +1372,12 @@ fn resume(
 }
 
 fn require_demand_set_output(
-    loaded: &review_config::Loaded,
+    loaded: &af_pipeline_config::Loaded,
     pipeline_path: &str,
 ) -> Result<(), String> {
     if loaded.node_kind_has_output_type(
-        review_graph::NodeKind::Ledger,
-        review_core::contract::DEMAND_SET_V1,
+        af_graph::NodeKind::Ledger,
+        af_contracts::contract::DEMAND_SET_V1,
     ) {
         Ok(())
     } else {
@@ -1391,7 +1394,7 @@ fn prepare_round(
     repo: &Repo,
     run_id: &str,
     campaign: &OpenCampaign,
-    events: &[review_core::RunEvent],
+    events: &[af_contracts::RunEvent],
 ) -> Result<String, String> {
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
@@ -1402,7 +1405,7 @@ fn prepare_round(
     let mut ledger_projection =
         LedgerProjection::from_events(run_id, events, cas).map_err(|error| error.to_string())?;
     // Before its Task exists a Campaign has only Round 1; later Rounds start in task_round.rs.
-    let mut starts: Vec<(&review_core::RunEvent, RoundStartedPayloadV1)> = events
+    let mut starts: Vec<(&af_contracts::RunEvent, RoundStartedPayloadV1)> = events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
         .filter_map(|event| {
@@ -1461,8 +1464,8 @@ fn prepare_round(
 }
 
 struct RoundCaptureRequest<'a> {
-    superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
-    history: &'a [review_core::RunEvent],
+    superseded: Option<(&'a af_contracts::RunEvent, &'a RoundStartedPayloadV1)>,
+    history: &'a [af_contracts::RunEvent],
     ledger_projection: &'a mut LedgerProjection,
 }
 
@@ -1690,8 +1693,8 @@ fn raw_patch_exceeds_change_set_bound(raw_bytes: usize) -> bool {
 fn load_round(
     options: &Options,
     cas: &Cas,
-    history: &[review_core::RunEvent],
-    event: &review_core::RunEvent,
+    history: &[af_contracts::RunEvent],
+    event: &af_contracts::RunEvent,
     payload: RoundStartedPayloadV1,
     repository_id: &str,
 ) -> Result<RoundInput, String> {
@@ -1776,13 +1779,14 @@ fn validate_round_set(
         .get_json(artifact_id)
         .map_err(|error| error.to_string())?;
     if items_field == "demands" {
-        if let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value.clone())
+        if let Ok(envelope) =
+            serde_json::from_value::<af_contracts::ArtifactEnvelope>(value.clone())
         {
             envelope.validate().map_err(|error| error.to_string())?;
-            if envelope.artifact_type != review_core::contract::DEMAND_SET_V1 {
+            if envelope.artifact_type != af_contracts::contract::DEMAND_SET_V1 {
                 return Err("Round demands set is not a DemandSet@1 artifact".into());
             }
-            let payload: review_core::DemandSetV1 =
+            let payload: af_contracts::DemandSetV1 =
                 serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
             payload.validate()?;
             return Ok(payload.demands.len());
@@ -1860,10 +1864,10 @@ fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
 }
 
 fn prior_location(file: &str, line: Option<i64>) -> (serde_json::Value, serde_json::Value, bool) {
-    if file == review_core::reviewer_result::CHANGE_WIDE_SENTINEL {
+    if file == af_contracts::reviewer_result::CHANGE_WIDE_SENTINEL {
         return (serde_json::Value::Null, serde_json::Value::Null, false);
     }
-    if review_core::is_valid_repo_path(file) {
+    if af_contracts::is_valid_repo_path(file) {
         (
             serde_json::Value::String(file.to_string()),
             line.map_or(serde_json::Value::Null, |line| line.into()),
@@ -1991,15 +1995,15 @@ fn captured_registry(
         let total = package_bytes.entry(name.to_string()).or_default();
         *total = total.saturating_add(entry.size);
         if entry.size > MAX_AUTHORITY_FILE_BYTES
-            || *total > review_config::lock::MAX_PACKAGE_BYTES
-            || files.len() >= review_config::lock::MAX_PACKAGE_FILES
+            || *total > af_pipeline_config::lock::MAX_PACKAGE_BYTES
+            || files.len() >= af_pipeline_config::lock::MAX_PACKAGE_FILES
         {
             return Err(format!(
                 "reviewer package `{name}` exceeds the package bounds at `{}`: at most {} \
                  files, {MAX_AUTHORITY_FILE_BYTES} bytes per file and {} bytes in all",
                 entry.path,
-                review_config::lock::MAX_PACKAGE_FILES,
-                review_config::lock::MAX_PACKAGE_BYTES
+                af_pipeline_config::lock::MAX_PACKAGE_FILES,
+                af_pipeline_config::lock::MAX_PACKAGE_BYTES
             ));
         }
         files.insert(
@@ -2030,7 +2034,7 @@ fn require_af_pipeline(pipeline: &str) -> Result<(), String> {
 fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
-    let project = crate::project::ProjectFile::parse(text)?;
+    let project = crate::project_policy::ProjectFile::parse(text)?;
     let candidates = project.pipeline_candidates();
     let name = Path::new(pipeline_path)
         .file_stem()
@@ -2062,7 +2066,7 @@ fn validate_af_pipeline_pin(
         .pipelines
         .get(name)
         .ok_or_else(|| format!("pipeline `{name}` is not pinned in `.af/af.lock`"))?;
-    let found = review_store::canonical::blob_content_id(bytes);
+    let found = af_store::canonical::blob_content_id(bytes);
     if pin.digest != found {
         return Err(format!(
             "pipeline `{name}` does not match `.af/af.lock`: locked {}, found {found}",
@@ -2131,7 +2135,7 @@ mod tests {
     fn omitted_git_timeout_resolves_to_the_capture_default() {
         assert_eq!(
             super::requested_git_timeout(None).as_secs(),
-            review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS
+            af_source_git::DEFAULT_GIT_TIMEOUT_SECONDS
         );
         assert_eq!(
             super::requested_git_timeout(Some(std::time::Duration::from_secs(17))).as_secs(),
@@ -2144,7 +2148,7 @@ mod tests {
         let limit = super::maximum_raw_patch_bytes();
         assert!(!super::raw_patch_exceeds_change_set_bound(limit));
         assert!(super::raw_patch_exceeds_change_set_bound(limit + 1));
-        assert!(limit * 4 / 3 >= review_core::MAX_CHANGE_SET_BYTES);
+        assert!(limit * 4 / 3 >= af_contracts::MAX_CHANGE_SET_BYTES);
     }
 
     #[test]
@@ -2162,7 +2166,7 @@ mod tests {
             (serde_json::Value::Null, serde_json::Value::Null, true)
         );
         assert_eq!(
-            super::prior_location(review_core::reviewer_result::CHANGE_WIDE_SENTINEL, Some(7)),
+            super::prior_location(af_contracts::reviewer_result::CHANGE_WIDE_SENTINEL, Some(7)),
             (serde_json::Value::Null, serde_json::Value::Null, false)
         );
     }

@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use review_core::store_writer::StoreProvenance;
+use af_contracts::store_writer::StoreProvenance;
 
 /// This release, as `af --version` prints it.
 pub(crate) const THIS_RELEASE: &str = env!("CARGO_PKG_VERSION");
@@ -17,7 +17,7 @@ pub(crate) const THIS_RELEASE: &str = env!("CARGO_PKG_VERSION");
 /// Whether `error` is a replay refusal: the log holds an event type this release does not know,
 /// or an event whose payload has another shape than the one this release writes.
 pub(crate) fn is_replay_refusal(error: &str) -> bool {
-    error.contains(review_core::event::ANOTHER_RELEASE)
+    error.contains(af_contracts::event::ANOTHER_RELEASE)
         || error.contains("invalid replayed event payload")
 }
 
@@ -28,7 +28,7 @@ pub(crate) fn foreign(state: &Path, error: &str) -> Option<StoreProvenance> {
     if !is_replay_refusal(error) {
         return None;
     }
-    match review_store::store::writers::provenance_at(&state.join("events.sqlite")) {
+    match af_store::store::writers::provenance_at(&state.join("events.sqlite")) {
         Ok(StoreProvenance::ThisRelease) => None,
         Ok(provenance) => Some(provenance),
         // A log this release cannot open far enough to read its markers predates them.

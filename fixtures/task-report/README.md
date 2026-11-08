@@ -9,8 +9,8 @@ renderer printed it for a test Store.
   interrupted during its first run and resumed once, with one failed Attempt.
 - `report.md` is the Markdown block `af task report` printed for the same Store.
 
-Three suites hold them together. `crates/af/src/task_execution/task_report/tests.rs` renders
-`report.json` and requires exactly `report.md`; `crates/review-core/tests/schema_parity/task_report.rs`
+Three suites hold them together. `crates/af/src/task_commands/task_report/tests.rs` renders
+`report.json` and requires exactly `report.md`; `crates/af-contracts/tests/schema_parity/task_report.rs`
 validates `report.json` against `schemas/task-report-v3.json`; and `scripts/test-check-pr-report.py`
 requires `scripts/check-pr-report.py` to accept `report.md`. A renderer change the fixture does not
 follow fails the first; a checker change that refuses the renderer's block fails the last.

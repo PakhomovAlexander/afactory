@@ -1,27 +1,15 @@
-//! Scenarios orchestrate Tasks and bounded effects; Ants admit durable daily occurrences.
-mod adapter;
-#[cfg(test)]
-mod admission_tests;
-mod checks;
-pub(crate) mod contract;
-pub(crate) mod performance;
-mod roadmap;
-mod runtime;
-mod schedule;
-pub(crate) mod source;
-mod state;
-mod store;
-pub(crate) mod template;
-#[cfg(test)]
-mod tests;
-pub(crate) mod workspace;
-
+//! Scenario CLI parsing and presentation; the domain lives in `af_scenario`.
+pub(crate) mod host;
+use af_scenario::{
+    contract, performance, roadmap, runtime, schedule, source, state, store, workspace,
+};
 use clap::{Args, Subcommand};
 use contract::*;
+use host::AfHost;
 use schedule::*;
 use state::*;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use store::Store;
 
 #[derive(Debug, Args)]
@@ -303,12 +291,12 @@ pub(crate) enum AntCommand {
 fn pin(definition: &Definition) -> Result<Pin> {
     let mut bundle: Bundle = store::definition(&definition.file)?;
     normalize_targets(&mut bundle)?;
-    Pin::new(bundle, store::policy(&definition.authority)?)
+    Pin::new(&AfHost, bundle, store::policy(&definition.authority)?)
 }
 fn ant_pin(definition: &Definition) -> Result<AntPin> {
     let mut ant: Ant = store::definition(&definition.file)?;
     normalize_targets(&mut ant.scenario)?;
-    AntPin::new(ant, store::policy(&definition.authority)?)
+    AntPin::new(&AfHost, ant, store::policy(&definition.authority)?)
 }
 fn normalize_targets(bundle: &mut Bundle) -> Result<()> {
     for def in bundle.definitions.values_mut() {
@@ -376,7 +364,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
                     .map_err(|e| e.to_string())?;
             let proof =
-                crate::task_execution::candidate::performance::proof(&request, &repo, &task_state)?;
+                crate::task_commands::candidate::performance::proof(&request, &repo, &task_state)?;
             print(&proof, &inspect)
         }
         ScenarioCommand::CandidateSource {
@@ -390,7 +378,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
                     .map_err(|e| e.to_string())?;
             request.validate()?;
-            let receipt = crate::task_execution::candidate::candidate_source(
+            let receipt = crate::task_commands::candidate::candidate_source(
                 &request,
                 &repo,
                 &task_state,
@@ -409,7 +397,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 serde_json::from_slice(&store::read(&file, MAX_BYTES)?)
                     .map_err(|e| e.to_string())?;
             request.validate()?;
-            let receipt = crate::task_execution::candidate::experiment_source(
+            let receipt = crate::task_commands::candidate::experiment_source(
                 &request,
                 &repo,
                 &task_state,
@@ -432,7 +420,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             task_state,
             inspect,
         } => print(
-            &crate::task_execution::scenario_evidence::read(
+            &crate::task_commands::scenario_evidence::read(
                 &repo,
                 &task_state,
                 &task_id,
@@ -448,7 +436,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             bindings,
             inspect,
         } => {
-            let template = crate::task_execution::scenario_template::pin(
+            let template = crate::task_commands::scenario_template::pin(
                 repo,
                 task_state,
                 authority_commit,
@@ -484,6 +472,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             )?;
             let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
             let run = Run::new(
+                &AfHost,
                 run_id.clone(),
                 pin,
                 store::load(&inputs)?,
@@ -491,7 +480,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 at(&inspect)?,
                 None,
             )?;
-            let store = Store::open(inspect.state.as_deref(), true)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), true)?;
             runtime::reconcile_pending(&store, run.created_unix_ms)?;
             let run = store.update(|world| world.admit_run(run))?;
             let run = if execute {
@@ -502,21 +491,21 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             print(&run, &inspect)
         }
         ScenarioCommand::Show { run_id, inspect } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
                 world.runs.get(&run_id).ok_or("Scenario Run not found")?,
                 &inspect,
             )
         }
         ScenarioCommand::List { inspect } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
                 &serde_json::json!({"schema":"af/scenario-list@5","runs":world.runs}),
                 &inspect,
             )
         }
         ScenarioCommand::Resume { run_id, inspect } => {
-            let store = Store::open(inspect.state.as_deref(), false)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
             print(&runtime::resume(&store, &run_id, inspect.now)?, &inspect)
         }
         ScenarioCommand::Cancel {
@@ -524,7 +513,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             reason,
             inspect,
         } => {
-            let store = Store::open(inspect.state.as_deref(), false)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
             print(
                 &runtime::cancel(&store, &run_id, reason, at(&inspect)?)?,
                 &inspect,
@@ -536,7 +525,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             reject,
             inspect,
         } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             let run = world.runs.get(&run_id).ok_or("Scenario Run not found")?;
             let Some(Waiting::Decision { request, .. }) = &run.waiting else {
                 return Err("Run is not waiting for a human decision".into());
@@ -548,7 +537,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 "Decision request expired",
             )?;
             use std::io::Write;
-            let mut file = review_store::local_fs::private_file_options()
+            let mut file = af_store::local_fs::private_file_options()
                 .write(true)
                 .create_new(true)
                 .open(out)
@@ -565,7 +554,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         } => {
             let decision: DecisionReceipt = store::load(&file)?;
             let at = at(&inspect)?;
-            let store = Store::open(inspect.state.as_deref(), false)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
             let run = store.update(|world| {
                 let run = world
                     .runs
@@ -596,7 +585,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
             )?;
             let id = pin.definition.id.clone();
             let ant = AntState::new(pin, at(&inspect)?)?;
-            let store = Store::open(inspect.state.as_deref(), true)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), true)?;
             store.update(|world| {
                 require(!world.ants.contains_key(&id), "Ant already exists")?;
                 world.ants.insert(id, ant.clone());
@@ -605,11 +594,11 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
             print(&ant, &inspect)
         }
         AntCommand::Show { ant_id, inspect } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(world.ants.get(&ant_id).ok_or("Ant not found")?, &inspect)
         }
         AntCommand::List { inspect } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
                 &serde_json::json!({"schema":"af/ant-list@5","ants":world.ants}),
                 &inspect,
@@ -620,38 +609,13 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::Disable { ant_id, inspect } => change(&ant_id, AntMode::Disabled, &inspect),
         AntCommand::Tick { inspect } => {
             let now = at(&inspect)?;
-            let store = Store::open(inspect.state.as_deref(), false)?;
-            runtime::reconcile_pending(&store, now)?;
-            let (started, refused) = store.update(|world| {
-                Ok(schedule::tick_all_with_roadmaps(
-                    &mut world.ants,
-                    &mut world.runs,
-                    &mut world.roadmaps,
-                    now,
-                ))
-            })?;
-            // Admission and execution are separate durable transitions. Recover an occurrence
-            // admitted by a process that died before driving it, and poll existing waits too.
-            let active: Vec<String> = store
-                .read()?
-                .runs
-                .values()
-                .filter(|r| r.ant.is_some() && r.status.active() && r.updated_unix_ms <= now)
-                .map(|r| r.id.clone())
-                .collect();
-            let mut results = BTreeMap::new();
-            let mut busy = Vec::new();
-            for id in &active {
-                match runtime::resume(&store, id, inspect.now) {
-                    Ok(run) => {
-                        results.insert(id.clone(), run);
-                    }
-                    Err(why) if why.starts_with("Scenario Run is already executing:") => {
-                        busy.push(id.clone())
-                    }
-                    Err(why) => return Err(why),
-                }
-            }
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let runtime::Tick {
+                started,
+                refused,
+                busy,
+                runs: results,
+            } = runtime::tick(&store, now, inspect.now)?;
             print(
                 &serde_json::json!({"schema":"af/ant-tick@5","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
@@ -660,7 +624,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
     }
 }
 fn change(id: &str, state: AntMode, inspect: &Inspect) -> Result<i32> {
-    let store = Store::open(inspect.state.as_deref(), false)?;
+    let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
     let now = at(inspect)?;
     let ant = store.update(|world| {
         let ant = world.ants.get_mut(id).ok_or("Ant not found")?;
@@ -733,7 +697,8 @@ fn roadmap_command(command: RoadmapCommand) -> Result<i32> {
         } => {
             let proposal: Proposal = store::definition(&file)?;
             let revision = if let Some(id) = roadmap {
-                let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+                let world =
+                    Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
                 world
                     .roadmaps
                     .get(&id)
@@ -755,7 +720,7 @@ fn roadmap_command(command: RoadmapCommand) -> Result<i32> {
                 "Roadmap revision confirmation differs; validate and review it again",
             )?;
             let roadmap = Roadmap::new(revision)?;
-            let store = Store::open(inspect.state.as_deref(), true)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), true)?;
             store.update(|world| {
                 require(
                     !world.roadmaps.contains_key(&roadmap.id),
@@ -773,7 +738,7 @@ fn roadmap_command(command: RoadmapCommand) -> Result<i32> {
             inspect,
         } => {
             let proposal: Proposal = store::definition(&file)?;
-            let store = Store::open(inspect.state.as_deref(), false)?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
             let roadmap = store.update(|world| {
                 let roadmap = world
                     .roadmaps
@@ -788,14 +753,14 @@ fn roadmap_command(command: RoadmapCommand) -> Result<i32> {
             roadmap_id,
             inspect,
         } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
                 world.roadmaps.get(&roadmap_id).ok_or("Roadmap not found")?,
                 &inspect,
             )
         }
         RoadmapCommand::List { inspect } => {
-            let world = Store::open(inspect.state.as_deref(), false)?.read()?;
+            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
                 &serde_json::json!({"schema":"af/scenario-roadmap-list@2","roadmaps":world.roadmaps}),
                 &inspect,

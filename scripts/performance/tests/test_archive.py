@@ -10,7 +10,7 @@ import subprocess
 import sys
 from unittest import mock
 
-from perflab import archive, compare, contracts, limits, synthetic
+from perflab import archive, evaluate_results, contracts, limits, synthetic
 from perflab.values import ContractError, sha256_bytes
 from tests.support import CLI, TempDir, read, run_dir, synthetic_suite
 
@@ -83,7 +83,7 @@ class Import(ArchiveHarness):
                 data = store.read_object(members[path], limits.SHARD_BUNDLE_BYTES_MAX)
                 self.assertEqual(sha256_bytes(data), members[path]["sha256"])
             self.assertEqual(json.loads(store.read_object(members["verdict.json"], 1 << 24)),
-                             compare.compare(source))
+                             evaluate_results.compare(source))
             self.assertEqual(members["shards/0/samples.jsonl"]["class"], "samples")
             self.assertEqual(members["run.json"]["class"], "plan")
             # Collections record both attempts; the run index holds the run once.

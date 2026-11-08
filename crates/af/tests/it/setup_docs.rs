@@ -4,7 +4,7 @@
 //! model runs.
 use std::path::PathBuf;
 
-use review_config::task::kind::TaskKindProfile;
+use af_pipeline_config::task::kind::TaskKindProfile;
 
 fn workspace_file(path: &str) -> String {
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")

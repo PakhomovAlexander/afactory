@@ -125,14 +125,14 @@ fn repin(repo: &Path) {
     let lock_path = repo.join(".af/af.lock");
     let mut lock = std::fs::read_to_string(&lock_path)
         .ok()
-        .map(|text| review_config::lock::Lockfile::from_toml(&text).unwrap())
-        .unwrap_or_else(review_config::lock::Lockfile::empty);
+        .map(|text| af_pipeline_config::lock::Lockfile::from_toml(&text).unwrap())
+        .unwrap_or_else(af_pipeline_config::lock::Lockfile::empty);
     let bytes = std::fs::read(pipeline_path(repo)).unwrap();
     lock.pipelines.insert(
         "review".into(),
-        review_config::lock::Pin {
+        af_pipeline_config::lock::Pin {
             version: "1.0.0".into(),
-            digest: review_store::canonical::blob_content_id(&bytes),
+            digest: af_store::canonical::blob_content_id(&bytes),
         },
     );
     std::fs::write(lock_path, lock.to_toml()).unwrap();
@@ -974,26 +974,29 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
     assert!(!stdout.contains("Incomplete"), "{stdout}");
 
     let state = Path::new(&state);
-    let cas = review_store::Cas::open(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open(state.join("cas")).unwrap();
+    let store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
     let events = store.replay("campaign-dispositions").unwrap();
     let ledger_receipt = events
         .iter()
         .rev()
         .find(|event| {
-            event.event_type == review_core::EventType::NodeOutputReceiptV1
+            event.event_type == af_contracts::EventType::NodeOutputReceiptV1
                 && event.node_id.as_deref() == Some("ledger")
         })
         .expect("Round 2 ledger receipt");
-    let receipt: review_core::NodeOutputReceiptPayloadV1 =
+    let receipt: af_contracts::NodeOutputReceiptPayloadV1 =
         serde_json::from_value(ledger_receipt.payload.clone()).unwrap();
     let set_record_id = &receipt.outputs[0].artifact_ids[0];
-    let set_envelope: review_core::ArtifactEnvelope =
+    let set_envelope: af_contracts::ArtifactEnvelope =
         serde_json::from_value(cas.get_json(set_record_id).unwrap()).unwrap();
-    let set: review_core::FindingSetV1 =
+    let set: af_contracts::FindingSetV1 =
         serde_json::from_value(set_envelope.payload.clone()).unwrap();
     assert_eq!(set.round, 2);
-    assert_eq!(set.reducer_version, review_core::FINDING_REDUCER_VERSION_V2);
+    assert_eq!(
+        set.reducer_version,
+        af_contracts::FINDING_REDUCER_VERSION_V2
+    );
     assert_eq!(set.relation_ids.len(), 1);
     assert_eq!(set.findings[0].status, "open");
 
@@ -1001,15 +1004,15 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         .input_artifacts
         .iter()
         .filter_map(|id| cas.get_json(id).ok())
-        .filter_map(|value| serde_json::from_value::<review_core::ArtifactEnvelope>(value).ok())
-        .find(|envelope| envelope.artifact_type == review_core::contract::FINDING_DISPOSITION_V1)
+        .filter_map(|value| serde_json::from_value::<af_contracts::ArtifactEnvelope>(value).ok())
+        .find(|envelope| envelope.artifact_type == af_contracts::contract::FINDING_DISPOSITION_V1)
         .expect("immutable disposition reducer input");
     assert_eq!(disposition_envelope.artifact_id, set.relation_ids[0]);
-    let disposition: review_core::FindingDispositionV1 =
+    let disposition: af_contracts::FindingDispositionV1 =
         serde_json::from_value(disposition_envelope.payload).unwrap();
     assert_eq!(
         disposition.position,
-        review_core::FindingDispositionPosition::NotReproduced
+        af_contracts::FindingDispositionPosition::NotReproduced
     );
     assert_eq!(disposition.round, 2);
     assert_eq!(disposition.subject_id, set.subject_id);
@@ -1018,17 +1021,17 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         .iter()
         .rev()
         .find(|event| {
-            event.event_type == review_core::EventType::NodeInvocationV1
+            event.event_type == af_contracts::EventType::NodeInvocationV1
                 && event.node_id.as_deref() == Some("correctness")
         })
         .expect("Round 2 reviewer invocation");
     let invocation_event_id = invocation.event_id.clone();
-    let invocation: review_core::NodeInvocationPayloadV1 =
+    let invocation: af_contracts::NodeInvocationPayloadV1 =
         serde_json::from_value(invocation.payload.clone()).unwrap();
     let assigned = invocation
         .inputs
         .iter()
-        .find(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+        .find(|port| port.artifact_type == af_contracts::contract::FINDING_SET_V1)
         .expect("exact prior FindingSet@1 input");
     assert_eq!(
         assigned.artifact_ids,
@@ -1039,13 +1042,13 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         .iter()
         .rev()
         .find(|event| {
-            event.event_type == review_core::EventType::TaskReviewResultSelectedV1
+            event.event_type == af_contracts::EventType::TaskReviewResultSelectedV1
                 && event.node_id.as_deref() == Some("correctness")
         })
         .expect("Round 2 common Reviewer selection");
-    let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
+    let selected: af_contracts::task::campaign_review::TaskReviewResultSelectedV1 =
         serde_json::from_value(selected.payload.clone()).unwrap();
-    let context: review_core::task::campaign_review::TaskReviewContextV1 =
+    let context: af_contracts::task::campaign_review::TaskReviewContextV1 =
         serde_json::from_value(cas.get_artifact(&selected.context_id).unwrap().payload).unwrap();
     assert_eq!(
         context.invocation_event_id, invocation_event_id,
@@ -1118,16 +1121,16 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
     );
 
     let state = Path::new(&state);
-    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
     let report = store
         .replay("campaign-missing-disposition")
         .unwrap()
         .into_iter()
         .rev()
-        .find(|event| event.event_type == review_core::EventType::RunReportV6)
+        .find(|event| event.event_type == af_contracts::EventType::RunReportV6)
         .expect("durable incomplete Task-backed RunReport@6");
-    let report: review_core::RunReportPayloadV6 = serde_json::from_value(report.payload).unwrap();
-    let review_core::RunVerdictV3::Incomplete { missing_nodes } = report.verdict else {
+    let report: af_contracts::RunReportPayloadV6 = serde_json::from_value(report.payload).unwrap();
+    let af_contracts::RunVerdictV3::Incomplete { missing_nodes } = report.verdict else {
         panic!("missing dispositions did not produce an incomplete verdict");
     };
     let correctness = missing_nodes
@@ -1760,13 +1763,13 @@ fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
         ledger_out.contains("\tblocker\tcontested\t"),
         "{ledger_out}"
     );
-    let store = review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
     assert!(
         store
             .replay("campaign-wontfix-ceiling")
             .unwrap()
             .iter()
-            .any(|event| event.event_type == review_core::EventType::FindingResolutionChallengedV1),
+            .any(|event| event.event_type == af_contracts::EventType::FindingResolutionChallengedV1),
         "the higher-severity report must emit an explicit challenge artifact/event"
     );
 }
@@ -2027,11 +2030,11 @@ args = [{{ value = "--model" }}, {{ value = "gpt-fixture-1" }}, {{ value = "-c" 
         "Review the exact Change Set.\n",
     )
     .unwrap();
-    let registry = review_config::lock::Registry::new(&reviewers);
-    let mut lockfile = review_config::lock::Lockfile::empty();
+    let registry = af_pipeline_config::lock::Registry::new(&reviewers);
+    let mut lockfile = af_pipeline_config::lock::Lockfile::empty();
     lockfile.workers.insert(
         "tester".into(),
-        review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
+        af_pipeline_config::lock::Lockfile::pin("tester", &registry).unwrap(),
     );
     std::fs::write(repo.join(".af/af.lock"), lockfile.to_toml()).unwrap();
     let pipeline = r#"
@@ -2285,9 +2288,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     assert_eq!(doctor["task"]["begun_attempts"], "1");
     let doctor_task_id = doctor["task"]["task_id"].as_str().unwrap().to_string();
     {
-        let cas = review_store::Cas::open(Path::new(&state).join("cas")).unwrap();
-        let store =
-            review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open(Path::new(&state).join("cas")).unwrap();
+        let store = af_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
         let task = store
             .task_projection(&cas, &doctor_task_id)
             .unwrap()
@@ -2298,7 +2300,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
         );
         assert!(!matches!(
             task.phase,
-            review_core::task::TaskPhaseV1::Finished { .. }
+            af_contracts::task::TaskPhaseV1::Finished { .. }
         ));
         assert!(
             store
@@ -2307,8 +2309,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
                 .iter()
                 .all(|event| !matches!(
                     event.event_type,
-                    review_core::EventType::TaskReviewResultSelectedV1
-                        | review_core::EventType::RunReportV6
+                    af_contracts::EventType::TaskReviewResultSelectedV1
+                        | af_contracts::EventType::RunReportV6
                 ))
         );
     }
@@ -2339,9 +2341,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(stdout.contains("done      generation"), "{stdout}");
     {
-        let cas = review_store::Cas::open(Path::new(&state).join("cas")).unwrap();
-        let store =
-            review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open(Path::new(&state).join("cas")).unwrap();
+        let store = af_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
         let task = store
             .task_projection(&cas, &doctor_task_id)
             .unwrap()
@@ -2355,7 +2356,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
         assert_eq!(execution.budget.committed_tokens(), 4);
         assert!(matches!(
             task.phase,
-            review_core::task::TaskPhaseV1::Finished { .. }
+            af_contracts::task::TaskPhaseV1::Finished { .. }
         ));
     }
 
@@ -2412,15 +2413,14 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
             assert_eq!(&id, previous);
         }
         failed_task_id = Some(id.clone());
-        let cas = review_store::Cas::open_existing(Path::new(&state).join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(Path::new(&state).join("cas")).unwrap();
         let store =
-            review_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite"))
-                .unwrap();
+            af_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite")).unwrap();
         let task = store.task_projection(&cas, &id).unwrap().unwrap();
         assert!(task.run_reports.is_empty());
         assert!(!matches!(
             task.phase,
-            review_core::task::TaskPhaseV1::Finished { .. }
+            af_contracts::task::TaskPhaseV1::Finished { .. }
         ));
     }
 }

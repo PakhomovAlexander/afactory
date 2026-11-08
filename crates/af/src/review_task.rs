@@ -3,20 +3,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use review_config::captured_review::ReviewMode;
-use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
-use review_core::task::{EXECUTION_PLAN_V4, TASK_REVISION_V1, TaskRevisionV1};
-use review_graph::NodeKind;
-use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
-use review_pipeline::task::campaign_review::plan::{
-    CampaignReviewPlanCompiler, ReviewPlanSettings,
-};
-use review_pipeline::task::campaign_review::{
-    CapturedCampaignReviewRound, CapturedReviewCompilation,
-};
-use review_pipeline::task::host::TaskModelBinding;
-use review_runner::task::WorkerModelAdapter;
-use review_store::{Cas, EventStore};
+use af_contracts::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
+use af_contracts::task::{EXECUTION_PLAN_V4, TASK_REVISION_V1, TaskRevisionV1};
+use af_graph::NodeKind;
+use af_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
+use af_pipeline_config::captured_review::ReviewMode;
+use af_runner::task::WorkerModelAdapter;
+use af_runtime::task::campaign_review::plan::{CampaignReviewPlanCompiler, ReviewPlanSettings};
+use af_runtime::task::campaign_review::{CapturedCampaignReviewRound, CapturedReviewCompilation};
+use af_runtime::task::host::TaskModelBinding;
+use af_store::{Cas, EventStore};
 
 use super::{CampaignMode, Options};
 
@@ -51,7 +47,7 @@ struct LocalWorkers {
 
 fn local_workers(
     options: &Options,
-    loaded: &review_config::Loaded,
+    loaded: &af_pipeline_config::Loaded,
 ) -> Result<LocalWorkers, String> {
     // The refusals `af review plan` gives, in the same words.
     super::authority::check_provider_bindings(
@@ -87,7 +83,7 @@ fn local_workers(
         let alias = options.provider_bindings.get(node).ok_or_else(|| {
             format!("model-backed Worker `{node}` ({kind}) requires explicit `--provider {node}=PROVIDER_ID`")
         })?;
-        let manifest: review_config::lock::PackageManifest = toml::from_str(
+        let manifest: af_pipeline_config::lock::PackageManifest = toml::from_str(
             std::str::from_utf8(
                 package
                     .file("reviewer.toml")
@@ -96,7 +92,7 @@ fn local_workers(
             .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let settings = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
+        let settings = af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest)
             .map_err(|e| e.to_string())?;
         crate::model_check::static_rules(&crate::model_check::Binding {
             owner: format!("Model Worker {node}"),
@@ -137,7 +133,9 @@ fn local_workers(
     })
 }
 
-fn public_outputs(loaded: &review_config::Loaded) -> Result<BTreeMap<String, Address>, String> {
+fn public_outputs(
+    loaded: &af_pipeline_config::Loaded,
+) -> Result<BTreeMap<String, Address>, String> {
     let mut outputs = BTreeMap::new();
     for (index, (node, definition)) in loaded
         .planned()
@@ -193,7 +191,7 @@ fn capture_new(
     )
     .map_err(|e| e.to_string())?;
     let workers = local_workers(options, &prepared.loaded)?;
-    let resources = review_config::task::campaign_review::resources::ReviewResourcePolicy {
+    let resources = af_pipeline_config::task::campaign_review::resources::ReviewResourcePolicy {
         uncapped_attempt_tokens: UNCAPPED_ATTEMPT_TOKENS,
     };
     let provider_admission = initial_provider_admission(options);
@@ -265,8 +263,8 @@ fn persist(
 ) -> Result<String, String> {
     cas.put_artifact(
         kind,
-        review_core::Producer::KernelOperation {
-            run_id: review_store::store::task::task_run_id(task_id).map_err(|e| e.to_string())?,
+        af_contracts::Producer::KernelOperation {
+            run_id: af_store::store::task::task_run_id(task_id).map_err(|e| e.to_string())?,
             node_id: None,
             operation_id: "installed-review-capture@1".into(),
         },
@@ -324,7 +322,7 @@ fn task_id(campaign: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"af.review-task-id/1\0");
     digest.update(campaign.as_bytes());
-    format!("review-{}", review_core::hex::encode(&digest.finalize()))
+    format!("review-{}", af_contracts::hex::encode(&digest.finalize()))
 }
 
 /// Every Campaign runs on the common Task runtime. Its first capture may fail after preparation
@@ -347,8 +345,8 @@ pub(super) fn require_common_campaign(
     if events.iter().any(|event| {
         matches!(
             event.event_type,
-            review_core::EventType::TaskReviewResultSelectedV1
-                | review_core::EventType::RunReportV6
+            af_contracts::EventType::TaskReviewResultSelectedV1
+                | af_contracts::EventType::RunReportV6
         )
     }) {
         return Err("Review has common Task evidence but its original Task is unavailable".into());
@@ -357,25 +355,25 @@ pub(super) fn require_common_campaign(
 }
 
 struct AdmissionOnly;
-impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
+impl af_runtime::task::TaskOperatorHost for AdmissionOnly {
     fn prepare_context(
         &self,
         _: &Cas,
-        _: &review_core::task::execution::TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
-        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
+        _: &af_contracts::task::execution::TaskInvocationV1,
+        _definition: &af_graph::task::CompiledNode,
+        _attempt: &af_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("Installed Review plan admission cannot render Worker context".into())
     }
     fn execute(
         &self,
         _: &Cas,
-        _: &review_core::task::execution::TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
-        _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _: &af_contracts::task::execution::TaskInvocationV1,
+        _definition: &af_graph::task::CompiledNode,
+        _: Option<&af_store::store::task::execution::PreparedTaskAttempt>,
         _cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> review_pipeline::task::TaskWorkOutput {
-        review_pipeline::task::TaskWorkOutput {
+    ) -> af_runtime::task::TaskWorkOutput {
+        af_runtime::task::TaskWorkOutput {
             notes: Default::default(),
             usage_observation: None,
             usage: None,
@@ -389,12 +387,12 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         }
     }
 }
-impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
+impl af_runtime::task::host::TaskDomain for AdmissionOnly {
     fn validate_context(
         &self,
         _: &Cas,
-        _: &review_core::task::execution::TaskInvocationV1,
-        _: &review_store::store::task::execution::ReservedTaskAttempt,
+        _: &af_contracts::task::execution::TaskInvocationV1,
+        _: &af_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no context authority".into())
@@ -404,9 +402,9 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         _: &Cas,
         _: &TaskRevisionV1,
         _: &ExecutionPlanV3,
-        _: &review_core::task::execution::TaskInvocationV1,
-        _: &review_core::task::execution::TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        _: &af_contracts::task::execution::TaskInvocationV1,
+        _: &af_contracts::task::execution::TaskOutputV1,
+        _definition: &af_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no output authority".into())
     }
@@ -414,7 +412,7 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &review_core::task::TaskResultV1,
+        _: &af_contracts::task::TaskResultV1,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no acceptance authority".into())
     }
@@ -424,8 +422,8 @@ fn open_captured(
     cas: &Cas,
     store: &mut EventStore,
     captured: &CapturedReviewTask,
-) -> Result<review_store::store::task::TaskLease, String> {
-    use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
+) -> Result<af_store::store::task::TaskLease, String> {
+    use af_runtime::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
     let authority = CapturedTaskAuthority::for_campaign_review(
         &captured.compiler,
         &AdmissionOnly,
@@ -436,7 +434,7 @@ fn open_captured(
             cas,
             &captured.revision_id,
             &format!("cli-{}", std::process::id()),
-            crate::task_execution::recovery::lease_ms(),
+            crate::task_commands::recovery::lease_ms(),
         )
         .map_err(|e| e.to_string())?;
     let admitted = (|| {
@@ -456,26 +454,26 @@ fn open_captured(
 }
 
 struct RoundExecution {
-    report: review_graph::RunReport,
-    ledger: review_store::Ledger,
-    attempts: Vec<review_pipeline::AttemptEvidence>,
-    verdict: review_pipeline::RunVerdict,
+    report: af_graph::RunReport,
+    ledger: af_store::Ledger,
+    attempts: Vec<af_runtime::AttemptEvidence>,
+    verdict: af_runtime::RunVerdict,
     continuation_required: bool,
-    result: Option<review_core::task::TaskResultV1>,
+    result: Option<af_contracts::task::TaskResultV1>,
 }
 
 fn execute_current(
     cas: &Cas,
     store: &mut EventStore,
     captured: &CapturedReviewTask,
-    lease: &review_store::store::task::TaskLease,
+    lease: &af_store::store::task::TaskLease,
 ) -> Result<RoundExecution, String> {
-    use review_pipeline::task::TaskRuntime;
-    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
-    use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
+    use af_runtime::task::TaskRuntime;
+    use af_runtime::task::campaign_review::host::CampaignReviewTaskHost;
+    use af_runtime::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
     let campaign = &captured.compiler.round().binding().campaign_id;
     // Recorded on the run's `af.run` span only (ADR-0153).
-    review_pipeline::telemetry::set_campaign(campaign, captured.compiler.round().binding().round);
+    af_runtime::telemetry::set_campaign(campaign, captured.compiler.round().binding().round);
     let round = captured.compiler.round().authority().round_event_id();
     let closed = store
         .replay(campaign)
@@ -483,21 +481,21 @@ fn execute_current(
         .iter()
         .filter(|event| event.causation_id.as_deref() == Some(round))
         .try_fold(false, |closed, event| {
-            review_core::run_report_closes_round(event)
+            af_contracts::run_report_closes_round(event)
                 .map(|value| closed || value.unwrap_or(false))
                 .map_err(|e| e.to_string())
         })?;
-    let shared = review_store::SharedEventStore::new(store);
+    let shared = af_store::SharedEventStore::new(store);
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     super::interrupt::forwarding(&cancellation, || {
-        review_pipeline::task::lease::with_heartbeat_supervised(
+        af_runtime::task::lease::with_heartbeat_supervised(
             &shared,
             cas,
             lease,
-            review_pipeline::task::lease::HeartbeatControl {
+            af_runtime::task::lease::HeartbeatControl {
                 cancellation: Some(&cancellation),
                 writer_lost: None,
-                timing: crate::task_execution::recovery::timing(),
+                timing: crate::task_commands::recovery::timing(),
             },
             || {
                 let host = CampaignReviewTaskHost::new(
@@ -531,7 +529,7 @@ fn execute_current(
                         &host,
                     )?
                     .with_cancellation(&cancellation)
-                    .with_lease_timing(crate::task_execution::recovery::timing());
+                    .with_lease_timing(crate::task_commands::recovery::timing());
                     runtime.execute()?;
                 }
                 // An interrupted Round publishes no conclusion; the Campaign resumes (ADR-0129).
@@ -549,7 +547,7 @@ fn execute_current(
                             &phase,
                         )?
                         .with_cancellation(&cancellation)
-                        .with_lease_timing(crate::task_execution::recovery::timing());
+                        .with_lease_timing(crate::task_commands::recovery::timing());
                         let (report_id, _) = runtime.execute_review_integration(&phase)?;
                         super::interrupt::check()?;
                         phase = host.finish_recorded_integration(cas, &phase, &report_id)?;
@@ -559,7 +557,7 @@ fn execute_current(
                 let result = if !continuation_required
                     && !matches!(
                         conclusion.verdict,
-                        review_pipeline::RunVerdict::Incomplete { .. }
+                        af_runtime::RunVerdict::Incomplete { .. }
                     ) {
                     let result = host.assemble_recorded_result(cas)?;
                     let mut refs = result.evidence.clone();
@@ -573,7 +571,7 @@ fn execute_current(
                     let id = persist(
                         cas,
                         lease.task_id(),
-                        review_core::task::TASK_RESULT_V1,
+                        af_contracts::task::TASK_RESULT_V1,
                         refs.into_iter().collect(),
                         &result,
                     )?;
@@ -582,7 +580,7 @@ fn execute_current(
                         store
                             .finish_task(cas, lease, &id, &authority)
                             .map_err(|e| e.to_string())?;
-                        review_pipeline::telemetry::finished(&store, lease);
+                        af_runtime::telemetry::finished(&store, lease);
                     }
                     Some(result)
                 } else {

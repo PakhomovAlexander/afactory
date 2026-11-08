@@ -1,6 +1,6 @@
 //! The real common CLI, native Codex framing and original writer recovery; no model calls.
 use super::*;
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -127,7 +127,7 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
     assert_eq!(ids.len(), 1);
     let task_id = &ids[0];
     let before = store.task_projection(&cas, task_id).unwrap().unwrap();
-    let run = review_store::store::task::task_run_id(task_id).unwrap();
+    let run = af_store::store::task::task_run_id(task_id).unwrap();
     let sql = rusqlite::Connection::open(&db).unwrap();
     // A durable-write outage prevents renewal and settlement while sidecar retention remains
     // available. Only a later real lease takeover can recover the original Started Attempt.
@@ -165,10 +165,8 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
         "native leader must be reaped"
     );
     assert_eq!(
-        cas.get(&review_store::canonical::blob_content_id(
-            raw_usage.as_bytes()
-        ))
-        .unwrap(),
+        cas.get(&af_store::canonical::blob_content_id(raw_usage.as_bytes()))
+            .unwrap(),
         raw_usage.as_bytes()
     );
     let walls = store.task_attempt_wall(&run).unwrap();
@@ -184,7 +182,7 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
     assert!(!observation.charge_complete);
     assert_eq!(observation.reported_usage.as_ref(), Some(usage));
     assert_eq!(
-        cas.get(&review_store::canonical::blob_content_id(b"diagnostic"))
+        cas.get(&af_store::canonical::blob_content_id(b"diagnostic"))
             .unwrap(),
         b"diagnostic"
     );

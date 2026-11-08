@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 
-from perflab import clicases
+from perflab import cli_cases
 from perflab.values import ContractError
 from tests.support import HELD_CHILD, ROOT
 
@@ -335,7 +335,7 @@ class TuiOpen(unittest.TestCase):
         self.assertEqual(result["exit_code"], 0)
         # The splash and the frame may reach one read: the terminal keeps no write apart.
         self.assertGreaterEqual(float(result["browser_ms"]), float(result["splash_ms"]))
-        browser, splash = clicases.tui_report(stdout.encode())
+        browser, splash = cli_cases.tui_report(stdout.encode())
         self.assertEqual((float(browser), float(splash)),
                          (float(result["browser_ms"]), float(result["splash_ms"])))
         code, stdout, stderr = self.run_driver("missing")
@@ -377,7 +377,7 @@ class TuiOpen(unittest.TestCase):
         self.addCleanup(os.chmod, proc, 0o700)
         driver.PROC = proc
         code, stdout, stderr = self.run_main(driver, "paint")
-        self.assertEqual(code, clicases.DRIVER_UNCONFIRMED_EXIT, stderr)
+        self.assertEqual(code, cli_cases.DRIVER_UNCONFIRMED_EXIT, stderr)
         self.assertEqual(stdout, "")
         self.assertIn("the process listing failed", stderr)
 
@@ -585,7 +585,7 @@ class TuiOpen(unittest.TestCase):
         # test's own: a clear and a splash at 5 and the status line at 12 end at 12.
         code, stdout, stderr = self.run_driver("late")
         self.assertEqual(code, 0, stderr)
-        browser, splash = clicases.tui_report(stdout.encode())
+        browser, splash = cli_cases.tui_report(stdout.encode())
         self.assertGreaterEqual(browser, splash)
         driver = load_driver()
         status = b"\x1b[30;1H\x1b[0;7mNORMAL  browser"
@@ -837,18 +837,18 @@ class TuiOpen(unittest.TestCase):
         finally:
             for child in spawned:
                 child.wait(timeout=10)
-        self.assertEqual(driver.UNCONFIRMED_EXIT, clicases.DRIVER_UNCONFIRMED_EXIT)
+        self.assertEqual(driver.UNCONFIRMED_EXIT, cli_cases.DRIVER_UNCONFIRMED_EXIT)
 
     def test_reported_interval_rejects_untrusted_fields(self):
         valid = {"schema": "af.perf-tui-open/1", "browser_ms": "42.125",
                  "splash_ms": "5", "exit_code": 0}
-        self.assertEqual([str(value) for value in clicases.tui_report(
+        self.assertEqual([str(value) for value in cli_cases.tui_report(
             json.dumps(valid).encode())], ["337/8", "5"])
         for edit in ({"extra": 1}, {"browser_ms": "-1"}, {"splash_ms": "50"},
                      {"exit_code": 1}):
             doc = dict(valid, **edit)
             with self.subTest(edit=edit), self.assertRaises(ContractError):
-                clicases.tui_report(json.dumps(doc).encode())
+                cli_cases.tui_report(json.dumps(doc).encode())
 
     def test_registry_setup_records_twenty_stores_through_the_sides_af(self):
         scratch = os.path.join(self.root, "scratch")
@@ -866,7 +866,7 @@ class TuiOpen(unittest.TestCase):
                          "mkdir -p \"$XDG_STATE_HOME/af\"\n"
                          "printf '[[store]]\\n' >>\"$XDG_STATE_HOME/af/stores.toml\"\n")
         os.chmod(af, 0o700)
-        environment = dict(os.environ, **clicases.tui_home_environment(scratch))
+        environment = dict(os.environ, **cli_cases.tui_home_environment(scratch))
         self.assertEqual(environment["XDG_STATE_HOME"], os.path.join(scratch, "home/state"))
         result = subprocess.run(["/bin/sh", SETUP, "registry_empty", scratch, af, "-", seed],
                                 env=environment, capture_output=True, text=True, timeout=120)

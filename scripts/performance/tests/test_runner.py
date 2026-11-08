@@ -17,7 +17,7 @@ import time
 from fractions import Fraction
 from unittest import mock
 
-from perflab import builds, bundle, clicases, compare, contracts, hostlock, oracle, planning
+from perflab import builds, bundle, cli_cases, evaluate_results, contracts, host_lock, oracle, planning
 from perflab import report, runner
 from perflab import schedule, supervise
 from perflab import suite as suite_module
@@ -27,7 +27,7 @@ from tests.support import read, release_recorded, writable_copy
 
 VERSION = "0.12.0-rc.3"
 LOCK_TEMPLATE = ('version = 4\n\n[[package]]\nname = "af"\nversion = "%s"\n\n[[package]]\n'
-                 'name = "review-core"\nversion = "%s"\n')
+                 'name = "af-contracts"\nversion = "%s"\n')
 LOCK = LOCK_TEMPLATE % (VERSION, VERSION)
 # The first package version whose adapter (af_cli_v2) runs the browser case.
 BROWSER_VERSION = "0.13.0"
@@ -292,8 +292,8 @@ def run_started_now(plan, started_unix_ms=None):
 def report_schema(version):
     """The `af review report --format json` schema the AF release `version` emits: `@4`
     through the 0.13 releases, `@5` from 0.14.0-rc.1 (its CHANGELOG)."""
-    return ("af/review-report@5" if clicases._version_key(version)
-            >= clicases._version_key("0.14.0-rc.1") else "af/review-report@4")
+    return ("af/review-report@5" if cli_cases._version_key(version)
+            >= cli_cases._version_key("0.14.0-rc.1") else "af/review-report@4")
 
 
 def make_build(root, plan, af_versions, slow_after=None, started_unix_ms=None):
@@ -461,7 +461,7 @@ class Shards(ShardHarness):
         self.assertEqual(before, after)
         # The scratch namespaces are gone; the private parent is untouched.
         self.assertEqual(os.listdir(self.path("scratch")), [])
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["provenance"], "measured")
         self.assertEqual(verdict["scope"], "partial_scope")
         self.assertFalse(verdict["aggregate"]["satisfies_required_check"])
@@ -489,7 +489,7 @@ class Shards(ShardHarness):
                 self.assertTrue(failed[0]["logs"]["retained"].startswith("logs/"))
                 # Failed samples are never retried.
                 self.assertEqual(self.calls(build), len(self.records(run_dir)))
-                verdict = compare.compare(run_dir)
+                verdict = evaluate_results.compare(run_dir)
                 self.assertEqual(verdict["aggregate"]["result"], expected)
                 self.assertEqual(verdict["aggregate"]["exit_code"], code)
                 status = verdict["cases"][0]["status"]
@@ -508,7 +508,7 @@ class Shards(ShardHarness):
         self.assertEqual(records[13]["failure"]["kind"], "lifecycle_violation")
         self.assertEqual(records[13]["execution"]["lifecycle"], "unexpected_descendants")
         self.assertEqual(doc["slots"]["failed"], 2)
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertNotEqual(verdict["aggregate"]["result"], "pass")
         kinds = sorted(item["kind"] for item in verdict["cases"][0]["failures"])
         self.assertEqual(kinds, ["lifecycle_violation", "timeout"])
@@ -525,7 +525,7 @@ class Shards(ShardHarness):
         self.assertEqual(doc["record_count"], 15)
         self.assertEqual(doc["slots"]["unstarted"], len(schedule.expected_slots(plan, 0)) - 15)
         self.assertEqual(self.calls(build), 15)
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["aggregate"]["result"], "incomplete")
         codes = set(reason["code"] for reason in verdict["aggregate"]["reasons"])
         self.assertTrue({"shard_not_complete", "missing_records"} <= codes, codes)
@@ -540,7 +540,7 @@ class Shards(ShardHarness):
         self.assertIn("perf-supervisor: invalid JSON", doc["failure"]["detail"])
         self.assert_kept_one_namespace(doc)
         self.assertEqual([r["sequence"] for r in self.records()], [0, 1, 2])
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["aggregate"]["result"], "incomplete")
 
     def test_an_artifact_changed_during_the_shard_stops_it_before_the_next_launch(self):
@@ -560,7 +560,7 @@ class Shards(ShardHarness):
         plan, plan_path, build = self.prepare([SMALL], run_id="unstable", slow_after=24)
         doc = runner.run_shard(self.options(plan_path, build))
         self.assertEqual(doc["status"], "complete")
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["health"][0]["status"], "unstable")
         self.assertIn("median_shift", verdict["health"][0]["flags"])
         case = verdict["cases"][0]
@@ -578,7 +578,7 @@ class Shards(ShardHarness):
         self.assertGreater(doc["slots"]["unstarted"], 0)
         self.assertEqual(doc["record_count"] + doc["slots"]["unstarted"],
                          doc["expected_records"])
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["aggregate"]["result"], "incomplete")
 
     def test_an_instance_without_a_runnable_cli_command_is_never_substituted(self):
@@ -607,7 +607,7 @@ class Shards(ShardHarness):
         self.assertEqual(doc["failure"]["reason"], "unavailable_coverage")
         self.assertIn("withheld by this test", doc["failure"]["detail"])
         self.assertTrue(all(r["phase"].startswith("sentinel") for r in self.records()))
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["cases"][0]["status"], "missing_records")
 
     def test_hosts_modes_and_states_that_cannot_run_the_plan_refuse_before_sampling(self):
@@ -671,7 +671,7 @@ class Shards(ShardHarness):
         for index in (0, 1):
             runner.run_shard(self.options(plan_path, build, shard=index,
                                           run_dir=self.path("host-%d" % index)))
-        partial = compare.compare(self.path("host-0"))
+        partial = evaluate_results.compare(self.path("host-0"))
         self.assertEqual(partial["aggregate"]["result"], "incomplete")
         result = subprocess.run(
             [sys.executable, "-I", CLI, "aggregate", "--run", self.path("host-0"),
@@ -726,7 +726,7 @@ class Shards(ShardHarness):
         refusal = json.loads(container.stdout)
         self.assertIn(refusal["reason"], ("mode_mismatch", "host_mismatch"))
         # The lock it took is the private one.
-        self.assertTrue(os.path.exists(os.path.join(locks, hostlock.MACHINE_LOCK_NAME)))
+        self.assertTrue(os.path.exists(os.path.join(locks, host_lock.MACHINE_LOCK_NAME)))
 
 
 class BrowserShard(ShardHarness):
@@ -776,7 +776,7 @@ class BrowserShard(ShardHarness):
         self.assertEqual(len(set(reported)), len(reported))
         self.assertEqual(set(frame - splash for frame, splash in reported),
                          {Fraction("90.25")})
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assert_valid_evidence(verdict)
         # The report keeps every sample's splash_ms in its verified evidence copy.
         doc = report.write(self.path("run"), self.path("report"))
@@ -791,7 +791,7 @@ class BrowserShard(ShardHarness):
     # What the real driver reports when a member of the browser's group survives its kill.
     UNCONFIRMED_DRIVER = ("import sys\n"
                           "sys.stderr.write('tui-open: cleanup unconfirmed: held\\n')\n"
-                          "sys.exit(%d)\n" % clicases.DRIVER_UNCONFIRMED_EXIT)
+                          "sys.exit(%d)\n" % cli_cases.DRIVER_UNCONFIRMED_EXIT)
 
     def driven_by(self, run_id, driver, overrides=None):
         """A plan of the browser case whose authority's PTY driver is the Python source
@@ -935,7 +935,7 @@ class Seeds(SeedHarness):
         self.assertNotEqual(seeds[("baseline", "task_state")]["digest"],
                             seeds[("candidate", "task_state")]["digest"])
         self.assertEqual(os.listdir(self.path("scratch")), [])
-        self.assert_valid_evidence(compare.compare(self.path("run")))
+        self.assert_valid_evidence(evaluate_results.compare(self.path("run")))
 
     def test_a_failed_writer_fails_only_its_own_side_and_is_never_retried(self):
         plan, plan_path, build = self.seeded("seed_failure", cases=(TASK_SHOW,))
@@ -955,7 +955,7 @@ class Seeds(SeedHarness):
                 self.assertIn("seed task_state was not written", record["failure"]["detail"])
             else:
                 self.assertEqual(record["status"], "ok", record["failure"])
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["cases"][0]["status"], "candidate_failure")
         self.assertEqual(verdict["aggregate"]["result"], "fail")
 
@@ -973,7 +973,7 @@ class Seeds(SeedHarness):
         self.assertEqual(last["failure"]["kind"], "lifecycle_violation")
         # The seeds were removed even though the shard stopped.
         self.assertEqual(os.listdir(self.path("scratch")), [])
-        self.assertEqual(compare.compare(self.path("run"))["aggregate"]["result"], "incomplete")
+        self.assertEqual(evaluate_results.compare(self.path("run"))["aggregate"]["result"], "incomplete")
 
 
 class NativeSeeds(SeedHarness):
@@ -1034,7 +1034,7 @@ class NativeSeeds(SeedHarness):
                             ["digest"])
         # Every seed was removed with the shard.
         self.assertEqual(os.listdir(self.path("scratch")), [])
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assert_valid_evidence(verdict)
 
         # A record that names no ready native seed of its own side is refused.
@@ -1044,7 +1044,7 @@ class NativeSeeds(SeedHarness):
             shard["seeds"] = [seed for seed in shard["seeds"] if seed["side"] == "baseline"]
         from perflab import synthetic
         synthetic.reseal_shard(root, forget_candidate_seeds)
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["aggregate"]["result"], "incomplete")
         self.assertIn("read no copy of the", " ".join(
             reason["detail"] for reason in verdict["aggregate"]["reasons"]))
@@ -1072,7 +1072,7 @@ class NativeSeeds(SeedHarness):
                         self.assertIn("was not written", record["failure"]["detail"])
                     else:
                         self.assertEqual(record["status"], "ok", record["failure"])
-                self.assertEqual(compare.compare(run_dir)["aggregate"]["result"], "fail")
+                self.assertEqual(evaluate_results.compare(run_dir)["aggregate"]["result"], "fail")
                 self.assertEqual(os.listdir(self.path("scratch")), [])
 
     def test_a_seed_holding_a_symlink_is_refused_before_anything_outside_it_changes(self):
@@ -1110,7 +1110,7 @@ class NativeSeeds(SeedHarness):
                         self.assertEqual(record["failure"]["kind"], "launch_failure")
                 # The seed, symlink included, was removed with the shard.
                 self.assertEqual(os.listdir(self.path("scratch")), [])
-                self.assertEqual(compare.compare(run_dir)["aggregate"]["result"], "fail")
+                self.assertEqual(evaluate_results.compare(run_dir)["aggregate"]["result"], "fail")
 
     def test_a_plan_seed_other_than_the_registry_s_is_refused_before_anything_runs(self):
         plan, plan_path, build = self.seeded("native_identity", cases=(COLD,))
@@ -1139,7 +1139,7 @@ class NativeSeeds(SeedHarness):
         self.assertEqual((last["instance_id"], last["side"], last["failure"]["kind"]),
                          (SOURCE_100, "baseline", "lifecycle_violation"))
         self.assertEqual(os.listdir(self.path("scratch")), [])
-        self.assertEqual(compare.compare(self.path("run"))["aggregate"]["result"], "incomplete")
+        self.assertEqual(evaluate_results.compare(self.path("run"))["aggregate"]["result"], "incomplete")
 
 
 class ControllerCancellation(ShardHarness):
@@ -1171,7 +1171,7 @@ class ControllerCancellation(ShardHarness):
     def test_a_signal_under_a_controller_lease_seals_the_shard_then_cancels_the_controller(self):
         plan, plan_path, build = self.prepare([DISCOVERY], run_id="cancelled")
         before = signal.getsignal(signal.SIGTERM)
-        lease = hostlock.MachineLock(self.path("locks"))
+        lease = host_lock.MachineLock(self.path("locks"))
         try:
             lease.guard()
             fired = []
@@ -1195,7 +1195,7 @@ class ControllerCancellation(ShardHarness):
                                             clock=self.cancelling_clock(build, fired)))
         self.assert_cancelled_record(doc, fired)
         # Its own confirmed cleanup settled its own lock: the next shard may run.
-        hostlock.MachineLock(self.path("locks")).release()
+        host_lock.MachineLock(self.path("locks")).release()
 
     def final_slot_signal(self, fired):
         """The shard's own installed handler, invoked from inside its final slot once that
@@ -1231,7 +1231,7 @@ class ControllerCancellation(ShardHarness):
         self.assertEqual(contracts.read_file(self.path("run", "shards", "0", runner.SHARD_FILE),
                                              "shard"), doc, "the interrupted record is sealed")
         self.assertEqual(os.listdir(self.path("scratch")), [], "confirmed scratch is removed")
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["aggregate"]["result"], "incomplete")
         self.assertIn("shard_not_complete",
                       [reason["code"] for reason in verdict["aggregate"]["reasons"]])
@@ -1239,7 +1239,7 @@ class ControllerCancellation(ShardHarness):
     def test_a_signal_in_the_final_slot_under_a_lease_seals_interrupted_then_cancels(self):
         plan, plan_path, build = self.prepare([DISCOVERY], run_id="final_lease")
         before = signal.getsignal(signal.SIGTERM)
-        lease = hostlock.MachineLock(self.path("locks"))
+        lease = host_lock.MachineLock(self.path("locks"))
         try:
             lease.guard()
             fired = []
@@ -1260,7 +1260,7 @@ class ControllerCancellation(ShardHarness):
         with self.final_slot_signal(fired):
             doc = runner.run_shard(self.options(plan_path, build))
         self.assert_every_slot_recorded_yet_interrupted(plan, doc, fired)
-        hostlock.MachineLock(self.path("locks")).release()
+        host_lock.MachineLock(self.path("locks")).release()
 
     def test_an_uncertain_final_slot_keeps_its_stop_and_fence_when_a_signal_follows(self):
         # The final sample's cleanup is unconfirmed and a signal lands in the same slot: the
@@ -1269,7 +1269,7 @@ class ControllerCancellation(ShardHarness):
         last = len(schedule.expected_slots(plan, 0)) - 1
         with open(os.path.join(build, "control", "overrides.json"), "w") as stream:
             json.dump({str(last): "uncertain"}, stream)
-        lease = hostlock.MachineLock(self.path("locks"))
+        lease = host_lock.MachineLock(self.path("locks"))
         try:
             lease.guard()
             fired = []
@@ -1331,7 +1331,7 @@ class RunDeadline(ShardHarness):
         self.assertEqual(execution["deadline_unix_ms"], execution["run"]["deadline_unix_ms"])
         self.assertGreater(doc["slots"]["unstarted"], 0)
         self.assertGreater(doc["record_count"], 0)
-        verdict = compare.compare(self.path("run"))
+        verdict = evaluate_results.compare(self.path("run"))
         self.assertEqual(verdict["aggregate"]["result"], "incomplete")
         self.assertIn("shard_not_complete", [r["code"] for r in verdict["aggregate"]["reasons"]])
         self.assertNotIn("run_deadline_exceeded",
@@ -1405,7 +1405,7 @@ class PartitionExecution(ShardHarness):
         # The build and its recorded run are unchanged provenance, never a refreshed receipt.
         self.assertEqual(read(os.path.join(run_dir, "builds.json")), builds_bytes)
         self.assertLess(json.loads(builds_bytes)["execution"]["run"]["deadline_unix_ms"], now)
-        codes = [r["code"] for r in compare.compare(run_dir)["aggregate"]["reasons"]]
+        codes = [r["code"] for r in evaluate_results.compare(run_dir)["aggregate"]["reasons"]]
         for code in ("shard_identity", "run_deadline_exceeded", "partition_authority_invalid",
                      "partition_overlap"):
             self.assertNotIn(code, codes)
@@ -1413,7 +1413,7 @@ class PartitionExecution(ShardHarness):
         bare = self.path("bare")
         runner.prepare_run_dir(bare, contracts.write_bytes(plan, "run"), builds_bytes)
         shutil.copytree(os.path.join(run_dir, "shards", "0"), os.path.join(bare, "shards", "0"))
-        codes = [r["code"] for r in compare.compare(bare)["aggregate"]["reasons"]]
+        codes = [r["code"] for r in evaluate_results.compare(bare)["aggregate"]["reasons"]]
         self.assertIn("shard_identity", codes)
         # A caller's deadline that passed still refuses the later partition.
         plan, plan_path, build = self.expired("later_caller")
@@ -1837,9 +1837,9 @@ def plan_minutes():
 
 class CliRegistry(TempDir):
     def test_the_committed_registry_covers_every_process_instance(self):
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         loaded = suite_module.load(SUITE)
-        clicases.check_registry(doc, loaded.doc)
+        cli_cases.check_registry(doc, loaded.doc)
         adapter = doc["adapters"]["af_cli_v1"]
         runnable = sorted("%s %s" % (entry["case_id"], json.dumps(entry["parameters"],
                                                                   sort_keys=True))
@@ -1878,12 +1878,12 @@ class CliRegistry(TempDir):
         edited = json.loads(json.dumps(doc))
         edited["adapters"]["af_cli_v1"]["commands"].pop(0)
         with self.assertRaises(ContractError) as caught:
-            clicases.check_registry(edited, loaded.doc)
+            cli_cases.check_registry(edited, loaded.doc)
         self.assertIn("no command for cli_discovery__command_version", str(caught.exception))
 
     def test_both_browser_commands_expand_to_requests_the_supervisor_admits(self):
         # The supervisor runs only an absolute program: each mode binds {python} to one.
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         current = [entry for entry in doc["adapters"]["af_cli_v2"]["commands"]
                    if entry["case_id"] == "tui_open"]
         self.assertEqual(len(current), 2)
@@ -1895,14 +1895,14 @@ class CliRegistry(TempDir):
                                        self.path("fixtures"), BROWSER_VERSION)
             for entry in current:
                 with self.subTest(mode=mode, registry=entry["parameters"]["registry"]):
-                    argv = [clicases.expand(text, values) for text in entry["argv"]]
+                    argv = [cli_cases.expand(text, values) for text in entry["argv"]]
                     self.assertEqual(argv[0], python)
                     self.assertTrue(os.path.isabs(argv[0]))
                     self.assertEqual(argv[2], values["fixtures"] + "/tui-open.py")
                     order = supervise.request(
-                        argv, {"HOME": "/h"}, clicases.expand(entry["cwd"], values), "",
+                        argv, {"HOME": "/h"}, cli_cases.expand(entry["cwd"], values), "",
                         120000, 1024, 4096, containment=containment, scratch=scratch,
-                        patterns=clicases.patterns(entry), selectors=clicases.selectors(entry))
+                        patterns=cli_cases.patterns(entry), selectors=cli_cases.selectors(entry))
                     self.assertEqual(order["argv"], argv)
         for argv in (["python3", "-I", "{fixtures}/tui-open.py", "{af}"],
                      ["{python}", "-I", "{fixtures}/tui-open.py", "{af}", "--repo", "/"]):
@@ -1918,32 +1918,32 @@ class CliRegistry(TempDir):
             contracts.validate_cli(edited)
         bare = dict(current[0], argv=["python3"] + current[0]["argv"][1:])
         with self.assertRaisesRegex(ContractError, "the program is an absolute path"):
-            supervise.request([clicases.expand(text, values) for text in bare["argv"]], {},
+            supervise.request([cli_cases.expand(text, values) for text in bare["argv"]], {},
                               "/", "", 1000, 1024, 4096)
 
     def test_the_task_fixture_catalog_pins_its_packages_by_the_reference_digest(self):
         repo = os.path.join(ROOT, "fixtures/performance/cli/task-roots/repo")
-        self.assertEqual(clicases.catalog_problems(repo), [])
+        self.assertEqual(cli_cases.catalog_problems(repo), [])
         # The committed fixture may be read-only in a sealed checkout; only the test's own
         # copy is made writable, never the source.
         copy = writable_copy(repo, self.path("repo"))
         path = os.path.join(copy, ".af/task-packages/perf/accept/worker.py")
         with open(path, "a") as stream:
             stream.write("# edited\n")
-        problems = clicases.catalog_problems(copy)
+        problems = cli_cases.catalog_problems(copy)
         self.assertEqual(len(problems), 1)
         self.assertIn("perf/accept pins", problems[0])
         campaign = os.path.join(ROOT, "fixtures/performance/cli/campaign-roots/repo")
-        self.assertEqual(clicases.pipeline_problems(campaign), [])
+        self.assertEqual(cli_cases.pipeline_problems(campaign), [])
         copy = writable_copy(campaign, self.path("campaign"))
         with open(os.path.join(copy, ".af/pipelines/review.toml"), "a") as stream:
             stream.write("# edited\n")
-        problems = clicases.pipeline_problems(copy)
+        problems = cli_cases.pipeline_problems(copy)
         self.assertEqual(len(problems), 1)
         self.assertIn("pipeline review pins", problems[0])
         task = json.loads(read(os.path.join(ROOT, "fixtures/performance/cli/task-roots/"
                                             "task.json")))
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         self.assertEqual(task["task_id"], doc["task_fixture"]["task_id"])
 
     def test_a_side_before_adr_0255_runs_the_task_fixture_with_the_receipt_its_af_writes(self):
@@ -1956,19 +1956,19 @@ class CliRegistry(TempDir):
                 return b"{}" if (sha, path) in self.holding else None
 
         plan = {"resolved": {"baseline_sha": "a" * 40, "candidate_sha": "b" * 40}}
-        across = Source({("b" * 40, clicases.RECEIPT_V2_SCHEMA)})
-        receipts = clicases.side_receipts(across, plan)
+        across = Source({("b" * 40, cli_cases.RECEIPT_V2_SCHEMA)})
+        receipts = cli_cases.side_receipts(across, plan)
         self.assertEqual(receipts, {"baseline": "receipt-v1", "candidate": "receipt-v2"})
-        both = Source({("a" * 40, clicases.RECEIPT_V2_SCHEMA),
-                       ("b" * 40, clicases.RECEIPT_V2_SCHEMA)})
-        self.assertEqual(clicases.side_receipts(both, plan),
+        both = Source({("a" * 40, cli_cases.RECEIPT_V2_SCHEMA),
+                       ("b" * 40, cli_cases.RECEIPT_V2_SCHEMA)})
+        self.assertEqual(cli_cases.side_receipts(both, plan),
                          {"baseline": "receipt-v2", "candidate": "receipt-v2"})
         for setup in ("task_repository", "task_started"):
-            self.assertEqual(clicases.setup_argument({"setup": setup}, receipts, "baseline",
+            self.assertEqual(cli_cases.setup_argument({"setup": setup}, receipts, "baseline",
                                                      "-"), "receipt-v1")
-            self.assertEqual(clicases.setup_argument({"setup": setup}, receipts, "candidate",
+            self.assertEqual(cli_cases.setup_argument({"setup": setup}, receipts, "candidate",
                                                      "-"), "receipt-v2")
-        self.assertEqual(clicases.setup_argument({"setup": "seed_copy"}, receipts, "baseline",
+        self.assertEqual(cli_cases.setup_argument({"setup": "seed_copy"}, receipts, "baseline",
                                                  "/seed"), "/seed")
         # The overlay pins its package as exactly as the repository does, and changes nothing
         # but the receipt the evaluator declares.
@@ -1985,10 +1985,10 @@ class CliRegistry(TempDir):
                                                                 b"af/TaskCheckReceipt@1"))
                 with open(os.path.join(copy, relative), "wb") as stream:
                     stream.write(replaced)
-        self.assertEqual(clicases.catalog_problems(copy), [])
+        self.assertEqual(cli_cases.catalog_problems(copy), [])
         # The setup lays it over a fresh repository for that side, and refuses a generation
         # it does not know.
-        environment = dict(clicases.ENVIRONMENT, HOME=self.path("home"))
+        environment = dict(cli_cases.ENVIRONMENT, HOME=self.path("home"))
         setup = os.path.join(ROOT, "fixtures/performance/cli/setup.sh")
         for receipt, declared in (("receipt-v1", b"af/TaskCheckReceipt@1"),
                                   ("receipt-v2", b"af/TaskCheckReceipt@2")):
@@ -1998,7 +1998,7 @@ class CliRegistry(TempDir):
                            env=environment, check=True, capture_output=True)
             worker = read(os.path.join(scratch, "repo/.af/task-packages/perf/accept/worker.toml"))
             self.assertIn(declared, worker)
-            self.assertEqual(clicases.catalog_problems(os.path.join(scratch, "repo")), [])
+            self.assertEqual(cli_cases.catalog_problems(os.path.join(scratch, "repo")), [])
         scratch = self.path("scratch-unknown")
         os.mkdir(scratch)
         refused = subprocess.run(["/bin/sh", setup, "task_repository", scratch, "-", "-", "-"],
@@ -2007,30 +2007,30 @@ class CliRegistry(TempDir):
         self.assertIn("unknown check-receipt generation", refused.stderr)
 
     def test_each_side_s_version_comes_from_its_own_bound_cargo_lock(self):
-        self.assertEqual(clicases.package_version(LOCK.encode("utf-8")), VERSION)
+        self.assertEqual(cli_cases.package_version(LOCK.encode("utf-8")), VERSION)
         with self.assertRaises(ContractError):
-            clicases.package_version(b'version = 4\n')
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
-        self.assertEqual(clicases.choose_adapter(doc, VERSION)[0], "af_cli_v1")
-        self.assertEqual(clicases.choose_adapter(doc, "0.13.0")[0], "af_cli_v2")
-        self.assertIsNone(clicases.choose_adapter(doc, "0.12.0-rc.2")[0])
-        self.assertIsNone(clicases.choose_adapter(doc, "0.11.9")[0])
+            cli_cases.package_version(b'version = 4\n')
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        self.assertEqual(cli_cases.choose_adapter(doc, VERSION)[0], "af_cli_v1")
+        self.assertEqual(cli_cases.choose_adapter(doc, "0.13.0")[0], "af_cli_v2")
+        self.assertIsNone(cli_cases.choose_adapter(doc, "0.12.0-rc.2")[0])
+        self.assertIsNone(cli_cases.choose_adapter(doc, "0.11.9")[0])
         repo, base, head = authority_repo(self.path("checkout"))
         plan = plan_for(repo, base, head, [DISCOVERY])
-        from perflab import gitrefs
-        self.assertEqual(clicases.side_versions(gitrefs.Git(repo.path), plan),
+        from perflab import git_refs
+        self.assertEqual(cli_cases.side_versions(git_refs.Git(repo.path), plan),
                          {"baseline": VERSION, "candidate": VERSION})
         forged = dict(plan, build_inputs=dict(plan["build_inputs"], candidate={
             "cargo_lock_sha256": sha256_bytes(b"another lock")}))
         with self.assertRaises(ContractError) as caught:
-            clicases.side_versions(gitrefs.Git(repo.path), forged)
+            cli_cases.side_versions(git_refs.Git(repo.path), forged)
         self.assertIn("not the one the plan bound", str(caught.exception))
 
 
 class CliOracle(TempDir):
     def setUp(self):
         TempDir.setUp(self)
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         adapter = doc["adapters"]["af_cli_v1"]
         self.commands = dict((entry["parameters"].get("command", entry["case_id"]), entry)
                              for entry in adapter["commands"])
@@ -2045,10 +2045,10 @@ class CliOracle(TempDir):
         whole = stdout if whole is None else whole
         if counts is None:
             counts = [whole.count(pattern.encode("utf-8"))
-                      for pattern in clicases.patterns(entry)]
-        selectors = clicases.selectors(entry)
+                      for pattern in cli_cases.patterns(entry)]
+        selectors = cli_cases.selectors(entry)
         observed = observe_json(selectors, whole) if selectors else None
-        return clicases.judge(entry, self.values, returncode, stdout, truncated, counts,
+        return cli_cases.judge(entry, self.values, returncode, stdout, truncated, counts,
                               observed)
 
     def test_discovery_checks_the_side_s_version_and_usage_tokens_only(self):
@@ -2068,7 +2068,7 @@ class CliOracle(TempDir):
         self.assertIn("exited 2, not 0", detail)
 
     def test_versioned_top_level_help_requires_its_heading_usage_and_commands(self):
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         for version, adapter_id, heading in (
                 ("0.12.0-rc.3", "af_cli_v1", "Commands:"),
                 ("0.12.0-rc.5", "af_cli_v1", "Commands:"),
@@ -2076,15 +2076,15 @@ class CliOracle(TempDir):
                 ("0.13.0-rc.2", "af_cli_v2", "Commands, in the order a first run needs them:"),
                 ("0.13.0", "af_cli_v2", "Commands, in the order a first run needs them:")):
             with self.subTest(version=version):
-                chosen, adapter = clicases.choose_adapter(doc, version)
+                chosen, adapter = cli_cases.choose_adapter(doc, version)
                 self.assertEqual(chosen, adapter_id)
-                entry = clicases.command(adapter, "cli_discovery", {"command": "help"})
+                entry = cli_cases.command(adapter, "cli_discovery", {"command": "help"})
                 text = ("Usage: af [OPTIONS] [COMMAND]\n\n" + heading +
                         "\n  review  Review\n  task  Task\n\nOptions:\n  --version  Version\n").encode()
                 values = dict(self.values, package_version=version)
 
                 def judge(output, code=0):
-                    return clicases.judge(entry, values, code, output, 0, [], None)[0]
+                    return cli_cases.judge(entry, values, code, output, 0, [], None)[0]
 
                 self.assertTrue(judge(text))
                 for missing in (b"Usage: af [OPTIONS] [COMMAND]", b"  review ",
@@ -2096,10 +2096,10 @@ class CliOracle(TempDir):
                     self.assertFalse(judge(text.replace(heading.encode(), malformed.encode())),
                                      malformed)
                 self.assertFalse(judge(text, 2))
-                version_entry = clicases.command(adapter, "cli_discovery", {"command": "version"})
-                self.assertTrue(clicases.judge(version_entry, values, 0,
+                version_entry = cli_cases.command(adapter, "cli_discovery", {"command": "version"})
+                self.assertTrue(cli_cases.judge(version_entry, values, 0,
                     ("af " + version + "\n").encode(), 0, [], None)[0])
-                self.assertFalse(clicases.judge(version_entry, values, 0,
+                self.assertFalse(cli_cases.judge(version_entry, values, 0,
                     b"af 0.0.0\n", 0, [], None)[0])
 
     def test_task_outcomes_need_the_expected_state_and_the_executed_check(self):
@@ -2137,7 +2137,7 @@ class CliOracle(TempDir):
     # output, as the supervisor observes it; the judge reads only the retained prefix and the
     # truncation, as a shard does. The retained 196,608 bytes are the sample log's default
     # 256 KiB less its stderr quarter. The real supervisor's observation of the same documents
-    # is tested in crates/review-process/tests/perf_supervisor.rs.
+    # is tested in crates/af-process/tests/perf_supervisor.rs.
     RETAINED = 196608
 
     def events(self, numbers, kinds=None):
@@ -2270,7 +2270,7 @@ class CliOracle(TempDir):
         self.assertTrue(self.judge_show(fields)[0])
 
     def test_a_sequence_follows_the_seed_s_declared_events(self):
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         changed = json.loads(json.dumps(doc))
         for command in changed["adapters"]["af_cli_v1"]["commands"]:
             if command["parameters"].get("command") == "task_show":
@@ -2278,7 +2278,7 @@ class CliOracle(TempDir):
                     if rule["kind"] == "json_stream_sequence":
                         rule["last"] = 9998
         with self.assertRaises(ContractError) as caught:
-            clicases.check_registry(changed, suite_module.load(SUITE).doc)
+            cli_cases.check_registry(changed, suite_module.load(SUITE).doc)
         self.assertIn("numbers 0..9998, not the seed task_state's 10000 events",
                       str(caught.exception))
 
@@ -2349,7 +2349,7 @@ class CliOracle(TempDir):
     def test_each_release_declares_its_own_report_schema_and_whole_output(self):
         # The release's own contract, from its version: 0.13 releases emit @4, 0.14.0-rc.1 on
         # @5. Neither accepts the other's schema; no adapter accepts whichever one is emitted.
-        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         findings = [self.finding(index) for index in range(1, 101)]
         log = suite_module.load(SUITE).doc["limits"]["sample_log_bytes"]
         for version, adapter_id, schema, other in (
@@ -2357,9 +2357,9 @@ class CliOracle(TempDir):
                 ("0.14.0-rc.1", "af_cli_v3", "af/review-report@5", "af/review-report@4"),
                 ("0.14.0-rc.3", "af_cli_v3", "af/review-report@5", "af/review-report@4")):
             with self.subTest(version=version):
-                chosen, adapter = clicases.choose_adapter(doc, version)
+                chosen, adapter = cli_cases.choose_adapter(doc, version)
                 self.assertEqual(chosen, adapter_id)
-                self.commands["review_report"] = clicases.command(
+                self.commands["review_report"] = cli_cases.command(
                     adapter, "cli_state_read", {"command": "review_report",
                                                 "state": "cli_state_10000"})
                 # The release's whole 100-Finding report, padded to the 234,442 bytes
@@ -2368,9 +2368,9 @@ class CliOracle(TempDir):
                 whole = self.report(padded, schema=schema, open=100)
                 whole = whole[:-1] + b" " * (234442 - len(whole)) + b"}"
                 self.assertEqual(len(whole), 234442)
-                cap = clicases.stdout_bytes(log)
+                cap = cli_cases.stdout_bytes(log)
                 self.assertGreaterEqual(cap, len(whole))
-                self.assertGreaterEqual(log - cap, clicases.STDERR_RESERVE_BYTES)
+                self.assertGreaterEqual(log - cap, cli_cases.STDERR_RESERVE_BYTES)
                 self.assertTrue(self.judge("review_report", whole)[0])
                 refused = (
                     (self.report(findings, schema=other, open=100), 0, "schema"),
@@ -2413,7 +2413,7 @@ class CliOracle(TempDir):
         partial = dict(entry, rules=[rule for rule in entry["rules"]
                                      if rule["kind"] == "stdout_enumerates"]
                        + [{"kind": "exit_code", "value": 0}])
-        passed, detail, _ = clicases.judge(partial, self.values, 0, self.ledger(rows)[:-1], 0,
+        passed, detail, _ = cli_cases.judge(partial, self.values, 0, self.ledger(rows)[:-1], 0,
                                            [], [])
         self.assertFalse(passed)
         self.assertIn("not retained whole", detail)

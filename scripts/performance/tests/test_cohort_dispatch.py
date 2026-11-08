@@ -532,9 +532,9 @@ spec=importlib.util.spec_from_file_location('dispatcher',sys.argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);m.LAB=pathlib.Path(sys.argv[2])
 a,c,contracts,t=m.runtime()
 assert contracts.TELEMETRY_BINDING_SCHEMA == 'af.perf-telemetry-binding/1'
-from perflab import telemetrybuild
-assert callable(telemetrybuild.run)
-assert all(pathlib.Path(item.__file__).is_relative_to(m.LAB) for item in (a,c,contracts,t,telemetrybuild))
+from perflab import telemetry_build
+assert callable(telemetry_build.run)
+assert all(pathlib.Path(item.__file__).is_relative_to(m.LAB) for item in (a,c,contracts,t,telemetry_build))
 """
         process = subprocess.run([sys.executable, "-I", "-B", "-c", script,
                                   operator.__file__, self.tmp], capture_output=True, timeout=20)

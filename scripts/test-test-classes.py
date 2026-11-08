@@ -834,14 +834,14 @@ if mode == 'malformed':
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
             inventory = {'rust-suites': {
-                'review-core': {'testcases': {'functional': {'ignored': False},
+                'af-contracts': {'testcases': {'functional': {'ignored': False},
                                               'perf_trace::perf_case': {'ignored': False}}},
-                'review-process': {'testcases': {'e2e_case': {'ignored': False}}},
+                'af-process': {'testcases': {'e2e_case': {'ignored': False}}},
                 'af::it': {'testcases': {'cli_surface::uix_case': {'ignored': False}}},
-                'review-pipeline::perf_probe': {'testcases': {
+                'af-runtime::perf_probe': {'testcases': {
                     'calibration_build_case': {'ignored': False}}}}}
             # A realistic generated class filter exceeds the strict per-argument bound.
-            inventory['rust-suites']['review-core']['testcases'].update(
+            inventory['rust-suites']['af-contracts']['testcases'].update(
                 {f'functional_case_{n:03}': {'ignored': False} for n in range(100)})
             tc.write(root / 'inventory.json', inventory)
             cargo = tools / 'cargo'
@@ -849,7 +849,7 @@ if mode == 'malformed':
 import json, os, pathlib, sys
 if sys.argv[1:3] == ['nextest', 'list']:
     args = sys.argv[1:]
-    variant = ('trace' if 'review-core/perf-trace,review-core/perf-calibration' in args
+    variant = ('trace' if 'af-contracts/perf-trace,af-contracts/perf-calibration' in args
                else 'calibration' if '--features' in args else 'default')
     report = pathlib.Path(os.environ['AF_CHECK_REPORT'])
     records = [json.loads(line) for line in report.read_text().splitlines()]
@@ -866,19 +866,19 @@ import json, os, pathlib, sys, xml.etree.ElementTree as ET
 args = sys.argv[1:]
 expression = pathlib.Path(args[args.index('--filterset-file') + 1]).read_text()
 if '--features' in args:
-    cases = ([('review-core', 'perf_trace::perf_case')] if 'test(perf_)' in expression
-             else [('review-pipeline::perf_probe', 'calibration_build_case')])
-elif 'review-process' in expression:
-    cases = [('review-process', 'e2e_case')]
+    cases = ([('af-contracts', 'perf_trace::perf_case')] if 'test(perf_)' in expression
+             else [('af-runtime::perf_probe', 'calibration_build_case')])
+elif 'af-process' in expression:
+    cases = [('af-process', 'e2e_case')]
 elif 'af::it' in expression:
     cases = [('af::it', 'cli_surface::uix_case')]
 elif 'functional' in expression:
-    names = json.loads(pathlib.Path('inventory.json').read_text())['rust-suites']['review-core']['testcases']
-    cases = [('review-core', name) for name in names if name.startswith('functional')]
+    names = json.loads(pathlib.Path('inventory.json').read_text())['rust-suites']['af-contracts']['testcases']
+    cases = [('af-contracts', name) for name in names if name.startswith('functional')]
     assert len(expression) > 1024
 else:
-    cases = [('review-core', 'perf_trace::perf_case'),
-             ('review-pipeline::perf_probe', 'calibration_build_case')]
+    cases = [('af-contracts', 'perf_trace::perf_case'),
+             ('af-runtime::perf_probe', 'calibration_build_case')]
 root = ET.Element('testsuites')
 suite = ET.SubElement(root, 'testsuite')
 for binary, name in cases:
@@ -1251,7 +1251,7 @@ class Quarantine(unittest.TestCase):
         suites = fixture['rust-suites']
         for name in ('cli_surface::help_lists_every_command', 'cli_surface::version_prints_one_line'):
             suites['af::it']['testcases'][name] = {'ignored': False}
-        suites['review-process::cancellation']['testcases']['cancellation_after_exit_is_a_noop'] = {
+        suites['af-process::cancellation']['testcases']['cancellation_after_exit_is_a_noop'] = {
             'ignored': False}
         return fixture
 
@@ -1302,7 +1302,7 @@ class Quarantine(unittest.TestCase):
                                  tc.filterset(tc.partition(fixture, held={}), plan['selected']))
 
     def test_a_quarantined_test_leaves_the_fast_and_full_filters_but_its_siblings_stay(self):
-        other = 'review-process::cancellation cancellation_before_spawn_cannot_execute_the_command'
+        other = 'af-process::cancellation cancellation_before_spawn_cannot_execute_the_command'
         self.held_file({self.held: self.entry(), other: self.entry(state='flaky', issue=None)})
         entries = tc.partition(self.inventory())
         classes = {e['binary'] + ' ' + e['test']: e['class'] for e in entries}
@@ -1317,8 +1317,8 @@ class Quarantine(unittest.TestCase):
                 self.assertFalse(self.selects(expression, *other.split(' ')))
                 for binary, name in [('af::it', 'cli_surface::help_lists_every_command'),
                                      ('af::it', 'cli_surface::version_prints_one_line'),
-                                     ('review-process::cancellation', 'cancellation_after_exit_is_a_noop'),
-                                     ('review-core::schema_parity',
+                                     ('af-process::cancellation', 'cancellation_after_exit_is_a_noop'),
+                                     ('af-contracts::schema_parity',
                                       'a_gate_cleanup_is_one_closed_transition_referencing_no_artifact')]:
                     self.assertTrue(self.selects(expression, binary, name), (binary, name))
         full = tc.filterset(entries, list(tc.CLASSES))
@@ -1406,7 +1406,7 @@ class Quarantine(unittest.TestCase):
                      'an #[ignore] test cannot be quarantined', inventory=fixture)
 
     def test_a_feature_only_identity_is_refused_as_outside_the_default_feature_inventory(self):
-        feature_only = ('review-pipeline::perf_probe calibration_build::'
+        feature_only = ('af-runtime::perf_probe calibration_build::'
                         'calibration_build_probe_injects_once_inside_the_region_and_keeps_its_oracle')
         needles = ('covers the default-feature inventory only',
                    'fix the test, or exclude it from its feature selector by hand')
@@ -1415,7 +1415,7 @@ class Quarantine(unittest.TestCase):
         # At partition time too, before the generic absent-identity guard could name it.
         self.refusal({feature_only: self.entry()}, *needles, inventory=self.inventory())
         self.assertNotIn('not in the test inventory', str(self.held_refusal(feature_only)))
-        trace = 'review-core perf_trace::tests::a_recorder_test'
+        trace = 'af-contracts perf_trace::tests::a_recorder_test'
         self.refusal({trace: self.entry()}, '.config/test-quarantine.json: ' + trace,
                      'trace feature build', *needles)
 

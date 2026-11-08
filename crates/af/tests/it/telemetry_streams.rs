@@ -8,15 +8,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use review_core::{Arg, Command};
-use review_runner::ModelRunner;
-use review_runner::stream::HarnessStream;
-use review_store::Cas;
-use review_telemetry::level::Level;
-use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
-use review_telemetry::segment::writer::{Writer, WriterOptions};
-use review_telemetry::stream::{Harness, Release, Stream, Tap, TapOptions};
-use review_telemetry::subscriber::{RecordedSpan, SpanIdentity};
+use af_contracts::{Arg, Command};
+use af_runner::ModelRunner;
+use af_runner::stream::HarnessStream;
+use af_store::Cas;
+use af_telemetry::level::Level;
+use af_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
+use af_telemetry::segment::writer::{Writer, WriterOptions};
+use af_telemetry::stream::{Harness, Release, Stream, Tap, TapOptions};
+use af_telemetry::subscriber::{RecordedSpan, SpanIdentity};
 use serde_json::{Value, json};
 
 use crate::telemetry_ledger::Recording;
@@ -103,13 +103,13 @@ fn record_stream(root: &Path, lines: &[String], end: bool) -> Option<(Writer, Ta
     options.cwd = PathBuf::from("/work");
     options.af_version = "0.0.0-golden".into();
     options.af_commit = "0123456789ab".into();
-    options.redactor = review_telemetry::redact::Redactor::new();
+    options.redactor = af_telemetry::redact::Redactor::new();
     options.segment_id = Some(SEGMENT.into());
     options.clock = Some(Arc::new(move || {
         u128::from(clock.fetch_add(1_000_000, Ordering::SeqCst))
     }));
     let writer = Writer::new(options).unwrap();
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: STORE.into(),
         run_id: RUN.into(),
         execution_id: SEGMENT.into(),
@@ -176,7 +176,7 @@ fn record_stream(root: &Path, lines: &[String], end: bool) -> Option<(Writer, Ta
             grants: vec![],
             content_reasoning: true,
             content_tool_io: true,
-            scope: review_telemetry::content::Scope::Process,
+            scope: af_telemetry::content::Scope::Process,
         },
     );
     let start = 1_700_000_300_010 * 1_000_000;
@@ -246,7 +246,7 @@ fn telemetry_turns_and_tools_match_their_goldens() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("telemetry");
     record_golden(&root, &claude_session("model-authored words"));
-    let trace = review_telemetry::trace::trace_id(STORE, RUN);
+    let trace = af_telemetry::trace::trace_id(STORE, RUN);
     let normalize = |text: String| {
         text.replace(&root.display().to_string(), "<root>")
             .replace(&trace, "<trace>")
@@ -419,7 +419,7 @@ fn live_records(writer: &Writer) -> (Vec<Record>, String) {
     (records, text)
 }
 
-fn events_named<'a>(records: &'a [Record], name: &str) -> Vec<&'a review_telemetry::record::Event> {
+fn events_named<'a>(records: &'a [Record], name: &str) -> Vec<&'a af_telemetry::record::Event> {
     records
         .iter()
         .filter_map(|record| match record {
@@ -580,12 +580,12 @@ fn telemetry_observer_survives_cancellation() {
     });
     assert!(matches!(
         capture.status,
-        Err(review_runner::RunnerError::Failed { .. })
+        Err(af_runner::RunnerError::Failed { .. })
     ));
     assert!(String::from_utf8_lossy(&capture.stdout).contains("toolu_cancelled"));
     let writer = recording.writer.clone();
     recording.finish();
-    let sealed = review_telemetry::segment::reader::read_sealed(
+    let sealed = af_telemetry::segment::reader::read_sealed(
         &writer
             .layout()
             .sealed_segment(&writer.segment_id().unwrap()),
@@ -728,7 +728,7 @@ fn telemetry_capped_capture_withholds_its_pending_content() {
             )
     });
     match capture.status {
-        Err(review_runner::RunnerError::Failed {
+        Err(af_runner::RunnerError::Failed {
             exit_code,
             stderr_excerpt,
         }) => {
@@ -743,7 +743,7 @@ fn telemetry_capped_capture_withholds_its_pending_content() {
     assert_eq!(capture.stdout.len(), 4096, "the Store keeps the prefix");
     let writer = recording.writer.clone();
     recording.finish();
-    let sealed = review_telemetry::segment::reader::read_sealed(
+    let sealed = af_telemetry::segment::reader::read_sealed(
         &writer
             .layout()
             .sealed_segment(&writer.segment_id().unwrap()),
@@ -850,10 +850,7 @@ fn telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped() {
         })
     });
     assert!(
-        matches!(
-            capture.status,
-            Err(review_runner::RunnerError::Failed { .. })
-        ),
+        matches!(capture.status, Err(af_runner::RunnerError::Failed { .. })),
         "{:?}",
         capture.status
     );
@@ -863,7 +860,7 @@ fn telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped() {
     drop(release);
     let writer = recording.writer.clone();
     recording.finish();
-    let sealed = review_telemetry::segment::reader::read_sealed(
+    let sealed = af_telemetry::segment::reader::read_sealed(
         &writer
             .layout()
             .sealed_segment(&writer.segment_id().unwrap()),
@@ -921,7 +918,7 @@ fn telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped() {
 /// Attempt's reply is unchanged.
 #[test]
 fn telemetry_codex_final_message_joins_the_release_decision() {
-    use review_runner::task::{WorkerAccess, WorkerModelAdapter as _};
+    use af_runner::task::{WorkerAccess, WorkerModelAdapter as _};
     use std::os::unix::fs::PermissionsExt;
     let stdout: String = [
         json!({"type":"thread.started","thread_id":"WXYZ-9876"}),
@@ -950,7 +947,7 @@ fn telemetry_codex_final_message_joins_the_release_decision() {
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let adapter = review_runner_codex::task::CodexTaskAdapter::new(&Command::new(
+        let adapter = af_runner_codex::task::CodexTaskAdapter::new(&Command::new(
             program.to_str().unwrap(),
             [
                 "--model",

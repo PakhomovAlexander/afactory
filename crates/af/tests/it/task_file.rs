@@ -404,7 +404,7 @@ fn native_model_drift_case_with(
     client_update: ClientUpdate,
     incompatible: Option<Incompatible>,
 ) {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = fixture_named(directory.path(), "review");
@@ -601,11 +601,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         attempt.wall_ms = NATIVE_REVIEWER_WALL_MS;
         std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
         catalog["packages"][&package]["digest"] =
-            toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
+            toml::Value::String(af_pipeline_config::lock::package_digest(&package, &path).unwrap());
         providers.insert(package, toml::Value::String(provider.clone()));
     }
     let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-    let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
         toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
             .unwrap();
     pipeline.max_attempts = 4;
@@ -618,7 +618,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     )
     .unwrap();
     catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
+        af_pipeline_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
     );
     catalog
         .as_table_mut()
@@ -785,8 +785,8 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         assert_eq!(shown["chargeable_tokens"], result["chargeable_tokens"]);
         assert_eq!(shown["attempts"], result["attempts"]);
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), sent);
-        let cas = review_store::Cas::open(state.join("cas")).unwrap();
-        let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open(state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         let projection = store.task_projection(&cas, "review-cli").unwrap().unwrap();
         assert_eq!(projection.revision.limits.tokens, 10000);
         let execution = projection.execution.unwrap();
@@ -842,15 +842,15 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             row.split_whitespace().any(|cell| cell == exact.to_string()),
             "{text}"
         );
-        let cas = review_store::Cas::open(state.join("cas")).unwrap();
-        let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open(state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         let projection = store.task_projection(&cas, "review-cli").unwrap().unwrap();
         let execution = projection.execution.unwrap();
         assert_eq!(execution.budget.committed_tokens(), exact);
         assert_eq!(execution.budget.begun_attempts(), 1);
         assert_eq!(projection.revision.limits.tokens, 10_000);
         let walls = store
-            .task_attempt_wall(&review_store::store::task::task_run_id("review-cli").unwrap())
+            .task_attempt_wall(&af_store::store::task::task_run_id("review-cli").unwrap())
             .unwrap();
         let usage = walls[0].usage.as_ref().unwrap();
         assert_eq!(usage.chargeable_tokens.get(), exact);
@@ -870,7 +870,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         let id = settled["record"]["usage_id"].as_str().unwrap();
         assert_eq!(
             cas.get_artifact(id).unwrap().artifact_type,
-            review_core::task::usage::TASK_TOKEN_USAGE_V3
+            af_contracts::task::usage::TASK_TOKEN_USAGE_V3
         );
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
         return;
@@ -962,7 +962,7 @@ fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
         ticket.as_object_mut().unwrap().remove("verification");
         std::fs::write(&file, serde_json::to_vec(&ticket).unwrap()).unwrap();
         let pipeline_dir = repo.join(format!(".af/task-packages/fixture/{root}"));
-        let mut pipeline = review_config::task::parse_task_pipeline(
+        let mut pipeline = af_pipeline_config::task::parse_task_pipeline(
             &std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap(),
         )
         .unwrap();
@@ -975,9 +975,10 @@ fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
-        catalog["packages"].as_table_mut().unwrap().insert(package_name.into(), toml::Value::try_from(serde_json::json!({"version":"1.0.0","digest":review_config::lock::package_digest(package_name,&package).unwrap(),"path":".af/task-packages/team/task-kind"})).unwrap());
+        catalog["packages"].as_table_mut().unwrap().insert(package_name.into(), toml::Value::try_from(serde_json::json!({"version":"1.0.0","digest":af_pipeline_config::lock::package_digest(package_name,&package).unwrap(),"path":".af/task-packages/team/task-kind"})).unwrap());
         catalog["packages"][format!("fixture/{root}")]["digest"] = toml::Value::String(
-            review_config::lock::package_digest(&format!("fixture/{root}"), &pipeline_dir).unwrap(),
+            af_pipeline_config::lock::package_digest(&format!("fixture/{root}"), &pipeline_dir)
+                .unwrap(),
         );
         catalog.as_table_mut().unwrap().insert(
             "kinds".into(),
@@ -1047,9 +1048,11 @@ fn embedded_review_never_accepts(case: &str) {
         }
         "missing_coverage" => {
             let path = packages.join("review/pipeline.toml");
-            let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-                review_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
-                    .unwrap();
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+                af_pipeline_config::task::parse_task_pipeline(
+                    &std::fs::read_to_string(&path).unwrap(),
+                )
+                .unwrap();
             pipeline.coverage.clear();
             pipeline
                 .contract
@@ -1062,9 +1065,11 @@ fn embedded_review_never_accepts(case: &str) {
         }
         "stale_checks" => {
             let path = packages.join("implementation/pipeline.toml");
-            let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-                review_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
-                    .unwrap();
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+                af_pipeline_config::task::parse_task_pipeline(
+                    &std::fs::read_to_string(&path).unwrap(),
+                )
+                .unwrap();
             pipeline.nodes.push(serde_json::from_value(serde_json::json!({"id":"old_checks","operator":{"op":"check","checks":["pagination"]},"inputs":{"source":{"kind":"input","port":"source"}}})).unwrap());
             pipeline
                 .nodes
@@ -1095,7 +1100,7 @@ fn embedded_review_never_accepts(case: &str) {
     ] {
         let name_key = format!("fixture/{name}");
         catalog["packages"][&name_key]["digest"] = toml::Value::String(
-            review_config::lock::package_digest(&name_key, &packages.join(name)).unwrap(),
+            af_pipeline_config::lock::package_digest(&name_key, &packages.join(name)).unwrap(),
         );
     }
     std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -1236,8 +1241,8 @@ fn implementation_embeds_the_same_locked_review_and_one_task_budget() {
     let alone = &standalone["review_rounds"][0];
     assert_eq!(review["outcome"], alone["outcome"]);
     assert_eq!(review["conclusion"], alone["conclusion"]);
-    let captured = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let separate = review_store::Cas::open_existing(standalone_state.join("cas")).unwrap();
+    let captured = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let separate = af_store::Cas::open_existing(standalone_state.join("cas")).unwrap();
     for reviewer in ["bugs", "correctness"] {
         let embedded_result = captured
             .get_json(review["selected_results"][reviewer].as_str().unwrap())
@@ -1287,7 +1292,7 @@ fn implementation_embeds_the_same_locked_review_and_one_task_budget() {
 
 #[test]
 fn two_developers_share_one_pipeline_with_captured_private_worker_bindings() {
-    use review_config::task::catalog::TaskWorkerManifest;
+    use af_pipeline_config::task::catalog::TaskWorkerManifest;
     let temp = tempfile::tempdir().unwrap();
     let (repo, _) = fixture(temp.path());
     let mut pipeline_ids = Vec::new();
@@ -1309,7 +1314,7 @@ fn two_developers_share_one_pipeline_with_captured_private_worker_bindings() {
             toml::to_string(&worker).unwrap(),
         )
         .unwrap();
-        let digest = review_config::lock::package_digest(&worker.name, &package).unwrap();
+        let digest = af_pipeline_config::lock::package_digest(&worker.name, &package).unwrap();
         let bindings = local.join("bindings.toml");
         std::fs::write(&bindings, toml::to_string(&serde_json::json!({
             "schema":"af.task-bindings/1", "packages":{worker.name.clone():{"version":"1.0.0", "digest":digest,"path":"worker"}},

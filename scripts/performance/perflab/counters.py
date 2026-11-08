@@ -19,7 +19,7 @@ import os
 import re
 import zlib
 
-from . import toolrun
+from . import tool_run
 
 _TOTALS = re.compile(r"^totals:\s+([0-9]+)", re.MULTILINE)
 _SUMMARY = re.compile(r"^summary:\s+([0-9]+)", re.MULTILINE)
@@ -54,7 +54,7 @@ def callgrind_switch(supervisor, callgrind_control, env, state, seconds, cwd, ta
     process, and the machine lock keeps any other Callgrind run off this machine."""
 
     def switch(deadline):
-        result = toolrun.run(supervisor, [callgrind_control, "-i", state, target], env,
+        result = tool_run.run(supervisor, [callgrind_control, "-i", state, target], env,
                              seconds, 65536, cwd=cwd, deadline=deadline)
         if result.failure() is not None:
             raise CounterError("callgrind_control_failed", result.failure())
@@ -99,7 +99,7 @@ def samply_capability(supervisor, samply, target, env, seconds, deadline=None, c
     """(available, reason, detail, reported version) of a samply capture of `target`; every
     tool runs under `supervisor` before `deadline`."""
     def run(argv, cap):
-        return toolrun.run(supervisor, argv, env, seconds, cap, cwd=cwd, deadline=deadline)
+        return tool_run.run(supervisor, argv, env, seconds, cap, cwd=cwd, deadline=deadline)
 
     version = run([samply, "--version"], 4096)
     if version.failure() is not None:

@@ -5,6 +5,7 @@ staged triage packages and example under `fixtures/issue-triage/`. Reachability 
 on a throwaway repository; no network, no GitHub, no Provider."""
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -58,7 +59,7 @@ def doc(**fields):
 
 
 def evaluation(outcome='passed', block=None):
-    summary = 'crates/review-core/src/task/state.rs:483 says what the report claims.'
+    summary = 'crates/af-contracts/src/task/state.rs:483 says what the report claims.'
     if block is not None:
         summary += '\n\n```json\n' + json.dumps(block, indent=2) + '\n```'
     return {'document_id': DOCUMENT_ID, 'sources_id': 'sha256:' + '2' * 64,
@@ -76,7 +77,7 @@ def rendered(document, fence='```'):
         '## Rationale', 'The approval group is named for a plan to confirm; `af task plan --fit` is not one.',
         '## Findings', 'The excerpts show the group and its next command.',
         '## Recommendation', 'Take it on the default pipeline.',
-        '## Repository citations', '- `crates/review-core/src/task/state.rs:483`',
+        '## Repository citations', '- `crates/af-contracts/src/task/state.rs:483`',
         '## Review', 'The report passed its automated checks.',
     ]) + '\n'
 
@@ -172,7 +173,7 @@ class Documents(unittest.TestCase):
         self.assertEqual(triage.author_document(draft=draft), doc())
 
     def test_the_canonical_escapes_are_read_back(self):
-        # The escapes of `markdown_text` (crates/review-pipeline/src/task/document.rs); the Rust
+        # The escapes of `markdown_text` (crates/af-runtime/src/task/document.rs); the Rust
         # test task_triage feeds the real renderer's bytes through the script.
         for written, authored in (('\\`\\`\\`json', '```json'), ('\\~\\~\\~', '~~~'),
                                   ('"schema": `"af/issue-triage@1",`', '"schema": "af/issue-triage@1",'),
@@ -797,6 +798,43 @@ class Cli(unittest.TestCase):
 
 class Staged(unittest.TestCase):
     """The packages and the example the owner installs (fixtures/issue-triage/README.md)."""
+
+    def captured_issue(self):
+        return json.loads((ROOT / 'fixtures/custom-tasks/triage/issue.json').read_text(encoding='utf-8'))
+
+    def captured_body_and_comment(self):
+        sources = json.loads((STAGED / 'example/sources.json').read_text(encoding='utf-8'))
+        _, separator, text = sources['sources']['issue']['text'].partition('\n--- body ---\n')
+        self.assertTrue(separator)
+        body, separator, comment = text.partition(
+            '\n--- comment 1: PakhomovAlexander (owner), 2026-10-30T12:10:41Z ---\n')
+        self.assertTrue(separator)
+        return body, comment
+
+    def test_the_captured_issue_bodies_match_the_original_body_sha256(self):
+        issue = self.captured_issue()
+        body, _ = self.captured_body_and_comment()
+        expected = '15df027abbdbd04730efeb9889d0084d5a86d0ee4a0332c165b01cc1dc5fddcb'
+        self.assertEqual(issue['captured_identity']['body_sha256'], f'sha256:{expected}')
+        for name, text in (('custom Task', issue['body']), ('report source', body)):
+            with self.subTest(capture=name):
+                self.assertEqual(hashlib.sha256(text.encode('utf-8')).hexdigest(), expected)
+        self.assertEqual(body, issue['body'])
+
+    def test_the_captured_full_owner_comment_matches_the_original_sha256(self):
+        _, comment = self.captured_body_and_comment()
+        expected = '0f7c2805252af45985fd1cbcead88fd78b8de59025e3c92459217637d9cc6bfe'
+        self.assertEqual(hashlib.sha256(comment.encode('utf-8')).hexdigest(), expected)
+        captured = self.captured_issue()['comments'][0]
+        self.assertEqual(captured['original_sha256'], f'sha256:{expected}')
+
+    def test_the_truncated_owner_comment_is_a_prefix_of_the_full_capture(self):
+        captured = self.captured_issue()['comments'][0]
+        _, comment = self.captured_body_and_comment()
+        self.assertTrue(captured['truncated'])
+        self.assertTrue(captured['body'])
+        self.assertLess(len(captured['body']), len(comment))
+        self.assertEqual(captured['body'], comment[:len(captured['body'])])
 
     def test_the_example_sources_fit_the_document_sources_shape_and_the_report_bounds(self):
         path = STAGED / 'example' / 'sources.json'

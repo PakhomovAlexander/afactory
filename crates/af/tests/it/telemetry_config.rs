@@ -5,15 +5,15 @@
 
 use std::path::Path;
 
-use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
-use review_pipeline::telemetry::{MachineConfig, row};
-use review_store::Cas;
-use review_store::store::task::{DeveloperGrant, TaskAuthority};
-use review_telemetry::level::Level;
-use review_telemetry::record::SealExit;
-use review_telemetry::segment::writer::{ConfigOwner, Writer, WriterOptions};
-use review_telemetry::subscriber::{TelemetrySubscriber, Typed};
-use review_telemetry::view::{self, ConfigRecord, Resolved};
+use af_runtime::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
+use af_runtime::telemetry::{MachineConfig, row};
+use af_store::Cas;
+use af_store::store::task::{DeveloperGrant, TaskAuthority};
+use af_telemetry::level::Level;
+use af_telemetry::record::SealExit;
+use af_telemetry::segment::writer::{ConfigOwner, Writer, WriterOptions};
+use af_telemetry::subscriber::{TelemetrySubscriber, Typed};
+use af_telemetry::view::{self, ConfigRecord, Resolved};
 
 use crate::telemetry_ledger::task_fixture::{Authority, TaskFixture};
 
@@ -35,7 +35,7 @@ fn machine() -> MachineConfig {
         harnesses: vec![row("harness", "claude_code.managed_settings", "", None)],
         host: vec![row("host", "host.os", std::env::consts::OS, None)],
         variables: vec![row("variable", "AF_TELEMETRY__LEVEL", "", None)],
-        texts: vec![review_pipeline::telemetry::ConfigText {
+        texts: vec![af_runtime::telemetry::ConfigText {
             kind: "af_toml",
             digest: AF_TOML.into(),
             bytes: 12,
@@ -51,18 +51,18 @@ impl TaskOperatorHost for NoOperators {
     fn prepare_context(
         &self,
         _: &Cas,
-        _: &review_core::task::execution::TaskInvocationV1,
-        _: &review_graph::task::CompiledNode,
-        _: &review_store::store::task::execution::ReservedTaskAttempt,
+        _: &af_contracts::task::execution::TaskInvocationV1,
+        _: &af_graph::task::CompiledNode,
+        _: &af_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("no operator runs in this fixture".into())
     }
     fn execute(
         &self,
         _: &Cas,
-        _: &review_core::task::execution::TaskInvocationV1,
-        _: &review_graph::task::CompiledNode,
-        _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _: &af_contracts::task::execution::TaskInvocationV1,
+        _: &af_graph::task::CompiledNode,
+        _: Option<&af_store::store::task::execution::PreparedTaskAttempt>,
         _: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         unreachable!("no operator runs in this fixture")
@@ -77,30 +77,30 @@ impl TaskAuthority for RefusesThePlan {
     fn validate_plan(
         &self,
         _: &Cas,
-        _: &review_core::task::TaskRevisionV1,
-        _: &review_core::task::plan::ExecutionPlanV3,
-    ) -> Result<Vec<review_core::task::plan::GeneratedOriginV1>, String> {
+        _: &af_contracts::task::TaskRevisionV1,
+        _: &af_contracts::task::plan::ExecutionPlanV3,
+    ) -> Result<Vec<af_contracts::task::plan::GeneratedOriginV1>, String> {
         Err("the plan's pipeline changed since it was admitted".into())
     }
     fn authorize_decision(
         &self,
-        _: &review_core::task::TaskRevisionV1,
+        _: &af_contracts::task::TaskRevisionV1,
         _: &str,
-        _: review_core::task::plan::PlanDecisionKindV1,
+        _: af_contracts::task::plan::PlanDecisionKindV1,
     ) -> Result<DeveloperGrant, String> {
         Err("no generated plans".into())
     }
     fn authorization_current(
         &self,
-        _: &review_core::task::plan::PlanDecisionV1,
+        _: &af_contracts::task::plan::PlanDecisionV1,
     ) -> Result<(), String> {
         Err("no generated plans".into())
     }
     fn validate_result(
         &self,
         _: &Cas,
-        _: &review_core::task::TaskRevisionV1,
-        _: &review_core::task::TaskResultV1,
+        _: &af_contracts::task::TaskRevisionV1,
+        _: &af_contracts::task::TaskResultV1,
     ) -> Result<(), String> {
         Err("no acceptance in this fixture".into())
     }
@@ -109,16 +109,16 @@ impl TaskAuthority for RefusesThePlan {
 /// A writer at `level` into `root`, its subscriber, and the command's sections installed.
 fn recording(root: &Path, level: Level) -> (Writer, tracing::Dispatch) {
     let mut options = WriterOptions::new(root, level);
-    options.redactor = review_telemetry::redact::Redactor::new();
+    options.redactor = af_telemetry::redact::Redactor::new();
     let writer = Writer::new(options).unwrap();
     let dispatch = tracing::Dispatch::new(TelemetrySubscriber::new(writer.clone()));
-    review_pipeline::telemetry::set_machine_config(Box::new(machine));
+    af_runtime::telemetry::set_machine_config(Box::new(machine));
     (writer, dispatch)
 }
 
 /// End every run span and seal the segment.
 fn seal(writer: &Writer, dispatch: &tracing::Dispatch) {
-    tracing::dispatcher::with_default(dispatch, review_pipeline::telemetry::end_runs);
+    tracing::dispatcher::with_default(dispatch, af_runtime::telemetry::end_runs);
     writer.finish(SealExit::Ok).unwrap();
 }
 
@@ -267,7 +267,7 @@ fn telemetry_config_text_identities_at_spans() {
             .unwrap();
         assert_eq!(
             named.digest.as_deref(),
-            Some(review_telemetry::trace::sha256_digest(text.as_bytes()).as_str()),
+            Some(af_telemetry::trace::sha256_digest(text.as_bytes()).as_str()),
             "{kind}"
         );
         assert_eq!(named.bytes, Some(text.len() as u64), "{kind}");
@@ -293,7 +293,7 @@ fn telemetry_config_of_a_measurement_run_is_its_own() {
     let (writer, dispatch) = recording(&root, Level::Spans);
     let store_id = "5".repeat(64);
     let task_id = "measured";
-    let task_run = review_store::store::task::task_run_id(task_id).unwrap();
+    let task_run = af_store::store::task::task_run_id(task_id).unwrap();
     let attempt = "01jd8m4qz9k7v3n2p6r8t0w2a1";
     let measurement_run = tracing::dispatcher::with_default(&dispatch, || {
         // The command's span opens the segment the run's spans name.
@@ -310,9 +310,7 @@ fn telemetry_config_of_a_measurement_run_is_its_own() {
         );
         let _run = run.enter();
         // The Task run's own record, as the runtime writes it for its plan.
-        let run_span = review_telemetry::subscriber::recorded(&run)
-            .unwrap()
-            .span_id;
+        let run_span = af_telemetry::subscriber::recorded(&run).unwrap().span_id;
         let segment = writer.segment_id().unwrap();
         writer.config(
             &ConfigOwner {
@@ -325,8 +323,8 @@ fn telemetry_config_of_a_measurement_run_is_its_own() {
         );
         let attempt_span = tracing::info_span!("af.attempt", af.attempt_id = attempt);
         let _attempt = attempt_span.enter();
-        let measured = review_pipeline::telemetry::measurement(task_id, attempt, "bench");
-        let run_id = review_telemetry::subscriber::recorded(&measured)
+        let measured = af_runtime::telemetry::measurement(task_id, attempt, "bench");
+        let run_id = af_telemetry::subscriber::recorded(&measured)
             .and_then(|recorded| recorded.trace_id)
             .unwrap();
         drop(measured);
@@ -343,7 +341,7 @@ fn telemetry_config_of_a_measurement_run_is_its_own() {
         panic!("one measurement run owns parts: {owners:?}");
     };
     assert_eq!(
-        review_telemetry::trace::trace_id(&store_id, measured),
+        af_telemetry::trace::trace_id(&store_id, measured),
         measurement_run
     );
     // The measurement's record: the command's sections and what it measures, complete.

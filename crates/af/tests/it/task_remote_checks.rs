@@ -97,7 +97,7 @@ fn fixture() -> Fixture {
     let package = repo.join(".af/task-packages/fixture/implementation-remote");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(package.join("pipeline.toml"), twin).unwrap();
-    let digest = review_config::lock::package_digest(REMOTE, &package).unwrap();
+    let digest = af_pipeline_config::lock::package_digest(REMOTE, &package).unwrap();
     let catalog = repo.join(".af/task-catalog.toml");
     let mut text = std::fs::read_to_string(&catalog).unwrap();
     text.push_str(&format!(
@@ -390,7 +390,7 @@ fn below_the_floor_a_remote_check_is_refused_before_any_push() {
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
     catalog["packages"]["fixture/implementer"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
+        af_pipeline_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
     );
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
     git(&fixture.repo, &["add", "-A"]);
@@ -896,7 +896,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
     assert_eq!(fragment["packages"].as_table().unwrap().len(), TWINS.len());
     for (remote, local) in TWINS {
         let pin = &fragment["packages"][remote];
-        let digest = review_config::lock::package_digest(
+        let digest = af_pipeline_config::lock::package_digest(
             remote,
             &workspace.join(STAGED).join("task-packages").join(remote),
         )

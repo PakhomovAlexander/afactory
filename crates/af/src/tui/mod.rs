@@ -1564,7 +1564,7 @@ impl App {
                 return;
             }
         };
-        let (name, value) = crate::selfmgmt::undispatched_child();
+        let (name, value) = crate::self_management::undispatched_child();
         let child = HandOff {
             program,
             args: words.to_vec(),

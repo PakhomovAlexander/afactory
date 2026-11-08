@@ -162,13 +162,13 @@ from perflab import activation, archive, builds, bundle, calibration  # noqa: E4
 from perflab import capability, contracts, costs  # noqa: E402
 from perflab import diagnostics  # noqa: E402
 from perflab import budget as deadlines  # noqa: E402
-from perflab import buildpack, ci, credentials, gitrefs, hostprep  # noqa: E402
-from perflab import history, kernelguard, kernelmeasure, oracle, phasetrace, planning  # noqa: E402
-from perflab import reference, render, telemetrycollect, telemetrylab  # noqa: E402
+from perflab import build_pack, ci, credentials, git_refs, host_prep  # noqa: E402
+from perflab import history, kernel_guard, kernel_measure, oracle, phase_trace, planning  # noqa: E402
+from perflab import reference, render, telemetry_collect, telemetry_lab  # noqa: E402
 from perflab import release, report, runner  # noqa: E402
 from perflab import transport  # noqa: E402
 from perflab import suite as suite_module  # noqa: E402
-from perflab.compare import InvalidInput, compare  # noqa: E402
+from perflab.evaluate_results import InvalidInput, compare  # noqa: E402
 from perflab.values import ContractError, document_bytes, require  # noqa: E402
 
 EXIT_INVALID = 2
@@ -268,8 +268,8 @@ def cmd_plan(args):
         if args.scope != "diagnostic":
             if not args.head or not args.tier:
                 raise ContractError("plan needs --head and --tier")
-        result = planning.plan(gitrefs.Git(args.repo), request)
-    except gitrefs.Unavailable as error:
+        result = planning.plan(git_refs.Git(args.repo), request)
+    except git_refs.Unavailable as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_plan", str(error))
@@ -283,7 +283,7 @@ def cmd_plan(args):
 def cmd_cohort_declare(args):
     """Declare a complete calibration cohort from the proposed authority's own registry."""
     try:
-        git = gitrefs.Git(args.repo)
+        git = git_refs.Git(args.repo)
         authority = git.resolve(args.authority, "--authority")
         suite = planning.read_suite(git, authority)
         groups = [calibration.parse_group(text) for text in args.group]
@@ -291,7 +291,7 @@ def cmd_cohort_declare(args):
                                   args.recipe, groups, args.start_date, args.repository,
                                   args.after_run_number, args.days, args.preparation_members,
                                   args.preparation_iterations, args.branch)
-    except gitrefs.Unavailable as error:
+    except git_refs.Unavailable as error:
         sys.stderr.write("unavailable: %s\n" % error)
         return EXIT_UNAVAILABLE
     except (ContractError, OSError) as error:
@@ -307,7 +307,7 @@ def cmd_cohort_declare(args):
 def _collected(args, sealed=None):
     import tempfile
     cohort = _load_json(args.cohort, "cohort")
-    git = gitrefs.Git(args.repo)
+    git = git_refs.Git(args.repo)
     replan = calibration.replanner(git, cohort, sealed)
     scratch = tempfile.mkdtemp(prefix="af-perf-calibration-")
     return cohort, scratch, calibration.collect(cohort, args.evidence, scratch, replan,
@@ -375,7 +375,7 @@ def cmd_activate(args):
         return EXIT_INVALID
     scratch = None
     try:
-        git = gitrefs.Git(args.repo)
+        git = git_refs.Git(args.repo)
         revision = git.resolve(args.revision, "--revision")
         evidence = None
         if args.verify_proposed:
@@ -415,7 +415,7 @@ def cmd_activate(args):
                                  "cohort not fetched again\n" % base[:12])
         verified = activation.verify(git, revision, args.manifest, evidence,
                                      None if scratch is None else os.path.join(scratch, "runs"))
-    except gitrefs.Unavailable as error:
+    except git_refs.Unavailable as error:
         sys.stderr.write("unavailable: %s\n" % error)
         return EXIT_UNAVAILABLE
     except (ContractError, OSError) as error:
@@ -441,7 +441,7 @@ def cmd_equivalence_evidence(args):
     """Compute a bridge's execution evidence from its golden-check and post-merge A/A runs;
     exit 0 only when both verify."""
     try:
-        git = gitrefs.Git(args.repo)
+        git = git_refs.Git(args.repo)
         revision = git.resolve(args.revision, "--revision")
         base, _ = activation.read_manifest(git, revision, args.calibrated_activation)
         if base is None:
@@ -461,7 +461,7 @@ def cmd_equivalence_evidence(args):
                                     % (role.replace("_", "-"), text))
             runs[role] = (path, int(number))
         doc = activation.equivalence_module.compute(ctx, runs)
-    except gitrefs.Unavailable as error:
+    except git_refs.Unavailable as error:
         sys.stderr.write("unavailable: %s\n" % error)
         return EXIT_UNAVAILABLE
     except (ContractError, OSError) as error:
@@ -702,15 +702,15 @@ def _write_probe_trace(path, data):
     if data is None:
         sys.stderr.write("no phase trace was exported: the probe is not a perf-trace build\n")
         return
-    doc = phasetrace.load(data, path)
+    doc = phase_trace.load(data, path)
     with open(path, "xb") as stream:
         stream.write(data)
     sys.stderr.write("phase trace %s: %d spans, %d dropped, %d open\n"
                      % (path, len(doc["spans"]), doc["dropped"], doc["open"]))
-    for row in phasetrace.phase_summary(doc):
+    for row in phase_trace.phase_summary(doc):
         sys.stderr.write("  %-22s %6d spans  covered %12d ns  longest %12d ns\n"
                          % (row["phase"], row["spans"], row["covered_ns"], row["longest_ns"]))
-    for line in phasetrace.region_breakdown(doc):
+    for line in phase_trace.region_breakdown(doc):
         sys.stderr.write(line + "\n")
 
 
@@ -724,14 +724,14 @@ def cmd_telemetry_run(args):
             if args.mode == "linux_container":
                 if not args.scratch_owner:
                     raise ContractError("--scratch-owner: trusted ci-scratch ownership is required")
-                owner = hostprep.TelemetryOwner(args.scratch_owner, args.scratch_fs)
+                owner = host_prep.TelemetryOwner(args.scratch_owner, args.scratch_fs)
                 stack.callback(owner.__exit__, None, None, None)
-                with telemetrylab.deadlines.Budget(started + 60, time.monotonic, 0).enforce(
+                with telemetry_lab.deadlines.Budget(started + 60, time.monotonic, 0).enforce(
                         "opening telemetry ownership"):
                     owner.__enter__()
                     owner.available()
             return _telemetry_run(args, owner, started)
-    except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
+    except (telemetry_lab.deadlines.Expired, telemetry_lab.deadlines.Interrupted) as error:
         return _refuse("unavailable", "telemetry_deadline", str(error) + (
             "; recovery ownership=%s mount=%s" % (args.scratch_owner, args.scratch_fs)
             if args.scratch_owner else ""))
@@ -746,10 +746,10 @@ def _telemetry_error(error, owner):
 
 def _telemetry_run(args, owner, started=None):
     try:
-        root = telemetrylab.ROOT
+        root = telemetry_lab.ROOT
         started = time.monotonic() if started is None else started
         build_paths = dict((side, getattr(args, side + "_build")) for side in contracts.SIDES)
-        result = telemetrylab.run(telemetrylab.Settings(
+        result = telemetry_lab.run(telemetry_lab.Settings(
             profile=args.profile, trigger=args.trigger, baseline_af=args.baseline_af,
             candidate_af=args.candidate_af, baseline_sha=args.baseline_sha,
             candidate_sha=args.candidate_sha, authority_sha=args.authority_sha,
@@ -758,14 +758,14 @@ def _telemetry_run(args, owner, started=None):
             result_id=args.result_id, root=root, mode=args.mode, docker=args.docker,
             image=args.image, scratch_fs=args.scratch_fs, build_paths=build_paths, started=started,
             scratch_owner=owner))
-    except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
+    except (telemetry_lab.deadlines.Expired, telemetry_lab.deadlines.Interrupted) as error:
         return _refuse("unavailable", "telemetry_deadline", _telemetry_error(error, owner))
-    except telemetrylab.Unavailable as error:
+    except telemetry_lab.Unavailable as error:
         return _refuse("unavailable", error.reason, _telemetry_error(error, owner))
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_telemetry_run", _telemetry_error(error, owner))
-    sys.stderr.write(telemetrylab.headline(result) + "\n")
-    print(os.path.join(os.path.abspath(args.output), telemetrylab.RESULT_JSON))
+    sys.stderr.write(telemetry_lab.headline(result) + "\n")
+    print(os.path.join(os.path.abspath(args.output), telemetry_lab.RESULT_JSON))
     # Advisory: a measured result exits 0 whatever it measured; 4 when nothing succeeded, a
     # cleanup was not confirmed or protected state changed.
     unsafe = (result["execution"]["cleanup"] != "confirmed" or result["execution"]["problems"])
@@ -784,7 +784,7 @@ def cmd_telemetry_bind_attempt(args):
         head = (event["pull_request"]["head"]["sha"] if event_name == "pull_request"
                 else os.environ["GITHUB_SHA"])
         attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-        require = telemetrylab.require
+        require = telemetry_lab.require
         require((binding["repository"], binding["run_id"], binding["event"],
                  binding["event_sha"], binding["run_head_sha"]) ==
                 (os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_RUN_ID"]), event_name,
@@ -798,14 +798,14 @@ def cmd_telemetry_bind_attempt(args):
 
 
 def cmd_telemetry_contained_build(args):
-    from perflab import telemetrybuild, hostlock
+    from perflab import telemetry_build, host_lock
     try:
-        with hostlock.MachineLock() as lease:
+        with host_lock.MachineLock() as lease:
             lease.guard()
-            telemetrybuild.run(args.source, args.output, args.image, args.scratch_fs,
+            telemetry_build.run(args.source, args.output, args.image, args.scratch_fs,
                                args.source_sha, args.seconds)
             lease.confirm_clean()
-    except hostlock.Refused as error:
+    except host_lock.Refused as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError, subprocess.SubprocessError) as error:
         return _refuse("invalid", "telemetry_build_failed", str(error))
@@ -819,20 +819,20 @@ def cmd_telemetry_schedule(args):
             with open(args.event, "rb") as stream:
                 event = json.loads(stream.read(contracts.limits.MAX_JSON_BYTES + 1))
         inputs = json.loads(args.inputs) if args.inputs else {}
-        doc = telemetrylab.schedule(gitrefs.Git(args.repo), args.event_name, event, inputs,
+        doc = telemetry_lab.schedule(git_refs.Git(args.repo), args.event_name, event, inputs,
                                     args.sha)
     except (ContractError, OSError, ValueError, KeyError, TypeError) as error:
         return _refuse("invalid", "invalid_telemetry_event", str(error))
     binding = None
     if args.binding and doc["state"] == "planned":
         try:
-            binding = telemetrylab.schedule_binding(
+            binding = telemetry_lab.schedule_binding(
                 doc, args.event_name, event, args.sha, os.environ["GITHUB_REPOSITORY"],
                 int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
             _emit(contracts.write_bytes(binding, "telemetry-binding"), args.binding)
         except (ContractError, KeyError, ValueError) as error:
             return _refuse("invalid", "invalid_telemetry_binding", str(error))
-    text = telemetrylab.schedule_outputs(doc)
+    text = telemetry_lab.schedule_outputs(doc)
     if binding is not None:
         text += "binding=" + json.dumps(binding, separators=(",", ":")) + "\n"
     if args.github_output:
@@ -851,12 +851,12 @@ def cmd_telemetry_schedule(args):
 
 def cmd_telemetry_verify(args):
     try:
-        result, identity, _ = telemetrylab.verify(args.result, args.authority_root)
+        result, identity, _ = telemetry_lab.verify(args.result, args.authority_root)
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_telemetry_result", str(error))
-    sys.stderr.write("verified %s (bundle %s)\n" % (telemetrylab.headline(result), identity))
+    sys.stderr.write("verified %s (bundle %s)\n" % (telemetry_lab.headline(result), identity))
     if args.summary:
-        sys.stdout.write(telemetrylab.summary_markdown(result))
+        sys.stdout.write(telemetry_lab.summary_markdown(result))
     return 0
 
 
@@ -865,7 +865,7 @@ def cmd_telemetry_build_record(args):
     try:
         doc = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": args.side,
                "source_sha": args.source_sha,
-               "binary_sha256": telemetrylab._binary(args.binary, "--binary")[1],
+               "binary_sha256": telemetry_lab._binary(args.binary, "--binary")[1],
                "image": args.image, "rustc": args.rustc.strip()[:512],
                "cargo": args.cargo.strip()[:512], "command": args.command_text}
         data = contracts.write_bytes(doc, "telemetry-build")
@@ -880,7 +880,7 @@ def cmd_telemetry_admit(args):
     """Admit a workflow's result bundle for upload: present, verified under this checkout's
     measurement authority and free of credentials, or not admitted. Writes `admitted=` and
     `outcome=` step outputs; exits 0 only when admitted."""
-    outcome, detail, result = telemetrylab.admit_for_upload(args.result)
+    outcome, detail, result = telemetry_lab.admit_for_upload(args.result)
     lines = "admitted=%s\noutcome=%s\n" % ("true" if outcome == "admitted" else "false",
                                              outcome)
     if args.github_output:
@@ -891,7 +891,7 @@ def cmd_telemetry_admit(args):
     if args.job_summary:
         with open(args.job_summary, "a") as stream:
             if result is not None:
-                stream.write(telemetrylab.summary_markdown(result))
+                stream.write(telemetry_lab.summary_markdown(result))
             else:
                 stream.write("### AF telemetry experiment (advisory): not uploaded\n\n%s\n"
                              % render.markdown_cell(detail))
@@ -901,14 +901,14 @@ def cmd_telemetry_admit(args):
 
 def cmd_telemetry_history(args):
     try:
-        doc = telemetrylab.history(os.path.abspath(args.root), args.import_ or (),
+        doc = telemetry_lab.history(os.path.abspath(args.root), args.import_ or (),
                                    args.authority_root, args.bytes_max, args.results_max,
                                    args.retention_days)
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_telemetry_history", str(error))
     sys.stderr.write("%d results in %d groups, %d pruned, %d refused\n" % (
         len(doc["results"]), len(doc["groups"]), len(doc["pruned"]), len(doc["refused"])))
-    print(os.path.join(os.path.abspath(args.root), telemetrylab.HISTORY_HTML))
+    print(os.path.join(os.path.abspath(args.root), telemetry_lab.HISTORY_HTML))
     return 4 if doc["refused"] else 0
 
 
@@ -916,13 +916,13 @@ def cmd_telemetry_collect(args):
     """One bounded telemetry collection cycle (ADR-0215); the credential is read here, from the
     environment variable the configuration names, and given only to the collector."""
     try:
-        config = telemetrycollect.load_config(args.config)
+        config = telemetry_collect.load_config(args.config)
         token = transport.token_from(os.environ, config["token_env"])
         api = transport.Collector(transport.HttpsTransport(), config["repository"], token,
                                   api_url=config["api_url"],
                                   seconds=config["collection_seconds"])
-        budget = deadlines.Budget(api.deadline, api.clock, telemetrycollect.TERMINAL_SECONDS)
-        doc = telemetrycollect.Cycle(config, api, gitrefs.Git(
+        budget = deadlines.Budget(api.deadline, api.clock, telemetry_collect.TERMINAL_SECONDS)
+        doc = telemetry_collect.Cycle(config, api, git_refs.Git(
             config["authority_repository"], budget), time.time, budget=budget).run()
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_telemetry_collection", str(error))
@@ -933,12 +933,12 @@ def cmd_telemetry_collect(args):
         doc["status"], ", ".join("%d %s" % (count, name) for name, count in sorted(
             counts.items())) or "no runs", doc["results"], doc["used_bytes"],
         ("; " + doc["detail"]) if doc["detail"] else ""))
-    print(os.path.join(config["root"], telemetrylab.HISTORY_HTML))
+    print(os.path.join(config["root"], telemetry_lab.HISTORY_HTML))
     return 0 if doc["status"] == "ok" else EXIT_UNAVAILABLE
 
 
 def cmd_build(args):
-    from perflab import hostlock
+    from perflab import host_lock
     try:
         with open(args.plan, "rb") as stream:
             plan = contracts.read_json(stream.read(contracts.limits.MAX_JSON_BYTES + 1), "run",
@@ -953,12 +953,12 @@ def cmd_build(args):
                                  zigbuild_bin=args.zigbuild_bin, build_image=args.build_image,
                                  docker=args.docker, deadline_unix_ms=args.deadline_unix_ms,
                                  build_cache=args.build_cache)
-        with hostlock.MachineLock() as lease:
+        with host_lock.MachineLock() as lease:
             lease.guard()
             doc = builder.build()
             if doc["cleanup"]["status"] == "removed":
                 lease.confirm_clean()
-    except hostlock.Refused as error:
+    except host_lock.Refused as error:
         return _refuse("unavailable", error.reason, str(error))
     except builds.Unavailable as error:
         return _refuse("unavailable", error.reason, str(error))
@@ -1029,8 +1029,8 @@ def cmd_profile(args):
             builder=None if args.no_build else builder, toolchain_bin=args.toolchain_bin,
             cargo_home=args.cargo_home, zigbuild_bin=args.zigbuild_bin,
             build_image=args.build_image, telemetry=args.telemetry)
-        code, path, message = diagnostics.run_profile(gitrefs.Git(args.repo), options)
-    except (gitrefs.Unavailable, diagnostics.Unavailable) as error:
+        code, path, message = diagnostics.run_profile(git_refs.Git(args.repo), options)
+    except (git_refs.Unavailable, diagnostics.Unavailable) as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_profile", str(error))
@@ -1166,7 +1166,7 @@ def cmd_ci_schedule(args):
         if args.release_claim:
             claim = contracts.read_json(_read_bytes(args.release_claim), "release-claim",
                                         args.release_claim)
-        doc, plans = ci.schedule(gitrefs.Git(args.repo), event, settings, release=claim)
+        doc, plans = ci.schedule(git_refs.Git(args.repo), event, settings, release=claim)
         ci.write(args.output, doc, plans)
     except (ContractError, OSError, ValueError) as error:
         return _refuse("invalid", "invalid_event", str(error))
@@ -1222,7 +1222,7 @@ def cmd_ci_release_handoff(args):
                          inputs.get("remeasure_of"))
         api = _release_api(args)
         os.makedirs(args.output)
-        doc, claim = release.handoff(api, gitrefs.Git(args.repo), actions, payload=payload,
+        doc, claim = release.handoff(api, git_refs.Git(args.repo), actions, payload=payload,
                                      remeasure=remeasure)
         if claim is not None:
             os.makedirs(os.path.join(args.output, "claim"))
@@ -1252,7 +1252,7 @@ def cmd_ci_release_confirm(args):
 def cmd_ci_pack(args):
     try:
         plan = _load_json(args.plan, "run")
-        doc = buildpack.pack(args.build, plan, args.output)
+        doc = build_pack.pack(args.build, plan, args.output)
     except (ContractError, OSError) as error:
         sys.stderr.write("refused: %s\n" % error)
         return EXIT_INVALID
@@ -1264,7 +1264,7 @@ def cmd_ci_pack(args):
 def cmd_ci_unpack(args):
     try:
         plan = _load_json(args.plan, "run")
-        doc = buildpack.unpack(args.pack, plan, args.output)
+        doc = build_pack.unpack(args.pack, plan, args.output)
     except (ContractError, OSError) as error:
         sys.stderr.write("refused: %s\n" % error)
         return EXIT_INVALID
@@ -1287,7 +1287,7 @@ def cmd_ci_aggregate(args):
     try:
         plan_bytes = _read_bytes(args.plan)
         plan = contracts.read_json(plan_bytes, "run", args.plan)
-        builds_bytes = buildpack.read_member(args.build_pack, plan, "builds.json")
+        builds_bytes = build_pack.read_member(args.build_pack, plan, "builds.json")
         doc, completeness = ci.aggregate(plan_bytes, builds_bytes, args.shards, args.run_dir,
                                          args.report, args.job_summary, args.transport)
     except (ContractError, OSError) as error:
@@ -1323,15 +1323,15 @@ def cmd_ci_credentials(args):
 
 
 def cmd_ci_scratch(args, *, lock_directory=None):
-    from perflab import hostlock
+    from perflab import host_lock
     try:
-        with hostlock.MachineLock(lock_directory) as lease:
+        with host_lock.MachineLock(lock_directory) as lease:
             lease.guard()
             code = _ci_scratch_locked(args)
             if code == 0:
                 lease.confirm_clean()
             return code
-    except hostlock.Refused as error:
+    except host_lock.Refused as error:
         return _refuse("unavailable", error.reason, "%s; retained recovery paths: image=%s "
                        "mount=%s ownership=%s" % (error, args.image, args.mount, args.telemetry_owner))
 
@@ -1340,24 +1340,24 @@ def _ci_scratch_locked(args):
     try:
         if args.cleanup:
             if args.telemetry_owner:
-                with hostprep.TelemetryOwner(args.telemetry_owner, args.mount) as owner:
+                with host_prep.TelemetryOwner(args.telemetry_owner, args.mount) as owner:
                     problems = owner.cleanup(args.image)
             else:
-                problems = hostprep.cleanup(args.image, args.mount)
+                problems = host_prep.cleanup(args.image, args.mount)
             for problem in problems:
                 sys.stderr.write("cleanup: %s\n" % problem)
             return EXIT_UNAVAILABLE if problems else 0
-        record = hostprep.prepare(args.image, args.mount, args.bytes)
+        record = host_prep.prepare(args.image, args.mount, args.bytes)
         if args.telemetry_owner:
             try:
-                with hostprep.TelemetryOwner(args.telemetry_owner, args.mount, create=True,
+                with host_prep.TelemetryOwner(args.telemetry_owner, args.mount, create=True,
                                             image=args.image):
                     pass
             except BaseException:
                 # Preparation has returned but no measurement can have launched yet.
-                hostprep.cleanup(args.image, args.mount)
+                host_prep.cleanup(args.image, args.mount)
                 raise
-    except hostprep.Refused as error:
+    except host_prep.Refused as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_scratch", "%s; retained recovery paths: image=%s "
@@ -1371,7 +1371,7 @@ def _ci_scratch_locked(args):
 def cmd_measure(args):
     """One guarded kernel measure repetition (ADR-0185): reached through the literal bootstrap
     after the protected harness verified; one judged sample, one report line, or nonzero."""
-    return kernelmeasure.measure(os.getcwd(), args.case, args.metric, os.environ, sys.stdout,
+    return kernel_measure.measure(os.getcwd(), args.case, args.metric, os.environ, sys.stdout,
                                  sys.stderr)
 
 
@@ -1381,28 +1381,28 @@ def cmd_harness_digest(args):
     root = os.path.abspath(args.root)
     try:
         if args.write:
-            found = kernelguard.write_staged(root)
+            found = kernel_guard.write_staged(root)
             sys.stderr.write("re-pinned %s and %s to %s; review the change, then re-install "
-                             "it into .af/ by hand\n" % (kernelguard.STAGED_POLICY,
-                                                          kernelguard.STAGED_INVENTORY, found))
+                             "it into .af/ by hand\n" % (kernel_guard.STAGED_POLICY,
+                                                          kernel_guard.STAGED_INVENTORY, found))
             print(found)
             return 0
         if args.check:
-            found, problems = kernelguard.check_staged(root)
+            found, problems = kernel_guard.check_staged(root)
             for problem in problems:
                 sys.stderr.write("stale: %s\n" % problem)
             if problems:
                 sys.stderr.write("run python3 scripts/performance/cli.py harness-digest --write "
-                                 "and follow %s/README.md to re-pin\n" % kernelguard.STAGED_DIR)
+                                 "and follow %s/README.md to re-pin\n" % kernel_guard.STAGED_DIR)
                 return 1
             print(found)
             return 0
-        found, entries = kernelguard.checkout_digest(root)
+        found, entries = kernel_guard.checkout_digest(root)
     except (ContractError, OSError) as error:
         sys.stderr.write("invalid harness: %s\n" % error)
         return EXIT_INVALID
     if args.json:
-        _emit(document_bytes(kernelguard.inventory_document(found, entries)), None)
+        _emit(document_bytes(kernel_guard.inventory_document(found, entries)), None)
     else:
         print("%s %d" % (found, len(entries)))
     return 0
@@ -1420,19 +1420,19 @@ def _trusted_pair(git, args):
                 "PR submission must bind the exact merge and its ordered parents")
     elif args.kind == "release":
         require(args.tag, "release submission needs --tag")
-        tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
+        tagged, _, _, predecessor = git_refs.release_baseline(git, args.tag)
         require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
                 "release submission disagrees with the tag/predecessor rule")
 
 
 def cmd_executor(args):
     """Operator controller; all executable authority comes from this installed checkout."""
-    from perflab import comparison, executor, localcalibration
+    from perflab import release_comparison, executor, local_calibration
     try:
         if args.operation == "comparison-verify":
             # A copied bundle verifies on its own: no journal or configuration is read.
             require(args.bundle, "comparison-verify needs --bundle DIRECTORY")
-            manifest, doc = comparison.verify_export(args.bundle)
+            manifest, doc = release_comparison.verify_export(args.bundle)
             print(json.dumps({"status": "verified", "comparison_id": doc["comparison_id"],
                               "comparison": doc["status"], "files": len(manifest["files"])},
                              sort_keys=True))
@@ -1442,7 +1442,7 @@ def cmd_executor(args):
         if args.operation == "cohort-declare":
             require(args.cohort_id and args.start_date and args.output and args.group,
                     "cohort-declare needs --cohort-id, --start-date, --group and --output")
-            doc = localcalibration.declare(config, args.cohort_id,
+            doc = local_calibration.declare(config, args.cohort_id,
                 [calibration.parse_group(group) for group in args.group], args.start_date,
                 args.days, args.preparation_members)
             _emit(contracts.write_bytes(doc, "local-cohort-declaration"), args.output)
@@ -1454,7 +1454,7 @@ def cmd_executor(args):
         if args.operation == "comparison-run":
             require(args.comparison, "comparison-run needs --comparison CMP_ID")
             with executor.cancellation():
-                doc, outcomes = comparison.run(
+                doc, outcomes = release_comparison.run(
                     lambda readonly: executor.Journal(config, readonly=readonly),
                     args.comparison, lambda journal: journal.cycle())
             print(json.dumps({"cycles": outcomes, "status": doc}, sort_keys=True))
@@ -1467,25 +1467,25 @@ def cmd_executor(args):
                 require(args.base and args.head and args.key,
                         args.operation + " needs exact --base, --head and --key")
                 _trusted_pair(executor.source_repository(config), args)
-                doc = comparison.preflight(journal, args.base, args.head, args.key, args.kind,
+                doc = release_comparison.preflight(journal, args.base, args.head, args.key, args.kind,
                                            launch=args.operation == "comparison-launch")
                 _emit(contracts.write_bytes(doc, "comparison-preflight"), None)
                 return 0 if doc["status"] != "refused" else 4
             elif args.operation.startswith("comparison-"):
                 require(args.comparison, args.operation + " needs --comparison CMP_ID")
                 if args.operation == "comparison-advance":
-                    doc = comparison.advance(journal, args.comparison)
+                    doc = release_comparison.advance(journal, args.comparison)
                 elif args.operation == "comparison-status":
-                    doc = comparison.status(journal, args.comparison)
+                    doc = release_comparison.status(journal, args.comparison)
                 elif args.operation == "comparison-report":
                     require(args.output, "comparison-report needs --output DIRECTORY")
-                    doc = comparison.status(journal, args.comparison,
+                    doc = release_comparison.status(journal, args.comparison,
                                             verify=executor.verify_original)
-                    comparison.write(doc, args.output, os.path.relpath(
+                    release_comparison.write(doc, args.output, os.path.relpath(
                         config["root"], os.path.abspath(args.output)))
                 else:
                     require(args.output, "comparison-export needs --output DIRECTORY")
-                    _, doc = comparison.export(journal, args.comparison, args.output)
+                    _, doc = release_comparison.export(journal, args.comparison, args.output)
                 _emit(contracts.write_bytes(doc, "comparison-report"), None)
                 return 0 if doc["status"] == "complete" else 4
             if args.operation == "submit" and args.kind == "nightly":
@@ -1544,10 +1544,10 @@ def cmd_executor(args):
                 sealed = (contracts.read_json(executor.read(args.parameters), "calibration-parameters")
                           if args.parameters else None)
                 if args.operation == "calibration-dispatch":
-                    print(json.dumps(localcalibration.dispatch_due(journal, cohort, sealed)))
+                    print(json.dumps(local_calibration.dispatch_due(journal, cohort, sealed)))
                 else:
                     require(args.output, "calibration output needs --output")
-                    runs, refused, hist = localcalibration.collect(journal, cohort, sealed)
+                    runs, refused, hist = local_calibration.collect(journal, cohort, sealed)
                     if args.operation == "calibration-prepare":
                         doc = calibration.prepare(cohort, runs, calibration.tolerances_of(runs, cohort))
                         contract = "calibration-parameters"
@@ -1559,7 +1559,7 @@ def cmd_executor(args):
         return 0
     except executor.JournalBusy as error:
         return _refuse("unavailable", "executor_busy", str(error))
-    except (ContractError, OSError, subprocess.SubprocessError, executor.hostlock.Refused) as error:
+    except (ContractError, OSError, subprocess.SubprocessError, executor.host_lock.Refused) as error:
         return _refuse("unavailable", "executor_refused", str(error))
 
 
@@ -1631,10 +1631,10 @@ def parser():
     plan.add_argument("--output")
     plan.set_defaults(handler=cmd_plan)
 
-    comparison = commands.add_parser("compare", help="recompute a verdict from evidence")
-    comparison.add_argument("--run", required=True)
-    comparison.add_argument("--output")
-    comparison.set_defaults(handler=cmd_compare)
+    release_comparison = commands.add_parser("compare", help="recompute a verdict from evidence")
+    release_comparison.add_argument("--run", required=True)
+    release_comparison.add_argument("--output")
+    release_comparison.set_defaults(handler=cmd_compare)
 
     run = commands.add_parser("run", help="execute exactly one frozen shard of a plan")
     run.add_argument("--plan", required=True, help="the frozen run.json")
@@ -1898,9 +1898,9 @@ def parser():
     telemetry_history.add_argument("--authority-root", help="a checkout of exactly the "
                                    "measurement authority the imports name (default: this one)")
     telemetry_history.add_argument("--bytes-max", type=int,
-                                   default=telemetrylab.HISTORY_BYTES_DEFAULT)
+                                   default=telemetry_lab.HISTORY_BYTES_DEFAULT)
     telemetry_history.add_argument("--results-max", type=int,
-                                   default=telemetrylab.HISTORY_RESULTS_DEFAULT)
+                                   default=telemetry_lab.HISTORY_RESULTS_DEFAULT)
     telemetry_history.add_argument("--retention-days", type=int)
     telemetry_history.set_defaults(handler=cmd_telemetry_history)
 

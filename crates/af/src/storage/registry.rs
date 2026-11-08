@@ -153,9 +153,9 @@ fn update(location: &Path, change: impl FnOnce(&mut Vec<Registered>)) -> Result<
         .parent()
         .ok_or("the Store registry has no directory")?;
     // af's state root: private, whatever the umask (ADR-0144).
-    review_store::local_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
-    let _ = review_store::local_fs::narrow_owned_dir(parent);
-    let lock = review_store::local_fs::private_file_options()
+    af_store::local_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
+    let _ = af_store::local_fs::narrow_owned_dir(parent);
+    let lock = af_store::local_fs::private_file_options()
         .create(true)
         .truncate(false)
         .write(true)

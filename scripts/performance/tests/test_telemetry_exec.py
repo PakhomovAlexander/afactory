@@ -19,7 +19,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from perflab import builds, limits, supervise, telemetryexec, telemetrylab
+from perflab import builds, limits, supervise, telemetry_exec, telemetry_lab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests.support import TempDir, writable_copy
@@ -114,7 +114,7 @@ def execution(test, argv, room=64 << 20, seconds=30, label="x1", cwd=None, reada
     env = {"PATH": "/usr/bin:/bin", "HOME": cwd, "TMPDIR": cwd,
            "XDG_CONFIG_HOME": cwd, "XDG_CACHE_HOME": cwd,
            "XDG_STATE_HOME": cwd, "XDG_DATA_HOME": cwd}
-    return telemetryexec.Execution(argv, env, cwd, [cwd], list(readable), capture, label, room,
+    return telemetry_exec.Execution(argv, env, cwd, [cwd], list(readable), capture, label, room,
                                    time.monotonic() + seconds, 1 << 30)
 
 
@@ -134,7 +134,7 @@ def alive(pid):
 class TrustedLocal(TempDir):
     def setUp(self):
         TempDir.setUp(self)
-        self.executor = telemetryexec.TrustedLocal(sys.executable)
+        self.executor = telemetry_exec.TrustedLocal(sys.executable)
 
     def test_a_clean_script_s_stdout_and_stderr_are_kept_whole_and_tailed(self):
         outcome = self.executor.run(execution(self, [
@@ -143,7 +143,7 @@ class TrustedLocal(TempDir):
         self.assertIsNone(outcome.failure())
         self.assertEqual((outcome.code, outcome.stdout), (0, b'{"a": 1}\n'))
         self.assertEqual(outcome.stderr_bytes, 300000)
-        self.assertEqual(len(outcome.stderr), telemetryexec.LOG_BYTES_MAX)
+        self.assertEqual(len(outcome.stderr), telemetry_exec.LOG_BYTES_MAX)
         self.assertEqual(outcome.cleanup, "confirmed")
 
     def test_a_process_left_behind_in_its_group_fails_the_execution_and_is_killed(self):
@@ -196,11 +196,11 @@ class TrustedLocal(TempDir):
 
     def test_an_exit_observed_after_the_absolute_deadline_is_still_a_timeout(self):
         doc = execution(self, [sys.executable, "-I", "-c", "pass"])
-        wait = telemetryexec._LocalProcess.wait
+        wait = telemetry_exec._LocalProcess.wait
         def observe_late(process, timeout):
             wait(process, timeout)
             self.executor.clock = lambda: doc.deadline + 1
-        with mock.patch.object(telemetryexec._LocalProcess, "wait", observe_late):
+        with mock.patch.object(telemetry_exec._LocalProcess, "wait", observe_late):
             outcome = self.executor.run(doc)
         self.assertTrue(outcome.timed_out)
         self.assertIsNone(outcome.code)
@@ -225,7 +225,7 @@ class TrustedLocal(TempDir):
         outcome = self.executor.run(execution(self, [sys.executable, "-c",
             "import sys; sys.stdout.write('x' * (17 << 20))"]))
         self.assertTrue(outcome.stdout_overflow)
-        self.assertEqual(len(outcome.stdout), telemetryexec.DOCUMENT_BYTES_MAX)
+        self.assertEqual(len(outcome.stdout), telemetry_exec.DOCUMENT_BYTES_MAX)
         self.assertIsNotNone(outcome.failure())
         self.assertEqual(outcome.cleanup, "confirmed", outcome.cleanup_detail)
 
@@ -282,7 +282,7 @@ class LocalEvidence(TempDir):
             self.assertEqual(leader[2:], [os.getpid(), pgid, pgid])
             observed.append(leader)
             return signal_group(pgid, sent)
-        with mock.patch.object(telemetryexec.os, "killpg", side_effect=check):
+        with mock.patch.object(telemetry_exec.os, "killpg", side_effect=check):
             outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         self.assertIsNone(outcome.failure(), outcome.cleanup_detail)
         self.assertTrue(observed)
@@ -290,7 +290,7 @@ class LocalEvidence(TempDir):
         self.assertIsNone(state(observed[0][0]), "leader is reaped only after the last signal")
 
     def test_unknown_evidence_is_sticky_even_when_the_next_scan_is_complete(self):
-        scan = telemetryexec._group_alive
+        scan = telemetry_exec._group_alive
         for index, error in enumerate((PermissionError(errno.EACCES, "process listing"),
                                        OSError(errno.EIO, "process iterator"),
                                        ValueError("malformed process status"))):
@@ -300,7 +300,7 @@ class LocalEvidence(TempDir):
                 if len(calls) == 1:
                     raise error
                 return scan(*args)
-            with mock.patch.object(telemetryexec, "_group_alive", side_effect=fail_once):
+            with mock.patch.object(telemetry_exec, "_group_alive", side_effect=fail_once):
                 outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"],
                                                      label="unknown%d" % index))
             self.assertEqual(outcome.cleanup, "uncertain", outcome.cleanup_detail)
@@ -316,7 +316,7 @@ class LocalEvidence(TempDir):
             if len(calls) == 1:
                 raise OSError(errno.EIO, "unreaped observation")
             return observe(*args)
-        with mock.patch.object(telemetryexec.os, "waitid", side_effect=fail_once):
+        with mock.patch.object(telemetry_exec.os, "waitid", side_effect=fail_once):
             outcome = self.executor.run(execution(self, ["/bin/sleep", "60"]))
         self.assertEqual(outcome.cleanup, "uncertain", outcome.cleanup_detail)
         self.assertIn("unreaped observation", outcome.failure())
@@ -329,7 +329,7 @@ class LocalEvidence(TempDir):
             if len(calls) == 1:
                 raise PermissionError(errno.EPERM, "group signal denied")
             return killpg(*args)
-        with mock.patch.object(telemetryexec.os, "killpg", side_effect=fail_once):
+        with mock.patch.object(telemetry_exec.os, "killpg", side_effect=fail_once):
             outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         self.assertEqual(outcome.cleanup, "uncertain")
         self.assertIn("group signal denied", outcome.failure())
@@ -353,9 +353,9 @@ class LocalEvidence(TempDir):
             self.assertEqual(reaped, pid)
             statuses.append(os.waitstatus_to_exitcode(status))
             raise ChildProcessError(errno.ECHILD, "lost ownership")
-        with mock.patch.object(telemetryexec.os, "waitid", side_effect=lost), \
+        with mock.patch.object(telemetry_exec.os, "waitid", side_effect=lost), \
                 mock.patch.object(self.executor, "launch", side_effect=record), \
-                mock.patch.object(telemetryexec.os, "killpg") as sent:
+                mock.patch.object(telemetry_exec.os, "killpg") as sent:
             outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         sent.assert_not_called()
         self.assertEqual(outcome.cleanup, "uncertain")
@@ -369,24 +369,24 @@ class LocalEvidence(TempDir):
         def broken_iterator():
             yield SimpleNamespace(name="not-a-pid")
             raise OSError(errno.EIO, "partial enumeration")
-        with mock.patch.object(telemetryexec.os, "scandir") as listing:
+        with mock.patch.object(telemetry_exec.os, "scandir") as listing:
             listing.return_value.__enter__.return_value = broken_iterator()
             with self.assertRaises(OSError):
-                telemetryexec._group_alive(123, time.monotonic() + 1)
+                telemetry_exec._group_alive(123, time.monotonic() + 1)
         for raw in (b"123 (x) Z 1 123 123", b"malformed", b"x" * 4097):
-            with mock.patch.object(telemetryexec.os, "scandir") as listing, \
+            with mock.patch.object(telemetry_exec.os, "scandir") as listing, \
                     mock.patch("builtins.open", return_value=io.BytesIO(raw)):
                 listing.return_value.__enter__.return_value = [SimpleNamespace(name="123")]
                 with self.assertRaises(ValueError):
-                    telemetryexec._group_alive(123, time.monotonic() + 1)
+                    telemetry_exec._group_alive(123, time.monotonic() + 1)
 
     def test_scan_bounds_and_missing_leader_are_unknown(self):
         with self.assertRaisesRegex(ValueError, "bound"):
-            telemetryexec._group_alive(123, time.monotonic() - 1)
-        with mock.patch.object(telemetryexec.os, "scandir") as listing:
+            telemetry_exec._group_alive(123, time.monotonic() - 1)
+        with mock.patch.object(telemetry_exec.os, "scandir") as listing:
             listing.return_value.__enter__.return_value = []
             with self.assertRaisesRegex(ValueError, "leader is absent"):
-                telemetryexec._group_alive(123, time.monotonic() + 1)
+                telemetry_exec._group_alive(123, time.monotonic() + 1)
 
     def test_a_missing_or_malformed_thread_count_is_unknown_in_the_real_executor(self):
         original, failed = open, []
@@ -546,7 +546,7 @@ class ContainedBase(TempDir):
         os.chmod(self.docker, 0o755)
         self.scratch = self.path("scratch")
         os.mkdir(self.scratch, 0o700)
-        self.executor = telemetryexec.Contained(
+        self.executor = telemetry_exec.Contained(
             self.docker, Image(), {"logical_cpus": 2, "memory_limit_bytes": 8 << 30,
                                    "pid_limit": 1024, "scratch_limit_bytes": 4 << 30},
             self.scratch, os.getuid(), os.getgid(), [0, 1], "tl_test", "linux stand-in")
@@ -677,7 +677,7 @@ class Contained(ContainedBase):
         class Loose(Image):
             reference = "registry.example/af-sample:latest"
         with self.assertRaises(ContractError):
-            telemetryexec.Contained(self.docker, Loose(), {}, self.scratch, 0, 0, [0], "x", "")
+            telemetry_exec.Contained(self.docker, Loose(), {}, self.scratch, 0, 0, [0], "x", "")
         self.assertTrue(builds.pinned_image(Image.reference))
 
 
@@ -703,7 +703,7 @@ class ContainedRun(ContainedBase):
         self.executor.python = sys.executable
         # A contained run's scratch filesystem is its work bound: what the corpus took from
         # it never stops the reads.
-        result = telemetrylab.run(fx.settings(self, self.executor, "result",
+        result = telemetry_lab.run(fx.settings(self, self.executor, "result",
                                               experiments=["read_latency"], rounds=1,
                                               free_bytes=lambda path: 1))
         self.assertEqual((result["execution"]["mode"], result["execution"]["cleanup"]),
@@ -733,4 +733,4 @@ class ContainedRun(ContainedBase):
             else:
                 self.assertNotIn(own + "corpus", writable)
         self.assertFalse(os.path.exists(self.executor.directory), "the work is removed")
-        telemetrylab.verify(self.path("result"))
+        telemetry_lab.verify(self.path("result"))

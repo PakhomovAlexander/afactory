@@ -10,7 +10,7 @@ may hold only `.md`, `.toml` and `.json` data.
 - `code-policy-measures.toml` — four `[measures.perf_*]` tables and their `*_elapsed`
   objectives. Each measure runs `python3 -I -S -B -c BOOTSTRAP DIGEST measure --case ID --metric
   wall_ms`, where `BOOTSTRAP` is the literal text of `BOOTSTRAP` in
-  `scripts/performance/perflab/kernelguard.py` and `DIGEST` the protected-harness digest of this
+  `scripts/performance/perflab/kernel_guard.py` and `DIGEST` the protected-harness digest of this
   revision. Before the measured Snapshot's driver is imported or anything is built, the
   bootstrap refuses every symbolic link and special file, a missing or extra protected file and
   any changed byte. Protected names match whatever their case or canonical spelling, because a

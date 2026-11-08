@@ -3,7 +3,7 @@ import builtins
 import os
 from unittest import mock
 
-from perflab import budget, contracts, telemetrylab
+from perflab import budget, contracts, telemetry_lab
 from perflab.values import ContractError
 from tests.support import TempDir, read
 
@@ -12,22 +12,22 @@ class Publication(TempDir):
     def setUp(self):
         super().setUp()
         self.root = self.path("history")
-        with telemetrylab.HistoryRoot(self.root) as kept:
+        with telemetry_lab.HistoryRoot(self.root) as kept:
             doc = kept.write()
             self.assertEqual(doc["used_bytes"], kept.used_bytes())
         self.before = {name: read(os.path.join(self.root, name)) for name in (
-            telemetrylab.HISTORY_JSON, telemetrylab.HISTORY_HTML)}
+            telemetry_lab.HISTORY_JSON, telemetry_lab.HISTORY_HTML)}
 
     def stage_files(self):
-        return sorted(os.listdir(os.path.join(self.root, telemetrylab.REPORT_STAGE)))
+        return sorted(os.listdir(os.path.join(self.root, telemetry_lab.REPORT_STAGE)))
 
     def test_repeated_write_and_replace_interruptions_both_outputs_restart_bounded(self):
         real_open, real_replace = builtins.open, os.replace
         for kind in ("write", "replace"):
-            for name in (telemetrylab.HISTORY_JSON, telemetrylab.HISTORY_HTML):
+            for name in (telemetry_lab.HISTORY_JSON, telemetry_lab.HISTORY_HTML):
                 with self.subTest(kind=kind, name=name):
                     for iteration in range(3):
-                        with telemetrylab.HistoryRoot(self.root) as kept:
+                        with telemetry_lab.HistoryRoot(self.root) as kept:
                             self.assertEqual(self.stage_files(), ["owner"])
                             before = {key: read(os.path.join(self.root, key)) for key in self.before}
                             baseline = kept.used_bytes()
@@ -47,7 +47,7 @@ class Publication(TempDir):
 
                             def opened(path, *args, **kwargs):
                                 stream = real_open(path, *args, **kwargs)
-                                if str(path) == os.path.join(self.root, telemetrylab.REPORT_STAGE, name):
+                                if str(path) == os.path.join(self.root, telemetry_lab.REPORT_STAGE, name):
                                     return InterruptedWriter(stream)
                                 return stream
 
@@ -65,11 +65,11 @@ class Publication(TempDir):
                             self.assertLessEqual(kept.used_bytes(), kept.bytes_max)
                             self.assertEqual(read(os.path.join(self.root, name)), before[name])
                             # Every published JSON is still a complete valid document.
-                            contracts.read_file(os.path.join(self.root, telemetrylab.HISTORY_JSON),
+                            contracts.read_file(os.path.join(self.root, telemetry_lab.HISTORY_JSON),
                                                 "telemetry-history")
-                            self.assertTrue(read(os.path.join(self.root, telemetrylab.HISTORY_HTML)).endswith(
+                            self.assertTrue(read(os.path.join(self.root, telemetry_lab.HISTORY_HTML)).endswith(
                                 b"</html>\n"))
-                    with telemetrylab.HistoryRoot(self.root) as kept:
+                    with telemetry_lab.HistoryRoot(self.root) as kept:
                         self.assertEqual(self.stage_files(), ["owner"])
                         doc = kept.write()
                         self.assertEqual(doc["used_bytes"], kept.used_bytes())
@@ -80,7 +80,7 @@ class Publication(TempDir):
         with open(os.path.join(self.root, "retained-foreign"), "wb") as stream:
             stream.write(b"x" * (1 << 20))
         # Measure the real peak while both new outputs coexist with both old reports.
-        with telemetrylab.HistoryRoot(self.root) as kept:
+        with telemetry_lab.HistoryRoot(self.root) as kept:
             before = kept.used_bytes()
             with mock.patch.object(os, "replace", side_effect=OSError("replace failed")):
                 with self.assertRaises(OSError):
@@ -88,7 +88,7 @@ class Publication(TempDir):
             peak = kept.used_bytes()
             self.assertGreater(peak, before)
         for capacity, succeeds in ((peak - 1, False), (peak, True)):
-            with self.subTest(capacity=capacity), telemetrylab.HistoryRoot(
+            with self.subTest(capacity=capacity), telemetry_lab.HistoryRoot(
                     self.root, bytes_max=capacity) as kept:
                 if succeeds:
                     doc = kept.write()
@@ -105,24 +105,24 @@ class Publication(TempDir):
         foreign = self.path("history", "history.json.tmp-foreign")
         with open(foreign, "wb") as stream:
             stream.write(b"retained foreign bytes" * 4096)
-        with telemetrylab.HistoryRoot(self.root) as kept:
+        with telemetry_lab.HistoryRoot(self.root) as kept:
             self.assertTrue(os.path.isfile(foreign))
             self.assertGreaterEqual(kept.used_bytes(), os.stat(foreign).st_size)
             kept.write()
-        stage = os.path.join(self.root, telemetrylab.REPORT_STAGE)
+        stage = os.path.join(self.root, telemetry_lab.REPORT_STAGE)
         outsider = self.path("outsider")
         with open(outsider, "wb") as stream:
             stream.write(b"do not touch")
-        os.symlink(outsider, os.path.join(stage, telemetrylab.HISTORY_JSON))
+        os.symlink(outsider, os.path.join(stage, telemetry_lab.HISTORY_JSON))
         with self.assertRaisesRegex(ContractError, "never links"):
-            with telemetrylab.HistoryRoot(self.root):
+            with telemetry_lab.HistoryRoot(self.root):
                 pass
         self.assertEqual(read(outsider), b"do not touch")
-        os.unlink(os.path.join(stage, telemetrylab.HISTORY_JSON))
+        os.unlink(os.path.join(stage, telemetry_lab.HISTORY_JSON))
         with open(os.path.join(stage, "foreign"), "wb") as stream:
             stream.write(b"foreign")
         with self.assertRaisesRegex(ContractError, "foreign report staging entry"):
-            with telemetrylab.HistoryRoot(self.root):
+            with telemetry_lab.HistoryRoot(self.root):
                 pass
         self.assertTrue(os.path.isfile(os.path.join(stage, "foreign")))
 
@@ -140,14 +140,14 @@ class CollectionCapacity(TempDir):
     def cycle(self, count=0, refused=False):
         import time
         from types import SimpleNamespace
-        from perflab import telemetrycollect, transport
+        from perflab import telemetry_collect, transport
         from tests.test_telemetry_collect import FakeApi, REPOSITORY, API, TOKEN, NOW, run_entry
         api = transport.Collector(FakeApi([run_entry(i) for i in range(1, count + 1)], {}),
                                   REPOSITORY, TOKEN, api_url=API)
         config = {"root": self.root, "bytes_max": self.capacity, "results_max": 100,
                   "retention_days": None, "repository": REPOSITORY,
                   "lookback_days": 13, "runs_max": 200}
-        cycle = telemetrycollect.Cycle(config, api, SimpleNamespace(), lambda: 1700000000, NOW)
+        cycle = telemetry_collect.Cycle(config, api, SimpleNamespace(), lambda: 1700000000, NOW)
         if refused:
             def collect(kept, run):
                 cycle.record(run, 1, "refused", reason="x" * 4096)
@@ -155,7 +155,7 @@ class CollectionCapacity(TempDir):
         return cycle.run()
 
     def usage(self):
-        return telemetrylab.HistoryRoot(self.root, sweep=False).used_bytes()
+        return telemetry_lab.HistoryRoot(self.root, sweep=False).used_bytes()
 
     def status(self):
         return contracts.read_file(os.path.join(self.root, "collection.json"), "telemetry-collection")
@@ -169,12 +169,12 @@ class CollectionCapacity(TempDir):
                 saved = self.path("saved-%s" % initial)
                 shutil.copytree(self.root, saved)
                 observed = []
-                original = telemetrylab.HistoryRoot.used_bytes
+                original = telemetry_lab.HistoryRoot.used_bytes
                 def usage(kept):
                     size = original(kept)
                     observed.append(size)
                     return size
-                with mock.patch.object(telemetrylab.HistoryRoot, "used_bytes", usage):
+                with mock.patch.object(telemetry_lab.HistoryRoot, "used_bytes", usage):
                     doc = self.cycle(count, refused=not initial)
                 self.assertEqual(doc["used_bytes"], self.usage())
                 peak = max(observed)
@@ -191,8 +191,8 @@ class CollectionCapacity(TempDir):
                         self.assertIn("history byte bound", result["detail"])
                         self.assertEqual(self.status()["status"], "failed")
                         # Reports are complete even if terminal status could not be staged.
-                        if os.path.exists(os.path.join(self.root, telemetrylab.HISTORY_JSON)):
-                            contracts.read_file(os.path.join(self.root, telemetrylab.HISTORY_JSON),
+                        if os.path.exists(os.path.join(self.root, telemetry_lab.HISTORY_JSON)):
+                            contracts.read_file(os.path.join(self.root, telemetry_lab.HISTORY_JSON),
                                                 "telemetry-history")
                 self.capacity = 1 << 28
 
@@ -206,13 +206,13 @@ class CollectionCapacity(TempDir):
         self.assertLessEqual(self.usage(), self.capacity)
 
     def test_status_and_position_write_replace_interruptions_and_restart(self):
-        from perflab import telemetrycollect
+        from perflab import telemetry_collect
         self.cycle(1)
         real_open, real_replace = builtins.open, os.replace
         for name in ("collection.json", "collection-position.json"):
             for kind in ("write", "replace"):
                 with self.subTest(name=name, kind=kind):
-                    stage = os.path.join(self.root, telemetrylab.REPORT_STAGE, name)
+                    stage = os.path.join(self.root, telemetry_lab.REPORT_STAGE, name)
                     class InterruptedWriter:
                         def __init__(self, stream): self.stream = stream
                         def __enter__(self): return self
@@ -252,7 +252,7 @@ class CollectionCapacity(TempDir):
         with open(foreign, "wb") as stream:
             stream.write(b"foreign bytes")
         for relative in ("collection.json", "collection-position.json",
-                         telemetrylab.REPORT_STAGE + "/collection.json"):
+                         telemetry_lab.REPORT_STAGE + "/collection.json"):
             path = os.path.join(self.root, relative)
             if os.path.lexists(path): os.unlink(path)
             os.symlink(sentinel, path)
@@ -277,7 +277,7 @@ class CollectionCapacity(TempDir):
 
     def test_interrupted_initial_reserve_write_restarts_from_failed_record(self):
         real_open = builtins.open
-        reserve = os.path.join(self.root, telemetrylab.REPORT_STAGE, "collection-incomplete.json")
+        reserve = os.path.join(self.root, telemetry_lab.REPORT_STAGE, "collection-incomplete.json")
         class InterruptedWriter:
             def __init__(self, stream): self.stream = stream
             def __enter__(self): return self

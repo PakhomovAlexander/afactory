@@ -13,10 +13,10 @@ import shutil
 import stat
 import time
 
-from perflab import telemetrylab, tomlfile
+from perflab import telemetry_lab, toml_file
 from tests.support import TempDir
 
-overhead = telemetrylab.script_module("scripts/telemetry-overhead.py")
+overhead = telemetry_lab.script_module("scripts/telemetry-overhead.py")
 REPOSITORY = pathlib.Path(__file__).resolve().parents[3]
 
 # A stand-in `af`: `--version` prints its release, `catalog digest PATH` prints the digest the
@@ -130,7 +130,7 @@ class FixtureContracts(TempDir):
 
     def test_rc4_through_rc7_select_the_existing_receipt_2_contract(self):
         # ADR-0255 introduced @2 before RC3; CHANGELOG.md's RC4 and RC5 sections
-        # retain it. RC6 and RC7 publish @2 in review-pipeline/src/task/code.rs;
+        # retain it. RC6 and RC7 publish @2 in af-runtime/src/task/code.rs;
         # their definition and schema match RC4/RC5 (docs/telemetry.md). The unchanged
         # fixture packages declare it. None of these releases needs an overlay.
         for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7"):
@@ -145,7 +145,7 @@ class FixtureContracts(TempDir):
         self.assertIsNone(contract["pins"])
 
     def test_workspace_release_has_an_explicit_valid_telemetry_contract(self):
-        manifest = tomlfile.loads((REPOSITORY / "Cargo.toml").read_bytes(), "Cargo.toml")
+        manifest = toml_file.loads((REPOSITORY / "Cargo.toml").read_bytes(), "Cargo.toml")
         release = manifest["workspace"]["package"]["version"]
         selected = overhead.select_contract(release)
         self.assertEqual(selected, overhead.CURRENT_CONTRACT)
@@ -188,7 +188,7 @@ class FixtureContracts(TempDir):
             overhead.apply_contract(af, fixture, self.copy(fixture), "check-receipt@1")
 
     def test_rc4_through_rc7_keep_all_committed_fixtures_without_contract_specific_pins(self):
-        from perflab import clicases
+        from perflab import cli_cases
         import re
         for source in sorted(overhead.FIXTURES_DIR.glob("*/repo")):
             fixture = source.parent.name
@@ -199,9 +199,9 @@ class FixtureContracts(TempDir):
                 # Check real package bytes against their pins as well as the stand-in's
                 # answers. No measured AF command runs in this regression.
                 if catalog.exists():
-                    self.assertEqual(clicases.catalog_problems(str(source)), [])
+                    self.assertEqual(cli_cases.catalog_problems(str(source)), [])
                 else:
-                    self.assertEqual(clicases.pipeline_problems(str(source)), [])
+                    self.assertEqual(cli_cases.pipeline_problems(str(source)), [])
                 for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7"):
                     with self.subTest(release=release):
                         af = self.stand_in(release, {"@1": {}, "@2": {

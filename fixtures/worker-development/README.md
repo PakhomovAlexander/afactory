@@ -146,7 +146,7 @@ Other probes reject a sparse one-GiB export under a one-MiB bound and kill a sto
 its real volume is mounted, then run the production dead-owner sweep. A fixture runtime is not
 a containment receipt.
 
-The `review-pipeline::it` test module `task_runtime::development` additionally admits configured
+The `af-runtime::it` test module `task_runtime::development` additionally admits configured
 packages and runs real Task plans for both languages under both roles. Its recording runtime
 executes the actual pinned local tools through the development mounts and supervisor. It checks
 compile/test output, build products, private state retained across child commands, source edits

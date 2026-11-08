@@ -1193,7 +1193,7 @@ fn ctrl_c_stops_the_handed_off_command_not_the_browser() {
         "import time\ntime.sleep(30)\n",
     )
     .unwrap();
-    let digest = review_config::lock::package_digest("fixture/implementer", &implementer);
+    let digest = af_pipeline_config::lock::package_digest("fixture/implementer", &implementer);
     let catalog = repo.join(".af/task-catalog.toml");
     let mut value: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog).unwrap()).unwrap();
@@ -1545,12 +1545,12 @@ gate = "major"
         "version=1\n[project]\nname='reviewed'\nmin_af='0.6'\n[defaults]\npipeline='review'\n",
     )
     .unwrap();
-    let mut lock = review_config::lock::Lockfile::empty();
+    let mut lock = af_pipeline_config::lock::Lockfile::empty();
     lock.pipelines.insert(
         "review".into(),
-        review_config::lock::Pin {
+        af_pipeline_config::lock::Pin {
             version: "1.0.0".into(),
-            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+            digest: af_store::canonical::blob_content_id(pipeline.as_bytes()),
         },
     );
     std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();

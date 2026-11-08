@@ -50,7 +50,7 @@ impl Fixture {
                 )
                 .unwrap();
                 let version = manifest["version"].as_str().unwrap();
-                catalog["packages"][&name] = json!({"version":version,"path":path,"digest":review_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
+                catalog["packages"][&name] = json!({"version":version,"path":path,"digest":af_pipeline_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
             }
             catalog["kinds"][kind] = json!(format!("custom/{kind}-kind"));
             catalog["providers"][format!("custom/{kind}-worker")] = json!("codex-personal");
@@ -167,7 +167,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         let planned = f.plan(kind);
         assert_eq!(planned["attempts"], 0);
         assert_eq!(planned["plan"]["authority"]["allowed_effects"], json!([]));
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let authority = cas
             .get_json(planned["plan"]["authority"]["policy_id"].as_str().unwrap())
             .unwrap();
@@ -185,15 +185,15 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
             &crate::schemas::validator("compiled-task-v3.json"),
             &planned["graph"],
         );
-        let mut old_graph: review_graph::task::CompiledTask =
+        let mut old_graph: af_graph::task::CompiledTask =
             serde_json::from_value(planned["graph"].clone()).unwrap();
         old_graph.schema = "af.compiled-task/2".into();
         assert!(old_graph.validate_schema().is_err());
         let pipeline_path = f
             .repo
             .join(format!("custom-tasks/{kind}/pipeline/pipeline.toml"));
-        let pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-            review_config::task::parse_task_pipeline(
+        let pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+            af_pipeline_config::task::parse_task_pipeline(
                 &std::fs::read_to_string(pipeline_path).unwrap(),
             )
             .unwrap();
@@ -202,10 +202,10 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
             &serde_json::to_value(&pipeline).unwrap(),
         );
         let mut old_pipeline = pipeline;
-        old_pipeline.schema = review_core::task::pipeline::PipelineSchema::V1;
+        old_pipeline.schema = af_contracts::task::pipeline::PipelineSchema::V1;
         assert!(old_pipeline.validate().is_err());
         let kind_path = f.repo.join(format!("custom-tasks/{kind}/kind/kind.toml"));
-        let mut kind_manifest: review_config::task::kind::TaskKindManifest =
+        let mut kind_manifest: af_pipeline_config::task::kind::TaskKindManifest =
             toml::from_str(&std::fs::read_to_string(kind_path).unwrap()).unwrap();
         kind_manifest.validate().unwrap();
         crate::schemas::valid(
@@ -286,7 +286,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         assert!(!refused.status.success());
         assert!(text(&refused).contains("structural data validation only"));
         let validation = &done["result"]["outputs"]["validation"]["artifact_ids"][0];
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let receipt = cas.get_artifact(validation.as_str().unwrap()).unwrap();
         crate::schemas::valid(
             &crate::schemas::validator("structured-validation-v1.json"),
@@ -851,10 +851,10 @@ fn structured_single_attempt_makes_one_worker_call_and_fails_closed() {
         assert_eq!(done["attempts"], 2, "{done}");
         let rows = accounting(&f, mode);
         assert_eq!(rows.len(), 2);
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         for row in rows {
             if mode != "good" && row.reservation.node.ends_with(".work") {
-                let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+                let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
                     diagnostic_id,
                     feedback_id: Some(feedback_id),
                 }) = &row.result
@@ -902,9 +902,9 @@ fn structured_single_attempt_makes_one_worker_call_and_fails_closed() {
 fn accounting(
     f: &Fixture,
     task: &str,
-) -> Vec<review_store::store::task::execution::TaskAttemptAccounting> {
-    let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
-    review_store::EventStore::open_read_only(f.state.join("events.sqlite"))
+) -> Vec<af_store::store::task::execution::TaskAttemptAccounting> {
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    af_store::EventStore::open_read_only(f.state.join("events.sqlite"))
         .unwrap()
         .task_projection(&cas, task)
         .unwrap()

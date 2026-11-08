@@ -92,14 +92,14 @@ pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &
 }
 
 /// One topic's body. The configuration page ends with the declared `.af/` layout, rendered from
-/// `review_config::layout` rather than stored a second time here: that table, the one in
+/// `af_pipeline_config::layout` rather than stored a second time here: that table, the one in
 /// the documentation and every classification are the same data.
 pub(crate) fn body(topic: &str, text: &str) -> String {
     match topic {
         "config" => format!(
             "{text}\n\nWhat `.af/` holds\n\n{}\n{}\n\n{UNDECLARED}",
-            review_config::layout::render_table(),
-            review_config::layout::ELSEWHERE,
+            af_pipeline_config::layout::render_table(),
+            af_pipeline_config::layout::ELSEWHERE,
         ),
         // The tables are rendered from the enum every Task rendering prints, so this page and
         // the binary cannot say different things.
@@ -220,9 +220,9 @@ fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
 }
 
 /// The phase, outcome, cause and attention tables of `af help task-states`, from
-/// `review_core::task::state`; `docs/tasks.md` carries the same rows.
+/// `af_contracts::task::state`; `docs/tasks.md` carries the same rows.
 pub(crate) fn task_state_tables() -> String {
-    use review_core::task::state::*;
+    use af_contracts::task::state::*;
     let mut out = String::from("Phases\n\n");
     for phase in TaskStatePhaseV1::ALL {
         out.push_str(&format!(
@@ -268,7 +268,7 @@ pub(crate) fn task_state_tables() -> String {
 
 /// The Task outcome section of `af help exit-codes`.
 fn task_exit_codes() -> String {
-    use review_core::task::state::TaskOutcomeV1;
+    use af_contracts::task::state::TaskOutcomeV1;
     let mut out = String::from(
         "`af task run`, `af task start --execute`, `af task explain` and `af review run --file`\n\
          end with their Task's outcome (`af help task-states`):\n\n",
@@ -1030,7 +1030,7 @@ resolves (a run refused before that has the first two), and af.config.text namin
 pipeline's pipeline.toml, the Task file and .af/af.toml by the SHA-256 of their own bytes and
 their size. A check fingerprint's runtime paths become placeholders only where a value names
 the path or one under it, never a sibling (/tmp/a-extra beside /tmp/a). Every child reap of af goes
-through review-process's one reap lock, so a process's af.rusage.* is never another child's.
+through af-process's one reap lock, so a process's af.rusage.* is never another child's.
 
 At spans and above every event the kernel commits to a Store is mirrored after its commit, on
 any path (an append, a Task transition, a Round publication, an integration), as af.store.event

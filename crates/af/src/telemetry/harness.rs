@@ -5,15 +5,15 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use review_telemetry::turns::{self, Harness, Tools, Turns};
-use review_telemetry::view;
+use af_telemetry::turns::{self, Harness, Tools, Turns};
+use af_telemetry::view;
 
 use super::views::{duration, iso_ns, print_json, resolve, root_of};
 
 /// What both commands read: the directory's index, the run, and how it was read.
 struct Opened {
     root: PathBuf,
-    index: review_telemetry::index::Index,
+    index: af_telemetry::index::Index,
     read: view::IndexRead,
     unreadable: Vec<view::Unreadable>,
     found: super::views::Found,

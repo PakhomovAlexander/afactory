@@ -131,7 +131,7 @@ printed separately without summing overlapping caps. Dynamic work produces an ex
 budget unknown; its scheduler admission is not reconstructed by this helper.
 
 The underlying budget semantics are defined in
-`crates/review-attempt/src/task_budget.rs`: `prepare` checks each reservation plus protected
+`crates/af-attempt/src/task_budget.rs`: `prepare` checks each reservation plus protected
 verification against the remaining Run budget, and `begun_attempts` includes begun and retired
 Attempts. The helper's configured-reserve comparison is a conservative explanation rather
 than a replay of `protected_after`, live holds or scope admission.

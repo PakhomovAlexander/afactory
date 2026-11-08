@@ -3,11 +3,13 @@
 Recorded 2026-10-27 in the AF implementation sandbox, using Python 3.14.4. The unchanged
 Rust pin is 1.88.0. This note records implementation checks; it is not VM measurement evidence.
 The repair sections below record the latest focused checks and protected inventory.
+Module references and reproducible commands below use the current internal navigation names;
+the recorded check results, measurements and source identities retain their original meaning.
 
 ## Original feature focused command
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_planning","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal","tests.test_runner.Preflight","tests.test_runner.HostCancellation","tests.test_diagnostics.Command","tests.test_suite","tests.test_continuous.HostedScratch","tests.test_calibration.ReadyCohort","tests.test_calibration.OriginalDispatch","tests.test_calibration.Declarations","tests.test_calibration.Arithmetic"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_local_calibration","tests.test_contracts","tests.test_host_lock","tests.test_builds.ContainerBuild","tests.test_planning","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal","tests.test_runner.Preflight","tests.test_runner.HostCancellation","tests.test_diagnostics.Command","tests.test_suite","tests.test_continuous.HostedScratch","tests.test_calibration.ReadyCohort","tests.test_calibration.OriginalDispatch","tests.test_calibration.Declarations","tests.test_calibration.Arithmetic"],verbosity=1)'
 ```
 
 **PASS: 223 tests, 144.400 seconds, exit 0.** New tests are under the existing performance
@@ -112,7 +114,7 @@ aggregate-size, sentinel, credential, network, binary and admission assertions r
 Latest focused command (Python 3.14.4):
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_runner.Shards.test_the_run_command_refuses_an_ambiguous_mode_and_reports_unavailability","tests.test_telemetry_build_smoke","tests.test_hostlock","tests.test_executor","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_runner.Preflight","tests.test_runner.HostCancellation"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_runner.Shards.test_the_run_command_refuses_an_ambiguous_mode_and_reports_unavailability","tests.test_telemetry_build_smoke","tests.test_host_lock","tests.test_executor","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_runner.Preflight","tests.test_runner.HostCancellation"],verbosity=1)'
 ```
 
 **PASS: 73 tests, 37.054 seconds, exit 0.** This includes the exact failing runner test,
@@ -186,7 +188,7 @@ npx --cache /tmp/af-validation-markdown-npm --offline --yes markdownlint-cli2@0.
 The sandbox's default cache initially returned `ENOTCACHED`; a fetch attempt returned
 `EAI_AGAIN`. The passing offline command uses a temporary writable copy of the public native
 npm dependency cache. No formatter rule or exclusion changed. All four changed paths return
-false from the unchanged `kernelguard.RULES['protected']` predicate, so no protected inventory
+false from the unchanged `kernel_guard.RULES['protected']` predicate, so no protected inventory
 regeneration is needed; the generator and recorded inventory remain unchanged.
 
 The preceding native Task was **not accepted** (`gate_failed/check_failed`): source Snapshot
@@ -238,7 +240,7 @@ guide, ADR-0240, domain design and change note document these repairs.
 Focused command, Python 3.14.4:
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_local_calibration","tests.test_contracts","tests.test_host_lock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command"],verbosity=1)'
 ```
 
 **PASS: 62 tests, 64.763 seconds, exit 0.** An earlier version of this set passed 61 tests
@@ -313,8 +315,8 @@ musl reproduction-command omission remains a follow-up.
 Focused commands, Python 3.14.4:
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command","tests.test_telemetry_measurements","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal"],verbosity=1)'
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_kernelguard.Bootstrap","tests.test_kernelguard.Staged","tests.test_kernelguard.Receipts.test_the_committed_fixtures_are_their_recipes"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_local_calibration","tests.test_contracts","tests.test_host_lock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command","tests.test_telemetry_measurements","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_kernel_guard.Bootstrap","tests.test_kernel_guard.Staged","tests.test_kernel_guard.Receipts.test_the_committed_fixtures_are_their_recipes"],verbosity=1)'
 python3 -I -B scripts/test-test-classes.py Selection Release ReleaseProof -v
 python3 -I -B scripts/test-test-classes.py Catalog SealedEvidence Metrics Gates -v
 python3 -I -B scripts/test-release-resolve.py -v
@@ -406,8 +408,8 @@ change source permissions, production sealing or fixture cleanup ownership.
 Focused commands, **non-root uid 994**, Python **3.14.4**; all exited **0**:
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command","tests.test_telemetry_measurements","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal"],verbosity=1)'
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_kernelguard.Bootstrap","tests.test_kernelguard.Staged","tests.test_kernelguard.Receipts.test_the_committed_fixtures_are_their_recipes"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_local_calibration","tests.test_contracts","tests.test_host_lock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command","tests.test_telemetry_measurements","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_kernel_guard.Bootstrap","tests.test_kernel_guard.Staged","tests.test_kernel_guard.Receipts.test_the_committed_fixtures_are_their_recipes"],verbosity=1)'
 python3 -I -B scripts/test-release-resolve.py -v
 python3 -I -B scripts/test-test-classes.py SealedEvidence.test_selected_build_receipts_cover_all_variants_before_any_suite -v
 python3 -I -B scripts/test-test-classes.py -v
@@ -490,13 +492,13 @@ bytes equal to the patch preimage, and their results equal the d8fc postimage bl
   `python3 -I scripts/performance/cli.py harness-digest --write`, then `--check`. The result is
   `sha256:09a58c96ec450e5411f7480739a0a2faacee692405a3764265c1166b1d882f91` for **632 files**,
   the same in the sandbox and in the Git copy. A three-way comparison of the inventory entries
-  shows 54 from the feature, 1 from main (`scripts/performance/tests/test_kernelguard.py`) and
+  shows 54 from the feature, 1 from main (`scripts/performance/tests/test_kernel_guard.py`) and
   no mismatch. The policy differs from main's only in its digest comment and its four digest
   arguments. Its measures, repetitions, wall and manual/full authority are main's.
 - `.af/code-policy.toml`, `.af/`, `.config/`, `.github/`, the Makefile and Cargo files are
   exactly main. No guarded measure is installed in `.af/`.
 - Every file under `scripts/performance/` is in the protected inventory. Of those, main changed
-  only `tests/test_kernelguard.py` since the feature base. The merged laboratory is therefore d8fc's
+  only `tests/test_kernel_guard.py` since the feature base. The merged laboratory is therefore d8fc's
   laboratory plus that test.
 
 Focused commands on macOS (Darwin, Python 3.15), from the sandbox root:
@@ -524,9 +526,9 @@ The performance-lab modules ran through a scratch `unittest` loader that adds
 `scripts/performance` to `sys.path`, the same way `scripts/test-performance.py` does. Results:
 
 - `test_contracts`, `test_suite`, `test_builds`, `test_diagnostics`, `test_runner`,
-  `test_kernelguard`, `test_localcalibration`, `test_telemetry_build_smoke`,
+  `test_kernel_guard`, `test_local_calibration`, `test_telemetry_build_smoke`,
   `test_telemetry_cleanup` and `test_telemetry_terminal`: **294 tests OK**, 1 skipped.
-- `test_hostlock`, `test_telemetry_measurements`, `test_telemetry_lab`,
+- `test_host_lock`, `test_telemetry_measurements`, `test_telemetry_lab`,
   `test_telemetry_lock_handoff` and `test_telemetry_build_bounds`: **60 tests OK**.
 - `test_executor`: **27 of 31 OK**. These four fail on this macOS host:
   - `Journal.test_local_diagnostic_uses_native_child_planner_report_and_admission`
@@ -562,7 +564,7 @@ source checks only. It is not a VM verification or measurement.
 
 **The blocker.** The Claw telemetry original `exp_15f8e705d9ae31b774e8f15fd7ca67c0ec3284b52671dc16`
 refused before any candidate build. Its error was "enforcement not verified: the fill did not
-finish within its time bound (1458569216 bytes written)". `telemetrybuild.run` checks its 8-GiB
+finish within its time bound (1458569216 bytes written)". `telemetry_build.run` checks its 8-GiB
 build scratch with a 120 s deadline. `capability.fill` keeps 30 s of that for cleanup, which
 leaves 90 s to write. The fill synced its file after every 1-MiB write, so it paid one durable
 flush per MiB. That original stays terminal and uncertain, and its artifacts stay as they are.
@@ -589,7 +591,7 @@ The guarded harness inventory was re-pinned with the unchanged generator.
 **Focused commands**, from the sandbox root:
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_supervise","tests.test_contracts","tests.test_kernelguard","tests.test_runner.Preflight","tests.test_runner.HostCancellation","tests.test_continuous.HostedScratch","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_supervise","tests.test_contracts","tests.test_kernel_guard","tests.test_runner.Preflight","tests.test_runner.HostCancellation","tests.test_continuous.HostedScratch","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup"],verbosity=1)'
 python3 -I scripts/performance/cli.py harness-digest --write
 python3 -I scripts/performance/cli.py harness-digest --check
 python3 -I -B scripts/performance/schemas.py
@@ -648,7 +650,7 @@ fixtures were the only conflicts. They were regenerated with that main's unchang
 `harness-digest --write`, and `--check` exited 0. The digest above belongs to the accepted
 source only. The integrated tree's digest is
 `sha256:9363f32dc9397b388178adc1b423a9bc676c2a9a77db366c52644bbcdda54f9b`. The 17
-`test_supervise.Capabilities` tests, `test_kernelguard`, `test_contracts`, `schemas.py`,
+`test_supervise.Capabilities` tests, `test_kernel_guard`, `test_contracts`, `schemas.py`,
 `test-classes.py audit` and `changelog-notes.py --check` passed there.
 
 ## Two Mac-gate test helper repairs (2026-10-28)
@@ -692,11 +694,11 @@ an indented line; a bare `\` after a cut piece, then the next piece at column 0.
 
 ## Host CPU observer and the durable release comparison (2026-10-30)
 
-This change adds the trusted host CPU observer (`perflab/hostobserver.py`), the partitioned
-serial core comparison and the native comparison lifecycle (`perflab/comparison.py`). Its
+This change adds the trusted host CPU observer (`perflab/host_observer.py`), the partitioned
+serial core comparison and the native comparison lifecycle (`perflab/release_comparison.py`). Its
 focused checks ran on a macOS development host, with injected computation:
 
-- **Host observer** (`tests/test_hostobserver.py`, 9 tests). Real processes: a gated shell, a
+- **Host observer** (`tests/test_host_observer.py`, 9 tests). Real processes: a gated shell, a
   stand-in perf that speaks perf's acknowledged control protocol and ends with its target, and
   the observer's bounded runner. A fixture process table stands in for `/proc`. The tests show
   perf's acknowledgement before the command's first instruction, a region probe attached
@@ -704,7 +706,7 @@ focused checks ran on a macOS development host, with injected computation:
   container or account refused, the capability probe decoding samples and refusing a perf that
   cannot record, and trusted tools routed to the host while perf and the host shell are never
   bound into the candidate container.
-- **Comparison** (`tests/test_comparison.py`, 4 tests). The real journal, Git retention,
+- **Comparison** (`tests/test_release_comparison.py`, 4 tests). The real journal, Git retention,
   claims, offline verification, aggregation, rendering and export, with synthetic builds and
   shards. Checked: the serial schedule, retained refusals that reserve nothing, launch and
   resume without a replay, read-only status while the journal is locked, build reuse by the
@@ -749,18 +751,18 @@ here ran Docker, a real perf, Claw or GitHub Actions, and no figure below is a m
   bytes stay unchanged, and its shard in a bundle without the authority is a `shard_identity`
   failure. A widened or re-totalled window, a forged build digest, a changed build run, a
   window before the build ended, an undeclared shard and an authority changed after sealing
-  each start nothing (`partition_authority`). `tests/test_comparison.py` shows the aggregate
+  each start nothing (`partition_authority`). `tests/test_release_comparison.py` shows the aggregate
   carrying the second partition's authority.
-- **Portable export closure** (`tests/test_comparison.py`). The telemetry original is now a
-  real `telemetrylab.run` result: its page links `raw/` and `logs/`, and the export carries
+- **Portable export closure** (`tests/test_release_comparison.py`). The telemetry original is now a
+  real `telemetry_lab.run` result: its page links `raw/` and `logs/`, and the export carries
   them with its manifest; each core partition carries its run bundle and its report's
   evidence; the aggregate carries its run. The copied bundle verifies (also through `cli.py
   executor comparison-verify`), re-evaluating every core run to its bundled verdict and the
   telemetry result under the installed authority. A self-consistently rehashed copy missing a
   linked raw document, one with a changed raw document, and one without a partition's run
   bundle are each refused.
-- **Host observer lifetime and callback failures** (`tests/test_hostobserver.py`). Through the
-  real `toolrun.start` request admission with 1,404 seconds of diagnostic window left, the
+- **Host observer lifetime and callback failures** (`tests/test_host_observer.py`). Through the
+  real `tool_run.start` request admission with 1,404 seconds of diagnostic window left, the
   whole window is refused (`at most 120 s`) and the per-command lifetime (10 s + 40 s of
   allowances) is admitted and records. `Profile.tool_run` with a failing observer callback: a
   confirmed cancellation carries its settled Result and keeps nothing; an unconfirmed one and an
@@ -801,7 +803,7 @@ here ran Docker, a real perf, Claw or GitHub Actions.
   Zig 0.15.2); the probes' exclusion settles clean. When the build image is then removed, the
   claim's own admission ends the original `failed`, measurement `unavailable`, before any
   build, with no fence kept. A probe container whose removal is unconfirmed keeps the fence.
-  `tests/test_comparison.py` shows a missing image refusing the whole comparison before any
+  `tests/test_release_comparison.py` shows a missing image refusing the whole comparison before any
   member is submitted.
 - **Physical storage** (`tests/test_executor.py`,
   `test_storage_admission_needs_the_policy_bound_and_the_filesystems_free_space`). The root
@@ -831,13 +833,13 @@ here ran Docker, a real perf, Claw or GitHub Actions.
 Focused command, from the repository root:
 
 ```sh
-cd scripts/performance && /opt/homebrew/bin/python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"."); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_comparison","tests.test_localcalibration","tests.test_builds","tests.test_diagnostics","tests.test_hostobserver","tests.test_telemetry_diagnostics","tests.test_runner.CliOracle","tests.test_contracts","tests.test_supervise"])'
+cd scripts/performance && /opt/homebrew/bin/python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"."); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_release_comparison","tests.test_local_calibration","tests.test_builds","tests.test_diagnostics","tests.test_host_observer","tests.test_telemetry_diagnostics","tests.test_runner.CliOracle","tests.test_contracts","tests.test_supervise"])'
 ```
 
 **300 tests, 776.630 seconds, exit 1**, run while a Rust build shared the host. Four cases of
 three executor tests failed with `host_mismatch`, as in the sections above: they need a Linux
 host for the contained mode. With `diagnostics.host_os` patched to Linux they pass (4 tests,
-6.738 s). `test_hostobserver` `test_bounded_runner_ends_its_whole_group_at_its_deadline` and
+6.738 s). `test_host_observer` `test_bounded_runner_ends_its_whole_group_at_its_deadline` and
 `test_supervise` `test_a_late_confirmation_in_real_time_is_unconfirmed`, real-time assertions
 on paths this change does not touch, failed under that load and passed alone (2 tests,
 0.742 s). Every other test passed.
@@ -922,7 +924,7 @@ GitHub Actions, and no signal was sent to any process.
 
 - **A controller's signal no longer ends only one shard** (`perflab/runner.py`,
   `perflab/executor.py`). SIGTERM to `comparison-run` during shard 2 was consumed by the
-  shard's own handler; `execute_local` went on to shard 3 and `comparison.run` to the queued
+  shard's own handler; `execute_local` went on to shard 3 and `release_comparison.run` to the queued
   telemetry original. Under a controller's lease, `run_shard` now seals the shard's
   `interrupted` record and then raises `runner.Cancelled`. The executor removes the original's
   scratch (`settle_cancellation`), and the cycle publishes an `interrupted` result with the
@@ -935,8 +937,8 @@ GitHub Actions, and no signal was sent to any process.
   (`test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays`), and an
   unconfirmed cleanup that stays `uncertain` with the fence kept
   (`test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence`).
-  `test_comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original`
-  runs a nightly partition of shards 0 and 1 through `comparison.run`. A cancellation in
+  `test_release_comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original`
+  runs a nightly partition of shards 0 and 1 through `release_comparison.run`. A cancellation in
   shard 0 leaves shard 1, the second partition and the telemetry original unstarted and
   queued, and the next cycle claims only the second partition.
 - **A telemetry build in a local image ID** (`perflab/contracts.py`). Build admission takes
@@ -966,7 +968,7 @@ owned writable temporary directory (`HOME` and `TMPDIR` set to a fresh `mktemp -
 here is a Claw measurement or a Linux run; the Linux-only tests named below were skipped on
 this host and run in the outer operator's Linux validation and CI.
 
-- **Bounded host-tool cleanup** (`perflab/hostobserver.py`). GitHub run 40998521481, job
+- **Bounded host-tool cleanup** (`perflab/host_observer.py`). GitHub run 40998521481, job
   123877732296: `test_bounded_runner_ends_its_whole_group_at_its_deadline` reported
   `uncertain=True` because `Bounded.wait` reaped the leader and then read `killpg(group, 0)`
   success as a live descendant, although killed descendants a subreaper keeps unreaped still
@@ -1001,7 +1003,7 @@ this host and run in the outer operator's Linux validation and CI.
   undumpable sentinel of this user's, the Claw reproduction's condition: exit 1, browser and
   escaped descendant gone, sentinel still running and released by its own file, never
   signalled) and `test_a_refused_watcher_still_fences_a_newer_unreadable_descendant` (exit 3).
-- **Comparison member binding** (`perflab/comparison.py`, `perflab/executor.py`). A member's
+- **Comparison member binding** (`perflab/release_comparison.py`, `perflab/executor.py`). A member's
   request ID depends only on its kind, key and work, so a narrower `K:telemetry` original was
   accepted by full comparison `K`. Every reused member is now checked against the comparison's
   sources, submission, partition, frozen configuration digest and, for a core partition, its
@@ -1117,7 +1119,7 @@ Each command ran from the repository root with `HOME` and `TMPDIR` set to a fres
 directory, Python 3.14.7, on macOS (the Linux-only tests skip here).
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_tui_open","tests.test_comparison","tests.test_executor","tests.test_contracts","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_builds","tests.test_calibration","tests.test_localcalibration","tests.test_planning","tests.test_diagnostics","tests.test_telemetry_cleanup","tests.test_telemetry_collect","tests.test_telemetry_exec","tests.test_telemetry_lock_handoff","tests.test_telemetry_measurements","tests.test_telemetry_terminal","tests.test_telemetry_workflow","tests.test_whole_source_repairs"],verbosity=1)'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_host_observer","tests.test_tui_open","tests.test_release_comparison","tests.test_executor","tests.test_contracts","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_builds","tests.test_calibration","tests.test_local_calibration","tests.test_planning","tests.test_diagnostics","tests.test_telemetry_cleanup","tests.test_telemetry_collect","tests.test_telemetry_exec","tests.test_telemetry_lock_handoff","tests.test_telemetry_measurements","tests.test_telemetry_terminal","tests.test_telemetry_workflow","tests.test_whole_source_repairs"],verbosity=1)'
 ```
 
 **526 tests, 1003.6 seconds: 1 failure, 4 errors, 21 skipped.** Four are this macOS host's, on
@@ -1129,14 +1131,14 @@ the workload and sample admission existed. The fifth,
 `test_telemetry_lab.Runs.test_documents_unlike_their_planned_run_are_refused_even_when_both_sides_agree`,
 was this change's: its foreign stand-in document named af 9.9.9, which no fixture contract
 names any more; it now names another declared release (0.14.0-rc.1) and passes below. An
-earlier run of the same modules failed four `test_localcalibration.LocalOriginals` cases (their
+earlier run of the same modules failed four `test_local_calibration.LocalOriginals` cases (their
 synthetic suite's process cases have no CLI registry; they run no shard, so they now stub the
 CLI admission `WorkloadAdmission` proves) and once
 `test_telemetry_collect.Collection.test_rotation_keeps_old_results_retries_and_higher_attempts_eligible`,
 which passed when rerun alone and in the run above.
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_tui_open","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_contracts","tests.test_comparison","tests.test_builds.ImageIdentity","tests.test_executor.ImageAdmission","tests.test_executor.WorkloadAdmission"],verbosity=1)'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_host_observer","tests.test_tui_open","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_contracts","tests.test_release_comparison","tests.test_builds.ImageIdentity","tests.test_executor.ImageAdmission","tests.test_executor.WorkloadAdmission"],verbosity=1)'
 ```
 
 **PASS: 109 tests, 122.6 seconds, 5 skipped (Linux only), exit 0.** It includes the Task13
@@ -1204,7 +1206,7 @@ The focused run started at 09:39:45 MSK from the repository root, with `HOME` an
 to a fresh owned directory, under Python 3.14.7 on macOS:
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_runner.ControllerCancellation","tests.test_executor.Journal.test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays","tests.test_executor.Journal.test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence","tests.test_comparison.Comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original","tests.test_executor.Journal.test_local_telemetry_publishes_and_verifies_an_actual_local_image_id","tests.test_executor.Journal.test_telemetry_build_records_refuse_previous_versions_and_mutable_references","tests.test_executor.WorkloadAdmission","tests.test_contracts.Parity"],verbosity=2)'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_runner.ControllerCancellation","tests.test_executor.Journal.test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays","tests.test_executor.Journal.test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence","tests.test_release_comparison.Comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original","tests.test_executor.Journal.test_local_telemetry_publishes_and_verifies_an_actual_local_image_id","tests.test_executor.Journal.test_telemetry_build_records_refuse_previous_versions_and_mutable_references","tests.test_executor.WorkloadAdmission","tests.test_contracts.Parity"],verbosity=2)'
 ```
 
 **PASS: 25 tests, 44.7 seconds, exit 0.** The run covered the 5 runner cancellation tests, both
@@ -1214,7 +1216,7 @@ tests and the 8 schema parity tests.
 
 Two wider runs used the same environment:
 
-- `tests.test_comparison`, `tests.test_localcalibration`, `tests.test_contracts`,
+- `tests.test_release_comparison`, `tests.test_local_calibration`, `tests.test_contracts`,
   `tests.test_builds` and `tests.test_planning`: 94 tests, OK.
 - `tests.test_activation`, `tests.test_calibration` and `tests.test_diagnostics`: 161 tests,
   OK.
@@ -1247,21 +1249,21 @@ are unchanged. Nothing here ran Docker, Claw, GitHub Actions or a measurement.
 
 - **The defect.** GitHub run 41012988068 on `e67f8bd` (CI 695, Python 3.15.2) failed the
   classperf job: 1209 tests, 72 failures, 121 errors. The Linux-only
-  `test_hostobserver.HostObserver.test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended`
+  `test_host_observer.HostObserver.test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended`
   passed, but its child ran `[sys.executable, "-I", "-c", SUBREAPER, ...]` and imported
-  `perflab.hostobserver` from the writable checkout. `-I` ignores `PYTHONDONTWRITEBYTECODE`,
+  `perflab.host_observer` from the writable checkout. `-I` ignores `PYTHONDONTWRITEBYTECODE`,
   and the child does not inherit the parent's `-B`, so the child wrote
   `scripts/performance/perflab/__pycache__`. Every later test and CLI run then refused that
   source ("measurement library bytecode cache refused"), as the authority must. The outer
   operator reproduced this on Claw in a writable copy of the `e67` source. Earlier Claw checks
   ran on read-only source, and macOS skips the test, so neither saw it.
-- **The repair** (`tests/test_hostobserver.py`). The child sets `sys.dont_write_bytecode`
+- **The repair** (`tests/test_host_observer.py`). The child sets `sys.dont_write_bytecode`
   before any import and runs with `-I -B`. The test no longer imports the checkout: it copies
   `perflab` with `tests.support.writable_copy` into its own temporary directory and runs the
   child there, with every `PYTHON*` variable removed and with private `HOME`, `TMPDIR` and
   working directory. A failure therefore cannot write into the checkout. The test asserts that
   the copy is bytecode-free before and after the run. It also asserts that the child imported
-  `hostobserver.py` from the copy and that the real subreaper outcome is unchanged
+  `host_observer.py` from the copy and that the real subreaper outcome is unchanged
   (`timed_out` true, `uncertain` false). `tests.test_telemetry_exec.AncestorSubreaper` covers
   the telemetry executor the same way. A scratch check on macOS ran the child against such a
   copy without any suppression: the child stops at `prctl`, after its import, and had written
@@ -1271,7 +1273,7 @@ The focused run started at 09:59 MSK from the repository root, with `HOME` and `
 a fresh owned directory and `PYTHONDONTWRITEBYTECODE` unset, under Python 3.14.7 on macOS:
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_kernelguard","tests.test_telemetry_exec.AncestorSubreaper","tests.test_whole_source_repairs"],verbosity=1)'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_host_observer","tests.test_kernel_guard","tests.test_telemetry_exec.AncestorSubreaper","tests.test_whole_source_repairs"],verbosity=1)'
 ```
 
 **PASS: 72 tests, 99.0 seconds, 8 skipped, exit 0.** All eight skips are Linux-only: the
@@ -1294,12 +1296,12 @@ to a fresh `mktemp -d` directory. Nothing here is a Claw measurement or a Linux 
 running native comparison `cmp_b748bbb15eb5c84455ea0e6669570c2089b31726a62a43ed` was not
 touched or replayed. Correction (2026-10-30): an earlier version of this record called applying
 this verifier to that comparison's export the outer operator's step. It is not final proof:
-`telemetrylab.verify` requires its installed authority digest to equal every measured authority
+`telemetry_lab.verify` requires its installed authority digest to equal every measured authority
 byte, so the final report needs a new comparison measured on the final repaired source, and
 that comparison's 4-shard first shard did not finish
 ([below](#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
 
-- **Offline verification derives the report** (`perflab/comparison.py`). Before this change,
+- **Offline verification derives the report** (`perflab/release_comparison.py`). Before this change,
   `verify_export` checked hashes and the members the report named, and `verify_native` skipped
   every member the report did not call complete. A bundle could therefore relabel a failed
   telemetry original, or queued members with no native result, as complete, rehash its report
@@ -1334,7 +1336,7 @@ that comparison's 4-shard first shard did not finish
     real regression (the family judged whole, injected for the journal's report and the offline
     derivation alike, as the existing status assertion injects it) verifies `complete` with
     verdict `fail`. Relabelling that verdict `pass` is refused.
-- **Known build ID, no recording hit** (`perflab/diagnostics.py`, `perflab/diagcontracts.py`).
+- **Known build ID, no recording hit** (`perflab/diagnostics.py`, `perflab/diag_contracts.py`).
   A capture whose recordings never hit the profiled executable's known build ID was kept
   usable (`binary_build_id_present: false`, no omission) and rendered. It is now omitted as
   `executable_not_sampled`, every recording kept and nothing rendered. `profiles.json` refuses
@@ -1368,7 +1370,7 @@ that comparison's 4-shard first shard did not finish
 The focused run started at 11:43 MSK from the repository root:
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_comparison","tests.test_contracts","tests.test_report","tests.test_report_diagnostics","tests.test_diagnostics","tests.test_executor"],verbosity=1)'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_release_comparison","tests.test_contracts","tests.test_report","tests.test_report_diagnostics","tests.test_diagnostics","tests.test_executor"],verbosity=1)'
 ```
 
 **219 tests, 581.4 seconds: 1 failure, 3 errors, exit 1.** All four are this macOS host's,
@@ -1429,14 +1431,14 @@ with the outer operator. Nothing here claims them.
 
 Recorded in the AF implementation sandbox on macOS, Python 3.15.0, `TMPDIR` a fresh
 `mktemp -d` directory; nothing was measured. A scratch probe drove the real launch path of
-`tests.test_comparison.Comparison`'s fixture with the documented configuration and read the
+`tests.test_release_comparison.Comparison`'s fixture with the documented configuration and read the
 retained plan and declaration. With `shards = 4` it gave slots `[776, 692, 692, 692]` (2852) and
 2 originals; with `shards = 8`, slots `[440, 356, 356, 356, 356, 356, 356, 356]` (2932),
 partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, worst cases `[6630, 6030, 6030, 6030]` seconds of
 7200. `Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` now
 expects `('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)`; it still launches the
 documented configuration, runs the documented check script and fails a narrower telemetry
-selection. The stray blank line at the end of `scripts/performance/tests/test_comparison.py`
+selection. The stray blank line at the end of `scripts/performance/tests/test_release_comparison.py`
 was removed. The protected harness was re-pinned after that last protected edit with
 `python3 -I -B scripts/performance/cli.py harness-digest --write`, to
 `sha256:266f29f9be021c8934f1eb5bd9e226bd5f62c190b884a00c2ed6ca618bbcb37c`, and `--check`
@@ -1448,7 +1450,7 @@ control file ending in one. markdownlint-cli2 0.22.1 reports 0 errors in the cha
 The focused run, from the repository root:
 
 ```sh
-python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_comparison"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_release_comparison"],verbosity=1)'
 ```
 
 **PASS: 9 tests, 42.5 seconds, exit 0.** The native light gate is the full gate.
@@ -1471,11 +1473,11 @@ they changed, with this section and one change note:
   measures, repetitions, wall and authority are unchanged.
 
 Recorded in the AF implementation sandbox on macOS, Python 3.15.0, `TMPDIR` a fresh
-`mktemp -d` directory. No conflict marker remains in the tree. `tests.test_comparison`, run with
+`mktemp -d` directory. No conflict marker remains in the tree. `tests.test_release_comparison`, run with
 the command above, **PASS: 9 tests, 48.0 seconds, exit 0**, including
 `Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` (eight serial
 shards, 33 cases, 2932 slots, and a narrower telemetry selection refused);
-`tests.test_kernelguard` **PASS: 29 tests**. Nothing was measured: no new VM or Claw
+`tests.test_kernel_guard` **PASS: 29 tests**. Nothing was measured: no new VM or Claw
 measurement and no green final CI is claimed. The final comparison on the integrated producer,
 its report, export and verification are pending with the outer operator.
 
@@ -1494,7 +1496,7 @@ kept; the shared contracts were reconciled:
   `parent` or `partition` as none. A request/3 shape labelled request/1 or request/2 is
   refused (`invalid-v2-partition.json`), as is a request/2 shape labelled request/3
   (`invalid-v3-missing-partition.json`). A nightly is never a partition or a parent-selected
-  profile. A durable comparison (`comparison.Bundled`) admits only current request/3 and
+  profile. A durable comparison (`release_comparison.Bundled`) admits only current request/3 and
   result/3 members, so its members and its export carry only those versions. The standalone
   `overview` reads each named original through `overview.member`, which still reads an earlier
   request version and treats its absent `parent` as none, as ADR-0266 states. `preflight`,
@@ -1523,14 +1525,14 @@ Recorded in the AF implementation sandbox on macOS, Python 3.15.0; nothing was m
 Docker, network or benchmark was used. Each command below ran from `scripts/performance` as
 `python3 -I -B -c` over `unittest`:
 
-- `tests.test_comparison`: **9 tests OK**. These include the documented full-comparison
+- `tests.test_release_comparison`: **9 tests OK**. These include the documented full-comparison
   configuration and checks (`('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)`,
   windows `(45, 120)`, partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, each later one reusing
   the first one's build, and 12 manual telemetry runs), and a narrower telemetry selection is
   refused.
-- `tests.test_contracts tests.test_localcalibration tests.test_planning tests.test_suite
-  tests.test_kernelguard`: **104 tests OK**.
-- `tests.test_runner tests.test_compare tests.test_report`: **130 tests OK**. A partition
+- `tests.test_contracts tests.test_local_calibration tests.test_planning tests.test_suite
+  tests.test_kernel_guard`: **104 tests OK**.
+- `tests.test_runner tests.test_evaluate_results tests.test_report`: **130 tests OK**. A partition
   authority with any total but the plan's is refused, and one past 180 minutes fails the
   shape check.
 - `tests.test_diagnostics tests.test_report_diagnostics tests.test_whole_source_repairs
@@ -1544,7 +1546,7 @@ Docker, network or benchmark was used. Each command below ran from `scripts/perf
   them, the ordinary nightly's 4-shard plan is ready with 15 and 180 minutes and the declared
   windows freeze 45 and 120. Main's nightly tests pass, and so does its request/1-result/2
   readability test, now also refusing request/3 under request/1 and request/2.
-- `tests.test_nightly_build tests.test_hostobserver tests.test_hostlock`: **63 tests, 1
+- `tests.test_nightly_build tests.test_host_observer tests.test_host_lock`: **63 tests, 1
   failure**. `CargoRewrite.test_a_rewritten_copy_of_this_tree_still_resolves_locked_and_offline`
   expects Cargo's `needs to be updated`, but this host's Cargo prints `cannot update the lock
   file ... because --locked was passed`. This change does not touch that test or its paths.
@@ -1639,7 +1641,7 @@ aggregate verdict did not select, with their sealed results, states and the expo
 resealed, completed both lanes while the report's diagnostic selection named the actual
 regression.
 
-**Change.** `comparison.status`, which `comparison-report` and `comparison-verify` both derive
+**Change.** `release_comparison.status`, which `comparison-report` and `comparison-verify` both derive
 the report through, recomputes the selection record from the aggregate's own verdict
 (`diagnostics.select` with the frozen configuration's `max_cases` and that verdict's digest) and
 requires each profile's selection to be exactly it: mode, limit, parent verdict digest, cases
@@ -1652,7 +1654,7 @@ reason naming the case, the side and what the trace holds; the evidence stays bu
 honest incomplete bundle verifies as incomplete. Standalone profiles, the `not_applicable` lane
 of a verdict with nothing to diagnose, measurement, capture budgets and contracts do not change.
 
-**Tests.** `tests.test_comparison.Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`
+**Tests.** `tests.test_release_comparison.Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`
 no longer injects profile usability: its profile stand-in writes a contract-valid
 `profiles.json` of the selection the frozen parent verdict derives, and the honest complete
 bundle verifies complete through `cli.py executor comparison-verify`. For a missing candidate
@@ -1672,7 +1674,7 @@ the named tests in place of `tests.test_nightly_build.CargoRewrite`:
 - `tests.test_nightly_build.CargoRewrite`: 3 tests, `OK`, 0.928 seconds, exit 0.
 - `tests.test_executor.Journal.test_hosted_declared_windows_refuse_before_any_original_or_transport`:
   1 test, `OK`, 0.242 seconds, exit 0.
-- `tests.test_comparison` and `tests.test_report_diagnostics`: 46 tests, `OK`, 233.742 seconds
+- `tests.test_release_comparison` and `tests.test_report_diagnostics`: 46 tests, `OK`, 233.742 seconds
   on a shared, loaded host, exit 0.
 
 These are this candidate's focused runs, recorded by its native Task record; no commit SHA, CI
@@ -1685,7 +1687,7 @@ adopted.
 ## CPU lanes need admitted captures; verified reports derive the aggregate (2026-10-30)
 
 **Findings.** Whole-PR verification 08 left two major correctness findings open on
-`perflab/comparison.py`. First, for each case the aggregate selected, the CPU lane accepted a
+`perflab/release_comparison.py`. First, for each case the aggregate selected, the CPU lane accepted a
 differential render without baseline and candidate captures, and offline admission
 (`report.admit_children`) neither requires captures nor binds a render to them. A copied
 bundle could keep its valid SVGs, remove the captures, reseal the child and the original, and
@@ -1724,7 +1726,7 @@ bundle's derivation are the same document. `comparison-verify` no longer refuses
 bundle outright: it derives the same refused, incomplete report and refuses any other claim.
 `comparison-status` (`verify` absent) still reads cheaply and verifies nothing.
 
-**Tests.** In `tests.test_comparison`:
+**Tests.** In `tests.test_release_comparison`:
 
 - `stand_in_profiles` now writes, for each selected CPU case, a contract-valid first perf
   capture per side at exactly the registry minimum, with the renders bound to their collapsed
@@ -1762,10 +1764,10 @@ candidate at the repository root, offline, with Python 3.14.7, no benchmark, Doc
 network, on 2026-10-30 at 15:28:59 to 15:33:09 UTC:
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_release_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
 ```
 
-`tests.test_comparison` and `tests.test_report_diagnostics`: 49 tests, `OK`, 249.316 seconds
+`tests.test_release_comparison` and `tests.test_report_diagnostics`: 49 tests, `OK`, 249.316 seconds
 on a shared host, exit 0. That is 46 tests before this change plus the 3 new ones. An earlier
 run of the same selection on this candidate failed one test only because `comparison.py` was
 edited while it ran. The telemetry authority digest covers `perflab/`, so the stand-in
@@ -1805,7 +1807,7 @@ against the derived inclusion. An incomplete, foreign or unadmitted partition st
 honestly as incomplete. `comparison-status` (`verify` absent) is unchanged and verifies
 nothing. Schemas, the writer, shard and verdict checks and persisted shapes do not change.
 
-**Tests.** In `tests.test_comparison`:
+**Tests.** In `tests.test_release_comparison`:
 
 - `Comparison.test_an_aggregate_of_another_identity_or_excluding_an_admitted_partition_is_refused`
   uses three fresh journals. In each, the real aggregate is rewritten before `advance` submits
@@ -1841,10 +1843,10 @@ implementer at the repository root, offline, with Python 3.14.7, no benchmark, D
 network, on 2026-10-30 from 17:09:40 to 17:14:56 UTC:
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_release_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
 ```
 
-`tests.test_comparison` and `tests.test_report_diagnostics`: 50 tests, `OK`, 315.765 seconds
+`tests.test_release_comparison` and `tests.test_report_diagnostics`: 50 tests, `OK`, 315.765 seconds
 on a shared host, exit 0. That is 49 tests before that repair plus its new one. Alone, the new
 test took 36.7 s. `python3.14 -I -B scripts/performance/cli.py harness-digest --write`
 re-pinned the protected harness after the last protected edit, to
@@ -1922,7 +1924,7 @@ stable test source with `/opt/homebrew/bin/python3.14`, Python 3.14.7 (Clang 21.
 the repository root, offline:
 
 ```sh
-python3.14 -I -B -c 'import datetime,sys,unittest; print("START UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); print(sys.version,flush=True); sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); print("END UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); raise SystemExit(not result.wasSuccessful())'
+python3.14 -I -B -c 'import datetime,sys,unittest; print("START UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); print(sys.version,flush=True); sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_release_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); print("END UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); raise SystemExit(not result.wasSuccessful())'
 ```
 
 2026-10-30 18:27:17.389419–18:36:59.980194 UTC: **51 tests, OK, 581.287 seconds**, exit 0.
@@ -1935,5 +1937,5 @@ forged-complete bundle without its explicit injections;
 The new test had already passed alone before this run (1 test, OK, 20.958 seconds):
 
 ```sh
-python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_comparison.Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_release_comparison.Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
 ```

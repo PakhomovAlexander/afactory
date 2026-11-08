@@ -13,7 +13,7 @@ from perflab import contracts, oracle, reference, suite
 from perflab.values import ContractError
 from tests.support import CLI, ROOT, SUITE, read
 
-PROBE = os.path.join(ROOT, "crates/review-pipeline/examples/perf-probe")
+PROBE = os.path.join(ROOT, "crates/af-runtime/examples/perf-probe")
 GOLDEN = os.path.join(ROOT, "fixtures/performance/golden/native.json")
 
 

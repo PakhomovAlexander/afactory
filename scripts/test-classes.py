@@ -27,15 +27,15 @@ QUARANTINE_DAYS = 14
 SCHEMA = 'af.test-plan/2'
 BINDING = 'af.release-tests/2'
 PERF_VARIANTS = (
-    ('trace', 'review-core/perf-trace,review-core/perf-calibration',
-     'binary_id(=review-core) & test(perf_)'),
-    ('calibration', 'review-pipeline/perf-calibration',
-     'binary_id(=review-pipeline::perf_probe) & test(calibration_build)'),
+    ('trace', 'af-contracts/perf-trace,af-contracts/perf-calibration',
+     'binary_id(=af-contracts) & test(perf_)'),
+    ('calibration', 'af-runtime/perf-calibration',
+     'binary_id(=af-runtime::perf_probe) & test(calibration_build)'),
 )
 # What each feature variant's fixed selector reaches: (binary, test name substring). The
 # Makefile's perf-feature-tests runs the same selectors through cargo test.
-FEATURE_SELECTORS = {'trace': ('review-core', 'perf_'),
-                     'calibration': ('review-pipeline::perf_probe', 'calibration_build')}
+FEATURE_SELECTORS = {'trace': ('af-contracts', 'perf_'),
+                     'calibration': ('af-runtime::perf_probe', 'calibration_build')}
 FILTER_OPTIONS = ('-E', '--filterset', '--filter-expr')
 
 

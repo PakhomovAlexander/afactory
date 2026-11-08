@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use review_core::store_writer::StoreProvenance;
+use af_contracts::store_writer::StoreProvenance;
 use serde_json::Value;
 
 use super::tasks::{array, bounded, fit};

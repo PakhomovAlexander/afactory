@@ -45,7 +45,7 @@ reasons. Fixtures and implementation tests establish the arithmetic only.
 import os
 from fractions import Fraction
 
-from . import compare, contracts, schedule
+from . import evaluate_results, contracts, schedule
 from . import suite as suite_module
 from .values import canonical_digest, format_rational, require
 
@@ -132,7 +132,7 @@ def execution_failures(evaluation):
                 entry["status"], ", ".join(entry["flags"]) or "no flag"))
     covered = ("missing_records", "missing_shard", "shard_not_complete")
     for reason in verdict["aggregate"]["reasons"]:
-        if reason["code"] in compare.INTEGRITY_CODES and reason["code"] not in covered:
+        if reason["code"] in evaluate_results.INTEGRITY_CODES and reason["code"] not in covered:
             fail(reason["shard"], "integrity", "%s: %s" % (reason["code"], reason["detail"]))
     for entry in verdict["cases"]:
         for failure in entry["failures"]:
@@ -145,7 +145,7 @@ def execution_failures(evaluation):
 def run_cost(run_dir, cache=None):
     """The cost record of one retained run directory; `cache` is the operator's declaration of
     its build cache, which must agree with what its build manifest shows."""
-    evaluation = compare.evaluate(run_dir)
+    evaluation = evaluate_results.evaluate(run_dir)
     plan, verdict = evaluation.plan, evaluation.verdict
     # A failed build's manifest still records its time, cache and failure.
     builds = evaluation.builds or evaluation.recorded_builds
@@ -361,7 +361,7 @@ def shipping_report(suite, run_dirs):
     entries = dict((key, {"targets": {}, "runs": set()}) for key in required)
     reasons, runs, seen, bundles = [], [], set(), set()
     for run_dir in run_dirs:
-        evaluation = compare.evaluate(run_dir)
+        evaluation = evaluate_results.evaluate(run_dir)
         plan, verdict = evaluation.plan, evaluation.verdict
         require(plan["run_id"] not in seen, "run %s is given twice; a sample counts once"
                 % plan["run_id"])

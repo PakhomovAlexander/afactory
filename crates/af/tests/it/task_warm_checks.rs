@@ -12,9 +12,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_config::lock::package_digest;
-use review_source_git::Manifest;
-use review_store::Cas;
+use af_pipeline_config::lock::package_digest;
+use af_source_git::Manifest;
+use af_store::Cas;
 use serde_json::Value;
 
 use crate::task_cli;
@@ -1756,7 +1756,7 @@ fn no_warm_documents() -> Value {
         "delivery": delivery,
         "delivered_tree": tree(&worktree)
             .into_iter()
-            .map(|(path, bytes)| (path, review_store::canonical::blob_content_id(&bytes)))
+            .map(|(path, bytes)| (path, af_store::canonical::blob_content_id(&bytes)))
             .collect::<std::collections::BTreeMap<_, _>>(),
     });
     // The engine is the digest of the running `af` executable's bytes, so every build has its
@@ -1833,7 +1833,7 @@ fn no_warm_cache_byte_reaches_a_worker_sandbox_a_snapshot_or_a_delivered_tree() 
     for directory in &directories {
         for (_, bytes) in tree(directory) {
             if !bytes.is_empty() {
-                cached.insert(review_store::canonical::blob_content_id(&bytes));
+                cached.insert(af_store::canonical::blob_content_id(&bytes));
             }
         }
     }
@@ -1909,7 +1909,7 @@ fn no_warm_cache_byte_reaches_a_worker_sandbox_a_snapshot_or_a_delivered_tree() 
             &format!("run {index}: the delivered tree"),
             tree(&worktree)
                 .into_iter()
-                .map(|(path, bytes)| (path, review_store::canonical::blob_content_id(&bytes)))
+                .map(|(path, bytes)| (path, af_store::canonical::blob_content_id(&bytes)))
                 .collect(),
         );
     }
@@ -2015,14 +2015,13 @@ fn native_toolchain(fixture: &Fixture, variant: &str) -> PathBuf {
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let limits = review_sandbox::toolchain::ToolchainLimits {
+    let limits = af_sandbox::toolchain::ToolchainLimits {
         max_bytes: 1_000_000,
         max_entries: 100,
         max_copy_bytes: 1_000_000,
     };
     let seed = fixture.root.join(format!("seed-{variant}"));
-    let digest =
-        review_sandbox::toolchain::snapshot_toolchain(&source, &seed, limits, None).unwrap();
+    let digest = af_sandbox::toolchain::snapshot_toolchain(&source, &seed, limits, None).unwrap();
     std::fs::remove_dir_all(seed).unwrap();
     let mapping = fixture.root.join(format!("rust-toolchain-{variant}.toml"));
     std::fs::write(
@@ -2375,7 +2374,7 @@ fn an_offline_check_passes_with_a_dead_proxy_on_a_pinned_package_filled_once() {
     let fixture = fixture(policy);
     // What npm would fetch: the pinned tarball, filed as npm's cache files it.
     let seed = fixture.root.join("npm-seed");
-    review_pipeline::task::warm_check::offline::cache_tarball(
+    af_runtime::task::warm_check::offline::cache_tarball(
         &seed,
         &review_check_pin("markdownlint-cli2@0.22.1", &sha256),
         tarball,
@@ -2434,8 +2433,8 @@ fn an_offline_check_passes_with_a_dead_proxy_on_a_pinned_package_filled_once() {
     );
 }
 
-fn review_check_pin(spec: &str, sha256: &str) -> review_pipeline::task::warm_check::NpmPin {
-    review_pipeline::task::warm_check::NpmPin {
+fn review_check_pin(spec: &str, sha256: &str) -> af_runtime::task::warm_check::NpmPin {
+    af_runtime::task::warm_check::NpmPin {
         spec: spec.into(),
         sha256: sha256.into(),
     }

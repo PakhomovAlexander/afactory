@@ -115,7 +115,7 @@ nothing.
 `af.process` — carries `process.pid`, `process.command` (the program, never its arguments),
 `process.exit_code` or `process.signal`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`,
 and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
-(`review-process`, which links no telemetry) carries them through every result it returns, a
+(`af-process`, which links no telemetry) carries them through every result it returns, a
 timed-out, killed or cancelled process included; the crates that receive the result record the
 span. A process span ends after its caller judged the capture: an Attempt, check, gate call or
 container command whose output went past the capture cap ends it with `error.type = "failed"`
@@ -125,9 +125,9 @@ per-child `wait4(2)` (`nix` 0.31 and `rustix` expose none), so the figures come 
 `getrusage(RUSAGE_CHILDREN)`: the change of the process's children totals across a reap is the
 reaped child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports
 it) only when no other child of the process is reaped between the two readings. So every child
-reap of the workspace's non-test code goes through `review-process`'s one reap lock: the
+reap of the workspace's non-test code goes through `af-process`'s one reap lock: the
 supervisor's own reaps, and every other — a login adapter's, the TUI's hand-off, `$EDITOR`,
-`gh`, `git` and `tar` — through `review_process::reap`, whose `wait`, `try_wait`,
+`gh`, `git` and `tar` — through `af_process::reap`, whose `wait`, `try_wait`,
 `wait_with_output`, `output`, `status` and non-blocking `wait_pid` do what the standard
 library's do under that lock, polling a non-blocking reap so the lock is never held while a
 child runs. A source test fails on a direct `wait`, `try_wait`, `wait_with_output`, `output()`,
@@ -664,7 +664,7 @@ Stores share without `--store`, or a refused `[telemetry]` key.
 ## Harness streams
 
 At `spans` and above every Claude and Codex Attempt's streams are tapped as they arrive. The
-supervisor (`review-process`, which links no telemetry) still drains each pipe into the complete
+supervisor (`af-process`, which links no telemetry) still drains each pipe into the complete
 stream the adapter reads; for every chunk it reads it also makes one **non-blocking offer** of
 `(process, stream, byte offset, bytes, arrival)` to a queue of at most `observer_queue_bytes`.
 The offer takes no lock: the room is reserved by one atomic operation, the chunk goes through a
@@ -1215,13 +1215,13 @@ constructs `TaskCheckReceiptV2` in `CodeDomain::check`, publishes it with
 
 | Source path | Git blob ID in RC4 and RC5 | Git blob ID in RC6 |
 | --- | --- | --- |
-| [`crates/review-core/src/task/verification.rs`](../crates/review-core/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
+| [`crates/review-core/src/task/verification.rs`](../crates/af-contracts/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
 | [`schemas/task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json) | `49e71c04c24222cc9855135785d540644a73b7dc` | `49e71c04c24222cc9855135785d540644a73b7dc` |
-| [`crates/review-pipeline/src/task/code.rs`](../crates/review-pipeline/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` | `15cbd9d55bedd0dbc993bf55dce16ea44deb9924` |
-| [`crates/af/src/task_execution/catalog.rs`](../crates/af/src/task_execution/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
-| [`crates/review-config/src/task/catalog.rs`](../crates/review-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` | `8a047a34fc3f880a982ae4fd541ac9ed11b48c15` |
-| [`crates/review-config/src/lock.rs`](../crates/review-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
-| [`crates/review-store/src/canonical.rs`](../crates/review-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
+| [`crates/review-pipeline/src/task/code.rs`](../crates/af-runtime/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` | `15cbd9d55bedd0dbc993bf55dce16ea44deb9924` |
+| [`crates/af/src/task_commands/catalog.rs`](../crates/af/src/task_commands/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
+| [`crates/review-config/src/task/catalog.rs`](../crates/af-pipeline-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` | `8a047a34fc3f880a982ae4fd541ac9ed11b48c15` |
+| [`crates/review-config/src/lock.rs`](../crates/af-pipeline-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
+| [`crates/review-store/src/canonical.rs`](../crates/af-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
 
 All four catalogs under `fixtures/telemetry-bench/<fixture>/repo/.af/task-catalog.toml` are
 also byte-identical in RC4, RC5 and RC6:
