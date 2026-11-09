@@ -1194,7 +1194,7 @@ committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
 `FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
 artifact type renamed and each re-pinned with the digest the contract declares, which the
 measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
-that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6 and rc.7), and a release
+that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6, rc.7 and 0.15.1-rc.1), and a release
 no contract names is refused, never measured under the committed contract. The contract is
 selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
 refused when the version selects another. It is benchmark fixture
@@ -1248,15 +1248,29 @@ serialization retain the blob IDs above. The entire `fixtures/telemetry-bench` t
 byte-identical to RC6, including all four catalogs and their package manifests and schemas.
 Thus RC7 explicitly selects the same receipt contract and committed package pins.
 
+**0.15.1-rc.1 source evidence.** This workspace names `0.15.1-rc.1` in `Cargo.toml`.
+`crates/af-contracts/src/task/verification.rs` still declares `TASK_CHECK_RECEIPT_V2` and
+`TaskCheckReceiptV2`; `CodeDomain::check` in `crates/af-runtime/src/task/code.rs` still publishes
+that receipt, validated by `schemas/task-check-receipt-v2.json`. The committed bench packages
+still declare `af/TaskCheckReceipt@2`. The regression below validates every catalog's digest
+against actual package bytes (and the Store fixture's Pipeline pin), then exercises contract
+production without overlays and compares every copied file byte for byte. This establishes the
+explicit current-version declaration; it does not admit an unnamed future release.
+
 This supports using `check-receipt@2` with `pins = None`: keep the committed package pins,
 perform no receipt-type renaming, and still require each measured binary's `af catalog digest`
 to match each committed pin. The Store fixture has no Task catalog. The focused regression
-`test_rc4_through_rc7_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
-fixture for all four versions and checks that every copied file stays byte-identical. This evidence
+`test_rc4_through_rc7_and_0_15_1_rc1_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
+fixture for all five versions and checks that every copied file stays byte-identical. This evidence
 admits only the named releases; RC8, stable 0.14.0, nightly and unknown build-metadata
 version strings remain unnamed.
 `test_workspace_release_has_an_explicit_valid_telemetry_contract` reads the workspace version
-and requires an explicit current contract, so a version bump must declare its workload before shipping.
+and requires an explicit current contract. The cheap `scripts/release-contract.py` preflight
+checks the same version selection and lab schema ownership in always-run `release-check` and
+`base-check`, including fast and `no-perf` PRs. Release preparation invokes it after the bump,
+before committing or publishing the PR. A version bump must declare its workload before shipping.
+The contained smoke's missing or invalid run-artifact diagnostic includes captured stderr, so a
+setup/contract refusal cannot be masked by a file-not-found exception.
 
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
 writes the `af/telemetry-overhead@2` document

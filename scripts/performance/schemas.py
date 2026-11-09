@@ -28,6 +28,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--write", action="store_true", help="rewrite the schema files")
     args = parser.parse_args(argv)
+    retired = sorted(set(contracts.lab_schema_names(SCHEMAS)) - set(rendered()))
+    if retired:
+        sys.stderr.write("retired or unowned performance schemas: %s; review ownership or remove "
+                         "retired lab schemas explicitly\n" % ", ".join(retired))
+        return 1
     stale = []
     for name, data in sorted(rendered().items()):
         path = os.path.join(SCHEMAS, name)

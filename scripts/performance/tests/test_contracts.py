@@ -157,7 +157,7 @@ class Parity(unittest.TestCase):
 
     def test_committed_schemas_are_generated_from_the_readers_definitions(self):
         generated = contracts.schema_documents()
-        committed = sorted(name for name in os.listdir(SCHEMAS) if name.startswith("performance-"))
+        committed = contracts.lab_schema_names(SCHEMAS)
         self.assertEqual(committed, sorted(generated))
         for name, doc in generated.items():
             on_disk = json.loads(read(os.path.join(SCHEMAS, name)))
@@ -303,9 +303,9 @@ class Parity(unittest.TestCase):
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],
                               str(caught.exception))
         # Only the laboratory's own files: another family's schema may share a suffix
-        # (`telemetry-invocation-cost-v2.json` ends in `cost-v1.json`).
-        self.assertFalse(any(name.startswith("performance-")
-                             and name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
+        # (`performance-publication-activation-v1.json` ends in `activation-v1.json`).
+        # Match the complete lab basename, never another contract's suffix.
+        self.assertFalse(any(name[len("performance-"):] in ("run-v1.json", "run-v2.json", "run-v3.json",
                                                 "run-v4.json", "run-v5.json", "readiness-v4.json",
                                                 "profiles-v4.json", "profiles-v5.json", "report-v2.json",
                                                 "activation-v2.json",
@@ -331,8 +331,8 @@ class Parity(unittest.TestCase):
                                                 "golden-v1.json", "probe-request-v1.json",
                                                 "supervisor-request-v1.json",
                                                 "supervisor-result-v1.json",
-                                                "supervisor-result-v2.json"))
-                                 for name in os.listdir(SCHEMAS)))
+                                                "supervisor-result-v2.json")
+                                 for name in contracts.lab_schema_names(SCHEMAS)))
 
     def test_probe_control_messages_are_bounded(self):
         entry = [e for e in self.index if e["contract"] == "probe" and e["valid"]][0]
