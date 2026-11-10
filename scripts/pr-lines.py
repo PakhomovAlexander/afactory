@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""Count BASE...HEAD additions and print one hierarchical PR additions table (ADR-0195).
+"""Count BASE...HEAD additions and deletions in one hierarchical PR table (ADR-0195).
 
-Top-level rows partition additions by actual first path component; root files keep their names.
-crates/ contains crate directories with nonzero main/, test/, other/ leaves, and direct files.
-Rust test paths take priority: any tests directory within the crate, tests.rs, test_*.rs or
-*_test.rs. Remaining Rust under src/ is main; everything else is other. Inline cfg(test) in
-ordinary source remains main. There is no shared classification.
-
-Git numstat uses the merge base, rename destinations, and zero additions for binary files.
-Siblings sort by descending count then raw name. Shares use the immediate parent (PR total at
-the top); bars use the largest sibling, at most twelve cells with eighth blocks and a sliver
-at least. Figures are exact below 1000, rounded to 0.1k below 10k and 1k above it, half up.
-Only nonzero nodes appear. Parent rows repeat subtotals, never increase the PR total.
-
-The first cell prefixes a child with ↳ and a grandchild with ↳ ↳. Directory names end in /;
-direct files do not. Names escape Markdown/HTML, whitespace and the structural arrow as numeric
-HTML entities. --json writes af/PrLines@3 (schemas/pr-lines-v3.json): exact total and nested rows.
-The unchanged af-pr-lines:v1 markers delimit the refresh container. The checker regenerates the
-whole block from the PR's exact commits; shape parsing never adds rounded figures.
+Root rows partition both counts by actual first path component. crates/ includes crate
+main/, tests/, other/ leaves and direct files. Rust test paths take priority over src;
+inline cfg(test) and common/shared source remain main. Binary and 0/0 files are absent.
+Siblings sort by descending additions, descending deletions, then raw identity. Shares use
+immediate parent additions; zero child is 0%, zero denominator is undefined (—).
+Figures round half up: exact below 1000, 0.1k below 10k, 1k above. Percentages round half
+up, positive values below 0.5% show <1%. Subtotals never add to the PR totals again.
+One table uses bold roots/parents and four &nbsp; entities per depth, with safe literal names.
+--json emits only af/PrLines@4 (schemas/pr-lines-v4.json), with exact added/deleted counts.
+The unchanged af-pr-lines:v1 markers delimit canonical refresh from exact PR commits.
 """
 import argparse
 import json
@@ -29,17 +22,15 @@ import sys
 BEGIN = '<!-- af-pr-lines:v1 -->'
 END = '<!-- /af-pr-lines -->'
 NONE = 'none'
-SCHEMA = 'af/PrLines@3'
-TREE = '↳ '
-KINDS = ('main/', 'test/', 'other/')
-HEADER = ['Directory', 'Added', 'Share']
+SCHEMA = 'af/PrLines@4'
+INDENT = '&nbsp;' * 4
+KINDS = ('main', 'tests', 'other')
+HEADER = ['Area', 'Changes', 'Share of additions']
 SEPARATOR_ROW = '|:--|--:|:--|'
-BAR_CELLS = 12
-BLOCKS = '▏▎▍▌▋▊▉█'
-FIGURE = re.compile(r'^(?:[1-9][0-9]{0,2}|0|[1-9][0-9]{0,2}(?:\.[0-9])?k)$')
-TITLE = re.compile(r'^\*\*Lines added: (none|0|[1-9][0-9]{0,2}|[1-9][0-9]{0,2}(?:\.[0-9])?k)\*\*$')
+FIGURE = re.compile(r'^(?:[1-9][0-9]{0,2}|0|[1-9][0-9]*(?:\.[0-9])?k)$')
+TITLE = re.compile(r'^\*\*Lines added: (none|0|[1-9][0-9]{0,2}|[1-9][0-9]*(?:\.[0-9])?k)\*\*$')
 SEPARATOR = re.compile(r'^:?-+:?$')
-SHARE = re.compile(r'^([▏▎▍▌▋▊▉█]+) (<1%|[0-9]{1,3}%)$')
+SHARE = re.compile(r'^(?:—|<1%|0%|[1-9][0-9]?%|100%)$')
 HOW = ('Run `python3 scripts/pr-lines.py` from this repository on the pull request\'s branch '
        '(with its base fetched; `--base REF` for a base other than origin/main) and paste its '
        'output, both markers included, into the template\'s `Lines added` section; after a '
@@ -77,17 +68,17 @@ def code_kind(relative):
     if name.endswith('.rs'):
         if 'tests' in relative[:-1] or name == 'tests.rs' \
                 or name.startswith('test_') or name.endswith('_test.rs'):
-            return 'test/'
+            return 'tests/'
         if relative[0] == 'src':
             return 'main/'
     return 'other/'
 
 
 def report(entries):
-    """One exact tree. Every addition belongs to one top-level row and one terminal row."""
+    """One exact tree. Every addition and deletion belongs to one top-level row and one terminal row."""
     roots = {}
-    for added, _, path in entries:
-        if not added:
+    for added, deleted, path in entries:
+        if added is None or deleted is None or not (added or deleted):
             continue
         parts = path.split('/')
         names = [parts[0] + ('/' if len(parts) > 1 else '')]
@@ -97,17 +88,20 @@ def report(entries):
                 names.append(code_kind(parts[2:]))
         children = roots
         for name in names:
-            node = children.setdefault(name, {'name': name, 'added': 0, 'children': {}})
+            node = children.setdefault(name, {'name': name, 'added': 0, 'deleted': 0, 'children': {}})
             node['added'] += added
+            node['deleted'] += deleted
             children = node['children']
 
     def ordered(nodes):
-        return [{'name': node['name'], 'added': node['added'],
+        return [{'name': node['name'], 'added': node['added'], 'deleted': node['deleted'],
                  'children': ordered(node['children'])}
-                for node in sorted(nodes.values(), key=lambda node: (-node['added'], node['name']))]
+                for node in sorted(nodes.values(), key=lambda node: (
+                    -node['added'], -node['deleted'], node['name']))]
 
     rows = ordered(roots)
-    return {'schema': SCHEMA, 'total': sum(node['added'] for node in rows), 'rows': rows}
+    return {'schema': SCHEMA, 'added': sum(node['added'] for node in rows),
+            'deleted': sum(node['deleted'] for node in rows), 'rows': rows}
 
 
 def render_entries(entries):
@@ -120,49 +114,85 @@ def figure(n):
     if n < 1000:
         return str(n)
     if n < 10_000:
-        tenths = int(n / 100 + 0.5)
+        tenths = (n + 50) // 100
         if tenths >= 100:
             return '10k'
         return f'{tenths // 10}k' if tenths % 10 == 0 else f'{tenths // 10}.{tenths % 10}k'
-    return f'{int(n / 1000 + 0.5)}k'
-
-
-def bar(n, largest):
-    """`n` against `largest` as a bar of up to BAR_CELLS cells in eighth blocks, a sliver at
-    least."""
-    eighths = int(8 * BAR_CELLS * n / largest + 0.5)
-    full, rest = divmod(eighths, 8)
-    return BLOCKS[7] * full + (BLOCKS[rest - 1] if rest else '') or BLOCKS[0]
+    return f'{(n + 500) // 1000}k'
 
 
 def share(n, total):
-    """`n` as a percentage of `total`, half rounding up; `<1%` below a half."""
+    """Parent-relative addition share, undefined for a zero denominator."""
+    if not total:
+        return '—'
+    if not n:
+        return '0%'
     percent = 100 * n / total
     return f'{int(percent + 0.5)}%' if percent >= 0.5 else '<1%'
 
 
 def escape(name):
-    return ''.join(f'&#{ord(char)};' if char in '\\|&<>`*_[]~↳' or char.isspace()
+    # Quotes make literal leading NBSP/space visible as part of a name, never hierarchy depth.
+    body = ''.join(f'&#{ord(char)};' if char in '\\|&<>`*_[]~↳"' or char.isspace()
                    else char for char in name)
+    return f'&#34;{body}&#34;' if any(char.isspace() for char in name) else body
+
+
+def safe_name(name):
+    decoded = re.sub(r'&#([0-9]+);', lambda m: chr(int(m[1]))
+                     if len(m[1]) <= 7 and int(m[1]) <= 0x10ffff else '', name)
+    if any(char.isspace() for char in decoded):
+        if not (decoded.startswith('"') and decoded.endswith('"')):
+            return False
+        decoded = decoded[1:-1]
+    return bool(name) and '/' not in name and escape(decoded) == name
+
+
+def display_names(rows):
+    """Project sibling identities without slashes; alias only colliding files.
+
+    Reserve every literal bare name before allocating (file), (file2), ... in raw identity
+    order, so neither row ordering nor literal suffixes can change or impersonate an alias.
+    Escaping is applied afterwards, equally to literals and aliases.
+    """
+    names = {row['name']: row['name'].removesuffix('/') for row in rows}
+    reserved = set(names.values())
+    directories = {row['name'] for row in rows if row['name'].endswith('/')}
+    for name in sorted(names):
+        if name + '/' not in directories:
+            continue
+        suffix = 1
+        while True:
+            label = f'{name} (file{suffix if suffix > 1 else ""})'
+            if label not in reserved:
+                break
+            suffix += 1
+        names[name] = label
+        reserved.add(label)
+    return names
 
 
 def render(data):
-    """One table, with parent-relative shares and bars scaled against siblings."""
+    """One table with bold parents, visible indentation and parent-relative shares."""
     if not data['rows']:
         return f'**Lines added: {NONE}**'
-    lines = [f"**Lines added: {figure(data['total'])}**", '',
+    lines = [f"**Lines added: {figure(data['added'])}**", '',
              '| ' + ' | '.join(HEADER) + ' |', SEPARATOR_ROW]
 
     def append(rows, parent, depth):
-        largest = max(row['added'] for row in rows)
+        names = display_names(rows)
         for row in rows:
             n = row['added']
-            lines.append(f"| {TREE * depth}{escape(row['name'])} | {figure(n)} | "
-                         f"{bar(n, largest)} {share(n, parent)} |")
+            cells = [escape(names[row['name']]),
+                     f"+{figure(n)}/−{figure(row['deleted'])}", share(n, parent)]
+            if depth == 0 or row['children']:
+                cells = [f'**{cell}**' for cell in cells]
+            cells[0] = INDENT * depth + cells[0]
+            lines.append('| ' + ' | '.join(cells) + ' |')
             if row['children']:
                 append(row['children'], n, depth + 1)
 
-    append(data['rows'], data['total'], 0)
+    append(data['rows'], data['added'], 0)
     return '\n'.join(lines)
 
 
@@ -221,32 +251,47 @@ def parse(lines):
     for line in lines[3:]:
         cells = row_cells(line)
         if cells is None or len(cells) != 3:
-            return None, f'not a row of three cells `| directory | figure | bar share |`: `{line}`'
-        name, shown, rest = cells
-        shared = SHARE.fullmatch(rest)
-        if not name or not FIGURE.fullmatch(shown) or shown == '0' or not shared:
-            return None, f'not a row `| directory | figure | bar share |`: `{line}`'
+            return None, f'not a row of three cells: `{line}`'
+        name, changes, rest = cells
         depth = 0
-        while name.startswith(TREE):
+        while name.startswith(INDENT):
             depth += 1
-            name = name[len(TREE):]
-        if not name.rstrip('/') or '↳' in name or '/' in name.rstrip('/') or name.endswith('//'):
-            return None, f'invalid hierarchy name: `{line}`'
+            name = name[len(INDENT):]
+        bold = name.startswith('**') and name.endswith('**')
+        if bold:
+            name = name[2:-2]
+            if not all(cell.startswith('**') and cell.endswith('**') for cell in (changes, rest)):
+                return None, 'inconsistent bold row'
+            changes, rest = changes[2:-2], rest[2:-2]
         if depth > 2 or depth > len(stack):
-            return None, f'missing hierarchy parent: `{line}`'
+            return None, 'missing hierarchy parent'
         stack = stack[:depth]
-        if depth and (stack[0] != 'crates/' or
-                      (depth == 2 and (not stack[1].endswith('/') or name not in KINDS))):
-            return None, f'invalid hierarchy: `{line}`'
-        path = tuple(stack + [name])
+        # Only canonical numeric entities may encode literal syntax/whitespace. In particular
+        # a literal &nbsp; in a filename is escaped as &#38;nbsp;, never indentation.
+        if not safe_name(name):
+            return None, 'invalid hierarchy name'
+        counts = re.fullmatch(r'\+(.+)/−(.+)', changes)
+        if not counts or not all(FIGURE.fullmatch(n) for n in counts.groups()) \
+                or counts.groups() == ('0', '0') or not SHARE.fullmatch(rest):
+            return None, 'invalid changes or share'
+        parent = stack[-1] if stack else None
+        if (depth == 0 and not bold) or (depth == 2 and bold) \
+                or (depth and (stack[0][0] != 'crates' or
+                               (depth == 2 and (not parent[1] or name not in KINDS)))):
+            return None, 'invalid hierarchy or bold row'
+        denominator = parent[2] if parent else title.group(1)
+        if (denominator == '0' and rest != '—') or (denominator != '0' and
+                (rest == '—' or (counts[1] == '0') != (rest == '0%'))):
+            return None, 'invalid addition share denominator'
+        path = tuple(row[0] for row in stack) + (name,)
         if path in rows:
             return None, f'`{name}` has two rows in the same hierarchy parent'
         if depth:
-            parents.add(tuple(stack))
-        if (name == 'crates/' and depth == 0) or (depth == 1 and name.endswith('/')):
+            parents.add(path[:-1])
+        if depth == 1 and bold:
             branches.add(path)
-        rows[path] = (shown, shared.group(1), shared.group(2))
-        stack.append(name)
+        rows[path] = (changes, rest, bold)
+        stack.append((name, bold, counts[1]))
     if branches - parents:
         return None, 'hierarchy branch has no children'
     return {'total': title.group(1),

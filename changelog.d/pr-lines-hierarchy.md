@@ -1,6 +1,8 @@
-- Render PR additions in one directory table with crate and nonzero `main/`, `test/`, `other/`
-  children. Crate tests stay in the `crates/` aggregate; direct files stay file children.
-  Shares use immediate parents and bars the largest sibling. Safely escape tree-like names.
-  CI repairs the complete hierarchy from exact commits; PR-body parsing and help match it.
-  `pr-lines.py --json` emits `af/PrLines@3` with exact totals and nested rows. See the
-  [decision](../docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+- Show PR additions and deletions in one readable Area/Changes/Share of additions table, with
+  bold parents, NBSP-indented crate/main/tests/other children and compact +N/−N counts.
+  Deletion-only rows remain visible; shares use parent additions and show — for zero denominators.
+  CI repairs the whole report from exact commits; PR-body parsing and help match the new shape.
+  File/directory name collisions label only the file `(file)`, `(file2)`, etc., skipping
+  literal sibling names while preserving exact counts and JSON identities.
+  JSON emits only `af/PrLines@4` with exact added/deleted totals and nested counts. See the
+  [crate-report decision](../docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).

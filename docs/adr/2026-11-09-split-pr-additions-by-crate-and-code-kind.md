@@ -1,68 +1,70 @@
-# ADR-2026-11-09-split-pr-additions-by-crate-and-code-kind: Render PR additions as one crate hierarchy
+# ADR-2026-11-09-split-pr-additions-by-crate-and-code-kind: Show PR additions and deletions in one hierarchy
 
-**Status:** proposed (2026-11-09). Supersedes the grouping, report shape and name escaping of
+**Status:** proposed (2026-11-09). Supersedes the counting, grouping, report shape and name escaping of
 [ADR-0195](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md).
-The automatic maintenance of
-[ADR-0270](0270-let-ci-maintain-the-lines-added-block.md) stays in force.
+The automatic maintenance of [ADR-0270](0270-let-ci-maintain-the-lines-added-block.md) stays in force.
 
 ## Context
 
-The owner wants to see which crate grew and how much is main code, tests or other files,
-within one additions table. A separate crate view repeats counts without showing their place
-in the directory hierarchy. Moving crate tests into a top-level test bucket obscures the crate
-aggregate. The report must partition all additions exactly, including direct files below crates.
+The owner wants one readable table showing where code grew or shrank, including each crate's
+main code, tests and other files. Crate tests belong within their crate's subtotal. Rounded
+human figures cannot prove exact arithmetic; exact commit regeneration owns numeric correctness.
 
 ## Considered options
 
-- A second crate table: rejected because the report must be one hierarchy in one table.
-- A top-level tests bucket for paths inside any tests directory: rejected because those
-  additions belong to their actual first path component, including the crates aggregate.
-- A shared-source category: rejected by the owner; common/shared source is ordinary main code.
-- Parse Rust to count inline tests: rejected because this is a deterministic path metric.
-- One table with nonzero crate and code-kind children: chosen.
+- A second crate table or global crate-tests bucket: rejected because both obscure the hierarchy.
+- Bars and structural arrows: rejected because bold parents and visible indentation read better.
+- Shared-source categories or parsing inline tests: rejected in favor of deterministic path counts.
+- One hierarchical table with both counts: chosen.
 
 ## Decision
 
-1. Use the existing `**Lines added: <figure>**` title, one `Directory`/`Added`/`Share` table,
-   and unchanged `af-pr-lines:v1` refresh markers. With zero additions print only
-   `**Lines added: none**` between the markers. No second heading or table is emitted.
-2. Top-level rows partition all additions by actual first path component; a root file keeps
-   its own name. `crates/` includes every addition below it, including tests. Valid
-   `crates/<crate>/<file...>` paths create crate children; direct files below `crates/` create
-   file children without leaves. Each crate has only nonzero `main/`, `test/`, `other/` leaves.
-   Rust files (`.rs`, case-sensitive) inside any `tests` directory within the crate, or named
-   `tests.rs`, `test_*.rs`, `*_test.rs`, are `test/`. Remaining Rust under the crate's `src/` is
-   `main/`; everything else is `other/`, including manifests, non-Rust fixtures, `build.rs` and
-   ordinary examples. Inline `#[cfg(test)]` in ordinary source and common/shared Rust source
-   remain main. There is no shared category.
-3. Every parent count equals the exact sum of its children. Only top-level counts contribute
-   to the PR total; repeated subtotals never increase it. Every sibling group sorts by descending
-   exact count, then raw name. Top-level percentages use the PR total, nested percentages their
-   immediate parent. Bars use the largest sibling, twelve cells with eighth blocks and at least
-   a sliver. Keep the existing half-up figure/percentage rounding, exact `BASE...HEAD` merge-base
-   numstat range, rename destinations and binary zero handling.
-4. Directory names have a trailing `/`, files do not. Prefix child names with `↳` and
-   grandchildren with `↳ ↳`, each followed by a space, in the first cell. Escape Markdown/HTML syntax, backslashes,
-   whitespace and the structural arrow in names as numeric HTML entities. Tree-like path
-   components cannot introduce hierarchy. Each subtree is contiguous; siblings may be reordered
-   by a reader without changing the parsed report. The generator always uses canonical order.
-5. `--json` writes only `af/PrLines@3`, defined in `schemas/pr-lines-v3.json`: an exact `total`
-   and ordered `rows`, each with raw `name` (including a directory suffix), exact positive
-   `added`, and nested `children` (empty for leaves). The obsolete unmerged v2 schema is removed;
-   neither earlier JSON shapes nor the separate Markdown crate table have compatibility readers.
-6. The checker regenerates the complete hierarchy from the event's exact `base.sha...head.sha`.
-   Missing parents, duplicate paths, empty branches, invalid kinds and invalid nesting fail
-   shape checks. Missing or stale nested rows, figures, bars, shares and category-only changes
-   are repaired by the existing bounded refresh. Shape-only parsing cannot infer absent rows
-   from commits or derive exact integer sums from rounded figures; canonical regeneration owns
-   numeric correctness. Python and the Rust PR-body parser accept the same shape, with parity
-   tests for valid and invalid hierarchies. CLI help describes the complete single-table block.
-7. Base-checkout CI generation, refresh authority, Task reports and publication boundaries stay
-   unchanged. This change edits neither workflow nor `.af` authority.
+1. Keep the `**Lines added: <figure>**` title and `af-pr-lines:v1` refresh markers. Emit exactly
+   one table with headers `Area | Changes | Share of additions`. Changes use `+382/−10` with
+   U+2212 minus and no spaces. There are no bars, arrows, tabs or displayed directory suffixes.
+   Root rows and crate parents are bold in all three cells; terminal children are plain.
+   Four `&nbsp;` entities per depth visibly indent children before any bold markup.
+2. Root rows partition additions and deletions independently by actual first path component.
+   `crates` includes all crate tests. Crate children have lowercase `main`, `tests`, `other`
+   leaves; direct crates files remain plain file children without leaves. Rust paths within any
+   `tests` directory inside a crate, or named `tests.rs`, `test_*.rs`, `*_test.rs`, are tests.
+   Remaining Rust under `src/` is main. Residual manifests, config, fixtures, `build.rs` and
+   ordinary examples are other. Inline `#[cfg(test)]` in ordinary source and common/shared
+   source remain main. There is no shared category: this measures paths, not Rust semantics.
+3. Use the same `git diff --numstat -z -M BASE...HEAD` merge-base range for both counts, with
+   rename destination attribution. Binary None/None and 0/0 entries are absent. A row appears
+   when either count is positive. Each parent's exact additions and exact deletions reconcile
+   separately with its children, as do roots with PR totals. Subtotals never add to totals again.
+   Siblings sort by descending additions, descending deletions, then raw identity.
+4. Shares use immediate parent additions, or PR additions for roots. A zero child of a positive
+   parent shows `0%`; a zero parent denominator is undefined (`—`). Percentages round half up;
+   positive shares below 0.5% show `<1%`. Figures are exact below 1000, round half up to 0.1k
+   below 10k and 1k thereafter. Deletion-only reports retain the full table with title
+   `**Lines added: 0**`. Only zero additions and zero deletions yield `**Lines added: none**` alone.
+5. Display names omit internal directory suffixes. When sibling bare names collide, the
+   directory keeps its name and only the file becomes `name (file)`. Allocate `(file2)`,
+   `(file3)`, etc. until unique, reserving all literal bare sibling names and already allocated
+   labels in raw identity order. Apply name escaping after this display-only projection; exact
+   JSON identities, ordering and both counts stay unchanged, including root type conversions.
+   Names escape Markdown/HTML syntax, backslashes, whitespace and tree arrows as numeric HTML
+   entities. Names containing whitespace have visible quote delimiters, so leading NBSP cannot
+   impersonate hierarchy depth. Literal `&nbsp;` becomes `&#38;nbsp;`, never structural
+   indentation. Each subtree is contiguous; siblings can be reordered without changing the parsed report. Bold depth-one
+   rows require children and distinguish crate parents from direct files without display slashes.
+6. JSON writes only `af/PrLines@4`, defined by `schemas/pr-lines-v4.json`: exact `added`, `deleted`
+   totals and ordered `rows` with raw `name` (retaining internal directory suffixes), exact
+   nonnegative `added`, `deleted`, and `children` (empty for leaves). Every node has at least one
+   positive count. Remove obsolete unmerged v3; no old aliases or compatibility readers exist.
+7. The checker regenerates the entire report from exact PR `base.sha...head.sha`, including
+   deleted counts and nested changes. Missing or stale old shapes refresh through the existing
+   bounded mechanism. Shape parsers reject malformed depth, parent, bold, count and share forms;
+   canonical regeneration owns exact sums, missing rows and numeric truth. Python and Rust
+   parsers have parity tests, and CLI help describes the complete block.
+8. Base-checkout generation, refresh authority, Task reports and publication boundaries stay
+   unchanged. No workflow or `.af` authority changes belong to this design.
 
 ## Consequences
 
-Reviewers see each crate's main-code, test and other growth in its directory context, with no
-second view to reconcile. This measures changed paths, not Rust semantics. Counting remains one
-Git query and aggregation over at most three levels; regression fixtures are local and token-free.
-JSON consumers must use the current versioned tree.
+Readers see additions and deletions in their directory and crate context in one table. JSON
+consumers must use the current version. Counting remains one Git query and at most three levels
+of aggregation; regression fixtures are local and token-free.

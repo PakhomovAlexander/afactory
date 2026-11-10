@@ -1,22 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:pr-lines:3",
-  "title": "af/PrLines@3",
-  "description": "Exact nonzero hierarchy. Top-level rows partition the PR total; crates/ children partition its additions, including direct files; each crate partitions into main/, test/, other/. Parent sums, unique names and deterministic order are enforced by canonical regeneration, never by adding rounded Markdown figures.",
+  "$id": "urn:af:schema:pr-lines:4",
+  "title": "af/PrLines@4",
+  "description": "Exact additions and deletions partitioned independently at every level. Canonical regeneration enforces sums, unique names and order; rounded Markdown does not prove exact arithmetic.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
-    "total",
+    "added",
+    "deleted",
     "rows"
   ],
   "properties": {
     "schema": {
-      "const": "af/PrLines@3"
-    },
-    "total": {
-      "type": "integer",
-      "minimum": 0
+      "const": "af/PrLines@4"
     },
     "rows": {
       "type": "array",
@@ -31,6 +28,14 @@
         ]
       },
       "minItems": 0
+    },
+    "added": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deleted": {
+      "type": "integer",
+      "minimum": 0
     }
   },
   "$defs": {
@@ -40,6 +45,7 @@
       "required": [
         "name",
         "added",
+        "deleted",
         "children"
       ],
       "properties": {
@@ -53,13 +59,33 @@
         },
         "added": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "children": {
           "type": "array",
           "maxItems": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
     },
     "crates": {
       "type": "object",
@@ -67,6 +93,7 @@
       "required": [
         "name",
         "added",
+        "deleted",
         "children"
       ],
       "properties": {
@@ -75,7 +102,7 @@
         },
         "added": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "children": {
           "type": "array",
@@ -90,8 +117,28 @@
             ]
           },
           "minItems": 1
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
     },
     "file": {
       "type": "object",
@@ -99,6 +146,7 @@
       "required": [
         "name",
         "added",
+        "deleted",
         "children"
       ],
       "properties": {
@@ -109,13 +157,33 @@
         },
         "added": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "children": {
           "type": "array",
           "maxItems": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
     },
     "crate": {
       "type": "object",
@@ -123,6 +191,7 @@
       "required": [
         "name",
         "added",
+        "deleted",
         "children"
       ],
       "properties": {
@@ -132,7 +201,7 @@
         },
         "added": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "children": {
           "type": "array",
@@ -140,8 +209,28 @@
             "$ref": "#/$defs/kind"
           },
           "minItems": 1
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
     },
     "kind": {
       "type": "object",
@@ -149,25 +238,46 @@
       "required": [
         "name",
         "added",
+        "deleted",
         "children"
       ],
       "properties": {
         "name": {
           "enum": [
             "main/",
-            "test/",
+            "tests/",
             "other/"
           ]
         },
         "added": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "children": {
           "type": "array",
           "maxItems": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
     }
   }
 }

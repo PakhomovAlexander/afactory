@@ -29,14 +29,14 @@ the first `-->` of raw HTML after it, nor inside the quoted attribute value of a
 block leaves open, up to that quote in raw HTML, nor starting inside a code span opened on a
 paragraph line above it, which GitHub shows as code.
 
-The description also carries the lines the pull request adds per directory (ADR-0195): exactly
-one block between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, rendered as text by the
-same rules, holding the title `**Lines added: <figure>**` and the table of directories, figures,
-bars and shares, with crate and code-kind children in the same table, that `scripts/pr-lines.py`
-prints (or `**Lines added: none**` alone). Given the pull request's commits — the event's
-`base.sha` and `head.sha`, which the workflow fetched, or
-`--diff BASE HEAD` — the block is rendered again and one that differs is refused, with the block
-to paste; without them the shape alone is checked, and the check says so.
+The description also carries additions and deletions per area (ADR-0195): exactly one block
+between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, rendered as text by the same
+rules, with the title `**Lines added: <figure>**` and one Area/Changes/Share of additions table.
+Bold parents and NBSP-indented crate/code-kind children share this table. Deletion-only
+changes retain it with title 0; only an empty numeric diff uses `**Lines added: none**` alone.
+Given the pull request's commits — the event's `base.sha` and `head.sha`, which the workflow
+fetched, or `--diff BASE HEAD` — the whole block is rendered again and one that differs is
+refused, with the block to paste; without them the shape alone is checked, and the check says so.
 
 A pull request whose commits add quarantined tests (ADR-0268, amended 2026-10-30) carries one
 more block, between `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->`: the title

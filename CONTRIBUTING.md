@@ -311,31 +311,40 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   workflow refuses a description without exactly one well-formed block; Dependabot and
   `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
   runs the same check locally.
-- The description also states the lines the pull request adds, per directory
-  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)),
-  in the template's `Lines added` section: the block `python3 scripts/pr-lines.py` prints, a
-  title with the total and one hierarchical `Directory`/`Added`/`Share` table. Top-level
-  rows partition `git diff --numstat` additions by actual first path component; root files
-  keep their names. `crates/` includes all crate tests, with no separate top-level test bucket.
-  Beneath it each `crates/<crate>/` has only nonzero `main/`, `test/`, `other/` leaves.
-  Direct files such as `crates/README.md` stay file children, never false crate branches.
-  Rust files (`.rs`, case-sensitive) inside any `tests` directory within the crate, or named
-  `tests.rs`, `test_*.rs` or `*_test.rs`, count as `test/`. Remaining Rust under the crate's
-  `src/` counts as `main/`. Everything else is `other/`, including non-Rust test fixtures,
-  manifests, `build.rs` and ordinary examples. Inline `#[cfg(test)]` modules in ordinary
-  source and common/shared source remain `main/`; this metric classifies paths, not Rust syntax.
-  Each parent is the exact sum of its children; repeated subtotals never increase the PR total.
-  Directories end in `/`; children use `↳` and grandchildren `↳ ↳`, each followed by a space, in the first cell.
-  Names escape Markdown, HTML, whitespace and the structural arrow as numeric HTML entities,
-  so a tree-like filename is data. Every sibling group sorts by descending count, then raw name.
-  Top-level shares use the PR total; nested shares use their immediate parent. Bars scale to
-  the largest sibling, at most twelve cells in eighth blocks with a sliver at least.
-  Figures are exact below 1000, rounded to a tenth of a thousand below 10k and a thousand
-  thereafter (`463`, `1.1k`, `12k`), half up; shares round half up, with `<1%` below a half.
-  No additions yields `**Lines added: none**` alone. The merge-base range `BASE...HEAD`, rename
-  destinations and zero additions for binary files stay unchanged.
-  `--json` emits `af/PrLines@3` (`schemas/pr-lines-v3.json`): exact `total` and ordered `rows`,
-  each with `name` (including the directory suffix), `added` and `children` (empty for leaves).
+- The description states additions and deletions per area in the template's `Lines added`
+  section ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+  `python3 scripts/pr-lines.py` prints the title and one `Area`/`Changes`/`Share of additions`
+  table. Root rows partition both `git diff --numstat BASE...HEAD` counts by actual first path
+  component; root files keep their names except for collision labels described below. Rename
+  changes belong to the destination. Binary, pure-rename 0/0 and other 0/0 entries contribute
+  no numeric rows.
+  `crates` includes all crate tests without a duplicate global test bucket. Crate children have
+  lowercase `main`, `tests`, `other` leaves; direct files remain file children. Rust paths inside
+  any `tests` directory within the crate, or named `tests.rs`, `test_*.rs`, `*_test.rs`, count as
+  tests. Remaining Rust under `src/` is main; everything else is other, including non-Rust test
+  fixtures, manifests, `build.rs` and ordinary examples. Inline `#[cfg(test)]` modules and
+  common/shared source remain main: this classifies paths, not Rust syntax.
+  Every parent reconciles additions and deletions independently with its children. Roots
+  reconcile with both PR totals; repeated subtotals are not additional lines. Nodes with either
+  count positive appear. Siblings sort by descending additions, descending deletions, raw name.
+  All root rows and crate parents are bold across all cells; terminal children are plain.
+  Children use four `&nbsp;` entities per depth, without arrows, bars or directory suffixes.
+  For a file/directory sibling collision after removing slashes, the directory keeps its name
+  and only the file gets `name (file)`, then `(file2)`, `(file3)`, etc. until unique. Allocation
+  follows raw identity order and reserves all literal bare sibling names and allocated labels.
+  This display projection leaves exact JSON identities and both counters unchanged.
+  Literal Markdown/HTML syntax, whitespace and tree arrows in names are numeric entities,
+  with visible quotes around names containing whitespace, so filenames cannot spoof bold or
+  indentation (literal `&nbsp;` becomes `&#38;nbsp;`).
+  Changes use compact `+382/−10` syntax. Figures are exact below 1000, rounded half up to 0.1k
+  below 10k and 1k thereafter. Shares use immediate parent additions (PR additions for roots),
+  rounded half up; positive shares below 0.5% show `<1%`. A zero child of a positive parent is
+  `0%`; a zero parent denominator is undefined, shown as `—`.
+  Deletion-only reports retain the table and `**Lines added: 0**` title. Only a diff with both
+  totals zero prints `**Lines added: none**` alone.
+  `--json` emits only `af/PrLines@4` (`schemas/pr-lines-v4.json`): exact `added`, `deleted`
+  totals and ordered `rows`, each with raw `name` (including internal directory suffix), exact
+  `added`, `deleted` and `children` (empty for leaves).
   Earlier JSON shapes are refused, without aliases. The `af-pr-lines:v1` markers remain the
   refresh container; there is no second table or schema heading. See the
   [crate-report decision](docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).

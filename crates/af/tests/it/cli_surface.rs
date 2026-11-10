@@ -2302,7 +2302,7 @@ fn task_help_names_continuation_and_report_help_counts_gate_retries() {
 }
 
 /// GA third fix item 4: `af task report --help` describes the whole lines added block the
-/// validator accepts — the title, the Directory/Added/Share header, its separator and at least
+/// validator accepts — the title, the Area/Changes/Share of additions header, its separator and at least
 /// one directory row, with crate and code-kind children in the same table, or
 /// `**Lines added: none**` alone — not only an end marker and a title, within 100 columns.
 #[test]
@@ -2314,12 +2314,14 @@ fn task_report_help_describes_the_whole_lines_added_block() {
     let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat.contains(
-            "so does a block scripts/check-pr-report.py would refuse, naming what is missing. A \
-             whole block is the begin marker, then the title `**Lines added: <figure>**`, the \
-             header `| Directory | Added | Share |`, its separator and at least one directory \
-             row, each directory once, with crates/ containing crate children and their main/, test/, \
-             other/ leaves in the same table (direct files stay file children), or \
-             `**Lines added: none**` alone, then the end marker."
+            "so does a block scripts/check-pr-report.py would refuse, naming what is missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the header `| \
+Area | Changes | Share of additions |`, its separator and at least one row, each area once \
+per parent. Roots and parents are bold; children use four `&nbsp;` entities per depth. \
+Changes use +N/−N; shares use parent additions (0% for a zero child, — for a zero parent). \
+The crates row contains crate children and their main, tests, other leaves in the same \
+table; direct files stay plain children. Colliding file names use (file), (file2), etc., \
+skipping literal sibling names; directories keep their names. Deletion-only changes retain the table with title \
+`**Lines added: 0**`; an empty diff uses `**Lines added: none**` alone, then the end marker."
         ),
         "{report}"
     );

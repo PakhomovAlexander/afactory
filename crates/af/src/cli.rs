@@ -2558,11 +2558,14 @@ scripts/pr-lines.py prints when it has one (counted from --base REF, origin/main
 without a template, the two blocks under their headings. scripts/check-pr-report.py accepts it. \
 When the checkout has scripts/pr-lines.py and it cannot print its block, nothing is printed and \
 the command exits 1; so does a block scripts/check-pr-report.py would refuse, naming what is \
-missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the \
-header `| Directory | Added | Share |`, its separator and at least one directory row, each \
-directory once, with crates/ containing crate children and their main/, test/, other/ leaves \
-in the same table (direct files stay file children), or \
-`**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
+missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the header `| \
+Area | Changes | Share of additions |`, its separator and at least one row, each area once \
+per parent. Roots and parents are bold; children use four `&nbsp;` entities per depth. \
+Changes use +N/−N; shares use parent additions (0% for a zero child, — for a zero parent). \
+The crates row contains crate children and their main, tests, other leaves in the same \
+table; direct files stay plain children. Colliding file names use (file), (file2), etc., \
+skipping literal sibling names; directories keep their names. Deletion-only changes retain the table with title \
+`**Lines added: 0**`; an empty diff uses `**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \

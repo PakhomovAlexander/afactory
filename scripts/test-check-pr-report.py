@@ -528,22 +528,22 @@ def main():
     def lines_block(*body):
         return '<!-- af-pr-lines:v1 -->\n' + '\n'.join(body) + '\n<!-- /af-pr-lines -->\n'
 
-    header = ['| Directory | Added | Share |', '|:--|--:|:--|']
-    table = lines_block('**Lines added: 18.9k**', '', *header, '| crates | 12k | ████████████ 64% |',
-                        '| docs | 5.5k | █████▌ 29% |', '| tests | 1.3k | █▎ 7% |')
+    header = ['| Area | Changes | Share of additions |', '|:--|--:|:--|']
+    table = lines_block('**Lines added: 18.9k**', '', *header, '| **crates** | **+12k/−0** | **64%** |',
+                        '| **docs** | **+5.5k/−0** | **29%** |', '| **tests** | **+1.3k/−0** | **7%** |')
     lines_passing = {
         'a lines block with a table': event(description(BLOCK, table)),
         'a lines block with a dot directory and a tenth': event(description(BLOCK, lines_block(
-            '**Lines added: 10k**', '', *header, '| x | 9.9k | ████████████ 96% |',
-            '| .github | 412 | ▌ 4% |'))),
+            '**Lines added: 10k**', '', *header, '| **x** | **+9.9k/−0** | **96%** |',
+            '| **.github** | **+412/−0** | **4%** |'))),
         'a lines block with a root file and a sliver': event(description(BLOCK, lines_block(
-            '**Lines added: 7.5k**', '', *header, '| crates | 7.5k | ████████████ 100% |',
-            '| Cargo.lock | 4 | ▏ <1% |'))),
+            '**Lines added: 7.5k**', '', *header, '| **crates** | **+7.5k/−0** | **100%** |',
+            '| **Cargo.lock** | **+4/−0** | **<1%** |'))),
         'the lines block before the report block': event(LINES + '\n' + description(BLOCK, '')),
         'a comment after the title': event(description(BLOCK, lines_block(
             '**Lines added: none** <!-- counted 2026-10-22 -->'))),
         'the table without a blank line after the title': event(description(BLOCK, lines_block(
-            '**Lines added: 12**', *header, '| docs/ | 12 | ████████████ 100% |'))),
+            '**Lines added: 12**', *header, '| **docs** | **+12/−0** | **100%** |'))),
         'the lines block with CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
     }
     for case, payload in lines_passing.items():
@@ -562,19 +562,19 @@ def main():
         'a title without its table': (event(description(BLOCK, lines_block(
             '**Lines added: 5k**'))), 'the title is not followed by the table'),
         'none followed by a table': (event(description(BLOCK, lines_block(
-            '**Lines added: none**', '', *header, '| docs | 3 | ▏ 100% |'))),
+            '**Lines added: none**', '', *header, '| **docs** | **+3/−0** | **100%** |'))),
             'is the whole block, but more follows'),
         'a table with another header': (event(description(BLOCK, lines_block(
             '**Lines added: 3**', '', '| Dir | Lines | Share |', '|:--|--:|:--|',
-            '| docs | 3 | ████████████ 100% |'))), 'is not the table header'),
+            '| **docs** | **+3/−0** | **100%** |'))), 'is not the table header'),
         'a row without its share': (event(description(BLOCK, lines_block(
             '**Lines added: 3**', '', *header, '| docs | 3 |'))), 'not a row of three cells'),
         'a row with an exact figure past 1000': (event(description(BLOCK, lines_block(
-            '**Lines added: 5k**', '', *header, '| docs | 5000 | ████████████ 100% |'))),
-            'not a row `| directory | figure | bar share |`'),
+            '**Lines added: 5k**', '', *header, '| **docs** | **+5000/−0** | **100%** |'))),
+            'invalid changes or share'),
         'two rows for one directory': (event(description(BLOCK, lines_block(
-            '**Lines added: 6**', '', *header, '| docs | 3 | ████████████ 50% |',
-            '| docs | 3 | ████████████ 50% |'))), '`docs` has two rows'),
+            '**Lines added: 6**', '', *header, '| **docs** | **+3/−0** | **50%** |',
+            '| **docs** | **+3/−0** | **50%** |'))), '`docs` has two rows'),
         'a lines block in a backtick fence': (event(description(BLOCK, '```\n' + LINES
                                                                 + '```\n')), 'inside a code block'),
         'a lines block indented four spaces': (event(description(BLOCK, ''.join(
@@ -588,11 +588,11 @@ def main():
         'the title after a comment that opens its line': (event(description(BLOCK, lines_block(
             '<!-- counted --> **Lines added: none**'))), 'inside a code block, an HTML block or an HTML comment'),
         'the table in a fence after the title': (event(description(BLOCK, lines_block(
-            '**Lines added: 12**', '', '```', *header, '| docs | 12 | ████████████ 100% |', '```'))),
+            '**Lines added: 12**', '', '```', *header, '| **docs** | **+12/−0** | **100%** |', '```'))),
             'part of the lines added block is inside a code block'),
         'a fenced row after a whole table': (event(description(BLOCK, lines_block(
-            '**Lines added: 12**', '', *header, '| docs | 12 | ████████████ 100% |', '```',
-            '| x | 1 | ▏ 1% |', '```'))), 'part of the lines added block is inside a code block'),
+            '**Lines added: 12**', '', *header, '| **docs** | **+12/−0** | **100%** |', '```',
+            '| **x** | **+1/−0** | **1%** |', '```'))), 'part of the lines added block is inside a code block'),
         'a comment line inside the block': (event(description(BLOCK, lines_block(
             '**Lines added: none**', '<!-- counted 2026-10-22 -->'))),
             'part of the lines added block is inside a code block, an HTML block or an HTML comment'),
@@ -876,8 +876,8 @@ def quarantine():
 
 
 # What `scripts/pr-lines.py` renders for the fixture repository's commits: twelve lines of docs.
-RENDERED = ('**Lines added: 12**\n\n| Directory | Added | Share |\n|:--|--:|:--|\n'
-            '| docs/ | 12 | ████████████ 100% |')
+RENDERED = ('**Lines added: 12**\n\n| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
+            '| **docs** | **+12/−0** | **100%** |')
 FRESH = '<!-- af-pr-lines:v1 -->\n' + RENDERED + '\n<!-- /af-pr-lines -->\n'
 STALE = FRESH.replace('| docs/ | 12 |', '| docs/ | 11 |').replace('**Lines added: 12**',
                                                               '**Lines added: 11**')
@@ -1059,18 +1059,18 @@ def refreshing(pipeline):
         git('commit', '-qm', 'base advanced')
         base = git('rev-parse', 'HEAD')
         enriched = ('<!-- af-pr-lines:v1 -->\n**Lines added: 17**\n\n'
-                    '| Directory | Added | Share |\n|:--|--:|:--|\n'
-                    '| docs/ | 12 | ████████████ 71% |\n'
-                    '| crates/ | 5 | █████ 29% |\n'
-                    '| ↳ a/ | 4 | ████████████ 80% |\n'
-                    '| ↳ ↳ main/ | 2 | ████████████ 50% |\n'
-                    '| ↳ ↳ other/ | 1 | ██████ 25% |\n'
-                    '| ↳ ↳ test/ | 1 | ██████ 25% |\n'
-                    '| ↳ b&#124;c/ | 1 | ███ 20% |\n'
-                    '| ↳ ↳ main/ | 1 | ████████████ 100% |\n'
+                    '| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
+                    '| **docs** | **+12/−0** | **71%** |\n'
+                    '| **crates** | **+5/−0** | **29%** |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+4/−0** | **80%** |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +2/−0 | 50% |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;other | +1/−0 | 25% |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +1/−0 | 25% |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;**b&#124;c** | **+1/−0** | **20%** |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +1/−0 | 100% |\n'
                     '<!-- /af-pr-lines -->\n')
-        stale_split = (enriched.replace('| ↳ ↳ main/ | 2 |', '| ↳ ↳ main/ | 1 |')
-                       .replace('| ↳ ↳ test/ | 1 |', '| ↳ ↳ test/ | 2 |'))
+        stale_split = (enriched.replace('+2/−0', '+1/−0')
+                       .replace('tests | +1/−0', 'tests | +2/−0'))
         payload = event(description(BLOCK, stale_split))
         payload['pull_request']['base']['sha'] = base
         payload['pull_request']['head']['sha'] = head
@@ -1079,14 +1079,14 @@ def refreshing(pipeline):
         code, said, wrote = run(description(BLOCK, enriched))
         assert code == 0 and wrote is None and 'figures match' in said, said
         # A directory-only block is stale as well; no crate row can be silently omitted.
-        overview = '\n'.join(line for line in enriched.splitlines() if not line.startswith('| ↳')) + '\n'
+        overview = '\n'.join(line for line in enriched.splitlines() if not line.startswith('| &nbsp;')) + '\n'
         code, said, wrote = run(description(BLOCK, overview))
         assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
         for stale_nested in [
-                enriched.replace('| ↳ ↳ other/ | 1 | ██████ 25% |\n', ''),
-                enriched.replace('██████ 25%', '██████ 6%'),
-                enriched.replace('██████ 25%', '█ 25%'),
-                enriched.replace('| ↳ a/ | 4 |', '| ↳ a/ | 3 |')]:
+                enriched.replace('| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;other | +1/−0 | 25% |\n', ''),
+                enriched.replace('25%', '6%'),
+                enriched.replace('/−0', '/−1'),
+                enriched.replace('**+4/−0**', '**+3/−0**')]:
             code, said, wrote = run(description(BLOCK, stale_nested))
             assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
         # With refresh disabled, the category-only mismatch fails the real checker.
@@ -1096,6 +1096,69 @@ def refreshing(pipeline):
                               capture_output=True, text=True, env=GIT_ENV)
         assert done.returncode == 1 and 'replace it with' in done.stderr, done.stderr
         assert enriched.strip().split('\n', 1)[1].rsplit('\n', 1)[0] in done.stderr, done.stderr
+        # Deleted counts are part of canonical equality even with unchanged additions.
+        # Delete a base file to make a genuinely deletion-only PR against that base.
+        git('checkout', '-qb', 'delete-only', base)
+        (repo / 'README.md').unlink()
+        git('add', '-A')
+        git('commit', '-qm', 'delete only')
+        head = git('rev-parse', 'HEAD')
+        deletion = ('<!-- af-pr-lines:v1 -->\n**Lines added: 0**\n\n'
+                    '| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
+                    '| **README.md** | **+0/−1** | **—** |\n<!-- /af-pr-lines -->\n')
+        for stale in [deletion.replace('/−1', '/−2'), LINES,
+                      '<!-- af-pr-lines:v1 -->\n**Lines added: 0**\n\n'
+                      '| Directory | Added | Share |\n|:--|--:|:--|\n'
+                      '| README.md | 1 | █ 100% |\n<!-- /af-pr-lines -->\n']:
+            code, said, wrote = run(description(BLOCK, stale))
+            assert code == 0 and wrote == description(BLOCK, deletion), (said, wrote)
+        code, said, wrote = run(description(BLOCK, deletion))
+        assert code == 0 and wrote is None and 'figures match' in said, said
+        # Valid Git file/directory conversions used to generate duplicate displayed names.
+        # Refresh from exact event commits, then accept the repaired body unchanged.
+        for path, nested in [('crates', 'crates/a/src/lib.rs'),
+                             ('crates/a', 'crates/a/src/lib.rs')]:
+            if (repo / 'crates').exists():
+                git('rm', '-qr', 'crates')
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('old one\nold two\n', encoding='utf-8')
+            literal = repo / (path + ' (file)')
+            literal.write_text('literal\n', encoding='utf-8')
+            git('add', '-A')
+            git('commit', '-qm', 'file baseline')
+            base = git('rev-parse', 'HEAD')
+            git('rm', '-q', path)
+            target = repo / nested
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('new one\nnew two\nnew three\n', encoding='utf-8')
+            literal.write_text('literal\nextra\n', encoding='utf-8')
+            git('add', '-A')
+            git('commit', '-qm', 'directory conversion')
+            head = git('rev-parse', 'HEAD')
+            name = path.split('/')[-1]
+            indent = '&nbsp;' * (4 if path == 'crates/a' else 0)
+            rows = [f'| **{name}** | **+3/−0** | **75%** |',
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+3/−0** | **100%** |',
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +3/−0 | 100% |',
+                    '| **&#34;crates&#32;(file)&#34;** | **+1/−0** | **25%** |',
+                    '| **&#34;crates&#32;(file2)&#34;** | **+0/−2** | **0%** |']
+            if indent:
+                rows = ['| **crates** | **+4/−2** | **100%** |',
+                        f'| {indent}**a** | **+3/−0** | **75%** |', rows[2],
+                        f'| {indent}&#34;a&#32;(file)&#34; | +1/−0 | 25% |',
+                        f'| {indent}&#34;a&#32;(file2)&#34; | +0/−2 | 0% |']
+            expected = ('<!-- af-pr-lines:v1 -->\n**Lines added: 4**\n\n'
+                        '| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
+                        + '\n'.join(rows) + '\n<!-- /af-pr-lines -->\n')
+            stale = expected.replace('(file2)', '(file)').replace('/−2', '/−9')
+            payload = event(description(BLOCK, stale))
+            payload['pull_request']['base']['sha'] = base
+            payload['pull_request']['head']['sha'] = head
+            code, said, wrote = run(None, event_payload=payload)
+            assert code == 0 and wrote == description(BLOCK, expected), (said, wrote, expected)
+            code, said, wrote = run(description(BLOCK, expected))
+            assert code == 0 and wrote is None and 'figures match' in said, said
     return len(cases) + len(nowhere) + len(runs) + 2
 
 
