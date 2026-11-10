@@ -30,6 +30,9 @@ Committed .af/ authority and runtime state remain compatible with 0.15.1-rc.1. A
 - Refactor AF naming and module boundaries (#759)
 - Guard release contracts and review post-release pins (#769)
 - Prepare rc.2 telemetry contract and repair cold-home gate test (#775)
+- feat: visualize per-crate additions and deletions in PR reports (#770)
+- Optimize macOS workspace fixture Python while preserving Linux behavior (#772)
+- Fix macOS release performance deadline failures (#781)
 
 - Name the shared libraries for their AF responsibilities, including `af-contracts`, `af-runtime`,
   `af-pipeline-config` and `af-source-issue`; update source, build, test and performance references
@@ -96,6 +99,36 @@ Committed .af/ authority and runtime state remain compatible with 0.15.1-rc.1. A
 - Declare `0.15.1-rc.2` explicitly under the telemetry `check-receipt@2` fixture contract,
   retaining the committed package and Pipeline pins and refusing unnamed versions. Record source
   and fixture evidence in `docs/telemetry.md`; leave the workspace at `0.15.1-rc.1` until release.
+
+- Show PR additions and deletions in one readable Area/Changes/+/−/Share of additions table, with
+  bold parents, NBSP-indented crate/main/tests/other children and compact +N/−N counts.
+  Deletion-only rows remain visible; shares use parent additions and show — for zero denominators.
+  CI repairs the whole report from exact commits; PR-body parsing and help match the new shape.
+  File/directory name collisions label only the file `(file)`, `(file2)`, etc., skipping
+  literal sibling names while preserving exact counts and JSON identities.
+  JSON emits only `af/PrLines@4` with exact added/deleted totals and nested counts. See the
+  [crate-report decision](../docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+- Compare addition and deletion bars on one common scale per sibling group; each column uses
+  up to twelve cells with eighth blocks, positive slivers and blank zeros, including bold rows.
+  Reject empty or overlapping bold wrappers in zero bar cells so CI repairs them to blanks.
+- Scope workspace test launchers' selected canonical Python to macOS. Linux and other supported
+  non-Darwin platforms retain explicit `/usr/bin/python3 -IS`, independent of the suite runner's
+  interpreter path. Both policies preserve isolated, no-site execution; production adapters and
+  complete-suite benchmark evidence contracts are unchanged. Paired hosted benchmark evidence for
+  the release repair is recorded in PR #781.
+- Workspace test launchers use the selected Python's canonical path on macOS and explicit
+  `/usr/bin/python3` elsewhere, with isolated, no-site execution. A read-only macOS/Linux PR
+  benchmark compares three alternating pairs of complete lifecycle suites at exact base/head commits,
+  retaining counts, logs and timing evidence without
+  enforcing a performance threshold. Production adapter installation and release gates are unchanged.
+- Keep performance collection accounting incomplete when an authority Git subprocess reaches the
+  cycle deadline before the cycle alarm; retain the refusal and terminate the stalled process.
+- Reduce macOS performance Scenario publication test overhead by executing ordinary Git reads
+  directly, preserving the publication deadline and lost commit, push and PR response recovery checks.
+- Verify the performance Git fixture launcher against the canonical platform interpreter policy,
+  isolated execution, and remote route refusal while retaining direct execution of ordinary Git reads.
+- Keep launcher policy checks in the separate fixture policy suite, preserving the paired workspace
+  benchmark's 87-test count and the existing performance publication recovery integration.
 
 ## [0.15.1-rc.1] - 2026-11-07
 
