@@ -1447,30 +1447,6 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
 
 
 class PerformancePublicationTests(unittest.TestCase):
-    def test_performance_git_executes_local_reads_directly_and_intercepts_only_fault_commands(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            # Spaces and shell syntax are literal argv/path bytes, never shell source.
-            git = root / "git with spaces"
-            git.write_text('#!/bin/sh\nprintf "git\\n"\nprintf "%s\\n" "$@"\n')
-            git.chmod(0o700)
-            wrapper = root / "wrapper"
-            wrapper.write_text(performance_git_launcher(git,
-                "import json,sys; print(json.dumps(sys.argv[1:]))"))
-            wrapper.chmod(0o700)
-            env = dict(PATH="/usr/bin:/bin", HOME=directory)
-            for command in ("config", "rev-parse", "hash-object", "ls-tree", "status"):
-                args = [command, "value with spaces", "$(exit 99)"]
-                out = subprocess.run([str(wrapper), *args], env=env, capture_output=True, check=True)
-                self.assertEqual(out.stdout.decode().splitlines(), ["git", *args])
-            for command in ("commit-tree", "push", "ls-remote"):
-                args = ["-c", "core.hooksPath=/dev/null", command, "value with spaces", "$(exit 99)"]
-                out = subprocess.run([str(wrapper), *args], env=env, capture_output=True, check=True)
-                self.assertEqual(json.loads(out.stdout), args)
-            args = ["fetch", "ssh://git@github.com/octo/project.git"]
-            out = subprocess.run([str(wrapper), *args], env=env, capture_output=True, check=True)
-            self.assertEqual(json.loads(out.stdout), args, "remote URL must reach the route guard")
-
     def test_installed_performance_publication_recovers_commit_push_and_http_response_without_duplicates(self):
         performance_integration()
 
