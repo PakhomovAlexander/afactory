@@ -1,44 +1,25 @@
 #!/usr/bin/env python3
-"""Count the lines a pull request adds, per directory and crate, and print the block its description
-carries (ADR-0195).
+"""Count BASE...HEAD additions and print one hierarchical PR additions table (ADR-0195).
 
-    pr-lines.py [--repo DIR] [--base REF] [--head REF]   the block for BASE...HEAD
-    pr-lines.py ... --json                                 the counts as JSON, for a tool
+Top-level rows partition additions by actual first path component; root files keep their names.
+crates/ contains crate directories with nonzero main/, test/, other/ leaves, and direct files.
+Rust test paths take priority: any tests directory within the crate, tests.rs, test_*.rs or
+*_test.rs. Remaining Rust under src/ is main; everything else is other. Inline cfg(test) in
+ordinary source remains main. There is no shared classification.
 
-The range is the one GitHub shows for a pull request, `BASE...HEAD`: what HEAD added since it
-forked from BASE (`origin/main` and `HEAD` by default; a stacked pull request names its base
-branch). Each added line counts under the first component of its path — `crates`, `docs`,
-`scripts` — except a line of a file under a directory named `tests`, at any depth, which counts
-under `tests` (`crates/af/tests/it/x.rs`), and a file at the repository root, which counts under
-its own name (`Cargo.lock`). Renames are detected, so a moved file adds only what changed in it,
-and a binary file adds nothing.
+Git numstat uses the merge base, rename destinations, and zero additions for binary files.
+Siblings sort by descending count then raw name. Shares use the immediate parent (PR total at
+the top); bars use the largest sibling, at most twelve cells with eighth blocks and a sliver
+at least. Figures are exact below 1000, rounded to 0.1k below 10k and 1k above it, half up.
+Only nonzero nodes appear. Parent rows repeat subtotals, never increase the PR total.
 
-A second view covers additions under crates/<crate>/. Rust files (.rs, case-sensitive) under
-any tests directory within the crate, or named tests.rs, test_*.rs or *_test.rs, count as Tests.
-Remaining Rust files under the crate's src/ count as Main code; everything else is Other,
-including non-Rust fixtures in tests/, Cargo.toml, build.rs and examples. Inline #[cfg(test)]
-modules in an ordinary src file remain Main code: this metric uses paths, not a Rust parser.
-The directory overview keeps its separate tests-directory rule, including non-Rust files.
-Each crate addition appears once in its split; this second view is not added to the total.
-The crate section is omitted when no crate has additions. Crates sort by descending
-total then name; shares use the whole PR total, with the same figures as the overview.
-Names are HTML numeric-escaped for Markdown metacharacters, whitespace and HTML syntax.
---json prints af/PrLines@2 (schemas/pr-lines-v2.json): exact directories and crate splits;
-the former unversioned directory-only JSON map is no longer written.
-
-The block is a title with the total, `**Lines added: 18.9k**`, and a table with one row per
-directory, the largest first: the directory, its figure, and its share of the total as a bar
-and a percentage (`| crates | 7.5k | ████████████ 40% |`). A figure is exact below 1000, to a
-tenth of a thousand up to 10k (`5k`, `7.9k`) and to a thousand from there (`23k`); the bar is
-the row's count against the largest row's, in up to twelve cells of eighth blocks, a sliver at
-least; a pull request that adds no line says `**Lines added: none**`. The `PR report` check
-recomputes the block from the pull request's own commits and, when the description's block is
-missing or differs, writes the block into the description itself; it refuses the description,
-printing the block to paste, only when it cannot: two blocks, a marker without its pair, or a
-refused write (ADR-0270).
+The first cell prefixes a child with ↳ and a grandchild with ↳ ↳. Directory names end in /;
+direct files do not. Names escape Markdown/HTML, whitespace and the structural arrow as numeric
+HTML entities. --json writes af/PrLines@3 (schemas/pr-lines-v3.json): exact total and nested rows.
+The unchanged af-pr-lines:v1 markers delimit the refresh container. The checker regenerates the
+whole block from the PR's exact commits; shape parsing never adds rounded figures.
 """
 import argparse
-from collections import Counter
 import json
 from pathlib import Path
 import re
@@ -48,19 +29,17 @@ import sys
 BEGIN = '<!-- af-pr-lines:v1 -->'
 END = '<!-- /af-pr-lines -->'
 NONE = 'none'
-TESTS = 'tests'
-CRATE_HEADER = ['Crate', 'Main code', 'Tests', 'Other', 'Total', 'Share']
-CRATE_SEPARATOR_ROW = '|:--|--:|--:|--:|--:|--:|'
-SCHEMA = 'af/PrLines@2'
-CRATE_TITLE = '**Crate additions**'
+SCHEMA = 'af/PrLines@3'
+TREE = '↳ '
+KINDS = ('main/', 'test/', 'other/')
 HEADER = ['Directory', 'Added', 'Share']
 SEPARATOR_ROW = '|:--|--:|:--|'
 BAR_CELLS = 12
 BLOCKS = '▏▎▍▌▋▊▉█'
-FIGURE = re.compile(r'^(?:[1-9]\d{0,2}|0|[1-9]\d{0,2}(?:\.\d)?k)$')
-TITLE = re.compile(r'^\*\*Lines added: (none|0|[1-9]\d{0,2}|[1-9]\d{0,2}(?:\.\d)?k)\*\*$')
+FIGURE = re.compile(r'^(?:[1-9][0-9]{0,2}|0|[1-9][0-9]{0,2}(?:\.[0-9])?k)$')
+TITLE = re.compile(r'^\*\*Lines added: (none|0|[1-9][0-9]{0,2}|[1-9][0-9]{0,2}(?:\.[0-9])?k)\*\*$')
 SEPARATOR = re.compile(r'^:?-+:?$')
-SHARE = re.compile(r'^([▏▎▍▌▋▊▉█]+) (<1%|\d{1,3}%)$')
+SHARE = re.compile(r'^([▏▎▍▌▋▊▉█]+) (<1%|[0-9]{1,3}%)$')
 HOW = ('Run `python3 scripts/pr-lines.py` from this repository on the pull request\'s branch '
        '(with its base fetched; `--base REF` for a base other than origin/main) and paste its '
        'output, both markers included, into the template\'s `Lines added` section; after a '
@@ -92,55 +71,47 @@ def numstat(repo, base, head):
     return entries
 
 
-def group(path):
-    """The directory a path's lines count under."""
-    parts = path.split('/')
-    if TESTS in parts[:-1]:
-        return TESTS
-    return parts[0]
-
-
-def counts(entries):
-    """Lines added per directory, the directories with none left out."""
-    totals = Counter()
-    for added, _, path in entries:
-        if added:
-            totals[group(path)] += added
-    return dict(totals)
-
-
-def crate_counts(entries):
-    """Disjoint path-based main/test/other additions under crates/<crate>/.
-
-    Test Rust paths take priority over src; inline test modules are main code.
-    Non-Rust files are always other, including fixtures inside tests directories.
-    """
-    crates = {}
-    for added, _, path in entries:
-        parts = path.split('/')
-        if not added or len(parts) < 3 or parts[0] != 'crates':
-            continue
-        relative, name = parts[2:], parts[-1]
-        kind = 'other'
-        if name.endswith('.rs'):
-            if 'tests' in relative[:-1] or name == 'tests.rs' \
-                    or name.startswith('test_') or name.endswith('_test.rs'):
-                kind = 'tests'
-            elif relative[0] == 'src':
-                kind = 'main'
-        split = crates.setdefault(parts[1], {'main': 0, 'tests': 0, 'other': 0})
-        split[kind] += added
-    return crates
+def code_kind(relative):
+    """Disjoint path metric within a crate; test Rust paths take priority over src."""
+    name = relative[-1]
+    if name.endswith('.rs'):
+        if 'tests' in relative[:-1] or name == 'tests.rs' \
+                or name.startswith('test_') or name.endswith('_test.rs'):
+            return 'test/'
+        if relative[0] == 'src':
+            return 'main/'
+    return 'other/'
 
 
 def report(entries):
-    """Versioned exact counts; the crate table is a second view, not more additions."""
-    return {'schema': SCHEMA, 'directories': counts(entries), 'crates': crate_counts(entries)}
+    """One exact tree. Every addition belongs to one top-level row and one terminal row."""
+    roots = {}
+    for added, _, path in entries:
+        if not added:
+            continue
+        parts = path.split('/')
+        names = [parts[0] + ('/' if len(parts) > 1 else '')]
+        if parts[0] == 'crates' and len(parts) > 1:
+            names.append(parts[1] + ('/' if len(parts) > 2 else ''))
+            if len(parts) > 2:
+                names.append(code_kind(parts[2:]))
+        children = roots
+        for name in names:
+            node = children.setdefault(name, {'name': name, 'added': 0, 'children': {}})
+            node['added'] += added
+            children = node['children']
+
+    def ordered(nodes):
+        return [{'name': node['name'], 'added': node['added'],
+                 'children': ordered(node['children'])}
+                for node in sorted(nodes.values(), key=lambda node: (-node['added'], node['name']))]
+
+    rows = ordered(roots)
+    return {'schema': SCHEMA, 'total': sum(node['added'] for node in rows), 'rows': rows}
 
 
 def render_entries(entries):
-    data = report(entries)
-    return render(data['directories'], data['crates'])
+    return render(report(entries))
 
 
 def figure(n):
@@ -171,34 +142,32 @@ def share(n, total):
 
 
 def escape(name):
-    return ''.join(f'&#{ord(char)};' if char in '\\|&<>`*_[]~' or char.isspace()
+    return ''.join(f'&#{ord(char)};' if char in '\\|&<>`*_[]~↳' or char.isspace()
                    else char for char in name)
 
 
-def render(totals, crates=None):
-    """The overview and optional crate table; both views share one PR total."""
-    if not totals:
+def render(data):
+    """One table, with parent-relative shares and bars scaled against siblings."""
+    if not data['rows']:
         return f'**Lines added: {NONE}**'
-    ordered = sorted(totals.items(), key=lambda item: (-item[1], item[0]))
-    total, largest = sum(totals.values()), ordered[0][1]
-    lines = [f'**Lines added: {figure(total)}**', '',
+    lines = [f"**Lines added: {figure(data['total'])}**", '',
              '| ' + ' | '.join(HEADER) + ' |', SEPARATOR_ROW]
-    lines.extend(f'| {escape(name)} | {figure(n)} | {bar(n, largest)} {share(n, total)} |'
-                 for name, n in ordered)
-    if crates:
-        lines.extend(['', CRATE_TITLE, '', '| ' + ' | '.join(CRATE_HEADER) + ' |',
-                      CRATE_SEPARATOR_ROW])
-        ordered_crates = sorted(crates.items(), key=lambda item: (-sum(item[1].values()), item[0]))
-        for name, split in ordered_crates:
-            n = sum(split.values())
-            cells = [escape(name), *(figure(split[kind]) for kind in ('main', 'tests', 'other')),
-                     figure(n), share(n, total)]
-            lines.append('| ' + ' | '.join(cells) + ' |')
+
+    def append(rows, parent, depth):
+        largest = max(row['added'] for row in rows)
+        for row in rows:
+            n = row['added']
+            lines.append(f"| {TREE * depth}{escape(row['name'])} | {figure(n)} | "
+                         f"{bar(n, largest)} {share(n, parent)} |")
+            if row['children']:
+                append(row['children'], n, depth + 1)
+
+    append(data['rows'], data['total'], 0)
     return '\n'.join(lines)
 
 
-def block(totals, crates=None):
-    return f'{BEGIN}\n{render(totals, crates)}\n{END}\n'
+def block(data):
+    return f'{BEGIN}\n{render(data)}\n{END}\n'
 
 
 def row_cells(line):
@@ -226,7 +195,7 @@ def row_cells(line):
 
 def parse(lines):
     """The block's body `lines` (what it shows, blank lines or not) read back:
-    `({'total': figure, 'rows': directory rows, 'crates': crate rows}, None)`, or
+    `({'total': figure, 'rows': hierarchy rows}, None)`, or
     `(None, what is wrong)`."""
     lines = [line.strip() for line in lines if line.strip()]
     if not lines:
@@ -238,7 +207,7 @@ def parse(lines):
     if title.group(1) == NONE:
         if len(lines) > 1:
             return None, f'`**Lines added: {NONE}**` is the whole block, but more follows: `{lines[1]}`'
-        return {'total': NONE, 'rows': frozenset(), 'crates': frozenset()}, None
+        return {'total': NONE, 'rows': frozenset()}, None
     header = '| ' + ' | '.join(HEADER) + ' |'
     if len(lines) < 4:
         return None, (f'the title is not followed by the table: the header `{header}`, its '
@@ -248,47 +217,40 @@ def parse(lines):
     separator = row_cells(lines[2])
     if separator is None or len(separator) != 3 or not all(SEPARATOR.match(c) for c in separator):
         return None, f'the header is not followed by its separator `{SEPARATOR_ROW}`: `{lines[2]}`'
-    crate_at = next((n for n in range(3, len(lines))
-                     if lines[n] == CRATE_TITLE), len(lines))
-    crate_rows = {}
-    if crate_at < len(lines):
-        if crate_at + 1 >= len(lines) or row_cells(lines[crate_at + 1]) != CRATE_HEADER:
-            return None, 'the crate title is not followed by its table header'
-        tail = lines[crate_at + 2:]
-        separator = row_cells(tail[0]) if tail else None
-        if separator is None or len(separator) != 6 \
-                or not all(SEPARATOR.match(c) for c in separator):
-            return None, 'the crate header is not followed by its separator'
-        if len(tail) < 2:
-            return None, 'the crate table has no rows'
-        for line in tail[1:]:
-            cells = row_cells(line)
-            if cells is None or len(cells) != 6 or not cells[0] \
-                    or not all(FIGURE.match(c) for c in cells[1:5]) \
-                    or not re.fullmatch(r'<1%|\d{1,3}%', cells[5]):
-                return None, f'not a crate row `| crate | main | tests | other | total | share |`: `{line}`'
-            if cells[0] in crate_rows:
-                return None, f'`{cells[0]}` has two crate rows'
-            crate_rows[cells[0]] = tuple(cells[1:])
-    if crate_at == 3:
-        return None, 'the directory table has no rows'
-    rows = {}
-    for line in lines[3:crate_at]:
+    rows, stack, branches, parents = {}, [], set(), set()
+    for line in lines[3:]:
         cells = row_cells(line)
         if cells is None or len(cells) != 3:
             return None, f'not a row of three cells `| directory | figure | bar share |`: `{line}`'
         name, shown, rest = cells
-        shared = SHARE.match(rest)
-        if not name or not FIGURE.match(shown) or not shared:
-            return None, ('not a row `| directory | figure | bar share |` (a figure as `412`, '
-                          '`1.5k` or `23k`; the share as `40%` or `<1%` after its bar): '
-                          f'`{line}`')
-        if name in rows:
-            return None, f'`{name}` has two rows'
-        rows[name] = (shown, shared.group(1), shared.group(2))
-    return ({'total': title.group(1),
-             'rows': frozenset((name, *values) for name, values in rows.items()),
-             'crates': frozenset((name, *values) for name, values in crate_rows.items())}, None)
+        shared = SHARE.fullmatch(rest)
+        if not name or not FIGURE.fullmatch(shown) or shown == '0' or not shared:
+            return None, f'not a row `| directory | figure | bar share |`: `{line}`'
+        depth = 0
+        while name.startswith(TREE):
+            depth += 1
+            name = name[len(TREE):]
+        if not name.rstrip('/') or '↳' in name or '/' in name.rstrip('/') or name.endswith('//'):
+            return None, f'invalid hierarchy name: `{line}`'
+        if depth > 2 or depth > len(stack):
+            return None, f'missing hierarchy parent: `{line}`'
+        stack = stack[:depth]
+        if depth and (stack[0] != 'crates/' or
+                      (depth == 2 and (not stack[1].endswith('/') or name not in KINDS))):
+            return None, f'invalid hierarchy: `{line}`'
+        path = tuple(stack + [name])
+        if path in rows:
+            return None, f'`{name}` has two rows in the same hierarchy parent'
+        if depth:
+            parents.add(tuple(stack))
+        if (name == 'crates/' and depth == 0) or (depth == 1 and name.endswith('/')):
+            branches.add(path)
+        rows[path] = (shown, shared.group(1), shared.group(2))
+        stack.append(name)
+    if branches - parents:
+        return None, 'hierarchy branch has no children'
+    return {'total': title.group(1),
+            'rows': frozenset((path, *values) for path, values in rows.items())}, None
 
 
 def main(argv=None):
@@ -307,7 +269,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(data, sort_keys=True))
     else:
-        print(block(data['directories'], data['crates']), end='')
+        print(block(data), end='')
     return 0
 
 

@@ -1223,9 +1223,10 @@ cannot print its block gets no body, and the command exits 1 naming `--base REF`
 `scripts/check-pr-report.py` would refuse gets no body either, and the exit 1 names what is
 missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the
 header `| Directory | Added | Share |`, its separator and at least one directory row, each
-directory once, optionally followed by the versioned crate additions table, or
-`**Lines added: none**` alone, then the end marker. The crate classification and columns
-are documented in [Contributing](../CONTRIBUTING.md).
+directory once, with `crates/` containing crate children and their nonzero `main/`, `test/`,
+`other/` leaves in the same table (direct files stay file children), or
+`**Lines added: none**` alone, then the end marker. The hierarchy, path classification,
+parent-relative shares and sibling bars are documented in [Contributing](../CONTRIBUTING.md).
 `scripts/check-pr-report.py --body` accepts it as it is.
 
 ## Troubleshooting

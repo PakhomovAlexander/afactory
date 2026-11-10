@@ -33,8 +33,10 @@ review corpora belong in consuming repositories, not here.
 - The description also states the lines the pull request adds per directory: the block
   between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->` that
   `python3 scripts/pr-lines.py` prints — a title with the total and a table with each
-  directory's figure, bar and share, plus a versioned per-crate table splitting additions into
-  main code, tests and other files (the path rules are in `CONTRIBUTING.md`). CI maintains it: the same check renders the block again
+  directory's figure, bar and share: `crates/` contains crate
+  children and their nonzero `main/`, `test/`, `other/` leaves; direct files stay file children
+  (the path, parent-relative share and sibling-bar rules are in `CONTRIBUTING.md`).
+  CI maintains this single hierarchical table: the same check renders the block again
   from the pull request's commits and, when the description's block is missing or differs,
   writes it into the description itself; paste the block or leave the template's markers. The
   check refuses the block, printing it to paste, only when it cannot write it: two blocks, a

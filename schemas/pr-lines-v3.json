@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pr-lines:3",
+  "title": "af/PrLines@3",
+  "description": "Exact nonzero hierarchy. Top-level rows partition the PR total; crates/ children partition its additions, including direct files; each crate partitions into main/, test/, other/. Parent sums, unique names and deterministic order are enforced by canonical regeneration, never by adding rounded Markdown figures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "total",
+    "rows"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/PrLines@3"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/topLeaf"
+          },
+          {
+            "$ref": "#/$defs/crates"
+          }
+        ]
+      },
+      "minItems": 0
+    }
+  },
+  "$defs": {
+    "topLeaf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]+/?$",
+          "not": {
+            "const": "crates/"
+          }
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "crates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "const": "crates/"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/file"
+              },
+              {
+                "$ref": "#/$defs/crate"
+              }
+            ]
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]+$"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "crate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[^/]+/$"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/kind"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "kind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "main/",
+            "test/",
+            "other/"
+          ]
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    }
+  }
+}

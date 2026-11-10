@@ -543,7 +543,7 @@ def main():
         'a comment after the title': event(description(BLOCK, lines_block(
             '**Lines added: none** <!-- counted 2026-10-22 -->'))),
         'the table without a blank line after the title': event(description(BLOCK, lines_block(
-            '**Lines added: 12**', *header, '| docs | 12 | ████████████ 100% |'))),
+            '**Lines added: 12**', *header, '| docs/ | 12 | ████████████ 100% |'))),
         'the lines block with CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
     }
     for case, payload in lines_passing.items():
@@ -787,7 +787,7 @@ def quarantine():
             cases += 1
 
         def described(branch, quarantine_block=''):
-            lines_block = lines.block(lines.counts(lines.numstat(repo, base.get(branch, 'main'),
+            lines_block = lines.block(lines.report(lines.numstat(repo, base.get(branch, 'main'),
                                                                  branch)))
             return (description(BLOCK, lines_block) + ('\n## Test quarantine\n\n' + quarantine_block
                                                       if quarantine_block else ''))
@@ -877,9 +877,9 @@ def quarantine():
 
 # What `scripts/pr-lines.py` renders for the fixture repository's commits: twelve lines of docs.
 RENDERED = ('**Lines added: 12**\n\n| Directory | Added | Share |\n|:--|--:|:--|\n'
-            '| docs | 12 | ████████████ 100% |')
+            '| docs/ | 12 | ████████████ 100% |')
 FRESH = '<!-- af-pr-lines:v1 -->\n' + RENDERED + '\n<!-- /af-pr-lines -->\n'
-STALE = FRESH.replace('| docs | 12 |', '| docs | 11 |').replace('**Lines added: 12**',
+STALE = FRESH.replace('| docs/ | 12 |', '| docs/ | 11 |').replace('**Lines added: 12**',
                                                               '**Lines added: 11**')
 
 
@@ -1039,8 +1039,8 @@ def refreshing(pipeline):
                               env=GIT_ENV)
         assert done.returncode == 2 and 'give --diff BASE HEAD' in done.stderr, done.stderr
         assert not into.exists()
-        # The same event-range refresh maintains every crate column, even when the
-        # overview and crate totals still match. Inline cfg(test) is path-based main code.
+        # The same event-range refresh maintains every nested leaf, even when the
+        # top-level and crate totals still match. Inline cfg(test) is path-based main code.
         files = {'crates/a/src/lib.rs': '#[cfg(test)]\nmod tests {}\n',
                  'crates/a/src/tests.rs': 'test\n',
                  'crates/a/tests/data.txt': 'fixture\n',
@@ -1060,14 +1060,17 @@ def refreshing(pipeline):
         base = git('rev-parse', 'HEAD')
         enriched = ('<!-- af-pr-lines:v1 -->\n**Lines added: 17**\n\n'
                     '| Directory | Added | Share |\n|:--|--:|:--|\n'
-                    '| docs | 12 | ████████████ 71% |\n'
-                    '| crates | 4 | ████ 24% |\n| tests | 1 | █ 6% |\n\n'
-                    '**Crate additions**\n\n'
-                    '| Crate | Main code | Tests | Other | Total | Share |\n'
-                    '|:--|--:|--:|--:|--:|--:|\n'
-                    '| a | 2 | 1 | 1 | 4 | 24% |\n| b&#124;c | 1 | 0 | 0 | 1 | 6% |\n'
+                    '| docs/ | 12 | ████████████ 71% |\n'
+                    '| crates/ | 5 | █████ 29% |\n'
+                    '| ↳ a/ | 4 | ████████████ 80% |\n'
+                    '| ↳ ↳ main/ | 2 | ████████████ 50% |\n'
+                    '| ↳ ↳ other/ | 1 | ██████ 25% |\n'
+                    '| ↳ ↳ test/ | 1 | ██████ 25% |\n'
+                    '| ↳ b&#124;c/ | 1 | ███ 20% |\n'
+                    '| ↳ ↳ main/ | 1 | ████████████ 100% |\n'
                     '<!-- /af-pr-lines -->\n')
-        stale_split = enriched.replace('| a | 2 | 1 | 1 |', '| a | 1 | 2 | 1 |')
+        stale_split = (enriched.replace('| ↳ ↳ main/ | 2 |', '| ↳ ↳ main/ | 1 |')
+                       .replace('| ↳ ↳ test/ | 1 |', '| ↳ ↳ test/ | 2 |'))
         payload = event(description(BLOCK, stale_split))
         payload['pull_request']['base']['sha'] = base
         payload['pull_request']['head']['sha'] = head
@@ -1076,9 +1079,16 @@ def refreshing(pipeline):
         code, said, wrote = run(description(BLOCK, enriched))
         assert code == 0 and wrote is None and 'figures match' in said, said
         # A directory-only block is stale as well; no crate row can be silently omitted.
-        overview = enriched[:enriched.index('\n\n**Crate additions')] + '\n<!-- /af-pr-lines -->\n'
+        overview = '\n'.join(line for line in enriched.splitlines() if not line.startswith('| ↳')) + '\n'
         code, said, wrote = run(description(BLOCK, overview))
         assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
+        for stale_nested in [
+                enriched.replace('| ↳ ↳ other/ | 1 | ██████ 25% |\n', ''),
+                enriched.replace('██████ 25%', '██████ 6%'),
+                enriched.replace('██████ 25%', '█ 25%'),
+                enriched.replace('| ↳ a/ | 4 |', '| ↳ a/ | 3 |')]:
+            code, said, wrote = run(description(BLOCK, stale_nested))
+            assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
         # With refresh disabled, the category-only mismatch fails the real checker.
         source.write_text(description(BLOCK, stale_split), encoding='utf-8')
         done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(source),

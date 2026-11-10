@@ -136,8 +136,8 @@ fn incomplete(text: &str) -> Option<Incomplete> {
 
 /// The table header and its separator row, as `scripts/pr-lines.py` writes them.
 const HEADER: [&str; 3] = ["Directory", "Added", "Share"];
-const CRATE_TITLE: &str = "**Crate additions**";
-const CRATE_HEADER: [&str; 6] = ["Crate", "Main code", "Tests", "Other", "Total", "Share"];
+const TREE: &str = "↳ ";
+const KINDS: [&str; 3] = ["main/", "test/", "other/"];
 const SEPARATOR_ROW: &str = "|:--|--:|:--|";
 /// The eighth blocks a share's bar is drawn with.
 const BLOCKS: &str = "▏▎▍▌▋▊▉█";
@@ -145,10 +145,10 @@ const BLOCKS: &str = "▏▎▍▌▋▊▉█";
 /// What is wrong with the block's body `lines`, by the rules of `parse` in
 /// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` reads the block with: the title
 /// `**Lines added: <figure>**`, then the table header, its separator and at least one row per
-/// directory, each directory once, optionally followed by the crate table; or
+/// directory, with crates and their code kinds nested in the same table; or
 /// `**Lines added: none**` alone. Blank lines do not count.
-/// `None` when the parser reads it back. A figure or share in non-ASCII digits, which the
-/// script never prints, is refused here even where Python's `\d` would read it.
+/// `None` when the parser reads it back. Numeric correctness belongs to canonical regeneration
+/// from commits: rounded figures cannot prove exact parent sums.
 fn body_problem(lines: &[&str]) -> Option<String> {
     let lines: Vec<&str> = lines
         .iter()
@@ -199,51 +199,11 @@ fn body_problem(lines: &[&str]) -> Option<String> {
             shown(lines[2])
         ));
     }
-    let crate_at = (3..lines.len())
-        .find(|&n| lines[n] == CRATE_TITLE)
-        .unwrap_or(lines.len());
-    if crate_at < lines.len() {
-        if lines
-            .get(crate_at + 1)
-            .and_then(|line| row_cells(line))
-            .is_none_or(|cells| cells != CRATE_HEADER)
-        {
-            return Some("its block's crate title is not followed by its table header".into());
-        }
-        let tail = &lines[crate_at + 2..];
-        if !tail
-            .first()
-            .and_then(|line| row_cells(line))
-            .is_some_and(|cells| cells.len() == 6 && cells.iter().all(separator))
-        {
-            return Some("its block's crate header is not followed by its separator".into());
-        }
-        if tail.len() < 2 {
-            return Some("its block's crate table has no rows".into());
-        }
-        let mut crates = Vec::new();
-        for line in &tail[1..] {
-            let Some(cells) = row_cells(line) else {
-                return Some("its block has an invalid crate row".into());
-            };
-            if cells.len() != 6
-                || cells[0].is_empty()
-                || !cells[1..5].iter().all(|cell| is_figure(cell))
-                || !is_share(&format!("▏ {}", cells[5]))
-            {
-                return Some("its block has an invalid crate row".into());
-            }
-            if crates.contains(&cells[0]) {
-                return Some("its block has two rows for a crate".into());
-            }
-            crates.push(cells[0].clone());
-        }
-    }
-    if crate_at == 3 {
-        return Some("its block's directory table has no rows".into());
-    }
-    let mut names: Vec<String> = Vec::new();
-    for line in &lines[3..crate_at] {
+    let mut paths = Vec::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut branches = Vec::new();
+    let mut parents = Vec::new();
+    for line in &lines[3..] {
         let Some([name, figure, share]) =
             row_cells(line).and_then(|c| <[String; 3]>::try_from(c).ok())
         else {
@@ -253,20 +213,50 @@ fn body_problem(lines: &[&str]) -> Option<String> {
                 shown(line)
             ));
         };
-        if name.is_empty() || !is_figure(&figure) || !is_share(&share) {
+        if name.is_empty() || !is_figure(&figure) || figure == "0" || !is_share(&share) {
             return Some(format!(
-                "its block has a row that is not `| directory | figure | bar share |` (a figure \
-                 as `412`, `1.5k` or `23k`; the share as `40%` or `<1%` after its bar): `{}`",
+                "its block has a row that is not `| directory | figure | bar share |`: `{}`",
                 shown(line)
             ));
         }
-        if names.contains(&name) {
-            return Some(format!(
-                "its block has two rows for `{}`",
-                preview::short(&preview::text(&name), 60)
-            ));
+        let (mut name, mut depth) = (name.as_str(), 0);
+        while let Some(rest) = name.strip_prefix(TREE) {
+            depth += 1;
+            name = rest;
         }
-        names.push(name);
+        if name.trim_end_matches('/').is_empty()
+            || name.contains('↳')
+            || name.trim_end_matches('/').contains('/')
+            || name.ends_with("//")
+        {
+            return Some("its block has an invalid hierarchy name".into());
+        }
+        if depth > 2 || depth > stack.len() {
+            return Some("its block has a missing hierarchy parent".into());
+        }
+        stack.truncate(depth);
+        if depth > 0
+            && (stack[0] != "crates/"
+                || (depth == 2 && (!stack[1].ends_with('/') || !KINDS.contains(&name))))
+        {
+            return Some("its block has an invalid hierarchy".into());
+        }
+        let mut path = stack.clone();
+        path.push(name.to_owned());
+        if paths.contains(&path) {
+            return Some("its block has two rows in the same hierarchy parent".into());
+        }
+        if depth > 0 {
+            parents.push(stack.clone());
+        }
+        if (name == "crates/" && depth == 0) || (depth == 1 && name.ends_with('/')) {
+            branches.push(path.clone());
+        }
+        paths.push(path);
+        stack.push(name.to_owned());
+    }
+    if branches.iter().any(|path| !parents.contains(path)) {
+        return Some("its block has a hierarchy branch with no children".into());
     }
     None
 }
@@ -747,38 +737,57 @@ mod tests {
             "**Lines added: 3**",
             "| Directory | Added | Share |",
             "|:--|--:|:--|",
-            "| crates | 3 | ████████████ 100% |",
         ];
-        let table = [
-            CRATE_TITLE,
-            "| Crate | Main code | Tests | Other | Total | Share |",
-            "|:--|--:|--:|--:|--:|--:|",
-            "| a&#124;b | 1 | 1 | 1 | 3 | 100% |",
+        let tree = [
+            "| crates/ | 3 | ████████████ 100% |",
+            "| ↳ a&#124;b/ | 2 | ████████████ 67% |",
+            "| ↳ ↳ main/ | 1 | ████████████ 50% |",
+            "| ↳ ↳ test/ | 1 | ████████████ 50% |",
+            "| ↳ direct.rs | 1 | ██████ 33% |",
         ];
-        cases.push([overview.as_slice(), &table].concat());
-        // The crate section title is required for an enriched report: an untitled
-        // second table, missing header/separator/rows, or a malformed cell fails closed.
-        cases.push([overview.as_slice(), &table[1..]].concat());
-        cases.push([overview.as_slice(), &table[..1]].concat());
-        cases.push([overview.as_slice(), &table[..2]].concat());
-        cases.push([overview.as_slice(), &table[..3]].concat());
-        for bad in [
-            "| a | 1 | 1 | 1 | 3 | 100% |",
-            "| | 1 | 1 | 1 | 3 | 100% |",
-            "| a | 1 | 1 | 1 | 3 | nope |",
-            "| a | 1000 | 1 | 1 | 3 | 100% |",
-            "| a | 1 | 1 | 1 | 3 |",
+        let valid = [overview.as_slice(), &tree].concat();
+        assert!(body_problem(&valid).is_none());
+        cases.push(valid);
+        for tail in [
+            tree[..1].to_vec(),                       // aggregate without children
+            tree[..2].to_vec(),                       // crate without leaves
+            tree[1..].to_vec(),                       // missing aggregate
+            vec![tree[0], tree[2]],                   // missing crate
+            vec![tree[0], tree[4], tree[2]],          // file cannot parent a category
+            vec![tree[0], tree[1], tree[2], tree[2]], // duplicate leaf
+            vec![tree[0], tree[1], "| ↳ ↳ shared/ | 1 | █ 50% |"],
+            vec![tree[0], tree[1], "| ↳ ↳ ↳ main/ | 1 | █ 50% |"],
+            vec!["| docs/ | 3 | █ 100% |", tree[1], tree[2]],
+            vec!["| crates/ | 0 | █ 100% |"],
+            vec!["| ↳fake | 1 | █ 100% |"],
+            vec!["| crates/ | 3 | █ 100% |", "**Crate additions**"],
         ] {
-            cases.push([overview.as_slice(), &table[..3], &[bad]].concat());
+            let bad = [overview.as_slice(), &tail].concat();
+            assert!(body_problem(&bad).is_some(), "{bad:?}");
+            cases.push(bad);
         }
-        cases.push([overview.as_slice(), &table, &table[3..]].concat());
-        cases.push([&overview[..3], &table].concat());
+        for tail in [
+            vec!["| &#8627;&#32;root | 1 | █ 100% |"],
+            vec![
+                "| crates/ | 1 | █ 100% |",
+                "| ↳ &#8627;&#32;file | 1 | █ 100% |",
+            ],
+            vec![tree[0], tree[1], tree[3], tree[2], tree[4]],
+        ] {
+            let valid = [overview.as_slice(), &tail].concat();
+            assert!(body_problem(&valid).is_none(), "{valid:?}");
+            cases.push(valid);
+        }
         let program = "import importlib.util, json, sys\n\
              spec = importlib.util.spec_from_file_location('pr_lines', sys.argv[1])\n\
              module = importlib.util.module_from_spec(spec)\n\
              spec.loader.exec_module(module)\n\
              cases = json.load(sys.stdin)\n\
-             print(json.dumps([module.parse(lines)[0] is not None for lines in cases]))\n";
+             generated = [module.render_entries(entries).splitlines() for entries in [\n\
+                 [], [(3000, 0, 'crates/↳ 雪|/src/lib.rs'),\n\
+                      (2100, 0, 'crates/↳ 雪|/src/tests.rs'),\n\
+                      (1, 0, 'crates/README.md'), (1, 0, 'docs/a.md')]]]\n\
+             print(json.dumps(([module.parse(lines)[0] is not None for lines in cases], generated)))\n";
         let mut child = std::process::Command::new("python3")
             .args(["-I", "-c", program])
             .arg(&script)
@@ -791,7 +800,12 @@ mod tests {
         drop(child.stdin.take());
         let output = child.wait_with_output().unwrap();
         assert!(output.status.success());
-        let accepted: Vec<bool> = serde_json::from_slice(&output.stdout).unwrap();
+        let (accepted, generated): (Vec<bool>, Vec<Vec<String>>) =
+            serde_json::from_slice(&output.stdout).unwrap();
+        for lines in generated {
+            let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert!(body_problem(&borrowed).is_none(), "{lines:?}");
+        }
         assert_eq!(accepted.len(), cases.len());
         assert!(accepted.iter().any(|a| *a) && accepted.iter().any(|a| !*a));
         for (lines, parsed) in cases.iter().zip(accepted) {
