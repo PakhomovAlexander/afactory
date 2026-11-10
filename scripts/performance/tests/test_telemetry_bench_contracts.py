@@ -6,6 +6,7 @@ selected by the measured release's version. A stand-in `af` answers `--version` 
 digest`; nothing here measures anything.
 """
 import copy
+import hashlib
 import json
 import os
 import pathlib
@@ -118,7 +119,8 @@ class FixtureContracts(TempDir):
         # `0.11.9` (and a development `0.0.0`) declare no bench workload: refused, with or
         # without a requested contract, rather than measured under check-receipt@2.
         for release in ("0.11.9", "0.0.0", "0.14.0", "0.14.0-rc.8",
-                        "0.15.1", "0.15.1-rc.2", "0.15.1-rc.1+unknown",
+                        "0.15.1", "0.15.1-rc.3", "0.15.1-rc.1+unknown",
+                        "0.15.1-rc.2+unknown", "0.15.1-rc.20",
                         "0.14.0-nightly.20261102", "0.14.0-rc.5+unknown", "0.14.0-rc.7+unknown"):
             with self.subTest(release=release):
                 with self.assertRaisesRegex(overhead.BenchError, "named by no fixture contract"):
@@ -129,12 +131,13 @@ class FixtureContracts(TempDir):
                  for version in contract["versions"]]
         self.assertEqual(len(named), len(set(named)), "a release is named by one contract")
 
-    def test_rc4_through_rc7_and_0_15_1_rc1_select_the_existing_receipt_2_contract(self):
+    def test_rc4_through_rc7_and_0_15_1_rc1_rc2_select_the_existing_receipt_2_contract(self):
         # ADR-0255 introduced @2 before RC3; CHANGELOG.md's RC4 and RC5 sections
         # retain it. RC6 and RC7 publish @2 in af-runtime/src/task/code.rs;
         # their definition and schema match RC4/RC5 (docs/telemetry.md). The unchanged
         # fixture packages declare it. None of these releases needs an overlay.
-        for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7", "0.15.1-rc.1"):
+        for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7",
+                        "0.15.1-rc.1", "0.15.1-rc.2"):
             with self.subTest(release=release):
                 self.assertEqual(overhead.select_contract(release), "check-receipt@2")
                 self.assertEqual(overhead.select_contract(release, "check-receipt@2"),
@@ -188,7 +191,7 @@ class FixtureContracts(TempDir):
         with self.assertRaisesRegex(overhead.BenchError, "not the declared"):
             overhead.apply_contract(af, fixture, self.copy(fixture), "check-receipt@1")
 
-    def test_rc4_through_rc7_and_0_15_1_rc1_keep_all_committed_fixtures_without_contract_specific_pins(self):
+    def test_rc4_through_rc7_and_0_15_1_rc1_rc2_keep_all_committed_fixtures_without_contract_specific_pins(self):
         from perflab import cli_cases
         import re
         for source in sorted(overhead.FIXTURES_DIR.glob("*/repo")):
@@ -203,7 +206,8 @@ class FixtureContracts(TempDir):
                     self.assertEqual(cli_cases.catalog_problems(str(source)), [])
                 else:
                     self.assertEqual(cli_cases.pipeline_problems(str(source)), [])
-                for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7", "0.15.1-rc.1"):
+                for release in ("0.14.0-rc.4", "0.14.0-rc.5", "0.14.0-rc.6", "0.14.0-rc.7",
+                                "0.15.1-rc.1", "0.15.1-rc.2"):
                     with self.subTest(release=release):
                         af = self.stand_in(release, {"@1": {}, "@2": {
                             path: digest for digest, path in committed.items()}})
@@ -217,6 +221,24 @@ class FixtureContracts(TempDir):
                                 relative = path.relative_to(source)
                                 self.assertEqual((repo / relative).read_bytes(), path.read_bytes(),
                                                  relative)
+
+    def test_rc2_retains_the_expected_committed_catalog_and_store_pipeline_pins(self):
+        # Hash the complete catalogs, including every package name, version and digest.
+        # docs/telemetry.md records these same SHA-256 values for RC2 preparation.
+        catalogs = {
+            "concurrent": "67ec93e2a56e0bdbaceb04984e9070506ed61b93c169930d429bf7c70a3a59f5",
+            "dense": "37b9f18953b2642eb45339438714ef49f803f07cc31b0d48ae25da15c95f8406",
+            "invocation-four": "a3fac15c013c6776c1540f3277c2747995dd273bc73711a6d8ccd99b074ab932",
+            "invocation-one": "2107bcbae0fb2d52564ac7d96ccf0b0aed512dc9aca15a7d1738b98481334dbe",
+        }
+        for fixture, expected in catalogs.items():
+            with self.subTest(fixture=fixture):
+                path = overhead.FIXTURES_DIR / ("telemetry-bench-" + fixture)
+                self.assertEqual(hashlib.sha256(
+                    (path / "repo/.af/task-catalog.toml").read_bytes()).hexdigest(), expected)
+        lock = overhead.FIXTURES_DIR / "telemetry-bench-store/repo/.af/af.lock"
+        self.assertEqual(hashlib.sha256(lock.read_bytes()).hexdigest(),
+                         "f79c69a9837591c89fb2142155f4827e821933cbc1de7c621a07168b247414d3")
 
     def test_every_contract_pins_exactly_each_fixtures_packages(self):
         import re

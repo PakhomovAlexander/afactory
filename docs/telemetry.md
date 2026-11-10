@@ -1194,8 +1194,9 @@ committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
 `FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
 artifact type renamed and each re-pinned with the digest the contract declares, which the
 measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
-that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6, rc.7 and 0.15.1-rc.1), and a release
-no contract names is refused, never measured under the committed contract. The contract is
+that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6, rc.7,
+0.15.1-rc.1 and 0.15.1-rc.2), and a release no contract names is refused, never measured under
+the committed contract. The contract is
 selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
 refused when the version selects another. It is benchmark fixture
 production, never a reader of state an earlier release wrote.
@@ -1257,11 +1258,50 @@ against actual package bytes (and the Store fixture's Pipeline pin), then exerci
 production without overlays and compares every copied file byte for byte. This establishes the
 explicit current-version declaration; it does not admit an unnamed future release.
 
+**0.15.1-rc.2 prerequisite evidence.** This declaration prepares RC2; the workspace remains
+`0.15.1-rc.1` until `make release` bumps it. The current source still defines
+`TASK_CHECK_RECEIPT_V2 = "af/TaskCheckReceipt@2"` and `TaskCheckReceiptV2` in
+[`verification.rs`](../crates/af-contracts/src/task/verification.rs). `CodeDomain::check` in
+[`code.rs`](../crates/af-runtime/src/task/code.rs) constructs `TaskCheckReceiptV2` and passes
+`TASK_CHECK_RECEIPT_V2` to `cas.put_artifact`; the receipt schema remains
+[`task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json). These unchanged files have
+the following SHA-256 hashes, checkable with `shasum -a 256 PATH` from the repository root:
+
+| Source path | SHA-256 |
+| --- | --- |
+| `crates/af-contracts/src/task/verification.rs` | `c3991963dd5237a77105242373790de3d01334c017e6fbddedfa8358f6e6964b` |
+| `crates/af-runtime/src/task/code.rs` | `0bbfe6fc4d64154bb0bd2d0d7f9b1dbc7bcea7737149020f44b2b933272f4e30` |
+| `schemas/task-check-receipt-v2.json` | `e46f654d9f565dec6da315eb116ae950b3b0542c14169080b94935f2397e90c5` |
+
+Every package name, version, path and digest is preserved in the four committed catalogs below.
+Paths are relative to `fixtures/telemetry-bench/`; the Store fixture instead retains its
+`review` Pipeline pin `sha256:b041b990ea43e5c8225f55b6554ec10f9a3e6f612b8364575749798d8c148396`
+in `af.lock`.
+
+| Fixture pin file | SHA-256 |
+| --- | --- |
+| `telemetry-bench-concurrent/repo/.af/task-catalog.toml` | `67ec93e2a56e0bdbaceb04984e9070506ed61b93c169930d429bf7c70a3a59f5` |
+| `telemetry-bench-dense/repo/.af/task-catalog.toml` | `37b9f18953b2642eb45339438714ef49f803f07cc31b0d48ae25da15c95f8406` |
+| `telemetry-bench-invocation-four/repo/.af/task-catalog.toml` | `a3fac15c013c6776c1540f3277c2747995dd273bc73711a6d8ccd99b074ab932` |
+| `telemetry-bench-invocation-one/repo/.af/task-catalog.toml` | `2107bcbae0fb2d52564ac7d96ccf0b0aed512dc9aca15a7d1738b98481334dbe` |
+| `telemetry-bench-store/repo/.af/af.lock` | `f79c69a9837591c89fb2142155f4827e821933cbc1de7c621a07168b247414d3` |
+
+`test_rc2_retains_the_expected_committed_catalog_and_store_pipeline_pins` fixes these pin-file
+hashes in regression coverage. The selection regression
+`test_rc4_through_rc7_and_0_15_1_rc1_rc2_select_the_existing_receipt_2_contract` checks that
+RC2 selects exactly `check-receipt@2`, with `af/TaskCheckReceipt@2`, no overlay pins, and refusal
+of a requested `check-receipt@1`. The all-fixture regression below also validates the real package
+and Pipeline bytes against their pins and byte-compares every produced fixture for RC2.
+`test_a_release_no_contract_names_is_refused_never_given_the_current_contract` still refuses
+unnamed versions, including `0.15.1-rc.3`, `0.15.1-rc.20`, `0.15.1`, and
+`0.15.1-rc.2+unknown`, with or without an explicit current-contract request. This is one exact
+release declaration, not a version range or a new receipt shape.
+
 This supports using `check-receipt@2` with `pins = None`: keep the committed package pins,
 perform no receipt-type renaming, and still require each measured binary's `af catalog digest`
 to match each committed pin. The Store fixture has no Task catalog. The focused regression
-`test_rc4_through_rc7_and_0_15_1_rc1_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
-fixture for all five versions and checks that every copied file stays byte-identical. This evidence
+`test_rc4_through_rc7_and_0_15_1_rc1_rc2_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
+fixture for all six versions and checks that every copied file stays byte-identical. This evidence
 admits only the named releases; RC8, stable 0.14.0, nightly and unknown build-metadata
 version strings remain unnamed.
 `test_workspace_release_has_an_explicit_valid_telemetry_contract` reads the workspace version
