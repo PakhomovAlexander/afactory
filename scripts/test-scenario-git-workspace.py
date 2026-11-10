@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,22 @@ def fixture_launcher(body):
     if len(line.encode()) > 127:
         raise ValueError("workspace fixture Python shebang exceeds the portable 127-byte limit: " + str(python))
     return line + body
+
+
+def performance_git_launcher(git, body):
+    """Intercept only the performance fixture's lost responses and remote transport.
+
+    The publish step's 30 s deadline includes every reconciliation. Starting Python for
+    dozens of ordinary Git reads consumed that budget on macOS, even in isolation. Keep
+    the entire interceptor in the pinned executable, but exec ordinary Git directly.
+    The three intercepted commands still run the same isolated Python and real Git.
+    Any use of the fixture's remote URL also enters Python's fail-closed route check.
+    """
+    python = fixture_launcher("").splitlines()[0][2:].split()
+    return ("#!/bin/sh\nfor argument do\n case \"$argument\" in\n"
+            " commit-tree|push|ls-remote|ssh://git@github.com/octo/project.git)\n  exec "
+            + shlex.join([*python, "-c", body])
+            + ' "$@"\n ;;\n esac\ndone\nexec ' + shlex.quote(str(git)) + ' "$@"\n')
 
 
 I = module("workspace_installer", ROOT / "scripts/install-scenario-git-workspace.py")
@@ -1166,7 +1183,7 @@ def performance_integration(native=None):
         git = c["git"]
         calls = test.root / "pushes"
         wrapper = test.root / "performance-git"
-        wrapper.write_text(fixture_launcher('''import os,pathlib,subprocess,sys
+        wrapper.write_text(performance_git_launcher(git, '''import os,pathlib,subprocess,sys
 args=sys.argv[1:]
 url='ssh://git@github.com/octo/project.git'
 if url in args:
@@ -1430,6 +1447,30 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
 
 
 class PerformancePublicationTests(unittest.TestCase):
+    def test_performance_git_executes_local_reads_directly_and_intercepts_only_fault_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # Spaces and shell syntax are literal argv/path bytes, never shell source.
+            git = root / "git with spaces"
+            git.write_text('#!/bin/sh\nprintf "git\\n"\nprintf "%s\\n" "$@"\n')
+            git.chmod(0o700)
+            wrapper = root / "wrapper"
+            wrapper.write_text(performance_git_launcher(git,
+                "import json,sys; print(json.dumps(sys.argv[1:]))"))
+            wrapper.chmod(0o700)
+            env = dict(PATH="/usr/bin:/bin", HOME=directory)
+            for command in ("config", "rev-parse", "hash-object", "ls-tree", "status"):
+                args = [command, "value with spaces", "$(exit 99)"]
+                out = subprocess.run([str(wrapper), *args], env=env, capture_output=True, check=True)
+                self.assertEqual(out.stdout.decode().splitlines(), ["git", *args])
+            for command in ("commit-tree", "push", "ls-remote"):
+                args = ["-c", "core.hooksPath=/dev/null", command, "value with spaces", "$(exit 99)"]
+                out = subprocess.run([str(wrapper), *args], env=env, capture_output=True, check=True)
+                self.assertEqual(json.loads(out.stdout), args)
+            args = ["fetch", "ssh://git@github.com/octo/project.git"]
+            out = subprocess.run([str(wrapper), *args], env=env, capture_output=True, check=True)
+            self.assertEqual(json.loads(out.stdout), args, "remote URL must reach the route guard")
+
     def test_installed_performance_publication_recovers_commit_push_and_http_response_without_duplicates(self):
         performance_integration()
 
