@@ -40,32 +40,60 @@ def sample_report():
 
 
 class FixtureInterpreterTests(unittest.TestCase):
-    def test_launcher_executes_current_canonical_python_isolated_without_path_or_site(self):
+    def test_platform_launchers_execute_isolated_despite_hostile_environment(self):
+        canonical = str(Path(sys.executable).resolve())
+        for platform, expected in (('darwin', canonical), ('linux', '/usr/bin/python3')):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / 'sitecustomize.py').write_text("raise RuntimeError('ambient site imported')\n")
+                (root / 'json.py').write_text("raise RuntimeError('ambient import path used')\n")
+                # Both a PATH lookup and an accidental selected-interpreter launch must fail.
+                hostile = root / 'python3'
+                hostile.write_text("#!/bin/sh\nexit 97\n")
+                hostile.chmod(0o700)
+                alias = root / 'python-alias'
+                alias.symlink_to(canonical)
+                selected = str(alias) if platform == 'darwin' else str(hostile)
+                launcher = root / 'fixture with spaces'
+                with patch.object(W.sys, 'platform', platform), patch.object(W.sys, 'executable', selected):
+                    launcher.write_text(W.fixture_launcher(
+                        "import json,sys\nprint(json.dumps([sys.executable,sys.flags.isolated,sys.flags.no_site,'site' in sys.modules,sys.argv[1:]]))\n"))
+                launcher.chmod(0o700)
+                self.assertEqual(launcher.read_text().splitlines()[0], '#!' + expected + ' -IS')
+                env = dict(PATH=str(root), HOME=str(root), PYTHONPATH=str(root), PYTHONHOME=str(root))
+                result = subprocess.run([str(launcher), 'argument with spaces'], cwd=root, env=env,
+                                        capture_output=True, text=True, check=True)
+                # Apple's /usr/bin/python3 dispatches to CommandLineTools; compare its real
+                # identity while still requiring the literal system path in the shebang.
+                identity = subprocess.check_output([expected, '-IS', '-c', 'import sys; print(sys.executable)'],
+                                                   cwd=root, env=env, text=True).strip()
+                self.assertEqual(json.loads(result.stdout), [identity, 1, 1, False, ['argument with spaces']])
+
+    def test_non_darwin_ignores_unused_selected_python_even_when_invalid(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'sitecustomize.py').write_text("raise RuntimeError('ambient site imported')\n")
-            (root / 'json.py').write_text("raise RuntimeError('ambient import path used')\n")
-            launcher = root / 'fixture with spaces'
-            launcher.write_text(W.fixture_launcher(
-                "import json,sys\nprint(json.dumps([sys.executable,sys.flags.isolated,sys.flags.no_site,'site' in sys.modules,sys.argv[1:]]))\n"))
-            launcher.chmod(0o700)
-            env = dict(PATH=str(root), HOME=str(root), PYTHONPATH=str(root), PYTHONHOME=str(root))
-            result = subprocess.run([str(launcher), 'argument with spaces'], cwd=root, env=env,
-                                    capture_output=True, text=True, check=True)
-            self.assertEqual(json.loads(result.stdout), [str(Path(sys.executable).resolve()), 1, 1, False,
-                                                        ['argument with spaces']])
-            # The symlink used to invoke this test must not become the fixture authority.
-            alias = root / 'python-alias'
-            alias.symlink_to(sys.executable)
-            with patch.object(W.sys, 'executable', str(alias)):
-                self.assertEqual(W.fixture_launcher('pass\n').splitlines()[0],
-                                 '#!' + str(Path(sys.executable).resolve()) + ' -IS')
+            spaced = root / 'Python Framework'
+            spaced.touch()
+            long_path = root / ('p' * 128)
+            long_path.touch()
+            for platform in ('linux', 'freebsd'):
+                for selected in (sys.executable, str(root / 'missing'), str(spaced), str(long_path), ''):
+                    with self.subTest(platform=platform, selected=selected), \
+                            patch.object(W.sys, 'platform', platform), patch.object(W.sys, 'executable', selected):
+                        self.assertEqual(W.fixture_launcher('pass\n'), '#!/usr/bin/python3 -IS\npass\n')
+
+    def test_darwin_missing_interpreter_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(W.sys, 'platform', 'darwin'), \
+                    patch.object(W.sys, 'executable', str(Path(tmp) / 'missing')):
+                with self.assertRaises(FileNotFoundError):
+                    W.fixture_launcher('pass\n')
 
     def test_interpreter_path_with_whitespace_is_refused_explicitly(self):
         with tempfile.TemporaryDirectory() as tmp:
             python = Path(tmp) / 'Python Framework'
             python.touch()
-            with patch.object(W.sys, 'executable', str(python)):
+            with patch.object(W.sys, 'platform', 'darwin'), patch.object(W.sys, 'executable', str(python)):
                 with self.assertRaisesRegex(ValueError, 'Python path.*no whitespace'):
                     W.fixture_launcher('pass\n')
 
@@ -73,13 +101,12 @@ class FixtureInterpreterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             python = Path(tmp) / ('p' * 128)
             python.touch()
-            with patch.object(W.sys, 'executable', str(python)):
+            with patch.object(W.sys, 'platform', 'darwin'), patch.object(W.sys, 'executable', str(python)):
                 with self.assertRaisesRegex(ValueError, '127-byte limit'):
                     W.fixture_launcher('pass\n')
 
     def test_each_generated_fixture_uses_launcher_and_production_installer_keeps_policy(self):
         source = (ROOT / 'scripts/test-scenario-git-workspace.py').read_text()
-        self.assertNotIn('#!/usr/bin/python3 -IS', source)
         for name in ('af', 'lab', 'wrapper', 'controlled'):
             self.assertIn(name + '.write_text(fixture_launcher(', source)
         self.assertTrue(W.I.source().startswith('#!/usr/bin/python3 -IS\n'))

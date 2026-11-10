@@ -25,11 +25,14 @@ def module(name, path):
 
 
 def fixture_launcher(body):
-    """Pin test executables to this Python; never change the installed adapter policy.
+    """Use current canonical Python on Darwin, system Python elsewhere, always isolated.
 
-    Kernels split a shebang at whitespace, so refuse unrepresentable interpreter paths
+    Kernels split a shebang at whitespace, so refuse unrepresentable Darwin paths
     rather than silently selecting another Python. -IS is one kernel argument for -I -S.
+    This test-only policy never changes the installed adapter policy.
     """
+    if sys.platform != "darwin":
+        return "#!/usr/bin/python3 -IS\n" + body
     python = Path(sys.executable).resolve(strict=True)
     if not python.is_absolute() or any(c.isspace() for c in str(python)):
         raise ValueError("workspace fixture Python path must be absolute and contain no whitespace: " + str(python))

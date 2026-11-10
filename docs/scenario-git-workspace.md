@@ -219,12 +219,16 @@ reproduction evidence; hosted Linux CI must independently confirm the fix.
 ## Measuring workspace fixture Python overhead
 
 The test-only `fake-af`, lab, performance Git wrapper and controlled adapter launchers use the
-current Python interpreter's canonical absolute path with `-I -S`. No interpreter is resolved
-through `PATH`. A path containing whitespace or exceeding the portable shebang limit is refused
-with a diagnostic; select a Python at a shorter, whitespace-free canonical path. The production
-installed adapter keeps its `/usr/bin/python3 -IS` policy.
+current Python interpreter's canonical absolute path on Darwin (macOS), and the explicit
+`/usr/bin/python3` path on Linux and other supported non-Darwin platforms. Both use `-IS`
+(isolated, no-site execution). This is fixed platform selection, with no `PATH` lookup or
+runtime timing selection. On Darwin, a missing interpreter path, a path containing whitespace,
+or one exceeding the portable shebang limit is refused; select an existing Python at a shorter,
+whitespace-free canonical path. Non-Darwin launchers do not inspect or validate the unused
+`sys.executable`. The production installed adapter keeps its `/usr/bin/python3 -IS` policy.
 
-To compare two committed revisions on one machine with one selected Python:
+To compare two committed revisions on one machine with one selected suite-runner Python
+(fixture interpreters follow each revision's platform policy):
 
 ```sh
 python3 -I -S -B scripts/benchmark-workspace-fixtures.py \
