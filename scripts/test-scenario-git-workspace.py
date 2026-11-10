@@ -24,6 +24,24 @@ def module(name, path):
     return result
 
 
+def fixture_launcher(body):
+    """Use current canonical Python on Darwin, system Python elsewhere, always isolated.
+
+    Kernels split a shebang at whitespace, so refuse unrepresentable Darwin paths
+    rather than silently selecting another Python. -IS is one kernel argument for -I -S.
+    This test-only policy never changes the installed adapter policy.
+    """
+    if sys.platform != "darwin":
+        return "#!/usr/bin/python3 -IS\n" + body
+    python = Path(sys.executable).resolve(strict=True)
+    if not python.is_absolute() or any(c.isspace() for c in str(python)):
+        raise ValueError("workspace fixture Python path must be absolute and contain no whitespace: " + str(python))
+    line = "#!" + str(python) + " -IS\n"
+    if len(line.encode()) > 127:
+        raise ValueError("workspace fixture Python shebang exceeds the portable 127-byte limit: " + str(python))
+    return line + body
+
+
 I = module("workspace_installer", ROOT / "scripts/install-scenario-git-workspace.py")
 A = I.module()
 
@@ -154,8 +172,7 @@ class LifecycleTests(unittest.TestCase):
         native = dict(schema="af/git-candidate-source@1", repository_id="fixture", source_snapshot=S,
                       candidate_snapshot=R, predecessor_snapshot=None, source_content_digest=D, source_commit=source_commit,
                       candidate_tree=tree, transport_commit=transport)
-        af.write_text('''#!/usr/bin/python3 -IS
-import hashlib, json, pathlib, sys, subprocess, os
+        af.write_text(fixture_launcher('''import hashlib, json, pathlib, sys, subprocess, os
 args=sys.argv[1:]
 if args[:2] == ["task", "materialize"]:
  dest=pathlib.Path(args[args.index("--into")+1])
@@ -187,7 +204,7 @@ p=pathlib.Path(values["--into"])
 p.mkdir(exist_ok=True)
 (p/"repository.git").symlink_to(pathlib.Path(values["--repo"])/".git") if not (p/"repository.git").exists() else None
 print(json.dumps(source))
-''')
+'''))
         af.chmod(0o700)
         git_path = self.git_path
         self.config = dict(schema=A.WORKSPACE_CONFIG, repository="octo/project", repository_id=17,
@@ -1138,7 +1155,7 @@ def performance_integration(native=None):
             binary.write_text(source)
             c["af_digest"] = A.file_digest(binary)
             lab = test.root / "lab"
-            lab.write_text("#!/usr/bin/python3 -IS\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n")
+            lab.write_text(fixture_launcher("import json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n"))
             lab.chmod(0o700)
             c["performance"] = dict(executable=str(lab), digest=A.file_digest(lab), destination="native:claw")
         if native is None:
@@ -1149,8 +1166,7 @@ def performance_integration(native=None):
         git = c["git"]
         calls = test.root / "pushes"
         wrapper = test.root / "performance-git"
-        wrapper.write_text('''#!/usr/bin/python3 -IS
-import os,pathlib,subprocess,sys
+        wrapper.write_text(fixture_launcher('''import os,pathlib,subprocess,sys
 args=sys.argv[1:]
 url='ssh://git@github.com/octo/project.git'
 if url in args:
@@ -1173,7 +1189,7 @@ if 'push' in args:
  if pathlib.Path(''' + repr(str(calls)) + ''').read_text().count('push')==1: sys.exit(2) # response lost after real push
  sys.exit(0)
 os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
-''')
+'''))
         wrapper.chmod(0o700)
         c.update(git=str(wrapper), git_digest=A.file_digest(wrapper))
         absent_scope = dict(c)
@@ -1326,7 +1342,7 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
                 # Pin the installed application with only its HTTPS connection mapped to the
                 # controlled HTTP server. Production has no configurable endpoint or proxy.
                 controlled = test.root / "controlled-installed-adapter"
-                controlled.write_text("#!/usr/bin/python3 -IS\nimport http.client\ndef _fixture_connection(host, timeout, context):\n assert host == 'api.github.com'\n return http.client.HTTPConnection('127.0.0.1', " + str(server.server_port) + ", timeout=timeout)\nhttp.client.HTTPSConnection = _fixture_connection\n" + installed_path.read_text())
+                controlled.write_text(fixture_launcher("import http.client\ndef _fixture_connection(host, timeout, context):\n assert host == 'api.github.com'\n return http.client.HTTPConnection('127.0.0.1', " + str(server.server_port) + ", timeout=timeout)\nhttp.client.HTTPSConnection = _fixture_connection\n" + installed_path.read_text()))
                 controlled.chmod(0o700)
                 def literal(value):
                     return dict(source="literal", value=dict(type="text", value=value))

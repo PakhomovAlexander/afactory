@@ -352,16 +352,17 @@ opening a pull request, and [AGENTS.md](AGENTS.md) if you are an agent working h
 
 `make release VERSION=X.Y.Z COMPAT="…"` opens the release pull request: the version bump and the
 `CHANGELOG.md` section, written from the merged pull requests and their `changelog.d/` notes.
-Merging it tags the commit, runs full `make check` on Linux and macOS, builds every target, signs
-`SHA256SUMS` and publishes the release
-([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)). A `pin` job then
-moves this repository's `.af/af.lock` to the new release, so `af` here runs the newest one;
-`make check` fails when the pin is more than one release behind
-([ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md)). The job pushes to `main`
-with a deploy key that bypasses the branch ruleset, running the release binary it has just
-verified against the signed `SHA256SUMS`: that signature check is what stands between a hostile
-release and `main`
-([ADR-0152](docs/adr/0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md)).
+Release preparation and every CI profile check the exact workspace version's telemetry
+fixture declaration and performance lab schema ownership. Merging the release PR tags the commit,
+runs its bound selected validation on Linux and macOS (fast by default; `PROFILE=full` selects
+all classes), builds every target, verifies binary/archive smoke, signs `SHA256SUMS` and publishes.
+A `pin` job then verifies the published release's signed digests and opens one pin-only PR from
+`release/pin-vVERSION` to `main`. **Review CI and merge that second PR** to move this repository's
+`.af/af.lock`; publication alone does not pin it. The workflow never pushes the pin to main or
+uses a deploy-key bypass. Provision `RELEASE_PIN_TOKEN`, a repository-scoped fine-grained PAT with
+Contents and Pull requests read/write permissions, as described in [CONTRIBUTING.md](CONTRIBUTING.md).
+Missing credentials fail closed. `make check` still refuses a pin more than one non-yanked release
+behind. See the [release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
 
 ## Security and licence
 

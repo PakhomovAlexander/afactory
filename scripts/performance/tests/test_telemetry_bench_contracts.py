@@ -75,6 +75,17 @@ class FixtureContracts(TempDir):
         with self.assertRaisesRegex(overhead.BenchError, "not `af VERSION`"):
             overhead.release_version("0.15.1-rc.1")
 
+    def test_workspace_and_rc2_release_guard_keep_the_current_native_contract(self):
+        from tests.support import ROOT
+        preflight = telemetry_lab.script_module("scripts/release-contract.py")
+        manifest = toml_file.loads((pathlib.Path(ROOT) / "Cargo.toml").read_bytes(), "Cargo.toml")
+        release = manifest["workspace"]["package"]["version"]
+        self.assertEqual(preflight.check(), release)
+        self.assertIn(release, overhead.CURRENT_RELEASES)
+        self.assertIn("0.15.1-rc.2", overhead.CURRENT_RELEASES)
+        self.assertEqual(overhead.select_contract(), "native-task-review@1")
+        self.assertEqual(overhead.CHECK_RECEIPT_CURRENT, "af/TaskCheckReceipt@2")
+
     def test_current_receipt_and_release_provenance_are_checked_and_old_documents_refused(self):
         from tests import telemetry_fixtures as fx
         for module, make in ((overhead, fx.overhead_doc),
@@ -136,9 +147,15 @@ class FixtureContracts(TempDir):
         from tests import telemetry_runtime_smoke as smoke
         from perflab.telemetry_exec import Outcome
         outcome = Outcome(1, b'', 0, b'unsupported current fixture contract: original reason', 52, 0)
-        with self.assertRaisesRegex(AssertionError, 'original reason') as caught:
-            smoke.failed_task_document(pathlib.Path(self.tmp), outcome)
-        self.assertNotIsInstance(caught.exception, FileNotFoundError)
+        artifact = pathlib.Path(self.tmp) / 'bench/telemetry-bench-concurrent/00-off/stdout'
+        for content in (None, b'not JSON'):
+            with self.subTest(content=content):
+                if content is not None:
+                    artifact.parent.mkdir(parents=True)
+                    artifact.write_bytes(content)
+                with self.assertRaisesRegex(AssertionError, 'original reason') as caught:
+                    smoke.failed_task_document(pathlib.Path(self.tmp), outcome)
+                self.assertNotIsInstance(caught.exception, FileNotFoundError)
 
     def test_successful_binary_admission_requires_a_current_zero_attempt_plan(self):
         from unittest import mock

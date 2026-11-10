@@ -166,6 +166,8 @@ class Parity(unittest.TestCase):
 
     def test_committed_schemas_are_generated_from_the_readers_definitions(self):
         generated = contracts.schema_documents()
+        self.assertEqual(contracts.RUST_OWNED_SCHEMAS, PUBLICATION_SCHEMAS)
+        self.assertEqual(contracts.lab_schema_names(SCHEMAS), sorted(generated))
         committed = {name for name in os.listdir(SCHEMAS) if name.startswith("performance-")}
         self.assertFalse(set(generated) & PUBLICATION_SCHEMAS, "schema owners must be disjoint")
         self.assertEqual(committed, set(generated) | PUBLICATION_SCHEMAS)

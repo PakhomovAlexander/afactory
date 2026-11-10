@@ -1,4 +1,4 @@
-# The release train (ADR-0045). One workflow, two entry points, one human act:
+# The release train (ADR-0045). One workflow, two entry points, two human merges (release and pin PRs):
 #
 #   scripts/release.sh X.Y.Z   →  a "release: vX.Y.Z" PR (version bump + CHANGELOG section)
 #   merge it                   →  this run tags vX.Y.Z, checks the tagged commit on Linux and
@@ -251,27 +251,26 @@ jobs:
           gh release edit "$tag" --draft=false
           echo "published $tag"
 
-  # The repository runs its newest release (ADR-0138): once published, pin it in .af/af.lock on
-  # main. The release PR cannot carry the pin, because the digests exist only once SHA256SUMS
-  # does. main's ruleset requires pull requests and lets only deploy keys bypass it, so the push
-  # goes through the PIN_DEPLOY_KEY write deploy key (ADR-0152). That push starts this workflow
-  # on main like any merge, so the pin commit gets main CI; `make check` also fails if this job
-  # ever leaves the pin more than one release behind. Blast radius: this job runs the release
-  # binary it installs, verified only by the signed SHA256SUMS, in a checkout that holds the key,
-  # so a release whose signed bytes were hostile could push anything to main past the ruleset
-  # (ADR-0152). The script itself only fast-forwards, and only the pin may move.
+  # Publication opens a pin-only PR; CI and a second human merge pin the repository.
+  # No deploy key or main-ruleset bypass is used. Missing PAT fails before install.
   pin:
+    # Stable display identity used by the performance handoff; success means PR preparation.
     name: pin the release in .af/af.lock
     needs: [resolve, publish]
     if: needs.resolve.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
-      contents: read # the push uses the deploy key, not this token
+      contents: read # branch push and PR use the scoped PAT, never GITHUB_TOKEN
     steps:
+      - name: Require CI-triggering pin credentials
+        env:
+          RELEASE_PIN_TOKEN: ${{ secrets.RELEASE_PIN_TOKEN }}
+        run: |
+          [[ "$RELEASE_PIN_TOKEN" == github_pat_* ]] || { echo "RELEASE_PIN_TOKEN must be a fine-grained PAT for this repository with Contents: write and Pull requests: write; GITHUB_TOKEN cannot trigger PR CI" >&2; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
-          ssh-key: ${{ secrets.PIN_DEPLOY_KEY }} # kept for the push in scripts/pin-release.sh
+          persist-credentials: false
       - name: Install the published release
         shell: bash
         env:
@@ -282,12 +281,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends minisign
           sh install.sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin it on main
+      - name: Open the pin-only PR for CI and human merge
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }} # the refresh reads the release's SHA256SUMS through gh
+          RELEASE_PIN_TOKEN: ${{ secrets.RELEASE_PIN_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          bash scripts/pin-release.sh "${{ needs.resolve.outputs.version }}" --push
+          bash scripts/pin-release.sh "${{ needs.resolve.outputs.version }}" --pr

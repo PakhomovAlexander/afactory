@@ -97,11 +97,14 @@ telemetry-gate:
 	python3 scripts/telemetry-overhead.py --af target/release/af \
 		--report target/telemetry-gate/overhead.json
 
+# Always check explicit telemetry release contracts and lab schema ownership, in every profile.
 # Exercise release selection and tag races against disposable local Git remotes, check that
 # CHANGELOG.md's [Unreleased] holds only its pointer and every changelog.d/ note only bullets,
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
+	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
+	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
 	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check
@@ -128,6 +131,7 @@ preflight-check:
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+	$(CI_STEP) --stage preflight workspace-fixtures python3 scripts/test-workspace-fixtures.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
 
@@ -145,6 +149,7 @@ scenario-python-tests: test
 .PHONY: perf-python-tests
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
+	$(CI_STEP) --stage tests workspace-fixture-benchmark python3 scripts/test-workspace-fixture-benchmark.py
 
 # Shared selective entry points. Full `check` above is what main validation, unbound releases
 # and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and

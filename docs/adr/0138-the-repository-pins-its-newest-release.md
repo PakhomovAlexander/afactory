@@ -4,7 +4,10 @@
 [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): the release train ends by
 pinning the release it published in this repository's own `.af/af.lock`. Partially superseded by
 [ADR-0152](0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md), which
-replaces the workflow token with a deploy key for the push to `main`.
+replaces the workflow token with a deploy key for the push to `main`. Partially superseded by
+[ADR-2026-11-09-review-release-contracts-and-pins-before-merge](2026-11-09-review-release-contracts-and-pins-before-merge.md),
+which requires an always-run release contract preflight and CI-reviewed pin PR with a second
+human merge; direct pin pushes and deploy-key bypass are retired.
 
 ## Context
 

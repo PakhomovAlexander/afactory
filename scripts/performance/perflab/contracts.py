@@ -6,6 +6,7 @@ schedules, cross-field identities and resource bounds. Unknown versions and fiel
 nothing migrates an earlier shape.
 """
 from fractions import Fraction
+import os
 import re
 
 from . import diag_contracts, images, limits, reference, schedule, stats, suite
@@ -5065,6 +5066,21 @@ def schema_version(name, schema_id=None):
 
 def schema_file(name, schema_id=None):
     return "performance-%s-v%d.json" % (name, schema_version(name, schema_id))
+
+
+# These performance-prefixed schemas belong to the Rust publication API, not the lab.
+# Keep this exact allowlist: an unknown/retired lab schema must still fail parity.
+RUST_OWNED_SCHEMAS = frozenset({
+    "performance-pr-content-v1.json",
+    "performance-pr-proof-request-v1.json",
+    "performance-pr-proof-v1.json",
+    "performance-publication-activation-v1.json",
+})
+
+
+def lab_schema_names(directory):
+    return sorted(name for name in os.listdir(directory)
+                  if name.startswith("performance-") and name not in RUST_OWNED_SCHEMAS)
 
 
 def schema_documents():

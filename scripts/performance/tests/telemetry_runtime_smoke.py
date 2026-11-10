@@ -108,9 +108,11 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
 def failed_task_document(run, outcome):
     """A failed script may never have reached its first Task; retain that original reason."""
     path = run / 'bench/telemetry-bench-concurrent/00-off/stdout'
-    assert path.is_file(), ('overhead exited before its first measured Task; original diagnostic:',
-                            outcome.code, outcome.stdout, outcome.stderr)
-    return json.loads(path.read_bytes())
+    try:
+        return json.loads(path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise AssertionError('missing or invalid run artifact %s: %s; original diagnostic: %r'
+                             % (path, error, (outcome.code, outcome.stdout, outcome.stderr))) from error
 
 
 def outcome_stderr(run):
