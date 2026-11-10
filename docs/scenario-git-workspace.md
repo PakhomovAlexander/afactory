@@ -215,3 +215,42 @@ bytes. The helper checks that the shared executable's identity, permissions and 
 unchanged. A local Rust 1.88 Linux container reproduced both installation refusals at the size
 check: its 288,451,120-byte debug executable exceeded the 268,435,456-byte bound. This is local
 reproduction evidence; hosted Linux CI must independently confirm the fix.
+
+## Measuring workspace fixture Python overhead
+
+The test-only `fake-af`, lab, performance Git wrapper and controlled adapter launchers use the
+current Python interpreter's canonical absolute path with `-I -S`. No interpreter is resolved
+through `PATH`. A path containing whitespace or exceeding the portable shebang limit is refused
+with a diagnostic; select a Python at a shorter, whitespace-free canonical path. The production
+installed adapter keeps its `/usr/bin/python3 -IS` policy.
+
+To compare two committed revisions on one machine with one selected Python:
+
+```sh
+python3 -I -S -B scripts/benchmark-workspace-fixtures.py \
+  --base BASE_COMMIT --head HEAD_COMMIT --output "$TMPDIR/workspace-fixture-evidence"
+```
+
+Use an absent output directory. The helper resolves both revisions to exact commits, exports their
+Git objects into read-only temporary source trees and verifies the exports remain unchanged. It
+runs the complete `scripts/test-scenario-git-workspace.py` suite in a fresh process for each sample,
+using only a stdlib recorder supplied by the helper: the older base needs no new helper dependency.
+Three pairs run base/head, head/base, base/head by default (`--pairs` accepts at least three).
+`--timeout` bounds each complete suite process at 600 seconds by default; existing test deadlines
+and assertions remain intact. These are wall-clock runs without profiling.
+
+`benchmark.json` (`af/workspace-fixture-benchmark@1`) records platform, interpreter path/version
+and binary digest, commit/tree/export/suite identities, individual wall times, exit codes, unittest
+counts and log names. Each sample also retains its full combined output and a versioned unittest
+receipt. Any failed, timed-out, skipped, incomplete or unequal-count suite invalidates the evidence;
+no median comparison is emitted for invalid evidence and the command fails. Valid evidence includes
+base/head medians, signed head-minus-base differences and the median paired difference. Timings
+are observations; the command asserts no hard performance threshold. `summary.md` carries the same
+results for people; `--summary FILE` also appends them to a GitHub job summary.
+
+The advisory `Workspace fixture benchmark` PR workflow runs that command on macOS and Linux for
+fixture, helper, schema and workflow changes. It captures exact PR base/head SHAs, selects Python
+3.12, retains evidence even on failure, uses read-only repository permissions without secrets, and
+has bounded job time and per-PR concurrency. Standard CI, release gates and AF remote checks are
+unchanged. The benchmark integration tests use tiny synthetic suites only to check evidence
+handling; their timings do not prove an improvement in the workspace lifecycle suite.

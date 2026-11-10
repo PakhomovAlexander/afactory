@@ -377,6 +377,8 @@
     "test-test-quarantine.py": "functional",
     "test-test-time-report.py": "functional",
     "test-worker-development.py": "e2e",
+    "test-workspace-fixtures.py": "functional",
+    "test-workspace-fixture-benchmark.py": "perf",
     "test-scenario-merge-watch.py": "e2e"
   },
   "utilities": [

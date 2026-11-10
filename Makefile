@@ -127,6 +127,7 @@ preflight-check:
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+	$(CI_STEP) --stage preflight workspace-fixtures python3 scripts/test-workspace-fixtures.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
 
@@ -144,6 +145,7 @@ scenario-python-tests: test
 .PHONY: perf-python-tests
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
+	$(CI_STEP) --stage tests workspace-fixture-benchmark python3 scripts/test-workspace-fixture-benchmark.py
 
 # Shared selective entry points. Full `check` above is what main validation, unbound releases
 # and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and
