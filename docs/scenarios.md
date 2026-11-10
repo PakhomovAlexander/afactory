@@ -10,7 +10,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@5`. A bundle (`af/scenario-bundle@5`) names its
+`af/scenario@6`. A bundle (`af/scenario-bundle@6`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -20,7 +20,8 @@ The port types are `text`, `boolean`, `integer`, `task`, `action`, `decision`, `
 `literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`). Forward
 references and type mismatches fail admission. A `project` binding selects a typed receipt field:
 `task_conclusion`, `task_result_id`, `task_output_id` or `task_output_snapshot` (the latter two
-name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`. Its `value` is
+name a `port`), `task_output_field` (a `port`, `schema` and allowlisted `field`), `action_intent`,
+`observation_satisfied`, or `decision_approved`. Its `value` is
 another binding and its `projection` is an object with `kind`. An `equals` binding compares scalar
 `left` and `right` bindings of the same type and returns a boolean. This allows a Task's evidenced
 `no_worthwhile_optimization` conclusion to skip implementation and still complete successfully.
@@ -28,6 +29,8 @@ A `select` binding has boolean `condition` and equal-type `when_true`/`when_fals
 it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
 are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
+Native CI diagnosis settlements additionally allow `ci_diagnosis_field` (`category` or
+`signature_id`) and boolean `ci_diagnosis_refused` projections, checked against the native step.
 
 Each step declares `id`, `operation`, `inputs`, `outputs`, `when` (null or boolean binding),
 `max_attempts` (1–8), `timeout_ms`, and `on_timeout` (`fail` or `skip`). Only Wait and Decision
@@ -75,6 +78,10 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   `af task run --confirm-plan` through the ordinary runtime. Generated plan
   signatures, sandboxing and Task acceptance still apply. A process exit is not evidence: the
   coordinator reads the accepted result, output artifacts and accounting from the Task Store.
+  The `ci_diagnosis` specialization uses the same target, plan authority, reservation and
+  cancellation lease with one step attempt. It returns an observation containing the accepted
+  diagnosis or a separate deterministic unknown with the original refused Task receipt and
+  bounded native refusal evidence. The refused result never becomes accepted Task output.
 - Scenario: `operation.kind: scenario` names a bundled definition. Its input and output ports
   must match exactly. Recursion, excessive depth, widened authority and larger child budgets
   fail admission. The Run pins the complete transitive bundle. Editing a definition changes
@@ -115,6 +122,14 @@ A [structured Task example](../fixtures/custom-tasks/README.md) projects the exa
 of one captured issue Task through `task_output_id` and checks `structurally_validated`. This
 uses the same pinned Task projection as every other kind, without report or evaluator nodes,
 dynamic Task creation or publication authority.
+
+The [CI health Phase 1 fixture](ci-health-maintenance.md) uses native `ci_diagnosis` settlements
+and their category/signature projections. Native retrieval verifies the exact accepted Task
+output and captured snapshot, or records a separate deterministic unknown from a refused result.
+Its `notify` inputs include `diagnosis_settlement` (observation), `category` and `signature_id`
+(text). Findings, including explicit alerts for every release-blocking failure, precede diagnosis.
+A refusal sends a deterministic unknown diagnosis, alert-only remedy and outcome, then skips Watch.
+Ordinary accepted Task outputs still support `task_output_field` with the same closed allowlist.
 
 A Decision receipt used for publication may authorize exactly that one decision-consuming Action
 in the pinned bundle, including uses through aliased child inputs and outputs. Admission rejects
@@ -199,7 +214,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Daily Ant scheduling
 
-An `af/ant@5` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@6` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
 `notify` action with its own authorized adapter.
@@ -332,7 +347,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@6`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@7`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
 collects revisions or resets a ledger. No second registry or storage budget exists.

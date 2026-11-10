@@ -1,0 +1,289 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "requirements",
+    "snapshot"
+  ],
+  "properties": {
+    "requirements": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "payload"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "artifact_type": {
+            "const": "af/Requirements@1"
+          },
+          "payload": {
+            "type": "object"
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "snapshot": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "payload"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "artifact_type": {
+            "const": "custom/CiHealthSnapshot@1"
+          },
+          "payload": {
+            "additionalProperties": false,
+            "properties": {
+              "captured_at": {
+                "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+                "type": "string"
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "failures": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "conclusion": {
+                      "enum": [
+                        "failure",
+                        "timed_out",
+                        "cancelled",
+                        "startup_failure",
+                        "action_required"
+                      ]
+                    },
+                    "first_seen_at": {
+                      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+                      "type": "string"
+                    },
+                    "head_sha": {
+                      "pattern": "^[0-9a-f]{40}$",
+                      "type": "string"
+                    },
+                    "job_id": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "job_name": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]+$",
+                      "type": "string"
+                    },
+                    "last_seen_at": {
+                      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+                      "type": "string"
+                    },
+                    "log_artifacts": {
+                      "items": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "maxItems": 20,
+                      "minItems": 0,
+                      "type": "array",
+                      "uniqueItems": true
+                    },
+                    "normalized_fingerprint": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "maxLength": 2048,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]+$",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "occurrence_count": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "occurrence_id": {
+                      "pattern": "^sha256:[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "platform": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]+$",
+                      "type": "string"
+                    },
+                    "release_blocking": {
+                      "type": "boolean"
+                    },
+                    "run_attempt": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "run_id": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "signature_id": {
+                      "pattern": "^sha256:[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "workflow_file": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]+$",
+                      "type": "string"
+                    },
+                    "workflow_id": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "occurrence_id",
+                    "signature_id",
+                    "workflow_id",
+                    "workflow_file",
+                    "run_id",
+                    "run_attempt",
+                    "job_id",
+                    "job_name",
+                    "platform",
+                    "head_sha",
+                    "conclusion",
+                    "normalized_fingerprint",
+                    "log_artifacts",
+                    "first_seen_at",
+                    "last_seen_at",
+                    "occurrence_count",
+                    "release_blocking"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 100,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "nightly_receipt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "conclusion": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]+$",
+                        "type": "string"
+                      },
+                      "identity": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "identity",
+                      "conclusion"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "omissions": {
+                "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]+$",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "minItems": 0,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "release_pr": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "head_sha": {
+                        "pattern": "^[0-9a-f]{40}$",
+                        "type": "string"
+                      },
+                      "number": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "number",
+                      "head_sha"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "repository": {
+                "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+                "type": "string"
+              },
+              "schema": {
+                "const": "af.ci-health-snapshot/1"
+              },
+              "source_sha": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema",
+              "repository",
+              "captured_at",
+              "source_sha",
+              "release_pr",
+              "nightly_receipt",
+              "complete",
+              "omissions",
+              "failures"
+            ],
+            "title": "Ci health snapshot v1",
+            "type": "object"
+          }
+        }
+      },
+      "minItems": 1
+    }
+  }
+}

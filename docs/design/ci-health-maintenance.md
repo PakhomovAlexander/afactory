@@ -1,6 +1,8 @@
 # Daily CI health maintenance
 
-**Status:** proposed design for review; no implementation or live authority is accepted here.
+**Status:** Phase 1 has a hermetic implementation and
+[operator guide](../ci-health-maintenance.md). Phases 2 and 3 remain proposed; no live authority,
+Ant activation or systemd installation is accepted here.
 
 ## Problem
 
@@ -56,7 +58,11 @@ job identity missing from an observation is malformed evidence, not a passing or
 `category` (`transient`, `product_bug`, `test_bug`, `ci_infra` or `unknown`), `rationale`, and
 bounded `evidence` references to the snapshot and source revision. A pinned light Task accepts the
 exact snapshot artifact and returns exactly one diagnosis artifact per selected occurrence. The
-Task cannot mutate GitHub or the repository. Schema violations, mismatched identities, references
+Selection Requirements, diagnosis and all evidence use the selected failure's `head_sha` as
+`source_sha`; the snapshot's main SHA is not the source revision of a distinct release job.
+The Task receives that failed revision in its captured Selection before Provider admission.
+These existing identity fields retain their version 1 shapes. The Task cannot mutate GitHub or
+the repository. Schema violations, mismatched identities, references
 outside the snapshot or an empty evidence list refuse the result and select `unknown` only through
 an explicit deterministic malformed-evidence record, never through model text.
 
@@ -65,11 +71,20 @@ The Scenario binds the snapshot through an existing typed Task input. Because na
 adds a native `task_output_field` projection for an admitted structured Task output. Its initial
 allowlist is the scalar `category` and `signature_id` fields of `af.ci-diagnosis/1`; it refuses
 other schemas, fields, missing values and non-scalar values. Scenario `equals` conditions compare
-the projected category with literals and the signature with the selected occurrence. This is an
-explicit `af/scenario@5` binding-contract extension with versioned schema and malformed-projection
-tests; no coordinator JSON parser or arbitrary projection expression is introduced. Each remedy
-step consumes the exact diagnosis Task receipt as well as its category, so a condition cannot
-manufacture acceptance evidence.
+the projected category with literals and the signature with the selected occurrence.
+The accepted-output projection remains closed to those fields. The explicit `af/scenario@6`
+`ci_diagnosis` Task specialization additionally settles refused output as an
+`af/scenario-ci-diagnosis@2` native observation. It retains the original refused Task receipt,
+exact captured selection and bounded native diagnostic evidence beside the deterministic unknown;
+it never creates accepted diagnosis output. Native `ci_diagnosis_field` category/signature
+projections and boolean `ci_diagnosis_refused` read that recorded settlement. Each remedy
+notification consumes the settlement as well as its category. Refusal selects alert-only, sends
+diagnosis, remedy and outcome, and skips Watch. Findings are sent before diagnosis using
+`af.ci-health-notification/2`: bounded batches retain every observed failure's workflow/run/job
+identity, job name, platform, conclusion, failed head, log references and release-blocking flag.
+Each release-blocking occurrence has an explicit immediate `release_alerts` entry even when
+another failure is selected or the diagnosis reservation is exhausted. Plan authority, Task acceptance, reservations,
+accounting and cancellation retain their ordinary native checks.
 
 ### Failure identity
 

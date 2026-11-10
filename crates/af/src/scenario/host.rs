@@ -110,6 +110,204 @@ impl Host for AfHost {
         })
     }
 
+    fn run_ci_diagnosis(
+        &self,
+        target: &TaskTarget,
+        timeout_ms: u64,
+        cancellation: &AtomicBool,
+    ) -> Result<Settlement> {
+        use af_scenario::ci_diagnosis::{Provenance, Record, Refusal, SCHEMA, unknown};
+        // Native Task admission, recovery, cancellation and accounting are unchanged. Only a
+        // durable answered/refused diagnosis is converted into a reporting observation.
+        let settlement = self.run_task(target, timeout_ms, cancellation)?;
+        let (charged_tokens, unknown_usage, accepted) = match &settlement {
+            Settlement::TaskDone {
+                outputs,
+                unknown_usage,
+            } => {
+                let Some(Datum::Task(receipt)) = outputs.get("result") else {
+                    return Err("Native diagnosis lacks Task receipt".into());
+                };
+                (receipt.charged_tokens, *unknown_usage, true)
+            }
+            Settlement::TaskFailed {
+                charged_tokens,
+                unknown_usage,
+                ..
+            } => (*charged_tokens, *unknown_usage, false),
+            _ => return Ok(settlement),
+        };
+        let opened =
+            crate::task_commands::open_task(&target.task_id, &target.repo, Some(&target.state))?;
+        require(
+            opened.task.revision_id == target.revision_id
+                && opened.task.plan_id.as_deref() == Some(&target.plan_id),
+            "Native diagnosis Task identity changed",
+        )?;
+        let (snapshot_id, snapshot, selection) =
+            af_store::ci_health::validate_selection(&opened.cas, &opened.task.revision.inputs)?;
+        let af_contracts::task::TaskPhaseV1::Finished { result_id } = &opened.task.phase else {
+            return Err("Native diagnosis lacks durable Task completion".into());
+        };
+        let (result, _) = opened.view()?;
+        let receipt = TaskReceipt {
+            task_id: target.task_id.clone(),
+            plan_id: target.plan_id.clone(),
+            revision_id: target.revision_id.clone(),
+            result_id: result_id.clone(),
+            charged_tokens,
+            result: result.ok_or("Native diagnosis result disappeared")?,
+        };
+        let (diagnosis, provenance) = if accepted {
+            let artifact = self.task_output(target, &receipt, "diagnosis")?;
+            let diagnosis = af_store::ci_health::validate_diagnosis(
+                &opened.cas,
+                &artifact.payload,
+                &opened.task.revision.inputs,
+            )?;
+            let output = af_scenario::task_output::Record {
+                schema: "af/scenario-task-output-field@1".into(),
+                task_id: receipt.task_id.clone(),
+                plan_id: receipt.plan_id.clone(),
+                revision_id: receipt.revision_id.clone(),
+                result_id: receipt.result_id.clone(),
+                port: "diagnosis".into(),
+                artifact_id: artifact.artifact_id.clone(),
+                artifact,
+            };
+            (
+                diagnosis,
+                Provenance::Accepted {
+                    output: Box::new(output),
+                },
+            )
+        } else {
+            let mut refusals = Vec::new();
+            if let Some(execution) = &opened.task.execution {
+                for attempt in execution.attempt_accounting() {
+                    let node = execution
+                        .graph
+                        .nodes
+                        .get(&attempt.reservation.node)
+                        .ok_or("Native refusal Attempt has no compiled node")?;
+                    let diagnosis_node = matches!(
+                        &node.operator,
+                        af_graph::task::CompiledOperator::Primitive {
+                            operator: af_contracts::task::pipeline::TaskOperatorV1::Worker { .. }
+                                | af_contracts::task::pipeline::TaskOperatorV1::StructuredAccept { .. },
+                            ..
+                        }
+                    ) && node
+                        .contract
+                        .outputs
+                        .values()
+                        .any(|p| p.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE);
+                    if !diagnosis_node {
+                        continue;
+                    }
+                    if let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
+                        diagnostic_id,
+                        ..
+                    }) = attempt.result
+                    {
+                        let diagnostic = opened
+                            .cas
+                            .get_json(&diagnostic_id)
+                            .map_err(|e| e.to_string())?;
+                        // Wall, environment and cancellation failures keep their original lifecycle.
+                        if diagnostic.get("cause").is_some() {
+                            return Ok(settlement);
+                        }
+                        require(
+                            diagnostic.get("schema").and_then(|v| v.as_str())
+                                == Some("af.task-diagnostic/1"),
+                            "Invalid native refusal diagnostic",
+                        )?;
+                        let error = diagnostic
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .ok_or("Native refusal diagnostic omitted its error")?;
+                        refusals.push(Refusal {
+                            attempt_id: attempt.attempt_id,
+                            diagnostic_id,
+                            error_prefix: error.chars().take(2048).collect(),
+                        });
+                    }
+                }
+            }
+            if refusals.is_empty() {
+                return Ok(settlement);
+            }
+            (
+                unknown(&snapshot_id, &selection),
+                Provenance::DeterministicRefusal { refusals },
+            )
+        };
+        diagnosis.validate_against(&snapshot_id, &snapshot)?;
+        let record = Record {
+            schema: SCHEMA.into(),
+            receipt,
+            snapshot_id,
+            selection,
+            diagnosis,
+            provenance,
+        };
+        record.target(target)?;
+        let observation = record.observation(&snapshot.repository)?;
+        Ok(Settlement::CiDiagnosisDone {
+            outputs: BTreeMap::from([("result".into(), Datum::Observation(observation))]),
+            charged_tokens,
+            unknown_usage,
+        })
+    }
+
+    fn task_output(
+        &self,
+        target: &TaskTarget,
+        receipt: &TaskReceipt,
+        port: &str,
+    ) -> Result<af_contracts::ArtifactEnvelope> {
+        let opened =
+            crate::task_commands::open_task(&target.task_id, &target.repo, Some(&target.state))?;
+        let (result, _) = opened.view()?;
+        require(
+            opened.task.revision_id == receipt.revision_id
+                && opened.task.plan_id.as_ref() == Some(&receipt.plan_id)
+                && matches!(&opened.task.phase, af_contracts::task::TaskPhaseV1::Finished { result_id }
+                if result_id == &receipt.result_id)
+                && result.as_ref() == Some(&receipt.result),
+            "Projection is not the exact accepted native Task result",
+        )?;
+        Datum::Task(receipt.clone()).validate()?;
+        let output = receipt
+            .result
+            .outputs
+            .get(port)
+            .ok_or("Projected output absent")?;
+        require(
+            output.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE
+                && output.cardinality == af_contracts::PortCardinality::One
+                && output.artifact_ids.len() == 1
+                && output.snapshot_id.is_none(),
+            "Projection requires one admitted diagnosis",
+        )?;
+        let envelope = opened
+            .cas
+            .get_artifact(&output.artifact_ids[0])
+            .map_err(|e| e.to_string())?;
+        require(
+            envelope.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE
+                && envelope.subject_snapshot_id.is_none(),
+            "Diagnosis envelope type differs",
+        )?;
+        af_store::ci_health::validate_diagnosis(
+            &opened.cas,
+            &envelope.payload,
+            &opened.task.revision.inputs,
+        )?;
+        Ok(envelope)
+    }
+
     fn active_task_run(&self, target: &TaskTarget) -> Option<u64> {
         let opened =
             crate::task_commands::open_task(&target.task_id, &target.repo, Some(&target.state))

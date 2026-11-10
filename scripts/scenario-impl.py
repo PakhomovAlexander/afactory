@@ -113,12 +113,12 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
               step("merged", wait("merged"), obj, "observation"),
               step("cleanup", action("cleanup_workspace_v1", condition="merged"), dict(**obj, body=projection(prepared_value, "workspace_receipt"),
                   prepared=prepared_value, evidence=step_ref("merged")), "action")]
-    root = dict(schema="af/scenario@5", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
+    root = dict(schema="af/scenario@6", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
         steps=steps, result={"implementation": task_value, "publication": publication_value, "merged": step_ref("merged"), "cleanup": step_ref("cleanup")},
         completion=[project("merged", "observation_satisfied")],
         authority=dict(task_plans=[], task_templates=[pin["template_id"]], grants=grants, decision_owners=[owner]),
         limits=dict(max_tokens=template["max_tokens"] * (repairs + 1), max_wall_ms=doc["limits"]["wall_ms"] * (repairs + 1) + 604800000, max_dispatches=64 + 5 * repairs), admission=None)
-    return dict(schema="af/scenario-bundle@5", root="impl", definitions={"impl": root})
+    return dict(schema="af/scenario-bundle@6", root="impl", definitions={"impl": root})
 
 
 def toml_value(value):

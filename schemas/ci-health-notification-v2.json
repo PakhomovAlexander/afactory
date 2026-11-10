@@ -1,0 +1,384 @@
+{
+  "$id": "urn:af:schema:ci-health-notification:2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "transient",
+            "product_bug",
+            "test_bug",
+            "ci_infra",
+            "unknown"
+          ]
+        }
+      ]
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "deterministic_diagnosis": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "enum": [
+                "transient",
+                "product_bug",
+                "test_bug",
+                "ci_infra",
+                "unknown"
+              ]
+            },
+            "evidence": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "reference": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]+$",
+                    "type": "string"
+                  },
+                  "snapshot_id": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "source_sha": {
+                    "pattern": "^[0-9a-f]{40}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "snapshot_id",
+                  "source_sha",
+                  "reference"
+                ],
+                "type": "object"
+              },
+              "maxItems": 20,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "occurrence_id": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "rationale": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]+$",
+              "type": "string"
+            },
+            "schema": {
+              "const": "af.ci-diagnosis/1"
+            },
+            "signature_id": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "snapshot_id": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "source_artifact_ids": {
+              "items": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "source_sha": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema",
+            "snapshot_id",
+            "source_artifact_ids",
+            "occurrence_id",
+            "signature_id",
+            "source_sha",
+            "category",
+            "rationale",
+            "evidence"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "failures": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "conclusion": {
+            "enum": [
+              "failure",
+              "timed_out",
+              "cancelled",
+              "startup_failure",
+              "action_required"
+            ]
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "job_id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "job_name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "log_artifacts": {
+            "items": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "occurrence_id": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "platform": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "release_blocking": {
+            "type": "boolean"
+          },
+          "run_attempt": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "signature_id": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "workflow_file": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "workflow_id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "signature_id",
+          "workflow_id",
+          "workflow_file",
+          "run_id",
+          "run_attempt",
+          "job_id",
+          "job_name",
+          "platform",
+          "head_sha",
+          "conclusion",
+          "log_artifacts",
+          "release_blocking"
+        ],
+        "type": "object"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "intended": {
+      "enum": [
+        "alert_only",
+        "release_alert",
+        "infrastructure_alert",
+        "rerun_intended",
+        "quarantine_evidence_intended",
+        "repair_intended",
+        "report_only"
+      ]
+    },
+    "main_ref": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "notification": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "observation_end": {
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "observation_start": {
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "occurrence_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "omissions": {
+      "items": {
+        "maxLength": 256,
+        "minLength": 1,
+        "pattern": "^[^\\u0000]+$",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "phase": {
+      "enum": [
+        "findings",
+        "diagnosis",
+        "remedy-intent",
+        "outcome"
+      ]
+    },
+    "release_alerts": {
+      "items": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "release_selector": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "report_only": {
+      "const": true
+    },
+    "repository": {
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "type": "string"
+    },
+    "row": {
+      "maximum": 7,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "scenario_run": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "af.ci-health-notification/2"
+    },
+    "signature_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "snapshot_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "unselected_occurrences": {
+      "items": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "unselected_reason": {
+      "enum": [
+        null,
+        "diagnosis_reservation_exhausted"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "scenario_run",
+    "snapshot_id",
+    "repository",
+    "main_ref",
+    "release_selector",
+    "observation_start",
+    "observation_end",
+    "notification",
+    "source_sha",
+    "phase",
+    "failures",
+    "release_alerts",
+    "occurrence_id",
+    "signature_id",
+    "category",
+    "unselected_occurrences",
+    "unselected_reason",
+    "deterministic_diagnosis",
+    "report_only",
+    "complete",
+    "omissions"
+  ],
+  "title": "Ci health notification v2",
+  "type": "object"
+}

@@ -67,7 +67,9 @@ pub fn task_id(intent: &str) -> String {
 }
 pub fn charge_key(d: &Dispatch) -> Result<String> {
     match &d.definition.operation {
-        Kind::Task { target } => hash(&(&target.state, &target.task_id, &target.revision_id)),
+        Kind::Task { target } | Kind::CiDiagnosis { target } => {
+            hash(&(&target.state, &target.task_id, &target.revision_id))
+        }
         Kind::FreshTask { template, .. } => hash(&(&template.state, task_id(&d.intent.id))),
         _ => Err("Non-Task has no charge identity".into()),
     }
@@ -200,7 +202,7 @@ pub fn targets(
     step: &Step,
 ) -> Option<TaskTarget> {
     match &step.operation {
-        Kind::Task { target } => Some(target.clone()),
+        Kind::Task { target } | Kind::CiDiagnosis { target } => Some(target.clone()),
         Kind::FreshTask { .. } => p
             .intents
             .last()

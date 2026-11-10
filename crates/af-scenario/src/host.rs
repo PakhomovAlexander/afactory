@@ -48,6 +48,26 @@ pub trait Host: Send + Sync {
         timeout_ms: u64,
         cancellation: &AtomicBool,
     ) -> Result<Settlement>;
+    /// A bounded native Task settlement, including deterministic refused-output observations.
+    /// This never supplies a refused result through an accepted Task port.
+    fn run_ci_diagnosis(
+        &self,
+        _target: &TaskTarget,
+        _timeout_ms: u64,
+        _cancellation: &AtomicBool,
+    ) -> Result<Settlement> {
+        Err("Native CI diagnosis settlement unsupported by this Host".into())
+    }
+    /// Read one output from the exact accepted native result, validating its CI source evidence.
+    /// Unsupported hosts refuse; payload text or an adapter response is never authority.
+    fn task_output(
+        &self,
+        _target: &TaskTarget,
+        _receipt: &TaskReceipt,
+        _port: &str,
+    ) -> Result<af_contracts::ArtifactEnvelope> {
+        Err("Native Task output retrieval unsupported by this Host".into())
+    }
     fn active_task_run(&self, target: &TaskTarget) -> Option<u64>;
     fn cancel_task_run(&self, target: &TaskTarget, expected: u64) -> Result<()>;
     /// Missing, unreadable, running or mismatched Tasks retain the full reservation (`None`).

@@ -1,0 +1,21 @@
+schema = "af.task-catalog/2"
+no_match = "refuse"
+[kinds]
+ci-diagnosis = "ci/diagnosis-kind"
+[providers]
+"ci/diagnosis-worker" = "codex-personal"
+
+[packages."ci/diagnosis-kind"]
+version = "1.0.0"
+path = "fixtures/scenarios/maintenance-ci-health/task/kind"
+digest = "sha256:60a4f0f67c155543ceddf033bab8d630216053a4d47377eafef87d418cb3eee5"
+
+[packages."ci/diagnosis-pipeline"]
+version = "1.0.0"
+path = "fixtures/scenarios/maintenance-ci-health/task/pipeline"
+digest = "sha256:cefd682fb4aed35d9c514e10fd3a428d44b508390f4b686fa8bfc18031048019"
+
+[packages."ci/diagnosis-worker"]
+version = "1.0.3"
+path = "fixtures/scenarios/maintenance-ci-health/task/worker"
+digest = "sha256:9a8bb72bdd683851e6a6eca92eeb729ddb59240c705a1e142684ae2f5e7814a1"

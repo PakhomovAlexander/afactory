@@ -1,0 +1,27 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "ci-diagnose-one",
+  "kind": "ci-diagnosis",
+  "goal": "Classify the selected exact CI failure without mutation.",
+  "strategy": "light",
+  "pipeline": {
+    "name": "ci/diagnosis-pipeline",
+    "fallback": "refuse"
+  },
+  "limits": {
+    "tokens": 5096,
+    "max_attempts": 2,
+    "wall_ms": 1200000,
+    "verification": {
+      "tokens": 0,
+      "attempts": 0,
+      "wall_ms": 0
+    }
+  },
+  "requirements": {
+    "schema": "af.ci-diagnosis-selection/1",
+    "occurrence_id": "sha256:e809b7900af7c427c7f33d0b29257204981f566297bfb258f6bb75cd2767c55c",
+    "signature_id": "sha256:d8ac91aeb04fb0e75b7fe8ec4fe0b0493208ecf0e941d424c8fcc8ee6fd0b068",
+    "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

@@ -101,7 +101,8 @@
     "af-sandbox::seal unchanged_large_tree_sandbox_measurement": "perf",
     "af-source-git::it capture::dirty_capture_large_tree_measurement": "perf",
     "af-store cas::tests::bench_put_throughput": "perf",
-    "af::it telemetry_bench::unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence": "e2e"
+    "af::it telemetry_bench::unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence": "e2e",
+    "af-scenario tests::ci_health_watchdog_reads_native_journal_without_a_tick_or_a_report": "e2e"
   },
   "hosted_checks": {
     "container-probes": "e2e",
@@ -363,7 +364,9 @@
     "test-worker-development.py": "e2e",
     "test-workspace-fixtures.py": "functional",
     "test-workspace-fixture-benchmark.py": "perf",
-    "test-scenario-merge-watch.py": "e2e"
+    "test-scenario-merge-watch.py": "e2e",
+    "test-ci-health.py": "functional",
+    "test-af-maintenance-watchdog.py": "e2e"
   },
   "utilities": [
     "test-classes.py",

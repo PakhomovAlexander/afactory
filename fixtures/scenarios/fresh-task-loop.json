@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@5",
+  "schema": "af/scenario-bundle@6",
   "root": "optimization",
   "definitions": {
     "optimization": {
-      "schema": "af/scenario@5",
+      "schema": "af/scenario@6",
       "admission": null,
       "inputs": {},
       "outputs": {

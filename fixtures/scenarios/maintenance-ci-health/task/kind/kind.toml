@@ -1,0 +1,5 @@
+schema = "af.task-kind/2"
+name = "ci/diagnosis-kind"
+version = "1.0.0"
+kind = "ci-diagnosis"
+profile = "structured"

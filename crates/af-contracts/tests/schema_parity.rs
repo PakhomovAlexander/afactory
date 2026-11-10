@@ -22,7 +22,16 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 235] = [
+const SCHEMAS: [&str; 270] = [
+    "ci-health-snapshot-v1.json",
+    "scenario-task-output-field-v1.json",
+    "ci-diagnosis-v1.json",
+    "ci-diagnosis-selection-v1.json",
+    "ci-health-notification-v2.json",
+    "ci-signature-state-v1.json",
+    "ci-observe-service-v1.json",
+    "maintenance-watchdog-config-v1.json",
+    "maintenance-watchdog-alert-v1.json",
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
@@ -3971,3 +3980,6 @@ fn native_check_containment_schema_and_reader_preserve_admission_and_execution()
         );
     }
 }
+
+#[path = "schema_parity/ci_health.rs"]
+mod ci_health;

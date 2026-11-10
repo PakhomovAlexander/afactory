@@ -1,0 +1,36 @@
+{
+  "schema": "af.ci-health-snapshot/1",
+  "repository": "octo/project",
+  "captured_at": "2026-11-09T04:00:00Z",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "release_pr": null,
+  "nightly_receipt": {
+    "identity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "conclusion": "failed"
+  },
+  "complete": true,
+  "omissions": [],
+  "failures": [
+    {
+      "workflow_id": 1,
+      "workflow_file": ".github/workflows/validate.yml",
+      "run_id": 101,
+      "run_attempt": 1,
+      "job_id": 201,
+      "job_name": "functional",
+      "platform": "linux",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "conclusion": "failure",
+      "occurrence_id": "sha256:e809b7900af7c427c7f33d0b29257204981f566297bfb258f6bb75cd2767c55c",
+      "signature_id": "sha256:d8ac91aeb04fb0e75b7fe8ec4fe0b0493208ecf0e941d424c8fcc8ee6fd0b068",
+      "normalized_fingerprint": "test: ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes",
+      "first_seen_at": "2026-11-09T04:00:00Z",
+      "last_seen_at": "2026-11-09T04:00:00Z",
+      "occurrence_count": 1,
+      "log_artifacts": [
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      ],
+      "release_blocking": false
+    }
+  ]
+}

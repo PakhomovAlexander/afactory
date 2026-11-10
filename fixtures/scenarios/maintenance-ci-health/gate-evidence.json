@@ -1,0 +1,78 @@
+{
+  "documents": [
+    {
+      "schema": "af/task-list@4",
+      "tasks": [
+        {
+          "schema": "af/task-list-entry@4",
+          "task_id": "gate-1",
+          "kind": "af/implement@1",
+          "phase": {
+            "kind": "finished",
+            "result_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "state": {
+            "phase": "finished",
+            "outcome": "verified",
+            "cause": null,
+            "next_action": null
+          },
+          "chargeable_tokens": "0",
+          "derived_snapshot_id": null,
+          "delivery": null,
+          "round": 1,
+          "updated_unix_ms": 1794193200000,
+          "gate": {
+            "status": "passed",
+            "failed_tests": [],
+            "flaky": [
+              "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes"
+            ]
+          }
+        },
+        {
+          "schema": "af/task-list-entry@4",
+          "task_id": "gate-2",
+          "kind": "af/implement@1",
+          "phase": {
+            "kind": "finished",
+            "result_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "state": {
+            "phase": "finished",
+            "outcome": "verified",
+            "cause": null,
+            "next_action": null
+          },
+          "chargeable_tokens": "0",
+          "derived_snapshot_id": null,
+          "delivery": null,
+          "round": 1,
+          "updated_unix_ms": 1794189600000,
+          "gate": {
+            "status": "passed",
+            "failed_tests": [],
+            "flaky": [
+              "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "inventory": {
+    "rust-suites": {
+      "af-contracts::schema_parity": {
+        "testcases": {
+          "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes": {
+            "ignored": false,
+            "filter-match": {
+              "status": "matches"
+            }
+          }
+        }
+      }
+    }
+  },
+  "evidence_platform": "linux"
+}

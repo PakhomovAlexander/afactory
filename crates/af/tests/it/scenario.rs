@@ -138,7 +138,7 @@ impl Fixture {
         ];
         write(
             &bundle,
-            &json!({"schema":"af/scenario-bundle@5","root":"main","definitions":{"main":{"schema":"af/scenario@5","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
+            &json!({"schema":"af/scenario-bundle@6","root":"main","definitions":{"main":{"schema":"af/scenario@6","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
         );
         Self {
             _root: root,
@@ -165,7 +165,7 @@ impl Fixture {
                 self.policy.to_str().unwrap(),
             ],
         );
-        valid("scenario-pin-v5.json", &pinned);
+        valid("scenario-pin-v6.json", &pinned);
         cli(
             &self.repo,
             &self.state,
@@ -267,8 +267,8 @@ fn performance_scenario_native_task_submission_lost_response_wait_and_report_com
         json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
     let candidate = json!({"source":"step","step":"candidate","port":"result"});
     let report = json!({"source":"step","step":"comparison","port":"result"});
-    let bundle = json!({"schema":"af/scenario-bundle@5","root":"performance","definitions":{"performance":{
-        "schema":"af/scenario@5","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
+    let bundle = json!({"schema":"af/scenario-bundle@6","root":"performance","definitions":{"performance":{
+        "schema":"af/scenario@6","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
         "steps":[
             step("candidate", json!({"kind":"task","target":{"repo":f.repo,"state":task_state,
                 "task_id":"pagination-cli","plan_id":plan["plan_id"],"revision_id":plan["revision_id"],"max_tokens":1000}}),json!({}),"task"),
@@ -282,7 +282,7 @@ fn performance_scenario_native_task_submission_lost_response_wait_and_report_com
             "projection":{"kind":"observation_satisfied"}}],
         "authority":{"task_plans":[plan["plan_id"]],"task_templates":[],"grants":[submit,observe],"decision_owners":[]},
         "limits":{"max_tokens":1000,"max_wall_ms":3600000,"max_dispatches":8}}}});
-    valid("scenario-bundle-v5.json", &bundle);
+    valid("scenario-bundle-v6.json", &bundle);
     write(&f.bundle, &bundle);
     std::fs::write(
         f.machine.join("lose-response"),
@@ -356,7 +356,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     )
     .unwrap();
     let waiting = f.start("issue-fix");
-    valid("scenario-run-v5.json", &waiting);
+    valid("scenario-run-v6.json", &waiting);
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waiting"]["kind"], "decision");
     assert_eq!(
@@ -399,7 +399,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
         &json!({"revision":"head-1","checks_passed":true,"merged":true}),
     );
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "issue-fix"]);
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     assert_eq!(done["status"], "succeeded");
     assert_eq!(
         done["frames"]["root"]["outputs"]["implementation"]["type"],
@@ -449,7 +449,7 @@ fn cancellation_preserves_receipts_and_never_dispatches_later_effects() {
     );
     assert!(!f.owned.join("note").exists());
     assert_eq!(cancelled["cancellation"]["reason"], "operator cancelled");
-    valid("scenario-run-v5.json", &cancelled);
+    valid("scenario-run-v6.json", &cancelled);
 }
 
 #[test]
@@ -617,7 +617,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let ant = f._root.path().join("ant.json");
     write(
         &ant,
-        &json!({"schema":"af/ant@5","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
+        &json!({"schema":"af/ant@6","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
     );
     let pin = cli(
         &f.repo,
@@ -685,7 +685,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
         1
     );
     for tick in ticks {
-        valid("ant-tick-v5.json", &tick);
+        valid("ant-tick-v6.json", &tick);
     }
     let shown = cli(&f.repo, &f.state, &["ant", "show", "daily"]);
     assert_eq!(shown["occurrences"].as_array().unwrap().len(), 1);
@@ -718,7 +718,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let expired = cli(&f.repo, &f.state, &["scenario", "show", run_id]);
     assert_eq!(expired["status"], "failed");
     assert!(expired["failure"].as_str().unwrap().contains("deadline"));
-    valid("ant-state-v5.json", &paused);
+    valid("ant-state-v6.json", &paused);
 }
 
 #[test]
@@ -903,7 +903,7 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
             f.policy.to_str().unwrap(),
         ],
     );
-    valid("scenario-pin-v5.json", &pin);
+    valid("scenario-pin-v6.json", &pin);
     let json_wire = f._root.path().join("wire.json");
     write(&json_wire, &pin["bundle"]);
     let replay = cli(
@@ -1211,7 +1211,7 @@ fn github_read_only_source_sequence(f: Fixture) {
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
     assert_eq!(done["status"], "succeeded", "{done:#}");
     assert_eq!(done["pin"], pin);
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     let journal: Value = serde_json::from_slice(
         &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
     )
@@ -1591,7 +1591,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     write(&f.bundle, &bundle);
     let done = f.start("fresh-chain");
     assert_eq!(done["status"], "succeeded", "{done}");
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     let roadmap = cli(
         &f.repo,
         &f.state,
@@ -2099,8 +2099,8 @@ fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_sa
         let mut publish_repair = publish("publish-repair", "repaired", "approve-repair");
         publish_repair["when"] = repair_if.clone();
         let selected = json!({"source":"select","condition":repair_if,"when_true":binding("repaired"),"when_false":binding("prepare")});
-        let bundle = json!({"schema":"af/scenario-bundle@5","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
-            "schema":"af/scenario@5","admission":null,"inputs":{},"outputs":{"selected":"action"},
+        let bundle = json!({"schema":"af/scenario-bundle@6","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@6","admission":null,"inputs":{},"outputs":{"selected":"action"},
             "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
                 prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
                 step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
@@ -2110,7 +2110,7 @@ fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_sa
             "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
                 "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe")],"decision_owners":["owner"]},
             "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":16}}}});
-        valid("scenario-bundle-v5.json", &bundle);
+        valid("scenario-bundle-v6.json", &bundle);
         write(&f.bundle, &bundle);
         assert_eq!(f.start("documentation")["status"], "waiting");
         f.approve("documentation");
@@ -2274,7 +2274,7 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
             &std::fs::read(f.bundle.with_extension("generated.json")).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v5.json", &bundle);
+        valid("scenario-bundle-v6.json", &bundle);
         let mut tampered = bundle.clone();
         tampered["definitions"]["impl"]["steps"][0]["operation"]["template"]["document"]["goal"] =
             json!("unapproved goal");

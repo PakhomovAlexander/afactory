@@ -597,16 +597,18 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@5; start, show, resume, decide, cancel: af/scenario-run@5.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@5.
-  ant validate: af/ant-pin@5; add, show, enable, pause, disable: af/ant-state@5;
-  ant list: af/ant-list@5; tick: af/ant-tick@5.
-  Definitions and machine policy: af/scenario@5, af/scenario-bundle@5, af/scenario-policy@5,
-  af/ant@5; signed envelopes: af/scenario-signed-decision@1.
+  scenario validate: af/scenario-pin@6; start, show, resume, decide, cancel: af/scenario-run@6.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@6.
+  ant validate: af/ant-pin@6; add, show, enable, pause, disable: af/ant-state@6;
+  ant list: af/ant-list@6; tick: af/ant-tick@6.
+  Definitions and machine policy: af/scenario@6, af/scenario-bundle@6, af/scenario-policy@5,
+  af/ant@6; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@2 (create, show, revise), af/scenario-roadmap-list@2 (list).
   Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
-  Journal: af/scenario-store@6. Owned file envelope: af/scenario-owned-file@1.
+  Journal: af/scenario-store@7. Owned file envelope: af/scenario-owned-file@1.
+  Admitted structured field records: af/scenario-task-output-field@1.
+  Native CI diagnosis settlements: af/scenario-ci-diagnosis@2.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
@@ -615,6 +617,10 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   Installed Git workspaces: af/git-workspace-config@2, af/git-workspace-content@1,
   af/git-workspace-prepared@1 and af/git-workspace-state@2.
   Bounded adapters: af/scenario-adapter-request@4 and af/scenario-adapter-response@1.
+  CI health Phase 1: af.ci-health-snapshot/1, af.ci-diagnosis/1, af.ci-diagnosis-selection/1,
+  af.ci-health-notification/2,
+  af.ci-observe-service/1,
+  af.ci-signature-state/1, af.maintenance-watchdog-config/1 and af.maintenance-watchdog-alert/1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 

@@ -236,8 +236,8 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
     let literal =
         |kind: &str, data: Value| json!({"source":"literal","value":{"type":kind,"value":data}});
     let bundle = json!({
-        "schema":"af/scenario-bundle@5","root":"main","definitions":{"main":{
-            "schema":"af/scenario@5","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
+        "schema":"af/scenario-bundle@6","root":"main","definitions":{"main":{
+            "schema":"af/scenario@6","inputs":{"file":"text"},"outputs":{"ok":"boolean"},
             "steps":[{"id":"write","operation":{"kind":"action","grant":grant,
                 "requires_decision":false,"required_condition":null},
                 "inputs":{"file":{"source":"input","port":"file"},
@@ -304,7 +304,7 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             _ => {
                 write(
                     &ant_file,
-                    &json!({"schema":"af/ant@5","id":"daily","scenario":bundle,
+                    &json!({"schema":"af/ant@6","id":"daily","scenario":bundle,
                     "inputs":{"file":{"type":"text","value":id}},
                     "schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
                     "owner":"owner","notification":"local:owner","execution":{"overlap":"skip",

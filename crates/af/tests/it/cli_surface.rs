@@ -2561,7 +2561,10 @@ fn schema_show_prints_every_id_af_help_json_lists() {
     assert!(help.status.success(), "{}", err(&help));
     let mut listed: Vec<String> = out(&help)
         .split(|c: char| c.is_whitespace() || "(),;:`".contains(c))
-        .filter(|word| word.starts_with("af/") && word.contains('@'))
+        .filter(|word| {
+            (word.starts_with("af/") && word.contains('@'))
+                || (word.starts_with("af.") && word.contains('/'))
+        })
         .map(|word| word.trim_end_matches('.').to_owned())
         .collect();
     listed.sort();
@@ -2571,6 +2574,20 @@ fn schema_show_prints_every_id_af_help_json_lists() {
         "{listed:?}"
     );
     assert!(listed.len() >= 20, "{listed:?}");
+    // Service contracts retain their established af.NAME/N identities. Check all eight,
+    // even if a future edit accidentally drops one from both the topic and shipped table.
+    for id in [
+        "af.ci-diagnosis-selection/1",
+        "af.ci-diagnosis/1",
+        "af.ci-health-notification/2",
+        "af.ci-health-snapshot/1",
+        "af.ci-observe-service/1",
+        "af.ci-signature-state/1",
+        "af.maintenance-watchdog-alert/1",
+        "af.maintenance-watchdog-config/1",
+    ] {
+        assert!(listed.iter().any(|listed| listed == id), "missing {id}");
+    }
 
     let ids = af(&["schema", "show"]);
     assert!(ids.status.success(), "{}", err(&ids));
@@ -2583,7 +2600,11 @@ fn schema_show_prints_every_id_af_help_json_lists() {
 
     let schemas = workspace_schemas();
     for id in &listed {
-        let (kind, version) = id.trim_start_matches("af/").split_once('@').unwrap();
+        let (kind, version) = if let Some(service) = id.strip_prefix("af.") {
+            service.split_once('/').unwrap()
+        } else {
+            id.strip_prefix("af/").unwrap().split_once('@').unwrap()
+        };
         let file = schemas.join(format!("{kind}-v{version}.json"));
         let shown = af(&["schema", "show", id]);
         assert!(shown.status.success(), "{id}: {}", err(&shown));

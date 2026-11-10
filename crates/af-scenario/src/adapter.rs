@@ -80,6 +80,11 @@ pub enum Settlement {
         outputs: BTreeMap<String, Datum>,
         unknown_usage: bool,
     },
+    CiDiagnosisDone {
+        outputs: BTreeMap<String, Datum>,
+        charged_tokens: u64,
+        unknown_usage: bool,
+    },
     Waiting(String),
     Failed(String),
     TaskFailed {
@@ -146,6 +151,9 @@ pub(crate) fn dispatch(
 ) -> Result<Settlement> {
     match &dispatch.definition.operation {
         Kind::Task { target } => host.run_task(target, dispatch.timeout_ms, cancellation),
+        Kind::CiDiagnosis { target } => {
+            host.run_ci_diagnosis(target, dispatch.timeout_ms, cancellation)
+        }
         Kind::FreshTask { .. } => host.run_task(
             dispatch
                 .target

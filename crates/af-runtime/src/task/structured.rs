@@ -95,6 +95,9 @@ impl StructuredTaskDomain {
         }
         for (name, declaration) in &self.contract.outputs {
             let payload = validate_value(cas, &outputs[name], declaration)?;
+            if declaration.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE {
+                af_store::ci_health::validate_diagnosis(cas, &payload, inputs)?;
+            }
             if payload.get("source_artifact_ids") != Some(&sources) {
                 return Err("Structured output lost exact source_artifact_ids".into());
             }
@@ -291,7 +294,7 @@ impl TaskDomain for StructuredTaskDomain {
     }
     fn check_worker_reply(
         &self,
-        _: &Cas,
+        cas: &Cas,
         input: &TaskInvocationV1,
         reply: &af_runner::task::WorkerReply,
     ) -> Result<(), WorkerReplyRefusal> {
@@ -311,6 +314,9 @@ impl TaskDomain for StructuredTaskDomain {
                 )?;
                 if values[0].get("source_artifact_ids") != Some(&sources) {
                     return Err("Structured reply has wrong source_artifact_ids".into());
+                }
+                if declaration.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE {
+                    af_store::ci_health::validate_diagnosis(cas, &values[0], &input.inputs)?;
                 }
             }
             Ok(())
@@ -437,6 +443,158 @@ mod tests {
             contract_id: format!("sha256:{}","a".repeat(64)),
             contract: serde_json::from_value(json!({"schema":"af.structured-contract/2","require_container":false,"inputs":{"note":{"artifact_type":"custom/Note@1","schema":{"type":"object"}}},"outputs":{"value":{"artifact_type":"custom/Value@1","schema":{"type":"object"}}}})).unwrap(),
             graph: serde_json::from_value(json!({"schema":"af.compiled-task/6","nodes":{},"order":[],"inputs":{},"outputs":{},"coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}})).unwrap(),
+        }
+    }
+    #[test]
+    fn ci_health_fixture_prepares_exact_snapshot_within_reservation_and_refuses_foreign_diagnosis()
+    {
+        let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let fixture = workspace.join("fixtures/scenarios/maintenance-ci-health");
+        let read = |name: &str| std::fs::read(fixture.join(name)).unwrap();
+        let file: serde_json::Value = serde_json::from_slice(&read("task/task.json")).unwrap();
+        for release in [false, true] {
+            let mut snapshot: serde_json::Value =
+                serde_json::from_slice(&read("snapshot.json")).unwrap();
+            if release {
+                // A release observation adds receipt bytes while its selected failed head
+                // differs from main. Render the complete request under the same reservation.
+                snapshot["source_sha"] = json!("b".repeat(40));
+                snapshot["release_pr"] =
+                    json!({"number":7,"head_sha":snapshot["failures"][0]["head_sha"]});
+                snapshot["failures"][0]["release_blocking"] = json!(true);
+            }
+            let root = tempfile::tempdir().unwrap();
+            let cas = Cas::open(root.path()).unwrap();
+            let mut domain = domain();
+            domain.contract = af_pipeline_config::task::structured::parse_contract(&read(
+                "task/kind/structured.json",
+            ))
+            .unwrap();
+            let inputs = [
+                (
+                    "requirements",
+                    "af/Requirements@1",
+                    json!({"text":file["goal"],"specification":file["requirements"]}),
+                ),
+                ("snapshot", af_contracts::ci_health::SNAPSHOT_TYPE, snapshot),
+            ]
+            .into_iter()
+            .map(|(port, artifact_type, payload)| {
+                let id = cas
+                    .put_artifact(
+                        artifact_type,
+                        af_contracts::Producer::KernelOperation {
+                            run_id: "ci-health-fixture".into(),
+                            node_id: None,
+                            operation_id: "capture@1".into(),
+                        },
+                        vec![],
+                        None,
+                        payload,
+                    )
+                    .unwrap()
+                    .0;
+                (
+                    port.into(),
+                    ArtifactInputV1 {
+                        artifact_ids: vec![id],
+                        artifact_type: artifact_type.into(),
+                        cardinality: PortCardinality::One,
+                        snapshot_id: None,
+                    },
+                )
+            })
+            .collect();
+            let invocation = TaskInvocationV1 {
+                plan_id: domain.contract_id.clone(),
+                node: "root.nodes.work".into(),
+                inputs,
+            };
+            let worker = af_runner::task::WorkerContract::capture(
+                &cas,
+                serde_json::from_slice(&read("task/worker/input.schema.json")).unwrap(),
+                BTreeMap::from([(
+                    "diagnosis".into(),
+                    serde_json::from_slice(&read("task/worker/outputs/diagnosis.schema.json"))
+                        .unwrap(),
+                )]),
+            )
+            .unwrap();
+            let instructions = format!(
+                "{}{}",
+                String::from_utf8(read("task/worker/instructions.md")).unwrap(),
+                domain
+                    .worker_instructions(&cas, &invocation)
+                    .unwrap()
+                    .unwrap()
+            );
+            let context_id = worker
+                .prepare(&cas, &invocation, &[], &instructions)
+                .expect("CI Worker must admit its exact captured snapshot input");
+            let (context, rendered) = worker.read_context(&cas, &context_id).unwrap();
+            let manifest: af_pipeline_config::task::catalog::TaskWorkerManifest =
+                toml::from_str(&String::from_utf8(read("task/worker/worker.toml")).unwrap())
+                    .unwrap();
+            let reservation = manifest.signature.attempt.unwrap().tokens;
+            assert!(
+                context.manifest.estimated_tokens <= reservation,
+                "CI context needs {} tokens, but Worker reserves {reservation}",
+                context.manifest.estimated_tokens
+            );
+            let request: af_runner::task::WorkerRequest =
+                serde_json::from_slice(&rendered).unwrap();
+            let snapshot = &request.inputs["snapshot"][0];
+            let selected = &request.inputs["requirements"][0].payload["specification"];
+            assert_eq!(selected, &file["requirements"]);
+            assert_eq!(
+                selected["source_sha"],
+                snapshot.payload["failures"][0]["head_sha"]
+            );
+            let diagnosis = json!({"schema":"af.ci-diagnosis/1","snapshot_id":snapshot.artifact_id,
+            "source_artifact_ids":[snapshot.artifact_id],"occurrence_id":selected["occurrence_id"],
+            "signature_id":selected["signature_id"],"source_sha":selected["source_sha"],
+            "category":"test_bug","rationale":"Exact snapshot evidence","evidence":[{
+                "snapshot_id":snapshot.artifact_id,"source_sha":selected["source_sha"],"reference":"snapshot"}]});
+            let admit = |payload| {
+                let reply = worker
+                .validate_reply(
+                    &serde_json::to_vec(
+                        &json!({"schema":"af.worker-reply/1","outputs":{"diagnosis":[payload]}}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                domain.check_worker_reply(&cas, &invocation, &reply)
+            };
+            admit(diagnosis.clone()).unwrap();
+            if release {
+                let mut main = diagnosis.clone();
+                main["source_sha"] = snapshot.payload["source_sha"].clone();
+                main["evidence"][0]["source_sha"] = snapshot.payload["source_sha"].clone();
+                assert!(
+                    admit(main)
+                        .unwrap_err()
+                        .message
+                        .contains("CI diagnosis source mismatch")
+                );
+            }
+            for field in ["occurrence_id", "signature_id", "evidence"] {
+                let mut foreign = diagnosis.clone();
+                let id = json!(format!("sha256:{}", "f".repeat(64)));
+                if field == "evidence" {
+                    foreign["evidence"][0]["reference"] = id;
+                } else {
+                    foreign[field] = id;
+                }
+                let refusal =
+                    admit(foreign).expect_err("Foreign CI evidence must fail native admission");
+                assert!(
+                    refusal.message.contains("CI diagnosis"),
+                    "{field}: {refusal:?}"
+                );
+            }
         }
     }
     #[test]

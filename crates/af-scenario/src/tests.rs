@@ -44,7 +44,7 @@ pub fn simple() -> (Bundle, Policy) {
         },
     };
     let def = Scenario {
-        schema: "af/scenario@5".into(),
+        schema: "af/scenario@6".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::from([("ok".into(), Port::Boolean)]),
         steps: vec![step],
@@ -61,7 +61,7 @@ pub fn simple() -> (Bundle, Policy) {
     };
     (
         Bundle {
-            schema: "af/scenario-bundle@5".into(),
+            schema: "af/scenario-bundle@6".into(),
             root: "main".into(),
             definitions: BTreeMap::from([("main".into(), def)]),
         },
@@ -124,7 +124,7 @@ fn publication() -> (Bundle, Policy) {
 pub fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@5".into(),
+        schema: "af/ant@6".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
@@ -161,7 +161,11 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
     for file in [
-        "scenario-v5.json",
+        "scenario-v6.json",
+        "ci-diagnosis-v1.json",
+        "ci-diagnosis-selection-v1.json",
+        "scenario-task-output-field-v1.json",
+        "artifact-envelope-v1.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
     ] {
@@ -209,7 +213,7 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
     }))
     .unwrap();
     Datum::Task(receipt.clone()).validate().unwrap();
-    let validator = schema("scenario-v5.json#/$defs/TaskReceipt");
+    let validator = schema("scenario-v6.json#/$defs/TaskReceipt");
     let mut wire = serde_json::to_value(&receipt).unwrap();
     let errors: Vec<_> = validator
         .iter_errors(&wire)
@@ -239,37 +243,38 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         None,
     )
     .unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     run.validate(&TestHost::default()).unwrap();
     let ant = ant("UTC", 12, 0);
     for (file, value) in [
         (
-            "scenario-v5.json",
+            "scenario-v6.json",
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
-        ("scenario-bundle-v5.json", json!(bundle)),
+        ("scenario-bundle-v6.json", json!(bundle)),
         ("scenario-policy-v5.json", json!(policy)),
-        ("scenario-pin-v5.json", json!(pin)),
-        ("scenario-run-v5.json", json!(run)),
-        ("ant-v5.json", json!(ant.pin.definition)),
-        ("ant-pin-v5.json", json!(ant.pin)),
-        ("ant-state-v5.json", json!(ant)),
+        ("scenario-pin-v6.json", json!(pin)),
+        ("scenario-run-v6.json", json!(run)),
+        ("ant-v6.json", json!(ant.pin.definition)),
+        ("ant-pin-v6.json", json!(ant.pin)),
+        ("ant-state-v6.json", json!(ant)),
         (
-            "scenario-list-v5.json",
-            json!({"schema":"af/scenario-list@5","runs":{"run":run}}),
+            "scenario-list-v6.json",
+            json!({"schema":"af/scenario-list@6","runs":{"run":run}}),
         ),
         (
-            "ant-list-v5.json",
-            json!({"schema":"af/ant-list@5","ants":{"daily":ant}}),
+            "ant-list-v6.json",
+            json!({"schema":"af/ant-list@6","ants":{"daily":ant}}),
         ),
         (
-            "ant-tick-v5.json",
-            json!({"schema":"af/ant-tick@5","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v6.json",
+            json!({"schema":"af/ant-tick@6","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
         let mut old = value.clone();
-        old["schema"] = json!("af/unknown@0");
+        let (kind, version) = value["schema"].as_str().unwrap().rsplit_once('@').unwrap();
+        old["schema"] = json!(format!("{kind}@{}", version.parse::<u32>().unwrap() - 1));
         assert!(!schema(file).is_valid(&old), "{file} admitted old version");
     }
     let text = serde_json::to_string(&run).unwrap();
@@ -400,7 +405,7 @@ fn signed_decisions_bind_exact_revision_owner_pin_and_deadline() {
         None,
     )
     .unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     let Some(Waiting::Decision { request, .. }) = &run.waiting else {
         panic!("missing decision");
     };
@@ -435,8 +440,8 @@ fn signed_decisions_bind_exact_revision_owner_pin_and_deadline() {
             .is_err()
     );
     run.apply_decision(receipt, START).unwrap();
-    run.prepare(START).unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     assert_eq!(run.status, Status::Succeeded);
     run.validate(&TestHost::default()).unwrap();
 }
@@ -713,7 +718,7 @@ fn publication_dispatch_preserves_decision_forwarding_into_and_out_of_children()
             None,
         )
         .unwrap();
-        run.prepare(START).unwrap();
+        run.prepare(&TestHost::default(), START).unwrap();
         let Some(Waiting::Decision { request, .. }) = &run.waiting else {
             panic!("missing decision")
         };
@@ -745,7 +750,7 @@ fn publication_dispatch_preserves_decision_forwarding_into_and_out_of_children()
         )
         .unwrap();
         let dispatch = (0..4)
-            .find_map(|_| run.prepare(START).unwrap())
+            .find_map(|_| run.prepare(&TestHost::default(), START).unwrap())
             .expect("publication dispatch after completing the Decision and child frame");
         assert_eq!(dispatch.step, "publish");
         assert_eq!(
@@ -777,7 +782,7 @@ fn publication_dispatch_checks_decision_source_and_changed_grants_invalidate_app
         None,
     )
     .unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     let Some(Waiting::Decision { request, .. }) = &run.waiting else {
         panic!("missing decision")
     };
@@ -799,7 +804,7 @@ fn publication_dispatch_checks_decision_source_and_changed_grants_invalidate_app
     };
     let receipt = sign(request.clone());
     run.apply_decision(receipt.clone(), START).unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     let mut wrong_source = run.clone();
     let mut unrelated = receipt.request.clone();
     unrelated.step = "root/another-decision".into();
@@ -808,7 +813,7 @@ fn publication_dispatch_checks_decision_source_and_changed_grants_invalidate_app
         .insert("result".into(), Datum::Decision(sign(unrelated)));
     assert!(
         wrong_source
-            .prepare(START)
+            .prepare(&TestHost::default(), START)
             .unwrap_err()
             .contains("unrelated human decision")
     );
@@ -833,13 +838,19 @@ fn publication_dispatch_checks_decision_source_and_changed_grants_invalidate_app
         changed_run.pin = pin;
         assert!(
             changed_run
-                .prepare(START)
+                .prepare(&TestHost::default(), START)
                 .unwrap_err()
                 .contains("unrelated"),
             "accepted changed {field}"
         );
     }
-    assert_eq!(run.prepare(START).unwrap().unwrap().step, "publish");
+    assert_eq!(
+        run.prepare(&TestHost::default(), START)
+            .unwrap()
+            .unwrap()
+            .step,
+        "publish"
+    );
 }
 
 #[test]
@@ -857,7 +868,7 @@ fn timezone_due_time_duplicate_ticks_and_waits_count_as_active() {
     assert_eq!(ids.len(), 1);
     runs.get_mut(&ids[0])
         .unwrap()
-        .prepare(START + 6 * 3_600_000)
+        .prepare(&TestHost::default(), START + 6 * 3_600_000)
         .unwrap();
     assert_eq!(runs[&ids[0]].status, Status::Waiting);
     assert!(
@@ -1133,7 +1144,11 @@ fn per_run_and_rolling_budgets_reserve_waiting_work_and_release_only_after_windo
         .pop()
         .unwrap();
     let run = runs.get_mut(&id).unwrap();
-    assert!(run.prepare(START + 12 * 3_600_000).unwrap().is_some());
+    assert!(
+        run.prepare(&TestHost::default(), START + 12 * 3_600_000)
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(run.tokens().unwrap(), 100);
     run.fail("fixture definitive Task failure; reservation retained".into());
     ant.tick(
@@ -1206,7 +1221,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v6.json", &world);
+    valid("scenario-store-v7.json", &world);
 }
 
 #[test]
@@ -1274,8 +1289,8 @@ fn typed_projections_drive_conditional_skips_and_evidenced_no_change_completion(
         None,
     )
     .unwrap();
-    run.prepare(START).unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     assert_eq!(run.status, Status::Succeeded);
     assert!(run.frames["root"].steps[0].skipped.is_some());
     run.validate(&TestHost::default()).unwrap();
@@ -1314,10 +1329,12 @@ fn typed_projections_drive_conditional_skips_and_evidenced_no_change_completion(
         None,
     )
     .unwrap();
-    false_completion.prepare(START).unwrap();
+    false_completion
+        .prepare(&TestHost::default(), START)
+        .unwrap();
     assert!(
         false_completion
-            .prepare(START)
+            .prepare(&TestHost::default(), START)
             .unwrap_err()
             .contains("completion condition is false")
     );
@@ -1364,20 +1381,25 @@ fn nested_dispatch_inherits_ancestor_deadline_and_retry_dispatch_bounds() {
         None,
     )
     .unwrap();
-    let first = run.prepare(START).unwrap().unwrap();
+    let first = run.prepare(&TestHost::default(), START).unwrap().unwrap();
     assert_eq!(first.timeout_ms, 10);
     assert_eq!(run.tokens().unwrap(), 50);
     // Uncertain outcomes reuse the same identity; they do not get another retry allowance.
     let child = run.frames.get_mut("root/review").unwrap();
     child.steps[0].intents[0].phase = Phase::Uncertain;
     assert!(
-        run.prepare(START)
+        run.prepare(&TestHost::default(), START)
             .unwrap_err()
             .contains("Child dispatch allowance")
     );
     let mut expired = run.clone();
     expired.status = Status::Running;
-    assert!(expired.prepare(START + 10).unwrap().is_none());
+    assert!(
+        expired
+            .prepare(&TestHost::default(), START + 10)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(expired.status, Status::Failed);
     assert_eq!(expired.task_charges.len(), 1);
 }
@@ -1406,8 +1428,8 @@ fn independent_executions_with_the_same_label_have_distinct_intents_and_decision
         None,
     )
     .unwrap();
-    first.prepare(START).unwrap();
-    second.prepare(START).unwrap();
+    first.prepare(&TestHost::default(), START).unwrap();
+    second.prepare(&TestHost::default(), START).unwrap();
     assert_ne!(first.execution_id, second.execution_id);
     assert_ne!(first.waiting, second.waiting);
     let mut bundle = bundle;
@@ -1450,8 +1472,18 @@ fn independent_executions_with_the_same_label_have_distinct_intents_and_decision
     )
     .unwrap();
     assert_ne!(
-        first.prepare(START).unwrap().unwrap().intent.id,
-        second.prepare(START).unwrap().unwrap().intent.id
+        first
+            .prepare(&TestHost::default(), START)
+            .unwrap()
+            .unwrap()
+            .intent
+            .id,
+        second
+            .prepare(&TestHost::default(), START)
+            .unwrap()
+            .unwrap()
+            .intent
+            .id
     );
 }
 
@@ -1484,14 +1516,14 @@ fn observed_budget_breach_is_retained_and_prevents_any_further_dispatch() {
         None,
     )
     .unwrap();
-    run.prepare(START).unwrap();
+    run.prepare(&TestHost::default(), START).unwrap();
     run.task_charges.values_mut().next().unwrap().charged = Some(101);
     assert!(run.validate(&TestHost::default()).is_err());
     run.fail("Task exceeded its Scenario token reservation; exact charge retained".into());
     run.validate(&TestHost::default()).unwrap();
     assert_eq!(run.tokens().unwrap(), 101);
     let dispatches = run.dispatches;
-    assert!(run.prepare(START).unwrap().is_none());
+    assert!(run.prepare(&TestHost::default(), START).unwrap().is_none());
     assert_eq!(run.dispatches, dispatches);
 }
 
@@ -1603,9 +1635,9 @@ fn uncertain_dispatch_reuses_intent_and_definitive_failures_exhaust_bounded_atte
         None,
     )
     .unwrap();
-    let first = run.prepare(START).unwrap().unwrap();
+    let first = run.prepare(&TestHost::default(), START).unwrap().unwrap();
     run.frames.get_mut("root").unwrap().steps[0].intents[0].phase = Phase::Uncertain;
-    let recovered = run.prepare(START).unwrap().unwrap();
+    let recovered = run.prepare(&TestHost::default(), START).unwrap().unwrap();
     assert_eq!(first.intent.id, recovered.intent.id);
     let intent = &mut run.frames.get_mut("root").unwrap().steps[0].intents[0];
     intent.phase = Phase::Failed;
@@ -1614,7 +1646,7 @@ fn uncertain_dispatch_reuses_intent_and_definitive_failures_exhaust_bounded_atte
         .push("definitive unsuccessful attempt".into());
     run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
     run.validate(&TestHost::default()).unwrap();
-    let second = run.prepare(START).unwrap().unwrap();
+    let second = run.prepare(&TestHost::default(), START).unwrap().unwrap();
     assert_ne!(first.intent.id, second.intent.id);
     assert_eq!(run.task_charges.len(), 1);
     assert_eq!(run.tokens().unwrap(), 50);
@@ -1622,11 +1654,15 @@ fn uncertain_dispatch_reuses_intent_and_definitive_failures_exhaust_bounded_atte
     assert_eq!(progress.intents.len(), 2);
     assert_eq!(progress.intents[0].evidence.len(), 1);
     progress.intents[1].phase = Phase::Failed;
-    assert!(run.prepare(START).unwrap_err().contains("bounded retries"));
+    assert!(
+        run.prepare(&TestHost::default(), START)
+            .unwrap_err()
+            .contains("bounded retries")
+    );
 }
 
 #[test]
-fn wait_timeout_dispositions_retain_history_and_cannot_fabricate_completion_evidence() {
+fn wait_observations_consume_dispatch_budget_and_timeout_cannot_fabricate_completion_evidence() {
     let (mut bundle, mut policy) = simple();
     let grant = Grant {
         adapter: "observer".into(),
@@ -1671,8 +1707,27 @@ fn wait_timeout_dispositions_retain_history_and_cannot_fabricate_completion_evid
         None,
     )
     .unwrap();
-    failed.prepare(START).unwrap();
-    failed.prepare(START + 1).unwrap();
+    failed.prepare(&TestHost::default(), START).unwrap();
+    let mut polling = failed.clone();
+    polling.limits.max_dispatches = 2;
+    let first_intent = polling.frames["root"].steps[0].intents[0].id.clone();
+    polling.frames.get_mut("root").unwrap().steps[0].intents[0].phase = Phase::Uncertain;
+    let observation = polling
+        .prepare(&TestHost::default(), START)
+        .unwrap()
+        .unwrap();
+    assert_eq!(observation.intent.id, first_intent);
+    assert_eq!(polling.frames["root"].steps[0].intents.len(), 1);
+    assert_eq!(polling.dispatches, 2);
+    assert_eq!(polling.frames["root"].dispatches, 2);
+    assert!(
+        polling
+            .prepare(&TestHost::default(), START)
+            .unwrap_err()
+            .contains("Scenario dispatch allowance exhausted")
+    );
+    assert_eq!(polling.dispatches, 2);
+    failed.prepare(&TestHost::default(), START + 1).unwrap();
     assert_eq!(failed.status, Status::Failed);
     assert_eq!(failed.frames["root"].steps[0].intents.len(), 1);
     bundle.definitions.get_mut("main").unwrap().steps[0].on_timeout = Timeout::Skip;
@@ -1686,13 +1741,13 @@ fn wait_timeout_dispositions_retain_history_and_cannot_fabricate_completion_evid
         None,
     )
     .unwrap();
-    skipped.prepare(START).unwrap();
-    skipped.prepare(START + 1).unwrap();
+    skipped.prepare(&TestHost::default(), START).unwrap();
+    skipped.prepare(&TestHost::default(), START + 1).unwrap();
     assert!(skipped.frames["root"].steps[0].skipped.is_some());
     assert!(skipped.frames["root"].steps[0].outputs.is_empty());
     assert!(
         skipped
-            .prepare(START + 1)
+            .prepare(&TestHost::default(), START + 1)
             .unwrap_err()
             .contains("missing, skipped or incomplete evidence")
     );
@@ -1712,7 +1767,7 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             &std::fs::read(root.join("fixtures/scenarios").join(file)).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v5.json", &value);
+        valid("scenario-bundle-v6.json", &value);
         let bundle: Bundle = serde_json::from_value(value).unwrap();
         bundle.validate(&TestHost::default()).unwrap();
         let definition = &bundle.definitions["performance"];
@@ -1755,7 +1810,7 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
     def.result.insert("ok".into(), selection.clone());
     def.completion = vec![selection];
     bundle.validate(&TestHost::default()).unwrap();
-    valid("scenario-bundle-v5.json", &bundle);
+    valid("scenario-bundle-v6.json", &bundle);
     let mut run = Run::new(
         &TestHost::default(),
         "selection".into(),
@@ -1767,7 +1822,7 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
     )
     .unwrap();
     for _ in 0..3 {
-        run.prepare(START).unwrap();
+        run.prepare(&TestHost::default(), START).unwrap();
     }
     run.validate(&TestHost::default()).unwrap();
     assert_eq!(run.status, Status::Succeeded);
@@ -1824,6 +1879,24 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
 pub(super) struct TestHost {
     pub reject_templates: std::sync::atomic::AtomicBool,
     pub charge: Option<(u64, bool)>,
+    pub ci_output: Option<Value>,
+}
+fn ci_output_envelope(payload: Value) -> Result<af_contracts::ArtifactEnvelope> {
+    let mut artifact = af_contracts::ArtifactEnvelope {
+        artifact_type: af_contracts::ci_health::DIAGNOSIS_TYPE.into(),
+        artifact_id: digest(b"pending"),
+        content_id: af_store::content_id(&payload).map_err(|e| e.to_string())?,
+        producer: af_contracts::Producer::KernelOperation {
+            run_id: "ci-fixture".into(),
+            node_id: None,
+            operation_id: "fixture-diagnosis".into(),
+        },
+        input_artifacts: vec![],
+        subject_snapshot_id: None,
+        payload,
+    };
+    artifact.artifact_id = af_store::artifact_id(&artifact).map_err(|e| e.to_string())?;
+    Ok(artifact)
 }
 impl crate::Host for TestHost {
     fn validate_template(&self, _: &Value, _: Option<&Value>, _: u64) -> Result<()> {
@@ -1870,6 +1943,18 @@ impl crate::Host for TestHost {
     ) -> Result<adapter::Settlement> {
         panic!("unexpected native Task dispatch")
     }
+    fn task_output(
+        &self,
+        _: &TaskTarget,
+        _: &TaskReceipt,
+        _: &str,
+    ) -> Result<af_contracts::ArtifactEnvelope> {
+        ci_output_envelope(
+            self.ci_output
+                .clone()
+                .ok_or("unexpected native output read")?,
+        )
+    }
     fn active_task_run(&self, _: &TaskTarget) -> Option<u64> {
         panic!("unexpected native active run lookup")
     }
@@ -1912,5 +1997,631 @@ impl crate::Host for TestHost {
         nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockSharedNonblock)
             .map(|guard| Box::new(guard) as Box<dyn Send>)
             .map_err(|(_, e)| e.to_string())
+    }
+}
+
+#[test]
+fn ci_health_task_output_field_wire_is_allowlisted_and_malformed_payloads_fail_closed() {
+    let id = digest(b"snapshot");
+    let occurrence = digest(b"occurrence");
+    let signature = digest(b"signature");
+    let payload = json!({"schema":"af.ci-diagnosis/1","snapshot_id":id,"source_artifact_ids":[id],
+        "occurrence_id":occurrence,"signature_id":signature,"source_sha":"a".repeat(40),
+        "category":"product_bug","rationale":"exact assertion", "evidence":[{
+            "snapshot_id":id,"source_sha":"a".repeat(40),"reference":"snapshot"}]});
+    let receipt: TaskReceipt=serde_json::from_value(json!({"task_id":"diagnose","plan_id":digest(b"plan"),
+        "revision_id":digest(b"revision"),"result_id":digest(b"result"),"charged_tokens":5,
+        "result":{"task_revision_id":digest(b"revision"),"execution":"completed","acceptance":"satisfied",
+            "domain_conclusion":"structurally_validated","outputs":{"diagnosis":{"artifact_type":"custom/CiDiagnosis@1",
+                "cardinality":"one","artifact_ids":[digest(b"diagnosis")]},"validation":{"artifact_type":"af/StructuredValidation@1","cardinality":"one","artifact_ids":[digest(b"evidence")]}},"evidence":[digest(b"evidence")],"missing_obligations":[]}})).unwrap();
+    let validator = schema("scenario-v6.json#/$defs/Projection");
+    for (field, expected) in [
+        ("category", "product_bug"),
+        ("signature_id", signature.as_str()),
+    ] {
+        let wire = json!({"kind":"task_output_field","port":"diagnosis","schema":"af.ci-diagnosis/1","field":field});
+        assert!(validator.is_valid(&wire));
+        let projection: Projection = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&projection).unwrap(), wire);
+        assert_eq!(
+            projection.task_field(&receipt, payload.clone()).unwrap(),
+            Datum::Text(expected.into())
+        );
+        assert!(
+            projection.apply(Datum::Task(receipt.clone())).is_err(),
+            "No ambient payload lookup"
+        );
+        for malformed in [
+            json!(null),
+            json!([]),
+            json!({"category":"transient"}),
+            json!({}),
+        ] {
+            assert!(projection.task_field(&receipt, malformed).is_err());
+        }
+        for bad in [
+            json!(null),
+            json!([]),
+            json!({"value":"transient"}),
+            json!(true),
+            json!(1),
+        ] {
+            let mut malformed = payload.clone();
+            malformed[field] = bad;
+            assert!(projection.task_field(&receipt, malformed).is_err());
+        }
+        let mut missing = payload.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(projection.task_field(&receipt, missing).is_err());
+        let mut wrong = receipt.clone();
+        wrong
+            .result
+            .outputs
+            .get_mut("diagnosis")
+            .unwrap()
+            .artifact_type = "af/Test@1".into();
+        assert!(projection.task_field(&wrong, payload.clone()).is_err());
+        let mut wrong = receipt.clone();
+        wrong
+            .result
+            .outputs
+            .get_mut("diagnosis")
+            .unwrap()
+            .artifact_ids
+            .push(digest(b"other"));
+        assert!(projection.task_field(&wrong, payload.clone()).is_err());
+        let mut rejected = receipt.clone();
+        rejected.result.acceptance = af_contracts::task::TaskAcceptanceV1::Inconclusive;
+        assert!(projection.task_field(&rejected, payload.clone()).is_err());
+    }
+    for (key, value) in [
+        ("field", json!("rationale")),
+        ("field", json!("/category")),
+        ("schema", json!("other/1")),
+        ("port", json!("invalid.port")),
+    ] {
+        let mut wire = json!({"kind":"task_output_field","port":"diagnosis","schema":"af.ci-diagnosis/1","field":"category"});
+        wire[key] = value;
+        assert!(!validator.is_valid(&wire));
+        if let Ok(projection) = serde_json::from_value::<Projection>(wire) {
+            assert!(projection.task_field(&receipt, payload.clone()).is_err());
+        }
+    }
+}
+
+#[test]
+fn ci_health_native_refusal_schema_keeps_unknown_separate_from_acceptance_and_refuses_forgery() {
+    use crate::ci_diagnosis::{Provenance, Record, Refusal, SCHEMA, unknown};
+    let snapshot_id = digest(b"snapshot");
+    let selection = af_contracts::ci_health::Selection {
+        schema: "af.ci-diagnosis-selection/1".into(),
+        occurrence_id: digest(b"occurrence"),
+        signature_id: digest(b"signature"),
+        source_sha: "a".repeat(40),
+    };
+    let receipt: TaskReceipt = serde_json::from_value(json!({"task_id":"diagnose",
+        "plan_id":digest(b"plan"),"revision_id":digest(b"revision"),"result_id":digest(b"refused"),
+        "charged_tokens":5,"result":{"task_revision_id":digest(b"revision"),"execution":"exhausted",
+        "acceptance":"inconclusive","domain_conclusion":"incomplete","outputs":{},"evidence":[],
+        "missing_obligations":["diagnosis"]}}))
+    .unwrap();
+    let record = Record {
+        schema: SCHEMA.into(),
+        receipt,
+        snapshot_id: snapshot_id.clone(),
+        diagnosis: unknown(&snapshot_id, &selection),
+        selection,
+        provenance: Provenance::DeterministicRefusal {
+            refusals: vec![Refusal {
+                attempt_id: "a".repeat(26),
+                diagnostic_id: digest(b"diagnostic"),
+                error_prefix:
+                    "CI diagnosis references evidence outside selected snapshot occurrence".into(),
+            }],
+        },
+    };
+    record.validate().unwrap();
+    let wire = serde_json::to_value(&record).unwrap();
+    let validator = schema("scenario-ci-diagnosis-v2.json");
+    assert!(validator.is_valid(&wire));
+    assert_eq!(
+        serde_json::from_value::<Record>(wire.clone()).unwrap(),
+        record
+    );
+    assert!(
+        Datum::Task(record.receipt.clone()).validate().is_err(),
+        "refused receipt never becomes accepted"
+    );
+    let observation = record.observation("octo/project").unwrap();
+    assert_eq!(Record::parse(&observation).unwrap(), record);
+    assert_eq!(
+        Projection::CiDiagnosisRefused
+            .apply(Datum::Observation(observation.clone()))
+            .unwrap(),
+        Datum::Boolean(true)
+    );
+    assert_eq!(
+        Projection::CiDiagnosisField {
+            field: "category".into()
+        }
+        .apply(Datum::Observation(observation.clone()))
+        .unwrap(),
+        Datum::Text("unknown".into())
+    );
+    // Refusal provenance uses the native Task Attempt alphabet, not artifact digests.
+    // Check the same identities through Task execution, the settlement and its wire schema.
+    for (attempt_id, accepted) in [
+        ("a".repeat(26), true),
+        ("Z0".repeat(13), true),
+        (digest(b"attempt"), false),
+        ("a".repeat(25), false),
+        ("a".repeat(27), false),
+        (format!("{}-", "a".repeat(25)), false),
+        ("é".repeat(13), false),
+    ] {
+        let native = af_contracts::task::execution::TaskExecutionRecordV1::Started {
+            attempt_id: attempt_id.clone(),
+        };
+        let mut value = wire.clone();
+        value["provenance"]["refusals"][0]["attempt_id"] = json!(attempt_id);
+        let settlement: Record = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(native.validate().is_ok(), accepted);
+        assert_eq!(settlement.validate().is_ok(), accepted);
+        assert_eq!(validator.is_valid(&value), accepted);
+    }
+    let (bundle, policy) = simple();
+    let host = TestHost::default();
+    let run = Run::new(
+        &host,
+        "no-native-diagnosis".into(),
+        Pin::new(&host, bundle, policy).unwrap(),
+        BTreeMap::new(),
+        limits(),
+        START,
+        None,
+    )
+    .unwrap();
+    assert!(
+        crate::ci_diagnosis::native(&run, &observation).is_err(),
+        "adapter evidence cannot forge native origin"
+    );
+    assert!(
+        run.resolve(
+            "root",
+            &Binding::Project {
+                value: Box::new(lit(Datum::Observation(observation.clone()))),
+                projection: Projection::CiDiagnosisRefused
+            }
+        )
+        .is_err()
+    );
+    for (pointer, value) in [
+        ("/schema", json!("af/scenario-ci-diagnosis@1")),
+        ("/snapshot_id", json!(digest(b"foreign"))),
+        ("/selection/occurrence_id", json!(digest(b"foreign"))),
+        ("/selection/signature_id", json!(digest(b"foreign"))),
+        ("/selection/source_sha", json!("b".repeat(40))),
+        (
+            "/receipt/result/task_revision_id",
+            json!(digest(b"foreign")),
+        ),
+        ("/receipt/result/acceptance", json!("satisfied")),
+        ("/diagnosis/category", json!("product_bug")),
+        ("/diagnosis/rationale", json!("a model says unknown")),
+        ("/provenance/refusals", json!([])),
+        (
+            "/provenance/refusals/0/error_prefix",
+            json!("x".repeat(2049)),
+        ),
+        (
+            "/provenance/refusals/0/diagnostic_id",
+            json!("not-a-digest"),
+        ),
+    ] {
+        let mut bad = wire.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        if pointer == "/schema" {
+            assert!(
+                !validator.is_valid(&bad),
+                "previous settlement version fails closed"
+            );
+        }
+        assert!(
+            serde_json::from_value::<Record>(bad).map_or(true, |r| r.validate().is_err()),
+            "{pointer}"
+        );
+    }
+    let mut extra = wire.clone();
+    extra["extra"] = json!(true);
+    assert!(!validator.is_valid(&extra));
+    assert!(serde_json::from_value::<Record>(extra).is_err());
+    for field in ["rationale", "/category", "receipt"] {
+        let projection = json!({"kind":"ci_diagnosis_field","field":field});
+        assert!(!schema("scenario-v6.json#/$defs/Projection").is_valid(&projection));
+        assert!(
+            serde_json::from_value::<Projection>(projection)
+                .unwrap()
+                .apply(Datum::Observation(observation.clone()))
+                .is_err()
+        );
+    }
+    let (mut old_bundle, _) = simple();
+    old_bundle.schema = "af/scenario-bundle@5".into();
+    assert!(old_bundle.validate(&host).is_err());
+    let mut old_run = run;
+    old_run.schema = "af/scenario-run@5".into();
+    assert!(old_run.validate(&host).is_err());
+}
+
+#[test]
+fn ci_health_watchdog_reads_native_journal_without_a_tick_or_a_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::isolated(&directory.path().join("state")).unwrap();
+    let ant = ant("UTC", 4, 0);
+    let due = START + 4 * 3_600_000;
+    let config = json!({"schema":"af.maintenance-watchdog-config/1","ant_id":"daily",
+        "ant_revision":ant.pin.revision,"writer_version":env!("CARGO_PKG_VERSION"),
+        "notification":"local:owner","notifier":null,"start_day":START/DAY,"hour":4,"minute":0,
+        "zone":ant.pin.zone,"max_wall_ms":60000,"grace_ms":7_200_000,"report_step":"report-outcome"});
+    let path = directory.path().join("watchdog.json");
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    store
+        .update(|w| {
+            w.ants.insert("daily".into(), ant.clone());
+            Ok(())
+        })
+        .unwrap();
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let read = |now: u64| -> Vec<Value> {
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(root.join("scripts/af-maintenance-watchdog.py"))
+            .arg("--config")
+            .arg(&path)
+            .arg("--journal")
+            .arg(directory.path().join("state/runs/scenarios.sqlite"))
+            .arg("--state")
+            .arg(directory.path().join(format!("watchdog-{now}.sqlite")))
+            .arg("--now-unix-ms")
+            .arg(now.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect()
+    };
+    let alerts = read(due + 7_200_000);
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0]["kind"], "missed_occurrence");
+    store
+        .update(|w| {
+            let a = w.ants.get_mut("daily").unwrap();
+            a.tick(&TestHost::default(), due, &mut w.runs)?;
+            w.runs
+                .values_mut()
+                .next()
+                .unwrap()
+                .fail("fixture failure before Report".into());
+            Ok(())
+        })
+        .unwrap();
+    let alerts = read(due + 1);
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0]["kind"], "run_failed_before_report");
+    let bytes = std::fs::read(directory.path().join("state/runs/scenarios.sqlite")).unwrap();
+    read(due + 2);
+    assert_eq!(
+        std::fs::read(directory.path().join("state/runs/scenarios.sqlite")).unwrap(),
+        bytes,
+        "The independent watchdog never ticks, drives or mutates the native journal"
+    );
+}
+
+#[test]
+fn ci_health_native_binding_runtime_routes_one_notification_row_for_each_category() {
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let bundle: Bundle = serde_json::from_slice(
+        &std::fs::read(root.join("fixtures/scenarios/maintenance-ci-health/scenario.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    valid("scenario-bundle-v6.json", &bundle);
+    let snapshot: Value = serde_json::from_slice(
+        &std::fs::read(root.join("fixtures/scenarios/maintenance-ci-health/snapshot.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let snapshot_id = format!("sha256:{}", "f".repeat(64));
+    let authority = &bundle.definitions[&bundle.root].authority;
+    let policy = Policy {
+        schema: "af/scenario-policy@5".into(),
+        adapters: BTreeMap::from([(
+            "ci-health".into(),
+            Adapter {
+                executable: "/installed/ci-health".into(),
+                digest: digest(b"adapter"),
+                operations: [Operation::Observe, Operation::Notify].into(),
+                destinations: ["fixture:ci-health".into()].into(),
+                max_wall_ms: 30000,
+                max_output_bytes: 65536,
+            },
+        )]),
+        task_plans: authority.task_plans.clone(),
+        task_templates: Default::default(),
+        performance_publications: Default::default(),
+        decision_keys: Default::default(),
+        file_roots: Default::default(),
+    };
+    for (category, row, refused) in [
+        ("transient", 4, false),
+        ("product_bug", 7, false),
+        ("test_bug", 7, false),
+        ("ci_infra", 3, false),
+        ("unknown", 1, false),
+        ("unknown", 1, true),
+    ] {
+        let payload = json!({"schema":"af.ci-diagnosis/1","snapshot_id":snapshot_id,"source_artifact_ids":[snapshot_id],
+            "occurrence_id":snapshot["failures"][0]["occurrence_id"],"signature_id":snapshot["failures"][0]["signature_id"],
+            "source_sha":snapshot["source_sha"],"category":category,"rationale":"exact evidence", "evidence":[{
+                "snapshot_id":snapshot_id,"source_sha":snapshot["source_sha"],"reference":"snapshot"}]});
+        let output_id = ci_output_envelope(payload.clone()).unwrap().artifact_id;
+        let host = TestHost {
+            ci_output: Some(payload.clone()),
+            ..Default::default()
+        };
+        let mut native_bundle = bundle.clone();
+        if refused {
+            // Request the fixture Watch, retaining its exact scope and native refusal guard.
+            let definition = native_bundle.definitions.get_mut(&bundle.root).unwrap();
+            let watch = definition.steps.last_mut().unwrap();
+            let mut when = serde_json::to_value(watch.when.as_ref().unwrap()).unwrap();
+            let requested = when
+                .pointer_mut("/when_true/condition/condition/value/value")
+                .unwrap();
+            assert_eq!(*requested, json!(false));
+            *requested = json!(true);
+            watch.when = Some(serde_json::from_value(when).unwrap());
+        }
+        let pin = Pin::new(&host, native_bundle, policy.clone()).unwrap();
+        let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
+        let mut run = Run::new(
+            &host,
+            "ci-health-fixture".into(),
+            pin,
+            serde_json::from_slice(
+                &std::fs::read(root.join("fixtures/scenarios/maintenance-ci-health/inputs.json"))
+                    .unwrap(),
+            )
+            .unwrap(),
+            limits,
+            START,
+            None,
+        )
+        .unwrap();
+        let mut events = Vec::new();
+        for _ in 0..32 {
+            let Some(dispatch) = run.prepare(&host, START).unwrap() else {
+                if !run.status.active() {
+                    break;
+                } else {
+                    continue;
+                }
+            };
+            events.push(dispatch.step.clone());
+            let value = match &dispatch.definition.operation {
+                Kind::CiDiagnosis { target } => {
+                    let receipt:TaskReceipt=serde_json::from_value(json!({"task_id":target.task_id,
+                        "plan_id":target.plan_id,"revision_id":target.revision_id,"result_id":digest(b"result"),"charged_tokens":5,
+                        "result":{"task_revision_id":target.revision_id,"execution":"completed","acceptance":"satisfied",
+                            "domain_conclusion":"structurally_validated","outputs":{"diagnosis":{"artifact_type":"custom/CiDiagnosis@1",
+                            "artifact_ids":[output_id],"cardinality":"one"},"validation":{"artifact_type":"af/StructuredValidation@1","artifact_ids":[digest(b"validation")],"cardinality":"one"}},"evidence":[digest(b"validation")],"missing_obligations":[]}})).unwrap();
+                    for charge in run.task_charges.values_mut() {
+                        charge.charged = Some(5);
+                    }
+                    let artifact = ci_output_envelope(payload.clone()).unwrap();
+                    let output = task_output::Record {
+                        schema: "af/scenario-task-output-field@1".into(),
+                        task_id: receipt.task_id.clone(),
+                        plan_id: receipt.plan_id.clone(),
+                        revision_id: receipt.revision_id.clone(),
+                        result_id: receipt.result_id.clone(),
+                        port: "diagnosis".into(),
+                        artifact_id: artifact.artifact_id.clone(),
+                        artifact,
+                    };
+                    let mut record = ci_diagnosis::Record { schema: ci_diagnosis::SCHEMA.into(), receipt,
+                        snapshot_id: snapshot_id.clone(), selection: serde_json::from_value(json!({
+                            "schema":"af.ci-diagnosis-selection/1","occurrence_id":payload["occurrence_id"],
+                            "signature_id":payload["signature_id"],"source_sha":payload["source_sha"]})).unwrap(),
+                        diagnosis: serde_json::from_value(payload.clone()).unwrap(),
+                        provenance: ci_diagnosis::Provenance::Accepted { output: Box::new(output) } };
+                    if refused {
+                        record.receipt.result.acceptance =
+                            af_contracts::task::TaskAcceptanceV1::Inconclusive;
+                        record.receipt.result.execution =
+                            af_contracts::task::TaskExecutionV1::Exhausted;
+                        record.receipt.result.domain_conclusion = "incomplete".into();
+                        record.receipt.result.outputs.clear();
+                        record.receipt.result.evidence.clear();
+                        record
+                            .receipt
+                            .result
+                            .missing_obligations
+                            .insert("diagnosis".into());
+                        record.diagnosis =
+                            ci_diagnosis::unknown(&record.snapshot_id, &record.selection);
+                        record.provenance = ci_diagnosis::Provenance::DeterministicRefusal {
+                            refusals: vec![ci_diagnosis::Refusal {
+                                attempt_id: "a".repeat(26),
+                                diagnostic_id: digest(b"diagnostic"),
+                                error_prefix: "Foreign diagnosis evidence".into(),
+                            }],
+                        };
+                    }
+                    valid("scenario-ci-diagnosis-v2.json", &record);
+                    Datum::Observation(record.observation("octo/project").unwrap())
+                }
+                Kind::Wait { condition, .. } => Datum::Observation(Observation {
+                    subject: "octo/project".into(),
+                    revision: "a".repeat(40),
+                    condition: condition.clone(),
+                    satisfied: true,
+                    evidence: "exact snapshot receipt".into(),
+                }),
+                Kind::Action { grant, .. } => {
+                    if dispatch.step == "notify-findings" {
+                        assert!(!dispatch.inputs.contains_key("diagnosis_settlement"));
+                    } else {
+                        assert!(matches!(
+                            dispatch.inputs.get("diagnosis_settlement"),
+                            Some(Datum::Observation(_))
+                        ));
+                        assert_eq!(dispatch.inputs["category"], Datum::Text(category.into()));
+                        assert_eq!(
+                            dispatch.inputs["signature_id"],
+                            Datum::Text(
+                                snapshot["failures"][0]["signature_id"]
+                                    .as_str()
+                                    .unwrap()
+                                    .into()
+                            )
+                        );
+                    }
+                    let body: Value =
+                        serde_json::from_str(dispatch.inputs["body"].as_text().unwrap()).unwrap();
+                    assert_eq!(body["scenario_run"], "ci-health-fixture");
+                    assert_eq!(body["snapshot_id"], snapshot_id);
+                    Datum::Action(ActionReceipt {
+                        intent_id: dispatch.intent.id.clone(),
+                        operation: grant.operation,
+                        destination: grant.destination.clone(),
+                        subject: "octo/project".into(),
+                        revision: "a".repeat(40),
+                        evidence: "notification retained".into(),
+                    })
+                }
+                _ => panic!("Unexpected CI health operation"),
+            };
+            run.complete(
+                &host,
+                "root",
+                &dispatch.step,
+                BTreeMap::from([("result".into(), value)]),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            run.status,
+            Status::Succeeded,
+            "{category}: {:?}",
+            run.failure
+        );
+        assert_eq!(
+            events,
+            vec![
+                "observe".to_owned(),
+                "notify-findings".to_owned(),
+                "diagnose".to_owned(),
+                "notify-diagnosis".to_owned(),
+                format!("remedy-{row}"),
+                "report-outcome".to_owned()
+            ]
+        );
+        run.validate(&host).unwrap();
+        // Collection/unavailability of the native Task cannot erase already admitted evidence.
+        run.validate(&TestHost::default()).unwrap();
+        let record = run.frames["root"]
+            .steps
+            .iter()
+            .find(|p| p.step == "diagnose")
+            .unwrap()
+            .outputs
+            .get("result")
+            .unwrap();
+        let Datum::Observation(observation) = record else {
+            panic!("native diagnosis observation");
+        };
+        let record = observation.evidence.clone();
+        let wire: Value = serde_json::from_str(&record).unwrap();
+        valid("scenario-ci-diagnosis-v2.json", &wire);
+        let typed: crate::ci_diagnosis::Record = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+        if refused {
+            assert_eq!(
+                typed.diagnosis.category,
+                af_contracts::ci_health::Category::Unknown
+            );
+            assert!(Datum::Task(typed.receipt).validate().is_err());
+            assert!(
+                run.frames["root"].steps.last().unwrap().skipped.is_some(),
+                "refusal skips requested Watch"
+            );
+            continue;
+        }
+        for malformed in [
+            None,
+            Some("af/scenario-ci-diagnosis@0"),
+            Some("missing"),
+            Some("non-scalar"),
+            Some("foreign"),
+            Some("forged-payload"),
+        ] {
+            let mut bad = run.clone();
+            let progress = bad
+                .frames
+                .get_mut("root")
+                .unwrap()
+                .steps
+                .iter_mut()
+                .find(|p| p.step == "diagnose")
+                .unwrap();
+            if let Some(kind) = malformed {
+                let mut payload = wire.clone();
+                match kind {
+                    "missing" => {
+                        payload["provenance"]["output"]["artifact"]["payload"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("category");
+                    }
+                    "non-scalar" => {
+                        payload["provenance"]["output"]["artifact"]["payload"]["category"] =
+                            json!(["product_bug"]);
+                    }
+                    "forged-payload" => {
+                        payload["provenance"]["output"]["artifact"]["payload"]["category"] =
+                            json!(if category == "unknown" {
+                                "product_bug"
+                            } else {
+                                "unknown"
+                            });
+                    }
+                    "foreign" => {
+                        payload["receipt"]["result_id"] = json!(digest(b"foreign"));
+                    }
+                    _ => {
+                        payload["schema"] = json!(kind);
+                    }
+                }
+                let Some(Datum::Observation(o)) = progress.outputs.get_mut("result") else {
+                    panic!();
+                };
+                o.evidence = serde_json::to_string(&payload).unwrap();
+            } else {
+                progress.outputs.clear();
+            }
+            assert!(bad.validate(&TestHost::default()).is_err(), "{malformed:?}");
+        }
     }
 }

@@ -1,0 +1,91 @@
+schema = "af.pipeline/4"
+name = "ci/diagnosis-pipeline"
+version = "1.0.0"
+max_attempts = 8
+max_parallel = 1
+[accepts]
+kinds = ["ci-diagnosis"]
+required_facts = {}
+[slots.diagnose]
+worker = "ci/diagnosis-worker"
+role = "diagnose"
+input_type = "custom/StructuredInput@1"
+output_type = "custom/CiDiagnosis@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.snapshot]
+artifact_type = "custom/CiHealthSnapshot@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.snapshot.affinity]
+kind = "unbound"
+
+[contract.outputs.diagnosis]
+artifact_type = "custom/CiDiagnosis@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.diagnosis.affinity]
+kind = "unbound"
+
+[contract.outputs.validation]
+artifact_type = "af/StructuredValidation@1"
+cardinality = "one"
+optional = false
+covers = ["structured"]
+[contract.outputs.validation.affinity]
+kind = "unbound"
+
+[[nodes]]
+id = "work"
+[nodes.operator]
+op = "worker"
+slot = "diagnose"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.snapshot]
+kind = "input"
+port = "snapshot"
+
+[[nodes]]
+id = "accept"
+[nodes.operator]
+op = "structured_accept"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.snapshot]
+kind = "input"
+port = "snapshot"
+[nodes.inputs.result_diagnosis]
+kind = "node"
+node = "work"
+port = "diagnosis"
+
+[outputs.diagnosis]
+kind = "node"
+node = "accept"
+port = "diagnosis"
+
+[outputs.validation]
+kind = "node"
+node = "accept"
+port = "validation"
+
+[coverage.structured]
+kind = "node"
+node = "accept"
+port = "validation"

@@ -9,10 +9,10 @@
       "const": "af/scenario-template-pin@1"
     },
     "template_id": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     },
     "template": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/Template"
+      "$ref": "urn:af:schema:scenario:6#/$defs/Template"
     }
   },
   "required": [
