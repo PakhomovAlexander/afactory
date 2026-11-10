@@ -597,7 +597,8 @@ assert(overflow.safe('short SDK error').includes('withheld'));
                     self.assertTrue(records[-1]['accounting_complete'])
                     self.assertFalse(any(r['type'] == 'message' for r in records))
             # The real credential filter also recognizes short literal credentials.
-            for unsafe in ['violet aardvark', 'orange-lantern-47', 'silver marigold', 'teal-juniper-73']:
+            for unsafe in ['PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'violet aardvark',
+                           'orange-lantern-47', 'silver marigold', 'teal-juniper-73']:
                 state.write_text(json.dumps({**base, 'lateError': unsafe}))
                 records = invoke([{**init, 'probe': False}, prepare, prompt])
                 diagnostic = records[-1]['diagnostic']

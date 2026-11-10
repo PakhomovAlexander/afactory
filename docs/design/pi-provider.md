@@ -297,8 +297,11 @@ check retained diagnostics, complete charge, refused later replies and the succe
 control, alongside invalid-usage and model-identity refusals. They make no live Provider calls.
 The real-host adapter regression checks structured rate-limit and unavailable-model errors with
 neutral messages, including the distinctive safe diagnostic in operator output and retained CAS
-evidence. Other category mappings and diagnostic forms run in process; separate host cases retain
-coverage of selected profile headers and the captured credential-file closure.
+evidence. Both real-host paths also supply selected OAuth access and refresh values, profile
+headers, AWS credential-file values, ADC private-key material and linked subject-token values as
+terminal diagnostics. The adapter checks that they stay out of operator errors and every retained
+CAS artifact, and that withheld quota, authentication and network errors keep their categories
+and complete charge. Other category mappings and diagnostic forms also run in process.
 
 ## Optional pi-light trial family
 

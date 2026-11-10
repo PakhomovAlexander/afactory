@@ -498,6 +498,28 @@ mod process {
             }}})
             .to_string(),
         );
+        // Capture the full credential-file closure, including a linked subject token.
+        // These values have no credential prefix for the diagnostic filter to guess.
+        let aws = root.join("aws-credentials");
+        private(
+            &aws,
+            "[default]\naws_secret_access_key = orange-lantern-47\n",
+        );
+        let token = root.join("subject-token");
+        private(&token, "teal-juniper-73");
+        let adc = root.join("adc.json");
+        private(
+            &adc,
+            &json!({"private_key":"silver marigold","credential_source":{"file":token}})
+                .to_string(),
+        );
+        private(
+            &auth.join("af-context.json"),
+            &json!({"schema":"af.pi-context/1","environment":{
+                "AWS_SHARED_CREDENTIALS_FILE":aws,"GOOGLE_APPLICATION_CREDENTIALS":adc
+            }})
+            .to_string(),
+        );
         let state_file = root.join("state.json");
         let base = json!({"backend":"kimi-coding","stopReason":"toolUse",
             "usage":{"prompt_tokens":439,"completion_tokens":38,"completion_tokens_details":{"reasoning_tokens":24}}});
@@ -521,25 +543,87 @@ mod process {
             captured,
         };
         let cas = Cas::open(root.join("cas")).unwrap();
-        // Each new structured field needs the real host path: a safe distinctive
-        // message reaches the operator/CAS, and a private message stays withheld.
+        // Exercise every credential source as terminal error text through the real
+        // host and adapter, alongside safe and structured errors. Withholding private
+        // text must preserve both its failure category and exact native accounting.
         for (payload, diagnostic, kind, cause) in [
             (
+                "Kimi terminal 764: tool-call continuation rejected".into(),
+                "Kimi terminal 764: tool-call continuation rejected",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
                 json!({"error":{"type":"rate_limit_error",
-                    "message":"Kimi terminal 764: tool-call continuation rejected"}}),
+                    "message":"Kimi terminal 764: tool-call continuation rejected"}})
+                .to_string(),
                 "Kimi terminal 764: tool-call continuation rejected",
                 NativeFailureKind::Quota,
                 TaskCauseV1::ProviderCapacity,
             ),
             (
-                json!({"error":{"code":"model_not_found","message":"violet aardvark"}}),
+                json!({"error":{"code":"model_not_found","message":"violet aardvark"}}).to_string(),
                 "[Pi diagnostic withheld: sensitive text]",
                 NativeFailureKind::ModelUnavailable,
                 TaskCauseV1::ModelRefused,
             ),
+            (
+                "private-access".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "private-refresh".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "violet aardvark".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "orange-lantern-47".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "silver marigold".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "teal-juniper-73".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "HTTP 429 rate limit exceeded at https://api.example.com".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Quota,
+                TaskCauseV1::ProviderCapacity,
+            ),
+            (
+                "HTTP 401 unauthorized: Bearer private-access".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::AuthRejected,
+                TaskCauseV1::IdentityUnverified,
+            ),
+            (
+                "network connection failed at https://api.example.com".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Network,
+                TaskCauseV1::ProviderNetwork,
+            ),
         ] {
             let mut state = base.clone();
-            state["lateError"] = json!(payload.to_string());
+            state["lateError"] = json!(payload);
             std::fs::write(&state_file, state.to_string()).unwrap();
             let returned = invoke_test(
                 &adapter,
@@ -593,6 +677,10 @@ mod process {
                 "violet aardvark",
                 "private-access",
                 "private-refresh",
+                "orange-lantern-47",
+                "silver marigold",
+                "teal-juniper-73",
+                "https://api.example.com",
                 "rate_limit_error",
                 "model_not_found",
                 "private request",

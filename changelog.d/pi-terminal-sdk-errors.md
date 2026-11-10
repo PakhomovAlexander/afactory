@@ -7,4 +7,6 @@
   quota, authentication and network failures. Bounded structured error `type` and `code` fields
   preserve rate-limit and unavailable-model classifications even with neutral messages; these
   fields stay out of diagnostic text. Diagnostics also withhold configured header values named
-  `type` and secrets from captured credential files.
+  `type` and secrets from captured credential files. Real-host regressions cover selected OAuth
+  credentials and linked credential files as terminal errors, checking operator output, retained
+  artifacts and failure categories alongside the structured-error cases.
