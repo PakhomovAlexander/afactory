@@ -513,6 +513,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,
             notes: af_runner::task::CallNotes {
+                native_failure,
                 transient,
                 events: Vec::new(),
                 refusal_category,

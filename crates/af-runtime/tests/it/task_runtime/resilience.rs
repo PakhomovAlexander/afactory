@@ -24,6 +24,8 @@ enum Answer {
     Transient(TransientClassV1),
     /// A safety-classifier refusal naming this category.
     Refused(&'static str),
+    /// A complete usage report alongside a quota failure with conflicting diagnostic text.
+    Quota,
     /// Identity probes that proved nothing three times: the Provider's environment failed.
     Environment,
     /// The runner killed the Worker at the deadline it was given, its remaining Attempt wall,
@@ -112,6 +114,11 @@ impl WorkerModelAdapter for Scripted {
                     refusal_category: Some(category.into()),
                     ..CallNotes::default()
                 },
+            ),
+            Answer::Quota => (
+                Err("Provider quota or rate limit was reached (quota); model_unavailable".into()),
+                Some(NativeFailureKind::Quota),
+                CallNotes::default(),
             ),
             Answer::Environment => (
                 Err("identity recheck: probe timed out 3× (up to 30 s each); the account was \
@@ -542,6 +549,70 @@ fn a_second_refusal_fails_the_admission_and_starts_no_worker() {
         ),
         "{report:?}"
     );
+}
+
+/// Complete native accounting must retain the final category for both paid admission and
+/// business failures, even when the diagnostic contains another category's name.
+#[test]
+fn complete_quota_failures_keep_context_bound_native_evidence_despite_conflicting_diagnostics() {
+    use review_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
+    for admission_fails in [false, true] {
+        let model = Scripted::new(
+            if admission_fails {
+                Answer::Quota
+            } else {
+                Answer::Reply("OK")
+            },
+            &[Answer::Quota],
+        );
+        let mut ran = run(&model);
+        assert!(!ran.report.complete());
+        let projection = ran.projection();
+        let execution = projection.execution.unwrap();
+        let failed: Vec<_> = execution
+            .attempt_accounting()
+            .into_iter()
+            .filter(|row| matches!(row.result, Some(TaskAttemptResultV1::Failed { .. })))
+            .collect();
+        assert!(!failed.is_empty());
+        for row in failed {
+            assert_eq!(row.charged_tokens, 7);
+            assert!(row.unknown_usage.is_none());
+            assert_eq!(
+                row.reservation.node,
+                if admission_fails {
+                    "root.providers.admit0"
+                } else {
+                    "root.nodes.write"
+                }
+            );
+            let evidence = ran
+                .f
+                .cas
+                .get_artifact(row.raw_artifact_ids.last().unwrap())
+                .unwrap();
+            assert_eq!(evidence.artifact_type, NATIVE_FAILURE_EVIDENCE_V1);
+            assert!(
+                matches!(evidence.producer, Producer::Attempt { attempt_id, node_id, .. }
+                if attempt_id == row.attempt_id && node_id == row.reservation.node)
+            );
+            assert_eq!(evidence.input_artifacts, vec![row.context_id.unwrap()]);
+            let evidence = NativeFailureEvidenceV1::decode(evidence.payload).unwrap();
+            assert_eq!(
+                evidence.task_cause(),
+                Some(review_core::task::state::TaskCauseV1::ProviderCapacity)
+            );
+            let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = row.result else {
+                unreachable!()
+            };
+            assert!(
+                ran.f.cas.get_json(&diagnostic_id).unwrap()["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("model_unavailable")
+            );
+        }
+    }
 }
 
 /// Issue #331 item 9: identity probes that proved nothing after their bounded retries fail the

@@ -496,6 +496,22 @@ for (const file of ['[default]\naws_secret_access_key = orange-lantern-47\n',
   privateFile.rememberFile(Buffer.from(file));
   assert(privateFile.safe('orange-lantern-47').includes('withheld'));
 }
+// URL selectors hide their query values from public context identity, but a
+// provider can echo only the decoded value. Remember every sensitive occurrence.
+for (const [url, secrets] of [
+  ['https://auth.example/path?token=briefvalue', ['briefvalue']],
+  [' \nhttps://auth.example/path?token=briefvalue\n', ['briefvalue']],
+  ['ht\ttps://auth.example/path?token=briefvalue', ['briefvalue']],
+  ['https://auth.example/path?token=first&token=second&api_key=third', ['first','second','third']],
+  ['https://auth.example/path?signature=short%2Dvalue&password=two+words', ['short-value','two words']],
+  ['https://auth.example/path?auth=%E9%9B%AA', ['雪']],
+  ['https://auth.example/path?secret=%00', ['unrepresentable diagnostic']],
+  ['https://auth.example/path?token=%FF', ['unrepresentable diagnostic']],
+]) {
+  const privateFile = host.diagnosticFilter();
+  privateFile.rememberFile(Buffer.from(JSON.stringify({credential_source:{url}})));
+  for (const secret of secrets) assert(privateFile.safe('provider rejected '+secret).includes('withheld'),url);
+}
 const overflow = host.diagnosticFilter();
 overflow.remember('x'.repeat(4097));
 assert(overflow.safe('short SDK error').includes('withheld'));
@@ -538,7 +554,8 @@ assert(overflow.safe('short SDK error').includes('withheld'));
             aws = private('aws-credentials', '[default]\naws_secret_access_key = orange-lantern-47\n')
             token = private('subject-token', 'teal-juniper-73')
             adc = private('adc.json', json.dumps({'private_key': 'silver marigold',
-                                                'credential_source': {'file': token}}))
+                                                'credential_source': {'file': token,
+                                                                      'url': 'https://auth.example/path?token=briefvalue'}}))
             private('auth/models.json', json.dumps({'providers': {'kimi-coding': {
                 'headers': {'type': 'violet aardvark'}}}}))
             private('auth/af-context.json', json.dumps({'schema': 'af.pi-context/1', 'environment': {
@@ -598,14 +615,15 @@ assert(overflow.safe('short SDK error').includes('withheld'));
                     self.assertFalse(any(r['type'] == 'message' for r in records))
             # The real credential filter also recognizes short literal credentials.
             for unsafe in ['PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'violet aardvark',
-                           'orange-lantern-47', 'silver marigold', 'teal-juniper-73']:
+                           'orange-lantern-47', 'silver marigold', 'teal-juniper-73',
+                           'provider rejected briefvalue']:
                 state.write_text(json.dumps({**base, 'lateError': unsafe}))
                 records = invoke([{**init, 'probe': False}, prepare, prompt])
                 diagnostic = records[-1]['diagnostic']
                 self.assertIn('withheld', diagnostic)
                 self.assertLessEqual(len(diagnostic), 240)
                 self.assertTrue(records[-1]['accounting_complete'])
-                for secret in [unsafe, 'PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'PRIVATE_WORKER_REQUEST']:
+                for secret in [unsafe, 'briefvalue', 'PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'PRIVATE_WORKER_REQUEST']:
                     self.assertNotIn(secret, json.dumps(records))
 
     def test_official_catalog_invariant_covers_every_chat_provider_transport_and_native_usage(self):

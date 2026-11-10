@@ -22,7 +22,7 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 234] = [
+const SCHEMAS: [&str; 235] = [
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
@@ -44,6 +44,7 @@ const SCHEMAS: [&str; 234] = [
     "custom-issue-input-v1.json",
     "custom-issue-triage-v2.json",
     "pi-host-v7.json",
+    "native-failure-v1.json",
     "pi-context-v1.json",
     "pi-inference-evidence-v2.json",
     "pi-validation-claim-v1.json",

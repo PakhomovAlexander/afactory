@@ -9,6 +9,7 @@ export const VERSION = '1.4.0';
 const MAX_LINE = 4 * 1024 * 1024;
 const FILE_LIMIT = 1024 * 1024;
 const RESULT_LIMIT = 64 * 1024;
+const PRIVATE_QUERY_KEY = /token|key|secret|signature|password|auth/i;
 class HostError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
@@ -21,15 +22,22 @@ const printableDiagnostic = value => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '
 // Remember initial and refreshed private values without retaining an unbounded history.
 export function diagnosticFilter() {
   const secrets = new Set(); let overflow = false;
+  const rememberScalar = (value) => {
+    if (value.length > 4096 || secrets.size >= 4096) { overflow = true; return; }
+    if (!value) return;
+    const secret = printableDiagnostic(value).replace(/\s+/g, '');
+    if (!secret || value.includes('\ufffd')) overflow = true;
+    else secrets.add(secret);
+  };
   const remember = (value) => {
     if (typeof value === 'string') {
-      if (value.length > 4096) overflow = true;
-      else if (value) {
-        if (secrets.size >= 4096) overflow = true;
-        else if (value.trim()) {
-          const secret = printableDiagnostic(value).replace(/\s+/g, '');
-          if (!secret) overflow = true;
-          else secrets.add(secret);
+      rememberScalar(value);
+      // A credential source URL can be echoed as just a decoded query value.
+      // Use the same sensitive-key rule as the public selector identity, including
+      // repeated parameters, and withhold all text if decoding is unrepresentable.
+      if (value.length <= 4096 && URL.canParse(value)) {
+        for (const [key, secret] of new URL(value).searchParams) {
+          if (PRIVATE_QUERY_KEY.test(key)) rememberScalar(secret);
         }
       }
     } else if (value && typeof value === 'object') {
@@ -613,7 +621,7 @@ function explicitEnvironment(env, observeFile = () => {}) {
         if (typeof child === 'string' && (key.endsWith('_file') || (parent === 'credential_source' && key === 'file'))) { selectors.push([value,parent,key,child]); captureFile(child); }
         else if (typeof child === 'string' && ['type','url','token_url','audience','subject_token_type','service_account_impersonation_url','quota_project_id','universe_domain'].includes(key)) {
           if (key === 'url' || key.endsWith('_url')) { const url = new URL(child); if (url.username || url.password) fail('profile_authority');
-            for (const key of url.searchParams.keys()) if (/token|key|secret|signature|password|auth/i.test(key)) url.searchParams.set(key,'<credential>');
+            for (const key of url.searchParams.keys()) if (PRIVATE_QUERY_KEY.test(key)) url.searchParams.set(key,'<credential>');
             child = url.href; }
           selectors.push([value,parent,key,child]);
         }

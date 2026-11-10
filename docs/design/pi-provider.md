@@ -216,7 +216,12 @@ and nested `error` fields named `type` or `code` also contribute to classificati
 scalar identifiers of at most 128 ASCII letters, digits or underscores, starting with a letter.
 Recognized codes such as `rate_limit_error` and `model_not_found` classify even a neutral or absent
 message. These fields never become diagnostic text. Rust uses the validated category,
-independently of the filtered text. Recognized native errors use AF's existing classifications;
+independently of the filtered text. Failed Task Attempts retain the adapter's final category in an
+Attempt-produced [`af/NativeFailureEvidence@1`](../../schemas/native-failure-v1.json) artifact,
+bound to that Attempt's context. Task state and failure reports read this structured evidence
+before diagnostic text, including when accounting is complete: a `rate_limit_error` whose safe
+message is `model_unavailable` remains `provider_capacity`. Recognized native errors use AF's
+existing classifications;
 an unclassified SDK session or invocation failure is a Provider environment failure. Authentication
 errors explicitly name authentication, so they cannot fall through to malformed Worker output.
 Success still requires the same final assistant text and successful settlement.
@@ -225,7 +230,10 @@ Diagnostics are judged whole before truncation: non-string/empty errors get a fi
 inputs above 4,096 characters are withheld. The host remembers bounded initial/refreshed credential
 values and selected private auth/environment/header values (including properties named `type`).
 It also remembers credential-file contents, JSON string values, INI values and opaque token lines
-from the complete captured file-reference closure. Oversized credential values/files, non-UTF-8
+from the complete captured file-reference closure. For credential-source URLs it also remembers
+every decoded query value whose key contains `token`, `key`, `secret`, `signature`, `password` or
+`auth`, including repeated parameters. Unrepresentable query values fail closed like other
+unrepresentable secrets. Oversized credential values/files, non-UTF-8
 files or an exhausted secret-memory bound cause all diagnostic text to be withheld. It withholds
 diagnostics containing private values, credential-like text or URLs. For a bounded JSON error it
 selects only a string `error.message`, `message` or `error` and filters that diagnostic; other
@@ -299,9 +307,13 @@ The real-host adapter regression checks structured rate-limit and unavailable-mo
 neutral messages, including the distinctive safe diagnostic in operator output and retained CAS
 evidence. Both real-host paths also supply selected OAuth access and refresh values, profile
 headers, AWS credential-file values, ADC private-key material and linked subject-token values as
-terminal diagnostics. The adapter checks that they stay out of operator errors and every retained
+terminal diagnostics, alongside a short secret echoed alone from a credential-source URL query.
+The adapter checks that they stay out of operator errors and every retained
 CAS artifact, and that withheld quota, authentication and network errors keep their categories
-and complete charge. Other category mappings and diagnostic forms also run in process.
+and complete charge. A common Task CLI regression proves that a completely accounted rate-limit
+failure whose safe diagnostic says `model_unavailable` reports `provider_capacity`, retains the
+safe diagnostic and charges the exact native usage after Store replay. Other category mappings
+and diagnostic forms also run in process.
 
 ## Optional pi-light trial family
 

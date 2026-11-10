@@ -510,7 +510,7 @@ mod process {
         let adc = root.join("adc.json");
         private(
             &adc,
-            &json!({"private_key":"silver marigold","credential_source":{"file":token}})
+            &json!({"private_key":"silver marigold","credential_source":{"file":token,"url":"https://auth.example/path?token=briefvalue"}})
                 .to_string(),
         );
         private(
@@ -560,6 +560,19 @@ mod process {
                 "Kimi terminal 764: tool-call continuation rejected",
                 NativeFailureKind::Quota,
                 TaskCauseV1::ProviderCapacity,
+            ),
+            (
+                json!({"error":{"type":"rate_limit_error","message":"model_unavailable"}})
+                    .to_string(),
+                "model_unavailable",
+                NativeFailureKind::Quota,
+                TaskCauseV1::ProviderCapacity,
+            ),
+            (
+                "provider rejected briefvalue".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
             ),
             (
                 json!({"error":{"code":"model_not_found","message":"violet aardvark"}}).to_string(),
@@ -642,7 +655,18 @@ mod process {
                 "{error}"
             );
             assert_eq!(returned.native_failure, Some(kind));
-            assert_eq!(TaskCauseV1::of_diagnostic(&error), Some(cause));
+            if diagnostic == "model_unavailable" {
+                assert_eq!(
+                    TaskCauseV1::of_diagnostic(&error),
+                    Some(TaskCauseV1::ModelRefused)
+                );
+            } else {
+                assert_eq!(TaskCauseV1::of_diagnostic(&error), Some(cause));
+            }
+            assert_eq!(
+                review_runner::native_failure::NativeFailureEvidenceV1::new(kind).task_cause(),
+                Some(cause)
+            );
             assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 477);
             assert!(returned.usage_observation.is_none());
             assert_eq!(returned.raw_artifact_ids.len(), 2);
@@ -680,6 +704,7 @@ mod process {
                 "orange-lantern-47",
                 "silver marigold",
                 "teal-juniper-73",
+                "briefvalue",
                 "https://api.example.com",
                 "rate_limit_error",
                 "model_not_found",

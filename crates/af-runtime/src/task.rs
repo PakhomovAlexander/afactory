@@ -1363,6 +1363,26 @@ impl TaskRuntime<'_, '_> {
                         TaskAttemptResultV1::Abandoned { diagnostic_id }
                     }
                     Err(error) => {
+                        if let Some(kind) = result.notes.native_failure {
+                            let evidence =
+                                review_runner::native_failure::NativeFailureEvidenceV1::new(kind);
+                            let (id, _) = self
+                                .cas
+                                .put_artifact(
+                                    review_runner::native_failure::NATIVE_FAILURE_EVIDENCE_V1,
+                                    Producer::Attempt {
+                                        run_id: task_run_id(self.lease.task_id())
+                                            .map_err(|e| e.to_string())?,
+                                        node_id: input.node.clone(),
+                                        attempt_id: attempt.id().into(),
+                                    },
+                                    vec![attempt.context_id().into()],
+                                    None,
+                                    serde_json::to_value(evidence).map_err(|e| e.to_string())?,
+                                )
+                                .map_err(|e| e.to_string())?;
+                            result.raw_artifact_ids.push(id);
+                        }
                         // The closed class of a failure af knows better than its words: the
                         // Attempt wall, or the Provider's environment (ADR-0257).
                         let mut diagnostic =

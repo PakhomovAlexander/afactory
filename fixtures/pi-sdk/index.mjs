@@ -92,6 +92,11 @@ export async function createAgentSession(options) {
       emit({type:'agent_end'});
       if (!state().unsettled) emit({type:'agent_settled',aborted:state().aborted ?? false});
       if (state().promptError !== undefined) throw Error(state().promptError);
+      if (probe && mode==='terminal-error-after-admission') {
+        const next=state(); next.stopReason='toolUse';
+        next.lateError=JSON.stringify({error:{type:'rate_limit_error',message:'model_unavailable'}});
+        fs.writeFileSync(statePath,JSON.stringify(next));
+      }
       if (probe && mode==='replace-auth-after-admission') {
         const data=JSON.parse(fs.readFileSync(state().auth,'utf8'));data[backend()]={type:'api_key',key:'PRIVATE_HELPER'};
         fs.writeFileSync(state().auth,JSON.stringify(data));
