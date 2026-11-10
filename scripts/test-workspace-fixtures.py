@@ -2,7 +2,9 @@
 """Selected interpreter/isolation and fail-closed paired benchmark evidence contracts."""
 import copy
 import importlib.util
+from itertools import product
 import json
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +25,7 @@ def module(name, filename):
 
 W = module('workspace_tests', 'test-scenario-git-workspace.py')
 B = module('workspace_benchmark', 'benchmark-workspace-fixtures.py')
+LAUNCHERS = (W.fixture_launcher, lambda body: W.performance_git_launcher('/unused/git', body))
 
 
 def sample_report():
@@ -42,8 +45,9 @@ def sample_report():
 class FixtureInterpreterTests(unittest.TestCase):
     def test_platform_launchers_execute_isolated_despite_hostile_environment(self):
         canonical = str(Path(sys.executable).resolve())
-        for platform, expected in (('darwin', canonical), ('linux', '/usr/bin/python3')):
-            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
+        for (platform, expected), launch in product(
+                (('darwin', canonical), ('linux', '/usr/bin/python3')), LAUNCHERS):
+            with self.subTest(platform=platform, launcher=launch), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / 'sitecustomize.py').write_text("raise RuntimeError('ambient site imported')\n")
                 (root / 'json.py').write_text("raise RuntimeError('ambient import path used')\n")
@@ -56,18 +60,21 @@ class FixtureInterpreterTests(unittest.TestCase):
                 selected = str(alias) if platform == 'darwin' else str(hostile)
                 launcher = root / 'fixture with spaces'
                 with patch.object(W.sys, 'platform', platform), patch.object(W.sys, 'executable', selected):
-                    launcher.write_text(W.fixture_launcher(
+                    launcher.write_text(launch(
                         "import json,sys\nprint(json.dumps([sys.executable,sys.flags.isolated,sys.flags.no_site,'site' in sys.modules,sys.argv[1:]]))\n"))
                 launcher.chmod(0o700)
-                self.assertEqual(launcher.read_text().splitlines()[0], '#!' + expected + ' -IS')
+                if launch is W.fixture_launcher:
+                    self.assertEqual(launcher.read_text().splitlines()[0], '#!' + expected + ' -IS')
+                else:
+                    self.assertIn('exec ' + shlex.join([expected, '-IS', '-c']), launcher.read_text())
                 env = dict(PATH=str(root), HOME=str(root), PYTHONPATH=str(root), PYTHONHOME=str(root))
-                result = subprocess.run([str(launcher), 'argument with spaces'], cwd=root, env=env,
+                result = subprocess.run([str(launcher), 'push', 'argument with spaces'], cwd=root, env=env,
                                         capture_output=True, text=True, check=True)
                 # Apple's /usr/bin/python3 dispatches to CommandLineTools; compare its real
                 # identity while still requiring the literal system path in the shebang.
                 identity = subprocess.check_output([expected, '-IS', '-c', 'import sys; print(sys.executable)'],
                                                    cwd=root, env=env, text=True).strip()
-                self.assertEqual(json.loads(result.stdout), [identity, 1, 1, False, ['argument with spaces']])
+                self.assertEqual(json.loads(result.stdout), [identity, 1, 1, False, ['push', 'argument with spaces']])
 
     def test_non_darwin_ignores_unused_selected_python_even_when_invalid(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,38 +84,93 @@ class FixtureInterpreterTests(unittest.TestCase):
             long_path = root / ('p' * 128)
             long_path.touch()
             for platform in ('linux', 'freebsd'):
-                for selected in (sys.executable, str(root / 'missing'), str(spaced), str(long_path), ''):
-                    with self.subTest(platform=platform, selected=selected), \
+                for selected, launch in product(
+                        (sys.executable, str(root / 'missing'), str(spaced), str(long_path), ''), LAUNCHERS):
+                    with self.subTest(platform=platform, selected=selected, launcher=launch), \
                             patch.object(W.sys, 'platform', platform), patch.object(W.sys, 'executable', selected):
-                        self.assertEqual(W.fixture_launcher('pass\n'), '#!/usr/bin/python3 -IS\npass\n')
+                        source = launch('pass\n')
+                        if launch is W.fixture_launcher:
+                            self.assertEqual(source, '#!/usr/bin/python3 -IS\npass\n')
+                        else:
+                            self.assertIn('exec /usr/bin/python3 -IS -c', source)
 
     def test_darwin_missing_interpreter_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(W.sys, 'platform', 'darwin'), \
                     patch.object(W.sys, 'executable', str(Path(tmp) / 'missing')):
-                with self.assertRaises(FileNotFoundError):
-                    W.fixture_launcher('pass\n')
+                for launch in LAUNCHERS:
+                    with self.subTest(launcher=launch), self.assertRaises(FileNotFoundError):
+                        launch('pass\n')
 
     def test_interpreter_path_with_whitespace_is_refused_explicitly(self):
         with tempfile.TemporaryDirectory() as tmp:
             python = Path(tmp) / 'Python Framework'
             python.touch()
             with patch.object(W.sys, 'platform', 'darwin'), patch.object(W.sys, 'executable', str(python)):
-                with self.assertRaisesRegex(ValueError, 'Python path.*no whitespace'):
-                    W.fixture_launcher('pass\n')
+                for launch in LAUNCHERS:
+                    with self.subTest(launcher=launch), self.assertRaisesRegex(ValueError, 'Python path.*no whitespace'):
+                        launch('pass\n')
 
     def test_portably_unrepresentable_shebang_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             python = Path(tmp) / ('p' * 128)
             python.touch()
             with patch.object(W.sys, 'platform', 'darwin'), patch.object(W.sys, 'executable', str(python)):
-                with self.assertRaisesRegex(ValueError, '127-byte limit'):
-                    W.fixture_launcher('pass\n')
+                for launch in LAUNCHERS:
+                    with self.subTest(launcher=launch), self.assertRaisesRegex(ValueError, '127-byte limit'):
+                        launch('pass\n')
+
+    def test_performance_git_routes_fault_commands_and_refuses_other_remote_uses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git = root / 'git with spaces'
+            git.write_text('#!/bin/sh\nprintf "local\\n"\nprintf "%s\\n" "$@"\n')
+            git.chmod(0o700)
+            url = 'ssh://git@github.com/octo/project.git'
+            # The production fixture allows this remote only for push and ls-remote.
+            # An unexpected route must reach the Python guard, never the direct Git path.
+            body = ("import json,sys\nargs=sys.argv[1:]\n"
+                    "if " + repr(url) + " in args and not ('push' in args or 'ls-remote' in args):\n"
+                    " sys.exit('route refused')\n"
+                    "print(json.dumps([sys.flags.isolated,sys.flags.no_site,args]))\n")
+            wrapper = root / 'wrapper'
+            wrapper.write_text(W.performance_git_launcher(git, body))
+            wrapper.chmod(0o700)
+            env = dict(PATH=str(root), HOME=tmp, PYTHONHOME=tmp, PYTHONPATH=tmp)
+
+            def run(args):
+                return subprocess.run([str(wrapper), *args], cwd=root, env=env,
+                                      capture_output=True, text=True)
+
+            for command in ('commit-tree', 'push', 'ls-remote'):
+                args = ['-c', 'core.hooksPath=/dev/null', command, "quote' and $(exit 99)"]
+                if command != 'commit-tree':
+                    args.append(url)
+                with self.subTest(args=args):
+                    result = run(args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), [1, 1, args])
+            for args in (['fetch', url], [url, 'fetch'], ['-c', 'key=value', 'fetch', url]):
+                with self.subTest(args=args):
+                    result = run(args)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn('route refused', result.stderr)
+            for command in ('config', 'rev-parse', 'hash-object', 'ls-tree', 'status'):
+                args = [command, 'argument with spaces', '$(exit 99)']
+                with self.subTest(args=args):
+                    result = run(args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), ['local', *args])
 
     def test_each_generated_fixture_uses_launcher_and_production_installer_keeps_policy(self):
         source = (ROOT / 'scripts/test-scenario-git-workspace.py').read_text()
-        for name in ('af', 'lab', 'wrapper', 'controlled'):
+        for name in ('af', 'lab', 'controlled'):
             self.assertIn(name + '.write_text(fixture_launcher(', source)
+        self.assertIn('wrapper.write_text(performance_git_launcher(git,', source)
+        with patch.object(W, 'fixture_launcher', wraps=W.fixture_launcher) as canonical:
+            W.performance_git_launcher('/unused/git', 'pass\n')
+        canonical.assert_called_once_with('')
         self.assertTrue(W.I.source().startswith('#!/usr/bin/python3 -IS\n'))
 
 

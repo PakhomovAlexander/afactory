@@ -417,6 +417,8 @@ class Cycle(object):
                         "artifact %s names an attempt this run does not have"
                         % artifact["name"])
                 found[attempt] = artifact
+        except deadlines.Expired:
+            raise
         except (ContractError, OSError) as error:
             self.record(run, run["run_attempt"], "refused", reason=str(error))
             return
@@ -435,6 +437,8 @@ class Cycle(object):
                 result, _, _ = telemetry_lab.read_bundle(os.path.join(kept.results, result_id))
                 binding = kept.read_binding(result_id)
                 self.bind(run, attempt, result, binding)
+            except deadlines.Expired:
+                raise
             except (ContractError, OSError) as error:
                 self.record(run, attempt, "refused", artifact, reason=str(error))
                 return
@@ -499,7 +503,10 @@ class Cycle(object):
             self.interrupted_import = (run, attempt, artifact, result_id)
             kept.retain_binding(result_id, binding)
             kept.import_result(staging, authority)
-        except deadlines.Interrupted as error:
+        except (deadlines.Interrupted, deadlines.Expired) as error:
+            # Git's subprocess timeout may precede the enclosing SIGALRM. Both end
+            # this whole cycle; neither is an ordinary artifact refusal followed by
+            # successful history accounting.
             self.interrupted_import = (run, attempt, artifact, result_id)
             self.record(run, attempt, "refused", artifact, reason=str(error))
             raise
