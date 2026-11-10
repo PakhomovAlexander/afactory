@@ -32,6 +32,50 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+#[test]
+fn an_unreadable_registry_fails_status_without_probing_ambient_logins() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".codex")).unwrap();
+    std::fs::write(
+        root.path().join(".codex/auth.json"),
+        "synthetic login marker",
+    )
+    .unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    for name in ["codex", "claude", "pi"] {
+        let path = bin.join(name);
+        std::fs::write(&path, "#!/bin/sh\n: > \"$HOME/cli-started\"\nexit 99\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for json in [false, true] {
+        let mut command = crate::common::af();
+        command
+            .current_dir(root.path())
+            .args(["provider", "status"])
+            .env("HOME", root.path())
+            .env("AF_PROVIDERS_FILE", "relative-registry.toml")
+            .env("PATH", &bin);
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        assert!(stderr(&output).contains("cannot inspect configured Providers"));
+        assert!(stderr(&output).contains("AF_PROVIDERS_FILE must be absolute"));
+        assert!(!root.path().join("cli-started").exists());
+        if json {
+            let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+            assert_eq!(document["schema"], "af/error@2");
+            assert_eq!(document["exit_code"], 1);
+            assert!(document.get("providers").is_none());
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+    }
+}
+
 /// Pi setup requires explicit backend/SDK authority. Ambient keys and --unverified cannot
 /// replace it or start a stock CLI; malformed profiles remain untouched.
 #[test]

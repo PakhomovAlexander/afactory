@@ -45,6 +45,7 @@ pub(crate) mod compatibility;
 pub mod detect;
 mod installation;
 pub mod models;
+mod ownership_diagnostic;
 mod pi;
 pub use pi::setup as setup_pi;
 pub mod task;
@@ -413,6 +414,9 @@ fn cross_reference_logged_in_siblings(providers: &mut [ProviderStatus]) {
 pub fn print_status(json: bool, usage: UsageProbe, verbose: bool) -> Result<i32, String> {
     let cancelled = AtomicBool::new(false);
     let inventory = discover_with_cancel(&cancelled, usage);
+    if let Some(warning) = &inventory.warning {
+        return Err(format!("cannot inspect configured Providers: {warning}"));
+    }
     let unavailable_usage = inventory
         .providers
         .iter()
@@ -438,9 +442,6 @@ pub fn print_status(json: bool, usage: UsageProbe, verbose: bool) -> Result<i32,
     } else {
         EXIT_OK
     };
-    if let Some(warning) = inventory.warning.as_deref() {
-        eprintln!("warning: {warning}");
-    }
     if json {
         println!("{}", status_document(&inventory, usage, code));
     } else {
@@ -1828,13 +1829,24 @@ fn validate_rename_controlling_directory_for_uid(
     what: &str,
     effective_uid: u32,
 ) -> Result<(), String> {
-    validate_rename_controlling_directory_values(
+    let result = validate_rename_controlling_directory_values(
         path,
         metadata.uid(),
         metadata.mode(),
         what,
         effective_uid,
-    )
+    );
+    if result.is_err()
+        && metadata.uid() != effective_uid
+        && metadata.uid() != 0
+        && let Some(reason) = ownership_diagnostic::unmapped_owner(metadata.uid())
+    {
+        return Err(format!(
+            "cannot verify ownership of ancestor {} for {what}: {reason}; run af in the host environment where these owners are mapped, or have the sandbox operator expose verifiable ownership. Moving the registry or logging in again cannot repair this namespace mapping",
+            path.display()
+        ));
+    }
+    result
 }
 
 fn validate_rename_controlling_directory_values(
@@ -3824,6 +3836,12 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
         _ => (Vec::new(), None),
     };
     let warning = path_warning.or(load_warning);
+
+    // A failed registry read is not a fresh machine. Do not probe ambient logins or suggest
+    // registering replacements for Providers whose configured identities could not be read.
+    if warning.is_some() {
+        return (Vec::new(), registry, warning);
+    }
 
     for default in implicit_defaults() {
         let duplicate_context = specs.iter().any(|spec| same_context(spec, &default));
@@ -6881,6 +6899,18 @@ mod tests {
 
     #[test]
     fn rename_controlling_ancestor_rejects_a_foreign_non_root_owner() {
+        // An overflow UID is not a trusted owner. Namespace diagnostics must never turn
+        // an unknown host identity into root or the current user.
+        assert!(
+            validate_rename_controlling_directory_values(
+                Path::new("/unmapped-owner"),
+                65534,
+                0o040755,
+                "auth directory",
+                1000,
+            )
+            .is_err()
+        );
         let error = validate_rename_controlling_directory_values(
             Path::new("/foreign-owned"),
             1001,
