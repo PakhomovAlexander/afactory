@@ -54,6 +54,16 @@ class Figures(unittest.TestCase):
                                 (2, 3, '67%'), (1, 200, '1%'), (1, 201, '<1%')]:
             self.assertEqual(lines.share(n, total), shown)
 
+    def test_bar_integer_half_up_eighth_boundaries_sliver_and_full_width(self):
+        for n, maximum, expected in [
+                (0, 0, ''), (0, 10, ''), (1, 10**50, '▏'),
+                (3, 193, '▏'), (3, 192, '▎'), (3, 191, '▎'),
+                (15, 193, '▉'), (15, 192, '█'), (15, 191, '█'),
+                (96, 96, '████████████'), (10**50, 10**50, '████████████')]:
+            self.assertEqual(lines.bar(n, maximum), expected, (n, maximum))
+        for n, glyph in enumerate('▏▎▍▌▋▊▉█', 1):
+            self.assertEqual(lines.bar(n, 96), glyph)
+
 
 class Hierarchy(unittest.TestCase):
     def test_minimal_root_and_crate_collisions_label_only_the_file(self):
@@ -113,28 +123,91 @@ class Hierarchy(unittest.TestCase):
         self.assertEqual(data, lines.report(entries[::-1]))
         body = lines.render(data)
         self.assertEqual(body, '\n'.join([
-            '**Lines added: 5**', '', '| Area | Changes | Share of additions |', '|:--|--:|:--|',
-            '| **crates** | **+4/−9** | **80%** |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+3/−6** | **75%** |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +3/−2 | 100% |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +0/−4 | 0% |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;direct | +1/−1 | 25% |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;**b** | **+0/−2** | **0%** |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +0/−2 | — |',
-            '| **README.md** | **+1/−0** | **20%** |',
-            '| **gone** | **+0/−8** | **0%** |']))
+            '**Lines added: 5**', '', '| Area | Changes | + | − | Share of additions |', '|:--|--:|:--|:--|:--|',
+            '| **crates** | **+4/−9** | **█████▍** | **████████████** | **80%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+3/−6** | **██████** | **████████████** | **75%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +3/−2 | █████████ | ██████ | 100% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +0/−4 |  | ████████████ | 0% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;direct | +1/−1 | ██ | ██ | 25% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;**b** | **+0/−2** |  | **████** | **0%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +0/−2 |  | ████████████ | — |',
+            '| **README.md** | **+1/−0** | **█▍** |  | **20%** |',
+            '| **gone** | **+0/−8** |  | **██████████▋** | **0%** |']))
         self.assertIsNone(lines.parse(body.splitlines())[1])
         self.assertEqual(body.count('| Area |'), 1)
         self.assertNotIn('↳', body)
-        self.assertNotIn('█', body)
         self.assertNotIn('shared', body)
         self.assertNotIn('| **tests**', body)
-        self.assertIn('| **gone** | **+0/−8** | **—** |',
+        self.assertIn('| **gone** | **+0/−8** |  | **████████████** | **—** |',
                       lines.render_entries([(0, 8, 'gone/a')]))
         zero = lines.render_entries([(0, 8, 'crates/a/tests/t.rs')])
         self.assertIn('**Lines added: 0**', zero)
         self.assertEqual(zero.count('—'), 3)
         self.assertIsNone(lines.parse(zero.splitlines())[1])
+
+    def test_common_sibling_scale_zero_cells_child_scale_and_exact_json(self):
+        entries = [(2, 0, 'crates/a/src/lib.rs'), (0, 4, 'crates/a/tests/t.rs'),
+                   (0, 8, 'gone/a'), (1, 0, 'tiny/a')]
+        data = lines.report(entries)
+        self.assertEqual(data, {
+            'schema': 'af/PrLines@4', 'added': 3, 'deleted': 12, 'rows': [
+                {'name': 'crates/', 'added': 2, 'deleted': 4, 'children': [
+                    {'name': 'a/', 'added': 2, 'deleted': 4, 'children': [
+                        {'name': 'main/', 'added': 2, 'deleted': 0, 'children': []},
+                        {'name': 'tests/', 'added': 0, 'deleted': 4, 'children': []}]}]},
+                {'name': 'tiny/', 'added': 1, 'deleted': 0, 'children': []},
+                {'name': 'gone/', 'added': 0, 'deleted': 8, 'children': []}]})
+        before = json.dumps(data, sort_keys=True)
+        body = lines.render(data)
+        self.assertEqual(before, json.dumps(data, sort_keys=True))
+        self.assertEqual(body, lines.render_entries(entries[::-1]))
+        # The root deletion count of eight dominates all additions. Children instead use four.
+        self.assertIn('| **crates** | **+2/−4** | **███** | **██████** | **67%** |', body)
+        self.assertIn('| ' + lines.INDENT + '**a** | **+2/−4** | **██████** | **████████████** | **100%** |', body)
+        self.assertIn('| **gone** | **+0/−8** |  | **████████████** | **0%** |', body)
+        self.assertIn('| **tiny** | **+1/−0** | **█▌** |  | **33%** |', body)
+        self.assertNotIn('** **', body)
+        for entries in [[(0, 1, 'crates/a/src/lib.rs')], [(1, 0, 'crates/a/src/lib.rs')]]:
+            body = lines.render_entries(entries)
+            for row in body.splitlines()[4:]:
+                cells = lines.row_cells(row)
+                self.assertEqual(len(cells), 5)
+                self.assertEqual(cells[2 if entries[0][0] == 0 else 3], '')
+            self.assertIsNone(lines.parse(body.splitlines())[1])
+
+    def test_bar_shape_blank_bold_and_prior_three_column_format_rejected(self):
+        body = lines.render_entries([(3, 2, 'crates/a/src/lib.rs')])
+        # Grammar accepts plausible lengths; regeneration, not rounded counts, owns exact lengths.
+        self.assertIsNone(lines.parse(body.replace('████████████', '▏').splitlines())[1])
+        for bad in ['', '—', '-', 'x', '█' * 13, '█' * 12 + '▏', '▏█', '▏▎', '█ █', '** **']:
+            with self.subTest(bar=bad):
+                self.assertIsNone(lines.parse(body.replace('████████████', bad).splitlines())[0])
+        zero = lines.render_entries([(0, 2, 'crates/a/src/lib.rs')])
+        for bad in ['** **', '**▏**', '**—**', '****']:
+            self.assertIsNone(lines.parse(zero.replace(' |  | ', ' | ' + bad + ' | ').splitlines())[0])
+        for zero in [lines.render_entries([(0, 2, 'gone/a')]),
+                     lines.render_entries([(2, 0, 'added/a')])]:
+            self.assertIsNone(lines.parse(zero.replace(' |  | ', ' | **** | ').splitlines())[0])
+        old = ['**Lines added: 3**', '| Area | Changes | Share of additions |',
+               '|:--|--:|:--|', '| **docs** | **+3/−0** | **100%** |']
+        self.assertIsNone(lines.parse(old)[0])
+
+    def test_empty_bold_zero_bars_rejected_on_root_and_crate_rows(self):
+        for added, deleted, column in [(0, 2, 2), (2, 0, 3)]:
+            body = lines.render_entries([(added, deleted, 'crates/a/src/lib.rs')])
+            self.assertIsNone(lines.parse(body.splitlines())[1])
+            for index in [4, 5]:
+                for bad in ['**', '***', '****']:
+                    with self.subTest(column=column, row=index, bar=bad):
+                        rows = body.splitlines()
+                        cells = lines.row_cells(rows[index])
+                        self.assertEqual(cells[column], '')
+                        cells[column] = bad
+                        rows[index] = '| ' + ' | '.join(cells) + ' |'
+                        self.assertNotEqual(rows, body.splitlines())
+                        parsed, problem = lines.parse(rows)
+                        self.assertIsNone(parsed)
+                        self.assertEqual(problem, 'inconsistent bold bar')
 
     def test_deletion_siblings_sort_by_deleted_then_raw_identity(self):
         entries = [(0, 2, 'z/a'), (0, 3, 'b/a'), (0, 3, 'a/a'), (1, 0, 'last/a')]
@@ -333,12 +406,12 @@ class Repository(unittest.TestCase):
         done = self.run_tool('--base', 'main', '--head', 'feature')
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout, '\n'.join([
-            '<!-- af-pr-lines:v1 -->', '**Lines added: 157**', '', '| Area | Changes | Share of additions |',
-            '|:--|--:|:--|', '| **crates** | **+151/−1** | **96%** |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;**af** | **+151/−1** | **100%** |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +121/−1 | 80% |',
-            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +30/−0 | 20% |',
-            '| **docs** | **+3/−3** | **2%** |', '| **README.md** | **+2/−0** | **1%** |', '| **scripts** | **+1/−0** | **1%** |',
+            '<!-- af-pr-lines:v1 -->', '**Lines added: 157**', '', '| Area | Changes | + | − | Share of additions |',
+            '|:--|--:|:--|:--|:--|', '| **crates** | **+151/−1** | **████████████** | **▏** | **96%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;**af** | **+151/−1** | **████████████** | **▏** | **100%** |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +121/−1 | ████████████ | ▏ | 80% |',
+            '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +30/−0 | ███ |  | 20% |',
+            '| **docs** | **+3/−3** | **▎** | **▎** | **2%** |', '| **README.md** | **+2/−0** | **▏** |  | **1%** |', '| **scripts** | **+1/−0** | **▏** |  | **1%** |',
             '<!-- /af-pr-lines -->', '']))
         done = self.run_tool('--base', 'main', '--json')
         self.assertEqual(json.loads(done.stdout),
@@ -382,7 +455,7 @@ class Repository(unittest.TestCase):
         code, said = self.check(body(stale), '--diff', 'main', 'feature')
         self.assertEqual(code, 1, said)
         self.assertIn('replace it with:\n**Lines added: 157**', said)
-        self.assertIn('| **crates** | **+151/−1** | **96%** |', said)
+        self.assertIn('| **crates** | **+151/−1** | **████████████** | **▏** | **96%** |', said)
         code, said = self.check(body(stale))
         self.assertEqual(code, 0, 'without --diff the shape alone is checked:\n' + said)
         self.assertIn('not compared', said)

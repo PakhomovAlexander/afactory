@@ -135,10 +135,10 @@ fn incomplete(text: &str) -> Option<Incomplete> {
 }
 
 /// The table header and its separator row, as `scripts/pr-lines.py` writes them.
-const HEADER: [&str; 3] = ["Area", "Changes", "Share of additions"];
+const HEADER: [&str; 5] = ["Area", "Changes", "+", "−", "Share of additions"];
 const INDENT: &str = "&nbsp;&nbsp;&nbsp;&nbsp;";
 const KINDS: [&str; 3] = ["main", "tests", "other"];
-const SEPARATOR_ROW: &str = "|:--|--:|:--|";
+const SEPARATOR_ROW: &str = "|:--|--:|:--|:--|:--|";
 
 /// What is wrong with the block's body `lines`, by the rules of `parse` in
 /// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` reads the block with: the title
@@ -191,7 +191,7 @@ fn body_problem(lines: &[&str]) -> Option<String> {
         let inner = inner.strip_suffix(':').unwrap_or(inner);
         !inner.is_empty() && inner.bytes().all(|b| b == b'-')
     };
-    if !row_cells(lines[2]).is_some_and(|cells| cells.len() == 3 && cells.iter().all(separator)) {
+    if !row_cells(lines[2]).is_some_and(|cells| cells.len() == 5 && cells.iter().all(separator)) {
         return Some(format!(
             "its block's header is not followed by its separator `{SEPARATOR_ROW}`: `{}`",
             shown(lines[2])
@@ -202,10 +202,10 @@ fn body_problem(lines: &[&str]) -> Option<String> {
     let mut branches = Vec::new();
     let mut parents = Vec::new();
     for line in &lines[3..] {
-        let Some([area, changes, share]) =
-            row_cells(line).and_then(|c| <[String; 3]>::try_from(c).ok())
+        let Some([area, changes, added_bar, deleted_bar, share]) =
+            row_cells(line).and_then(|c| <[String; 5]>::try_from(c).ok())
         else {
-            return Some("its block has a line that is not a row of three cells".into());
+            return Some("its block has a line that is not a row of five cells".into());
         };
         let (mut name, mut depth) = (area.as_str(), 0);
         while let Some(rest) = name.strip_prefix(INDENT) {
@@ -228,6 +228,17 @@ fn body_problem(lines: &[&str]) -> Option<String> {
         } else {
             (name.to_owned(), changes, share)
         };
+        let bar_cell = |cell: &str| {
+            if bold && !cell.is_empty() {
+                unbold(cell).filter(|bar| !bar.is_empty())
+            } else {
+                Some(cell.to_owned())
+            }
+        };
+        let (Some(added_bar), Some(deleted_bar)) = (bar_cell(&added_bar), bar_cell(&deleted_bar))
+        else {
+            return Some("its block has an inconsistent bold bar".into());
+        };
         if depth > 2 || depth > stack.len() {
             return Some("its block has a missing hierarchy parent".into());
         }
@@ -245,6 +256,9 @@ fn body_problem(lines: &[&str]) -> Option<String> {
             || !is_share(&share)
         {
             return Some("its block has invalid changes or share".into());
+        }
+        if !is_bar(&added_bar, added) || !is_bar(&deleted_bar, deleted) {
+            return Some("its block has an invalid addition or deletion bar".into());
         }
         if (depth == 0 && !bold)
             || (depth == 2 && bold)
@@ -278,6 +292,21 @@ fn body_problem(lines: &[&str]) -> Option<String> {
         return Some("its block has a hierarchy branch with no children".into());
     }
     None
+}
+
+/// Bars are at most twelve cells: full blocks followed by at most one eighth block.
+/// Exact lengths come from commit regeneration, since printed counts can be rounded.
+fn is_bar(bar: &str, count: &str) -> bool {
+    if bar.is_empty() {
+        return count == "0";
+    }
+    if count == "0" {
+        return false;
+    }
+    let rest = bar.trim_start_matches('█');
+    let full = (bar.len() - rest.len()) / '█'.len_utf8();
+    (rest.is_empty() && full <= 12)
+        || (full < 12 && rest.chars().count() == 1 && "▏▎▍▌▋▊▉".contains(rest))
 }
 
 /// Names contain literal safe characters or canonical numeric entities for syntax/whitespace.
@@ -646,14 +675,14 @@ mod tests {
                  print('<!-- /af-pr-lines -->')\n",
                 Err(
                     "its block's title is not followed by the table: the header \
-                     `| Area | Changes | Share of additions |`, its separator `|:--|--:|:--|` and one row \
+                     `| Area | Changes | + | − | Share of additions |`, its separator `|:--|--:|:--|:--|:--|` and one row \
                      per directory",
                 ),
             ),
             (
                 "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 18.9k**')\nprint()\n\
-                 print('| Area | Changes | Share of additions |')\nprint('|:--|--:|:--|')\n\
-                 print('| **docs** | **+18.9k/−0** | **100%** |')\n\
+                 print('| Area | Changes | + | − | Share of additions |')\nprint('|:--|--:|:--|:--|:--|')\n\
+                 print('| **docs** | **+18.9k/−0** | **████████████** |  | **100%** |')\n\
                  print('<!-- /af-pr-lines -->')\n",
                 Ok(()),
             ),
@@ -718,7 +747,7 @@ for body in [*collisions, valid, zero, safe, m.render_entries([(2500000, 1, 'doc
              m.render_entries([(1, 0, 'crates/\u00a0\u00a0\u00a0\u00a0/src/lib.rs')])]:
     cases.append((body.splitlines(), True))
 for before, after in [
-    ('Area', 'Directory'), ('|:--|--:|:--|', '|---|---|'),
+    ('Area', 'Directory'), ('|:--|--:|:--|:--|:--|', '|---|---|'),
     ('**gone**', '**&#160;fake**'), ('**gone**', '**&#034;fake**'),
     ('**gone**', '**a&#999999999999999999999999;**'),
     ('**gone**', '**fake↳**'), ('**gone**', '**fake/**'),
@@ -737,6 +766,32 @@ for before, after in [
 for transform in [lambda rows: rows[:4]+rows[5:], lambda rows: rows+rows[4:5],
                   lambda rows: rows[:5]+rows[6:]]:
     cases.append((transform(valid.splitlines()), False))
+for column in [2, 3]:
+    for bad in ['', '—', '-', 'x', '█'*13, '█'*12+'▏', '▏█', '▏▎', '█ █', '** **']:
+        rows = valid.splitlines()
+        cells = m.row_cells(rows[4])
+        cells[column] = '**'+bad+'**'
+        rows[4] = '| ' + ' | '.join(cells) + ' |'
+        cases.append((rows, False))
+    for glyph in ['▏', '█'*12, '█'*11+'▉', *'▏▎▍▌▋▊▉']:
+        rows = valid.splitlines()
+        cells = m.row_cells(rows[4])
+        cells[column] = '**'+glyph+'**'
+        rows[4] = '| ' + ' | '.join(cells) + ' |'
+        cases.append((rows, True))
+for body, column in [(zero, 2), (m.render_entries([(2, 0, 'crates/a/src/lib.rs')]), 3)]:
+    for index in [4, 5, 6]:
+        for bad in ['**', '***', '****', '** **', '**▏**', '**—**', '▏']:
+            rows = body.splitlines()
+            cells = m.row_cells(rows[index])
+            assert cells[column] == ''
+            cells[column] = bad
+            rows[index] = '| ' + ' | '.join(cells) + ' |'
+            assert rows != body.splitlines(), (index, column, bad)
+            assert m.parse(rows)[0] is None, (index, column, bad)
+            cases.append((rows, False))
+cases.append((['**Lines added: 3**', '| Area | Changes | Share of additions |',
+               '|:--|--:|:--|', '| **docs** | **+3/−0** | **100%** |'], False))
 for rows, expected in cases:
     assert (m.parse(rows)[0] is not None) == expected, rows
 print(json.dumps(cases))

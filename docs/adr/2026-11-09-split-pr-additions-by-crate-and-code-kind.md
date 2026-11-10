@@ -13,16 +13,23 @@ human figures cannot prove exact arithmetic; exact commit regeneration owns nume
 ## Considered options
 
 - A second crate table or global crate-tests bucket: rejected because both obscure the hierarchy.
-- Bars and structural arrows: rejected because bold parents and visible indentation read better.
+- Structural arrows or bars in the share cell: rejected to keep hierarchy and shares readable.
+- Separate addition and deletion bars on a common sibling scale: chosen for comparable lengths.
 - Shared-source categories or parsing inline tests: rejected in favor of deterministic path counts.
 - One hierarchical table with both counts: chosen.
 
 ## Decision
 
 1. Keep the `**Lines added: <figure>**` title and `af-pr-lines:v1` refresh markers. Emit exactly
-   one table with headers `Area | Changes | Share of additions`. Changes use `+382/−10` with
-   U+2212 minus and no spaces. There are no bars, arrows, tabs or displayed directory suffixes.
-   Root rows and crate parents are bold in all three cells; terminal children are plain.
+   one table with headers `Area | Changes | + | − | Share of additions`. Changes use `+382/−10` with
+   U+2212 minus and no spaces. There are no structural arrows, tabs or displayed directory suffixes.
+   Root rows and crate parents are bold in all nonempty cells; terminal children are plain.
+   Separate `+` and `−` bar columns use one common scale per sibling group: the largest exact
+   added or deleted count among those siblings. Children use their own sibling scale, not
+   their ancestor's scale. Bars are at most twelve full cells with Unicode eighth blocks
+   (`▏▎▍▌▋▊▉█`), rounded half up with integer arithmetic. Positive counts get at least a `▏`
+   sliver; zero counts have truly blank bar cells, even on bold rows. Deletion-only rows
+   have a blank `+` cell and visible `−` bar. This presentation adds no JSON fields or version.
    Four `&nbsp;` entities per depth visibly indent children before any bold markup.
 2. Root rows partition additions and deletions independently by actual first path component.
    `crates` includes all crate tests. Crate children have lowercase `main`, `tests`, `other`
@@ -57,9 +64,11 @@ human figures cannot prove exact arithmetic; exact commit regeneration owns nume
    positive count. Remove obsolete unmerged v3; no old aliases or compatibility readers exist.
 7. The checker regenerates the entire report from exact PR `base.sha...head.sha`, including
    deleted counts and nested changes. Missing or stale old shapes refresh through the existing
-   bounded mechanism. Shape parsers reject malformed depth, parent, bold, count and share forms;
-   canonical regeneration owns exact sums, missing rows and numeric truth. Python and Rust
-   parsers have parity tests, and CLI help describes the complete block.
+   bounded mechanism. Shape parsers reject malformed depth, parent, bold, count, share and
+   bounded bar glyph forms, including nonblank zero bars and blank positive bars. The previous
+   three-column human format is refused. Canonical regeneration owns exact sums, missing rows,
+   numeric truth and each exact bar length independently. Python and Rust parsers have parity
+   tests, and CLI help describes the complete block.
 8. Base-checkout generation, refresh authority, Task reports and publication boundaries stay
    unchanged. No workflow or `.af` authority changes belong to this design.
 

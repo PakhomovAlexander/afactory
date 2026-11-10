@@ -528,22 +528,22 @@ def main():
     def lines_block(*body):
         return '<!-- af-pr-lines:v1 -->\n' + '\n'.join(body) + '\n<!-- /af-pr-lines -->\n'
 
-    header = ['| Area | Changes | Share of additions |', '|:--|--:|:--|']
-    table = lines_block('**Lines added: 18.9k**', '', *header, '| **crates** | **+12k/−0** | **64%** |',
-                        '| **docs** | **+5.5k/−0** | **29%** |', '| **tests** | **+1.3k/−0** | **7%** |')
+    header = ['| Area | Changes | + | − | Share of additions |', '|:--|--:|:--|:--|:--|']
+    table = lines_block('**Lines added: 18.9k**', '', *header, '| **crates** | **+12k/−0** | **████████████** |  | **64%** |',
+                        '| **docs** | **+5.5k/−0** | **█████▌** |  | **29%** |', '| **tests** | **+1.3k/−0** | **█▎** |  | **7%** |')
     lines_passing = {
         'a lines block with a table': event(description(BLOCK, table)),
         'a lines block with a dot directory and a tenth': event(description(BLOCK, lines_block(
-            '**Lines added: 10k**', '', *header, '| **x** | **+9.9k/−0** | **96%** |',
-            '| **.github** | **+412/−0** | **4%** |'))),
+            '**Lines added: 10k**', '', *header, '| **x** | **+9.9k/−0** | **████████████** |  | **96%** |',
+            '| **.github** | **+412/−0** | **▌** |  | **4%** |'))),
         'a lines block with a root file and a sliver': event(description(BLOCK, lines_block(
-            '**Lines added: 7.5k**', '', *header, '| **crates** | **+7.5k/−0** | **100%** |',
-            '| **Cargo.lock** | **+4/−0** | **<1%** |'))),
+            '**Lines added: 7.5k**', '', *header, '| **crates** | **+7.5k/−0** | **████████████** |  | **100%** |',
+            '| **Cargo.lock** | **+4/−0** | **▏** |  | **<1%** |'))),
         'the lines block before the report block': event(LINES + '\n' + description(BLOCK, '')),
         'a comment after the title': event(description(BLOCK, lines_block(
             '**Lines added: none** <!-- counted 2026-10-22 -->'))),
         'the table without a blank line after the title': event(description(BLOCK, lines_block(
-            '**Lines added: 12**', *header, '| **docs** | **+12/−0** | **100%** |'))),
+            '**Lines added: 12**', *header, '| **docs** | **+12/−0** | **████████████** |  | **100%** |'))),
         'the lines block with CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
     }
     for case, payload in lines_passing.items():
@@ -562,19 +562,19 @@ def main():
         'a title without its table': (event(description(BLOCK, lines_block(
             '**Lines added: 5k**'))), 'the title is not followed by the table'),
         'none followed by a table': (event(description(BLOCK, lines_block(
-            '**Lines added: none**', '', *header, '| **docs** | **+3/−0** | **100%** |'))),
+            '**Lines added: none**', '', *header, '| **docs** | **+3/−0** | **████████████** |  | **100%** |'))),
             'is the whole block, but more follows'),
         'a table with another header': (event(description(BLOCK, lines_block(
             '**Lines added: 3**', '', '| Dir | Lines | Share |', '|:--|--:|:--|',
-            '| **docs** | **+3/−0** | **100%** |'))), 'is not the table header'),
+            '| **docs** | **+3/−0** | **████████████** |  | **100%** |'))), 'is not the table header'),
         'a row without its share': (event(description(BLOCK, lines_block(
-            '**Lines added: 3**', '', *header, '| docs | 3 |'))), 'not a row of three cells'),
+            '**Lines added: 3**', '', *header, '| docs | 3 |'))), 'not a row of five cells'),
         'a row with an exact figure past 1000': (event(description(BLOCK, lines_block(
-            '**Lines added: 5k**', '', *header, '| **docs** | **+5000/−0** | **100%** |'))),
+            '**Lines added: 5k**', '', *header, '| **docs** | **+5000/−0** | **████████████** |  | **100%** |'))),
             'invalid changes or share'),
         'two rows for one directory': (event(description(BLOCK, lines_block(
-            '**Lines added: 6**', '', *header, '| **docs** | **+3/−0** | **50%** |',
-            '| **docs** | **+3/−0** | **50%** |'))), '`docs` has two rows'),
+            '**Lines added: 6**', '', *header, '| **docs** | **+3/−0** | **████████████** |  | **50%** |',
+            '| **docs** | **+3/−0** | **████████████** |  | **50%** |'))), '`docs` has two rows'),
         'a lines block in a backtick fence': (event(description(BLOCK, '```\n' + LINES
                                                                 + '```\n')), 'inside a code block'),
         'a lines block indented four spaces': (event(description(BLOCK, ''.join(
@@ -588,11 +588,11 @@ def main():
         'the title after a comment that opens its line': (event(description(BLOCK, lines_block(
             '<!-- counted --> **Lines added: none**'))), 'inside a code block, an HTML block or an HTML comment'),
         'the table in a fence after the title': (event(description(BLOCK, lines_block(
-            '**Lines added: 12**', '', '```', *header, '| **docs** | **+12/−0** | **100%** |', '```'))),
+            '**Lines added: 12**', '', '```', *header, '| **docs** | **+12/−0** | **████████████** |  | **100%** |', '```'))),
             'part of the lines added block is inside a code block'),
         'a fenced row after a whole table': (event(description(BLOCK, lines_block(
-            '**Lines added: 12**', '', *header, '| **docs** | **+12/−0** | **100%** |', '```',
-            '| **x** | **+1/−0** | **1%** |', '```'))), 'part of the lines added block is inside a code block'),
+            '**Lines added: 12**', '', *header, '| **docs** | **+12/−0** | **████████████** |  | **100%** |', '```',
+            '| **x** | **+1/−0** | **████████████** |  | **1%** |', '```'))), 'part of the lines added block is inside a code block'),
         'a comment line inside the block': (event(description(BLOCK, lines_block(
             '**Lines added: none**', '<!-- counted 2026-10-22 -->'))),
             'part of the lines added block is inside a code block, an HTML block or an HTML comment'),
@@ -876,8 +876,8 @@ def quarantine():
 
 
 # What `scripts/pr-lines.py` renders for the fixture repository's commits: twelve lines of docs.
-RENDERED = ('**Lines added: 12**\n\n| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
-            '| **docs** | **+12/−0** | **100%** |')
+RENDERED = ('**Lines added: 12**\n\n| Area | Changes | + | − | Share of additions |\n|:--|--:|:--|:--|:--|\n'
+            '| **docs** | **+12/−0** | **████████████** |  | **100%** |')
 FRESH = '<!-- af-pr-lines:v1 -->\n' + RENDERED + '\n<!-- /af-pr-lines -->\n'
 STALE = FRESH.replace('| docs/ | 12 |', '| docs/ | 11 |').replace('**Lines added: 12**',
                                                               '**Lines added: 11**')
@@ -919,6 +919,26 @@ def refreshing(pipeline):
         # Markers shown as code are text: they stay, and the real block is inserted.
         'markers inside a code fence': (fenced, fenced.replace(end, end + '\n' + FRESH)),
     }
+    # Empty bold wrappers must not normalize to canonical blank zero bars.
+    tool = module.pr_lines()
+    for added, deleted, column in [(0, 2, 2), (2, 0, 3)]:
+        rendered = tool.render_entries([(added, deleted, 'crates/a/src/lib.rs')])
+        canonical = description(BLOCK, tool.BEGIN + '\n' + rendered + '\n' + tool.END + '\n')
+        assert module.lines_problems(canonical, rendered) == []
+        for index in [4, 5]:
+            for bad in ['**', '***', '****']:
+                rows = rendered.splitlines()
+                cells = tool.row_cells(rows[index])
+                assert cells[column] == ''
+                cells[column] = bad
+                rows[index] = '| ' + ' | '.join(cells) + ' |'
+                malformed = '\n'.join(rows)
+                before = canonical.replace(rendered, malformed)
+                assert before != canonical, (column, index, bad)
+                assert module.lines_problems(before, rendered), (column, index, bad)
+                repaired = refresh(before, rendered)
+                assert repaired == canonical, (column, index, bad, repaired)
+                assert module.lines_problems(repaired, rendered) == []
     for case, (before, after) in cases.items():
         assert refresh(before, RENDERED) == after, f'{case}:\n{refresh(before, RENDERED)!r}'
         if not before:
@@ -985,6 +1005,11 @@ def refreshing(pipeline):
         assert code == 0 and wrote == description(BLOCK, FRESH), said
         assert 'the block is not that of this pull request\'s commits; wrote the description' \
             in said, said
+        for bad in ['**', '***', '****']:
+            malformed = FRESH.replace(' |  | ', ' | ' + bad + ' | ', 1)
+            assert malformed != FRESH
+            code, said, wrote = run(description(BLOCK, malformed))
+            assert code == 0 and wrote == description(BLOCK, FRESH), (bad, said, wrote)
         # Absent: inserted after the report block.
         code, said, wrote = run(absent)
         assert code == 0 and wrote == absent.replace(end, end + '\n' + FRESH), said
@@ -1059,15 +1084,15 @@ def refreshing(pipeline):
         git('commit', '-qm', 'base advanced')
         base = git('rev-parse', 'HEAD')
         enriched = ('<!-- af-pr-lines:v1 -->\n**Lines added: 17**\n\n'
-                    '| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
-                    '| **docs** | **+12/−0** | **71%** |\n'
-                    '| **crates** | **+5/−0** | **29%** |\n'
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+4/−0** | **80%** |\n'
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +2/−0 | 50% |\n'
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;other | +1/−0 | 25% |\n'
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +1/−0 | 25% |\n'
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;**b&#124;c** | **+1/−0** | **20%** |\n'
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +1/−0 | 100% |\n'
+                    '| Area | Changes | + | − | Share of additions |\n|:--|--:|:--|:--|:--|\n'
+                    '| **docs** | **+12/−0** | **████████████** |  | **71%** |\n'
+                    '| **crates** | **+5/−0** | **█████** |  | **29%** |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+4/−0** | **████████████** |  | **80%** |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +2/−0 | ████████████ |  | 50% |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;other | +1/−0 | ██████ |  | 25% |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tests | +1/−0 | ██████ |  | 25% |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;**b&#124;c** | **+1/−0** | **███** |  | **20%** |\n'
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +1/−0 | ████████████ |  | 100% |\n'
                     '<!-- /af-pr-lines -->\n')
         stale_split = (enriched.replace('+2/−0', '+1/−0')
                        .replace('tests | +1/−0', 'tests | +2/−0'))
@@ -1083,7 +1108,7 @@ def refreshing(pipeline):
         code, said, wrote = run(description(BLOCK, overview))
         assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
         for stale_nested in [
-                enriched.replace('| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;other | +1/−0 | 25% |\n', ''),
+                enriched.replace('| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;other | +1/−0 | ██████ |  | 25% |\n', ''),
                 enriched.replace('25%', '6%'),
                 enriched.replace('/−0', '/−1'),
                 enriched.replace('**+4/−0**', '**+3/−0**')]:
@@ -1096,6 +1121,11 @@ def refreshing(pipeline):
                               capture_output=True, text=True, env=GIT_ENV)
         assert done.returncode == 1 and 'replace it with' in done.stderr, done.stderr
         assert enriched.strip().split('\n', 1)[1].rsplit('\n', 1)[0] in done.stderr, done.stderr
+        # A valid-looking stale + bar alone is also refreshed, without changing a count.
+        stale_bar = enriched.replace('**█████**', '**▏**')
+        assert stale_bar != enriched
+        code, said, wrote = run(description(BLOCK, stale_bar))
+        assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
         # Deleted counts are part of canonical equality even with unchanged additions.
         # Delete a base file to make a genuinely deletion-only PR against that base.
         git('checkout', '-qb', 'delete-only', base)
@@ -1104,9 +1134,18 @@ def refreshing(pipeline):
         git('commit', '-qm', 'delete only')
         head = git('rev-parse', 'HEAD')
         deletion = ('<!-- af-pr-lines:v1 -->\n**Lines added: 0**\n\n'
-                    '| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
-                    '| **README.md** | **+0/−1** | **—** |\n<!-- /af-pr-lines -->\n')
-        for stale in [deletion.replace('/−1', '/−2'), LINES,
+                    '| Area | Changes | + | − | Share of additions |\n|:--|--:|:--|:--|:--|\n'
+                    '| **README.md** | **+0/−1** |  | **████████████** | **—** |\n<!-- /af-pr-lines -->\n')
+        for bad in ['**', '***', '****']:
+            malformed = deletion.replace(' |  | ', ' | ' + bad + ' | ', 1)
+            assert malformed != deletion
+            before = description(BLOCK, malformed)
+            rendered = deletion.split('\n', 1)[1].rsplit('<!-- /af-pr-lines -->', 1)[0].strip()
+            assert module.lines_problems(before, rendered), bad
+            code, said, wrote = run(before)
+            assert code == 0 and wrote == description(BLOCK, deletion), (bad, said, wrote)
+        for stale in [deletion.replace('/−1', '/−2'),
+                      deletion.replace('**████████████**', '**▏**'), LINES,
                       '<!-- af-pr-lines:v1 -->\n**Lines added: 0**\n\n'
                       '| Directory | Added | Share |\n|:--|--:|:--|\n'
                       '| README.md | 1 | █ 100% |\n<!-- /af-pr-lines -->\n']:
@@ -1138,18 +1177,18 @@ def refreshing(pipeline):
             head = git('rev-parse', 'HEAD')
             name = path.split('/')[-1]
             indent = '&nbsp;' * (4 if path == 'crates/a' else 0)
-            rows = [f'| **{name}** | **+3/−0** | **75%** |',
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+3/−0** | **100%** |',
-                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +3/−0 | 100% |',
-                    '| **&#34;crates&#32;(file)&#34;** | **+1/−0** | **25%** |',
-                    '| **&#34;crates&#32;(file2)&#34;** | **+0/−2** | **0%** |']
+            rows = [f'| **{name}** | **+3/−0** | **████████████** |  | **75%** |',
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;**a** | **+3/−0** | **████████████** |  | **100%** |',
+                    '| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;main | +3/−0 | ████████████ |  | 100% |',
+                    '| **&#34;crates&#32;(file)&#34;** | **+1/−0** | **████** |  | **25%** |',
+                    '| **&#34;crates&#32;(file2)&#34;** | **+0/−2** |  | **████████** | **0%** |']
             if indent:
-                rows = ['| **crates** | **+4/−2** | **100%** |',
-                        f'| {indent}**a** | **+3/−0** | **75%** |', rows[2],
-                        f'| {indent}&#34;a&#32;(file)&#34; | +1/−0 | 25% |',
-                        f'| {indent}&#34;a&#32;(file2)&#34; | +0/−2 | 0% |']
+                rows = ['| **crates** | **+4/−2** | **████████████** | **██████** | **100%** |',
+                        f'| {indent}**a** | **+3/−0** | **████████████** |  | **75%** |', rows[2],
+                        f'| {indent}&#34;a&#32;(file)&#34; | +1/−0 | ████ |  | 25% |',
+                        f'| {indent}&#34;a&#32;(file2)&#34; | +0/−2 |  | ████████ | 0% |']
             expected = ('<!-- af-pr-lines:v1 -->\n**Lines added: 4**\n\n'
-                        '| Area | Changes | Share of additions |\n|:--|--:|:--|\n'
+                        '| Area | Changes | + | − | Share of additions |\n|:--|--:|:--|:--|:--|\n'
                         + '\n'.join(rows) + '\n<!-- /af-pr-lines -->\n')
             stale = expected.replace('(file2)', '(file)').replace('/−2', '/−9')
             payload = event(description(BLOCK, stale))

@@ -8,7 +8,10 @@ Siblings sort by descending additions, descending deletions, then raw identity. 
 immediate parent additions; zero child is 0%, zero denominator is undefined (—).
 Figures round half up: exact below 1000, 0.1k below 10k, 1k above. Percentages round half
 up, positive values below 0.5% show <1%. Subtotals never add to the PR totals again.
-One table uses bold roots/parents and four &nbsp; entities per depth, with safe literal names.
+Separate +/− bars use up to twelve cells, sharing the largest sibling addition or deletion
+count; children have their own sibling scale. Eighths round half up, positives get a sliver,
+zeros are blank. One table uses bold roots/parents and four &nbsp; entities per depth,
+with safe literal names.
 --json emits only af/PrLines@4 (schemas/pr-lines-v4.json), with exact added/deleted counts.
 The unchanged af-pr-lines:v1 markers delimit canonical refresh from exact PR commits.
 """
@@ -25,8 +28,9 @@ NONE = 'none'
 SCHEMA = 'af/PrLines@4'
 INDENT = '&nbsp;' * 4
 KINDS = ('main', 'tests', 'other')
-HEADER = ['Area', 'Changes', 'Share of additions']
-SEPARATOR_ROW = '|:--|--:|:--|'
+HEADER = ['Area', 'Changes', '+', '−', 'Share of additions']
+SEPARATOR_ROW = '|:--|--:|:--|:--|:--|'
+BAR = re.compile(r'^(?:█{1,12}|█{0,11}[▏▎▍▌▋▊▉])?$')
 FIGURE = re.compile(r'^(?:[1-9][0-9]{0,2}|0|[1-9][0-9]*(?:\.[0-9])?k)$')
 TITLE = re.compile(r'^\*\*Lines added: (none|0|[1-9][0-9]{0,2}|[1-9][0-9]*(?:\.[0-9])?k)\*\*$')
 SEPARATOR = re.compile(r'^:?-+:?$')
@@ -121,6 +125,15 @@ def figure(n):
     return f'{(n + 500) // 1000}k'
 
 
+def bar(n, maximum):
+    """At most twelve cells on the common sibling scale; integer half-up eighths."""
+    if not n:
+        return ''
+    eighths = max(1, (n * 96 * 2 + maximum) // (maximum * 2))
+    full, fraction = divmod(eighths, 8)
+    return '█' * full + ('▏▎▍▌▋▊▉'[fraction - 1] if fraction else '')
+
+
 def share(n, total):
     """Parent-relative addition share, undefined for a zero denominator."""
     if not total:
@@ -181,12 +194,14 @@ def render(data):
 
     def append(rows, parent, depth):
         names = display_names(rows)
+        maximum = max(max(row['added'], row['deleted']) for row in rows)
         for row in rows:
             n = row['added']
             cells = [escape(names[row['name']]),
-                     f"+{figure(n)}/−{figure(row['deleted'])}", share(n, parent)]
+                     f"+{figure(n)}/−{figure(row['deleted'])}",
+                     bar(n, maximum), bar(row['deleted'], maximum), share(n, parent)]
             if depth == 0 or row['children']:
-                cells = [f'**{cell}**' for cell in cells]
+                cells = [f'**{cell}**' if cell else '' for cell in cells]
             cells[0] = INDENT * depth + cells[0]
             lines.append('| ' + ' | '.join(cells) + ' |')
             if row['children']:
@@ -245,14 +260,14 @@ def parse(lines):
     if row_cells(lines[1]) != HEADER:
         return None, f'the line after the title is not the table header `{header}`: `{lines[1]}`'
     separator = row_cells(lines[2])
-    if separator is None or len(separator) != 3 or not all(SEPARATOR.match(c) for c in separator):
+    if separator is None or len(separator) != 5 or not all(SEPARATOR.match(c) for c in separator):
         return None, f'the header is not followed by its separator `{SEPARATOR_ROW}`: `{lines[2]}`'
     rows, stack, branches, parents = {}, [], set(), set()
     for line in lines[3:]:
         cells = row_cells(line)
-        if cells is None or len(cells) != 3:
-            return None, f'not a row of three cells: `{line}`'
-        name, changes, rest = cells
+        if cells is None or len(cells) != 5:
+            return None, f'not a row of five cells: `{line}`'
+        name, changes, added_bar, deleted_bar, rest = cells
         depth = 0
         while name.startswith(INDENT):
             depth += 1
@@ -262,7 +277,12 @@ def parse(lines):
             name = name[2:-2]
             if not all(cell.startswith('**') and cell.endswith('**') for cell in (changes, rest)):
                 return None, 'inconsistent bold row'
+            for cell in (added_bar, deleted_bar):
+                if cell and (not cell[2:-2] or not (cell.startswith('**') and cell.endswith('**'))):
+                    return None, 'inconsistent bold bar'
             changes, rest = changes[2:-2], rest[2:-2]
+            added_bar = added_bar[2:-2] if added_bar else ''
+            deleted_bar = deleted_bar[2:-2] if deleted_bar else ''
         if depth > 2 or depth > len(stack):
             return None, 'missing hierarchy parent'
         stack = stack[:depth]
@@ -274,6 +294,9 @@ def parse(lines):
         if not counts or not all(FIGURE.fullmatch(n) for n in counts.groups()) \
                 or counts.groups() == ('0', '0') or not SHARE.fullmatch(rest):
             return None, 'invalid changes or share'
+        if not all(BAR.fullmatch(cell) and (count == '0') == (cell == '')
+                   for cell, count in zip((added_bar, deleted_bar), counts.groups())):
+            return None, 'invalid addition or deletion bar'
         parent = stack[-1] if stack else None
         if (depth == 0 and not bold) or (depth == 2 and bold) \
                 or (depth and (stack[0][0] != 'crates' or
@@ -290,7 +313,7 @@ def parse(lines):
             parents.add(path[:-1])
         if depth == 1 and bold:
             branches.add(path)
-        rows[path] = (changes, rest, bold)
+        rows[path] = (changes, added_bar, deleted_bar, rest, bold)
         stack.append((name, bold, counts[1]))
     if branches - parents:
         return None, 'hierarchy branch has no children'

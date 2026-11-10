@@ -313,7 +313,7 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   runs the same check locally.
 - The description states additions and deletions per area in the template's `Lines added`
   section ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
-  `python3 scripts/pr-lines.py` prints the title and one `Area`/`Changes`/`Share of additions`
+  `python3 scripts/pr-lines.py` prints the title and one `Area`/`Changes`/`+`/`−`/`Share of additions`
   table. Root rows partition both `git diff --numstat BASE...HEAD` counts by actual first path
   component; root files keep their names except for collision labels described below. Rename
   changes belong to the destination. Binary, pure-rename 0/0 and other 0/0 entries contribute
@@ -327,8 +327,8 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   Every parent reconciles additions and deletions independently with its children. Roots
   reconcile with both PR totals; repeated subtotals are not additional lines. Nodes with either
   count positive appear. Siblings sort by descending additions, descending deletions, raw name.
-  All root rows and crate parents are bold across all cells; terminal children are plain.
-  Children use four `&nbsp;` entities per depth, without arrows, bars or directory suffixes.
+  All root rows and crate parents are bold across all nonempty cells; terminal children are plain.
+  Children use four `&nbsp;` entities per depth, without arrows or directory suffixes.
   For a file/directory sibling collision after removing slashes, the directory keeps its name
   and only the file gets `name (file)`, then `(file2)`, `(file3)`, etc. until unique. Allocation
   follows raw identity order and reserves all literal bare sibling names and allocated labels.
@@ -336,6 +336,12 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   Literal Markdown/HTML syntax, whitespace and tree arrows in names are numeric entities,
   with visible quotes around names containing whitespace, so filenames cannot spoof bold or
   indentation (literal `&nbsp;` becomes `&#38;nbsp;`).
+  Separate `+` and `−` bar columns share one scale per sibling group: the largest exact
+  added or deleted count among those siblings. Children use their own sibling scale, not
+  their ancestor's scale. Bars have at most twelve full cells, with Unicode eighth blocks
+  (`▏▎▍▌▋▊▉█`) rounded half up using integers. Positive counts have at least a `▏` sliver;
+  zero counts have blank cells, including bold parent rows. Deletion-only rows have a blank
+  `+` cell and a visible `−` bar. Bars are presentation only and never appear in JSON.
   Changes use compact `+382/−10` syntax. Figures are exact below 1000, rounded half up to 0.1k
   below 10k and 1k thereafter. Shares use immediate parent additions (PR additions for roots),
   rounded half up; positive shares below 0.5% show `<1%`. A zero child of a positive parent is
@@ -348,8 +354,10 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   Earlier JSON shapes are refused, without aliases. The `af-pr-lines:v1` markers remain the
   refresh container; there is no second table or schema heading. See the
   [crate-report decision](docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
-  Shape parsing checks parents, unique paths and valid kinds, but never sums rounded figures;
-  the checker regenerates the complete hierarchy from exact commits to judge numeric correctness.
+  Shape parsing checks parents, unique paths, valid kinds and bounded bar glyphs, including
+  blank zero bars and nonblank positive bars. It refuses the previous three-column human
+  format and never sums rounded figures. The checker regenerates the complete hierarchy
+  from exact commits to judge numeric correctness and each bar length independently.
   CI maintains the block
   ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)): the `PR report`
   workflow renders it again from the pull request's commits on every opening, edit and push,

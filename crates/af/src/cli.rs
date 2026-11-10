@@ -2559,9 +2559,12 @@ without a template, the two blocks under their headings. scripts/check-pr-report
 When the checkout has scripts/pr-lines.py and it cannot print its block, nothing is printed and \
 the command exits 1; so does a block scripts/check-pr-report.py would refuse, naming what is \
 missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the header `| \
-Area | Changes | Share of additions |`, its separator and at least one row, each area once \
+Area | Changes | + | − | Share of additions |`, its separator and at least one row, each area once \
 per parent. Roots and parents are bold; children use four `&nbsp;` entities per depth. \
-Changes use +N/−N; shares use parent additions (0% for a zero child, — for a zero parent). \
+Changes use +N/−N. Separate + and − bars share the largest sibling addition or deletion \
+count as their scale, up to twelve cells with half-up eighths and a minimum positive sliver; \
+zero bars are blank, including bold parents. Children use their own sibling scale. \
+Shares use parent additions (0% for a zero child, — for a zero parent). \
 The crates row contains crate children and their main, tests, other leaves in the same \
 table; direct files stay plain children. Colliding file names use (file), (file2), etc., \
 skipping literal sibling names; directories keep their names. Deletion-only changes retain the table with title \

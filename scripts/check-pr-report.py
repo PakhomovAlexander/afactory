@@ -31,8 +31,11 @@ paragraph line above it, which GitHub shows as code.
 
 The description also carries additions and deletions per area (ADR-0195): exactly one block
 between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, rendered as text by the same
-rules, with the title `**Lines added: <figure>**` and one Area/Changes/Share of additions table.
-Bold parents and NBSP-indented crate/code-kind children share this table. Deletion-only
+rules, with the title `**Lines added: <figure>**` and one Area/Changes/+/−/Share of additions table.
+Bold parents and NBSP-indented crate/code-kind children share this table. Separate +/− bars
+share the largest sibling addition or deletion count as their scale; children have their own
+sibling scale. Bars use up to twelve cells with half-up eighths, positive slivers and blank zeros.
+Deletion-only
 changes retain it with title 0; only an empty numeric diff uses `**Lines added: none**` alone.
 Given the pull request's commits — the event's `base.sha` and `head.sha`, which the workflow
 fetched, or `--diff BASE HEAD` — the whole block is rendered again and one that differs is

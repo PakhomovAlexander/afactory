@@ -32,10 +32,12 @@ review corpora belong in consuming repositories, not here.
   process that does ([`docs/design/issue-triage.md`](docs/design/issue-triage.md)).
 - The description also states additions and deletions per area: the block between
   `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->` that `python3 scripts/pr-lines.py`
-  prints — a Lines added title and one Area/Changes/Share of additions table with bold roots
+  prints — a Lines added title and one Area/Changes/+/−/Share of additions table with bold roots
   and parents, four NBSP entities per child depth, compact +N/−N counts and parent-relative
-  addition shares. `crates` contains all crate tests and lowercase `main`, `tests`, `other`
-  leaves; direct files stay file children (the exact rules are in `CONTRIBUTING.md`).
+  addition shares. Separate +/− bars share the largest sibling addition or deletion count,
+  up to twelve cells with half-up eighths, a positive sliver and blank zero cells; children
+  use their own sibling scale. `crates` contains all crate tests and lowercase `main`, `tests`,
+  `other` leaves; direct files stay file children (the exact rules are in `CONTRIBUTING.md`).
   CI maintains this single hierarchical table: the same check renders the block again
   from the pull request's commits and, when the description's block is missing or differs,
   writes it into the description itself; paste the block or leave the template's markers. The
