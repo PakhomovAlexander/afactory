@@ -189,9 +189,8 @@ fn resolve_names_the_exact_id_and_prints_both_configurations() {
         "resolve  `Fable 5.1/xhigh` on claude-work (claude)",
         "`Fable 5.1` is the display name of the exact ID claude-fable-5-1",
         "xhigh: confirmed, claude-fable-5-1 lists low, medium, high, xhigh, max",
-        "    reviewer.toml  [runner]\n                   program = \"claude\"\n                   args = [{ value = \"--model\" }, { value = \"claude-fable-5-1\" }, { value = \"--effort\" }, { value = \"xhigh\" }]\n",
         "    worker.toml    [runner]\n                   kind = \"model\"\n                   provider_kind = \"claude\"\n                   model = \"claude-fable-5-1\"\n                   effort = \"xhigh\"\n",
-        "    bindings       [providers]\n                   \"PACKAGE\" = \"claude-work\"\n                   # af review run … --provider NODE=claude-work",
+        "    bindings       [providers]\n                   \"PACKAGE\" = \"claude-work\"",
     ] {
         assert!(lines.contains(part), "{part}:\n{lines}");
     }
@@ -217,10 +216,10 @@ fn resolve_names_the_exact_id_and_prints_both_configurations() {
     let lines = resolve(&codex, "GPT-6 Sol/ultra").join("\n");
     assert!(lines.contains("names the exact ID gpt-6-sol"), "{lines}");
     assert!(lines.contains("ultra: confirmed"), "{lines}");
-    assert!(
-        lines.contains("{ value = \"model_reasoning_effort=\\\"ultra\\\"\" }"),
-        "{lines}"
-    );
+    assert!(lines.contains("provider_kind = \"codex\""), "{lines}");
+    assert!(lines.contains("model = \"gpt-6-sol\""), "{lines}");
+    assert!(lines.contains("effort = \"ultra\""), "{lines}");
+    assert!(!lines.contains("reviewer.toml"), "{lines}");
     let lines = resolve(&codex, "gpt-6-luna/ultra").join("\n");
     assert!(
         lines.contains(
@@ -254,18 +253,6 @@ fn the_configurations_parse_as_afs_own_schemas() {
                 model: model.into(),
                 effort: effort.into(),
             }
-        );
-        let reviewer = configuration.reviewer.join("\n");
-        toml::from_str::<toml::Value>(&reviewer).unwrap();
-        let manifest =
-            format!("name = \"x\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n{reviewer}\n");
-        let manifest: af_pipeline_config::lock::PackageManifest =
-            toml::from_str(&manifest).unwrap();
-        let settings =
-            af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
-        assert_eq!(
-            (settings.model.as_str(), settings.effort.as_str()),
-            (model, effort)
         );
         let binding: toml::Value = toml::from_str(&configuration.binding.join("\n")).unwrap();
         assert_eq!(

@@ -15,7 +15,7 @@ maps the rest of the documentation. New ADRs follow that stable guide: add only 
 `python3 -I scripts/adr.py list`; no central index edit or sequence allocation is required.
 That guide supersedes older Task prompt wording about assigned ADR numbers or README entries.
 Use the pinned Rust toolchain (`rust-toolchain.toml`) and keep `make check` green. Never weaken a
-contract, fixture, gate, budget, or sandbox boundary to make a test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
+contract, fixture, gate, budget, or sandbox boundary to make a test or review pass. Project-specific pipelines, reviewer packages, Task state, and captured
 review corpora belong in consuming repositories, not here.
 
 - Every change to this repository is made through af Tasks: an implementation pipeline makes
@@ -98,11 +98,11 @@ review corpora belong in consuming repositories, not here.
 - Task is the common execution abstraction. Every Pipeline has a public input/output contract,
   including embedded and generated Pipelines; newly generated plans require developer review and
   exact-plan approval before execution. The runtime's decisions, contracts and walkthroughs are
-  indexed in [docs/task-execution.md](docs/task-execution.md). Captured Review operations use
+  indexed in [docs/task-execution.md](docs/task-execution.md). Native Review operations use
   common Task Attempts, preserve canonical domain receipts and require the Review verdict for
   acceptance
   ([ADR-0077](docs/adr/0077-run-captured-review-operations-under-common-task-attempts.md)).
-- Task-backed Review conclusions carry exact cumulative accounting and a checked Task log
+- `af/TaskReviewConclusion@1` carries exact cumulative accounting and a checked Task log
   prefix; report snapshots are never summed as independent spend
   ([ADR-0078](docs/adr/0078-bind-review-conclusions-to-exact-task-accounting.md)).
 - A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
@@ -131,11 +131,14 @@ review corpora belong in consuming repositories, not here.
   manifest. Parent transcripts, whole Ledgers, repository dumps, unrelated documents, and other
   Workers' private reasoning are absent by default; bounded Tool retrieval is recorded
   ([ADR-0028](docs/adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
-- Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the
-  deterministic project gate. Do not start a follow-up Campaign. Use `--heavy` only when a human
-  explicitly requests convergence review; the selected effective convergence authority is pinned
-  and cannot change on resume
-  ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)).
+- Review Tasks are light by default: one closed Round, then fix concrete Findings and run the
+  deterministic project gate. Do not start a follow-up Review Task without human authorization.
+  Convergence review requires an explicit human request and an authored bounded native Pipeline;
+  `af review run/plan` refuses the retired `--heavy` flag. Resume retains the exact original plan;
+  authorized continuation creates a new Task with exact prior ReviewHistory and Base, preserving
+  Round bounds and earlier charges
+  ([native Review](docs/task-execution/campaign-review.md),
+  [original scope policy](docs/adr/0037-default-campaigns-to-one-round-light-review.md)).
 - V3.1 delivery accepts only a verified Task whose target is clean and exactly matches its source
   Snapshot. It creates only a new local branch/worktree after explicit Task-ID confirmation,
   persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
@@ -172,32 +175,45 @@ review corpora belong in consuming repositories, not here.
   executes Gates, accesses credentials, or publishes repository changes. Emitted authority is
   project-owned and becomes trusted only after review and commit on an Authority Snapshot
   ([ADR-0032](docs/adr/0032-generate-review-authority-with-af-onboard.md)).
-- Trusting configured Worker authority and intentionally running `af review run` or `af task
-  start` authorizes delivery of each Worker's exact declared inputs for every retry and later
-  Round or stage in that Campaign or Task. Do not ask for per-call confirmation; undeclared
-  context, changed bindings, delivery, publication, and remote side effects remain unauthorized
+- Trusting configured Worker authority and intentionally executing `af review run --file FILE`,
+  `af task start --file FILE --execute` or an approved captured plan with `af task run` authorizes
+  delivery of each Worker's exact declared inputs for every retry and later Round or stage in that
+  Task. Planning alone grants no execution authority. Do not ask for per-call confirmation;
+  undeclared context, changed bindings, delivery, publication, and remote side effects remain unauthorized
   ([ADR-0033](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md)).
 - Admitted reviewer results may be shown as recorded, not gathered evidence when required sibling
   output is missing, but they never become a partial Ledger, satisfy Semantic Closure, or support
   convergence ([ADR-0034](docs/adr/0034-surface-partial-results-without-ledger-authority.md)).
-- Default Campaign state is addressed by a domain-separated opaque ID derived from its validated
-  label, and resolution must remain beneath the configured root. Enumeration also lists an
-  explicit `--state` directory named by its label; one Campaign under both names and symlinked
-  enumeration fail closed ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
-- Review records state the Campaign's wall-clock, per-Attempt provider usage, and Finding
-  dispositions exactly as `af review report` prints them.
-- Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
-  kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
-  with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist
-  ([ADR-0038](docs/adr/0038-transport-proposals-beside-reviewer-results.md)).
-- Dynamic shards do not rewrite the planned DAG. Pipeline v5 persists a complete Slice Set before
-  a typed Scatter owns tagged sub-invocations, and carries every shard outcome through a lossless
-  Shard Set to whole-Subject closeout and semantic closure
+- Review state belongs to the common Task Store, selected by the same `--repo`, `--state` and
+  inspection `--workspace` selectors as other Tasks. The default Store uses an opaque hash of the
+  canonical repository path under `$XDG_STATE_HOME/af/task/local`; an explicit Store must remain
+  outside the repository and pass storage ownership admission. Task IDs address checked Task
+  logs within that Store through a validated, domain-separated log identity; no Campaign label,
+  manifest or enumeration supplies execution authority
+  ([native Review](docs/task-execution/campaign-review.md)).
+- Review records state the Task's wall-clock and exact cumulative/per-Attempt Provider usage as
+  `af review report ID` prints them, and canonical Finding dispositions as
+  `af review ledger ID` prints them. Complete ReviewHistory retains original Report/Finding
+  identities and prior charges; current-Round report views never replace the complete Ledger.
+- Workers reply through the typed `af.worker-reply/1` output ports. Canonical
+  `review.kernel/ReviewerResult@2` remains a separate domain payload. A source-writing Worker
+  declares one `af/TaskReviewProposal@1` beside one sealed candidate; the kernel checks the exact
+  selected Attempt, original complete Round, selected Reviewer Result and canonical Report/Finding
+  provenance, Evidence links and the complete sealed diff. A declaration grants no promotion or
+  publication authority. The source-writing author remains independent from verification Workers
+  ([native transport and proposals](docs/design/current-contracts-and-task-review.md#native-worker-transport-ownership)).
+- Dynamic shards do not rewrite the planned DAG. Pipeline `af.pipeline/6` persists a complete
+  Slice Set before a typed Scatter owns tagged child Attempts under the common Task allowance,
+  and carries every completed, failed or missing outcome through a lossless Shard Set to
+  whole-Subject closeout and Semantic Closure
   ([ADR-0039](docs/adr/0039-own-dynamic-shards-inside-a-typed-scatter-node.md)).
 - Automatic Integration composes only selected, sealed, disjoint Proposal Manifests. It checks an
-  unpromoted `Capture::Derived` Snapshot and advances only the internal Campaign head plus
-  pending-verification claims in one transaction; branch and PR publication stay outside the
-  kernel ([ADR-0040](docs/adr/0040-promote-only-checked-derived-snapshots.md)).
+  unpromoted derived Snapshot and publishes only the checked internal head plus pending-verification
+  claims in one transaction. Native Task Review binds parent source lineage and a `TaskReviewCommit@1`;
+  acceptance requires the exact complete committed successor Round and its selected verdict.
+  Branch and PR publication stay outside the kernel
+  ([ADR-0040](docs/adr/0040-promote-only-checked-derived-snapshots.md),
+  [native consolidation](docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md)).
 - Diff review resolves policy, Base, and candidate selectors independently. An empty typed Change
   Set is refused before Gates, Provider admission, or Workers; it is never reported as a clean
   review ([ADR-0041](docs/adr/0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)).

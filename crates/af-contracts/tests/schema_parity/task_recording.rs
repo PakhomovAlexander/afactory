@@ -13,23 +13,23 @@ fn adoption_observation_is_an_ordinary_exact_transition_change() {
     };
     transition.validate().unwrap();
     let value = serde_json::to_value(&transition).unwrap();
-    assert_valid("task-transition-v5.json", &value);
+    assert_valid("task-transition-v6.json", &value);
     assert_eq!(
         serde_json::from_value::<TaskTransitionV1>(value.clone()).unwrap(),
         transition
     );
-    af_contracts::event::validate_event_payload(af_contracts::EventType::TaskTransitionV5, &value)
+    af_contracts::event::validate_event_payload(af_contracts::EventType::TaskTransitionV6, &value)
         .unwrap();
     let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
     let mut inspection = json!({
-        "schema":"af/task-inspection@17", "task_id":"observed-task", "revision_id":id('a'),
+        "schema":"af/task-inspection@20", "task_id":"observed-task", "revision_id":id('a'),
         "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001}, "plan_id":id('b'), "chargeable_tokens":"0", "attempts":0,
         "history":[{"sequence":4,"transition":value}], "execution_records":[], "run_reports":[]
     });
-    assert_valid("task-inspection-v17.json", &inspection);
+    assert_valid("task-inspection-v20.json", &inspection);
     inspection["adoption_observations"] = json!([]);
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &inspection,
         "an absent section is omitted, never empty",
     );
@@ -40,7 +40,7 @@ fn adoption_observation_is_an_ordinary_exact_transition_change() {
         .unwrap()
         .remove("observation_id");
     assert_invalid(
-        "task-transition-v5.json",
+        "task-transition-v6.json",
         &missing,
         "observation identity is mandatory",
     );
@@ -61,12 +61,12 @@ fn recording_resume_is_exact_and_stays_distinct_from_an_ordinary_resume() {
     };
     transition.validate().unwrap();
     let value = serde_json::to_value(&transition).unwrap();
-    assert_valid("task-transition-v5.json", &value);
+    assert_valid("task-transition-v6.json", &value);
     assert_eq!(
         serde_json::from_value::<TaskTransitionV1>(value.clone()).unwrap(),
         transition
     );
-    af_contracts::event::validate_event_payload(af_contracts::EventType::TaskTransitionV5, &value)
+    af_contracts::event::validate_event_payload(af_contracts::EventType::TaskTransitionV6, &value)
         .unwrap();
     let mut invalid = Vec::new();
     for field in ["task_revision_id", "plan_id", "report_id"] {
@@ -91,7 +91,7 @@ fn recording_resume_is_exact_and_stays_distinct_from_an_ordinary_resume() {
     invalid.push(bad);
     for bad in invalid {
         assert_invalid(
-            "task-transition-v5.json",
+            "task-transition-v6.json",
             &bad,
             "invalid or invented recovery authority",
         );
@@ -110,14 +110,14 @@ fn recording_resume_is_exact_and_stays_distinct_from_an_ordinary_resume() {
         old_json,
         json!({"writer":"recovery","epoch":2,"now_unix_ms":1234,"change":{"kind":"resumed"}})
     );
-    assert_valid("task-transition-v5.json", &old_json);
+    assert_valid("task-transition-v6.json", &old_json);
 }
 
 #[test]
 fn recording_inspection_retains_optional_histories_and_exact_resource_bounds() {
     let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
     let mut value = json!({
-        "schema":"af/task-inspection@17", "task_id":"review-task", "revision_id":id('a'),
+        "schema":"af/task-inspection@20", "task_id":"review-task", "revision_id":id('a'),
         "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001}, "plan_id":id('b'),
         "chargeable_tokens":u128::MAX.to_string(), "attempts":1,
         "history":[
@@ -129,7 +129,7 @@ fn recording_inspection_retains_optional_histories_and_exact_resource_bounds() {
         ],
         "execution_records":[], "run_reports":[]
     });
-    assert_valid("task-inspection-v17.json", &value);
+    assert_valid("task-inspection-v20.json", &value);
     assert!(value.get("review_integrations").is_none());
     for (pointer, replacement) in [
         (
@@ -145,7 +145,7 @@ fn recording_inspection_retains_optional_histories_and_exact_resource_bounds() {
     ] {
         let mut bad = value.clone();
         *bad.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-inspection-v17.json", &bad, pointer);
+        assert_invalid("task-inspection-v20.json", &bad, pointer);
     }
     for (field, extra) in [
         ("authority", json!({"approved":true})),
@@ -155,26 +155,26 @@ fn recording_inspection_retains_optional_histories_and_exact_resource_bounds() {
     ] {
         let mut bad = value.clone();
         bad[field] = extra;
-        assert_invalid("task-inspection-v17.json", &bad, field);
+        assert_invalid("task-inspection-v20.json", &bad, field);
     }
     let mut bad = value.clone();
     bad["history"][1]["transition"]["change"]["output_ids"] = json!([]);
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &bad,
         "recovery cannot invent selected outputs",
     );
     // Recording recovery is ordinary history: no section or version depends on it.
     let mut ordinary = value.clone();
     ordinary["history"].as_array_mut().unwrap().pop();
-    assert_valid("task-inspection-v17.json", &ordinary);
+    assert_valid("task-inspection-v20.json", &ordinary);
 
     value["history"].as_array_mut().unwrap().push(json!({
         "sequence":2,"transition":{"writer":"writer","epoch":2,"now_unix_ms":3,
             "change":{"kind":"review_integration_selected","phase_id":id('e')}}
     }));
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &value,
         "recorded Integration retains typed phase evidence",
     );
@@ -186,10 +186,14 @@ fn recording_inspection_retains_optional_histories_and_exact_resource_bounds() {
         "node":"root.integration_checks","requires_checks":false,"finished":true,
         "report_id":null,"integration_committed_event_id":null
     }]);
-    assert_valid("task-inspection-v17.json", &value);
+    assert_invalid(
+        "task-inspection-v20.json",
+        &value,
+        "retired Campaign Integration projections are refused",
+    );
     value["review_integrations"][0]["finished"] = json!(false);
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &value,
         "the Empty Integration condition remains enforced",
     );

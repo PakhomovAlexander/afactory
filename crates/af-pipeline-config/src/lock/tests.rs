@@ -12,11 +12,11 @@ fn package() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("pkg");
     std::fs::create_dir_all(root.join("prompts")).unwrap();
-    std::fs::write(root.join("reviewer.toml"), "name = \"pkg\"\n").unwrap();
+    std::fs::write(root.join("worker.toml"), "name = \"pkg\"\n").unwrap();
     std::fs::write(root.join("prompts/review.md"), "review\n").unwrap();
     let outside = dir.path().join("outside");
     std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("reviewer.toml"), "name = \"outside\"\n").unwrap();
+    std::fs::write(outside.join("worker.toml"), "name = \"outside\"\n").unwrap();
     std::fs::write(outside.join("review.md"), "outside\n").unwrap();
     (dir, root, outside)
 }
@@ -58,7 +58,7 @@ fn the_walk_reads_every_regular_file_by_relative_path() {
         files,
         BTreeMap::from([
             ("prompts/review.md".to_string(), b"review\n".to_vec()),
-            ("reviewer.toml".to_string(), b"name = \"pkg\"\n".to_vec()),
+            ("worker.toml".to_string(), b"name = \"pkg\"\n".to_vec()),
         ])
     );
     assert_eq!(
@@ -70,8 +70,8 @@ fn the_walk_reads_every_regular_file_by_relative_path() {
 #[test]
 fn a_file_swapped_for_a_symlink_after_its_check_is_refused_not_read() {
     let (_dir, root, outside) = package();
-    let target = root.join("reviewer.toml");
-    let error = race(&root, &target, to_symlink(outside.join("reviewer.toml"))).unwrap_err();
+    let target = root.join("worker.toml");
+    let error = race(&root, &target, to_symlink(outside.join("worker.toml"))).unwrap_err();
     assert!(
         matches!(&error, LockError::Symlink { path, .. } if *path == target),
         "{error}"
@@ -92,8 +92,8 @@ fn a_directory_swapped_for_a_symlink_after_its_check_is_refused_not_walked() {
 #[test]
 fn an_entry_swapped_for_an_outside_object_is_refused_not_read() {
     let (_dir, root, outside) = package();
-    let target = root.join("reviewer.toml");
-    let moved = outside.join("reviewer.toml");
+    let target = root.join("worker.toml");
+    let moved = outside.join("worker.toml");
     let error = race(&root, &target, |path| {
         std::fs::rename(&moved, path).unwrap();
     })
@@ -123,7 +123,7 @@ fn an_entry_swapped_for_an_outside_object_is_refused_not_read() {
 #[test]
 fn a_file_swapped_for_a_fifo_is_refused_without_blocking() {
     let (_dir, root, _) = package();
-    let target = root.join("reviewer.toml");
+    let target = root.join("worker.toml");
     let error = race(&root, &target, |path| {
         std::fs::remove_file(path).unwrap();
         nix::unistd::mkfifo(path, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
@@ -179,61 +179,6 @@ fn a_symlinked_root_spelled_with_a_trailing_separator_or_dot_is_still_refused() 
 
 /// Read `pkg` through a registry, running `swap` once on its root after `locate` checked it and
 /// before the walk opens it.
-fn registry_race(
-    root: &Path,
-    swap: impl Fn(&Path),
-) -> Result<(PathBuf, BTreeMap<String, Vec<u8>>), LockError> {
-    let registry = Registry::new(root.parent().unwrap());
-    let mut swapped = false;
-    let result = registry.read_with("pkg", &mut |path| {
-        if path == root && !swapped {
-            swapped = true;
-            swap(path);
-        }
-    });
-    assert!(swapped, "the read never reached {}", root.display());
-    result
-}
-
-#[test]
-fn a_registry_package_root_swapped_for_a_symlink_after_locate_is_refused_not_read() {
-    let (dir, root, outside) = package();
-    let moved = dir.path().join("moved");
-    let error = registry_race(&root, |path| {
-        std::fs::rename(path, &moved).unwrap();
-        std::os::unix::fs::symlink(&outside, path).unwrap();
-    })
-    .unwrap_err();
-    assert!(
-        matches!(&error, LockError::Symlink { path, .. } if *path == root),
-        "{error}"
-    );
-}
-
-#[test]
-fn a_registry_package_root_swapped_for_another_directory_after_locate_is_refused() {
-    let (_dir, root, outside) = package();
-    let error = registry_race(&root, |path| {
-        std::fs::remove_dir_all(path).unwrap();
-        std::fs::rename(&outside, path).unwrap();
-    })
-    .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("was replaced while the package was read"),
-        "{error}"
-    );
-}
-
-#[test]
-fn an_unswapped_registry_package_reads_as_the_walk_does() {
-    let (dir, root, _) = package();
-    let (found, files) = Registry::new(dir.path()).read("pkg").unwrap();
-    assert_eq!(found, root);
-    assert_eq!(files, package_files("pkg", &root, BOUNDS).unwrap());
-}
-
 #[test]
 fn a_bounded_walk_refuses_an_oversized_sparse_file_before_reading_it() {
     let (_dir, root, _) = package();
@@ -279,7 +224,7 @@ fn a_bounded_walk_refuses_one_file_or_byte_past_its_bounds_and_admits_exactly_th
 #[test]
 fn a_file_that_grows_past_the_bounds_while_the_walk_runs_is_refused_not_truncated() {
     let (_dir, root, _) = package();
-    let target = root.join("reviewer.toml");
+    let target = root.join("worker.toml");
     let mut grown = false;
     let error = collect_no_follow("pkg", &root, RootLink::Refuse, Some(BOUNDS), &mut |path| {
         if path == target && !grown {

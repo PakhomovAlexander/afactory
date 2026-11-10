@@ -9,8 +9,8 @@
 //! ```
 //!
 //! Nothing below a layer knows about anything above it, and the projection holds no state the
-//! log cannot rebuild. `LedgerProjection::rebuild` is the only constructor for that reason: there is no
-//! path by which hand-edited state can enter.
+//! native Task receipts cannot rebuild. `Ledger::for_task_subject` binds canonical identity and
+//! exact Subject authority before a native Task reduction can run.
 
 pub mod canonical;
 pub mod cas;
@@ -25,11 +25,11 @@ pub mod subject;
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id, validate_envelope};
 pub use cas::{Cas, CasError, FiledObject, OpenedCasObject};
 pub use ingest::{
-    CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction,
-    prepare_canonical_task_review,
+    CanonicalReduction, CanonicalStage, PreparedReviewReduction, prepare_canonical_task_review,
+    prepare_canonical_task_review_with_shards,
 };
 pub use ledger::{
-    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, LedgerProjection, ReportScope,
+    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, ReportScope,
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use shared::SharedEventStore;

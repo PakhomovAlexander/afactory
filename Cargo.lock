@@ -112,8 +112,6 @@ dependencies = [
 name = "af-pipeline-config"
 version = "0.15.1-rc.1"
 dependencies = [
- "af-attempt",
- "af-check",
  "af-contracts",
  "af-graph",
  "af-runner",
@@ -179,7 +177,6 @@ name = "af-runner-claude"
 version = "0.15.1-rc.1"
 dependencies = [
  "af-contracts",
- "af-pipeline-config",
  "af-runner",
  "af-sandbox",
  "af-store",
@@ -196,7 +193,6 @@ name = "af-runner-codex"
 version = "0.15.1-rc.1"
 dependencies = [
  "af-contracts",
- "af-pipeline-config",
  "af-runner",
  "af-store",
  "af-telemetry",
@@ -341,7 +337,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "toml",
  "tracing",
 ]
 

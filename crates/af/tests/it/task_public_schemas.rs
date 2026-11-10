@@ -9,18 +9,6 @@ use af_contracts::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
 use af_graph::task::CompiledTask;
 use serde_json::{Value, json};
 
-#[path = "../../../af-runtime/tests/it/support/captured_review_continuation.rs"]
-mod captured_continuation;
-#[path = "../../../af-runtime/tests/it/support/captured_review.rs"]
-mod captured_fixture;
-#[path = "task_public_schemas/continuation.rs"]
-mod continuation;
-#[path = "task_public_schemas/integration.rs"]
-mod integration;
-#[path = "task_public_schemas/owned.rs"]
-mod owned;
-#[path = "task_public_schemas/recording.rs"]
-mod recording;
 use crate::task_cli;
 
 use crate::schemas::{valid, validator};
@@ -136,7 +124,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v17.json"), &planned);
+    valid(&validator("task-inspection-v20.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -244,8 +232,8 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v17.json"), &inspection);
-    let schema = validator("compiled-task-v1.json");
+    valid(&validator("task-inspection-v20.json"), &inspection);
+    let schema = validator("compiled-task-v6.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
     let compiled: CompiledTask = serde_json::from_value(graph.clone()).unwrap();
@@ -260,27 +248,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         json!({"kind":"select"}),
         json!({"kind":"provider_admission","bindings":["slot"]}),
         json!({"kind":"primitive","operator":{"op":"select"},"signature":"select"}),
-    ]
-    .into_iter()
-    .chain(
-        [
-            "generation",
-            "gate",
-            "gather",
-            "ledger",
-            "slicer",
-            "reviewer",
-            "scatter",
-        ]
-        .into_iter()
-        .map(|kind| {
-            let mut operation = json!({"kind":kind});
-            if matches!(kind, "reviewer" | "scatter") {
-                operation["slot"] = json!("slot");
-            }
-            json!({"kind":"review_domain","review_node":"gate","operation":operation})
-        }),
-    ) {
+    ] {
         let mut value = graph.clone();
         value["nodes"][node]["operator"] = operator;
         valid(&schema, &value);
@@ -291,6 +259,8 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         json!({"kind":"select","extra":true}),
         json!({"kind":"provider_admission","bindings":["slot","slot"]}),
         json!({"kind":"review_domain","review_node":"gate","operation":{"kind":"reviewer"}}),
+        json!({"kind":"review_domain","review_node":"gate","operation":{"kind":"gate"}}),
+        json!({"kind":"review_integration_checks","phase_id":"sha256:".to_owned()+&"a".repeat(64)}),
     ] {
         let mut value = graph.clone();
         value["nodes"][node]["operator"] = operator;
@@ -322,14 +292,19 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
 fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v17.json");
+    let inspection_schema = validator("task-inspection-v20.json");
     let list_schema = validator("task-list-entry-v4.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
-    assert_eq!(planned["schema"], "af/task-inspection@17");
+    assert_eq!(planned["schema"], "af/task-inspection@20");
+    for old in ["af/task-inspection@17", "af/task-inspection@18"] {
+        let mut retired = planned.clone();
+        retired["schema"] = json!(old);
+        assert!(!inspection_schema.is_valid(&retired));
+    }
     let exact = json_output(
         cli(
             &repo,
@@ -344,8 +319,13 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         ),
         0,
     );
-    let plan_schema = validator("task-plan-inspection-v3.json");
+    let plan_schema = validator("task-plan-inspection-v6.json");
     valid(&plan_schema, &exact);
+    for old in ["af/task-plan-inspection@3", "af/task-plan-inspection@4"] {
+        let mut retired = exact.clone();
+        retired["schema"] = json!(old);
+        assert!(!plan_schema.is_valid(&retired));
+    }
     assert_eq!(exact["current_plan"], true);
     assert_eq!(exact["plan"], planned["plan"]);
     assert_eq!(exact["graph"], planned["graph"]);
@@ -368,7 +348,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         0,
     );
     valid(&inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@17");
+    assert_eq!(finished["schema"], "af/task-inspection@20");
     assert!(
         !finished["runtime_observations"]
             .as_array()
@@ -629,4 +609,40 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         append_delivery(&cas, &mut store, &lease, template, bound).unwrap();
     }
     store.release_task_lease(&cas, &lease).unwrap();
+}
+
+#[test]
+fn preflight_script_prints_only_the_current_closed_native_advisory_contract() {
+    let root = workspace();
+    let run = |extra: &[&str]| {
+        Command::new("python3")
+            .arg("-I")
+            .arg(root.join("scripts/task-preflight.py"))
+            .arg("--inspection")
+            .arg(root.join("fixtures/task-runtime/bound-inputs/inspection-bound.json"))
+            .arg("--checklist")
+            .arg(root.join("fixtures/task-runtime/preflight/checklist.json"))
+            .args(["--now-unix-ms", "0", "--json"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let actual = run(&[]);
+    assert_eq!(actual.status.code(), Some(2), "{actual:?}");
+    let mut value: Value = serde_json::from_slice(&actual.stdout).unwrap();
+    let schema = validator("preflight-report-v2.json");
+    valid(&schema, &value);
+    assert_eq!(value["schema"], "af-preflight-report/2");
+    assert!(value["budget"].get("review_integration").is_none());
+    value["schema"] = json!("af-preflight-report/1");
+    assert!(!schema.is_valid(&value));
+    value["schema"] = json!("af-preflight-report/2");
+    value["budget"]["review_integration"] = json!({});
+    assert!(!schema.is_valid(&value));
+    let invalid = run(&["--checklist", "/absent-preflight-checklist"]);
+    assert_eq!(invalid.status.code(), Some(1));
+    valid(
+        &schema,
+        &serde_json::from_slice::<Value>(&invalid.stdout).unwrap(),
+    );
 }

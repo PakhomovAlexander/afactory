@@ -17,7 +17,7 @@ Task: report where the cycle's time goes
                        |
                 author Worker              Attempt 1: reads the Snapshot, may run commands
                        |                   in a clone that seals nothing back
-             af/DocumentDraft@1 or @2
+             af/DocumentDraft@3 or @2
                        |
                 report_seal                renders the Document, bound to the Snapshot
                        |
@@ -59,7 +59,7 @@ citations were checked against.
 ## Inputs
 
 The Task file names the kind `report`. The built-in kind needs no kind package; an
-`af.task-kind/1` package with `profile = "report"` maps another business kind to it. The
+`af.task-kind/3` package with `profile = "report"` maps another business kind to it. The
 catalog names the captured policy with `report_policy`:
 
 ```toml
@@ -109,15 +109,20 @@ is discarded, and a changed or removed file fails its Attempt with
 `write-source`; a Worker that declares it is refused when the Task is planned. Any Worker that
 returns a draft is the author for verifier independence, whatever it declares.
 
-The author returns one `draft`, `af/DocumentDraft@1` or `af/DocumentDraft@2`. The second
-version adds `repository_citations`, a list sorted by path and then line:
+The author returns one `draft`, `af/DocumentDraft@3`, using the same internal representation
+and renderer as Document Tasks. The `citations` set has explicit source and repository variants:
 
 ```json
-{"schema": "af.document-draft/2", "title": "Where the time goes",
+{"schema": "af.document-draft/3", "title": "Where the time goes",
  "sections": [{"heading": "Findings", "body": "…"}, {"heading": "Recommendation", "body": "…"}],
- "citations": ["r1"],
- "repository_citations": [{"path": "Makefile", "line": 12}, {"path": "scripts/verify.sh"}]}
+ "citations": [{"kind": "source", "name": "r1"},
+               {"kind": "repository", "location": {"path": "Makefile", "line": 12}},
+               {"kind": "repository", "location": {"path": "scripts/verify.sh"}}]}
 ```
+
+The bounds remain 32 captured source citations and 64 repository citations. Document Tasks
+have no repository Snapshot and refuse repository variants. Both domains refuse retired draft
+formats; a report seal requires `draft` and no longer admits the historical `draft_v1` port.
 
 A path is spelled exactly as the Snapshot's Manifest spells it (`af_contracts::encode_path`),
 relative to the repository root. The verifier declares `requirements`, `document`, `checks` and

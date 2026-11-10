@@ -22,18 +22,19 @@ checks. Nothing you write is kept. A change to any file of the source fails your
 - `title`: one line naming what the report answers.
 - `sections`: plain text, one heading per section; the Task's report policy names the headings
   it requires. Do not write Markdown syntax: the kernel renders and escapes your text.
-- `citations`: the names of the captured sources you relied on, sorted in byte order and
-  unique (the kernel admits a set in any order, but sorted is what it records).
-- `repository_citations`: every file you rely on, as `{ "path": "<path>" }` or
-  `{ "path": "<path>", "line": <n> }`, sorted by path and then line. The path is spelled exactly
-  as the Snapshot's Manifest spells it, relative to the repository root. The kernel refuses a
-  path that is absent, a directory, a symbolic link or a binary file, and a line past the end of
-  the file.
+- `citations`: one set of explicitly tagged entries. A captured source is
+  `{ "kind": "source", "name": "<captured source name>" }`. A repository citation is
+  `{ "kind": "repository", "location": { "path": "<path>", "line": <n> } }`;
+  omit `line` when citing the whole file. List each entry once; the kernel records source names
+  in byte order, followed by repository paths and lines in order. At most 32 source citations
+  and 64 repository citations are admitted. Paths use the exact source Snapshot Manifest
+  spelling, relative to the repository root. The kernel checks that each location is a regular
+  or executable text file and that any cited line exists in that exact Snapshot.
 
 ## Reply
 
 Return the reply envelope the request describes with one `draft` payload in the
-`af.document-draft/2` shape its schema gives.
+`af.document-draft/3` shape its schema gives.
 
 When `research_report` is present, read that exact accepted native Document input as bounded
 research evidence. Retain its artifact ID, source and recommendation in your result and explain

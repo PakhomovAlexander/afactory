@@ -4099,16 +4099,6 @@ pub(crate) fn completion_script(shell: Shell) -> Result<String, String> {
     String::from_utf8(buf).map_err(|error| error.to_string())
 }
 
-/// Candidates for `--campaign`: every Campaign under the default state root.
-pub(crate) fn complete_campaign(current: &OsStr) -> Vec<CompletionCandidate> {
-    let prefix = current.to_string_lossy();
-    crate::campaign_names_for_completion()
-        .into_iter()
-        .filter(|name| name.starts_with(prefix.as_ref()))
-        .map(CompletionCandidate::new)
-        .collect()
-}
-
 /// Candidates for a version argument: installed versions.
 pub(crate) fn complete_version(current: &OsStr) -> Vec<CompletionCandidate> {
     let prefix = current.to_string_lossy();

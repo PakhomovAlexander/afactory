@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-gate-cleanup:1",
   "title": "af/TaskGateCleanup@1",
-  "description": "One attempt to remove what a finished Task's remote checks left on GitHub (ADR-0144): its draft gate pull requests closed and its two `af-gate/<task-id>/` branches deleted from the mapping's push target. Carried inline by one `gate_cleanup` TaskTransition@5 that references no artifact; it never changes the Task's result. A failed attempt keeps its redacted reason and is retried by a later sweep. The branches name the Task whose log carries the record, which the typed contract checks.",
+  "description": "One attempt to remove what a finished Task's remote checks left on GitHub (ADR-0144): its draft gate pull requests closed and its two `af-gate/<task-id>/` branches deleted from the mapping's push target. Carried inline by one `gate_cleanup` TaskTransition@6 that references no artifact; it never changes the Task's result. A failed attempt keeps its redacted reason and is retried by a later sweep. The branches name the Task whose log carries the record, which the typed contract checks.",
   "type": "object",
   "additionalProperties": false,
   "required": [

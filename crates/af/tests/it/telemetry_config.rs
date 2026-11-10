@@ -78,7 +78,7 @@ impl TaskAuthority for RefusesThePlan {
         &self,
         _: &Cas,
         _: &af_contracts::task::TaskRevisionV1,
-        _: &af_contracts::task::plan::ExecutionPlanV3,
+        _: &af_contracts::task::plan::ExecutionPlan,
     ) -> Result<Vec<af_contracts::task::plan::GeneratedOriginV1>, String> {
         Err("the plan's pipeline changed since it was admitted".into())
     }

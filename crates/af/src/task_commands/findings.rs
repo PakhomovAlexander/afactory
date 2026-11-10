@@ -15,7 +15,7 @@ use af_contracts::task::agent_loop::*;
 use af_contracts::task::handoff::{self, PromptSource, VerifiedBy, VerifiedFixV1};
 use af_contracts::task::repair::{TASK_REVIEW_CONTINUATION_V1, TaskReviewContinuationV1};
 use af_contracts::task::review::VerificationOutcomeV1;
-use af_contracts::task::review_context::{TASK_REVIEW_SUBJECT_V2, TaskReviewSubjectV2};
+use af_contracts::task::review_context::{TASK_REVIEW_SUBJECT_V3, TaskReviewSubject};
 use af_contracts::task::verification::{TASK_EVALUATION_V1, TaskEvaluationV1};
 
 /// Bound a reviewer's text to what a document carries.
@@ -30,16 +30,17 @@ fn bounded(text: &str) -> String {
     }
 }
 
-/// The findings of one complete round: the Finding Set entries that round saw itself, by the
-/// reviewer that reported them.
+/// The selected Finding Set by original reviewer. Round reports retain only entries seen in
+/// that Round; Ledger inspection retains every canonical entry, including earlier claims.
 fn gathered(
     set: &FindingSetV1,
     snapshot_id: &str,
+    ledger: bool,
 ) -> Result<BTreeMap<String, Vec<TaskFindingV2>>, String> {
     set.validate()?;
     let mut by_reviewer: BTreeMap<String, Vec<TaskFindingV2>> = BTreeMap::new();
     for entry in &set.findings {
-        if entry.last_seen_round != set.round {
+        if !ledger && entry.last_seen_round != set.round {
             continue;
         }
         by_reviewer
@@ -162,10 +163,19 @@ pub(super) fn round_findings(
     cas: &Cas,
     round: &TaskReviewRoundV1,
 ) -> Result<Vec<TaskReviewerFindingsV2>, String> {
+    selected_findings(cas, round, false)
+}
+
+fn selected_findings(
+    cas: &Cas,
+    round: &TaskReviewRoundV1,
+    ledger: bool,
+) -> Result<Vec<TaskReviewerFindingsV2>, String> {
     let gathered = match &round.finding_set_id {
         Some(set) => Some(gathered(
             &artifact(cas, set, af_contracts::contract::FINDING_SET_V1)?,
             &round.snapshot_id,
+            ledger,
         )?),
         None => None,
     };
@@ -205,7 +215,7 @@ fn not_run_reason(task_id: &str) -> String {
 /// outside it.
 fn round_coverage(
     task_id: &str,
-    subject: &TaskReviewSubjectV2,
+    subject: &TaskReviewSubject,
     reviewers: &[TaskReviewerFindingsV2],
 ) -> handoff::CoverageV1 {
     let changed = subject
@@ -232,14 +242,14 @@ fn round_coverage(
 }
 
 /// The round's Subject, as its reduce step read it.
-fn round_subject(cas: &Cas, round: &TaskReviewRoundV1) -> Result<TaskReviewSubjectV2, String> {
+fn round_subject(cas: &Cas, round: &TaskReviewRoundV1) -> Result<TaskReviewSubject, String> {
     let id = round
         .invocation
         .inputs
         .get("subject")
         .and_then(|input| input.artifact_ids.first())
         .ok_or("the review round names no Subject")?;
-    let subject: TaskReviewSubjectV2 = artifact(cas, id, TASK_REVIEW_SUBJECT_V2)?;
+    let subject: TaskReviewSubject = artifact(cas, id, TASK_REVIEW_SUBJECT_V3)?;
     subject.validate()?;
     Ok(subject)
 }
@@ -251,7 +261,7 @@ fn round_subject(cas: &Cas, round: &TaskReviewRoundV1) -> Result<TaskReviewSubje
 fn verified_fixed(
     cas: &Cas,
     round: &TaskReviewRoundV1,
-    subject: &TaskReviewSubjectV2,
+    subject: &TaskReviewSubject,
 ) -> Result<Vec<VerifiedFixV1>, String> {
     let (Some(set_id), Some(continuation_id)) = (&round.finding_set_id, &subject.continuation_id)
     else {
@@ -328,6 +338,28 @@ fn evaluation(
 }
 
 pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskFindingsV2, String> {
+    selected_document(opened, wanted, false).map(|(document, _)| document)
+}
+
+pub(super) fn ledger_document(
+    opened: &OpenedTask,
+    wanted: Option<u64>,
+) -> Result<TaskFindingsV2, String> {
+    ledger_selection(opened, wanted).map(|(document, _)| document)
+}
+
+pub(super) fn ledger_selection(
+    opened: &OpenedTask,
+    wanted: Option<u64>,
+) -> Result<(TaskFindingsV2, Option<String>), String> {
+    selected_document(opened, wanted, true)
+}
+
+fn selected_document(
+    opened: &OpenedTask,
+    wanted: Option<u64>,
+    ledger: bool,
+) -> Result<(TaskFindingsV2, Option<String>), String> {
     let task = &opened.task;
     let id = &task.task_id;
     let (_, view) = opened.view()?;
@@ -354,11 +386,13 @@ pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskF
         Some(n) => Some(n),
         None => (count > 0).then_some(count),
     };
+    let mut finding_set_id = None;
     let round = match index {
         None => None,
         Some(index) => {
             let round = &rounds[usize::try_from(index - 1).map_err(|e| e.to_string())?];
-            let reviewers = round_findings(&opened.cas, round)?;
+            finding_set_id = round.finding_set_id.clone();
+            let reviewers = selected_findings(&opened.cas, round, ledger)?;
             let mut counts = TaskFindingCountsV1::default();
             for finding in reviewers.iter().flat_map(|reviewer| &reviewer.findings) {
                 match finding.severity {
@@ -406,7 +440,7 @@ pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskF
         evaluation,
     };
     document.validate()?;
-    Ok(document)
+    Ok((document, finding_set_id))
 }
 
 fn severity_name(severity: Severity) -> &'static str {
@@ -702,7 +736,8 @@ mod tests {
                 findings: vec![],
             },
         ];
-        let subject = TaskReviewSubjectV2 {
+        let subject = TaskReviewSubject {
+            schema: "af.task-review-subject/3".into(),
             subject_id: id('6'),
             subject: af_contracts::SubjectV1::whole_tree(id('2')),
             snapshot_id: id('2'),

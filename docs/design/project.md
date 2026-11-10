@@ -376,15 +376,13 @@ number descending, then path. `contributors` and `activity` are never part of `o
 implementer does not need names or bills.
 
 A pipeline that wants a Brief declares the root port and wires it only where it is wanted. The
-declaration is a new version of the pipeline shape (ADR-0145 clause 2): a pipeline with the port
-is `af.pipeline/2`, an `af.pipeline/1` pipeline carrying `brief` or `project_brief` is refused,
-and a pipeline without the port stays `af.pipeline/1`, bytes and digest unchanged. The
-containers that list contracts without a version label (`af.planning-request/1`,
-`af.catalog-contract-fixtures/1`) carry no `af.pipeline/2` pipeline, and a Worker manifest never
-declares the root default:
+current `af.pipeline/6` format admits it as an explicit optional capability, alongside bounded
+recovery and structured acceptance. The Planner and shared catalogs still exclude Pipelines with
+Brief ports: their interface fixtures grant no Brief constructor authority. A Worker manifest
+never declares the root default:
 
 ```toml
-schema = "af.pipeline/2"
+schema = "af.pipeline/6"
 
 [contract.inputs.project]
 artifact_type = "af/ProjectBrief@1"
@@ -467,8 +465,8 @@ artifact; `af task plan` and `af task explain` print it beside the port.
 
 What the Worker sees is one more entry in its context manifest — name `project`, required by
 `port:project`, the artifact ID and type, bytes and estimated tokens — and `af project brief
---variant orient` prints the exact bytes before any token is spent, the way `af review render`
-does for a reviewer. On afactory `orient` renders to roughly 6 KiB, about 1,500 tokens, once per
+--variant orient` prints the exact bytes before any token is spent or the native Task
+binds its exact inputs. On afactory `orient` renders to roughly 6 KiB, about 1,500 tokens, once per
 Attempt. For comparison, `CONTEXT.md` alone is 529 lines, about 8,000 tokens, and the implementer
 is told to read it in full today; PJ3 measures the Attempt spend with and without the Brief on
 the kernel's own Tasks before `orient` is wired into `kernel/implementer`.
@@ -788,7 +786,7 @@ releases their pinned Survey data while a later Task remains replayable; a varia
 table and `contributors` in `orient`, an unknown requested variant is a plan-time error, a schema-valid Worker-authored Brief is
 refused at admission and at binding while a forwarded constructed one binds, and a node whose
 serialized known request exceeds the renderer cap is refused at plan time, even when its
-payloads alone would fit; a pipeline carrying the port under `af.pipeline/1` is refused; a Task
+payloads alone would fit; a pipeline carrying the port under a retired format is refused; a Task
 invoked in one repository with `source` bound to another never receives the invoking
 repository's Survey; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer

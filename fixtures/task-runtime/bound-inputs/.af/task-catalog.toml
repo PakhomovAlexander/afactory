@@ -5,12 +5,12 @@
 
 ["packages"."fixture/bugs"]
 "version" = "1.0.0"
-"digest" = "sha256:86a1b9caaab6899bc0bfacad056df48a8aaf6c8ec247852b58f8dc11acec9a6d"
+"digest" = "sha256:8d31fd68781c02346942a51d34df828a90dcbe12d1c2300e0dad4cc41f8c2c94"
 "path" = ".af/task-packages/fixture/bugs"
 
 ["packages"."fixture/correctness"]
 "version" = "1.0.0"
-"digest" = "sha256:e0a32e48a29d1af8608bf3b882b9040ace3666883c4a68f5e27572af37bf90e8"
+"digest" = "sha256:250fa09c833f904cb9fa23c995d62bcff07a100bc051b41af34d2990244d93f8"
 "path" = ".af/task-packages/fixture/correctness"
 
 # Placeholders: this repository is `embedded-review` with a `history` output added to the
@@ -18,13 +18,13 @@
 # `history` input on the implementer. The test pins every digest from the copied tree before
 # it commits, exactly as `crates/af/tests/task_acceptance.rs` does for the fixtures it edits.
 ["packages"."fixture/implementation"]
-"version" = "1.0.0"
-"digest" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+version = "1.0.1"
+digest = "sha256:e0098db8f19f395f409c49da0797c385e06411339df2f52c7324b30bf624b42a"
 "path" = ".af/task-packages/fixture/implementation"
 
 ["packages"."fixture/plain"]
-"version" = "1.0.0"
-"digest" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+version = "1.0.1"
+digest = "sha256:32d310c3136329c41864ccccf758d84d3dc9a1479603c667395b63a381d551d5"
 "path" = ".af/task-packages/fixture/plain"
 
 ["packages"."fixture/implementer"]
@@ -33,8 +33,8 @@
 "path" = ".af/task-packages/fixture/implementer"
 
 ["packages"."fixture/review"]
-"version" = "1.0.0"
-"digest" = "sha256:85bb29f01d00211a55e01b14b2c008e1ed4f6bea9291ebcbcc749ebb074ff447"
+version = "1.0.1"
+digest = "sha256:898ab1fea90db7cf9d917ddf49575458b85bb496af5c1920eb06c98390ab6467"
 "path" = ".af/task-packages/fixture/review"
 
 ["packages"."fixture/evaluator"]

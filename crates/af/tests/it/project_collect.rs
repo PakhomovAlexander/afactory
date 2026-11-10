@@ -258,8 +258,8 @@ fn repository(machine: &Machine, survey: &str) -> PathBuf {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\n{survey}"
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\n{survey}"
         ),
     );
     for (n, file) in ["src/a.rs", "src/b.rs", "README.md"].iter().enumerate() {
@@ -1026,8 +1026,8 @@ fn the_adversarial_pattern_neither_hangs_nor_matches_the_surveyors_exclude() {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\nexclude = [\"{}\"]\n",
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\nexclude = [\"{}\"]\n",
             "*a".repeat(30)
         ),
     );
@@ -1052,8 +1052,8 @@ fn a_pattern_over_256_bytes_and_a_list_over_64_are_refused_naming_the_key() {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\nagent_trailers = [{}]\n",
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\nagent_trailers = [{}]\n",
             list.join(", ")
         ),
     );
@@ -1076,8 +1076,8 @@ fn a_pattern_over_256_bytes_and_a_list_over_64_are_refused_naming_the_key() {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\nagent_trailers = [{}]\n",
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\nagent_trailers = [{}]\n",
             list.join(", ")
         ),
     );
@@ -1534,8 +1534,8 @@ fn a_question_mark_is_one_byte_in_the_surveyors_exclude() {
             &repo,
             ".af/af.toml",
             &format!(
-                "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-                 [defaults]\npipeline = \"review\"\n\n[survey]\nexclude = [\"{pattern}\"]\n"
+                "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+                 [survey]\nexclude = [\"{pattern}\"]\n"
             ),
         );
         // Not `-a`: the index holds paths the working tree does not.

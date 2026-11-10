@@ -14,49 +14,10 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::ArgValueCompleter;
 
-use crate::self_management::{complete_campaign, complete_version};
-
-pub(crate) const REVIEW_PIPELINE: &str = ".af/pipelines/review.toml";
-
-/// `af review --help`: its eighteen subcommands grouped by where a Campaign is in its life, in
-/// place of clap's flat list. The run options the namespace also accepts are `af review run`'s,
-/// documented there. A unit test holds every line to the subcommand's own name and summary.
-const REVIEW_HELP_TEMPLATE: &str = "\
-{before-help}{about-with-newline}
-{usage-heading} {usage}
-
-Plan, token-free and without Campaign state:
-  plan                  Show what a review would run, token-free, without Campaign state
-  render                Compose one Worker's exact input, token-free, without Campaign state
-
-Run:
-  run                   Execute the pipeline and fold results into the ledger
-
-Inspect a Campaign:
-  ledger                List the ledger: findings, dispositions, and open demands
-  show                  Show one ledger entry by key
-  report                Render the Campaign report
-  export                Export a verified patch proposal, by id or by the finding it fixes
-
-Work its findings and demands:
-  resolve               Resolve a finding without a fix: rejected, or tracked as wontfix
-  attest-change         Attest that a region changed in response to a finding
-  verify-fix            Record a verification of an attested fix
-  challenge-resolution  Challenge a non-fixed resolution
-  group                 Group one finding under another
-  ungroup               Undo a grouping
-  evidence              Attach or apply evidence to a demand
-  demand                Waive a demand
-  policy-time           Advance the Campaign's policy clock
-
-Campaigns and maintenance:
-  campaigns             List Campaigns under the state root
-  gc                    Reclaim Campaign state: list what would go; remove it only with --apply
-
-Run options (`af review [OPTIONS]` is `af review run [OPTIONS]`): see `af review run --help`.{after-help}";
+use crate::self_management::complete_version;
 
 const AF_ABOUT: &str =
     "Afactory — model Workers review and change a git repository in sandboxes, on a budget";
@@ -72,35 +33,34 @@ Start here (`af help start` explains each step):
   1. af provider detect           preview claude/codex logins; --apply registers them
   2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
   3. git add .af && git commit    review that authority, then commit it
-  4. af review plan --policy-rev HEAD --base HEAD --uncommitted
-                                  token-free; pass --provider NODE=ID for each model Worker
+  4. af review plan --file ../review.json --base HEAD --uncommitted
+                                  token-free; register the Providers declared by the Task catalog
   af doctor                       check this machine and repository, token-free
 
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
 `af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, errors, \
 providers, task-states, task-file, agents, self, storage, telemetry, scenarios). `af` alone at a terminal \
-opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks and \
-review Campaigns: `?` there lists its keys, and `:` runs any af command.";
+opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks: `?` there lists its keys, and `:` runs any af command.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes (`af help exit-codes`):
-  0 pass · 1 error · 2 usage · 3 fail · 4 incomplete · 10 outdated (self update --check)
-  af task run: 5 gate failed · 6 provider failed · 7 expired (`af help exit-codes`)
+  0 pass · 1 error · 2 usage · 3 changes requested · 4 incomplete
+  5 gate failed · 6 provider failed · 7 expired · 10 outdated (self update --check)
 
 Examples:
-  # preview `.af/` for this repository, token-free\n  af onboard
-  af onboard --apply             # needs: a repository without `.af/`
-  # needs: one registered Provider for every model Worker
-  af review plan --policy-rev HEAD --base HEAD --uncommitted
-  # needs: Providers claude-main and codex-main (af provider setup)
-  af review --policy-rev HEAD --base HEAD --uncommitted \\
-    --provider correctness=claude-main --provider architecture=codex-main
-  af self status                 # what is installed and which pin applies here
-  # what is ready on this machine and in this repository\n  af doctor
+  af provider detect
+  # needs: a repository without .af/
+  af onboard --tasks --gate 'check=make check'
+  # needs: a Review Task file and committed native Task catalog
+  af review plan --file ../review.json --base HEAD --uncommitted
+  # needs: the same Review Task file and its declared registered Providers
+  af review run --file ../review.json --base HEAD --uncommitted
+  af self status
+  af doctor
 
-Review and commit generated `.af/` before selecting it with --policy-rev. These review examples
-use trusted policy at HEAD and compare working-tree changes against HEAD; run refuses an empty diff.
-To execute, also supply --provider NODE=ID for every model Worker required by that policy.";
+Review uses the common Task Store, plan approval, accounting and recovery. Select its Authority
+Snapshot with --authority, independently of --base and --candidate. A Diff must be nonempty.
+Campaign selectors and captured Campaign authority are retired; write a native Review Task file.";
 
 /// What bare `af` prints first when stdout is not a terminal, before its usage on stderr.
 pub(crate) const FIRST_RUN_HINTS: &str = "\
@@ -133,6 +93,32 @@ pub(crate) struct Af {
     pub(crate) command: Option<Command>,
 }
 
+/// Explain a retired browser spelling without adding a command to the CLI tree.
+/// Both terminal parsing and the browser command line use this usage-only guidance.
+pub(crate) fn usage_error(error: clap::Error) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::InvalidSubcommand
+        || !error
+            .get(ContextKind::Usage)
+            .is_some_and(|usage| usage.to_string().starts_with("Usage: af review "))
+    {
+        return error;
+    }
+    let Some(ContextValue::String(word)) = error.get(ContextKind::InvalidSubcommand) else {
+        return error;
+    };
+    let message = match word.as_str() {
+        "tui" => {
+            "`af review tui` is not a command; the browser is `af` alone, at a terminal\n  try: af"
+        }
+        "tu" => {
+            "unrecognized subcommand 'tu'\n\n  tip: 'tui' was the browser spelling; use `af` alone, at a terminal\n  try: af"
+        }
+        _ => return error,
+    };
+    clap::Error::raw(ErrorKind::InvalidSubcommand, message)
+}
+
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
@@ -163,28 +149,11 @@ symlink or a non-directory is refused, and an existing destination is never over
         #[command(subcommand)]
         command: CatalogCommand,
     },
-    /// Plan, run, and work a review Campaign
+    /// Plan, run and inspect native Review Tasks
     #[command(
         display_order = 3,
-        long_about = "Plan, run, and work a review Campaign.\n\n\
-A Campaign reviews one Subject (a diff or the working tree) against committed `.af/` policy. \
-`plan` is token-free. `run` executes the pipeline inside sandboxes and folds results into the \
-ledger; the remaining commands read or resolve that ledger. Flags given directly to `af review` \
-are shorthand for `af review run`.",
-        after_long_help = "HEAD must contain trusted, committed `.af/`; make candidate changes first. To \
-execute, also supply --provider NODE=ID for every model Worker the policy names; `af review plan` \
-lists them.\n\nExamples:\n  # needs: one registered Provider for every model Worker\n  \
-af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
-# needs: Providers claude-main and codex-main (af provider setup)\n  \
-af review --policy-rev HEAD --base HEAD --uncommitted \\\n    \
---provider correctness=claude-main --provider architecture=codex-main\n  \
-# needs: Campaign pr-42 (af review run --campaign pr-42)\n  af review ledger --campaign pr-42\n  \
-af review report --campaign pr-42 --format md   # needs: Campaign pr-42",
-        override_usage = "af review <COMMAND>\n       af review [--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
-        help_template = REVIEW_HELP_TEMPLATE,
-        args_conflicts_with_subcommands = true,
-        subcommand_negates_reqs = true,
-        arg_required_else_help = true
+        long_about = "Review uses the common native Task lifecycle and Task Store. Plan a Review Task file, inspect its exact plan, run it, and resume the same Task after interruption. Ledger and report read native Findings and exact Task accounting. Export validates a sealed proposed repair independently of whole-Task acceptance.\n\nCampaign selectors and Review Pipeline configuration are retired; use --file and the committed Task catalog. Use `af` at a terminal to browse Review Tasks in tasks/. Continuation and repair use captured native Pipelines; they cannot reset the original Task's allowance.",
+        after_long_help = "Examples:\n  # needs: a native Review Task file and committed catalog\n  af review plan --file ../review.json\n  # needs: a native Review Task file, a nonempty change and declared Providers\n  af review run --file ../review.json --base main --uncommitted\n  # needs: a captured Task\n  af review inspect TASK_ID --tree\n  # needs: a recorded Review Task\n  af review ledger TASK_ID --json\n  # needs: a recorded Review Task\n  af review report TASK_ID --json\n  # needs: a captured Task and its exact plan ID\n  af review resume TASK_ID --confirm-plan PLAN_ID"
     )]
     Review(ReviewNamespace),
     /// Inspect and preflight the configured model providers
@@ -207,8 +176,8 @@ cannot start, 5 registry conflict, 6 authentication failed, 7 optional usage or 
 unavailable.",
         after_long_help = "Examples:\n  af provider detect --apply\n  af provider status\n  af provider models --resolve 'Fable 5.1/xhigh'\n  \
 af provider setup codex-main --kind codex   # needs: the codex CLI, logged in\n  \
-# needs: Campaign pr-42 and Provider claude-main\n  \
-af provider doctor --campaign pr-42 --provider correctness=claude-main\n\n\
+# needs: a planned Review Task and its exact plan ID\n  \
+af provider doctor review --confirm-plan PLAN_ID\n\n\
 See `af help providers` for the registry model and the order of first use."
     )]
     Provider {
@@ -224,25 +193,27 @@ reviewed and committed ever governs a review. Four steps:\n\n  \
 1. af onboard          preview what would be written; token-free, writes nothing\n  \
 2. af onboard --apply  write `.af/`, only where none exists; it never overwrites one\n  \
 3. git add .af && git commit -m \"af review policy\"\n  \
-4. af review plan --policy-rev HEAD --base HEAD --uncommitted   see what a review would run\n\n\
-In a repository that already has `.af/`, `af onboard` checks it instead: the selected pipeline, \
-its exact pins, the Worker packages, the graph and the Gates. --refresh-lock: explicitly re-pin \
-the selected pipeline, every pipeline a route or the oversized policy names, and the Worker \
-packages they reference; it drops a pin whose `.af/workers/NAME` package or \
-`.af/pipelines/NAME.toml` file no longer exists.\n\n\
-With --tasks, preview the exact files and [task.defaults] text for model-driven Tasks; \
---tasks --apply creates a combined bundle in a new repository or adds only absent Task files \
-and the absent table to an existing `.af/` directory. Task Workers use Codex: GPT-6.1 Sol/high \
-implements and GPT-6.1 Terra/high reviews and evaluates, all bound to codex-main. --runner \
-selects the review-authority profile and does not change these Task \
-Workers. Review and commit the result before a Task can plan.\n\n\
+4. af review plan --file ../review.json --base HEAD --uncommitted   see what a review would run\n\n\
+In a repository that already has `.af/`, `af onboard` validates current Task catalog authority: \
+its package pins, Worker contracts and acceptance checks. --refresh-lock re-pins intentional \
+current local package edits in .af/task-catalog.toml and retains receipted release pins. \
+Retired Campaign definitions do not execute Review; Task selection uses the common catalog.\n\n\
+Default onboarding emits standalone Review and implementation Task authority together. Copy \
+.af/task-packages/onboard/review-code/task.json to ../review.json and choose a fresh Task ID. \
+Review and commit .af/ before planning. Use af review resume ID --confirm-plan PLAN_ID after \
+inspecting the captured plan; af review run --file FILE creates and runs a new Task.\n\n\
+With --tasks, preview exact files and [task.defaults] text; --tasks --apply creates a combined \
+bundle or adds only absent Task files and the absent table to an existing .af/ directory. An existing \
+[task] table, catalog, code policy or target package refuses the operation without writing. Default \
+onboarding already creates these files; use plain af onboard to validate them. Implementation \
+and evaluation Workers use Codex with distinct models. Native Review Workers follow --runner.\n\n\
 The command never calls a model, runs a Gate, reads credentials, creates Campaign state, fetches \
 a pull request, commits, pushes, comments, or overwrites existing authority files. Notes for \
 agents and automation close this page.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6.1 Terra/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6.1 Terra/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; bugs = GPT-6.1 Terra/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6.1 Terra/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the catalog alias to bind in --bindings FILE, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
 # needs: a repository without .af/\n  af onboard --gate 'check=make check' --apply\n  \
-# needs: a repository with an acceptance Gate\n  af onboard --tasks\n  # needs: a repository with review authority and an acceptance Gate\n  af onboard --tasks --apply\n  \
+# needs: a repository without .af/ and with an acceptance Gate\n  af onboard --tasks\n  # needs: .af/ without Task settings, catalog, code policy or packages\n  af onboard --tasks --apply\n  \
 af onboard --runner mixed --apply   # needs: a repository without .af/\n  \
 af onboard --refresh-lock\n  \
 # needs: release 0.9.0; moves the pin to it\n  af onboard --refresh-lock --af 0.9.0\n\n\
@@ -256,9 +227,9 @@ build without an install receipt (a source build) pins nothing.\n  \
 * Trusting configured Worker authority and intentionally running `af review run` or `af task \
 start` authorizes delivery of each Worker's declared inputs for all Attempts and later Rounds or \
 stages of that Campaign or Task. Afactory does not ask for per-call confirmation.\n  \
-* Review Campaigns are light by default: one closed Round, then fix concrete Findings and run \
-the deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
-explicitly requests convergence review, and repeat that explicit mode when resuming it."
+* The generated native Review Pipeline is light: one complete Round. Heavy convergence uses \
+an explicitly authored bounded native Pipeline; the retired --heavy Campaign flag is refused. \
+Resume the recorded Task with its exact plan ID; its limits and accounting remain captured."
     )]
     Onboard(OnboardArgs),
     /// Run, follow, inspect, and deliver Tasks
@@ -611,656 +582,201 @@ pub(crate) struct MachineDoctorArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct ReviewNamespace {
-    #[command(flatten)]
-    pub(crate) run: RunArgs,
     #[command(subcommand)]
-    pub(crate) command: Option<ReviewCommand>,
+    pub(crate) command: ReviewCommand,
 }
 
-/// Selector, mode, budget, and output options shared by `plan`, `run`, `render`, and `provider
-/// doctor`.
+/// Native Review capture uses the same Task file, authority and local bindings as `af task`.
 #[derive(Debug, Args, Clone)]
 pub(crate) struct RunArgs {
-    /// Versioned Review Task file, executed through the shared Task runtime
-    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "heavy", "restart_round", "provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
-    pub(crate) task_file: Option<PathBuf>,
-    /// Explicit local Worker packages, slot replacements and Provider aliases
-    #[arg(
-        long,
-        value_name = "FILE",
-        requires = "task_file",
-        help_heading = "Selector"
-    )]
+    /// Review Task file; keep local requests outside the checkout
+    #[arg(long = "file", value_name = "FILE")]
+    pub(crate) task_file: PathBuf,
+    /// Local Worker replacements and Provider aliases
+    #[arg(long, value_name = "FILE")]
     pub(crate) bindings: Option<PathBuf>,
-    /// Repository to review
-    #[arg(
-        long,
-        value_name = "DIR",
-        default_value = ".",
-        help_heading = "Selector"
-    )]
+    /// Repository whose committed authority the Task captures
+    #[arg(long, value_name = "DIR", default_value = ".")]
     pub(crate) repo: PathBuf,
-    /// Pipeline definition, relative to the repository [default: .af/pipelines/review.toml, or
-    /// the pipeline the project's routes select from the changed paths]
-    #[arg(long, value_name = "FILE", help_heading = "Selector")]
-    pub(crate) pipeline: Option<PathBuf>,
-    /// Explicit Campaign state directory outside the repository: absent, empty or already an
-    /// af Store; it becomes af-owned, and af may remove it whole
-    #[arg(long, value_name = "DIR", help_heading = "Selector")]
+    /// Explicit Task Store outside the repository
+    #[arg(long, value_name = "DIR")]
     pub(crate) state: Option<PathBuf>,
-    /// Campaign name; state lives under XDG state by an opaque id
-    #[arg(long, value_name = "NAME", help_heading = "Selector", add = ArgValueCompleter::new(complete_campaign))]
-    pub(crate) campaign: Option<String>,
-    /// Policy revision: the commit whose `.af/` governs this Campaign
-    #[arg(long, value_name = "REV", help_heading = "Selector")]
-    pub(crate) policy_rev: Option<String>,
-    /// Diff base revision
-    #[arg(long, value_name = "REV", help_heading = "Selector")]
-    pub(crate) base: Option<String>,
-    /// Candidate revision to review (default: HEAD)
-    #[arg(
-        long,
-        value_name = "REV",
-        help_heading = "Selector",
-        conflicts_with = "uncommitted"
-    )]
+    /// Commit whose `.af/` authority governs the Task
+    #[arg(long, value_name = "REV", default_value = "HEAD")]
+    pub(crate) authority: String,
+    /// Candidate commit, independently selected from authority (default: authority)
+    #[arg(long, value_name = "REV", conflicts_with = "uncommitted")]
     pub(crate) candidate: Option<String>,
-    /// Review the working tree (including unstaged changes) against HEAD
-    #[arg(long, help_heading = "Selector")]
+    /// Diff Base commit; the native Pipeline must declare its `base` input
+    #[arg(long, value_name = "REV")]
+    pub(crate) base: Option<String>,
+    /// Review the working tree, including unstaged changes
+    #[arg(long)]
     pub(crate) uncommitted: bool,
-    /// Free-text focus handed to every reviewer
-    #[arg(long, value_name = "TEXT", help_heading = "Selector")]
-    pub(crate) focus: Option<String>,
-    /// `render`: the Worker node whose exact input to compose
-    #[arg(long, value_name = "NODE", help_heading = "Selector")]
-    pub(crate) node: Option<String>,
-    /// The pipeline's complete convergence policy, instead of the default single light Round
-    #[arg(long, help_heading = "Mode")]
-    pub(crate) heavy: bool,
-    /// Abandon the open Round and start a fresh one
-    #[arg(long, help_heading = "Mode")]
-    pub(crate) restart_round: bool,
-    /// Bind a pipeline node to a provider from the registry
-    #[arg(long, value_name = "NODE=PROVIDER_ID", action = ArgAction::Append, help_heading = "Providers")]
-    pub(crate) provider: Vec<String>,
-    /// Tokens reserved for each new common Review Provider admission [new capture: 32768]
-    #[arg(
-        long,
-        value_name = "N",
-        requires = "provider_admission_wall_ms",
-        help_heading = "Budget"
-    )]
-    pub(crate) provider_admission_tokens: Option<u64>,
-    /// Milliseconds reserved per admission; supply both bounds, or omit both on resume
-    #[arg(
-        long,
-        value_name = "N",
-        requires = "provider_admission_tokens",
-        help_heading = "Budget"
-    )]
-    pub(crate) provider_admission_wall_ms: Option<u64>,
-    /// Wall-clock budget in seconds. Without --file (default routed run, --campaign or --pipeline):
-    /// per reviewer Attempt (default 1800; pinned in the Campaign manifest as
-    /// reviewer_timeout_seconds), not a bound on the
-    /// whole run. With --file: a cap on the whole Task, the lower of this flag and the file's
-    /// limits.wall_ms
-    #[arg(long, value_name = "N", help_heading = "Budget")]
+    /// Cap the whole Task at the lower of this many seconds and the file's limits.wall_ms
+    #[arg(long, value_name = "N")]
     pub(crate) timeout_secs: Option<u64>,
-    /// Wall-clock budget for each git operation
-    #[arg(long, value_name = "N", help_heading = "Budget")]
-    pub(crate) git_timeout_secs: Option<u64>,
-    /// One JSON document on stdout instead of text
-    #[arg(long, help_heading = "Output")]
+    /// Print the existing versioned Task document
+    #[arg(long)]
     pub(crate) json: bool,
 }
 
-/// `af provider doctor`: the selectors, mode and budgets of `af review run` that admission reads,
-/// and only those. A Task file, local bindings and `render`'s node do not apply, and the Campaign
-/// whose admission evidence `review run` reuses is required.
 #[derive(Debug, Args, Clone)]
 pub(crate) struct DoctorArgs {
-    /// Repository to review
-    #[arg(
-        long,
-        value_name = "DIR",
-        default_value = ".",
-        help_heading = "Selector"
-    )]
-    pub(crate) repo: PathBuf,
-    /// Pipeline definition, relative to the repository [default: .af/pipelines/review.toml, or
-    /// the pipeline the project's routes select from the changed paths]
-    #[arg(long, value_name = "FILE", help_heading = "Selector")]
-    pub(crate) pipeline: Option<PathBuf>,
-    /// Explicit Campaign state directory outside the repository: absent, empty or already an
-    /// af Store; it becomes af-owned, and af may remove it whole
-    #[arg(long, value_name = "DIR", help_heading = "Selector")]
-    pub(crate) state: Option<PathBuf>,
-    /// The Campaign whose admission evidence `af review run --campaign` reuses
-    #[arg(long, value_name = "NAME", help_heading = "Selector", add = ArgValueCompleter::new(complete_campaign))]
-    pub(crate) campaign: String,
-    /// Policy revision: the commit whose `.af/` governs this Campaign
-    #[arg(long, value_name = "REV", help_heading = "Selector")]
-    pub(crate) policy_rev: Option<String>,
-    /// Diff base revision
-    #[arg(long, value_name = "REV", help_heading = "Selector")]
-    pub(crate) base: Option<String>,
-    /// Candidate revision to review (default: HEAD)
-    #[arg(
-        long,
-        value_name = "REV",
-        help_heading = "Selector",
-        conflicts_with = "uncommitted"
-    )]
-    pub(crate) candidate: Option<String>,
-    /// Review the working tree (including unstaged changes) against HEAD
-    #[arg(long, help_heading = "Selector")]
-    pub(crate) uncommitted: bool,
-    /// Free-text focus handed to every reviewer
-    #[arg(long, value_name = "TEXT", help_heading = "Selector")]
-    pub(crate) focus: Option<String>,
-    /// The pipeline's complete convergence policy, instead of the default single light Round
-    #[arg(long, help_heading = "Mode")]
-    pub(crate) heavy: bool,
-    /// Abandon the open Round and start a fresh one
-    #[arg(long, help_heading = "Mode")]
-    pub(crate) restart_round: bool,
-    /// Bind a pipeline node to a provider from the registry
-    #[arg(long, value_name = "NODE=PROVIDER_ID", action = ArgAction::Append, help_heading = "Providers")]
-    pub(crate) provider: Vec<String>,
-    /// Tokens reserved for each new common Review Provider admission [new capture: 32768]
-    #[arg(
-        long,
-        value_name = "N",
-        requires = "provider_admission_wall_ms",
-        help_heading = "Budget"
-    )]
-    pub(crate) provider_admission_tokens: Option<u64>,
-    /// Milliseconds reserved per admission; supply both bounds, or omit both on resume
-    #[arg(
-        long,
-        value_name = "N",
-        requires = "provider_admission_tokens",
-        help_heading = "Budget"
-    )]
-    pub(crate) provider_admission_wall_ms: Option<u64>,
-    /// Wall-clock budget in seconds per reviewer Attempt (default 1800), pinned in the Campaign
-    /// manifest when the Campaign is captured
-    #[arg(long, value_name = "N", help_heading = "Budget")]
-    pub(crate) timeout_secs: Option<u64>,
-    /// Wall-clock budget for each git operation
-    #[arg(long, value_name = "N", help_heading = "Budget")]
-    pub(crate) git_timeout_secs: Option<u64>,
-    /// One JSON document on stdout instead of text
-    #[arg(long, help_heading = "Output")]
-    pub(crate) json: bool,
-}
-
-impl From<DoctorArgs> for RunArgs {
-    fn from(args: DoctorArgs) -> Self {
-        RunArgs {
-            task_file: None,
-            bindings: None,
-            repo: args.repo,
-            pipeline: args.pipeline,
-            state: args.state,
-            campaign: Some(args.campaign),
-            policy_rev: args.policy_rev,
-            base: args.base,
-            candidate: args.candidate,
-            uncommitted: args.uncommitted,
-            focus: args.focus,
-            node: None,
-            heavy: args.heavy,
-            restart_round: args.restart_round,
-            provider: args.provider,
-            provider_admission_tokens: args.provider_admission_tokens,
-            provider_admission_wall_ms: args.provider_admission_wall_ms,
-            timeout_secs: args.timeout_secs,
-            git_timeout_secs: args.git_timeout_secs,
-            json: args.json,
-        }
-    }
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct CampaignSelector {
-    /// Campaign name
-    #[arg(long, value_name = "NAME", help_heading = "Selector", add = ArgValueCompleter::new(complete_campaign))]
-    pub(crate) campaign: String,
-    /// Explicit Campaign state directory
-    #[arg(long, value_name = "DIR", help_heading = "Selector")]
-    pub(crate) state: Option<PathBuf>,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct ActorArgs {
-    /// Who records this transition (default: the local user)
-    #[arg(long, value_name = "ACTOR", help_heading = "Record")]
-    pub(crate) actor: Option<String>,
-    /// Evidence artifact ids supporting the transition
-    #[arg(long, value_name = "ID", action = ArgAction::Append, help_heading = "Record")]
-    pub(crate) evidence: Vec<String>,
+    /// Confirm the exact plan before running its charged Provider admissions
+    #[arg(long, value_name = "PLAN_ID")]
+    pub(crate) confirm_plan: String,
+    /// Planned native Task whose captured Provider admissions to run
+    pub(crate) task_id: String,
+    #[command(flatten)]
+    pub(crate) inspect: TaskInspectArgs,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ReviewCommand {
-    /// Execute the pipeline and fold results into the ledger
-    #[command(
-        long_about = "Execute the pipeline over the selected Subject and fold every result into the \
-Campaign ledger.\n\nEach reviewer runs in a private sandbox with an exact, role-scoped input and \
-a token budget reserved before dispatch; results are admitted in canonical order. The exit code \
-is the verdict: 0 pass, 3 fail, 4 incomplete.\n\nNever: mutates the repository, commits, pushes, \
-or contacts anything but the bound providers; with --file, a pipeline with remote checks pushes \
-its gate branches and a draft gate pull request (ADR-0140).",
-        override_usage = "af review run [--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  \
-# needs: Providers claude-main and codex-main (af provider setup)\n  \
-af review run --policy-rev HEAD --base HEAD --uncommitted \\\n    \
---provider correctness=claude-main --provider architecture=codex-main\n  \
-# needs: those Providers and a branch main\n  \
-af review run --campaign pr-42 --policy-rev main --base main \\\n    --candidate HEAD \\\n    \
---provider correctness=claude-main --provider architecture=codex-main --json"
-    )]
+    /// Capture and execute a Review Task under the common Task runtime
     Run(RunArgs),
-    /// Show what a review would run, token-free, without Campaign state
-    #[command(
-        long_about = "Resolve policy, pipeline, Workers, providers, and the Subject and print the \
-plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory; with --file it \
-opens a Task in the Task Store and records its proposed plan. The plan is \
-exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
-        override_usage = "af review plan [--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  # needs: one registered Provider for every model Worker\n  \
-af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
-# needs: one registered Provider for every model Worker\n  \
-af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
-# needs: one registered Provider for every model Worker\n  \
-af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
-    )]
-    Plan {
+    /// Capture and compile a Review Task without dispatching Workers
+    Plan(RunArgs),
+    /// Inspect the captured plan, typed ports, bindings and budgets
+    Inspect {
+        /// Recorded native Task ID
+        task_id: String,
+        #[arg(long, conflicts_with = "json")]
+        /// Print the captured typed graph as a tree
+        tree: bool,
+        #[arg(long, value_name = "PLAN_ID")]
+        /// Inspect this exact recorded plan instead of the current plan
+        plan: Option<String>,
         #[command(flatten)]
-        args: RunArgs,
-        /// Include pipeline nodes and edges and every changed path in the text plan
-        #[arg(long, help_heading = "Output")]
-        long: bool,
+        inspect: TaskInspectArgs,
     },
-    /// Compose one Worker's exact input, token-free, without Campaign state
-    #[command(
-        long_about = "Compose the exact input one Worker node would receive — the bytes, their \
-transport, and every artifact the role-scoped manifest names — without a sandbox, a model call, \
-or Campaign state. This is how a human audits what a Worker sees. A model Worker's header also \
-prints the reply schema its dispatch passes to the Provider CLI (`--json-schema` for Claude Code, \
-`--output-schema` for Codex). --json prints one af/review-render@2 document \
-(schemas/review-render-v2.json) with the bytes, the manifest and that `reply_schema`.",
-        override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  \
-af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted\n  \
-af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted --json"
-    )]
-    Render(RunArgs),
-    /// List the ledger: findings, dispositions, and open demands
-    #[command(
-        long_about = "Read the current Campaign ledger. --json prints one af/review-ledger@1 document with Finding views and Demand views (schemas/review-ledger-v1.json). An empty ledger has empty arrays. --long expands each Finding in text output.",
-        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --json   # needs: Campaign pr-42\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
-    )]
-    Ledger {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Full detail per finding
-        #[arg(long, help_heading = "Output")]
-        long: bool,
-        /// One versioned JSON document on stdout
-        #[arg(long, help_heading = "Output")]
-        json: bool,
-    },
-    /// Show one ledger entry by key
-    #[command(
-        long_about = "Read one Finding by its ledger key. --json prints one af/review-show@1 document with the Finding, its attached reports and linked proposals (schemas/review-show-v1.json).",
-        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H… --json"
-    )]
+    /// Show native Task state, checks, exact spend and the next command
     Show {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding key
-        key: String,
-        /// One versioned JSON document on stdout
-        #[arg(long, help_heading = "Output")]
-        json: bool,
-    },
-    /// Export a verified patch proposal, by id or by the finding it fixes
-    #[command(
-        group = ArgGroup::new("target").required(true).args(["proposal", "finding"]),
-        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its proposal P-01H…\n  af review export --campaign pr-42 P-01H…\n  \
-# needs: Campaign pr-42 and a proposal fixing F-01H…\n  \
-af review export --campaign pr-42 --finding F-01H… --allow-stale"
-    )]
-    Export {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Proposal id
-        proposal: Option<String>,
-        /// Export the proposal that fixes this finding
-        #[arg(long, value_name = "FINDING_ID")]
-        finding: Option<String>,
-        /// Export even when the proposal's base is no longer the Campaign's
+        /// Recorded native Task ID
+        task_id: String,
         #[arg(long)]
-        allow_stale: bool,
+        /// Include all recorded check receipts
+        checks: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
     },
-    /// Render the Campaign report
-    #[command(
-        long_about = "Render the Campaign report. --json selects the af/review-report@5 document, the same as --format json: each finding with the prompt that hands it to the agent that will fix it, and what the last Round covered per reviewer and per path, so a reviewer that did not run is never read as one that found nothing. --format sarif prints the findings as one SARIF 2.1.0 log for code-scanning tools. --json cannot be combined with --format, even when --format names json.",
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42\n  # needs: Campaign pr-42\n  af review report --campaign pr-42 --format sarif > review.sarif"
-    )]
+    /// Read the complete canonical Ledger, with original claims and current statuses
+    Ledger {
+        /// Recorded native Task ID
+        task_id: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        /// Select a recorded Review Round (default: latest)
+        round: Option<u64>,
+        #[arg(long, value_enum, default_value = "text", conflicts_with = "json")]
+        /// Ledger output format (JSON: af/review-ledger@2)
+        format: FindingsFormatArg,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Report exact native Task accounting and Review history
     Report {
+        /// Recorded native Task ID
+        task_id: String,
         #[command(flatten)]
-        selector: CampaignSelector,
-        /// Output format
-        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
-        format: Option<ReportFormatArg>,
-        /// Shorthand for --format json; cannot be combined with --format
-        #[arg(long, help_heading = "Output")]
-        json: bool,
+        inspect: TaskInspectArgs,
     },
-    /// List Campaigns under the state root
-    #[command(
-        after_long_help = "Examples:\n  af review campaigns\n  af review campaigns --format json"
-    )]
-    Campaigns {
-        /// State root to enumerate (default: XDG state)
-        #[arg(long, value_name = "DIR")]
-        state_root: Option<PathBuf>,
-        /// Output format
-        #[arg(long, value_enum, default_value_t = ListFormatArg::Text, help_heading = "Output")]
-        format: ListFormatArg,
-        /// Walk each state directory for its size on disk (seconds on a large root)
+    /// Resume the same Task and its original bounded Attempts
+    Resume {
+        /// Recorded native Task ID
+        task_id: String,
+        #[arg(long, value_name = "PLAN_ID", conflicts_with = "execute")]
+        /// Approve this exact current plan ID
+        confirm_plan: Option<String>,
         #[arg(long)]
-        sizes: bool,
+        /// Execute the captured plan after reviewing its authority
+        execute: bool,
+        #[arg(long, conflicts_with = "confirm_plan")]
+        /// Retry the failed gate under the original Task bounds
+        retry_gate: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
     },
-    /// Reclaim Campaign state: list what would go; remove it only with --apply
+    /// Plan a new Task from exact Review source, Base, history and original claims
     #[command(
-        long_about = "List the Campaigns whose newest store write is at least --older-than days old \
-(never the --keep newest) and how much they hold on disk. Only --apply removes them, whole \
-Campaign directories at a time; directories the enumeration cannot read are reported and left \
-alone, and nothing inside a kept Campaign is ever touched.",
-        after_long_help = "Examples:\n  af review gc --older-than 14 --keep 5\n  af review gc --older-than 14 --keep 5 --apply\n  af review gc --keep 10 --json"
+        long_about = "Plan a new authorized native Task from a completed Review. Standalone Review binds the exact original source, Base and canonical history, including a Base supplied by CLI. Implementation Tasks retain their candidate and typed findings input. Prior accounting remains unchanged; captured Review history and Round bounds still apply. Resume the new exact plan after inspection, or use --execute to authorize this run."
     )]
-    Gc {
-        /// State root to reclaim under (default: XDG state)
-        #[arg(long, value_name = "DIR")]
-        state_root: Option<PathBuf>,
-        /// Campaigns whose newest store write is at least this many days old
-        #[arg(long, value_name = "DAYS", required_unless_present = "keep")]
-        older_than: Option<u64>,
-        /// Never touch the newest N Campaigns
-        #[arg(long, value_name = "N")]
-        keep: Option<usize>,
-        /// Remove the listed Campaign directories (default: preview only)
+    Continue {
+        /// New native Task ID (must not already exist)
+        task_id: String,
+        #[arg(long, value_name = "TASK_ID")]
+        /// Continue from this recorded Task and its reviewed source
+        from: String,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=16))]
+        /// Select a recorded Review Round (default: latest)
+        round: Option<u32>,
+        #[arg(long, value_name = "FILE")]
+        /// Replacement goal file for the continuation
+        goal: Option<PathBuf>,
+        #[arg(long, value_name = "FILE")]
+        /// Machine-local Provider binding overrides
+        bindings: Option<PathBuf>,
         #[arg(long)]
-        apply: bool,
-        /// Machine-readable af/review-gc@1
-        #[arg(long, help_heading = "Output")]
-        json: bool,
+        /// Execute the captured plan after reviewing its authority
+        execute: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
     },
-    /// Resolve a finding without a fix: rejected, or tracked as wontfix
-    #[command(
-        long_about = "Record a non-fixed resolution for a finding.\n\n`rejected` disputes the \
-finding; `wontfix-tracked` accepts it under a severity ceiling, a tracking reference, and a \
-policy-time expiry, and requires --max-severity, --tracking, and --expires-at-policy-time. \
-Non-fixed resolutions are scoped and challengeable.",
-        after_long_help = "Examples:\n  \
-# needs: Campaign pr-42 and its finding F-01H…\n  \
-af review resolve --campaign pr-42 F-01H… rejected --policy main \\\n    --reason \"not reachable\"\n  \
-# needs: Campaign pr-42 and its finding F-01H…\n  \
-af review resolve --campaign pr-42 F-01H… wontfix-tracked --policy main \\\n    --reason \"tracked\" \\\n    \
---max-severity major --tracking JIRA-1 --expires-at-policy-time 12",
-        // Held to the page's 100 columns, as clap does not wrap a usage line.
-        override_usage = "af review resolve [OPTIONS] --campaign <NAME> --policy <REV> --reason <TEXT>\n       <KEY> <rejected|wontfix-tracked>"
-    )]
-    Resolve {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding key
-        key: String,
-        /// Resolution status: rejected or wontfix-tracked (a fix is proven with attest-change)
-        #[arg(value_name = "rejected|wontfix-tracked")]
-        status: String,
-        /// Policy revision the resolution is recorded under
-        #[arg(long, value_name = "REV")]
-        policy: String,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        #[command(flatten)]
-        actor: ActorArgs,
-        /// wontfix-tracked: highest severity this resolution may cover
+    /// Export an exact sealed proposed repair without promotion or publication
+    Export {
+        /// Recorded native Task ID
+        task_id: String,
         #[arg(
-            long,
-            value_enum,
-            value_name = "SEVERITY",
-            help_heading = "wontfix-tracked"
+            value_name = "PROPOSAL_ID",
+            required_unless_present = "finding",
+            conflicts_with = "finding"
         )]
-        max_severity: Option<SeverityArg>,
-        /// wontfix-tracked: external tracking reference
-        #[arg(long, value_name = "REF", help_heading = "wontfix-tracked")]
-        tracking: Option<String>,
-        /// wontfix-tracked: policy-time tick at which the resolution expires
-        #[arg(long, value_name = "TICK", help_heading = "wontfix-tracked")]
-        expires_at_policy_time: Option<u64>,
-    },
-    /// Attest that a region changed in response to a finding
-    #[command(after_long_help = "Examples:\n  \
-# needs: Campaign pr-42 and its finding F-01H…\n  \
-af review attest-change --campaign pr-42 F-01H… --region src/lib.rs:10-20 \\\n    --reason \"guarded\"")]
-    AttestChange {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding key
-        finding: String,
-        /// Changed region, PATH or PATH:START-END
-        #[arg(long, value_name = "PATH[:START-END]", action = ArgAction::Append)]
-        region: Vec<String>,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        #[command(flatten)]
-        actor: ActorArgs,
-    },
-    /// Record a verification of an attested fix
-    #[command(
-        group = ArgGroup::new("outcome").required(true).args(["positive", "negative"]),
-        after_long_help = "Examples:\n  \
-# needs: Campaign pr-42, its finding F-01H… and attestation A-01H…\n  \
-af review verify-fix --campaign pr-42 F-01H… A-01H… --policy main \\\n    --reason \"reproduced clean\" \\\n    \
---positive",
-        override_usage = "af review verify-fix [OPTIONS] --campaign <NAME> --policy <REV> --reason <TEXT>\n       <--positive|--negative> <FINDING> <ATTESTATION>"
-    )]
-    VerifyFix {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding key
-        finding: String,
-        /// Attestation id
-        attestation: String,
-        /// Policy revision the verification is recorded under
-        #[arg(long, value_name = "REV")]
-        policy: String,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        /// The fix holds
+        /// Exact admitted sealed Proposal artifact ID
+        proposal: Option<String>,
+        #[arg(long, value_name = "FINDING_ID")]
+        /// Export the unique proposed repair for this original Finding
+        finding: Option<String>,
+        #[arg(long, value_name = "PLAN_ID")]
+        /// Inspect sealed proposals from this exact recorded current-format plan
+        plan: Option<String>,
         #[arg(long)]
-        positive: bool,
-        /// The fix does not hold
+        /// Explicitly export a Proposal whose original base differs from the current head
+        allow_stale: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Read canonical Finding/Demand identities and decision authority
+    DecisionContext {
+        /// Finished native Review Task
+        task_id: String,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Plan a zero-token native Task of exact human Review decisions
+    #[command(
+        long_about = "Capture a closed af.review-decisions/1 JSON batch against the selected complete Review output of --from. The native Task validates original Subject, Base, policy, actor, evidence and Finding/Demand identities; it changes no original claim or charge. Inspect the plan, then use af review resume NEW --confirm-plan PLAN_ID, or explicitly authorize this batch with --execute. Fixed claims still require native independent repair verification. See docs/task-execution/review-task.md for the batch contract."
+    )]
+    Decide {
+        /// New decision Task ID
+        task_id: String,
+        /// Finished native Review Task whose selected output this batch names
         #[arg(long)]
-        negative: bool,
-        /// Who verified (default: the local user)
-        #[arg(long, value_name = "ACTOR", help_heading = "Record")]
-        verifier: Option<String>,
-        /// Evidence artifact ids supporting the verification
-        #[arg(long, value_name = "ID", action = ArgAction::Append, help_heading = "Record")]
-        evidence: Vec<String>,
-    },
-    /// Challenge a non-fixed resolution
-    #[command(
-        after_long_help = "Examples:\n  \
-# needs: Campaign pr-42, a resolved finding F-01H… and evidence E-01H…\n  \
-af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\n    \
---reason \"repro attached\" --evidence E-01H…",
-        override_usage = "af review challenge-resolution [OPTIONS] --campaign <NAME> --kind <KIND>\n       --reason <TEXT> <FINDING>"
-    )]
-    ChallengeResolution {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding key
-        finding: String,
-        /// Ground for the challenge
-        #[arg(long, value_enum)]
-        kind: ChallengeKindArg,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        #[command(flatten)]
-        actor: ActorArgs,
-    },
-    /// Advance the Campaign's policy clock
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    PolicyTime {
-        #[command(subcommand)]
-        command: PolicyTimeCommand,
-    },
-    /// Group one finding under another
-    #[command(
-        after_long_help = "Examples:\n  # needs: Campaign pr-42 and both findings\n  af review group --campaign pr-42 F-02H… F-01H…"
-    )]
-    Group {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding to fold in
         from: String,
-        /// Finding that absorbs it
-        into: String,
-    },
-    /// Undo a grouping
-    Ungroup {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Finding to release
-        from: String,
-        /// Finding it was grouped under
-        into: String,
-    },
-    /// Attach or apply evidence to a demand
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    Evidence {
-        #[command(subcommand)]
-        command: EvidenceCommand,
-    },
-    /// Waive a demand
-    #[command(subcommand_required = true, arg_required_else_help = true)]
-    Demand {
-        #[command(subcommand)]
-        command: DemandCommand,
-    },
-    /// Not a command: the browser is `af` alone at a terminal; this names it
-    #[command(hide = true)]
-    Tui,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum PolicyTimeCommand {
-    /// Advance the policy clock to a tick
-    #[command(
-        after_long_help = "Examples:\n  # needs: Campaign pr-42\n  af review policy-time advance --campaign pr-42 12 --reason \"sprint end\""
-    )]
-    Advance {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// The new tick (monotonic)
-        tick: u64,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        /// Who records this (default: the local user)
-        #[arg(long, value_name = "ACTOR", help_heading = "Record")]
-        actor: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum EvidenceCommand {
-    /// Attach a file as evidence for a demand
-    #[command(
-        after_long_help = "Examples:\n  # needs: Campaign pr-42, demand D-01H…\n  af review evidence add --campaign pr-42 D-01H… ./bench.txt"
-    )]
-    Add {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Demand id
-        demand: String,
-        /// File to attach
+        /// Closed af.review-decisions/1 JSON batch
+        #[arg(long)]
         file: PathBuf,
-        /// Who records this (default: the local user)
-        #[arg(long, value_name = "ACTOR", help_heading = "Record")]
-        actor: Option<String>,
-    },
-    /// Mark a demand satisfied by attached evidence
-    #[command(
-        after_long_help = "Examples:\n  \
-# needs: Campaign pr-42, its demand D-01H… and evidence E-01H…\n  \
-af review evidence satisfy --campaign pr-42 D-01H… E-01H… --policy main \\\n    --reason \"bench attached\"",
-        override_usage = "af review evidence satisfy [OPTIONS] --campaign <NAME> --policy <REV> --reason <TEXT>\n       <DEMAND> <EVIDENCE>"
-    )]
-    Satisfy {
-        #[command(flatten)]
-        selector: CampaignSelector,
-        /// Demand id
-        demand: String,
-        /// Evidence id
-        evidence: String,
-        /// Policy revision the satisfaction is recorded under
-        #[arg(long, value_name = "REV")]
-        policy: String,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        /// Allow evidence already used for another demand
+        /// Committed deterministic decision Pipeline
+        #[arg(long, default_value = "onboard/review-decisions")]
+        pipeline: String,
+        /// Committed authority selector
+        #[arg(long, default_value = "HEAD")]
+        authority: String,
+        /// Execute the exact captured batch after reviewing its authority
         #[arg(long)]
-        admit_reuse: bool,
-        /// Who records this (default: the local user)
-        #[arg(long, value_name = "ACTOR", help_heading = "Record")]
-        actor: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum DemandCommand {
-    /// Waive a demand under a policy revision
-    #[command(after_long_help = "Examples:\n  \
-# needs: Campaign pr-42 and its demand D-01H…\n  \
-af review demand waive --campaign pr-42 D-01H… --policy main \\\n    --reason \"out of scope\"")]
-    Waive {
+        execute: bool,
         #[command(flatten)]
-        selector: CampaignSelector,
-        /// Demand id
-        demand: String,
-        /// Policy revision the waiver is recorded under
-        #[arg(long, value_name = "REV")]
-        policy: String,
-        /// Why
-        #[arg(long, value_name = "TEXT")]
-        reason: String,
-        /// Who records this (default: the local user)
-        #[arg(long, value_name = "ACTOR", help_heading = "Record")]
-        actor: Option<String>,
+        inspect: TaskInspectArgs,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ReportFormatArg {
-    Md,
-    Text,
-    Json,
-    /// SARIF 2.1.0 (ADR-0248)
-    Sarif,
 }
 
 /// What `af task findings` prints: text, its `af/task-findings@2` document, or SARIF 2.1.0.
@@ -1276,21 +792,6 @@ pub(crate) enum FindingsFormatArg {
 pub(crate) enum ListFormatArg {
     Text,
     Json,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum SeverityArg {
-    Minor,
-    Major,
-    Blocker,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ChallengeKindArg {
-    NewEvidence,
-    HigherSeverity,
-    OutsideScope,
-    Expired,
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1457,7 +958,7 @@ catalog is unavailable (the static rules are printed and nothing is invented).",
         /// Pi catalog page (zero-based, at most 64 models per page)
         #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..64))]
         page: u16,
-        /// Emit the versioned `af/provider-models@3` document instead of the table
+        /// Emit the versioned `af/provider-models@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Resolve a human model spelling, with an optional /EFFORT, to an exact ID
@@ -1585,14 +1086,10 @@ Checks the transaction marker, live registry, and preserved candidate/prior hash
 archiving the marker. It never guesses which version committed and never deletes recovery files."
     )]
     Recover,
-    /// Run a bounded, charged preflight for the named bindings
+    /// Run the captured Task's bounded, charged Provider admissions
     #[command(
-        long_about = "Run a bounded, charged preflight for the named provider bindings.\n\n\
-Resolves the review selector exactly as `af review plan` would, then sends each bound provider \
-one fenced preflight operation and reports identity, model, and spend.",
-        after_long_help = "Examples:\n  \
-# needs: Campaign pr-42 and Provider claude-main (af provider setup)\n  \
-af provider doctor --campaign pr-42 --provider correctness=claude-main"
+        long_about = "Run only the Provider admission nodes of an exact approved native Task plan. The common Task log records their identity checks, Attempt charges and outputs; later execution reuses those selected receipts.",
+        after_long_help = "Examples:\n  # needs: a captured Task and its exact plan ID\n  af provider doctor TASK_ID --confirm-plan PLAN_ID"
     )]
     Doctor(DoctorArgs),
 }
@@ -1682,7 +1179,7 @@ pub(crate) struct OnboardArgs {
     /// Write the previewed bundle (absent-only; never overwrites)
     #[arg(long, help_heading = "Action", conflicts_with = "refresh_lock")]
     pub(crate) apply: bool,
-    /// Repin the selected, routed and oversized pipelines and their Workers; drop stale pins
+    /// Repin current local Task packages and the receipted af release
     #[arg(long, help_heading = "Action")]
     pub(crate) refresh_lock: bool,
     /// Run this command under release VERSION, installing it on demand (how a pin moves)
@@ -2189,7 +1686,7 @@ af task status TASK_ID --json   # needs: a Task"
     /// Follow a Task as JSON lines: each event of its log, then one terminal record
     #[command(
         long_about = "Print the events a Task's log records as JSON lines on stdout, one \
-`af/task-event@1` document per line, and follow the Task until it settles — no writer holds it \
+`af/task-event@2` document per line, and follow the Task until it settles — no writer holds it \
 and no run of this host is starting — then print one terminal record and exit with the Task's \
 exit code, as `af task wait` does: its outcome's (`af help exit-codes`), 4 for a Task that waits \
 for a person.\n\nAn event line (`record: event`) is one event of the Task's log, in the order \
@@ -3727,29 +3224,34 @@ mod tests {
     use super::*;
     use clap::CommandFactory as _;
 
-    /// `af review --help` lists its subcommands by lifecycle in a template rather than clap's
-    /// flat list; every visible subcommand is there exactly once, with its own summary.
     #[test]
-    fn the_review_help_groups_every_subcommand_once_with_its_summary() {
-        let root = Af::command();
-        let review = root.find_subcommand("review").unwrap();
-        let mut listed = 0;
-        for sub in review.get_subcommands().filter(|sub| !sub.is_hide_set()) {
-            let about = sub.get_about().unwrap().to_string();
-            let line = format!("  {:<22}{about}\n", sub.get_name());
-            assert_eq!(
-                REVIEW_HELP_TEMPLATE.matches(&line).count(),
-                1,
-                "{line:?} in the review help template"
-            );
-            listed += 1;
-        }
-        assert_eq!(listed, 18);
-        let rows = REVIEW_HELP_TEMPLATE
-            .lines()
-            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
-            .count();
-        assert_eq!(rows, listed, "a row for a subcommand that does not exist");
+    fn review_help_lists_only_native_task_entrypoints() {
+        let mut root = Af::command();
+        let review = root.find_subcommand_mut("review").unwrap();
+        let names: Vec<_> = review
+            .get_subcommands()
+            .map(|s| s.get_name().to_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "run",
+                "plan",
+                "inspect",
+                "show",
+                "ledger",
+                "report",
+                "resume",
+                "continue",
+                "export",
+                "decision-context",
+                "decide"
+            ]
+        );
+        let help = review.render_long_help().to_string();
+        assert!(help.contains("native Task lifecycle"));
+        assert!(help.contains("Campaign selectors and Review Pipeline configuration are retired"));
+        assert!(!help.contains("--campaign"));
     }
 
     /// `af provider doctor` takes the selectors admission reads and nothing a Task file,
@@ -3768,14 +3270,15 @@ mod tests {
         for absent in ["file", "bindings", "node"] {
             assert!(!flags.contains(&absent), "--{absent} in {flags:?}");
         }
-        for present in ["campaign", "provider", "policy-rev", "base", "json"] {
+        for present in ["confirm-plan", "repo", "state", "workspace", "json"] {
             assert!(flags.contains(&present), "--{present} missing in {flags:?}");
         }
-        let campaign = doctor
+        let task = doctor
             .get_arguments()
-            .find(|arg| arg.get_long() == Some("campaign"))
+            .find(|arg| arg.get_id() == "task_id")
             .unwrap();
-        assert!(campaign.is_required_set());
+        assert!(task.is_required_set());
+        assert!(!flags.contains(&"campaign"));
     }
 
     /// `af self --help` leads with what most people come for.

@@ -238,12 +238,15 @@ pub(super) fn record_base(
     repository_id: &str,
 ) -> Result<String, String> {
     use af_contracts::task::findings::{TASK_BASE_SCHEMA, TASK_BASE_V1, TaskBaseV1};
-    let origin = cas
-        .put_json(
-            &json!({"schema":"af.task-source-origin/1","repository_id":repository_id,
-            "source_revision":base.commit,"content_digest":base.content_digest}),
-        )
-        .map_err(|e| e.to_string())?;
+    let origin = af_source_git::task::write_origin(
+        cas,
+        &af_source_git::task::TaskSourceOrigin::Captured {
+            schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
+            repository_id: repository_id.into(),
+            source_revision: Some(base.commit.clone()),
+            content_digest: base.content_digest.clone(),
+        },
+    )?;
     let snapshot_id = capture_snapshot(cas, &base.manifest, &origin, None)?;
     let record = TaskBaseV1 {
         schema: TASK_BASE_SCHEMA.into(),

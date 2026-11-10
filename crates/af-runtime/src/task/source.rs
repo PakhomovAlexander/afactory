@@ -9,7 +9,7 @@ use af_contracts::task::diff_subject::{
 };
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::pipeline::PortAffinityV1;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::{ArtifactInputV1, TaskRevisionV1};
 use af_contracts::{PortCardinality, Producer};
 use af_graph::task::OperatorSignature;
@@ -114,7 +114,7 @@ fn plan_revision(cas: &Cas, plan_id: &str) -> Result<Option<TaskRevisionV1>, Str
     let Ok(plan) = envelope(cas, plan_id) else {
         return Ok(None);
     };
-    let Ok(plan) = serde_json::from_value::<ExecutionPlanV3>(plan.payload) else {
+    let Ok(plan) = serde_json::from_value::<ExecutionPlan>(plan.payload) else {
         return Ok(None);
     };
     serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
@@ -296,7 +296,7 @@ pub fn task_acceptance(
     let Ok(plan) = envelope(cas, plan_id) else {
         return Ok(None);
     };
-    let Ok(plan) = serde_json::from_value::<ExecutionPlanV3>(plan.payload) else {
+    let Ok(plan) = serde_json::from_value::<ExecutionPlan>(plan.payload) else {
         return Ok(None);
     };
     let task: TaskRevisionV1 =
@@ -463,7 +463,7 @@ pub fn invocation_producer(
     invocation: &TaskInvocationV1,
     attempt: Option<&PreparedTaskAttempt>,
 ) -> Result<Producer, String> {
-    let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &invocation.plan_id)?.payload)
+    let plan: ExecutionPlan = serde_json::from_value(envelope(cas, &invocation.plan_id)?.payload)
         .map_err(|e| e.to_string())?;
     let task: TaskRevisionV1 =
         serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
@@ -850,11 +850,11 @@ pub(super) fn add_review_inputs(
     source: &str,
     manifest: &mut af_source_git::Manifest,
 ) -> Result<(), String> {
-    use af_contracts::task::review::{TASK_REVIEW_SUBJECT_V2, TaskReviewSubjectV2};
+    use af_contracts::task::review::{TASK_REVIEW_SUBJECT_V3, TaskReviewSubject};
     let Some(port) = invocation
         .inputs
         .get("subject")
-        .filter(|p| p.artifact_type == TASK_REVIEW_SUBJECT_V2)
+        .filter(|p| p.artifact_type == TASK_REVIEW_SUBJECT_V3)
     else {
         return Ok(());
     };
@@ -863,11 +863,11 @@ pub(super) fn add_review_inputs(
         return Err("Readable Review inputs require a Worker whose tree is never captured".into());
     }
     let artifact = envelope(cas, &port.artifact_ids[0])?;
-    let subject: TaskReviewSubjectV2 =
+    let subject: TaskReviewSubject =
         serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
     subject.validate()?;
     if subject.snapshot_id != source
-        || artifact.artifact_type != TASK_REVIEW_SUBJECT_V2
+        || artifact.artifact_type != TASK_REVIEW_SUBJECT_V3
         || artifact.subject_snapshot_id.as_deref() != Some(source)
         || port.snapshot_id.as_deref() != Some(source)
     {
@@ -983,7 +983,7 @@ mod tests {
         let base = Manifest::new(vec![file("lib.rs", "a")]).unwrap();
         let tree = Manifest::new(vec![file("lib.rs", "b"), file("new.rs", "c")]).unwrap();
         let origin = cas
-            .put_json(&serde_json::json!({"schema":"af.task-source-origin/1"}))
+            .put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":base.content_digest()}))
             .unwrap();
         let base_id = capture_snapshot(&cas, &base, &origin, None).unwrap();
         let tree_id = capture_snapshot(&cas, &tree, &origin, Some(&base_id)).unwrap();

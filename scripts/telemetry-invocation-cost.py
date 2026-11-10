@@ -21,8 +21,8 @@ exit, both on `CLOCK_MONOTONIC`, as the overhead gate takes it; a negative one i
 measured and leaves the gate `not_judged`) and the bytes the harness wrote to stdout; and it requires
 the run to finish with the same accounting under both shapes and at both levels (the Task's
 charge, its Attempts and every Attempt's usage records), stopping the measurement otherwise.
-Each release runs the workload its fixture contract describes (`--fixture-contract`, as the
-overhead gate selects it).
+The current fixture contract requires exact package pins and a zero-Attempt plan from the
+measured binary before timing, as the overhead gate does; release strings are provenance.
 
 The gate is judged at `off`: in every case the median paired wall difference `(stream-json -
 json) / json` is at most 2%, and the median paired peak-RSS difference at most the stream's bytes
@@ -33,8 +33,8 @@ and a passed one a single `stream-json` shape (`decision`). `--judge` recomputes
 and the verdict from a recorded document's own pairs. Exit status: 0 for `pass` or `not_judged`,
 3 for `fail`, 1 when a measurement or a document cannot be read.
 
-Prints a Markdown table, or with `--json` the `af/telemetry-invocation-cost@2` document
-(`schemas/telemetry-invocation-cost-v2.json`); `--report PATH` writes the document as well.
+Prints a Markdown table, or with `--json` the `af/telemetry-invocation-cost@3` document
+(`schemas/telemetry-invocation-cost-v3.json`); `--report PATH` writes the document as well.
 """
 import argparse
 import importlib.util
@@ -61,7 +61,7 @@ _OVERHEAD_PATH = REPOSITORY / 'scripts' / 'telemetry-overhead.py'
 exec(compile(_OVERHEAD_PATH.read_bytes(), str(_OVERHEAD_PATH), 'exec'), overhead.__dict__)
 BenchError = overhead.BenchError
 
-SCHEMA = 'af/telemetry-invocation-cost@2'
+SCHEMA = 'af/telemetry-invocation-cost@3'
 FIXTURES_DIR = overhead.FIXTURES_DIR
 HARNESS = FIXTURES_DIR / 'invocation-claude.py'
 FIXTURES = {'telemetry-bench-invocation-one': 1, 'telemetry-bench-invocation-four': 4}
@@ -94,10 +94,7 @@ def summarize(document):
         raise BenchError('the document measures its drain between other boundaries than the '
                          f'protocol ({overhead.DRAIN_BOUNDARY} on the {overhead.DRAIN_CLOCK} '
                          'clock)')
-    contract = document['fixture_contract']
-    if overhead.select_contract(contract['release']) != contract['name']:
-        raise BenchError(f"the document measured af {contract['release']} under the fixture "
-                         f"contract `{contract['name']}`, which does not describe it")
+    overhead.validate_contract(document)
     seed = protocol['seed']
     reasons = []
     for case in document['cases']:
@@ -198,6 +195,7 @@ def prepare(fixture, work, af, contract):
                               text=True)
         if done.returncode != 0:
             raise BenchError(f'{fixture}: git {" ".join(args)}: {done.stderr.strip()}')
+    overhead.admit_fixture(af, fixture, pristine, lambda run: provider_env(run, 0, 'json', 'off'))
     return pristine, produced
 
 
@@ -240,12 +238,9 @@ def accounting(stdout):
             'attempts': document['attempts'], 'usage': usage}
 
 
-def run_once(af, fixture, size, pristine, work, name, shape, level):
-    run = work / fixture / name
-    repo = run / 'repo'
-    overhead.copy_writable(pristine, repo)
-    for directory in ('home', 'config', 'xstate', 'data', 'cache', 'bin', 'tmp', 'auth'):
-        (run / directory).mkdir(parents=True)
+def provider_env(run, size, shape, level):
+    """The same scripted Provider authority for planning and measured execution."""
+    (run / 'auth').mkdir(exist_ok=True)
     os.chmod(run / 'auth', 0o700)
     shutil.copy(HARNESS, run / 'bin' / 'claude')
     os.chmod(run / 'bin' / 'claude', 0o755)
@@ -258,6 +253,16 @@ def run_once(af, fixture, size, pristine, work, name, shape, level):
     env['PATH'] = f"{run / 'bin'}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}"
     env['AF_PROVIDERS_FILE'] = str(run / 'providers.toml')
     env.setdefault('USER', 'bench')
+    return env
+
+
+def run_once(af, fixture, size, pristine, work, name, shape, level):
+    run = work / fixture / name
+    repo = run / 'repo'
+    overhead.copy_writable(pristine, repo)
+    for directory in ('home', 'config', 'xstate', 'data', 'cache', 'bin', 'tmp', 'auth'):
+        (run / directory).mkdir(parents=True)
+    env = provider_env(run, size, shape, level)
     state = run / 'store'
     argv = [af, 'task', 'start', '--execute', '--file', str(FIXTURES_DIR / fixture / 'task.json'),
             '--state', str(state), '--json']
@@ -301,14 +306,14 @@ def measure(args):
     if version.returncode != 0:
         raise BenchError(f'{af} --version: {version.stderr.strip()}')
     release = overhead.release_version(version.stdout.strip())
-    contract = overhead.select_contract(release, args.fixture_contract)
+    contract = overhead.select_contract(args.fixture_contract)
     order_rng = random.Random(args.seed)
     load = os.getloadavg()[0] if hasattr(os, 'getloadavg') else None
     document = {
         'schema': SCHEMA,
         'af': {'path': af, 'version': version.stdout.strip()},
         'fixture_contract': {'name': contract, 'release': release,
-                             'check_receipt': overhead.FIXTURE_CONTRACTS[contract]['check_receipt'],
+                             'check_receipt': overhead.CHECK_RECEIPT_CURRENT,
                              'fixtures': []},
         'drain': {'boundary': overhead.DRAIN_BOUNDARY, 'clock': overhead.DRAIN_CLOCK},
         'machine': {'os': overhead.platform.system().lower(), 'arch': overhead.platform.machine(),
@@ -395,9 +400,9 @@ def main(argv=None):
     parser.add_argument('--seed', type=int, default=overhead.DEFAULT_SEED)
     parser.add_argument('--work', help='the work directory (default: a fresh temporary one)')
     parser.add_argument('--keep', action='store_true', help='keep every run directory')
-    parser.add_argument('--fixture-contract', choices=sorted(overhead.FIXTURE_CONTRACTS),
-                        help='require this fixture contract; refused unless the measured '
-                        "release's version selects it")
+    parser.add_argument('--fixture-contract', choices=(overhead.CURRENT_CONTRACT,),
+                        help='require the current fixture contract; the measured '
+                        "binary must admit its exact workload")
     parser.add_argument('--json', action='store_true', help=f'print the {SCHEMA} document')
     parser.add_argument('--report', help='also write the document to this file')
     parser.add_argument('--judge', metavar='DOCUMENT',

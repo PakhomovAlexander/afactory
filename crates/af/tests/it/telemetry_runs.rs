@@ -509,7 +509,7 @@ fn telemetry_executions_of_a_resume() {
 fn transitions(state: &Path, kind: &str) -> Vec<u64> {
     events(state)
         .iter()
-        .filter(|row| row[3] == "TaskTransition@5")
+        .filter(|row| row[3] == "TaskTransition@6")
         .filter_map(|row| {
             let payload: Value = serde_json::from_str(&row[10]).unwrap();
             (payload["change"]["kind"] == kind).then(|| payload["epoch"].as_u64().unwrap())

@@ -283,7 +283,6 @@ impl TaskProjection {
                 return Err(conflict("Source refresh has pending Attempts"));
             }
             execution.budget.invalidate_plan(time).map_err(conflict)?;
-            execution.active_review_integration = None;
             execution.invocations.clear();
             execution.outputs.clear();
         }
@@ -294,7 +293,7 @@ impl TaskProjection {
         self.resume_phase = None;
         if let Some(id) = plan_id {
             let plan = plan(cas, id, self)?;
-            let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
+            let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@4")?;
             if graph.inputs != self.revision.inputs
                 || graph.order != graph.scheduler_plan().map_err(conflict)?.order
             {
@@ -381,7 +380,7 @@ impl EventStore {
             candidate.revision = next;
             candidate.revision_id = revision_id.into();
             let plan = self.authorized_plan(cas, &candidate, id, authority)?;
-            let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
+            let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@4")?;
             let capacity = budget.as_ref().map_or_else(
                 || candidate.revision.limits.clone(),
                 |b| b.remaining_limits(),

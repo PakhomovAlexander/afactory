@@ -8,12 +8,61 @@ use std::collections::BTreeMap;
 pub use super::review_context::*;
 
 pub const TASK_REVIEW_ROUND_V1: &str = "af/TaskReviewRound@1";
+pub const TASK_REVIEW_CONCLUSION_V1: &str = "af/TaskReviewConclusion@1";
+
+/// A native Review conclusion freezes one common Task prefix, never a sum of Round costs.
+/// `through_sequence` is the exclusive end of that prefix, immediately before Task finish.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReviewConclusionV1 {
+    pub task_revision_id: String,
+    pub plan_id: String,
+    pub task_report_id: String,
+    pub through_sequence: u64,
+    pub cumulative_chargeable_tokens: super::usage::DecimalU128,
+    pub begun_attempts: u64,
+    #[serde(deserialize_with = "super::unique_set")]
+    pub round_ids: std::collections::BTreeSet<String>,
+    pub conclusion: ReviewConclusionV1,
+}
+
+impl TaskReviewConclusionV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            [&self.task_revision_id, &self.plan_id, &self.task_report_id]
+                .into_iter()
+                .all(|id| is_digest(id))
+                && self.through_sequence > 0
+                && super::safe_number(self.through_sequence)
+                && super::safe_number(self.begun_attempts)
+                && self.round_ids.len() <= 64
+                && self.round_ids.iter().all(|id| is_digest(id))
+                && (self.conclusion == ReviewConclusionV1::Incomplete
+                    || !self.round_ids.is_empty()),
+            "Review conclusion requires the complete exact Task prefix and Round receipts",
+        )
+    }
+
+    pub fn artifact_refs(&self) -> Vec<String> {
+        self.round_ids
+            .iter()
+            .cloned()
+            .chain([
+                self.task_revision_id.clone(),
+                self.plan_id.clone(),
+                self.task_report_id.clone(),
+            ])
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
 
 /// A Review invocation binds the immutable Subject separately from the execution plan. This is
-/// the in-memory expanded form of `af/TaskReviewSubject@2`: the host decodes the exact Change
+/// the in-memory expanded form of `af/TaskReviewSubject@3`: the host decodes the exact Change
 /// Set that the wire form carries only as a declared patch file. It is never written itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskReviewSubjectV1 {
+pub struct ResolvedReviewSubject {
     pub subject_id: String,
     pub subject: crate::SubjectV1,
     pub change_set: Option<crate::ChangeSetV1>,
@@ -24,12 +73,15 @@ pub struct TaskReviewSubjectV1 {
     pub continuation_id: Option<String>,
     pub round: u32,
 }
-impl TaskReviewSubjectV1 {
+impl ResolvedReviewSubject {
     pub fn validate(&self) -> Result<(), String> {
-        self.subject.validate()?;
-        require(
-            self.subject.head_snapshot_id == self.snapshot_id,
-            "Review Subject has a stale Snapshot",
+        super::review_context::validate_subject_identity(
+            &self.subject_id,
+            &self.subject,
+            &self.snapshot_id,
+            &self.prior_history_id,
+            self.continuation_id.as_deref(),
+            self.round,
         )?;
         match (&self.subject.kind, &self.change_set) {
             (crate::SubjectKind::WholeTree, None) => (),
@@ -45,15 +97,7 @@ impl TaskReviewSubjectV1 {
             }
             _ => return Err("Review Subject must retain its exact Change Set".into()),
         }
-        require(
-            [&self.subject_id, &self.snapshot_id, &self.prior_history_id]
-                .into_iter()
-                .all(|id| is_digest(id))
-                && (1..=16).contains(&self.round)
-                && self.continuation_id.as_deref().is_none_or(is_digest)
-                && (self.continuation_id.is_none() || self.round > 1),
-            "Review Subject requires bounded Round and exact Subject, Snapshot and history",
-        )
+        Ok(())
     }
 }
 

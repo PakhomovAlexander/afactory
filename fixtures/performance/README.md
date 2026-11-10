@@ -15,7 +15,7 @@ The data of the continuous performance laboratory
   expands it and checks that the golden entries cover every native instance. Every recipe,
   environment and case is executable where its host provides it (ADR-0169); a host that cannot
   refuses at run time with its reason, which `cli.py capabilities` lists.
-- `cli.toml` — the whole-CLI commands (`af.perf-cli/6`, ADR-0168 to ADR-0172): per CLI adapter
+- `cli.toml` — the whole-CLI commands (`af.perf-cli/7`, ADR-0168 to ADR-0172): per CLI adapter
   and process instance, the actual AF argv, its untimed fixture setup and the independent
   oracle rules, and the seeds each side writes once per shard. `task show`'s whole output must
   be one complete JSON document whose `task_id`, history numbered exactly 0..9999 in order and
@@ -56,7 +56,7 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
-- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/3`, ADR-0214): each
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/4`, ADR-0214): each
   exactly a bench script of the telemetry design's §12 with its document, the product schema it
   is read through, its levels and the inputs that identify its measurement authority, and one
   bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and

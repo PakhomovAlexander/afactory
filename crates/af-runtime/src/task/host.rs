@@ -8,8 +8,8 @@ use af_contracts::Producer;
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::pipeline::{PortAffinityV1, TaskOperatorV1};
 use af_contracts::task::plan::{
-    EffectiveWorkerBindingV3, ExecutionPlanV3, GeneratedOriginV1, PlanDecisionKindV1,
-    PlanDecisionV1, WorkerExecutionV3,
+    EffectiveWorkerBindingV3, ExecutionPlan, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
+    WorkerExecutionV3,
 };
 use af_contracts::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use af_graph::task::{CompiledOperator, CompiledTask, OperatorSignature};
@@ -182,52 +182,17 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _prepared: &af_contracts::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Task domain has no installed experimental compiler".into())
     }
-    fn validate_review_integration_selection(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
-        _phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        _evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        Err("Task domain has no installed Review Integration".into())
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_integration_completion(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
-        _phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        _report: &af_contracts::task::run_report::TaskRunReportV1,
-        _events: &[af_store::NewEvent],
-        _evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        Err("Task domain has no installed Review Integration".into())
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_continuation(
-        &self,
-        _cas: &Cas,
-        _previous: &TaskRevisionV1,
-        _next: &TaskRevisionV1,
-        _previous_plan: &ExecutionPlanV3,
-        _next_plan: &ExecutionPlanV3,
-        _handoff: &af_contracts::task::review_handoff::TaskReviewHandoffV1,
-    ) -> Result<(), String> {
-        Err("Task domain has no installed Review continuation".into())
-    }
     fn validate_owned_children(
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _parent: &TaskInvocationV1,
         _children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -238,7 +203,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _parent: &TaskInvocationV1,
         _children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
         _facts: &[af_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -251,7 +216,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         _cas: &Cas,
         _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV3,
+        _plan: &ExecutionPlan,
         _input: &TaskInvocationV1,
         _previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -303,7 +268,7 @@ pub trait TaskDomain: TaskOperatorHost {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,
@@ -362,14 +327,9 @@ impl TaskDeveloper for NoTaskDeveloper {
 }
 
 pub struct CapturedTaskAuthority<'a> {
-    compiler: CapturedCompiler<'a>,
+    compiler: af_pipeline_config::task::catalog::CapturedTaskPlanValidator<'a>,
     domain: &'a dyn TaskDomain,
     developer: &'a dyn TaskDeveloper,
-}
-
-enum CapturedCompiler<'a> {
-    Task(Box<af_pipeline_config::task::catalog::CapturedTaskPlanValidator<'a>>),
-    Review(&'a super::campaign_review::plan::CampaignReviewPlanCompiler),
 }
 
 impl<'a> CapturedTaskAuthority<'a> {
@@ -379,21 +339,7 @@ impl<'a> CapturedTaskAuthority<'a> {
         developer: &'a dyn TaskDeveloper,
     ) -> Self {
         Self {
-            compiler: CapturedCompiler::Task(Box::new(
-                af_pipeline_config::task::catalog::CapturedTaskPlanValidator::new(compiler),
-            )),
-            domain,
-            developer,
-        }
-    }
-
-    pub fn for_campaign_review(
-        compiler: &'a super::campaign_review::plan::CampaignReviewPlanCompiler,
-        domain: &'a dyn TaskDomain,
-        developer: &'a dyn TaskDeveloper,
-    ) -> Self {
-        Self {
-            compiler: CapturedCompiler::Review(compiler),
+            compiler: af_pipeline_config::task::catalog::CapturedTaskPlanValidator::new(compiler),
             domain,
             developer,
         }
@@ -402,10 +348,7 @@ impl<'a> CapturedTaskAuthority<'a> {
     /// Whether a plan check through this authority would reuse an earlier structural
     /// validation instead of recompiling. A newly constructed Task authority holds none.
     pub fn holds_validated_plan(&self) -> bool {
-        match &self.compiler {
-            CapturedCompiler::Task(compiler) => compiler.holds_validated_plan(),
-            CapturedCompiler::Review(compiler) => compiler.holds_validated_plan(),
-        }
+        self.compiler.holds_validated_plan()
     }
 }
 
@@ -414,7 +357,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         prepared: &af_contracts::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.validate_plan(cas, task, plan)?;
@@ -429,69 +372,11 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         self.developer.experiment_current(decision)
     }
 
-    fn validate_review_integration_selection(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
-        phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        if !matches!(self.compiler, CapturedCompiler::Review(_)) {
-            return Err("Only captured Review admits an Integration phase".into());
-        }
-        self.validate_plan(cas, task, plan)?;
-        self.domain
-            .validate_review_integration_selection(cas, task, plan, phase, evidence)
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_integration_completion(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
-        phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &af_contracts::task::run_report::TaskRunReportV1,
-        events: &[af_store::NewEvent],
-        evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        if !matches!(self.compiler, CapturedCompiler::Review(_)) {
-            return Err("Only captured Review admits an Integration phase".into());
-        }
-        self.validate_plan(cas, task, plan)?;
-        self.domain.validate_review_integration_completion(
-            cas, task, plan, phase, report, events, evidence,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_continuation(
-        &self,
-        cas: &Cas,
-        previous: &TaskRevisionV1,
-        next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV3,
-        next_plan: &ExecutionPlanV3,
-        handoff: &af_contracts::task::review_handoff::TaskReviewHandoffV1,
-    ) -> Result<(), String> {
-        if !matches!(self.compiler, CapturedCompiler::Review(_)) {
-            return Err("Only the captured Review compiler admits a Review continuation".into());
-        }
-        self.validate_plan(cas, next, next_plan)?;
-        self.domain.validate_review_continuation(
-            cas,
-            previous,
-            next,
-            previous_plan,
-            next_plan,
-            handoff,
-        )
-    }
     fn validate_owned_children(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         parent: &TaskInvocationV1,
         children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -503,7 +388,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         parent: &TaskInvocationV1,
         children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
         facts: &[af_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -518,7 +403,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -529,30 +414,19 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<(), String> {
-        match &self.compiler {
-            CapturedCompiler::Task(compiler) => {
-                compiler.validate_planning_inputs(cas, previous, next, plan)
-            }
-            CapturedCompiler::Review(_) => {
-                Err("Installed Review plans do not normalize generated planning inputs".into())
-            }
-        }
+        self.compiler
+            .validate_planning_inputs(cas, previous, next, plan)
     }
     fn validate_plan(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
-        match &self.compiler {
-            CapturedCompiler::Task(compiler) => {
-                compiler.validate_plan(cas, task, plan)?;
-                Ok(plan.generated_origins.clone())
-            }
-            CapturedCompiler::Review(compiler) => compiler.validate_plan(cas, task, plan),
-        }
+        self.compiler.validate_plan(cas, task, plan)?;
+        Ok(plan.generated_origins.clone())
     }
     fn authorize_decision(
         &self,
@@ -569,7 +443,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         id: &str,
@@ -580,7 +454,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,
@@ -818,7 +692,7 @@ impl<'a> CapturedTaskHost<'a> {
         cas: &Cas,
         compiler: &TaskPlanCompiler,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         graph: CompiledTask,
         environment: &'a dyn TaskEnvironment,
         domain: &'a dyn TaskDomain,
@@ -886,11 +760,14 @@ impl<'a> CapturedTaskHost<'a> {
             let slot = match operator {
                 TaskOperatorV1::Worker { slot }
                 | TaskOperatorV1::Verify { slot }
-                | TaskOperatorV1::FixVerify { slot } => slot,
+                | TaskOperatorV1::FixVerify { slot }
+                | TaskOperatorV1::ReviewScatter { slot, .. } => slot,
                 _ => continue,
             };
             let worker = capture_worker(slot)?;
-            workers.insert(id.clone(), worker.clone());
+            if !matches!(operator, TaskOperatorV1::ReviewScatter { .. }) {
+                workers.insert(id.clone(), worker.clone());
+            }
             slot_workers.insert(slot.clone(), worker);
         }
         // Experimental slots are executable authority even though their coordinator is not a
@@ -1569,63 +1446,18 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         prepared: &af_contracts::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.domain
             .validate_experiment_preparation(cas, task, plan, prepared)
     }
-    fn validate_review_integration_selection(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
-        phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        self.domain
-            .validate_review_integration_selection(cas, task, plan, phase, evidence)
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_integration_completion(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
-        phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &af_contracts::task::run_report::TaskRunReportV1,
-        events: &[af_store::NewEvent],
-        evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        self.domain.validate_review_integration_completion(
-            cas, task, plan, phase, report, events, evidence,
-        )
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_continuation(
-        &self,
-        cas: &Cas,
-        previous: &TaskRevisionV1,
-        next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV3,
-        next_plan: &ExecutionPlanV3,
-        handoff: &af_contracts::task::review_handoff::TaskReviewHandoffV1,
-    ) -> Result<(), String> {
-        self.domain.validate_review_continuation(
-            cas,
-            previous,
-            next,
-            previous_plan,
-            next_plan,
-            handoff,
-        )
-    }
     fn validate_owned_children(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         parent: &TaskInvocationV1,
         children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -1636,7 +1468,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         parent: &TaskInvocationV1,
         children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
         facts: &[af_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -1650,7 +1482,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -1726,7 +1558,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,

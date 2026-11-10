@@ -46,13 +46,17 @@ automatic Integration are outside this path.
 - a reviewed Task catalog committed in the repository: `.af/task-catalog.toml`, the Pipeline and
   Worker packages it pins, and `.af/code-policy.toml` with the required checks. Run
   `af onboard --tasks` to preview the generic model-driven catalog and the exact
-  `[task.defaults]` text. `af onboard --tasks --apply` writes it with review authority
-  in a new repository, or adds absent Task files and appends the table to an existing
-  `.af/`. It refuses an existing target or `[task]` table without writing. Review the
-  diff and commit `.af/` before planning; local, uncommitted files are not authority.
+  `[task.defaults]` text in a repository without Task authority.
+  `af onboard --tasks --apply` writes it in a new repository, or adds absent Task files
+  and appends the table to an existing `.af/` without Task settings, catalog, code policy
+  or target packages. Both preview and apply refuse an existing target or `[task]` table
+  without writing. Default onboarding already emits this authority; use plain `af onboard`
+  to validate it. Review the diff and commit `.af/` before planning; local, uncommitted files
+  are not authority.
   The generated implementer uses Codex `gpt-6.1-sol` at high effort; independent
-  reviewers and the evaluator use `gpt-6.1-terra` at high effort, all on `codex-main`.
-  `--runner` selects Review authority; Task Workers always require a Codex Provider.
+  evaluator uses `gpt-6.1-terra` at high effort, both on `codex-main`.
+  Native Review Workers follow `--runner`; with Codex they use `gpt-6.1-terra` at high effort.
+  Default `af onboard` emits the same common catalog and an explicit standalone Review example.
   A combined new-repository preview reports missing Providers for both the selected Review
   profile and the Codex Task Workers. Adding Task files to existing authority reports only
   the Codex Task requirement; it preserves existing Review authority regardless of `--runner`.
@@ -267,7 +271,7 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@1` document per
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@2` document per
 event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
 record with its state and exit code; `--after N` prints only the events after sequence N, so a
 follower that reconnects gets the rest, and the command takes no `--json`
@@ -465,7 +469,7 @@ it lost its writer lease (the lease the one `af` process recording on a Task hol
 interrupted Attempt is settled as *abandoned*: it is charged only the usage its Provider reported
 before it stopped, never its reservation, which goes back to the Task's remaining tokens, and it
 uses none of its node's Attempts. The node runs again, once by default; a slot that declares
-`recovery_attempts` in an `af.pipeline/3` pipeline allows more. The run's first line says what
+`recovery_attempts` in an `af.pipeline/6` pipeline allows more. The run's first line says what
 it does:
 
 ```text
@@ -475,7 +479,7 @@ resuming Task pagination-cli: node root.nodes.implement was interrupted at 17:41
 or why it cannot continue, with exit code 1:
 
 ```text
-af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)
+af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/6)
 ```
 
 A killed run holds its 60 s lease until it expires; `af task run` waits that out and says so.
@@ -576,7 +580,7 @@ round the selected Pipeline must declare `findings` (the kernel's
 do [`default/implementation`](#the-default-pipeline) and
 [`default-light/implementation`](#the-light-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@17`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@20`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 
@@ -765,7 +769,7 @@ Attempt accounting. Provider Admission remains separate; see
   admitted as that object. Any other reply that does not parse is re-asked once from the same
   Worker, with the parser's message, line, column and the offending excerpt. Both replies are
   kept, and a second failure names them in the diagnostic: `raw reply kept: sha256:…`.
-- **A structurally wrong reply.** A typed reply, and a review-Campaign reviewer's Reviewer
+- **A structurally wrong reply.** A typed reply, and a native Review Worker's Reviewer
   Result, travels under a native schema: `--json-schema` for Claude Code, `--output-schema` for
   Codex ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)).
   The CLI refuses a reply of the wrong shape inside the same call, charged to it; the kernel

@@ -1,14 +1,12 @@
 //! One Task dispatcher over the existing graph scheduler and common Store. Domain handlers
 //! supply typed operations; they do not schedule children or create their own Attempt budgets.
 
-pub mod campaign_review;
 pub mod code;
 pub(crate) mod control;
 mod development;
 pub mod document;
 pub mod host;
 pub mod human_document;
-mod integration;
 mod knowledge;
 pub mod lease;
 pub mod optimization;
@@ -203,7 +201,6 @@ pub struct TaskRuntime<'store, 'host> {
     lease: TaskLease,
     plan_id: String,
     graph: CompiledTask,
-    integration: Option<af_store::store::task::review_integration::RegisteredTaskReviewIntegration>,
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     cancellation: Option<&'host AtomicBool>,
@@ -312,15 +309,6 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 .ok_or("Unknown Task")?;
             (plan, projection)
         };
-        if projection
-            .execution
-            .as_ref()
-            .is_some_and(|e| e.active_review_integration().is_some())
-        {
-            return Err(
-                "Closed Review Round requires its dedicated Integration phase runtime".into(),
-            );
-        }
         Self::from_captured(
             store,
             cas,
@@ -329,7 +317,6 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             host,
             plan,
             projection,
-            None,
             (telemetry, load),
         )
     }
@@ -361,15 +348,12 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         lease: TaskLease,
         authority: &'host dyn TaskAuthority,
         host: &'host dyn TaskOperatorHost,
-        plan: af_contracts::task::plan::ExecutionPlanV3,
+        plan: af_contracts::task::plan::ExecutionPlan,
         projection: TaskProjection,
-        integration: Option<
-            af_store::store::task::review_integration::RegisteredTaskReviewIntegration,
-        >,
         (mut telemetry, load): (crate::telemetry::RunTelemetry, tracing::Span),
     ) -> Result<Self, String> {
         let value = envelope(cas, &plan.compiled_graph_id)?;
-        if value.artifact_type != "af/CompiledTask@1" {
+        if value.artifact_type != "af/CompiledTask@4" {
             return Err("Task plan has no compiled Task graph".into());
         }
         let graph: CompiledTask =
@@ -394,7 +378,6 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             lease,
             plan_id: projection.plan_id.ok_or("Task has no plan")?,
             graph,
-            integration,
             authority,
             host,
             cancellation: None,
@@ -589,9 +572,6 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     fn execute_graph(&self) -> Result<RunReport, String> {
-        if self.integration.is_some() {
-            return Err("Activated Integration runtime can execute only its captured phase".into());
-        }
         let report = lease::with_heartbeat_supervised(
             &self.store,
             self.cas,
@@ -835,18 +815,14 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
 /// where a refusal is the check's result.
 fn starts_a_worker(operator: &CompiledOperator) -> bool {
     use af_contracts::task::pipeline::TaskOperatorV1;
-    use af_graph::task::ReviewOperation;
     match operator {
         CompiledOperator::ProviderAdmission { .. } => true,
-        CompiledOperator::ReviewDomain { operation, .. } => matches!(
-            operation,
-            ReviewOperation::Generation
-                | ReviewOperation::Reviewer { .. }
-                | ReviewOperation::Scatter { .. }
-        ),
         CompiledOperator::Primitive { operator, .. } => matches!(
             operator,
-            TaskOperatorV1::Worker { .. } | TaskOperatorV1::OptimizationExperiment { .. }
+            TaskOperatorV1::Worker { .. }
+                | TaskOperatorV1::Verify { .. }
+                | TaskOperatorV1::FixVerify { .. }
+                | TaskOperatorV1::OptimizationExperiment { .. }
         ),
         _ => false,
     }
@@ -1546,10 +1522,6 @@ impl Dispatch for TaskRuntime<'_, '_> {
         }
     }
 
-    fn requires_successful_predecessors(&self, node: &Node) -> bool {
-        self.graph.requires_successful_predecessors(&node.id)
-    }
-
     fn task_node_selected(&self, node: &Node, inputs: &ArtifactMap) -> Result<bool, String> {
         if self.resolve_node(&node.id)?.owned.is_some() || !self.graph.nodes.contains_key(&node.id)
         {
@@ -1726,5 +1698,18 @@ impl Dispatch for TaskRuntime<'_, '_> {
             )
             .map_err(|e| e.to_string())?;
         self.commit_domain_output(&id)
+    }
+}
+
+impl TaskRuntime<'_, '_> {
+    fn check_node_authority(&self, _node: &str, dispatching: bool) -> Result<(), String> {
+        let locked = self.store.lock().expect("Task Store");
+        if dispatching {
+            locked.check_task_dispatch(self.cas, &self.lease, self.authority)
+        } else {
+            locked.check_current_task_plan_for_recording(self.cas, &self.lease, self.authority)
+        }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 }

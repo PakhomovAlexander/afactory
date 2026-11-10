@@ -1,6 +1,5 @@
 //! One exact usage representation for Worker and Provider admission results.
 
-use crate::TokenUsage;
 use af_contracts::{
     ArtifactEnvelope, Producer,
     task::usage::{TASK_TOKEN_USAGE_V3, TaskTokenUsageV3},
@@ -38,19 +37,18 @@ impl NativeCounter {
 }
 
 /// Every usage artifact is `af/TaskTokenUsage@3`, whatever the width of its counters.
-pub fn persist_task_usage_exact<U: Clone + Into<TaskTokenUsageV3>>(
+pub fn persist_task_usage_exact(
     cas: &Cas,
     producer: Producer,
     context_id: &str,
-    usage: &U,
+    usage: &TaskTokenUsageV3,
 ) -> Result<String, String> {
-    let usage: TaskTokenUsageV3 = usage.clone().into();
     cas.put_artifact(
         TASK_TOKEN_USAGE_V3,
         producer,
         vec![context_id.into()],
         None,
-        serde_json::to_value(&usage).map_err(|error| error.to_string())?,
+        serde_json::to_value(usage).map_err(|error| error.to_string())?,
     )
     .map(|(id, _)| id)
     .map_err(|error| error.to_string())
@@ -68,23 +66,4 @@ pub fn read_task_usage_exact(cas: &Cas, id: &str) -> Result<TaskTokenUsageV3, St
         return Err("Unsupported Task usage artifact version".into());
     }
     serde_json::from_value(envelope.payload).map_err(|error| error.to_string())
-}
-
-impl From<&TokenUsage> for TaskTokenUsageV3 {
-    fn from(value: &TokenUsage) -> Self {
-        let widen = |n: u64| u128::from(n).into();
-        Self {
-            input_tokens: value.input_tokens.map(widen),
-            output_tokens: value.output_tokens.map(widen),
-            cache_read_tokens: value.cache_read_tokens.map(widen),
-            cache_write_tokens: value.cache_write_tokens.map(widen),
-            reasoning_tokens: value.reasoning_tokens.map(widen),
-            chargeable_tokens: widen(value.chargeable_tokens),
-        }
-    }
-}
-impl From<TokenUsage> for TaskTokenUsageV3 {
-    fn from(value: TokenUsage) -> Self {
-        Self::from(&value)
-    }
 }

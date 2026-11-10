@@ -52,8 +52,8 @@ fn fixture(root: &Path, policy: Option<&str>) -> (PathBuf, PathBuf) {
     if let Some(policy) = policy {
         let table = format!("[delivery]\nundeclared_af_paths = \"{policy}\"\n");
         let text = format!(
-            "version = 1\n[project]\nname = \"pagination\"\nmin_af = \"0.8\"\n\
-             [defaults]\npipeline = \"review\"\n{table}"
+            "version = 2\n[project]\nname = \"pagination\"\nmin_af = \"0.8\"\n\
+             {table}"
         );
         std::fs::write(repo.join(".af/af.toml"), text).unwrap();
         commit(&repo, "delivery policy");
@@ -126,7 +126,7 @@ fn plan_reports_every_undeclared_path_on_stderr_and_in_the_json_document() {
     // single advisory line could only summarize.
     let planned = document(&planned);
     assert_eq!(planned["attempts"], 0);
-    assert_eq!(planned["schema"], "af/task-inspection@17");
+    assert_eq!(planned["schema"], "af/task-inspection@20");
     let group = &planned["undeclared_af_paths"];
     let expected = [".af/tasks/x/candidate.patch", ".af/tasks/x/reviews.json"];
     assert_eq!(group["paths"], serde_json::json!(expected));

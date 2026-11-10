@@ -20,8 +20,6 @@ use af_graph::task::{CompiledOperator, CompiledTask, condition_input};
 
 use super::*;
 
-pub(in crate::store) mod review;
-
 #[derive(Debug, Clone)]
 pub struct TaskExecutionProjection {
     pub graph: CompiledTask,
@@ -32,9 +30,6 @@ pub struct TaskExecutionProjection {
     attempts: BTreeMap<String, RecordedAttempt>,
     pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
     pub(super) experiments: BTreeMap<String, experiment::RecordedExperiment>,
-    pub(super) review_integrations:
-        BTreeMap<String, super::review_integration::RegisteredTaskReviewIntegration>,
-    pub(super) active_review_integration: Option<String>,
     /// Attempts whose selected output a gate retry (`TaskGateRetried@1`) superseded: their check
     /// node, or a node after it, runs again. They keep their settlement and charge; they are
     /// never an output to recover again.
@@ -483,7 +478,7 @@ impl TaskExecutionProjection {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         node: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<bool, StoreError> {
@@ -527,7 +522,7 @@ impl TaskExecutionProjection {
                 .ok_or_else(|| conflict("Task has no plan"))?,
             state,
         )?;
-        let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
+        let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@4")?;
         if graph.validate_schema().is_err() || graph.inputs != state.revision.inputs {
             return Err(conflict("Task execution requires its exact compiled graph"));
         }
@@ -554,8 +549,6 @@ impl TaskExecutionProjection {
             attempts: BTreeMap::new(),
             owned: BTreeMap::new(),
             experiments: BTreeMap::new(),
-            review_integrations: BTreeMap::new(),
-            active_review_integration: None,
             retired: BTreeSet::new(),
         })
     }
@@ -849,27 +842,36 @@ impl TaskExecutionProjection {
                 ids.insert(condition_input(index), value.artifact_ids.clone());
             }
         }
+        let read_outcome = |id: &str| {
+            let value: ArtifactEnvelope =
+                serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            validate_envelope(&value)?;
+            serde_json::from_value(
+                value
+                    .payload
+                    .get("outcome")
+                    .cloned()
+                    .ok_or("Typed branch receipt has no outcome")?,
+            )
+            .map_err(|e| e.to_string())
+        };
         let selected = self
             .graph
-            .node_selected(&input.node, &ids, |id| {
-                let value: ArtifactEnvelope =
-                    serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
-                        .map_err(|e| e.to_string())?;
-                validate_envelope(&value)?;
-                serde_json::from_value(
-                    value
-                        .payload
-                        .get("outcome")
-                        .cloned()
-                        .ok_or("Typed branch receipt has no outcome")?,
-                )
-                .map_err(|e| e.to_string())
-            })
+            .node_selected(&input.node, &ids, read_outcome)
             .map_err(conflict)?;
         if !selected {
             return Err(conflict(
                 "Inactive Task branch cannot publish an invocation",
             ));
+        }
+        if matches!(node.operator, CompiledOperator::Select) {
+            // Inactive arms are optional, the chosen arm is not. Persisting an invocation
+            // before its chosen value exists would freeze absence and prevent recovery when
+            // an upstream domain publication is subsequently repaired.
+            self.graph
+                .select_output(&input.node, &ids, read_outcome)
+                .map_err(conflict)?;
         }
         Ok(())
     }
@@ -1061,7 +1063,6 @@ impl TaskProjection {
             self.execution = Some(TaskExecutionProjection::new(cas, self)?);
         }
         let execution = self.execution.as_mut().expect("execution initialized");
-        execution.check_review_integration_record(cas, &record)?;
         match &record {
             TaskExecutionRecordV1::ExperimentPrepared { .. }
             | TaskExecutionRecordV1::ExperimentPlanDecided { .. }
@@ -2159,7 +2160,7 @@ impl EventStore {
     fn validate_task_output(
         cas: &Cas,
         state: &TaskProjection,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         output_id: &str,
         attempt_id: Option<&str>,
         authority: &dyn TaskAuthority,
@@ -2262,49 +2263,6 @@ impl EventStore {
             now()?,
         )?;
         Ok(())
-    }
-}
-
-impl TaskExecutionProjection {
-    fn check_review_integration_record(
-        &self,
-        cas: &Cas,
-        record: &TaskExecutionRecordV1,
-    ) -> Result<(), StoreError> {
-        let node = match record {
-            TaskExecutionRecordV1::Invocation { invocation_id }
-            | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
-                invocation(cas, invocation_id)?.node
-            }
-            TaskExecutionRecordV1::ContextBound { attempt_id, .. }
-            | TaskExecutionRecordV1::Started { attempt_id } => self
-                .attempts
-                .get(attempt_id)
-                .ok_or_else(|| conflict("Unknown Task Attempt"))?
-                .reservation
-                .node
-                .clone(),
-            TaskExecutionRecordV1::Published { output_id, .. } => {
-                invocation(cas, &output(cas, output_id)?.invocation_id)?.node
-            }
-            TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
-            | TaskExecutionRecordV1::OwnedChildPublished { .. }
-            | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {
-                if self.active_review_integration.is_some() {
-                    return Err(conflict(
-                        "Integration cannot dispatch or publish an old Round owned node",
-                    ));
-                }
-                return Ok(());
-            }
-            TaskExecutionRecordV1::Released { .. }
-            | TaskExecutionRecordV1::Settled { .. }
-            | TaskExecutionRecordV1::UsageObserved { .. }
-            | TaskExecutionRecordV1::ExperimentPrepared { .. }
-            | TaskExecutionRecordV1::ExperimentPlanDecided { .. }
-            | TaskExecutionRecordV1::ExperimentChildrenRegistered { .. } => return Ok(()),
-        };
-        self.check_integration_node(&node)
     }
 }
 

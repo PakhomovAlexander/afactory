@@ -3,27 +3,27 @@ code_policy = ".af/code-policy.toml"
 
 [packages."bench/alpha"]
 version = "1.0.0"
-digest = "sha256:e398bd93b02e1fe638ecd34544335dcfd8b48a96f48e2215e6965fd25ecbeaef"
+digest = "sha256:e841876ec6f2b39c6e5d3c19c462b9933842b340cef2232b1a39f1609ac0858c"
 path = ".af/task-packages/bench/alpha"
 
 [packages."bench/beta"]
 version = "1.0.0"
-digest = "sha256:c16b46119f1687a5234b3d6d5e391d8c3b6ff22c4608b938b71661e8e2edeb87"
+digest = "sha256:bcaec91c249510802988921e02965657a961abc3c938a61a2c8887e2b6e269cc"
 path = ".af/task-packages/bench/beta"
 
 [packages."bench/gamma"]
 version = "1.0.0"
-digest = "sha256:e0f2000270b10e6d467269f10fb5a94c01bd5020775ff7a6a660b33e761fa8e9"
+digest = "sha256:78519e9b062afa293ebefd76fc358f9a4497f1e1a5a8a9c371f3e4f96b0a7788"
 path = ".af/task-packages/bench/gamma"
 
 [packages."bench/delta"]
 version = "1.0.0"
-digest = "sha256:7909885c942a3b26a6a6bd61d0275a7dd3f6eab140100c1ccc96e64d0c18a8d4"
+digest = "sha256:a1016aae7f3f96a67a97ee4cf9ee9ccc4c6e02935e3559d4bf464bdb3c7245f7"
 path = ".af/task-packages/bench/delta"
 
 [packages."bench/concurrent"]
-version = "1.0.0"
-digest = "sha256:15b2ccff3d067f7dec9c89a2c5028c248fe6810df8b0ee65023729f68f03f2a4"
+version = "1.0.1"
+digest = "sha256:dcf000b997dcd2d56537602a6e1ed5ba824c0601cd82666614a40003058f2f63"
 path = ".af/task-packages/bench/concurrent"
 
 [independence]

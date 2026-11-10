@@ -1,7 +1,7 @@
 {
-  "schema": "af/task-inspection@17",
+  "schema": "af/task-inspection@20",
   "task_id": "chain-history",
-  "revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
+  "revision_id": "sha256:7d26d2f8b9b0cfba4af7b9a0516056e8e9ede68f964298dd4d9cede3c9ae97ec",
   "phase": {
     "kind": "ready"
   },
@@ -9,19 +9,19 @@
     "phase": "planned",
     "outcome": null,
     "cause": null,
-    "next_action": "af task run chain-history --confirm-plan sha256:c63f2163dde39788c3144fb727251cc542704f422328fb8318a4493f01fd9b0e --state /tmp/.tmpBcblXi/state"
+    "next_action": "af task run chain-history --confirm-plan sha256:cfe2dfaf778d42db3ce15778056aed15445fd4520ec8b4ca348f7607fcabb67f --state /tmp/.tmpd0THmq/state"
   },
-  "plan_id": "sha256:c63f2163dde39788c3144fb727251cc542704f422328fb8318a4493f01fd9b0e",
+  "plan_id": "sha256:cfe2dfaf778d42db3ce15778056aed15445fd4520ec8b4ca348f7607fcabb67f",
   "chargeable_tokens": "0",
   "attempts": 0,
   "clock": {
-    "wall_ms": 59963,
+    "wall_ms": 59978,
     "started_unix_ms": null,
     "deadline_unix_ms": null
   },
   "selection": {
-    "artifact_id": "sha256:1bc90c586535216ca5321a9e7b38483a567371680323fa91e711ddf83488b68d",
-    "request_revision_id": "sha256:8c4282ec9c36903c02001a5e07a79a7da4b9358bfa0f04d0cc280cae2740b5fc",
+    "artifact_id": "sha256:4128828c3c8701fb37c9702a3fab26f56840e774008aa3a0b46676f5b867ca68",
+    "request_revision_id": "sha256:3c5c1f8b834cb7622e607fc5e8e32f085f227b4408832667445dcd56d008b651",
     "assessment": {
       "schema": "af.pipeline-selection/1",
       "requested": {
@@ -49,34 +49,34 @@
     {
       "sequence": 0,
       "transition": {
-        "writer": "cli-89130-38f5894d68764bd3",
+        "writer": "cli-266-fb917bd5a4c39203",
         "epoch": 1,
-        "now_unix_ms": 1793551434946,
+        "now_unix_ms": 1794247772919,
         "change": {
           "kind": "opened",
-          "revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
-          "lease_until_unix_ms": 1793551494946
+          "revision_id": "sha256:7d26d2f8b9b0cfba4af7b9a0516056e8e9ede68f964298dd4d9cede3c9ae97ec",
+          "lease_until_unix_ms": 1794247832919
         }
       }
     },
     {
       "sequence": 1,
       "transition": {
-        "writer": "cli-89130-38f5894d68764bd3",
+        "writer": "cli-266-fb917bd5a4c39203",
         "epoch": 1,
-        "now_unix_ms": 1793551434961,
+        "now_unix_ms": 1794247772934,
         "change": {
           "kind": "plan_proposed",
-          "plan_id": "sha256:c63f2163dde39788c3144fb727251cc542704f422328fb8318a4493f01fd9b0e"
+          "plan_id": "sha256:cfe2dfaf778d42db3ce15778056aed15445fd4520ec8b4ca348f7607fcabb67f"
         }
       }
     },
     {
       "sequence": 2,
       "transition": {
-        "writer": "cli-89130-38f5894d68764bd3",
+        "writer": "cli-266-fb917bd5a4c39203",
         "epoch": 1,
-        "now_unix_ms": 1793551434970,
+        "now_unix_ms": 1794247772940,
         "change": {
           "kind": "lease_released"
         }
@@ -89,11 +89,11 @@
     "schema": "af.task-input-bindings/1",
     "bindings": {
       "history": {
-        "artifact_id": "sha256:0170dccb5bfbb5b9d5012d6ed58da9fe217e665ef10583dd1f97a302b94e42cf",
+        "artifact_id": "sha256:0c56c1f6412437b12d775338ca601f3e1472f8a3ce959c2d0a7c788d86087083",
         "task": {
           "task_id": "chain-base",
-          "task_revision_id": "sha256:3fdaed5cb66d18f75603f9e5717df299b052aebf475b2a76cbe35002c6fbbc52",
-          "result_id": "sha256:8550875e3aa4e5646f497590c8a3100419dfd7c20cc5d6cda1a395f649850292",
+          "task_revision_id": "sha256:d2d04e45b6c88400e0ff4962d3a4b35a4938b24bf13297c79d1f7734d00dd3fd",
+          "result_id": "sha256:ca6a2ad3976ce2931843b3f2b4451fe8529ba40f1fd889470ba3b2b7ebc789f7",
           "port": "history",
           "acceptance": "satisfied",
           "domain_conclusion": "verified"
@@ -116,7 +116,7 @@
     }
   ],
   "graph": {
-    "schema": "af.compiled-task/1",
+    "schema": "af.compiled-task/6",
     "nodes": {
       "root.inputs": {
         "operator": {
@@ -488,7 +488,7 @@
     "inputs": {
       "history": {
         "artifact_ids": [
-          "sha256:0170dccb5bfbb5b9d5012d6ed58da9fe217e665ef10583dd1f97a302b94e42cf"
+          "sha256:0c56c1f6412437b12d775338ca601f3e1472f8a3ce959c2d0a7c788d86087083"
         ],
         "artifact_type": "af/ReviewHistory@1",
         "cardinality": "one"
@@ -502,11 +502,11 @@
       },
       "source": {
         "artifact_ids": [
-          "sha256:8ca2689e3a541b4a29fe39f29ae2ecc01ca9f318ba0bdfd01a8caa222841fb2f"
+          "sha256:f8607f9d27739564453f7901934cae5a2a94fddbb9ef83850dc6d1256272d6c7"
         ],
         "artifact_type": "af/SourceTree@1",
         "cardinality": "one",
-        "snapshot_id": "sha256:65002af2738a101e35fa7b3460bfbbfaff93009f391b9b78f99380cd9552062b"
+        "snapshot_id": "sha256:82bc854ad7fe8e8b70f795873d6342a3eef27de5295d4f9f8e050e5e351df775"
       }
     },
     "outputs": {
@@ -609,12 +609,12 @@
     }
   },
   "plan": {
-    "task_revision_id": "sha256:26d7e370aed33247cb4515e82fe8a4f5d8c8a5d50a7c258349951f67b89784e5",
-    "engine_id": "sha256:ec891302ddf6d7f1c5a4efbd4de25dd9694bc7ce3e2d52ca7cc533f01cba88b4",
-    "pipeline_id": "sha256:fac6b2eafba2ef8c05f23cd211135066509e0a94eeb417bccd8a2d8013027a92",
-    "compiled_graph_id": "sha256:368b86431e1a6035b4a1f03b1cbe140b248caefb08ae48ecbef2b16a51f062a6",
+    "task_revision_id": "sha256:7d26d2f8b9b0cfba4af7b9a0516056e8e9ede68f964298dd4d9cede3c9ae97ec",
+    "engine_id": "sha256:8d693e4ff53c54aa1dfc42ad12641e3de5dbf7ab6f706cbfc2b85e20293587ee",
+    "pipeline_id": "sha256:2c22f412d73915b539b1bd962e2cfa226d719c75a02e3f7c5ded01ff038860b9",
+    "compiled_graph_id": "sha256:57e90e87cec5210957150a1dee9a878d417114fe6afc4f1222d1443c30bc15d0",
     "authority": {
-      "policy_id": "sha256:275aee556857a08caa87f3617ad3b8d9949f2afbcde42ef09c881d050717d2c9",
+      "policy_id": "sha256:20b5e7b8a5728a77f62966ec1d9875f5c1fbb4d1a4fcf5a0d50ebf7de1827848",
       "allowed_effects": [
         "execute-checks",
         "read-source",
@@ -625,7 +625,7 @@
     "limits": {
       "tokens": 1000,
       "max_attempts": 3,
-      "deadline_unix_ms": 1793551494909,
+      "deadline_unix_ms": 1794247832897,
       "verification": {
         "tokens": 200,
         "attempts": 2,
@@ -635,7 +635,7 @@
     "inputs": {
       "history": {
         "artifact_ids": [
-          "sha256:0170dccb5bfbb5b9d5012d6ed58da9fe217e665ef10583dd1f97a302b94e42cf"
+          "sha256:0c56c1f6412437b12d775338ca601f3e1472f8a3ce959c2d0a7c788d86087083"
         ],
         "artifact_type": "af/ReviewHistory@1",
         "cardinality": "one"
@@ -649,11 +649,11 @@
       },
       "source": {
         "artifact_ids": [
-          "sha256:8ca2689e3a541b4a29fe39f29ae2ecc01ca9f318ba0bdfd01a8caa222841fb2f"
+          "sha256:f8607f9d27739564453f7901934cae5a2a94fddbb9ef83850dc6d1256272d6c7"
         ],
         "artifact_type": "af/SourceTree@1",
         "cardinality": "one",
-        "snapshot_id": "sha256:65002af2738a101e35fa7b3460bfbbfaff93009f391b9b78f99380cd9552062b"
+        "snapshot_id": "sha256:82bc854ad7fe8e8b70f795873d6342a3eef27de5295d4f9f8e050e5e351df775"
       }
     },
     "bindings": {
@@ -687,8 +687,8 @@
       },
       "fixture/plain": {
         "name": "fixture/plain",
-        "content_digest": "sha256:2b6183ba13d7f24a9ad3d012a96d2d12aae9cf5679d0bee57a8a48336bbeb6fe",
-        "artifact_id": "sha256:fac6b2eafba2ef8c05f23cd211135066509e0a94eeb417bccd8a2d8013027a92"
+        "content_digest": "sha256:28c9c0b64e8cf8b2bd32fc762144968c0dbcea106b04aea0832615019c0e20de",
+        "artifact_id": "sha256:2c22f412d73915b539b1bd962e2cfa226d719c75a02e3f7c5ded01ff038860b9"
       }
     },
     "generated_origins": [],

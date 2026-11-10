@@ -13,13 +13,11 @@ use std::{
 
 use af_contracts::reviewer_result::CHANGE_WIDE_SENTINEL;
 use af_contracts::{
-    ArtifactEnvelope, CANONICAL_FINDING_IDENTITY_POLICY, CampaignManifestV1,
-    CampaignOpenedPayloadV1, ChangeAttestationV1, DemandSetEntryV1, DemandStatus, DemandV1,
-    DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
-    FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
-    FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1, PolicyTimeV1,
-    RecordedArtifactPayloadV1, Relation, ResolutionChallengeV1, RoundStartedPayloadV1, Severity,
-    SubjectKind,
+    ArtifactEnvelope, CANONICAL_FINDING_IDENTITY_POLICY, ChangeAttestationV1, DemandSetEntryV1,
+    DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1,
+    EvidenceSatisfactionV1, EvidenceV1, FindingGroupingAction, FindingGroupingEventPayloadV1,
+    FindingGroupingV1, FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1,
+    PolicyTimeV1, RecordedArtifactPayloadV1, Relation, ResolutionChallengeV1, Severity,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -256,7 +254,6 @@ pub struct Ledger {
     scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
     subject_scope_cache: BTreeMap<String, CachedSubjectScope>,
     finding_identity_policy: String,
-    finding_identity_policy_unavailable: bool,
     active_groupings: BTreeMap<String, GroupingRelation>,
     grouping_history: Vec<GroupingEvidence>,
     demands: BTreeMap<String, DemandRecord>,
@@ -356,13 +353,6 @@ struct ResolutionEvidence {
 /// trusted callers carry one replay across layers without making an arbitrary hand-built Ledger
 /// admissible as convergence authority.
 #[derive(Debug, Clone)]
-pub struct LedgerProjection {
-    run_id: String,
-    event_count: u64,
-    ledger: Ledger,
-}
-
-#[derive(Debug, Clone)]
 struct ActiveScope {
     round: u32,
     subject_id: String,
@@ -372,16 +362,13 @@ struct ActiveScope {
 
 #[derive(Debug, Clone)]
 struct CachedSubjectScope {
-    scope: Arc<SubjectScope>,
     change_set_id: Option<String>,
-    head_snapshot_id: String,
 }
 
 #[derive(Debug, Clone)]
 enum SubjectScope {
     WholeTree,
     Diff(Arc<[String]>),
-    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,9 +455,7 @@ impl Ledger {
         self.subject_scope_cache.insert(
             subject_id.into(),
             CachedSubjectScope {
-                scope: Arc::clone(&scope),
                 change_set_id: resolved.subject.change_set_id,
-                head_snapshot_id: resolved.subject.head_snapshot_id.clone(),
             },
         );
         self.active_scope = Some(ActiveScope {
@@ -550,11 +535,49 @@ impl Ledger {
         Ok(())
     }
 
-    /// The Campaign's recorded Finding identity policy; `None` before `CampaignOpened@1` or when
-    /// its manifest is unreadable.
+    /// Project a checked native Integration as pending verification, preserving original claims
+    /// and their immutable reports. A complete successor Round still owns verification.
+    pub fn project_task_integration(
+        &mut self,
+        commit_id: &str,
+        claims: &BTreeMap<String, String>,
+    ) -> Result<(), crate::StoreError> {
+        let conflict = |s: &str| crate::StoreError::Conflict(s.into());
+        if !af_contracts::is_digest(commit_id)
+            || claims.is_empty()
+            || claims
+                .iter()
+                .any(|(id, view)| self.finding_view_id(id).as_ref() != Some(view))
+        {
+            return Err(conflict(
+                "Integration changed an original canonical Finding view",
+            ));
+        }
+        let mut keys = BTreeSet::new();
+        for id in claims.keys() {
+            keys.extend(self.finding_member_keys(id)?);
+        }
+        if keys
+            .iter()
+            .any(|key| !self.findings[key].status.is_active())
+        {
+            return Err(conflict("Integration cannot repair an inactive claim"));
+        }
+        for key in keys {
+            let finding = self
+                .findings
+                .get_mut(&key)
+                .expect("validated Finding member");
+            finding.status = Status::PendingVerification;
+            finding.history.push(Transition { round: self.round, kind: TransitionKind::Resolved(Status::PendingVerification),
+                note: Some(format!("Checked native Task Integration {commit_id}; full discovery verification pending")) });
+        }
+        Ok(())
+    }
+
+    /// The native Task's canonical Finding identity policy; `None` before binding its Subject.
     pub fn finding_identity_policy(&self) -> Option<&str> {
-        (!self.finding_identity_policy_unavailable && !self.finding_identity_policy.is_empty())
-            .then_some(self.finding_identity_policy.as_str())
+        (!self.finding_identity_policy.is_empty()).then_some(self.finding_identity_policy.as_str())
     }
 
     /// Resolve only an exact rule-owned occurrence key. Ambiguous historical state fails closed.
@@ -587,8 +610,6 @@ impl Ledger {
         cas: &Cas,
     ) -> Result<(), crate::store::StoreError> {
         match event_type {
-            EventType::CampaignOpenedV1 => self.apply_campaign_opened(payload, cas)?,
-            EventType::RoundStartedV1 => self.apply_round_started(payload, cas)?,
             EVENT_GENERATION_ADVANCED => {
                 let round = payload
                     .get("round")
@@ -885,119 +906,6 @@ impl Ledger {
         Ok(())
     }
 
-    fn apply_campaign_opened(
-        &mut self,
-        payload: &Value,
-        cas: &Cas,
-    ) -> Result<(), crate::store::StoreError> {
-        let opened: CampaignOpenedPayloadV1 = serde_json::from_value(payload.clone())
-            .map_err(|error| malformed("CampaignOpened@1", &error.to_string()))?;
-        let manifest = cas
-            .get_json(&opened.campaign_manifest_id)
-            .map_err(|error| error.to_string())
-            .and_then(|value| {
-                serde_json::from_value::<CampaignManifestV1>(value)
-                    .map_err(|error| error.to_string())
-            })
-            .and_then(|manifest| manifest.validate().map(|()| manifest));
-        match manifest {
-            Ok(manifest) => {
-                self.finding_identity_policy = manifest.finding_identity_policy;
-                self.finding_identity_policy_unavailable = false;
-            }
-            Err(reason) => {
-                self.finding_identity_policy.clear();
-                self.finding_identity_policy_unavailable = true;
-                self.record_authority_failure(
-                    self.round,
-                    ScopeAuthorityKind::Subject,
-                    &opened.campaign_manifest_id,
-                    &format!("CampaignManifest authority unavailable: {reason}"),
-                );
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_round_started(
-        &mut self,
-        payload: &Value,
-        cas: &Cas,
-    ) -> Result<(), crate::store::StoreError> {
-        let started: RoundStartedPayloadV1 = serde_json::from_value(payload.clone())
-            .map_err(|error| malformed("RoundStarted@1", &error.to_string()))?;
-        started
-            .validate()
-            .map_err(|error| malformed("RoundStarted@1", &error))?;
-        // A parsed scope may be reused, but its immutable artifact authority is reverified for
-        // every Round. Otherwise a warm live projection and a cold replay can disagree after CAS
-        // loss or corruption.
-        let verified = cas
-            .verify(&started.subject_id)
-            .map(|_| ())
-            .map_err(|error| error.to_string());
-        let resolved_scope = if let Err(error) = verified {
-            Err(error)
-        } else if let Some(cached) = self.subject_scope_cache.get(&started.subject_id) {
-            cached
-                .change_set_id
-                .as_deref()
-                .map_or(Ok(()), |change_set_id| {
-                    cas.verify(change_set_id)
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                })
-                .map(|()| (cached.scope.clone(), cached.head_snapshot_id.clone()))
-        } else {
-            let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
-                .map_err(|error| error.to_string())
-                .and_then(|resolved| {
-                    let change_set_id = resolved.subject.change_set_id.clone();
-                    let scope = match resolved.subject.kind {
-                        SubjectKind::WholeTree => Arc::new(SubjectScope::WholeTree),
-                        SubjectKind::Diff => resolved
-                            .changed_paths
-                            .map(|paths| Arc::new(SubjectScope::Diff(paths)))
-                            .ok_or_else(|| {
-                                format!(
-                                    "diff Subject {} resolved without changed paths",
-                                    started.subject_id
-                                )
-                            })?,
-                    };
-                    Ok(CachedSubjectScope {
-                        scope,
-                        change_set_id,
-                        head_snapshot_id: resolved.subject.head_snapshot_id,
-                    })
-                });
-            if let Ok(cached) = &resolved {
-                self.subject_scope_cache
-                    .insert(started.subject_id.clone(), cached.clone());
-            }
-            resolved.map(|cached| (cached.scope, cached.head_snapshot_id))
-        };
-        let (subject_scope, head_snapshot_id) = match resolved_scope {
-            Ok(authority) => authority,
-            Err(reason) => {
-                self.record_authority_failure(
-                    started.round,
-                    ScopeAuthorityKind::Subject,
-                    &started.subject_id,
-                    &reason,
-                );
-                (Arc::new(SubjectScope::Unavailable), String::new())
-            }
-        };
-        self.active_scope = Some(ActiveScope {
-            round: started.round,
-            subject_id: started.subject_id,
-            head_snapshot_id,
-            subject: subject_scope,
-        });
-        Ok(())
-    }
-
     fn report_scope(
         &mut self,
         round: u32,
@@ -1009,7 +917,7 @@ impl Ledger {
             .filter(|active| active.round != round)
         {
             let reason = format!(
-                "Report round {round} disagrees with active RoundStarted@1 round {}",
+                "Report round {round} disagrees with active native Task Review round {}",
                 active.round
             );
             let subject_id = active.subject_id.clone();
@@ -1025,9 +933,7 @@ impl Ledger {
             return (None, location.first_index());
         };
         match (active.subject.as_ref(), location) {
-            (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => {
-                (None, location.first_index())
-            }
+            (_, ReportLocation::Unrecorded) => (None, location.first_index()),
             (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
                 (Some(ReportScope::In), location.first_index())
             }
@@ -1374,7 +1280,7 @@ impl Ledger {
             .map_err(|error| malformed(event_type.as_str(), &error))?;
         let active_subject = self
             .active_subject_id()
-            .ok_or_else(|| malformed(event_type.as_str(), "Campaign has no active Subject"))?
+            .ok_or_else(|| malformed(event_type.as_str(), "Ledger has no active Subject"))?
             .to_string();
 
         match event_type {
@@ -2160,9 +2066,8 @@ impl Ledger {
             .flat_map(|finding| finding.unreadable_reports.iter().map(String::as_str))
             .filter(|report_id| !recent_authority_ids.contains(*report_id))
             .collect();
-        let authority_failures_recent = recent_authority_failures.len()
-            + unresolved_unrecent_reports.len()
-            + usize::from(self.finding_identity_policy_unavailable);
+        let authority_failures_recent =
+            recent_authority_failures.len() + unresolved_unrecent_reports.len();
         let open_required_demands = self.required_open_demands();
         let verdict = if authority_failures_recent == 0
             && open_blocking == 0
@@ -2184,109 +2089,6 @@ impl Ledger {
             authority_failures_recent,
             verdict,
         }
-    }
-}
-
-impl LedgerProjection {
-    /// Fold an already-loaded run log into one run-bound projection.
-    pub fn from_events(
-        run_id: &str,
-        events: &[af_contracts::RunEvent],
-        cas: &Cas,
-    ) -> Result<Self, crate::store::StoreError> {
-        let mut projection = Self {
-            run_id: run_id.to_string(),
-            event_count: 0,
-            ledger: Ledger {
-                round: 1,
-                ..Default::default()
-            },
-        };
-        for event in events {
-            projection.apply_event(event, cas)?;
-        }
-        Ok(projection)
-    }
-
-    pub fn rebuild(
-        store: &crate::EventStore,
-        cas: &Cas,
-        run_id: &str,
-    ) -> Result<Self, crate::store::StoreError> {
-        let events = store.replay(run_id)?;
-        Self::from_events(run_id, &events, cas)
-    }
-
-    pub fn ledger(&self) -> &Ledger {
-        &self.ledger
-    }
-
-    pub fn into_ledger(self) -> Ledger {
-        self.ledger
-    }
-
-    pub fn belongs_to(&self, run_id: &str) -> bool {
-        self.run_id == run_id
-    }
-
-    /// Number of durable events folded into this projection; also the next required sequence.
-    pub fn event_count(&self) -> u64 {
-        self.event_count
-    }
-
-    pub fn apply_event(
-        &mut self,
-        event: &af_contracts::RunEvent,
-        cas: &Cas,
-    ) -> Result<(), crate::store::StoreError> {
-        if event.run_id != self.run_id {
-            return Err(crate::store::StoreError::Conflict(format!(
-                "Ledger projection for `{}` cannot apply event from `{}`",
-                self.run_id, event.run_id
-            )));
-        }
-        if event.sequence != self.event_count {
-            return Err(crate::store::StoreError::Conflict(format!(
-                "Ledger projection for `{}` expected sequence {}, got {}",
-                self.run_id, self.event_count, event.sequence
-            )));
-        }
-        self.ledger.apply_event(event, cas)?;
-        self.event_count += 1;
-        Ok(())
-    }
-
-    /// Fold the exact durable suffix after this projection's watermark. This tolerates runtime
-    /// events appended between preparation and installation while preserving dense ordering and
-    /// still applying every event type the Ledger declares as projection input.
-    pub fn fast_forward(
-        &mut self,
-        store: &crate::EventStore,
-        cas: &Cas,
-    ) -> Result<(), crate::store::StoreError> {
-        let durable_count = store.len(&self.run_id)?;
-        if self.event_count > durable_count {
-            return Err(crate::store::StoreError::Conflict(format!(
-                "Ledger projection for `{}` covers {} events, but the log contains {durable_count}",
-                self.run_id, self.event_count
-            )));
-        }
-        for event in store.replay_from(&self.run_id, self.event_count)? {
-            self.apply_event(&event, cas)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn from_parts(run_id: String, event_count: u64, ledger: Ledger) -> Self {
-        Self {
-            run_id,
-            event_count,
-            ledger,
-        }
-    }
-
-    pub(crate) fn into_parts(self) -> (String, u64, Ledger) {
-        (self.run_id, self.event_count, self.ledger)
     }
 }
 

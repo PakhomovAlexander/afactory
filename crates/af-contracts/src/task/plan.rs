@@ -274,7 +274,7 @@ pub enum PlanPreparationV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecutionPlanV3 {
+pub struct ExecutionPlan {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -296,7 +296,7 @@ pub struct ExecutionPlanV3 {
     pub acceptance: BTreeMap<String, BTreeSet<String>>,
 }
 
-impl ExecutionPlanV3 {
+impl ExecutionPlan {
     /// The compiler derives this closure from verified package provenance. A caller cannot
     /// make a plan trusted by deleting generated_origins: admission rechecks the closure.
     pub fn requires_developer_approval(&self) -> bool {
@@ -427,7 +427,7 @@ impl PlanDecisionV1 {
 
     /// Structural matching only. The trusted Store entry point must separately authenticate
     /// the developer, validate authorization, check revocation and enforce transition order.
-    pub fn approves(&self, plan_id: &str, plan: &ExecutionPlanV3) -> bool {
+    pub fn approves(&self, plan_id: &str, plan: &ExecutionPlan) -> bool {
         self.decision == PlanDecisionKindV1::Approved
             && self.plan_id == plan_id
             && self.task_revision_id == plan.task_revision_id

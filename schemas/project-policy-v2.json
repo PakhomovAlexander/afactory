@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-policy:2",
+  "title": "Project authority af.toml version 2",
+  "$comment": "Structural TOML authority contract. Current Task defaults, delivery, Survey and Brief tables remain. Campaign defaults/routing and version 1 are refused. Effective Survey/Brief policy applies its own additional bounds. Release pins are a separate unchanged document.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 2
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "min_af": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "min_af"
+      ]
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "undeclared_af_paths": {
+          "enum": [
+            "warn",
+            "refuse"
+          ]
+        }
+      }
+    },
+    "survey": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_wall_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "max_commits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "max_file_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "hot_paths": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "max_paths": {},
+        "max_entries": {},
+        "max_survey_bytes": {},
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "agent_authors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "agent_trailers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "decisions": {
+          "type": "string"
+        },
+        "vocabulary": {
+          "type": "string"
+        },
+        "release_tags": {
+          "type": "string"
+        },
+        "identity": {
+          "enum": [
+            "name",
+            "email_hash"
+          ]
+        },
+        "languages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_bytes": {},
+          "decisions": {},
+          "hot_paths": {}
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pipeline": {
+              "type": "string"
+            },
+            "fallback": {
+              "enum": [
+                "refuse",
+                "select",
+                "generate"
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tokens",
+                "max_attempts",
+                "wall_ms",
+                "verification"
+              ],
+              "properties": {
+                "tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_attempts": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 4294967295
+                },
+                "wall_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 18446744073709551615
+                },
+                "verification": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "tokens",
+                    "attempts",
+                    "wall_ms"
+                  ],
+                  "properties": {
+                    "tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "attempts": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295
+                    },
+                    "wall_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "version",
+    "project"
+  ]
+}

@@ -293,85 +293,52 @@ fn nested_payload_references_keep_their_own_roots_and_literal_values() {
     assert!(!validator.is_valid(&bad));
 }
 
-/// ADR-0246: a review-Campaign reviewer's prompt is no typed request, yet its dispatch passes
-/// the Reviewer Result schema inline as `--json-schema`, byte for byte what `af review render`
-/// shows, and the reply is the native `structured_output`, which the kernel's unchanged parser
-/// reads. A textual `result` is never a fallback: an envelope without a structured object, a
-/// CLI that did not deliver a constrained reply, is refused with its usage kept for the charge.
+/// A current native Review payload uses the same typed Worker envelope as any other Task.
+/// The captured published schema reaches Claude unchanged; text is never a constrained reply.
 #[test]
-fn a_campaign_reviewer_passes_the_reviewer_result_schema_and_reads_structured_output() {
-    use af_runner::ReviewerAdapter;
-    use af_runner::task::reply_schema::ReplyContract;
-    let prompt = b"Review the change.\n\n## Output contract\n\nYour FINAL message ...".to_vec();
-    let reply = json!({"reports":[],"benchmark_demands":[],"dispositions":[]});
-    let campaign = |envelope: &Value| {
-        let temp = tempfile::tempdir().unwrap();
-        let cas = Cas::open(temp.path().join("cas")).unwrap();
-        let program = temp.path().join("provider");
-        let quoted = envelope.to_string().replace('\'', "'\\''");
-        std::fs::write(
-            &program,
-            format!(
-                "#!/bin/sh\ncat > received\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{quoted}'\n"
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let adapter = ClaudeTaskAdapter::new(&Command::new(
-            program.to_str().unwrap(),
-            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
-        ))
-        .unwrap();
-        let returned = adapter
-            .invoke_constrained(
-                &cas,
-                temp.path(),
-                prompt.clone(),
-                LOAD_SAFE_WALL,
-                WorkerAccess::ReadOnly,
-                None,
-                &[],
-                ReplyContract::ReviewerResult,
-            )
-            .unwrap_or_else(|unstarted| *unstarted.0);
-        let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
-        assert_eq!(std::fs::read(temp.path().join("received")).unwrap(), prompt);
-        (returned, flags)
-    };
-    let (returned, flags) = campaign(&json!({"is_error":false,"result":"Done, see the answer.",
-        "structured_output":reply,"usage":{"input_tokens":10,"output_tokens":5}}));
+fn a_native_review_payload_uses_the_captured_schema_and_refuses_textual_fallback() {
+    let mut payload: Value =
+        serde_json::from_str(include_str!("../../../../schemas/reviewer-result-v2.json")).unwrap();
+    payload.as_object_mut().unwrap().remove("$schema");
+    payload.as_object_mut().unwrap().remove("$id");
+    let input = request(payload.clone());
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path()).unwrap();
+    let contract = WorkerContract::capture(
+        &cas,
+        json!({"type":"object"}),
+        BTreeMap::from([("document".into(), payload)]),
+    )
+    .unwrap();
+    let reply = json!({"schema":"af.worker-reply/1","outputs":{"document":[{"reports":[],"benchmark_demands":[],"dispositions":[]}]}});
+    let (returned, flags, received) = invoke(
+        &input,
+        &json!({"is_error":false,"result":"Done, see the answer.","structured_output":reply,
+            "usage":{"input_tokens":10,"output_tokens":5}}),
+        WorkerAccess::ReadOnly,
+    );
     let message = returned.message.unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&message).unwrap(), reply);
-    assert!(af_runner::parse_reviewer_result(std::str::from_utf8(&message).unwrap()).is_ok());
+    contract.validate_reply(&message).unwrap();
+    let parsed: af_contracts::ReviewerStageOutput =
+        serde_json::from_value(reply["outputs"]["document"][0].clone()).unwrap();
+    assert!(parsed.reports.is_empty());
+    assert_eq!(received, input.to_string().as_bytes());
     let flags: Vec<_> = flags.lines().collect();
     assert_eq!(flags.iter().filter(|v| **v == "--json-schema").count(), 1);
     let at = flags.iter().position(|v| *v == "--json-schema").unwrap();
-    let package = af_runner::ResolvedReviewer::new(
-        "fixture",
-        "1.0.0",
-        "fixture-digest",
-        "/fixture",
-        Command::new("claude", vec![]),
-        BTreeMap::from([("reviewer.md".to_string(), b"Review it.".to_vec())]),
-    );
-    let rendered = af_runner_claude::ClaudeAdapter::from_package(&package)
-        .unwrap()
-        .render_input(&af_runner::ReviewerInputs::default())
-        .unwrap()
-        .reply_schema
-        .unwrap();
-    assert_eq!(rendered.option, "--json-schema");
-    assert_eq!(flags[at + 1], rendered.schema.to_string());
     assert_eq!(
-        Some(rendered.schema),
-        ReplyContract::ReviewerResult.transport(&[]).unwrap()
+        flags[at + 1],
+        af_runner::task::reply_schema::transport(&input.to_string().into_bytes())
+            .unwrap()
+            .unwrap()
+            .to_string()
     );
-
-    // The CLI ended without a constrained reply: the textual result, a structurally wrong
-    // answer, never reaches the kernel's parser, and the call's usage stays for the charge.
-    let (returned, _) = campaign(&json!({"is_error":false,
-        "result":"{\"findings\":[],\"dispositions\":[]}",
-        "usage":{"input_tokens":10,"output_tokens":5}}));
+    let (returned, _, _) = invoke(
+        &input,
+        &json!({"is_error":false,"result":reply.to_string(),"usage":{"input_tokens":10,"output_tokens":5}}),
+        WorkerAccess::ReadOnly,
+    );
     assert_eq!(
         returned.message.unwrap_err(),
         "Claude Worker returned no structured output object"

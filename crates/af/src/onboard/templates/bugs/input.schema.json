@@ -168,7 +168,7 @@
             "type": "string"
           },
           "artifact_type": {
-            "const": "af/TaskReviewSubject@2"
+            "const": "af/TaskReviewSubject@3"
           },
           "payload": {
             "type": "object"

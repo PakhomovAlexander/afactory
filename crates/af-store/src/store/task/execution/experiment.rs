@@ -14,7 +14,7 @@ use af_contracts::task::runtime::{
     TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
 };
 use af_graph::task::{
-    EXPERIMENT_EXECUTION_PLAN_V1, ExperimentExecutionPlanV1, ExperimentPlannedChildV1,
+    EXPERIMENT_EXECUTION_PLAN_V3, ExperimentExecutionPlanV3, ExperimentPlannedChildV1,
 };
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub(in crate::store::task) struct RecordedExperiment {
     pub prepared: ExperimentPreparedV1,
     pub parent_node: String,
     pub decision: Option<(String, ExperimentPlanDecisionV1)>,
-    pub child_plan: Option<ExperimentExecutionPlanV1>,
+    pub child_plan: Option<ExperimentExecutionPlanV3>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ pub struct RegisteredTaskExperiment {
     pub prepared_id: String,
     pub prepared: ExperimentPreparedV1,
     pub parent_node: String,
-    pub child_plan: ExperimentExecutionPlanV1,
+    pub child_plan: ExperimentExecutionPlanV3,
 }
 
 #[derive(Debug, Clone)]
@@ -221,8 +221,8 @@ fn typed<T: serde::de::DeserializeOwned>(cas: &Cas, id: &str, kind: &str) -> Res
     payload(cas, id, kind)
 }
 
-fn child_plan(cas: &Cas, id: &str) -> Result<ExperimentExecutionPlanV1, StoreError> {
-    typed(cas, id, EXPERIMENT_EXECUTION_PLAN_V1)
+fn child_plan(cas: &Cas, id: &str) -> Result<ExperimentExecutionPlanV3, StoreError> {
+    typed(cas, id, EXPERIMENT_EXECUTION_PLAN_V3)
 }
 
 #[derive(serde::Deserialize)]
@@ -345,11 +345,11 @@ fn validate_child_plan(
     cas: &Cas,
     outer_plan_id: &str,
     prepared: &ExperimentPreparedV1,
-    value: &ExperimentExecutionPlanV1,
+    value: &ExperimentExecutionPlanV3,
 ) -> Result<(), StoreError> {
-    let outer: ExecutionPlanV3 = payload(cas, outer_plan_id, task::EXECUTION_PLAN_V4)?;
-    let graph: CompiledTask = payload(cas, &outer.compiled_graph_id, "af/CompiledTask@1")?;
-    if value.schema != "af.experiment-execution-plan/1"
+    let outer: ExecutionPlan = payload(cas, outer_plan_id, task::EXECUTION_PLAN_V4)?;
+    let graph: CompiledTask = payload(cas, &outer.compiled_graph_id, "af/CompiledTask@4")?;
+    if value.schema != "af.experiment-execution-plan/3"
         || value.children.len() != prepared.children.len()
     {
         return Err(conflict(
@@ -843,7 +843,7 @@ mod derived_package_tests {
         cas: Cas,
         outer_plan_id: String,
         prepared: ExperimentPreparedV1,
-        plan: ExperimentExecutionPlanV1,
+        plan: ExperimentExecutionPlanV3,
         original_id: String,
         execution_id: String,
         instructions_id: String,
@@ -971,7 +971,7 @@ mod derived_package_tests {
                 conditions: vec![],
             };
             let graph = CompiledTask {
-                schema: "af.compiled-task/1".into(),
+                schema: "af.compiled-task/6".into(),
                 nodes: BTreeMap::new(),
                 order: vec![],
                 inputs: BTreeMap::new(),
@@ -997,12 +997,11 @@ mod derived_package_tests {
                 allowances: BTreeMap::new(),
                 owned_children: BTreeMap::new(),
                 experimental_slots: BTreeMap::new(),
-                review_integration: None,
                 token_scopes: BTreeMap::new(),
             };
             let compiled_graph_id = cas
                 .put_artifact(
-                    "af/CompiledTask@1",
+                    "af/CompiledTask@4",
                     producer(),
                     vec![],
                     None,
@@ -1010,7 +1009,7 @@ mod derived_package_tests {
                 )
                 .unwrap()
                 .0;
-            let mut outer: af_contracts::task::plan::ExecutionPlanV3 = serde_json::from_slice(
+            let mut outer: af_contracts::task::plan::ExecutionPlan = serde_json::from_slice(
                 &std::fs::read(
                     std::env::var_os("AF_WORKSPACE_ROOT")
                         .map(std::path::PathBuf::from)
@@ -1092,8 +1091,8 @@ mod derived_package_tests {
                     wall_ms: 1000,
                 },
             };
-            let plan = ExperimentExecutionPlanV1 {
-                schema: "af.experiment-execution-plan/1".into(),
+            let plan = ExperimentExecutionPlanV3 {
+                schema: "af.experiment-execution-plan/3".into(),
                 parent_node: "root.experiment".into(),
                 children: BTreeMap::from([(
                     node.into(),
@@ -1138,6 +1137,29 @@ mod derived_package_tests {
     fn child_plan_accepts_only_the_exact_instruction_derivation() {
         let fixture = Fixture::new();
         fixture.validate().unwrap();
+        let mut retired = fixture.plan.clone();
+        retired.schema = "af.experiment-execution-plan/1".into();
+        assert!(
+            validate_child_plan(
+                &fixture.cas,
+                &fixture.outer_plan_id,
+                &fixture.prepared,
+                &retired
+            )
+            .is_err()
+        );
+        let old_id = fixture
+            .cas
+            .put_artifact(
+                "af/ExperimentExecutionPlan@1",
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&retired).unwrap(),
+            )
+            .unwrap()
+            .0;
+        assert!(child_plan(&fixture.cas, &old_id).is_err());
 
         let mut normal = fixture.plan.clone();
         let child = normal.children.values_mut().next().unwrap();

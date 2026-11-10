@@ -5,7 +5,7 @@
 //! on the `PATH` the check receives, so every key is deterministic and nothing here builds Rust.
 //! Like a rustup proxy, the stub answers only when it received the kernel's `RUSTUP_HOME` and
 //! `RUSTUP_AUTO_INSTALL=0`, so a warm key here proves no toolchain download was needed. A Task
-//! without `[warm]` is compared with the documents a kernel without the warm package recorded.
+//! without `[warm]` is compared with exact current-format documents from two independent runs.
 
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -295,7 +295,7 @@ fn start_with(fixture: &Fixture, extra: &[(&str, &Path)], task_id: &str, expecte
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &outcome);
     outcome
 }
 
@@ -1624,9 +1624,12 @@ fn every_check_of_a_warm_task_has_one_named_group_even_when_the_deadline_skips_i
     assert!(!shown.contains("check not run"), "{shown}");
 }
 
-/// The checked-in documents a kernel without the Warm Check Cache package recorded for the
-/// Task below: its revision, plan, `af task show --json` inspection and delivery receipt,
-/// normalized by [`run_independent`].
+/// The current-format documents for the Task below: its authority, revision, plan,
+/// `af task show --json` inspection, check records, delivery receipt and delivered tree.
+/// [`pinned_fixture`] owns the source bytes and Git history; [`run_independent`] pairs two
+/// real runs without hiding their stable content identities. After an intentional contract
+/// revision, capture the assertion's normalized output and audit every changed literal before
+/// refreshing this golden. Warm-cache changes must still leave these documents identical.
 const NO_WARM_DOCUMENTS: &str = include_str!("../fixtures/task-warm/no-warm-documents.json");
 
 /// Pair two independent runs' documents. A value equal in both is kept literally: the captured
@@ -1785,7 +1788,7 @@ fn without_engine(value: Value, engine_id: &Value, authority_id: &Value) -> Valu
 }
 
 #[test]
-fn a_task_without_warm_records_the_documents_a_kernel_without_warm_recorded() {
+fn a_task_without_warm_records_the_exact_current_format_documents() {
     let normalized = run_independent(&no_warm_documents(), &no_warm_documents());
     let expected: Value = serde_json::from_str(NO_WARM_DOCUMENTS).unwrap();
     assert!(

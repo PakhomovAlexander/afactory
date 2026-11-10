@@ -1,7 +1,7 @@
 //! One AF-owned Pi 1.4.0 SDK process per Attempt. Credentials stay in the embedded host.
 //!
 //! The CLI supplies machine bindings and native Task integration. This adapter implements
-//! `af_runner::task::WorkerModelAdapter` and `af_runner::ReviewerAdapter`; `af-runtime` owns
+//! `af_runner::task::WorkerModelAdapter`; `af-runtime` owns
 //! execution and admission. `af-contracts` supplies Pi authority and usage evidence, `af-runner`
 //! supplies Worker contracts and transport, `af-process` supervises the confined host, and
 //! `af-store` retains safe evidence. Application bindings use `af_runner::models` before
@@ -1072,67 +1072,3 @@ impl PiTaskAdapter {
 
 #[cfg(test)]
 mod tests;
-
-/// Digest-pinned Review rendering. Native schema generation is not a Pi capability; the common
-/// Reviewer Result contract in the prompt and local admission remain authoritative.
-pub struct PiAdapter {
-    prompt: String,
-}
-impl PiAdapter {
-    pub fn from_package(package: &af_runner::ResolvedReviewer) -> Result<Self, String> {
-        if Path::new(&package.runner.program)
-            .file_name()
-            .and_then(|name| name.to_str())
-            != Some("pi")
-        {
-            return Err("Pi reviewer package must name runner pi".into());
-        }
-        let arguments = package.runner.resolve().map_err(|e| e.to_string())?;
-        let mut model = None;
-        let mut effort = None;
-        for pair in arguments.chunks(2) {
-            if pair.len() != 2 {
-                return Err("Pi reviewer model option needs a value".into());
-            }
-            let target = match pair[0].as_str() {
-                "--model" => &mut model,
-                "--effort" => &mut effort,
-                _ => return Err("Pi packages may set only exact --model and --effort".into()),
-            };
-            if target.replace(pair[1].clone()).is_some() {
-                return Err("Duplicate Pi model option".into());
-            }
-        }
-        static_rules(
-            model.as_deref().ok_or("Pi requires --model")?,
-            effort.as_deref().ok_or("Pi requires --effort")?,
-        )?;
-        let prompt = String::from_utf8(
-            package
-                .file("reviewer.md")
-                .ok_or("Pi reviewer prompt is absent")?
-                .to_vec(),
-        )
-        .map_err(|_| "Pi reviewer prompt is not UTF-8")?;
-        Ok(Self { prompt })
-    }
-    pub fn with_focus(mut self, focus: impl AsRef<str>) -> Self {
-        af_runner::append_focus(&mut self.prompt, focus.as_ref());
-        self
-    }
-}
-impl af_runner::ReviewerAdapter for PiAdapter {
-    fn render_input(
-        &self,
-        inputs: &af_runner::ReviewerInputs,
-    ) -> Result<af_runner::RenderedInput, af_runner::RunnerError> {
-        let (prompt, manifest) = af_runner::compose_model_prompt(&self.prompt, inputs)
-            .map_err(af_runner::RunnerError::Refused)?;
-        Ok(af_runner::RenderedInput {
-            transport: af_runner::InputTransport::Prompt,
-            bytes: prompt.into_bytes(),
-            manifest,
-            reply_schema: None,
-        })
-    }
-}

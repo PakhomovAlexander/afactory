@@ -211,7 +211,7 @@ pub(super) fn tombstone_in(
     }
     let payload: Option<String> = connection
         .query_row(
-            "SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@5'
+            "SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@6'
              ORDER BY sequence DESC LIMIT 1",
             [run_id],
             |row| row.get(0),
@@ -747,7 +747,7 @@ impl EventStore {
                     },
                 },
             };
-            let (event_type, value) = review_handoff::encode_transition(&transition)?;
+            let (event_type, value) = journal::encode_transition(&transition)?;
             af_contracts::event::validate_event_payload(event_type, &value)
                 .map_err(|error| conflict(format!("invalid Task tombstone: {error}")))?;
             let run_id = task_run_id(&task.task_id)?;

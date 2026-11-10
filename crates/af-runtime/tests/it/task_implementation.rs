@@ -49,7 +49,7 @@ fn from(node: &str, port: &str) -> ValueRefV1 {
     }
 }
 
-fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> PipelineDefinitionV1 {
+fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> PipelineDefinition {
     let slot = |name: &str,
                 role: &str,
                 signature: &OperatorSignature,
@@ -92,8 +92,8 @@ fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> Pipe
         },
     );
     verification.covers.insert("verified".into());
-    PipelineDefinitionV1 {
-        schema: PipelineSchema::V1,
+    PipelineDefinition {
+        schema: PipelineSchema::V6,
         name: "fixture/implementation".into(),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {
@@ -238,7 +238,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         }])
         .unwrap();
         let origin = cas
-            .put_json(&json!({"source":"fixture repository","revision":"original"}))
+            .put_json(&json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":original.content_digest()}))
             .unwrap();
         let s0 = capture_snapshot(&cas, &original, &origin, None).unwrap();
         let source_input = source_tree(&cas, producer(), &s0, vec![]).unwrap();

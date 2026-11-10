@@ -1,0 +1,49 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."bench/alpha"]
+version = "1.0.0"
+digest = "sha256:5a18b2147c750d218cb2005e5fd2a446baf1df53b8e01c812f661fb2b0f1a014"
+path = ".af/task-packages/bench/alpha"
+
+[packages."bench/beta"]
+version = "1.0.0"
+digest = "sha256:82c6843a6352298a6a54c7e6a5f9e8b3cae90899c2874e7bcf070eb1047aeafc"
+path = ".af/task-packages/bench/beta"
+
+[packages."bench/gamma"]
+version = "1.0.0"
+digest = "sha256:cab55548cdb8f475b7fe737830d30423ffdc52c69035ac8972622f4425365893"
+path = ".af/task-packages/bench/gamma"
+
+[packages."bench/delta"]
+version = "1.0.0"
+digest = "sha256:03871c1d779d2ac9878a18789d3d3b56ff4153ecb4b054336efa9d160b25e565"
+path = ".af/task-packages/bench/delta"
+
+[packages."bench/store"]
+version = "1.0.1"
+digest = "sha256:91a3c17b1042243c942c13a70d9cfe707626b4da9605b51ecd6fd767c3057ad0"
+path = ".af/task-packages/bench/store"
+
+[packages."bench/checks"]
+version = "1.0.0"
+digest = "sha256:02c0e7751f906d7309d262cb9fa8e9a5fa842f23fd73b602636b410c56ec52a5"
+path = ".af/task-packages/bench/checks"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[review]
+gate = "major"
+clean_rounds = 1
+max_rounds = 1
+
+[review.reviewers]
+alpha = "required"
+beta = "required"
+gamma = "required"
+delta = "required"

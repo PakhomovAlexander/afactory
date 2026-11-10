@@ -146,7 +146,7 @@ violation.
 
 ## Write
 
-Return one `af.document-draft/2` draft:
+Return one `af.document-draft/3` draft:
 
 - `title`: `Triage of issue #N`.
 - `sections`, in this order:
@@ -160,13 +160,16 @@ Return one `af.document-draft/2` draft:
     repository's policy requires `Findings`, for what each captured source and cited file you
     relied on says, and `Recommendation`, for the pipeline and the acceptance line.
   Do not write Markdown syntax outside the fenced block: the kernel renders and escapes your text.
-- `citations`: the names of the captured sources you relied on, sorted in byte order and unique.
-- `repository_citations`: every file you relied on, as `{ "path": "<path>" }` or
-  `{ "path": "<path>", "line": <n> }`, sorted by path and then line, spelled exactly as the
-  Snapshot's Manifest spells it. The kernel refuses a path the Snapshot does not hold as a
-  text file, and a line past the end of the file, so a path an issue invented fails the check.
+- `citations`: one set of explicitly tagged entries. A captured source is
+  `{ "kind": "source", "name": "<captured source name>" }`. A repository citation is
+  `{ "kind": "repository", "location": { "path": "<path>", "line": <n> } }`;
+  omit `line` when citing the whole file. List each entry once; the kernel records source names
+  in byte order, followed by repository paths and lines in order. At most 32 source citations
+  and 64 repository citations are admitted. Paths use the exact source Snapshot Manifest
+  spelling, relative to the repository root. The kernel checks that each location is a regular
+  or executable text file and that any cited line exists in that exact Snapshot.
 
 ## Reply
 
 Return the reply envelope the request describes with one `draft` payload in the
-`af.document-draft/2` shape its schema gives.
+`af.document-draft/3` shape its schema gives.

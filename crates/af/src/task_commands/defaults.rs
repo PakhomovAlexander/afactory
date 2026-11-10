@@ -6,7 +6,7 @@
 //! is the effective one. A Task file states only what differs: a field it names wins whole.
 
 use super::*;
-use af_contracts::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinition;
 
 /// The `[task]` table of `.af/af.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -67,6 +67,7 @@ pub(super) fn captured(cas: &Cas, manifest: &Manifest) -> Result<Option<TaskDefa
     }
     let bytes = captured_file(cas, manifest, ".af/af.toml")?;
     let text = std::str::from_utf8(&bytes).map_err(|e| format!(".af/af.toml: {e}"))?;
+    crate::project_policy::ProjectFile::validate_current_fields(text)?;
     #[derive(Deserialize)]
     struct TaskOnly {
         #[serde(default)]
@@ -90,7 +91,7 @@ pub(super) fn captured(cas: &Cas, manifest: &Manifest) -> Result<Option<TaskDefa
 pub(super) fn apply(
     file: &mut TaskFile,
     defaults: Option<&TaskDefaults>,
-    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: &BTreeMap<String, PipelineDefinition>,
 ) -> Result<Vec<String>, String> {
     let mut filled = Vec::new();
     if file.limits.is_none() {

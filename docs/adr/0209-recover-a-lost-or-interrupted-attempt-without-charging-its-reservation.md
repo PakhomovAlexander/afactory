@@ -8,6 +8,9 @@ Attempt counts against the Attempt limits. Supersedes in part
 `Failed`, and a resumed run needs one more Attempt within its slot. Amends
 [ADR-0128](0128-renew-a-live-task-writer-lease-through-its-own-connection.md): the 15 s lease
 and the 10 s renewal threshold.
+Partially superseded for feature-selected format identities by the
+[current-contract consolidation](2026-11-08-consolidate-current-contracts-and-task-review.md);
+all other authority and bounds remain in force.
 
 ## Context
 

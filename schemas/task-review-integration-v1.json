@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-integration:1",
+  "title": "TaskReviewIntegration@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "policy_id",
+    "review_id",
+    "base_snapshot_id",
+    "outcome",
+    "selection"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "review_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "base_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "selection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "empty"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "paths",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "conflict"
+            },
+            "paths": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 4096,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+              }
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "snapshot_id",
+            "manifest_id",
+            "proposals"
+          ],
+          "properties": {
+            "kind": {
+              "const": "prepared"
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "manifest_id": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "proposals": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 64,
+              "propertyNames": {
+                "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "result_id",
+                  "candidate_id",
+                  "declaration_id",
+                  "claims"
+                ],
+                "properties": {
+                  "result_id": {
+                    "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                  },
+                  "candidate_id": {
+                    "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                  },
+                  "declaration_id": {
+                    "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                  },
+                  "claims": {
+                    "type": "object",
+                    "maxProperties": 4096,
+                    "propertyNames": {
+                      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                    },
+                    "additionalProperties": {
+                      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                    },
+                    "minProperties": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "selection": {
+            "properties": {
+              "kind": {
+                "const": "empty"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "inconclusive"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "selection": {
+            "properties": {
+              "kind": {
+                "const": "conflict"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "selection": {
+            "properties": {
+              "kind": {
+                "const": "prepared"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "passed"
+          }
+        }
+      }
+    }
+  ]
+}

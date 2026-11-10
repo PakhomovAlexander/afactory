@@ -39,14 +39,6 @@ pub(super) fn explain_plan(
                 plan_id: recorded,
                 ..
             } => recorded == plan_id || bootstrap_plan_id == plan_id,
-            TaskChangeV1::ReviewContinued { handoff_id } => {
-                let handoff = state
-                    .review_handoffs
-                    .iter()
-                    .find(|(id, _)| id == handoff_id)
-                    .ok_or("Recorded Review handoff is absent from Task projection")?;
-                handoff.1.predecessor_plan_id == plan_id || handoff.1.successor_plan_id == plan_id
-            }
             _ => false,
         };
         if recorded {
@@ -56,16 +48,16 @@ pub(super) fn explain_plan(
     if recorded_event_ids.is_empty() {
         return Err("The requested plan is not recorded in this Task".into());
     }
-    let plan: ExecutionPlanV3 = artifact(cas, plan_id, EXECUTION_PLAN_V4)?;
+    let plan: ExecutionPlan = artifact(cas, plan_id, EXECUTION_PLAN_V4)?;
     plan.validate()?;
     let revision: TaskRevisionV1 = artifact(cas, &plan.task_revision_id, TASK_REVISION_V1)?;
     revision.validate()?;
     if revision.task_id != task_id {
         return Err("The recorded plan belongs to another Task".into());
     }
-    let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
     let value = json!({
-        "schema":"af/task-plan-inspection@3", "task_id":task_id, "plan_id":plan_id,
+        "schema":"af/task-plan-inspection@6", "task_id":task_id, "plan_id":plan_id,
         "task_revision_id":plan.task_revision_id,
         "current_plan":state.plan_id.as_deref() == Some(plan_id),
         "recorded_event_ids":recorded_event_ids, "revision":revision, "plan":plan, "graph":graph,

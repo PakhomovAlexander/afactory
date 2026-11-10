@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use af_contracts::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
+use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1};
 use af_contracts::task::plan::{
-    EffectiveWorkerBindingV3, ExecutionPlanV3, GeneratedOriginV1, IndependencePolicyV1,
+    EffectiveWorkerBindingV3, ExecutionPlan, GeneratedOriginV1, IndependencePolicyV1,
     PlanDependencyV1, WorkerExecutionV3, validate_independent_bindings,
 };
 use af_contracts::task::{TaskRevisionV1, is_package_name};
@@ -20,7 +20,7 @@ use super::kind::TaskKindManifest;
 use crate::{CommandSpec, lock::package_digest_from_files};
 
 pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
-pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
+pub const COMPILED_TASK_V4: &str = "af/CompiledTask@4";
 
 pub mod export;
 mod local;
@@ -95,7 +95,7 @@ struct Package {
 
 #[derive(Debug)]
 enum ParsedPackage {
-    Pipeline(PipelineDefinitionV1),
+    Pipeline(PipelineDefinition),
     Worker(TaskWorkerManifest),
     TaskKind(TaskKindManifest),
 }
@@ -177,7 +177,7 @@ pub struct TaskPlanCompiler {
     engine_id: String,
     policy_id: String,
     packages: BTreeMap<String, Package>,
-    pipelines: BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: BTreeMap<String, PipelineDefinition>,
     pub(super) workers: BTreeMap<String, TaskWorkerManifest>,
     pub(super) kinds: BTreeMap<String, TaskKindManifest>,
     pub(super) active_kind: Option<String>,
@@ -740,8 +740,8 @@ impl TaskPlanCompiler {
                             .into(),
                     );
                 }
-                // A root default and its `brief` variant are a pipeline root port's, and the
-                // Brief port is `af.pipeline/2`'s alone (ADR-0160): `af.worker/1` keeps its shape.
+                // Brief constructors and variants belong to Pipeline root ports (ADR-0160),
+                // never Worker manifests.
                 if let Some(port) = worker
                     .signature
                     .contract
@@ -753,7 +753,7 @@ impl TaskPlanCompiler {
                     return Err(format!(
                         "Worker {} declares port {port} with a Project Brief root default or \
                          `brief` variant; a Worker admits a Brief as a plain optional input, and \
-                         only an af.pipeline/2 root port names its variant",
+                         only a Pipeline root port names its variant",
                         worker.name
                     ));
                 }
@@ -897,7 +897,7 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
-    pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinitionV1> {
+    pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinition> {
         &self.pipelines
     }
     pub fn task_kind(&self, name: &str) -> Option<&TaskKindManifest> {
@@ -1158,7 +1158,7 @@ impl TaskPlanCompiler {
         cas: &Cas,
         task_revision_id: &str,
         root: &str,
-    ) -> Result<(ExecutionPlanV3, CompiledTask), String> {
+    ) -> Result<(ExecutionPlan, CompiledTask), String> {
         self.compile_inner(cas, task_revision_id, root, None)
     }
 
@@ -1199,7 +1199,7 @@ impl TaskPlanCompiler {
         task_revision_id: &str,
         root: &str,
         recorded_graph: Option<&ArtifactEnvelope>,
-    ) -> Result<(ExecutionPlanV3, CompiledTask), String> {
+    ) -> Result<(ExecutionPlan, CompiledTask), String> {
         let revision = read_envelope(cas, task_revision_id, af_contracts::task::TASK_REVISION_V1)?;
         let task: TaskRevisionV1 =
             serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
@@ -1276,7 +1276,10 @@ impl TaskPlanCompiler {
             .collect();
         for node in graph.nodes.values() {
             if let CompiledOperator::Primitive {
-                operator: TaskOperatorV1::Verify { slot } | TaskOperatorV1::FixVerify { slot },
+                operator:
+                    TaskOperatorV1::Verify { slot }
+                    | TaskOperatorV1::FixVerify { slot }
+                    | TaskOperatorV1::ReviewScatter { slot, .. },
                 ..
             } = &node.operator
             {
@@ -1299,7 +1302,8 @@ impl TaskPlanCompiler {
                     operator:
                         TaskOperatorV1::Worker { slot }
                         | TaskOperatorV1::Verify { slot }
-                        | TaskOperatorV1::FixVerify { slot },
+                        | TaskOperatorV1::FixVerify { slot }
+                        | TaskOperatorV1::ReviewScatter { slot, .. },
                     ..
                 } => vec![slot],
                 CompiledOperator::Primitive {
@@ -1345,7 +1349,7 @@ impl TaskPlanCompiler {
             recorded.artifact_id.clone()
         } else {
             cas.put_artifact(
-                COMPILED_TASK_V1,
+                COMPILED_TASK_V4,
                 capture_producer(),
                 vec![task_revision_id.into(), self.engine_id.clone()],
                 None,
@@ -1354,7 +1358,7 @@ impl TaskPlanCompiler {
             .map_err(|e| e.to_string())?
             .0
         };
-        let plan = ExecutionPlanV3 {
+        let plan = ExecutionPlan {
             preparation: self
                 .preparation_roots
                 .contains(root)
@@ -1385,7 +1389,7 @@ impl TaskPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         let revision = read_envelope(
             cas,
@@ -1403,7 +1407,7 @@ impl TaskPlanCompiler {
             .find(|(_, package)| package.dependency.artifact_id == plan.pipeline_id)
             .map(|(name, _)| name)
             .ok_or("Root is absent from trusted catalog")?;
-        let recorded = read_envelope(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+        let recorded = read_envelope(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
         let (expected, _) =
             self.compile_inner(cas, &plan.task_revision_id, root, Some(&recorded))?;
         if &expected != plan {

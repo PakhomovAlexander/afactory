@@ -68,18 +68,18 @@ hostile = '\n'.join([
     '  [^1]: footnote',
 ])
 print(json.dumps({'schema': 'af.worker-reply/1', 'outputs': {'draft': [{
-    'schema': 'af.document-draft/2', 'title': 'Starter layout',
+    'schema': 'af.document-draft/3', 'title': 'Starter layout',
     'sections': [
         {'heading': 'Findings', 'body': findings},
         {'heading': 'Примеры и пути', 'body': examples},
         {'heading': 'Hostile input', 'body': hostile},
     ],
-    'citations': sorted(sources),
-    'repository_citations': sorted([
+    'citations': [{'kind': 'source', 'name': name} for name in sorted(sources)] +
+    [{'kind': 'repository', 'location': c} for c in sorted([
         {'path': 'README.md'},
         {'path': 'README.md', 'line': len(lines)},
         {'path': 'report.json'},
-    ], key=lambda c: (c['path'], c.get('line', 0)))}]}}))
+    ], key=lambda c: (c['path'], c.get('line', 0)))]}]}}))
 "#;
 
 /// The starter with the rich author above and one captured HTTPS source beside its note.

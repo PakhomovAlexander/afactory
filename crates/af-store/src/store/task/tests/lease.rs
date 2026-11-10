@@ -331,7 +331,7 @@ fn apply_unstamped(
     state: &TaskProjection,
     transition: &TaskTransitionV1,
 ) -> Result<TaskProjection, StoreError> {
-    let (event_type, payload) = crate::store::task::review_handoff::encode_transition(transition)?;
+    let (event_type, payload) = crate::store::task::journal::encode_transition(transition)?;
     let mut next = state.clone();
     next.apply(
         &f.cas,
@@ -667,8 +667,7 @@ fn apply_marker(
     state: &TaskProjection,
     marker: &TaskExecutionStartedV1,
 ) -> Result<TaskProjection, StoreError> {
-    let (event_type, payload) =
-        crate::store::task::review_handoff::encode_execution_started(marker)?;
+    let (event_type, payload) = crate::store::task::journal::encode_execution_started(marker)?;
     let mut next = state.clone();
     next.apply_execution_started(
         &RunEvent {

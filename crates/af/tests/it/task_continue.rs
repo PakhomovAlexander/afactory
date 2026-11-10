@@ -171,11 +171,11 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     // Without --execute it plans and waits for the plan's confirmation.
     let plan = ["task", "run", "second", "--from", "first"];
     let (planned, _) = json(&repo, &state, &plan, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@17");
+    assert_eq!(planned["schema"], "af/task-inspection@20");
     assert_eq!(planned["continues"]["task_id"], "first");
     assert_eq!(planned["continues"]["round"], 1);
     assert_eq!(planned["continues"]["findings"], 1);
-    valid("task-inspection-v17.json", &planned);
+    valid("task-inspection-v20.json", &planned);
 
     let plan_id = planned["plan_id"].as_str().unwrap().to_owned();
     let confirm = ["task", "run", "second", "--confirm-plan", &plan_id];
@@ -262,11 +262,11 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     // The lineage is shown, in the document and as text.
     let (shown, _) = json(&repo, &state, &["task", "show", "second"], 0);
     assert_eq!(shown["continues"], planned["continues"]);
-    valid("task-inspection-v17.json", &shown);
+    valid("task-inspection-v20.json", &shown);
     let text = run(&repo, &state, &["task", "show", "second"], false);
     let text = String::from_utf8_lossy(&text.stdout).into_owned();
     assert!(
-        text.contains("continues first round 1 (1 finding on the findings port)"),
+        text.contains("continues first round 1 (1 finding in the recorded review history)"),
         "{text}"
     );
 
@@ -354,7 +354,7 @@ fn a_task_file_with_only_an_id_a_kind_and_a_goal_plans_with_the_project_defaults
     // places to state them.
     std::fs::write(
         repo.join(".af/af.toml"),
-        "version = 1\n[project]\nname = \"x\"\nmin_af = \"0.2\"\n[defaults]\npipeline = \"d\"\n",
+        "version = 2\n[project]\nname = \"x\"\nmin_af = \"0.2\"\n",
     )
     .unwrap();
     commit(&repo, "no task defaults");

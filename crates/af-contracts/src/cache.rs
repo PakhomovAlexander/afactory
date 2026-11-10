@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{RunCacheKindV5, decode_path, encode_path};
+use crate::{decode_path, encode_path};
 
 pub const MAX_CACHE_BYTES_V1: u64 = 4 * 1024 * 1024 * 1024;
 pub const MAX_CACHE_COPY_BYTES_V1: u64 = 512 * 1024 * 1024;
@@ -122,4 +122,10 @@ impl CacheManifestV1 {
     pub fn bytes(&self) -> u64 {
         self.entries.iter().map(|entry| entry.size).sum()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunCacheKindV5 {
+    Cargo,
 }

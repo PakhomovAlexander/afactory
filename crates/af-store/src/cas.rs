@@ -138,6 +138,7 @@ impl OpenedCasObject {
 }
 
 pub struct Cas {
+    verify_only: bool,
     root: PathBuf,
     /// Objects renamed into place but not yet synced. Drained by [`Cas::flush`].
     pending: Mutex<BTreeSet<PathBuf>>,
@@ -179,9 +180,18 @@ impl Cas {
     fn at_root(root: PathBuf) -> Self {
         Self {
             root,
+            verify_only: false,
             pending: Mutex::new(BTreeSet::new()),
             durable: Mutex::new(BTreeSet::new()),
         }
+    }
+
+    /// An observer's view: deterministic puts verify existing bytes and can never publish.
+    /// Missing or corrupt objects are refused, including outputs reconstructed by a reducer.
+    pub fn verifying_existing(&self) -> Self {
+        let mut view = Self::at_root(self.root.clone());
+        view.verify_only = true;
+        view
     }
 
     fn path_for(&self, digest: &str) -> PathBuf {
@@ -196,6 +206,10 @@ impl Cas {
         let _span = af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::CasPut);
         let digest = canonical::blob_content_id(bytes);
         let final_path = self.path_for(&digest);
+        if self.verify_only {
+            with_verify_scratch(|buffer| verify_exact_bytes(&final_path, &digest, bytes, buffer))?;
+            return Ok(digest);
+        }
         if final_path.exists() {
             // Durability is cacheable, integrity is not: an external mutation after a prior
             // publication must still be detected before idempotent put accepts this object.
@@ -265,6 +279,13 @@ impl Cas {
         reader: &mut (impl Read + Seek),
         buffer: &mut [u8],
     ) -> Result<(String, u64), CasError> {
+        if self.verify_only {
+            return Err(CasError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "a verifying CAS view cannot publish streamed objects",
+            )));
+        }
+
         let (digest, size) = canonical::blob_content_id_reader_with_buffer(&mut *reader, buffer)?;
         let final_path = self.path_for(&digest);
         if final_path.exists() {
@@ -294,6 +315,13 @@ impl Cas {
         reader: &mut (impl Read + Seek),
         buffer: &mut [u8],
     ) -> Result<(String, u64), CasError> {
+        if self.verify_only {
+            return Err(CasError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "a verifying CAS view cannot publish streamed objects",
+            )));
+        }
+
         if !valid_digest(expected_digest) {
             return Err(CasError::InvalidDigest(expected_digest.to_string()));
         }
@@ -474,6 +502,13 @@ impl Cas {
             return Err(artifact_envelope_too_large(bytes.len() as u64));
         }
         let final_path = self.path_for(artifact_id);
+        if self.verify_only {
+            with_verify_scratch(|buffer| {
+                verify_exact_bytes(&final_path, artifact_id, bytes, buffer)
+            })?;
+            verify_object_bytes(artifact_id, bytes)?;
+            return Ok(());
+        }
         if final_path.exists() {
             with_verify_scratch(|buffer| {
                 verify_exact_bytes(&final_path, artifact_id, bytes, buffer)
@@ -844,6 +879,12 @@ impl Cas {
     /// descriptors that follow no link, under the Project Store's lock and only after the
     /// Survey's tombstone is in the log; no other command removes a CAS object.
     pub fn remove_unreachable(&self, digest: &str) -> Result<u64, CasError> {
+        if self.verify_only {
+            return Err(CasError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "a verifying CAS view cannot remove objects",
+            )));
+        }
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));
         }
@@ -1701,5 +1742,31 @@ mod tests {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod verifying_view_tests {
+    use super::*;
+    #[test]
+    fn observer_reduction_can_verify_but_never_restore_missing_objects() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let id = cas.put(b"original").unwrap();
+        let view = cas.verifying_existing();
+        assert_eq!(view.put(b"original").unwrap(), id);
+        assert!(view.put(b"missing").is_err());
+        assert!(
+            !cas.path_for(&canonical::blob_content_id(b"missing"))
+                .exists()
+        );
+        std::fs::remove_file(cas.path_for(&id)).unwrap();
+        assert!(view.put(b"original").is_err());
+        assert!(!cas.path_for(&id).exists());
+        let mut input = std::io::Cursor::new(b"stream");
+        assert!(
+            view.put_reader_with_buffer(&mut input, &mut vec![0; 4096])
+                .is_err()
+        );
     }
 }

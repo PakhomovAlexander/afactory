@@ -1870,7 +1870,7 @@ class CliRegistry(TempDir):
         self.assertEqual(seeds, {"task_show": ("seed_copy", "task_state"),
                                  "review_ledger": ("seed_copy", "campaign_state"),
                                  "review_report": ("seed_copy", "campaign_state")})
-        self.assertEqual(sorted(doc["seeds"]), ["campaign_state", "task_state"])
+        self.assertEqual(sorted(doc["seeds"]), ["campaign_state", "native_review_state", "task_state"])
         for seed in doc["seeds"].values():
             self.assertEqual(seed["events"], 10000)
         self.assertEqual(argv["cli_task_run_check"][:4], ["{af}", "task", "run",
@@ -1880,6 +1880,24 @@ class CliRegistry(TempDir):
         with self.assertRaises(ContractError) as caught:
             cli_cases.check_registry(edited, loaded.doc)
         self.assertIn("no command for cli_discovery__command_version", str(caught.exception))
+
+    def test_current_review_adapter_uses_native_state_and_preserves_every_finding(self):
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        name, adapter = cli_cases.choose_adapter(doc, "0.15.1-rc.1")
+        self.assertEqual(name, "af_cli_v4")
+        rows = {entry["parameters"].get("command"): entry for entry in adapter["commands"]}
+        for command in ("review_ledger", "review_report"):
+            self.assertEqual(rows[command]["seed"], "native_review_state")
+            self.assertIn("--json", rows[command]["argv"])
+            self.assertNotIn("--campaign", rows[command]["argv"])
+            self.assertIn("--repo", rows[command]["argv"])
+        enumeration = [rule for rule in rows["review_ledger"]["rules"]
+                       if rule["kind"] == "json_enumerates"]
+        self.assertEqual(len(enumeration), 1)
+        self.assertEqual((enumeration[0]["first"], enumeration[0]["last"]), (1, 100))
+        self.assertEqual(enumeration[0]["distinct"], ["finding_id"])
+        native = os.path.join(ROOT, "fixtures/performance/cli/native-review-roots/repo")
+        self.assertEqual(cli_cases.catalog_problems(native), [])
 
     def test_both_browser_commands_expand_to_requests_the_supervisor_admits(self):
         # The supervisor runs only an absolute program: each mode binds {python} to one.

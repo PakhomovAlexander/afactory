@@ -5,7 +5,7 @@ use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 use af_contracts::PortCardinality;
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::pipeline::TaskOperatorV1;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::structured::*;
 use af_contracts::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
@@ -143,7 +143,7 @@ impl StructuredTaskDomain {
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
         self.output_payload(cas, &inputs, &outputs)?;
-        let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
+        let plan: ExecutionPlan = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
             .map_err(|e| e.to_string())?;
         let value = StructuredValidationV1 {
             schema: "af.structured-validation/1".into(),
@@ -349,7 +349,7 @@ impl TaskDomain for StructuredTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _: &af_graph::task::CompiledNode,
@@ -436,7 +436,7 @@ mod tests {
         StructuredTaskDomain {
             contract_id: format!("sha256:{}","a".repeat(64)),
             contract: serde_json::from_value(json!({"schema":"af.structured-contract/2","require_container":false,"inputs":{"note":{"artifact_type":"custom/Note@1","schema":{"type":"object"}}},"outputs":{"value":{"artifact_type":"custom/Value@1","schema":{"type":"object"}}}})).unwrap(),
-            graph: serde_json::from_value(json!({"schema":"af.compiled-task/1","nodes":{},"order":[],"inputs":{},"outputs":{},"coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}})).unwrap(),
+            graph: serde_json::from_value(json!({"schema":"af.compiled-task/6","nodes":{},"order":[],"inputs":{},"outputs":{},"coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}})).unwrap(),
         }
     }
     #[test]

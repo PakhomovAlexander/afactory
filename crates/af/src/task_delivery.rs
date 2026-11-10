@@ -586,7 +586,7 @@ pub(super) fn observe_adoption(
     let plan_envelope = cas
         .get_artifact(plan_id)
         .map_err(|error| error.to_string())?;
-    let plan: af_contracts::task::plan::ExecutionPlanV3 =
+    let plan: af_contracts::task::plan::ExecutionPlan =
         serde_json::from_value(plan_envelope.payload).map_err(|error| error.to_string())?;
     plan.validate()?;
     let observed_unix_ms = SystemTime::now()
@@ -639,7 +639,7 @@ pub(super) fn observe_adoption(
         let observed_plan_envelope = cas
             .get_artifact(&observed_plan_id)
             .map_err(|error| error.to_string())?;
-        let observed_plan: af_contracts::task::plan::ExecutionPlanV3 =
+        let observed_plan: af_contracts::task::plan::ExecutionPlan =
             serde_json::from_value(observed_plan_envelope.payload)
                 .map_err(|error| error.to_string())?;
         observed_plan.validate()?;

@@ -171,7 +171,7 @@ ports that the compiler wires for retry and repair and never across `independent
 
 **Exit evidence:** a two-Round fixture Campaign replays to identical Warm Sets and rendered
 inputs; a fenced Attempt's Notes never appear in the next Round; a path reverted to Base is
-marked `reverted`; with warm off, existing fixtures and `af review render` output are
+marked `reverted`; with warm off, native Task context fixtures and Worker output contracts are
 byte-identical.
 
 ### P2 — Build cache carry from the Gate

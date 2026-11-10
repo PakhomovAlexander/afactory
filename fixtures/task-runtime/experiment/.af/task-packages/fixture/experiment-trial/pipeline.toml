@@ -1,8 +1,8 @@
 # The candidate half of fixture/experiment: measure the sealed source, compare it with the
 # baseline under the declared objective, and evaluate it only when the comparison passed.
-schema = "af.pipeline/1"
+schema = "af.pipeline/6"
 name = "fixture/experiment-trial"
-version = "1.0.0"
+version = "1.0.1"
 max_attempts = 3
 max_parallel = 1
 

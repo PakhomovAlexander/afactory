@@ -1,9 +1,9 @@
 use super::*;
-use crate::task::report_domain::ReportDraft;
 use af_contracts::task::{AcceptanceObligationV1, TASK_REVISION_V1};
 use af_source_git::task::{capture_snapshot, source_tree};
 use af_source_git::{Entry, EntryKind, Manifest};
 use comrak::nodes::{AstNode, NodeValue};
+use std::collections::BTreeSet;
 
 /// The covered dialect: CommonMark with the GFM extensions, GitHub alerts, dollar and code
 /// math, and comrak's relaxed autolinks, which claim more than GitHub does. The tag filter only
@@ -661,7 +661,7 @@ fn one(id: &str, ty: &str, snapshot: Option<&str>) -> ArtifactInputV1 {
 /// A recorded plan of the revision `revision_id`, binding its inputs and authority; `name`
 /// tells two plans of one revision apart.
 fn plan(cas: &Cas, task: &TaskRevisionV1, revision_id: &str, name: &str) -> String {
-    let mut plan: ExecutionPlanV3 = fixture("execution-plan.json");
+    let mut plan: ExecutionPlan = fixture("execution-plan.json");
     plan.task_revision_id = revision_id.into();
     plan.authority = task.authority.clone();
     plan.inputs = task.inputs.clone();
@@ -783,7 +783,7 @@ fn capture(cas: &Cas, bytes: &[u8]) -> (String, ArtifactInputV1, String) {
     .unwrap();
     let origin = cas
         .put_json(&serde_json::json!({
-            "schema": "af.task-source-origin/1",
+            "schema":"af.task-source-origin/3","kind":"captured",
             "repository_id": "fixture",
             "source_revision": "0".repeat(40),
             "content_digest": manifest.content_digest(),
@@ -795,9 +795,9 @@ fn capture(cas: &Cas, bytes: &[u8]) -> (String, ArtifactInputV1, String) {
     (id, port, manifest_id)
 }
 
-fn draft(body: &str) -> DocumentDraftV2 {
-    DocumentDraftV2 {
-        schema: "af.document-draft/2".into(),
+fn draft(body: &str) -> DocumentDraft {
+    DocumentDraft {
+        schema: "af.document-draft/3".into(),
         title: "Отчёт: why --format markdown is hard to read".into(),
         sections: vec![
             DocumentSectionV1 {
@@ -809,11 +809,16 @@ fn draft(body: &str) -> DocumentDraftV2 {
                 body: "Add a presentation (not a rewrite).".into(),
             },
         ],
-        citations: BTreeSet::from(["spec".into(), "local".into()]),
-        repository_citations: BTreeSet::from([RepositoryCitationV1 {
-            path: "crates/af/src/cli.rs".into(),
-            line: Some(1163),
-        }]),
+        citations: BTreeSet::from([
+            "spec".into(),
+            "local".into(),
+            DraftCitation::Repository {
+                location: RepositoryCitationV1 {
+                    path: "crates/af/src/cli.rs".into(),
+                    line: Some(1163),
+                },
+            },
+        ]),
     }
 }
 
@@ -924,15 +929,17 @@ fn report_chain_citing(
     );
     let mut draft = draft("Plain text with a path crates/af/src/cli.rs:1163.\n- one\n- two");
     if captured != Captured::Cited {
-        draft.citations.clear();
+        draft
+            .citations
+            .retain(|c| matches!(c, DraftCitation::Repository { .. }));
     }
-    let draft_id = put(&cas, DOCUMENT_DRAFT_V2, vec![], snapshot, &draft);
+    let draft_id = put(&cas, DOCUMENT_DRAFT_V3, vec![], snapshot, &draft);
     let document = DocumentV1 {
         schema: af_contracts::task::document::DOCUMENT_SCHEMA.into(),
         draft_id: draft_id.clone(),
         sources_id: sources_id.clone(),
         format: DocumentFormatV1::Markdown,
-        text: render_report(&ReportDraft::V2(draft), &sources).unwrap(),
+        text: render_report(&draft, &sources).unwrap(),
     };
     let document_id = put(
         &cas,
@@ -1166,8 +1173,8 @@ fn document_chain(evaluation: Option<ReceiptOutcomeV1>, broken: Break) -> Chain 
         DOCUMENT_VERIFICATION_V1,
         broken,
     );
-    let draft = DocumentDraftV1 {
-        schema: "af.document-draft/1".into(),
+    let draft = DocumentDraft {
+        schema: "af.document-draft/3".into(),
         title: "Migration guide".into(),
         sections: vec![DocumentSectionV1 {
             heading: "Steps".into(),
@@ -1177,7 +1184,7 @@ fn document_chain(evaluation: Option<ReceiptOutcomeV1>, broken: Break) -> Chain 
         }],
         citations: BTreeSet::from(["spec".into()]),
     };
-    let draft_id = put(&cas, DOCUMENT_DRAFT_V1, vec![], None, &draft);
+    let draft_id = put(&cas, DOCUMENT_DRAFT_V3, vec![], None, &draft);
     let document = DocumentV1 {
         schema: af_contracts::task::document::DOCUMENT_SCHEMA.into(),
         draft_id: draft_id.clone(),

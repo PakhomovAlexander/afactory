@@ -91,7 +91,7 @@ fn help_flags_preserve_text_exit_code_and_streams_with_json() {
 
 #[test]
 fn usage_errors_name_only_the_failing_command() {
-    let bad = af(&["review", "ledger", "--campaign", "x", "--nope"]);
+    let bad = af(&["review", "ledger", "x", "--nope"]);
     assert_eq!(bad.status.code(), Some(2));
     let text = err(&bad);
     assert!(text.contains("--nope"), "{text}");
@@ -101,15 +101,7 @@ fn usage_errors_name_only_the_failing_command() {
 
 #[test]
 fn report_json_and_format_are_mutually_exclusive() {
-    let output = af(&[
-        "review",
-        "report",
-        "--campaign",
-        "demo",
-        "--json",
-        "--format",
-        "md",
-    ]);
+    let output = af(&["review", "ledger", "demo", "--json", "--format", "sarif"]);
     assert_eq!(output.status.code(), Some(2));
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["schema"], "af/error@2");
@@ -130,7 +122,7 @@ fn help_topics_and_command_paths() {
 
     let ledger = af(&["help", "review", "ledger"]);
     assert!(ledger.status.success());
-    assert!(out(&ledger).contains("--campaign"), "{}", out(&ledger));
+    assert!(out(&ledger).contains("<TASK_ID>"), "{}", out(&ledger));
     assert!(out(&ledger).contains("--json"), "{}", out(&ledger));
     for command in ["show", "report", "plan"] {
         let help = af(&["help", "review", command]);
@@ -138,7 +130,7 @@ fn help_topics_and_command_paths() {
         assert!(out(&help).contains("--json"), "{command}: {}", out(&help));
     }
     let plan = af(&["help", "review", "plan"]);
-    assert!(out(&plan).contains("--long"), "{}", out(&plan));
+    assert!(out(&plan).contains("--file"), "{}", out(&plan));
 
     let unknown = af(&["help", "nonsense"]);
     assert_eq!(unknown.status.code(), Some(2));
@@ -168,21 +160,12 @@ fn review_run_timeout_help() -> Vec<String> {
 }
 
 #[test]
-fn review_run_timeout_is_per_reviewer_attempt_for_campaigns() {
-    for flag in review_run_timeout_help() {
-        assert!(
-            flag.contains("Without --file (default routed run, --campaign or --pipeline): per reviewer Attempt (default 1800;"),
-            "{flag}"
-        );
-        assert!(
-            flag.contains("pinned in the Campaign manifest as reviewer_timeout_seconds"),
-            "{flag}"
-        );
-        assert!(flag.contains("not a bound on the whole run"), "{flag}");
-        assert!(
-            !flag.contains("Wall-clock budget for the whole run"),
-            "{flag}"
-        );
+fn campaign_selectors_are_refused_before_opening_native_task_state() {
+    for selector in ["--campaign", "--policy-rev", "--pipeline", "--heavy"] {
+        let output = af(&["review", "run", selector, "retired"]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(err(&output).contains(selector), "{}", err(&output));
+        assert!(err(&output).contains("--file"), "{}", err(&output));
     }
 }
 
@@ -190,7 +173,9 @@ fn review_run_timeout_is_per_reviewer_attempt_for_campaigns() {
 fn review_run_timeout_caps_the_whole_task_for_task_files() {
     for flag in review_run_timeout_help() {
         assert!(
-            flag.contains("With --file: a cap on the whole Task, the lower of this flag and the file's limits.wall_ms"),
+            flag.contains(
+                "Cap the whole Task at the lower of this many seconds and the file's limits.wall_ms"
+            ),
             "{flag}"
         );
     }
@@ -309,11 +294,11 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
-        "af/review-ledger@1",
-        "af/review-show@1",
-        "af/review-report@5",
+        "af/task-findings@2",
+        "af/task-inspection@20",
+        "af/task-report@3",
         "af/findings-sarif@1",
-        "af/task-inspection@17",
+        "af/task-inspection@20",
         "af/task-checks@3",
         "af/task-list@4",
         "af/task-list-entry@4",
@@ -560,7 +545,7 @@ fn provider_models_help_and_man_page_describe_the_command() {
             "Usage: af provider models [OPTIONS] [ID]...",
             "--json",
             "--resolve <SPELLING[/EFFORT]>",
-            "af/provider-models@3",
+            "af/provider-models@4",
             "`list_models` control request",
             "`model/list` on a bare `codex app-server`",
             "Pi's AF host reads the effective SDK/profile chat catalog without model networking.",
@@ -1356,7 +1341,7 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
         "{provider}"
     );
     let doctor = collapsed(&["provider", "doctor", "--help"]);
-    assert!(doctor.contains("--campaign <NAME>"), "{doctor}");
+    assert!(doctor.contains("<TASK_ID>"), "{doctor}");
     assert!(!doctor.contains("--file"), "{doctor}");
     let machine = collapsed(&["doctor", "--help"]);
     assert!(
@@ -1434,7 +1419,7 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
         "1. af provider detect",
         "2. af onboard",
         "3. git add .af && git commit",
-        "4. af review plan --policy-rev HEAD --base HEAD --uncommitted",
+        "4. af review plan --file ../review.json --base HEAD --uncommitted",
         "af doctor",
     ] {
         assert!(help.contains(step), "`{step}` missing:\n{help}");
@@ -1622,7 +1607,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--after <N>",
                 "--timeout <S>",
-                "af/task-event@1",
+                "af/task-event@2",
                 "gap-free from 0",
                 "exactly once, last",
                 "--after N prints only the events after sequence N",
@@ -2089,10 +2074,9 @@ fn the_agents_page_starts_at_step_one_and_says_what_a_review_refusal_names() {
          `af help task-states` and `af help errors CAUSE`.",
         "A command this page describes, or one a `next_action` names, needs no such lookup \
          first. Before you run any other command for the first time, read its `effects`",
-        "`af review plan --json` previews it token-free, and when selectors or Provider bindings \
-         are missing, its refusal's `next_action` names the next command when one command \
-         fixes it, and a refusal for missing bindings carries in `details.plan` what the review \
-         would run.",
+        "`af review plan --file ../review.json --json` captures its native plan without an Attempt.",
+        "Inspect the exact recorded plan, then run `af review resume TASK_ID --confirm-plan PLAN_ID`.",
+        "Retired Campaign selectors/configuration are refused.",
     ] {
         assert!(prose.contains(sentence), "{sentence}\n{page}");
     }
@@ -2100,17 +2084,18 @@ fn the_agents_page_starts_at_step_one_and_says_what_a_review_refusal_names() {
 }
 
 /// #363 round 3: the page says that a page under `--json` is one `af/help-topic@1` document,
-/// and that the selectors refusal names the command with the selectors af would choose.
+/// and that native Review names independent source/authority selectors and common bindings.
 #[test]
-fn the_agents_page_names_the_help_topic_document_and_the_selectors_command() {
+fn the_agents_page_names_the_help_topic_document_and_native_review_selectors() {
     let page = out(&af(&["help", "agents"]));
     let prose = page.split_whitespace().collect::<Vec<_>>().join(" ");
     for sentence in [
         "`af help agents --json` prints this page as one `af/help-topic@1` document whose \
          `text` is the page `af help agents` prints below its title line, and so does every \
          other topic and `af help errors CAUSE` with `--json` added",
-        "When af finds the default branch, the selectors refusal names the command with the \
-         selectors af would choose, even while reviewers still need a Provider",
+        "Select authority and reviewed source independently with `--authority`, `--base` and \
+         `--candidate` or `--uncommitted`.",
+        "Provider bindings use the catalog's aliases and the common `--bindings` file.",
     ] {
         assert!(prose.contains(sentence), "{sentence}\n{page}");
     }
@@ -2328,8 +2313,20 @@ fn task_report_help_describes_the_whole_lines_added_block() {
 fn onboard_tasks_help_names_preview_and_additive_apply() {
     let help = out(&af(&["onboard", "--help"]));
     assert!(help.contains("--tasks"), "{help}");
-    assert!(help.contains("model-driven Tasks"), "{help}");
+    assert!(
+        help.contains("standalone Review and implementation Task authority"),
+        "{help}"
+    );
     assert!(help.contains("adds only absent Task files"), "{help}");
+    let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("use plain af onboard to validate them"),
+        "{help}"
+    );
+    assert!(
+        flat.contains("refuses the operation without writing"),
+        "{help}"
+    );
 }
 
 fn workspace_schemas() -> std::path::PathBuf {

@@ -7,11 +7,9 @@ v hub  (project)            |layer      file                                 sta
       fixture/evaluator     |project    .af/af.toml                          present  <- edit with e
       fixture/implementer   |local      .af/af.local.toml                    absent
   v pipelines/              |
-      review                |version = 1                               project .af/af.toml:1
-      fixture/implementation|[defaults]
-  v tasks/                  |pipeline = "review"                       project .af/af.toml:8
-  v campaigns/              |[project]
-                            |min_af = "0.9"                            project .af/af.toml:5
+      review                |version = 2                               project .af/af.toml:1
+      fixture/implementation|[project]
+  v tasks/                  |min_af = "0.9"                            project .af/af.toml:5
                             |name = "hub"                              project .af/af.toml:4
                             |[self]
                             |auto_update = "notify"                    built-in
@@ -27,4 +25,6 @@ v hub  (project)            |layer      file                                 sta
                             |keep_days = 14                            built-in
                             |keep_gate_pull_requests = false           built-in
                             |keep_surveys = 50                         built-in
+                            |keep_tasks = 20                           built-in
+                            |keep_worker_transcripts = false           built-in
 NORMAL  hub                                 j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

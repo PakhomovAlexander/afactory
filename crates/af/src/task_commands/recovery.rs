@@ -146,7 +146,7 @@ fn exhausted_fix(state: &TaskProjection, recovery: &TaskNodeRecovery) -> String 
     let slot = slot_of(state, &recovery.node).unwrap_or_else(|| "<slot>".into());
     format!(
         "start it again with `{}` (the Task file it was started from), or allow more with \
-         `[slots.{}] recovery_attempts` in its pipeline (af.pipeline/3)",
+         `[slots.{}] recovery_attempts` in its pipeline (af.pipeline/6)",
         super::with_selectors("af task start --file TASK_FILE"),
         preview::text(&slot)
     )

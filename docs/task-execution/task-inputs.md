@@ -143,14 +143,14 @@ Only an admitted source reaches the branch below, which depends on one property 
 - **Already a root capture** — carried verbatim, keeping its `source_revision`. The Task delivers
   exactly as one planned from the checkout.
 - **Derived**, which is what a `snapshot` output is — re-rooted: the referenced Manifest is
-  republished as a root `af.task-snapshot/1` with no parent and an `af.task-source-origin/2`
-  origin that copies the repository identity forward, states the bound tree's content digest,
+  republished as a root `af.task-snapshot/1` with no parent and an `af.task-source-origin/3`
+  origin tagged `kind = "bound"` that copies the repository identity forward, states the bound tree's content digest,
   names the referenced Task, result, port and artifact under `bound_from`, and deliberately
   carries no `source_revision`. The named output must hold the bound Snapshot itself, or the
   binding is refused; a continuation of an earlier review round names the `af/TaskOutput@1`
   record that published that round's candidate in place of the result (ADR-0212). A new `af/SourceTree@1` envelope is published for the re-rooted
   Snapshot, and the resolved port carries that new artifact ID with the re-rooted Snapshot ID.
-- **Already re-rooted** — a parentless Snapshot with a generation-2 origin, referenced again — is
+- **Already re-rooted** — a parentless Snapshot with a `kind = "bound"` origin, referenced again — is
   carried verbatim; nothing is re-rooted twice, and delivery refuses as for the first re-rooting.
 
 A derived tree has no commit, so `af task deliver` refuses that second case, naming the Task the
@@ -192,7 +192,7 @@ make it. `fixtures/task-runtime/bound-inputs/` is built that way, and says so.
   Task output — two for a port bound from two — and one `bound <port> <- artifact sha256:…` line
   per exact-artifact binding, and its
   `--json` document carries `input_bindings` — present only when there is a binding, inside the
-  one `af/task-inspection@17` generation. The self-optimizer's AF history adapter reads it as
+  one `af/task-inspection@20` generation. The self-optimizer's AF history adapter reads it as
   provenance that changes no counter.
 - The durable record is one `af/TaskInputBindings@1` artifact referenced from the revision's
   `provenance.input_artifact_ids`, one entry per bound port. A port bound from several outputs
@@ -211,8 +211,8 @@ it added is new, and every existing one stays.
 | Crate | What it owns |
 |---|---|
 | `af-contracts` | `task::input_bindings`: `TASK_INPUT_BINDINGS_V1 = "af/TaskInputBindings@1"`, `TaskInputBindingsV1 { schema, bindings: BTreeMap<String, TaskInputBindingV1> }`, `TaskInputBindingV1 { artifact_id, resolved_artifact_id, snapshot_id, rerooted_snapshot_id, task }`, `ReferencedTaskV1 { task_id, task_revision_id, result_id, port, acceptance, domain_conclusion }`, each `deny_unknown_fields` with a `validate()` in the shape of `ArtifactInputV1::validate`. `resolved_artifact_id` is present only for a re-rooted `source`, whose port carries a new `af/SourceTree@1` envelope. No existing type gained a field. |
-| `af-source-git` | `task::TaskSourceOriginV2 { schema, repository_id, content_digest, bound_from }` and `TaskSourceBoundFromV1 { artifact_id, snapshot_id, task }`, both `deny_unknown_fields`, plus `read_origin`, which accepts either generation, branches on `schema` and reports whether a committed `source_revision` is present. `capture_snapshot(cas, manifest, origin, None)` performs the re-rooting; there is no new capture path. |
-| `af` | `task_commands::input_bindings` owns the two Task-file reference forms, resolution and the typed record; its `RecordedTasks` seam is the whole Store surface resolution reads. `TaskFile` gained `inputs: Option<BTreeMap<String, TaskInputRefV1>>` under the existing `present_option` treatment, so an absent table stays absent on round-trip. `start_captured` resolves bindings before it builds the revision, skips the construction a bound port replaces, and installs bound ports last so a profile that rebuilds its own input set cannot drop one. `preview::render` annotates `IN` and adds `BOUND` rows through the existing `text()` sanitizer. `present_with_format` adds `input_bindings` and the `af/task-inspection@17` bump beside the existing conditional generations. `self_optimizer::optimization_adapters` admits `af/task-inspection@17`. `task_delivery::delivery_common` reads either origin generation and `task_delivery::deliver` refuses a re-rooted source before the prepared record and any Git mutation. |
+| `af-source-git` | `task::TaskSourceOrigin`, the single `af.task-source-origin/3` tagged `captured` or `bound` representation, and `TaskSourceBoundFromV1 { artifact_id, snapshot_id, task }`, both closed to unknown fields. `read_origin` refuses retired formats; only a captured origin can carry a committed `source_revision`. `capture_snapshot(cas, manifest, origin, None)` performs the re-rooting; there is no new capture path. |
+| `af` | `task_commands::input_bindings` owns the two Task-file reference forms, resolution and the typed record; its `RecordedTasks` seam is the whole Store surface resolution reads. `TaskFile` gained `inputs: Option<BTreeMap<String, TaskInputRefV1>>` under the existing `present_option` treatment, so an absent table stays absent on round-trip. `start_captured` resolves bindings before it builds the revision, skips the construction a bound port replaces, and installs bound ports last so a profile that rebuilds its own input set cannot drop one. `preview::render` annotates `IN` and adds `BOUND` rows through the existing `text()` sanitizer. Inspection exposes optional `input_bindings` in the single `af/task-inspection@20` generation. `self_optimizer::optimization_adapters` admits `af/task-inspection@20`. `task_delivery::delivery_common` reads the captured or bound variant of the current origin contract and `task_delivery::deliver` refuses a re-rooted source before the prepared record and any Git mutation. |
 
 `selection::assess` preserves exactly one record no port carries — the `af/TaskInputBindings@1`
 one — instead of overwriting `provenance.input_artifact_ids` with the port identities alone. A
@@ -223,7 +223,7 @@ which the Store's refresh validator uses, derive the same list, so they cannot d
 
 `task_delivery::delivery_common` reads the refusal's label from the *current* revision's binding record,
 falling back to the origin's `bound_from` only when the revision records no binding: a parentless
-generation-2 Snapshot is carried verbatim when it is re-bound, so its origin still names the Task
+Snapshot with a `bound` origin is carried verbatim when it is re-bound, so its origin still names the Task
 that re-rooted it first, which is not what this Task's file referenced.
 
 ### Display
@@ -239,28 +239,32 @@ that re-rooted it first, which is not what this Task's file referenced.
 
 ### Schemas
 
-`schemas/task-file-v1.json` gained the optional `inputs` property with the two closed forms;
-`schemas/task-input-bindings-v1.json`, `schemas/task-source-origin-v2.json` and
-`schemas/task-inspection-v17.json` gains the optional `input_bindings` property. The `SCHEMAS` array in
-`crates/af-contracts/tests/schema_parity.rs` and its length constant grew by three, with parity
-tests in `crates/af-contracts/tests/schema_parity/task_contracts.rs` beside the existing
-Task-contract ones.
+`schemas/task-file-v1.json` declares the optional closed `inputs` forms;
+`schemas/task-input-bindings-v1.json` owns their resolved provenance. The current origin contract
+is `schemas/task-source-origin-v3.json`, and `schemas/task-inspection-v20.json` exposes the
+binding record. The parity registry in `crates/af-contracts/tests/schema_parity.rs` checks their
+current schema closure; typed tests also exercise the source-origin writer and reader.
+Captured and bound origin generations 1 and 2 are retired. Snapshot capture, Snapshot reads and
+SourceTree admission decode the same current origin, so an unchanged Snapshot wrapper cannot
+carry a retired origin through admission.
 
 ### Tests
 
 - Unit, `af-contracts`: `TaskInputBindingsV1` rejects a non-digest artifact ID, an unknown field
   in any of the three closed shapes, an empty bindings map and a re-rooted binding that lost the
   Snapshot it came from; a binding with no `task` round-trips and writes no absent member.
-- Unit, `af-source-git`: generation 1 and generation 2 origins both read, including the
-  explicit `"source_revision": null` a dirty capture has always written; generation 2 reports no
-  committed revision; an unknown field or an unknown generation is refused in either.
+- Unit, `af-source-git`: the current tagged writer/reader round-trips captured commits, dirty
+  captures with `"source_revision": null`, and bound Task/output provenance with no commit, against
+  the current schema. Retired origins, unknown fields/kinds, malformed identities and any bound
+  commit claim are refused, including through Snapshot capture, Snapshot reads and SourceTree
+  admission.
 - Unit, `af::task_commands::input_bindings`: a binding on `requirements`, `base`, `continuation`
   or any other port is refused by name; a reference to an unknown Task, to a Task that is not
   finished, to a port the result does not carry, and to an artifact whose type does not match the
   port each refuse with a message naming the Task and the port; a `many` output bound into a
   `one` port refuses whether it holds one artifact or several; an exact-artifact `history`
   binding resolves; a root capture is carried verbatim and a derived tree is re-rooted over the
-  identical Manifest; a parentless generation-2 source is carried verbatim; an exact-artifact
+  identical Manifest; a parentless source with a `bound` origin is carried verbatim; an exact-artifact
   source whose envelope names one Snapshot in its subject and another in its payload is refused,
   while the honest envelope for the same root capture resolves; every refusal is ASCII and
   control-free for newline, escape, bidi and non-ASCII values in both reference forms and in the
@@ -268,8 +272,8 @@ Task-contract ones.
 - Unit, `af::task_commands::preview`: the `IN` annotation and the `BOUND` rows sanitize a
   hostile Task ID, as `display_data_cannot_inject_terminal_actions` already requires, render the
   exact-artifact form, and keep the exact artifact ID off the wrap boundary.
-- Unit, `af::self_optimizer::optimization_adapters`: a real bound `af/task-inspection@17` receipt is
-  admitted and its accounting reads exactly as the same receipt at `@11`.
+- Unit, `af::self_optimizer::optimization_adapters`: a real bound `af/task-inspection@20` receipt is
+  admitted and its accounting reads exactly as the same receipt without a binding record.
 - Integration, `crates/af/tests/task_input_bindings.rs`: the `fixtures/task-runtime/bound-inputs/`
   repository runs four Tasks in one Store. `chain-base` is an ordinary reviewed implementation
   whose Pipeline also exposes the embedded Review's `history`. `chain-history` binds `history` to
@@ -280,11 +284,11 @@ Task-contract ones.
   that re-rooted tree again by exact artifact: it is carried verbatim, and its delivery refusal
   names the artifact it bound rather than the Task recorded in the origin of the first
   re-rooting. The test asserts the `af task explain` `BOUND` rows, validates both bound documents
-  against `schemas/task-inspection-v17.json`, and checks that `chain-base`'s own document is
+  against `schemas/task-inspection-v20.json`, and checks that `chain-base`'s own document is
   unchanged.
 - Integration, the same file: `successor-issue.json` binds `history` and captures a local issue.
   Changing the issue and running `af task refresh` makes a new revision that still carries the
-  binding record in its provenance, still emits `input_bindings` in its `af/task-inspection@17` document, and
+  binding record in its provenance, still emits `input_bindings` in its `af/task-inspection@20` document, and
   still prints the `BOUND` row and the `bound` line.
 - Unit, `af::providers`: a Claude usage probe whose leader starts a same-group descendant that
   ignores `SIGHUP` and then exits without a limit leaves no descendant behind — the exit is

@@ -22,7 +22,7 @@ use af_contracts::task::usage::TaskUnknownUsageCauseV1;
 use af_contracts::task::verification::{
     TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2, TaskCheckStopV2,
 };
-use af_graph::task::{CompiledOperator, ReviewOperation};
+use af_graph::task::CompiledOperator;
 use af_store::store::task::execution::TaskAttemptAccounting;
 use af_store::store::task::gate_retry::GateRetry;
 
@@ -415,7 +415,7 @@ fn gate_next_action(id: &str, retry: &GateRetry) -> String {
 /// a shell takes as one word.
 fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
     let execution = state.execution.as_ref()?;
-    let plan: ExecutionPlanV3 = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V4).ok()?;
+    let plan: ExecutionPlan = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V4).ok()?;
     execution
         .attempt_accounting()
         .iter()
@@ -442,10 +442,6 @@ fn node_slot(operator: &CompiledOperator) -> Option<&str> {
                 | pipeline::TaskOperatorV1::FixVerify { slot },
             ..
         } => Some(slot),
-        CompiledOperator::ReviewDomain {
-            operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
-            ..
-        } => Some(slot),
         _ => None,
     }
 }
@@ -465,8 +461,7 @@ fn node_kind(operator: Option<&CompiledOperator>) -> NodeKind {
         Some(CompiledOperator::Primitive {
             operator: pipeline::TaskOperatorV1::Check { .. },
             ..
-        })
-        | Some(CompiledOperator::ReviewIntegrationChecks { .. }) => NodeKind::Check,
+        }) => NodeKind::Check,
         Some(operator) if node_slot(operator).is_some() => NodeKind::Worker,
         _ => NodeKind::Kernel,
     }

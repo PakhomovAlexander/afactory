@@ -213,12 +213,6 @@ pub const LAYOUT: &[Entry] = &[
         "review pipeline definitions",
     ),
     directory(
-        "workers",
-        Writer::Human,
-        Versioning::Versioned,
-        "reviewer Worker packages",
-    ),
-    directory(
         "task-packages",
         Writer::Human,
         Versioning::Versioned,
@@ -585,7 +579,8 @@ mod tests {
         assert_eq!(classify(".af/af.toml/x"), Classification::Undeclared);
         assert!(is_undeclared(".af/tasks"));
         assert!(!is_undeclared("tasks/x.json"));
-        assert!(is_declared(".af/workers/bugs/reviewer.toml"));
+        assert!(is_declared(".af/task-packages/bugs/worker.toml"));
+        assert!(is_undeclared(".af/workers/bugs/reviewer.toml"));
         assert!(is_declared(".af"));
     }
 
@@ -656,8 +651,11 @@ mod tests {
         // `50%25-off` is one path named `50%-off`; the group records the spelling.
         let patch = classify_manifest_path(".af/tasks/50%25-off.patch");
         assert_eq!(patch, Classification::Undeclared);
-        let worker = classify_manifest_path(".af/workers/50%25-off/r.toml");
-        assert_eq!(worker.entry().map(|entry| entry.segment), Some("workers"));
+        let worker = classify_manifest_path(".af/task-packages/50%25-off/worker.toml");
+        assert_eq!(
+            worker.entry().map(|entry| entry.segment),
+            Some("task-packages")
+        );
         // A non-UTF-8 name declares nothing: every declared segment is ASCII.
         let raw = classify_manifest_path(".af/%FF");
         assert_eq!(raw, Classification::Undeclared);

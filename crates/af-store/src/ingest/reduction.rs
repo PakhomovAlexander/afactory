@@ -1,4 +1,4 @@
-//! Pure canonical Review reduction, shared by the Campaign and Task Review domain hosts.
+//! Pure canonical Review reduction, used by the native Task Review domain.
 //! No Store, Attempt budget or scheduler is created here. The caller admits/persists the result.
 use super::*;
 
@@ -17,7 +17,30 @@ pub fn prepare_canonical_task_review(
     ledger: &Ledger,
     stages: &[CanonicalStage<'_>],
 ) -> Result<PreparedReviewReduction, StoreError> {
-    validate_stages(ledger, stages)?;
+    prepare_task_review(cas, run_id, ledger, stages, &Default::default())
+}
+
+/// Multiple selected shard Attempts may have one logical reviewer. The caller supplies the
+/// complete per-source result membership from its checked Shard Sets; ordinary gathers retain
+/// their unique-source rule. Reduction and immutable Report provenance are otherwise identical.
+pub fn prepare_canonical_task_review_with_shards(
+    cas: &Cas,
+    run_id: &str,
+    ledger: &Ledger,
+    stages: &[CanonicalStage<'_>],
+    shard_results: &std::collections::BTreeMap<String, BTreeSet<String>>,
+) -> Result<PreparedReviewReduction, StoreError> {
+    prepare_task_review(cas, run_id, ledger, stages, shard_results)
+}
+
+fn prepare_task_review(
+    cas: &Cas,
+    run_id: &str,
+    ledger: &Ledger,
+    stages: &[CanonicalStage<'_>],
+    shard_results: &std::collections::BTreeMap<String, BTreeSet<String>>,
+) -> Result<PreparedReviewReduction, StoreError> {
+    validate_stages(ledger, stages, shard_results)?;
     let mut prepared = prepare_canonical_inputs(run_id, ledger, stages)?;
     for (stage, item) in stages.iter().zip(&mut prepared) {
         let artifact: af_contracts::ArtifactEnvelope = serde_json::from_value(
@@ -54,15 +77,34 @@ fn selected_task_stage(payload: &serde_json::Value) -> Result<ReviewerStageOutpu
     Ok(serde_json::from_value(payload.clone())?)
 }
 
-fn validate_stages(ledger: &Ledger, stages: &[CanonicalStage<'_>]) -> Result<(), StoreError> {
+fn validate_stages(
+    ledger: &Ledger,
+    stages: &[CanonicalStage<'_>],
+    shard_results: &std::collections::BTreeMap<String, BTreeSet<String>>,
+) -> Result<(), StoreError> {
+    let mut sources = std::collections::BTreeMap::<&str, BTreeSet<String>>::new();
+    for stage in stages {
+        if !sources
+            .entry(stage.source)
+            .or_default()
+            .insert(stage.result_artifact_id.into())
+        {
+            return Err(StoreError::Conflict(
+                "Review cannot select one result more than once".into(),
+            ));
+        }
+    }
     if stages.is_empty()
         || stages.len() > 64
-        || stages
+        || sources
             .iter()
-            .map(|s| s.source)
-            .collect::<BTreeSet<_>>()
-            .len()
-            != stages.len()
+            .any(|(source, ids)| match shard_results.get(*source) {
+                Some(expected) => ids != expected,
+                None => ids.len() != 1,
+            })
+        || shard_results
+            .keys()
+            .any(|source| !sources.contains_key(source.as_str()))
         || stages.iter().any(|s| {
             Some(s.subject_id) != ledger.active_subject_id()
                 || Some(s.subject_snapshot_id) != ledger.active_head_snapshot_id()
@@ -82,7 +124,7 @@ pub(super) fn prepare_canonical_inputs(
 ) -> Result<Vec<PreparedStage>, StoreError> {
     if ledger.finding_identity_policy() != Some(CANONICAL_FINDING_IDENTITY_POLICY) {
         return Err(StoreError::Conflict(format!(
-            "canonical report ingestion disagrees with Campaign policy `{}`",
+            "canonical report ingestion disagrees with native identity policy `{}`",
             ledger.finding_identity_policy().unwrap_or("unavailable")
         )));
     }

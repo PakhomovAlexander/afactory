@@ -18,9 +18,9 @@ use af_contracts::task::input_bindings::{
     TaskInputBindingsV1,
 };
 use af_contracts::task::optimization::OPTIMIZATION_HISTORY_V1;
-use af_contracts::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinition;
 use af_source_git::task::{
-    SourceTree, TaskSnapshot, TaskSourceBoundFromV1, TaskSourceOriginV2, read_origin, read_snapshot,
+    SourceTree, TaskSnapshot, TaskSourceBoundFromV1, TaskSourceOrigin, read_origin, read_snapshot,
 };
 
 /// One root input reference in the Task file: exactly one of the three closed forms.
@@ -148,11 +148,11 @@ pub(super) struct DeclaredPorts {
 
 impl DeclaredPorts {
     pub(super) fn of(
-        pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+        pipelines: &BTreeMap<String, PipelineDefinition>,
         kind: &str,
         named: Option<&str>,
     ) -> Self {
-        let consulted: Vec<&PipelineDefinitionV1> = match named {
+        let consulted: Vec<&PipelineDefinition> = match named {
             Some(name) => pipelines.get(name).into_iter().collect(),
             None => pipelines
                 .values()
@@ -580,8 +580,8 @@ pub(super) fn bind_source(
         return Ok((port, binding, manifest));
     }
     let origin = read_origin(cas, &snapshot.origin_id)?;
-    let rerooted_origin = TaskSourceOriginV2 {
-        schema: "af.task-source-origin/2".into(),
+    let rerooted_origin = TaskSourceOrigin::Bound {
+        schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
         repository_id: origin.repository_id().to_owned(),
         content_digest: snapshot.content_digest.clone(),
         bound_from: TaskSourceBoundFromV1 {
@@ -590,10 +590,7 @@ pub(super) fn bind_source(
             task: task.cloned(),
         },
     };
-    let encoded = serde_json::to_value(&rerooted_origin);
-    let encoded = encoded.map_err(|error| error.to_string())?;
-    let put = cas.put_json(&encoded);
-    let origin_id = put.map_err(|error| error.to_string())?;
+    let origin_id = af_source_git::task::write_origin(cas, &rerooted_origin)?;
     let rerooted = capture_snapshot(cas, &manifest, &origin_id, None)?;
     // The referenced envelope still names the derived Snapshot, and `source_snapshot`
     // admission refuses a SourceTree that disagrees with its Snapshot, so the re-rooted

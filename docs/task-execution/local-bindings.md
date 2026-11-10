@@ -30,15 +30,20 @@ substitution within the same context cannot be detected. Its embedded SDK host e
 no shell. See the [Pi Provider design](../design/pi-provider.md) for setup, the exact support
 matrix and token-free fixture evidence; paid live smoke was not run.
 
-`af onboard --tasks` generates `onboard/implementer`, `onboard/bugs`,
-`onboard/correctness` and `onboard/evaluator` with `codex-main` Provider aliases.
-The implementer uses `gpt-6.1-sol` at high effort; the independent judging Workers use
-`gpt-6.1-terra` at high effort. `--runner` selects the review-authority profile;
-Task Workers always require a Codex Provider, including on a Claude-only machine.
-If the local registry uses another ID, map those package
-names to that ID in `[providers]` of a machine-local bindings file and pass
-`--bindings FILE` to `af task plan`. The implementer and independent judging Workers
-use distinct models; one registered login can serve them.
+Default `af onboard` emits standalone Review and implementation authority together. The explicit
+`af onboard --tasks` mode previews or adds that catalog only where Task settings and target
+files are absent; it refuses an existing `[task]` table even in preview mode. Use plain
+`af onboard` to validate existing Task authority.
+
+The generated `onboard/implementer` and `onboard/evaluator` use `codex-main`: the implementer
+uses `gpt-6.1-sol` at high effort and the independent evaluator `gpt-6.1-terra` at high effort.
+`--runner` selects the `onboard/bugs` and `onboard/correctness` Review Workers and their Provider
+aliases: `codex-main` with `gpt-6.1-terra` at high effort, or `claude-main` with
+`claude-opus-5-5` at high effort. Implementation and evaluation always require a Codex Provider,
+including on a Claude-only machine.
+If the local registry uses another ID, map those package names to that ID in `[providers]` of a
+machine-local bindings file and pass `--bindings FILE` to `af task plan`. The implementer and
+independent judging Workers use distinct models; one registered login can serve them.
 
 Additional packages must use `local/*` names, exact version/digest pins and paths beneath
 the bindings file's directory. They use the same Worker manifest and input/output schemas

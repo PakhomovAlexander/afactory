@@ -127,6 +127,17 @@ seed_task_state)
     probe_writer
     test -f "$scratch/seed/probe-work/events.sqlite"
     ;;
+seed_native_review_state)
+    repository "$fixtures/native-review-roots/repo" "$scratch/native-review-repo"
+    mkdir "$scratch/seed"
+    (cd "$scratch/native-review-repo" &&
+        "$af" review run --file "$fixtures/native-review-roots/task.json" \
+            --state "$scratch/seed/native-review" --json >"$scratch/review.json")
+    mkdir "$scratch/seed/native-review-probe"
+    probe_writer
+    rm -r "$scratch/seed/native-review-probe"
+    test -f "$scratch/seed/native-review/events.sqlite"
+    ;;
 seed_campaign_state)
     repository "$fixtures/campaign-roots/repo" "$scratch/campaign-repo"
     mkdir "$scratch/seed"

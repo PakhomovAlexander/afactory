@@ -20,7 +20,7 @@ fn fixture_with_sibling() -> Fixture {
         .0;
     f.plan.task_revision_id = f.revision_id.clone();
     f.plan.limits = f.revision.limits.clone();
-    let mut pipeline: task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: task::pipeline::PipelineDefinition =
         payload(&f.cas, &f.plan.pipeline_id, PIPELINE_V1).unwrap();
     let mut sibling = pipeline.nodes[0].clone();
     sibling.id = "sibling".into();

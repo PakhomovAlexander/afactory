@@ -58,32 +58,35 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         else:
             assert outcome.code == 0, (label, outcome.code, outcome.stdout, outcome.stderr)
         print('real AF setup:', label, 'exit', outcome.code, flush=True)
-        return run, json.loads(outcome.stdout) if outcome.stdout else None
+        return run, json.loads(outcome.stdout) if outcome.stdout else None, outcome
 
     if refuse:
-        run, _ = execute('overhead', 'overhead')
-        document = json.loads((run / 'bench/telemetry-bench-concurrent/00-off/stdout').read_bytes())
+        run, _, outcome = execute('overhead', 'overhead')
+        document = failed_task_document(run, outcome)
         assert document['phase']['kind'] == 'finished'
         assert document['result']['execution'] == 'exhausted'
         assert document['result']['acceptance'] == 'inconclusive'
         assert document['attempts'] == 1
         report = document['run_reports'][0]
         check = next(node for node in report['report']['nodes'] if node['node'] == 'root.nodes.check')
-        assert check['outcome']['kind'] == 'failed' and check['outcome']['class'] == 'resources'
-        assert report['diagnostics']['root.nodes.check']['message'] == 'Task runtime evidence cannot be empty'
-        assert b'finished/exhausted/budget' in outcome_stderr(run)
+        assert check['outcome']['kind'] == 'completed', report
+        assert 'Task runtime evidence cannot be empty' not in json.dumps(report)
+        receipts = document.get('runtime_observations', [])
+        assert not receipts, receipts
+        assert b'insufficient_disk:' in outcome_stderr(run)
+        assert b'finished/gate_failed/preflight_failed' in outcome_stderr(run)
         # Inspect only public typed receipts, never Worker stdout/stderr or transcripts.
-        print('4 GiB reproduces the public check resource failure before any reviewer', flush=True)
+        print('4 GiB retains the public disk refusal before any reviewer', flush=True)
     else:
-        _, overhead = execute('overhead', 'overhead')
+        _, overhead, _ = execute('overhead', 'overhead')
         assert overhead['gate']['verdict'] == 'not_judged'
         assert len(overhead['fixtures']) == 3
-        _, invocation = execute('invocation', 'invocation_cost')
+        _, invocation, _ = execute('invocation', 'invocation_cost')
         assert invocation['gate']['verdict'] == 'not_judged'
         assert len(invocation['cases']) == 2
-        corpus, summary = execute('corpus', 'read_latency')
+        corpus, summary, _ = execute('corpus', 'read_latency')
         assert summary['runs'] == 10 and summary['executions'] == 20 and summary['blobs'] == 200
-        _, reads = execute('reads', 'read_latency', lambda run:
+        _, reads, _ = execute('reads', 'read_latency', lambda run:
             shutil.copytree(corpus / 'corpus', run / 'corpus'))
         assert reads['corpus']['runs'] == 10 and reads['corpus']['executions'] == 20
         assert reads['corpus']['blobs'] == 200 and reads['corpus']['segments'] == 20
@@ -100,6 +103,14 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
     if owner is not None:
         owner.filesystem_cleaned()
         owner.work_cleaned()
+
+
+def failed_task_document(run, outcome):
+    """A failed script may never have reached its first Task; retain that original reason."""
+    path = run / 'bench/telemetry-bench-concurrent/00-off/stdout'
+    assert path.is_file(), ('overhead exited before its first measured Task; original diagnostic:',
+                            outcome.code, outcome.stdout, outcome.stderr)
+    return json.loads(path.read_bytes())
 
 
 def outcome_stderr(run):

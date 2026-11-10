@@ -141,14 +141,11 @@ fn only_af_links_the_reader_module_and_af_process_links_nothing() {
 /// Worker Notes (`af-runtime`'s `task/` and its warm paths, `af-contracts`'s Warm Set), and
 /// the self-optimizer's sources and History Capture (`af`, `af-store`, `af-contracts`,
 /// `af-pipeline-config`).
-const WORKER_INPUT: [&str; 12] = [
+const WORKER_INPUT: [&str; 9] = [
     "crates/af-runner/src/task.rs",
     "crates/af-runner/src/task",
     "crates/af-runner/src/model.rs",
     "crates/af-runtime/src/task",
-    "crates/af-runtime/src/warm.rs",
-    "crates/af-runtime/src/review_domain.rs",
-    "crates/af-runtime/src/build_cache.rs",
     "crates/af-contracts/src/warm.rs",
     "crates/af-contracts/src/task/optimization.rs",
     "crates/af-store/src/optimization.rs",

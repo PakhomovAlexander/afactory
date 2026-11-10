@@ -194,14 +194,14 @@ a package named `kernel/triage` would not create one. Triage therefore runs as t
 profile**, which already has the shape decision 2 asks for: one author, a protected token-free
 check, and one independent verifier reading the same Snapshot (ADR-0133, decisions 1 and 5).
 
-- The business kind is `triage`, an `af.task-kind/1` package with `profile = "report"`, so Task
+- The business kind is `triage`, an `af.task-kind/3` package with `profile = "report"`, so Task
   files and `af task list` say what the Task is while the kernel runs the installed operators.
 - The **author** slot is the first triager: Codex `gpt-6.1-sol`, `model_reasoning_effort =
   "medium"`, Provider `codex-personal`, `read-source` only (no `execute-checks`, so no shell).
-  It returns an `af/DocumentDraft@2` with two required sections, `Triage` (the
+  It returns an `af/DocumentDraft@3` with two required sections, `Triage` (the
   `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the
   sections the installed report policy requires of every report (`Findings` and
-  `Recommendation` in this repository), and `repository_citations` for every file it relied on.
+  `Recommendation` in this repository), and tagged `repository` entries in `citations` for every file it relied on.
   Owner decision, 2026-10-30: the installed report policy's required sections apply in addition
   to `Triage` and `Rationale`, so in this repository a triage draft has four.
 - `report_seal` and `report_check` are the kernel's: the Document is bound to the exact source

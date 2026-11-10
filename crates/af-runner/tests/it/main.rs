@@ -5,11 +5,7 @@
 // Shared fixtures, declared once for every subject module.
 #[path = "support/load_safe_wall.rs"]
 mod load_safe_wall;
-#[path = "support/render.rs"]
-mod render_support;
 
-mod change_wide_prior;
-mod command_inputs;
 mod model_supervision;
 mod prior_bound;
 mod task_command_process_group;
@@ -17,4 +13,3 @@ mod task_contexts;
 mod task_model_transport;
 mod task_reply_reask;
 mod task_usage;
-mod warm_render;

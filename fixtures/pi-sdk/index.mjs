@@ -68,11 +68,11 @@ export async function createAgentSession(options) {
         const request = ['document','retry','rotate-after-admission'].includes(mode) ? JSON.parse(text) : undefined;
         if (mode==='document' || mode==='rotate-after-admission') {
           const sources=request.inputs.sources[0].payload.sources;
-          answer=JSON.stringify({schema:'af.worker-reply/1',outputs:{draft:[{schema:'af.document-draft/1',title:'Release notes',sections:[{heading:'Summary',body:Object.keys(sources).sort().map(k=>sources[k].text).join('\n\n')}],citations:Object.keys(sources).sort()}]}});
+          answer=JSON.stringify({schema:'af.worker-reply/1',outputs:{draft:[{schema:'af.document-draft/3',title:'Release notes',sections:[{heading:'Summary',body:Object.keys(sources).sort().map(k=>sources[k].text).join('\n\n')}],citations:Object.keys(sources).sort().map(name=>({kind:'source',name}))}]}});
         } else if (mode==='retry' && !request.feedback.length) answer='not a typed reply';
         else if (mode==='retry') {
           const sources=request.inputs.sources[0].payload.sources;
-          answer=JSON.stringify({schema:'af.worker-reply/1',outputs:{draft:[{schema:'af.document-draft/1',title:'Release notes',sections:[{heading:'Summary',body:Object.keys(sources).sort().map(k=>sources[k].text).join('\n\n')}],citations:Object.keys(sources).sort()}]}});
+          answer=JSON.stringify({schema:'af.worker-reply/1',outputs:{draft:[{schema:'af.document-draft/3',title:'Release notes',sections:[{heading:'Summary',body:Object.keys(sources).sort().map(k=>sources[k].text).join('\n\n')}],citations:Object.keys(sources).sort().map(name=>({kind:'source',name}))}]}});
         } else answer=JSON.stringify({findings:[],benchmark_demands:[],dispositions:[]});
       }
       if (mode === 'kimi-tool') {

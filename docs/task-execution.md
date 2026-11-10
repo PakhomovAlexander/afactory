@@ -59,7 +59,7 @@ commands, assertions, or the Task's own budget.
   ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
 - An Attempt whose writer was lost or whose run was interrupted is settled as abandoned, charged
   its reported usage and never its reservation, and counts against its node's recovery
-  allowance, one unless its `af.pipeline/3` (or structured `af.pipeline/4`) slot declares `recovery_attempts`, instead of any
+  allowance, one unless its `af.pipeline/6` slot declares `recovery_attempts`, instead of any
   Attempt limit; the writer lease is 60 s, renewed by its own heartbeat thread, and the resume
   says on its first line what it runs again or why it cannot
   ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
@@ -68,10 +68,19 @@ commands, assertions, or the Task's own budget.
   evidence ([ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md)).
 - Targeted repair is a distinct acceptance type from complete Review, and a project must opt
   into it ([ADR-0054](adr/0054-keep-targeted-repair-distinct-from-complete-review.md)).
-- Review commands run every Campaign through the common runtime. Missing common Task state
-  refuses instead of falling back, and a Campaign log holding a record this release does not
-  write is refused by its replay error
-  ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+- Native Review Pipelines can partition exact Subject paths with `review_slice`, execute bounded
+  owned children with `review_scatter`, and require a whole-Subject closeout through
+  `review_reduce_shards`. Native Proposal Integration captures declarations and sealed candidates,
+  checks the derived source with ordinary check nodes, and records pending claims in a checked
+  `TaskReviewCommit@1` before `review_bind_integrated` can dispatch a successor Round. Final native
+  Review results carry an exact cumulative `TaskReviewConclusion@1` and checked Task log prefix;
+  [the capability record](design/current-contracts-and-task-review.md#stage-3a-native-review-capabilities-2026-11-09)
+  maps these operations to their regression evidence.
+- Review commands select native Tasks and their checked Review outputs through the common runtime.
+  Human evidence and disposition batches use the same exact-plan approval, lease and publication
+  path. Missing Task state and retired Campaign selectors or records are refused without a
+  compatibility reader
+  ([native Review consolidation](adr/2026-11-08-consolidate-current-contracts-and-task-review.md),
   [ADR-0145](adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
 - Provider admission is a paid, captured node inside the Task's own limits; a catalog may
   declare an explicit admission cost, and an omitted one means the fixed 4,096-token, 45-second
@@ -199,12 +208,12 @@ What it never grants:
 
 | Contract | Location |
 |---|---|
-| Task, Pipeline, plan, result and decision wire contracts | `crates/af-contracts/src/task/`, [`task-contracts-v2`](../schemas/task-contracts-v3.json), `fixtures/task-contracts/` |
+| Task, Pipeline, plan, result and decision wire contracts | `crates/af-contracts/src/task/`, [`task-contracts-v4`](../schemas/task-contracts-v4.json), `fixtures/task-contracts/` |
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-state-v2`](../schemas/task-state-v2.json), [`task-inspection-v17`](../schemas/task-inspection-v17.json), [`task-list-v4`](../schemas/task-list-v4.json), [`task-list-entry-v4`](../schemas/task-list-entry-v4.json), [`task-attention-v1`](../schemas/task-attention-v1.json), [`task-checks-v3`](../schemas/task-checks-v3.json), [`task-selection-v3`](../schemas/task-selection-v3.json), [`error-v2`](../schemas/error-v2.json), [`task-plan-inspection-v3`](../schemas/task-plan-inspection-v3.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`compiled-task-v2`](../schemas/compiled-task-v2.json), [`task-report-v3`](../schemas/task-report-v3.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
-| Recovery of a lost or interrupted run ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)) | `crates/af-runtime/src/task/lease.rs`, `crates/af-attempt/src/task_budget.rs`, `crates/af/src/task_commands/recovery.rs`, [`pipeline-definition-v3`](../schemas/pipeline-definition-v3.json) |
-| Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
-| The agent loop ([ADR-0211](adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md), [ADR-0250](adr/0250-follow-a-task-as-a-stream-of-its-store-events.md), [agents](agents.md)) | `crates/af-contracts/src/task/agent_loop.rs`, `crates/af/src/task_commands/{findings,candidate,runs,events,pr_body}.rs`, [`task-findings-v2`](../schemas/task-findings-v2.json), [`findings-sarif-v1`](../schemas/findings-sarif-v1.json), [`task-diff-v1`](../schemas/task-diff-v1.json), [`task-materialized-v1`](../schemas/task-materialized-v1.json), [`task-status-v2`](../schemas/task-status-v2.json), [`task-event-v1`](../schemas/task-event-v1.json), [`task-detached-v3`](../schemas/task-detached-v3.json), [`task-cancelled-v2`](../schemas/task-cancelled-v2.json), [`task-run-process-v1`](../schemas/task-run-process-v1.json), [`task-cancel-request-v1`](../schemas/task-cancel-request-v1.json), [`task-delivery-proof-v1`](../schemas/task-delivery-proof-v1.json) |
+| Inspection and listing | [`task-state-v2`](../schemas/task-state-v2.json), [`task-inspection-v19`](../schemas/task-inspection-v20.json), [`task-list-v4`](../schemas/task-list-v4.json), [`task-list-entry-v4`](../schemas/task-list-entry-v4.json), [`task-attention-v1`](../schemas/task-attention-v1.json), [`task-checks-v3`](../schemas/task-checks-v3.json), [`task-selection-v3`](../schemas/task-selection-v3.json), [`error-v2`](../schemas/error-v2.json), [`task-plan-inspection-v5`](../schemas/task-plan-inspection-v6.json), [`compiled-task-v5`](../schemas/compiled-task-v6.json), [`task-report-v3`](../schemas/task-report-v3.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Recovery of a lost or interrupted run ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)) | `crates/af-runtime/src/task/lease.rs`, `crates/af-attempt/src/task_budget.rs`, `crates/af/src/task_commands/recovery.rs`, [`pipeline-definition-v6`](../schemas/pipeline-definition-v6.json) |
+| Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v3.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
+| The agent loop ([ADR-0211](adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md), [ADR-0250](adr/0250-follow-a-task-as-a-stream-of-its-store-events.md), [agents](agents.md)) | `crates/af-contracts/src/task/agent_loop.rs`, `crates/af/src/task_commands/{findings,candidate,runs,events,pr_body}.rs`, [`task-findings-v2`](../schemas/task-findings-v2.json), [`findings-sarif-v1`](../schemas/findings-sarif-v1.json), [`task-diff-v1`](../schemas/task-diff-v1.json), [`task-materialized-v1`](../schemas/task-materialized-v1.json), [`task-status-v2`](../schemas/task-status-v2.json), [`task-event-v1`](../schemas/task-event-v2.json), [`task-detached-v3`](../schemas/task-detached-v3.json), [`task-cancelled-v2`](../schemas/task-cancelled-v2.json), [`task-run-process-v1`](../schemas/task-run-process-v1.json), [`task-cancel-request-v1`](../schemas/task-cancel-request-v1.json), [`task-delivery-proof-v1`](../schemas/task-delivery-proof-v1.json) |
 | Gate evidence and retry ([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)) | `crates/af-contracts/src/task/check_report.rs`, `crates/af-store/src/store/task/gate_retry.rs`, [`task-check-report-v1`](../schemas/task-check-report-v1.json), [`task-gate-retried-v1`](../schemas/task-gate-retried-v1.json) |
 | Warm check layer ([ADR-0207](adr/0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)) | `crates/af-contracts/src/task/check_layer.rs`, `crates/af-runtime/src/task/warm_check.rs`, `crates/af-check/src/offline.rs`, `crates/af-sandbox/src/seal_ignore.rs`, [`task-check-layer-v1`](../schemas/task-check-layer-v1.json), [`warm-sources-v1`](../schemas/warm-sources-v1.json), [`warm-holder-v1`](../schemas/warm-holder-v1.json), [`warm-eviction-v1`](../schemas/warm-eviction-v1.json), [`seal-ignored-v1`](../schemas/seal-ignored-v1.json) |
 | Attempt resilience ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) | [`task-provider-event-v1`](../schemas/task-provider-event-v1.json), [`worker-reply-reask-v1`](../schemas/worker-reply-reask-v1.json), [`report-draft-validation-v1`](../schemas/report-draft-validation-v1.json), `crates/af-runtime/src/task/retry.rs`, `crates/af-runner/src/task/reask.rs`, `crates/af-runner/src/task/reply_schema.rs` |
@@ -241,7 +250,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Interrupted runs](task-execution/interrupted-runs.md) — writer loss and interruption, what an abandoned Attempt is charged, the recovery allowance and the resume's first line.
 - [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
-- [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.
+- [Review facade and Campaign retirement](task-execution/campaign-review.md) — native Task commands, recorded-plan export and the CLI authority boundaries.
 
 The operator-facing guide for the `implement` Task and local delivery is
 [Implementation Tasks with `af task`](tasks.md). Capabilities deliberately left out are listed in

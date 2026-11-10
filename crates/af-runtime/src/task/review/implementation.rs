@@ -76,7 +76,7 @@ impl ReviewTaskDomain {
             || artifact.producer != invocation_producer(cas, &review.invocation, None)?
             || !matches!(
                 self.operator(&review.invocation)?,
-                TaskOperatorV1::ReviewReduce {}
+                TaskOperatorV1::ReviewReduce {} | TaskOperatorV1::ReviewReduceShards { .. }
             )
             || self.reduce(cas, &review.invocation, 0)?.0 != review
             || review.invocation.inputs.get("checks") != input.inputs.get("checks")
@@ -222,7 +222,7 @@ impl ReviewTaskDomain {
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 receipt.validate()?;
                 let plan_artifact = envelope(cas, &receipt.invocation.plan_id)?;
-                let plan: ExecutionPlanV3 =
+                let plan: ExecutionPlan =
                     serde_json::from_value(plan_artifact.payload).map_err(|e| e.to_string())?;
                 if plan_artifact.artifact_type != EXECUTION_PLAN_V4
                     || plan.task_revision_id != result.task_revision_id

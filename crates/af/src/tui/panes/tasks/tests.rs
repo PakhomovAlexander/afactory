@@ -3117,3 +3117,43 @@ fn a_project_store_that_cannot_be_read_is_a_warning_above_the_stores() {
         "{text:#?}"
     );
 }
+
+#[test]
+fn native_review_detail_keeps_findings_coverage_accounting_history_and_task_commands() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = root.join("review-repo");
+    crate::tui::tests::copy_tree(
+        &crate::tui::tests::workspace().join("fixtures/task-runtime/review"),
+        &repo,
+    );
+    git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+    git(&repo, &["config", "user.name", "Fixture"]).unwrap();
+    git(&repo, &["config", "user.email", "fixture@example.invalid"]).unwrap();
+    git(&repo, &["add", "-A"]).unwrap();
+    git(&repo, &["commit", "-qm", "native Review authority"]).unwrap();
+    std::fs::copy(repo.join("review.json"), repo.join("ticket.json")).unwrap();
+    let state = crate::task_commands::default_task_state(&root.join("state"), &repo).unwrap();
+    crate::tui::tests::record_task(&root, &repo, &state, "review-cli");
+    let detail = Detail::read(&state, "review-cli", &mut Cache::default()).unwrap();
+    let (rows, _) = detail.rows(0);
+    let text = rows.iter().map(Row::text).collect::<Vec<_>>().join("\n");
+    for retained in [
+        "TASK  review-cli",
+        "FINDINGS  (af review ledger)",
+        "changes_requested",
+        "correctness",
+        "major",
+        "Missing behavior",
+        "lib.rs:1",
+        "0 tok",
+        "HISTORY  (af task show)",
+        ":review ledger review-cli --state",
+        ":review report review-cli --state",
+    ] {
+        assert!(text.contains(retained), "{retained}: {text}");
+    }
+    assert!(!text.contains("CAMPAIGN"));
+    assert_eq!(detail.document["attempts"], 3);
+    assert_eq!(detail.document["chargeable_tokens"], "0");
+}

@@ -2,5 +2,5 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:execution-plan:4",
   "title": "execution-plan@4",
-  "$ref": "urn:af:schema:task-contracts:3#/$defs/executionPlan"
+  "$ref": "urn:af:schema:task-contracts:4#/$defs/executionPlan"
 }

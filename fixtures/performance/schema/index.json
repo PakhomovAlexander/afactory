@@ -602,7 +602,7 @@
       "path": "cli/invalid-version.toml",
       "contract": "cli",
       "valid": false,
-      "error": "expected af.perf-cli/6",
+      "error": "expected af.perf-cli/7",
       "shape": true
     },
     {

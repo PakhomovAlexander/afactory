@@ -7,14 +7,14 @@ use std::ops::Deref;
 use std::sync::Mutex;
 
 use af_contracts::task::TaskRevisionV1;
-use af_contracts::task::plan::{ExecutionPlanV3, GeneratedOriginV1};
+use af_contracts::task::plan::{ExecutionPlan, GeneratedOriginV1};
 use af_store::Cas;
 
 use super::TaskPlanCompiler;
 
 struct ValidatedPlan {
     task: TaskRevisionV1,
-    plan: ExecutionPlanV3,
+    plan: ExecutionPlan,
     artifacts: BTreeSet<String>,
 }
 
@@ -46,7 +46,7 @@ impl<'a> CapturedTaskPlanValidator<'a> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         let mut cached = self
             .validated
