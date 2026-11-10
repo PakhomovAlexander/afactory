@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:pi-host:5",
-  "title": "AF Pi SDK host protocol @5",
+  "$id": "urn:af:schema:pi-host:7",
+  "title": "AF Pi SDK host protocol @7",
   "oneOf": [
     {
       "type": "object",
@@ -22,7 +22,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "init"
@@ -109,7 +109,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "ready"
@@ -234,7 +234,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "prepare"
@@ -276,7 +276,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "prepared"
@@ -306,7 +306,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "prompt"
@@ -330,7 +330,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "accepted"
@@ -358,7 +358,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "usage"
@@ -428,7 +428,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "message"
@@ -447,7 +447,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "settled"
@@ -464,7 +464,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "error"
@@ -490,8 +490,75 @@
             "no_chat_models",
             "unsafe_model_configuration"
           ]
+        },
+        "diagnostic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[ -~]+$",
+          "not": {
+            "pattern": "[^ -~]"
+          }
+        },
+        "accounting_complete": {
+          "type": "boolean"
+        },
+        "failure_kind": {
+          "enum": [
+            "auth_missing",
+            "auth_revoked",
+            "auth_expired",
+            "auth_refresh_contended",
+            "auth_refresh_failed",
+            "auth_rejected",
+            "quota",
+            "capacity",
+            "model_unavailable",
+            "model_refused",
+            "network",
+            "environment"
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "inference_failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic",
+              "accounting_complete",
+              "failure_kind"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "diagnostic"
+                  ]
+                },
+                {
+                  "required": [
+                    "accounting_complete"
+                  ]
+                },
+                {
+                  "required": [
+                    "failure_kind"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
     },
     {
       "type": "object",
@@ -504,7 +571,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/5"
+          "const": "af.pi-host/7"
         },
         "type": {
           "const": "tool_count"

@@ -43,7 +43,7 @@ const SCHEMAS: [&str; 234] = [
     "task-engine-v4.json",
     "custom-issue-input-v1.json",
     "custom-issue-triage-v2.json",
-    "pi-host-v5.json",
+    "pi-host-v7.json",
     "pi-context-v1.json",
     "pi-inference-evidence-v2.json",
     "pi-validation-claim-v1.json",

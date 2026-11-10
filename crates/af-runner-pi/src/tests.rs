@@ -104,13 +104,221 @@ fn errors_unknown_and_partial_usage_retain_the_observed_floor() {
     );
 
     record(&mut state, "usage", usage(1, false, Value::Null, json!(7))).unwrap();
-    record(&mut state, "error", json!({"code":"inference_failed"})).unwrap();
+    record(&mut state, "error", json!({"code":"inference_failed",
+        "diagnostic":"Pi inference failed before successful settlement","failure_kind":"environment","accounting_complete":false})).unwrap();
     let observation = state.observation();
     assert!(!observation.charge_complete);
     let usage = observation.reported_usage.unwrap();
     assert_eq!(usage.chargeable_tokens.get(), 7);
     assert!(usage.input_tokens.is_none());
     assert_eq!(usage.output_tokens.unwrap().get(), 7);
+}
+#[test]
+fn terminal_sdk_error_keeps_complete_native_charge_and_classifies_without_admitting_a_reply() {
+    use review_core::task::state::TaskCauseV1;
+    use review_runner::native_failure::NativeFailureKind;
+    for (diagnostic, kind, cause) in [
+        (
+            "Kimi terminal 764: tool-call continuation rejected",
+            NativeFailureKind::Environment,
+            TaskCauseV1::ProviderEnvironment,
+        ),
+        (
+            "Kimi terminal 764: rate limit reached",
+            NativeFailureKind::Quota,
+            TaskCauseV1::ProviderCapacity,
+        ),
+        (
+            "Kimi terminal 764: network connection failed",
+            NativeFailureKind::Network,
+            TaskCauseV1::ProviderNetwork,
+        ),
+        (
+            "Kimi terminal 764: credentials expired",
+            NativeFailureKind::AuthExpired,
+            TaskCauseV1::IdentityUnverified,
+        ),
+        (
+            "Kimi terminal 764: unknown option --session",
+            NativeFailureKind::Environment,
+            TaskCauseV1::ProviderEnvironment,
+        ),
+        (
+            "Kimi terminal 764: model unavailable",
+            NativeFailureKind::ModelUnavailable,
+            TaskCauseV1::ModelRefused,
+        ),
+    ] {
+        let mut state = accepted();
+        state.ready.as_mut().unwrap().backend = "kimi-coding".into();
+        let native = json!({"inference":1,"complete":true,"observations":2,"input":439,
+            "output":38,"cache_read":null,"cache_write":null,"reasoning":24});
+        record(&mut state, "usage", native.clone()).unwrap();
+        record(
+            &mut state,
+            "error",
+            json!({"code":"inference_failed",
+            "diagnostic":diagnostic,"failure_kind":kind.as_str(),"accounting_complete":true}),
+        )
+        .unwrap();
+        assert!(!state.settled);
+        assert!(state.message.is_none());
+        let failure = state.inference_failure.as_ref().unwrap();
+        assert_eq!(failure.diagnostic, diagnostic);
+        assert_eq!(failure.kind(), kind);
+        let error = state.error.as_deref().unwrap();
+        assert!(error.contains(diagnostic));
+        assert!(!error.contains("billing"));
+        assert_eq!(TaskCauseV1::of_diagnostic(error), Some(cause));
+        let observation = state.observation();
+        assert!(observation.charge_complete);
+        let observed = observation.reported_usage.unwrap();
+        assert_eq!(observed.input_tokens.unwrap().get(), 439);
+        assert_eq!(observed.output_tokens.unwrap().get(), 38);
+        assert_eq!(observed.reasoning_tokens.unwrap().get(), 24);
+        assert_eq!(observed.chargeable_tokens.get(), 477);
+        assert!(observed.cache_read_tokens.is_none() && observed.cache_write_tokens.is_none());
+        assert_eq!(serde_json::to_value(&state.usage[&1]).unwrap(), native);
+        assert!(
+            record(
+                &mut state,
+                "message",
+                json!({"text":"must not be accepted"})
+            )
+            .is_err()
+        );
+        assert!(record(&mut state, "settled", json!({})).is_err());
+    }
+}
+
+#[test]
+fn withheld_terminal_diagnostics_preserve_validated_failure_categories_and_complete_charge() {
+    use review_runner::native_failure::NativeFailureKind;
+    for kind in [
+        NativeFailureKind::Quota,
+        NativeFailureKind::AuthMissing,
+        NativeFailureKind::AuthRevoked,
+        NativeFailureKind::AuthExpired,
+        NativeFailureKind::AuthRefreshContended,
+        NativeFailureKind::AuthRefreshFailed,
+        NativeFailureKind::AuthRejected,
+        NativeFailureKind::Capacity,
+        NativeFailureKind::ModelUnavailable,
+        NativeFailureKind::ModelRefused,
+        NativeFailureKind::Network,
+        NativeFailureKind::Environment,
+    ] {
+        let mut state = accepted();
+        state.ready.as_mut().unwrap().backend = "kimi-coding".into();
+        record(
+            &mut state,
+            "usage",
+            json!({"inference":1,"complete":true,"input":439,
+            "output":38,"cache_read":null,"cache_write":null,"reasoning":24}),
+        )
+        .unwrap();
+        record(
+            &mut state,
+            "error",
+            json!({"code":"inference_failed",
+            "diagnostic":"[Pi diagnostic withheld: sensitive text]",
+            "failure_kind":kind.as_str(),"accounting_complete":true}),
+        )
+        .unwrap();
+        assert_eq!(state.inference_failure.as_ref().unwrap().kind(), kind);
+        let error = state.error.as_ref().unwrap();
+        assert!(error.contains(kind.diagnostic()), "{error}");
+        assert!(!error.contains("billing") && !error.contains("malformed_reply"));
+        let observation = state.observation();
+        assert!(observation.charge_complete);
+        assert_eq!(
+            observation.reported_usage.unwrap().chargeable_tokens.get(),
+            477
+        );
+    }
+}
+
+#[test]
+fn terminal_failure_accounting_claims_and_diagnostics_fail_closed() {
+    let failure = json!({"code":"inference_failed","diagnostic":"terminal SDK error","failure_kind":"environment",
+        "accounting_complete":true});
+    for change in [
+        json!({"complete":false}),
+        json!({"input":null}),
+        json!({"output":null}),
+        json!({"cache_read":null}),
+        json!({"observations":0}),
+    ] {
+        let mut state = accepted();
+        let mut native = usage(1, true, json!(10), json!(2));
+        for (key, value) in change.as_object().unwrap() {
+            native[key] = value.clone();
+        }
+        record(&mut state, "usage", native).unwrap();
+        assert!(
+            record(&mut state, "error", failure.clone()).is_err(),
+            "{change}"
+        );
+        assert!(!state.observation().charge_complete);
+    }
+    assert!(record(&mut accepted(), "error", failure.clone()).is_err());
+    for diagnostic in [
+        json!(""),
+        json!("x".repeat(241)),
+        json!("bad\ntext"),
+        Value::Null,
+    ] {
+        let mut bad = failure.clone();
+        bad["accounting_complete"] = json!(false);
+        bad["diagnostic"] = diagnostic;
+        assert!(record(&mut accepted(), "error", bad).is_err());
+    }
+    for field in ["diagnostic", "failure_kind", "accounting_complete"] {
+        let mut bad = failure.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert!(record(&mut accepted(), "error", bad).is_err());
+    }
+    for kind in [
+        Value::Null,
+        json!("unknown"),
+        json!("https://private.invalid"),
+    ] {
+        let mut bad = failure.clone();
+        bad["failure_kind"] = kind;
+        assert!(record(&mut accepted(), "error", bad).is_err());
+    }
+    let mut state = accepted();
+    record(
+        &mut state,
+        "error",
+        json!({"code":"inference_failed",
+        "diagnostic":"Authorization: Bearer short-private-value","failure_kind":"auth_rejected","accounting_complete":false}),
+    )
+    .unwrap();
+    assert!(
+        !state
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("short-private-value")
+    );
+    assert!(
+        !state
+            .inference_failure
+            .unwrap()
+            .diagnostic
+            .contains("short-private-value")
+    );
+    for old in ["af.pi-host/5", "af.pi-host/6"] {
+        let mut record = failure.clone();
+        record["schema"] = json!(old);
+        record["type"] = json!("error");
+        assert!(
+            State::default()
+                .record(&serde_json::to_vec(&record).unwrap())
+                .is_err()
+        );
+    }
 }
 #[test]
 fn prompt_acknowledgement_requires_delivery_and_exact_fresh_challenge() {
@@ -219,6 +427,188 @@ fn kimi_invalid_missing_conflicting_and_unsafe_counters_keep_prior_observed_floo
 
 mod process {
     use super::*;
+    // Use the same token-free SDK fixture as scripts/test-pi-host.py. Runtime roots
+    // also work with binaries built in an earlier gate's removed checkout.
+    fn installed_fixture(root: &Path) -> PiConfig {
+        let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let packages = root.join("installed/node_modules/@earendil-works");
+        for name in ["pi-coding-agent", "pi-ai", "pi-agent-core"] {
+            let package = packages.join(name);
+            std::fs::create_dir_all(package.join("dist/core")).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                json!({
+                    "name":format!("@earendil-works/{name}"),"version":SDK_VERSION,"type":"module"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let entry = packages.join("pi-coding-agent/dist/index.js");
+        let source = std::fs::read_to_string(workspace.join("fixtures/pi-sdk/index.mjs")).unwrap();
+        std::fs::write(
+            &entry,
+            source.replace(
+                "AF_FIXTURE_STATE",
+                &json!(root.join("state.json")).to_string(),
+            ),
+        )
+        .unwrap();
+        std::fs::copy(
+            workspace.join("fixtures/pi-sdk/auth-storage.mjs"),
+            packages.join("pi-coding-agent/dist/core/auth-storage.js"),
+        )
+        .unwrap();
+        std::fs::write(packages.join("pi-ai/dist/models.js"),
+            "export const getSupportedThinkingLevels=m=>Object.keys(m.thinkingLevelMap ?? (m.reasoning?{high:'high'}:{off:'off'}));").unwrap();
+        PiConfig {
+            backend: "kimi-coding".into(),
+            sdk_entrypoint: entry,
+        }
+    }
+
+    #[test]
+    fn real_host_structured_terminal_errors_surface_safe_diagnostics_and_retain_complete_charge() {
+        use review_core::task::state::TaskCauseV1;
+        use review_runner::native_failure::NativeFailureKind;
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().canonicalize().unwrap();
+        let config = installed_fixture(&root);
+        let node = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join("node"))
+            .find(|file| file.is_file())
+            .expect("Pi host tests require Node")
+            .canonicalize()
+            .unwrap();
+        let auth = root.join("auth");
+        std::fs::create_dir(&auth).unwrap();
+        let private = |file: &Path, text: &str| {
+            std::fs::write(file, text).unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        private(&auth.join("auth.json"), &json!({"kimi-coding":{
+            "type":"oauth","access":"private-access","refresh":"private-refresh","expires":9999999999999_u64
+        }}).to_string());
+        private(
+            &auth.join("models.json"),
+            &json!({"providers":{"kimi-coding":{
+                "headers":{"type":"violet aardvark"}
+            }}})
+            .to_string(),
+        );
+        let state_file = root.join("state.json");
+        let base = json!({"backend":"kimi-coding","stopReason":"toolUse",
+            "usage":{"prompt_tokens":439,"completion_tokens":38,"completion_tokens_details":{"reasoning_tokens":24}}});
+        std::fs::write(&state_file, base.to_string()).unwrap();
+        let identity = probe(&node, &config, &auth, Duration::from_secs(30), None).unwrap();
+        let captured = authority(
+            &node,
+            &config,
+            &auth,
+            &identity.models[0],
+            &identity.auth_method,
+        )
+        .unwrap();
+        let adapter = PiTaskAdapter {
+            node,
+            config,
+            auth_dir: auth,
+            principal: None,
+            model: "k3".into(),
+            effort: "high".into(),
+            captured,
+        };
+        let cas = Cas::open(root.join("cas")).unwrap();
+        // Each new structured field needs the real host path: a safe distinctive
+        // message reaches the operator/CAS, and a private message stays withheld.
+        for (payload, diagnostic, kind, cause) in [
+            (
+                json!({"error":{"type":"rate_limit_error",
+                    "message":"Kimi terminal 764: tool-call continuation rejected"}}),
+                "Kimi terminal 764: tool-call continuation rejected",
+                NativeFailureKind::Quota,
+                TaskCauseV1::ProviderCapacity,
+            ),
+            (
+                json!({"error":{"code":"model_not_found","message":"violet aardvark"}}),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::ModelUnavailable,
+                TaskCauseV1::ModelRefused,
+            ),
+        ] {
+            let mut state = base.clone();
+            state["lateError"] = json!(payload.to_string());
+            std::fs::write(&state_file, state.to_string()).unwrap();
+            let returned = invoke_test(
+                &adapter,
+                &cas,
+                &root,
+                b"private request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            let error = returned.message.unwrap_err();
+            assert!(error.contains(diagnostic), "{error}");
+            assert!(
+                !error.contains("billing") && !error.contains("malformed_reply"),
+                "{error}"
+            );
+            assert_eq!(returned.native_failure, Some(kind));
+            assert_eq!(TaskCauseV1::of_diagnostic(&error), Some(cause));
+            assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 477);
+            assert!(returned.usage_observation.is_none());
+            assert_eq!(returned.raw_artifact_ids.len(), 2);
+            let evidence =
+                PiInferenceEvidenceV2::decode(&cas.get(&returned.raw_artifact_ids[0]).unwrap())
+                    .unwrap();
+            assert!(!evidence.successful && !evidence.settled);
+            assert!(evidence.aggregate.charge_complete);
+            assert_eq!(evidence.started_inferences, 1);
+            assert_eq!(evidence.completed_inferences, 1);
+            assert_eq!(evidence.inferences.len(), 1);
+            assert!(evidence.inferences[0].complete);
+            assert_eq!(evidence.inferences[0].observations, 2);
+            assert!(evidence.inferences[0].cache_read.is_none());
+            assert!(evidence.inferences[0].cache_write.is_none());
+            assert_eq!(
+                (
+                    evidence.inferences[0].input,
+                    evidence.inferences[0].output,
+                    evidence.inferences[0].reasoning
+                ),
+                (Some(439), Some(38), Some(24))
+            );
+            let terminal: Value =
+                serde_json::from_slice(&cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+            assert_eq!(
+                terminal,
+                json!({"schema":PROTOCOL,"type":"error","code":"inference_failed",
+                "diagnostic":diagnostic,"failure_kind":kind.as_str(),"accounting_complete":true})
+            );
+            for secret in [
+                "violet aardvark",
+                "private-access",
+                "private-refresh",
+                "rate_limit_error",
+                "model_not_found",
+                "private request",
+            ] {
+                assert!(!error.contains(secret));
+                for id in &returned.raw_artifact_ids {
+                    assert!(
+                        !String::from_utf8(cas.get(id).unwrap())
+                            .unwrap()
+                            .contains(secret)
+                    );
+                }
+            }
+        }
+    }
+
     fn fixture(mode: &str, root: &Path, socket: Option<&Path>) -> PiTaskAdapter {
         let node = root.join("node");
         let mut identity = ready();
@@ -243,7 +633,11 @@ open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
 def emit(v):
  if v.get('type')=='usage': v.setdefault('observations',1)
- v['schema']='af.pi-host/5'
+ if v.get('code')=='inference_failed':
+  v.setdefault('diagnostic','Pi inference failed before successful settlement')
+  v.setdefault('accounting_complete',False)
+  v.setdefault('failure_kind','environment')
+ v['schema']='af.pi-host/7'
  data=(json.dumps(v,ensure_ascii=False)+'\n').encode()
  # Split inside a UTF-8 sequence too: LF is the only record separator.
  if mode.startswith('pages-'): os.write(1,data); return
@@ -462,7 +856,10 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
                 "{mode}: {:?}",
                 returned.message
             );
-            assert_eq!(returned.raw_artifact_ids.len(), 1);
+            assert_eq!(
+                returned.raw_artifact_ids.len(),
+                if mode == "kimi-failed" { 2 } else { 1 }
+            );
             let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
             PiInferenceEvidenceV2::decode(&bytes).unwrap();
             let evidence: Value = serde_json::from_slice(&bytes).unwrap();
@@ -980,7 +1377,10 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             cancelled.store(true, Ordering::Release);
             let returned = running.join().unwrap();
             assert!(returned.message.is_err());
-            assert_eq!(returned.raw_artifact_ids.len(), 1);
+            assert_eq!(
+                returned.raw_artifact_ids.len(),
+                if mode == "error" { 2 } else { 1 }
+            );
             let evidence =
                 PiInferenceEvidenceV2::decode(&cas.get(&returned.raw_artifact_ids[0]).unwrap())
                     .unwrap();

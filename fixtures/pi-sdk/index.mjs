@@ -78,14 +78,20 @@ export async function createAgentSession(options) {
       if (mode === 'kimi-tool') {
         await options.customTools.find(t=>t.name==='write').execute('tool',{path:'kimi-edited',content:'confined Kimi edit'});
       }
-      const message={role:'assistant',provider:backend(),model:options.model.id,stopReason:'stop',content:[{type:'text',text:answer}]};
+      const message={role:'assistant',provider:backend(),model:options.model.id,stopReason:state().stopReason ?? 'stop',content:[{type:'text',text:answer}]};
       for (let i=0;i<(state().inferences ?? 1);i++) {
         emit({type:'message_start',message});
         try { await options.modelRuntime.streamSimple(options.model,{},{}); }
         catch (error) { if (!state().continueAfterNativeError) throw error; }
-        emit({type:'message_end',message});
+        emit({type:'message_end',message:state().wrongMessageModel ? {...message,model:'wrong-model'} : message});
         if (state().countRead) await options.customTools.find(t=>t.name==='read').execute('id',{path:'SYNTHETIC_SECRET_PATH'});
-      } emit({type:'agent_end'}); emit({type:'agent_settled',aborted:false});
+      }
+      if (state().lateError !== undefined) emit({type:'message_end',message:{...message,
+        stopReason:state().lateStopReason ?? 'error',errorMessage:state().lateError}});
+      if (state().finalAfterError) emit({type:'message_end',message:{...message,stopReason:'stop'}});
+      emit({type:'agent_end'});
+      if (!state().unsettled) emit({type:'agent_settled',aborted:state().aborted ?? false});
+      if (state().promptError !== undefined) throw Error(state().promptError);
       if (probe && mode==='replace-auth-after-admission') {
         const data=JSON.parse(fs.readFileSync(state().auth,'utf8'));data[backend()]={type:'api_key',key:'PRIVATE_HELPER'};
         fs.writeFileSync(state().auth,JSON.stringify(data));

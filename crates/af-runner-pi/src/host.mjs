@@ -1,10 +1,10 @@
-// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/5.
+// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/7.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
-export const PROTOCOL = 'af.pi-host/5';
+export const PROTOCOL = 'af.pi-host/7';
 export const VERSION = '1.4.0';
 const MAX_LINE = 4 * 1024 * 1024;
 const FILE_LIMIT = 1024 * 1024;
@@ -14,6 +14,112 @@ class HostError extends Error {
 }
 const fail = (code) => { throw new HostError(code); };
 const hash = (text) => 'sha256:' + createHash('sha256').update(text).digest('hex');
+const printableDiagnostic = value => value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[^\x20-\x7e]/g, ' ').replace(/\s+/g, ' ').trim();
+// Native errors are untrusted credential-bearing text. Judge the whole bounded input
+// before shortening it. Only an explicit message scalar can leave a JSON error;
+// payloads, URLs and credential-like text are otherwise withheld altogether.
+// Remember initial and refreshed private values without retaining an unbounded history.
+export function diagnosticFilter() {
+  const secrets = new Set(); let overflow = false;
+  const remember = (value) => {
+    if (typeof value === 'string') {
+      if (value.length > 4096) overflow = true;
+      else if (value) {
+        if (secrets.size >= 4096) overflow = true;
+        else if (value.trim()) {
+          const secret = printableDiagnostic(value).replace(/\s+/g, '');
+          if (!secret) overflow = true;
+          else secrets.add(secret);
+        }
+      }
+    } else if (value && typeof value === 'object') {
+      for (const child of Object.values(value)) remember(child);
+    }
+  };
+  const safe = (value) => {
+    if (typeof value !== 'string') return 'Pi SDK supplied no terminal diagnostic';
+    if (value.length > 4096) return '[Pi diagnostic withheld: oversized]';
+    if (!value.trim()) return 'Pi SDK supplied no terminal diagnostic';
+    if (value.trimStart().startsWith('[')) {
+      try { JSON.parse(value); return '[Pi diagnostic withheld: structured payload]'; }
+      catch { /* A plain diagnostic label such as [SDK Error] is not a JSON payload. */ }
+    }
+    if (value.trimStart().startsWith('{')) {
+      try {
+        const error = JSON.parse(value);
+        const message = error?.error?.message ?? error?.message ?? error?.error;
+        if (typeof message !== 'string') return '[Pi diagnostic withheld: structured payload]';
+        value = message;
+      } catch { return '[Pi diagnostic withheld: structured payload]'; }
+    }
+    const plain = printableDiagnostic(value);
+    const compact = plain.replace(/\s+/g, '');
+    if (overflow || [...secrets].some(secret => compact.includes(secret)) ||
+        /[{}]|\[\s*["'{\[]|\b[a-z][a-z0-9+.-]*:\/\/|\b(?:bearer|basic|password|passwd|passphrase)\s|(?:key|token|secret|password|passwd|credential|auth)[\w-]*["']?\s*[:=]|\b(?:sk[-_]|gh[pousr]_|github_pat_|xox[baprs]-|glpat-)|[A-Za-z0-9_+/=-]{32,}/i.test(plain)) {
+      return '[Pi diagnostic withheld: sensitive text]';
+    }
+    return plain.slice(0, 240) || 'Pi SDK supplied no terminal diagnostic';
+  };
+  const rememberFile = (bytes) => {
+    const text = bytes.toString('utf8');
+    // File auth is private just like stored auth. Remember JSON scalars, INI values
+    // (including quoted values), and opaque token/PEM lines in the captured closure.
+    // Oversized/unrepresentable material fails closed through the same bounded filter.
+    remember(text);
+    if (text.length > 4096 || text.includes('\ufffd')) { overflow = true; return; }
+    try { remember(JSON.parse(text)); } catch { /* INI or opaque credential file. */ }
+    for (const line of text.split(/\r?\n/)) {
+      remember(line.trim());
+      const setting = /^\s*[^#;=\s][^=]*=\s*(.*?)\s*$/.exec(line);
+      if (setting) remember(setting[1].replace(/^["']|["']$/g, ''));
+    }
+  };
+  return { remember, rememberFile, safe };
+}
+// Classify bounded original failure text before privacy filtering can erase its
+// meaning. Only this closed category leaves the host, never the text used to infer it.
+export function failureKind(value) {
+  let message = typeof value === 'string' ? value.slice(0, 4096) : '';
+  if (message.trimStart().startsWith('{')) {
+    try {
+      const error = JSON.parse(message);
+      const detail = error?.error?.message ?? error?.message ?? error?.error;
+      // Only bounded scalar identifiers in the provider's type/code fields may
+      // supplement its message. Do not inspect unrelated payloads or retain codes
+      // as diagnostic text; diagnosticFilter independently selects that text.
+      const codes = [error?.type, error?.code, error?.error?.type, error?.error?.code]
+        .filter(code => typeof code === 'string' && code.length <= 128 && /^[a-z][a-z0-9_]*$/i.test(code));
+      message = [...codes, typeof detail === 'string' ? detail : ''].join(' ');
+    } catch { return 'environment'; }
+  }
+  const text = printableDiagnostic(message).toLowerCase();
+  const has = (...patterns) => patterns.some(pattern => text.includes(pattern));
+  const refresh = has('refresh token','refresh_token','refresh oauth','credential refresh');
+  const credentials = refresh || has('credential','access token','access_token','oauth token',
+    'authentication token','auth token','api key','api_key','session token');
+  if (has('auth_refresh_contended') || refresh && has('another','concurrent','already refreshing',
+    'refresh in progress','mid-refresh','lock is held')) return 'auth_refresh_contended';
+  if (has('auth_revoked','token_revoked','credentials_revoked') || credentials && has('revoked')) return 'auth_revoked';
+  if (has('auth_expired','token_expired','expired_token') || credentials && has('expired','has expired')) return 'auth_expired';
+  if (has('auth_missing','not logged in','not authenticated','no credentials','missing credentials',
+    'no api key','missing authentication','authentication required','login required','please run /login',
+    'please log in','please login') || credentials && has('not found','missing','not configured')) return 'auth_missing';
+  if (has('safeguards flagged this message')) return 'model_refused';
+  if (has('rate_limit','rate limit','insufficient_quota','quota exceeded','exceeded your quota',
+    'usage limit','credit balance','too many requests','http 429','status 429')) return 'quota';
+  if (has('at capacity','over capacity','capacity exceeded','overloaded','server_is_overloaded')) return 'capacity';
+  if (has('model_not_found','model unavailable','model is unavailable','model does not exist',
+    'unsupported model','unknown model','model access denied','issue with the selected model',
+    'may not exist or you may not have access')) return 'model_unavailable';
+  if (has('network','connection refused','connection reset','connection timed out','request timed out',
+    'etimedout','econnreset','enotfound','dns','failed to connect','unable to connect','unable to resolve',
+    'fetch failed','tls','certificate')) return 'network';
+  if (has('auth_refresh_failed') || refresh && has('failed','failure','unable','cannot','could not')) return 'auth_refresh_failed';
+  if (has('auth_rejected','authentication_error','invalid_api_key','invalid api key','invalid_token',
+    'invalid token','invalid_grant','authentication failed','unauthorized','unauthorised','http 401',
+    'status 401','refresh_token_reused') || credentials && has('invalid','rejected','already used')) return 'auth_rejected';
+  return 'environment';
+}
 // Pi owns OAuth metadata. Validate only the required mode and credential fields; extra
 // fields are opaque, never interpreted as identity, settings, routing or helpers. Reads
 // bypass AuthStorage's helper resolution and refresh preserves the SDK's complete record.
@@ -56,7 +162,7 @@ export function principal(credential, backend = 'openai-codex') {
 export async function storedCredential(storage, options, backend = 'openai-codex') {
   return storage.modify(backend, async (current) => { principal(current, backend); return undefined; }, options);
 }
-export function guardedCredentials(storage, expected, backend = 'openai-codex', checkContext = () => {}, initialCredential) {
+export function guardedCredentials(storage, expected, backend = 'openai-codex', checkContext = () => {}, initialCredential, observeCredential = () => {}) {
   let mode = arguments.length >= 5 ? initialCredential?.type ?? 'context' : undefined;
   let keyContext = initialCredential?.type === 'api_key' ? JSON.stringify(initialCredential) : undefined;
   const check = (value) => {
@@ -70,6 +176,7 @@ export function guardedCredentials(storage, expected, backend = 'openai-codex', 
       keyContext = current;
     }
     if (principal(value, backend) !== expected) fail('identity_changed');
+    observeCredential(value);
     return value;
   };
   return {
@@ -480,7 +587,7 @@ function publicEnvironment(env) {
   return Object.fromEntries(Object.entries(env ?? {}).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) =>
     [k, /(?:REGION|LOCATION|PROJECT|PROFILE|ENDPOINT|BASE_URL|_FILE|CREDENTIALS|VERSION|DEPLOYMENT(?:_NAME)?(?:_MAP)?|RESOURCE_NAME|HOST|PORT|MODE|FORMAT|ENABLED|DISABLED|SKIP_AUTH)$/.test(k) && !/(?:SECRET|TOKEN|API_KEY|PASSWORD)/.test(k) ? v : true]));
 }
-function explicitEnvironment(env) {
+function explicitEnvironment(env, observeFile = () => {}) {
   if (!env || typeof env !== 'object' || Array.isArray(env) || Object.entries(env).some(([k,v]) =>
       !/^[A-Z][A-Z0-9_]*$/.test(k) || /^(NODE_|PI_|HOME$|XDG_|PATH$|LD_|DYLD_)/.test(k) || typeof v !== 'string')) fail('profile_authority');
   const files = new Map(); const selectors = []; let bytes = 0;
@@ -494,6 +601,7 @@ function explicitEnvironment(env) {
     const raw = profileFile(path.dirname(value),path.basename(value),true);
     if (raw === undefined || files.size >= 32 || (bytes += raw.length) > MAX_LINE) fail('profile_authority');
     files.set(value,raw);
+    observeFile(raw);
     const text = raw.toString('utf8');
     selectors.push([value]);
     // SDK credential chains may follow explicit ADC/INI file references. Capture that
@@ -648,6 +756,124 @@ export async function createSession(sdk, runtime, model, effort, cwd, readable, 
   return { session, tools, settings };
 }
 function emit(type, data = {}) { process.stdout.write(JSON.stringify({ schema: PROTOCOL, type, ...data }) + '\n'); }
+// The invocation lifecycle has no credential/file I/O of its own. The real host binds
+// it below; token-free tests can drive the same SDK callbacks directly.
+export function bindInferenceSession(session, state, model, request, budget, emitRecord = emit) {
+  const initialized = {};
+  let inference = 0; let active; let failed = false; let settled = false; let aborted = false; let finalText; let terminalError;
+  let hasDiagnostic = false; let terminalKind = 'environment';
+  const recordError = (text, fallback) => {
+    const present = typeof text === 'string' && (text.length > 4096 || Boolean(text.trim()));
+    if (terminalError === undefined || (!hasDiagnostic && present)) {
+      terminalKind = failureKind(present ? text : fallback);
+      terminalError = state.diagnostic.safe(present ? text : fallback);
+      hasDiagnostic = present;
+    }
+  };
+  initialized.beginInference = (effective) => {
+    if ((active && !active.finished) || effective.provider !== state.request.backend || effective.id !== model.id || state.effectiveIdentity(effective) !== request.model_identity) {
+      failed = true; fail('model_changed');
+    }
+    if (failed || terminalError !== undefined) fail('unsafe_accounting');
+    active = budget.begin(effective); inference = active.id;
+    finalText = undefined;
+    emitRecord('usage', { inference: active.id, complete: false, observations: active.observations, ...active.observed });
+    return active;
+  };
+  initialized.observe = (current, event, effective) => {
+    let next; let invalid = false;
+    try { next = rawUsage(effective.api, event, () => { invalid = true; }, current.nativeComponents); }
+    catch { failed = true; fail('invalid_usage'); }
+    if (next) {
+      // Validate cumulative counters before allowing another inference. Preserve safe
+      // observed floors even if another counter in this same event is malformed.
+      const prior = current.observed;
+      const safe = { ...prior };
+      for (const key of Object.keys(next)) if (next[key] !== null) {
+        if (prior[key] !== null && next[key] < prior[key]) invalid = true;
+        else safe[key] = next[key];
+      }
+      // Do not send Rust an inconsistent record: it correctly rejects the entire
+      // record. Roll back optional components first, retaining prior safe evidence.
+      // If a newly known aggregate contradicts prior components, leave it unknown.
+      const cacheExceeds = () => safe.input !== null &&
+        BigInt(safe.cache_read ?? 0) + BigInt(safe.cache_write ?? 0) > BigInt(safe.input);
+      if (cacheExceeds()) {
+        invalid = true;
+        safe.cache_read = prior.cache_read; safe.cache_write = prior.cache_write;
+        if (cacheExceeds()) safe.input = prior.input;
+      }
+      if (safe.output !== null && (safe.reasoning ?? 0) > safe.output) {
+        invalid = true; safe.reasoning = prior.reasoning;
+        if ((safe.reasoning ?? 0) > safe.output) safe.output = prior.output;
+      }
+      current.observed = safe;
+      current.observations++;
+      emitRecord('usage', { inference: current.id, complete: false, observations: current.observations, ...current.observed });
+      if (current.observations >= 128) { budget.unsafe = true; fail('diagnostic_capacity'); }
+    }
+    if (invalid) { budget.unsafe = true; failed = true; fail('invalid_usage'); }
+    if (current.finished || effective.provider !== state.request.backend || effective.id !== model.id || state.effectiveIdentity(effective,true) !== request.model_identity) {
+      failed = true; fail('model_changed');
+    }
+  };
+  session.subscribe((event) => {
+    if (['message_update','message_end'].includes(event.type) && event.message.role === 'assistant') {
+      const msg = event.message;
+      if (msg.provider !== state.request.backend || msg.model !== model.id) failed = true;
+      if (event.type === 'message_end') {
+        const terminal = ['error','aborted'].includes(msg.stopReason);
+        aborted ||= msg.stopReason === 'aborted';
+        // The SDK can close a toolUse inference, then emit a separate terminal
+        // assistant error without another stream. Keep its actual error first;
+        // never rewrite the finalized native counters or admit a later reply.
+        if (terminal) recordError(msg.errorMessage, msg.stopReason === 'aborted' ? 'Pi SDK assistant aborted' : undefined);
+        if (!active || active.finished) {
+          if (!active || !terminal) failed = true;
+          return;
+        }
+        active.finished = true;
+        active.complete = !failed && !terminal && terminalError === undefined;
+        emitRecord('usage', { inference: active.id, complete: active.complete, observations: active.observations, ...active.observed });
+      }
+      if (event.type === 'message_end') {
+        if (msg.stopReason === 'stop') {
+          const text = msg.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
+          if (Buffer.byteLength(text) > MAX_LINE / 2) failed = true;
+          else finalText = text;
+        }
+      }
+    }
+    if (event.type === 'agent_settled') {
+      settled = true; aborted ||= event.aborted;
+      if (event.aborted) recordError(undefined, 'Pi SDK agent aborted');
+    }
+  });
+  initialized.run = async (text, promptNonce) => {
+    state.verifyContext();
+    await state.credentials.read(state.request.backend);
+    await state.checkAuth(model);
+    emitRecord('accepted', { prompt_nonce: promptNonce });
+    try { await session.prompt(text, { expandPromptTemplates: false, source: 'rpc' }); }
+    catch (error) {
+      // Internal refusals remain incomplete, even if an SDK catches/rethrows them
+      // after a previously finalized inference.
+      if (error instanceof HostError) failed = true;
+      recordError(error?.message);
+    }
+    const accounted = budget.entries.every(entry => entry.finished && entry.complete &&
+      entry.observations > 0 && entry.observed.input !== null && entry.observed.output !== null &&
+      (state.request.backend !== 'openai-codex' || entry.observed.cache_read !== null));
+    if (!settled || failed || terminalError !== undefined || !accounted || inference === 0 || finalText === undefined) {
+      emitRecord('error', { code: 'inference_failed', diagnostic: terminalError ?? 'Pi inference failed before successful settlement',
+        failure_kind: terminalKind,
+        accounting_complete: terminalError !== undefined && settled && !aborted && !failed && !budget.unsafe && accounted && inference > 0 });
+    }
+    else { emitRecord('message', { text: finalText }); emitRecord('settled'); }
+    session.dispose();
+  };
+  return initialized;
+}
 export async function main() {
   // No inherited NODE_OPTIONS/NODE_PATH is accepted by the Rust launcher. No credentials,
   // proxy, endpoint or cloud environment can become an alternate SDK authentication source.
@@ -677,7 +903,10 @@ export async function main() {
         const account = principal(rawCredential, request.backend);
         const authMethod = rawCredential?.type ?? 'context';
         const selectedEnv = {...(rawCredential?.env ?? {}),...profile.env};
-        const checkCredentialFiles = explicitEnvironment(selectedEnv);
+        const diagnostic = diagnosticFilter();
+        const checkCredentialFiles = explicitEnvironment(selectedEnv, diagnostic.rememberFile);
+        diagnostic.remember(rawCredential); diagnostic.remember(selectedEnv);
+        diagnostic.remember(profile.config?.headers); diagnostic.remember(profile.config?.apiKey);
         const verifyContext = () => { checkContext(); profile.check(); checkCredentialFiles(); };
         // Some official cloud transports use their SDK's process-level credential chain.
         // Only the explicitly selected context is exported into this already empty environment.
@@ -687,7 +916,7 @@ export async function main() {
         // Pin its initial request only, including for explicitly selected cloud contexts.
         process.env.AWS_MAX_ATTEMPTS = '1';
         if (request.principal !== null && request.principal !== account) fail('identity_changed');
-        const credentials = guardedCredentials(storage, account, request.backend, verifyContext, rawCredential);
+        const credentials = guardedCredentials(storage, account, request.backend, verifyContext, rawCredential, diagnostic.remember);
         let runtime;
         try { runtime = await createRuntime(sdk, credentials, profile, request.backend, request.home); }
         catch (error) { if (error instanceof HostError) throw error; fail('provider_configuration'); }
@@ -702,6 +931,7 @@ export async function main() {
           verifyContext();
           const current = await runtime.getAuth(model ?? request.backend,{env:selectedEnv});
           if (!current) fail('missing_credentials');
+          diagnostic.remember(current.auth);
           if ((current.auth.baseUrl ?? null) !== (requestAuth?.auth?.baseUrl ?? null)) fail('configuration_changed');
         };
         const stream = runtime.streamSimple.bind(runtime);
@@ -713,7 +943,7 @@ export async function main() {
         };
         const catalog = runtime.getModels(request.backend).filter(model => model.type === undefined || model.type === 'chat');
         const models = catalog.map((model) => ({ id: publicModelId(model), efforts: sdk.getSupportedThinkingLevels(model), identity: effectiveIdentity(model) }));
-        initialized = { sdk, runtime, credentials, account, request, profile, verifyContext, effectiveIdentity, checkAuth, catalog };
+        initialized = { sdk, runtime, credentials, account, request, profile, verifyContext, effectiveIdentity, checkAuth, catalog, diagnostic };
         if (!models.length) fail('no_chat_models');
         const offset = request.catalog_offset ?? 0;
         if (!Number.isSafeInteger(offset) || offset < 0 || offset >= 4096) fail('protocol');
@@ -742,88 +972,7 @@ export async function main() {
         const result = await createSession(state.sdk, state.runtime, model, request.effort,
           state.request.cwd, state.request.readable, state.request.writable, state.request.home, request.reply_schema, countTool);
         session = result.session;
-        let inference = 0; let active; let failed = false; let settled = false; let finalText;
-        initialized.beginInference = (effective) => {
-          if ((active && !active.finished) || effective.provider !== state.request.backend || effective.id !== model.id || state.effectiveIdentity(effective) !== request.model_identity) {
-            failed = true; fail('model_changed');
-          }
-          if (failed) fail('unsafe_accounting');
-          active = budget.begin(effective); inference = active.id;
-          finalText = undefined;
-          emit('usage', { inference: active.id, complete: false, observations: active.observations, ...active.observed });
-          return active;
-        };
-        initialized.observe = (current, event, effective) => {
-          let next; let invalid = false;
-          try { next = rawUsage(effective.api, event, () => { invalid = true; }, current.nativeComponents); }
-          catch { failed = true; fail('invalid_usage'); }
-          if (next) {
-            // Validate cumulative counters before allowing another inference. Preserve safe
-            // observed floors even if another counter in this same event is malformed.
-            const prior = current.observed;
-            const safe = { ...prior };
-            for (const key of Object.keys(next)) if (next[key] !== null) {
-              if (prior[key] !== null && next[key] < prior[key]) invalid = true;
-              else safe[key] = next[key];
-            }
-            // Do not send Rust an inconsistent record: it correctly rejects the entire
-            // record. Roll back optional components first, retaining prior safe evidence.
-            // If a newly known aggregate contradicts prior components, leave it unknown.
-            const cacheExceeds = () => safe.input !== null &&
-              BigInt(safe.cache_read ?? 0) + BigInt(safe.cache_write ?? 0) > BigInt(safe.input);
-            if (cacheExceeds()) {
-              invalid = true;
-              safe.cache_read = prior.cache_read; safe.cache_write = prior.cache_write;
-              if (cacheExceeds()) safe.input = prior.input;
-            }
-            if (safe.output !== null && (safe.reasoning ?? 0) > safe.output) {
-              invalid = true; safe.reasoning = prior.reasoning;
-              if ((safe.reasoning ?? 0) > safe.output) safe.output = prior.output;
-            }
-            current.observed = safe;
-            current.observations++;
-            emit('usage', { inference: current.id, complete: false, observations: current.observations, ...current.observed });
-            if (current.observations >= 128) { budget.unsafe = true; fail('diagnostic_capacity'); }
-          }
-          if (invalid) { budget.unsafe = true; failed = true; fail('invalid_usage'); }
-          if (current.finished || effective.provider !== state.request.backend || effective.id !== model.id || state.effectiveIdentity(effective,true) !== request.model_identity) {
-            failed = true; fail('model_changed');
-          }
-        };
-        session.subscribe((event) => {
-          if (['message_update','message_end'].includes(event.type) && event.message.role === 'assistant') {
-            const msg = event.message;
-            if (msg.provider !== state.request.backend || msg.model !== model.id) failed = true;
-            if (event.type === 'message_end') {
-              if (!active || active.finished) { failed = true; return; }
-              active.finished = true;
-              active.complete = !failed && !['error','aborted'].includes(msg.stopReason);
-              emit('usage', { inference: active.id, complete: active.complete, observations: active.observations, ...active.observed });
-            }
-            if (event.type === 'message_end') {
-              if (['error','aborted'].includes(msg.stopReason)) failed = true;
-              if (msg.stopReason === 'stop') {
-                const text = msg.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
-                if (Buffer.byteLength(text) > MAX_LINE / 2) failed = true;
-                else finalText = text;
-              }
-            }
-          }
-          if (event.type === 'agent_settled') { settled = true; failed ||= event.aborted; }
-        });
-        initialized.run = async (text, promptNonce) => {
-          state.verifyContext();
-          await initialized.credentials.read(state.request.backend);
-          await state.checkAuth(model);
-          emit('accepted', { prompt_nonce: promptNonce });
-          try { await session.prompt(text, { expandPromptTemplates: false, source: 'rpc' }); } catch { failed = true; }
-          const accounted = budget.entries.every(entry => entry.finished && entry.complete &&
-            entry.observations > 0 && entry.observed.input !== null && entry.observed.output !== null &&
-            (state.request.backend !== 'openai-codex' || entry.observed.cache_read !== null));
-          if (!settled || failed || !accounted || inference === 0 || finalText === undefined) emit('error', { code: 'inference_failed' });
-          else { emit('message', { text: finalText }); emit('settled'); }
-          session.dispose();
-        };
+        Object.assign(initialized, bindInferenceSession(session, state, model, request, budget));
         emit('prepared', { model: request.model, effort: request.effort, model_identity: request.model_identity });
       } else if (initialized?.run && !running && request.type === 'prompt' && typeof request.text === 'string') {
         if (typeof request.prompt_nonce !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(request.prompt_nonce)) fail('protocol');

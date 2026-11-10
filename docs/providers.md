@@ -74,6 +74,15 @@ failure/cancellation when observed. Capacity exhaustion fails closed. File-only 
 the actual output schemas and an array-envelope example; typed admission remains authoritative.
 See the [allowance decision](adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
 
+Pi terminal SDK errors, including assistant errors after a completed tool call, retain a bounded,
+sanitized diagnostic for the operator and raw CAS evidence. Complete native usage keeps its exact
+AF charge without an incomplete-billing refusal; the Worker reply still fails. Bounded structured
+error `type` and `code` fields contribute to classification, so `rate_limit_error` or
+`model_not_found` keeps its category even when the message is neutral or withheld for privacy.
+Only the filtered message becomes diagnostic text; provider codes and other payload fields stay
+private. Successful replies still require successful settlement. See the
+[Pi host design](design/pi-provider.md) for the protocol and diagnostic bounds.
+
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
 executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must
@@ -514,7 +523,7 @@ tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
-| `pi` | AF host `af.pi-host/5` identity/catalog, using installed SDK 1.4.0 effective chat models from the SDK and explicit profile | Pinned SDK plus configured/cached catalogs; no network refresh |
+| `pi` | AF host `af.pi-host/7` identity/catalog, using installed SDK 1.4.0 effective chat models from the SDK and explicit profile | Pinned SDK plus configured/cached catalogs; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
 
 Pi lists zero-based pages with `--page N`, retaining the 64-row page bound. JSON `catalog_page`
