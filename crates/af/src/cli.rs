@@ -2560,7 +2560,8 @@ When the checkout has scripts/pr-lines.py and it cannot print its block, nothing
 the command exits 1; so does a block scripts/check-pr-report.py would refuse, naming what is \
 missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the \
 header `| Directory | Added | Share |`, its separator and at least one directory row, each \
-directory once, or `**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
+directory once, optionally followed by the crate additions table, or \
+`**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \

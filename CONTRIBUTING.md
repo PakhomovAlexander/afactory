@@ -315,9 +315,25 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)),
   in the template's `Lines added` section: the block `python3 scripts/pr-lines.py` prints, a
   title with the total and a table with one row per directory — its figure, and its share as a
-  bar and a percentage. It counts `git diff --numstat` additions under the first directory of
-  each path, a file under a `tests` directory as `tests`, a root file under its own name,
-  figures rounded past 1000 (`12k`, `1.1k`, `463`). CI maintains the block
+  bar and a percentage, followed by a per-crate table when a crate has additions. It counts
+  `git diff --numstat` additions under the first directory of each path, a file under a `tests` directory as `tests`, a root file under its own name,
+  figures rounded past 1000 (`12k`, `1.1k`, `463`). The second table, headed
+  `**Crate additions**`, covers paths under `crates/<crate>/`: Main code,
+  Tests, Other, Total and Share. Rust files (`.rs`, case-sensitive) inside any `tests`
+  directory within the crate, or named `tests.rs`, `test_*.rs` or `*_test.rs`, count as Tests.
+  Other Rust files under the crate's `src/` count as Main code. Everything else counts as
+  Other, including non-Rust test fixtures, `Cargo.toml`, `build.rs` and ordinary examples.
+  Inline `#[cfg(test)]` modules in ordinary `src` files stay Main code: classification is
+  path-based. This differs deliberately from the directory overview's `tests` rule, which
+  covers every file type inside any `tests` directory. The crate table is a second view of
+  the same additions, never added to the PR total. Crates sort by descending total then name;
+  Share uses the whole PR total and each figure uses the overview's rounding. Names escape
+  Markdown, HTML and whitespace as numeric HTML entities. With no crate additions the second
+  table is omitted. `--json` emits exact counts as `af/PrLines@2`, with `directories` and
+  `crates` (each crate has `main`, `tests`, `other`); the previous unversioned map is no longer
+  emitted. See the
+  [crate-report decision](docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+  CI maintains the block
   ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)): the `PR report`
   workflow renders it again from the pull request's commits on every opening, edit and push,
   and when the description's block is missing or differs it writes the block into the

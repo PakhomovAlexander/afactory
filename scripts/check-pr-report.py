@@ -32,8 +32,8 @@ paragraph line above it, which GitHub shows as code.
 The description also carries the lines the pull request adds per directory (ADR-0195): exactly
 one block between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, rendered as text by the
 same rules, holding the title `**Lines added: <figure>**` and the table of directories, figures,
-bars and shares that `scripts/pr-lines.py` prints (or `**Lines added: none**` alone). Given the
-pull request's commits — the event's `base.sha` and `head.sha`, which the workflow fetched, or
+bars and shares, plus the versioned crate split when present, that `scripts/pr-lines.py` prints
+(or `**Lines added: none**` alone). Given the pull request's commits — the event's `base.sha` and `head.sha`, which the workflow fetched, or
 `--diff BASE HEAD` — the block is rendered again and one that differs is refused, with the block
 to paste; without them the shape alone is checked, and the check says so.
 
@@ -874,7 +874,7 @@ def main(argv=None):
     if base and head and not args.no_diff:
         tool = pr_lines()
         try:
-            expected = tool.render(tool.counts(tool.numstat(args.repo, base, head)))
+            expected = tool.render_entries(tool.numstat(args.repo, base, head))
         except subprocess.CalledProcessError as error:
             lines_found.append(f'could not count the lines added: git diff {base}...{head} '
                                f'failed in {args.repo}: '

@@ -136,6 +136,8 @@ fn incomplete(text: &str) -> Option<Incomplete> {
 
 /// The table header and its separator row, as `scripts/pr-lines.py` writes them.
 const HEADER: [&str; 3] = ["Directory", "Added", "Share"];
+const CRATE_TITLE: &str = "**Crate additions**";
+const CRATE_HEADER: [&str; 6] = ["Crate", "Main code", "Tests", "Other", "Total", "Share"];
 const SEPARATOR_ROW: &str = "|:--|--:|:--|";
 /// The eighth blocks a share's bar is drawn with.
 const BLOCKS: &str = "▏▎▍▌▋▊▉█";
@@ -143,7 +145,8 @@ const BLOCKS: &str = "▏▎▍▌▋▊▉█";
 /// What is wrong with the block's body `lines`, by the rules of `parse` in
 /// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` reads the block with: the title
 /// `**Lines added: <figure>**`, then the table header, its separator and at least one row per
-/// directory, each directory once; or `**Lines added: none**` alone. Blank lines do not count.
+/// directory, each directory once, optionally followed by the crate table; or
+/// `**Lines added: none**` alone. Blank lines do not count.
 /// `None` when the parser reads it back. A figure or share in non-ASCII digits, which the
 /// script never prints, is refused here even where Python's `\d` would read it.
 fn body_problem(lines: &[&str]) -> Option<String> {
@@ -196,8 +199,51 @@ fn body_problem(lines: &[&str]) -> Option<String> {
             shown(lines[2])
         ));
     }
+    let crate_at = (3..lines.len())
+        .find(|&n| lines[n] == CRATE_TITLE)
+        .unwrap_or(lines.len());
+    if crate_at < lines.len() {
+        if lines
+            .get(crate_at + 1)
+            .and_then(|line| row_cells(line))
+            .is_none_or(|cells| cells != CRATE_HEADER)
+        {
+            return Some("its block's crate title is not followed by its table header".into());
+        }
+        let tail = &lines[crate_at + 2..];
+        if !tail
+            .first()
+            .and_then(|line| row_cells(line))
+            .is_some_and(|cells| cells.len() == 6 && cells.iter().all(separator))
+        {
+            return Some("its block's crate header is not followed by its separator".into());
+        }
+        if tail.len() < 2 {
+            return Some("its block's crate table has no rows".into());
+        }
+        let mut crates = Vec::new();
+        for line in &tail[1..] {
+            let Some(cells) = row_cells(line) else {
+                return Some("its block has an invalid crate row".into());
+            };
+            if cells.len() != 6
+                || cells[0].is_empty()
+                || !cells[1..5].iter().all(|cell| is_figure(cell))
+                || !is_share(&format!("▏ {}", cells[5]))
+            {
+                return Some("its block has an invalid crate row".into());
+            }
+            if crates.contains(&cells[0]) {
+                return Some("its block has two rows for a crate".into());
+            }
+            crates.push(cells[0].clone());
+        }
+    }
+    if crate_at == 3 {
+        return Some("its block's directory table has no rows".into());
+    }
     let mut names: Vec<String> = Vec::new();
-    for line in &lines[3..] {
+    for line in &lines[3..crate_at] {
         let Some([name, figure, share]) =
             row_cells(line).and_then(|c| <[String; 3]>::try_from(c).ok())
         else {
@@ -696,7 +742,37 @@ mod tests {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join(PR_LINES);
-        let cases = bodies();
+        let mut cases = bodies();
+        let overview = [
+            "**Lines added: 3**",
+            "| Directory | Added | Share |",
+            "|:--|--:|:--|",
+            "| crates | 3 | ████████████ 100% |",
+        ];
+        let table = [
+            CRATE_TITLE,
+            "| Crate | Main code | Tests | Other | Total | Share |",
+            "|:--|--:|--:|--:|--:|--:|",
+            "| a&#124;b | 1 | 1 | 1 | 3 | 100% |",
+        ];
+        cases.push([overview.as_slice(), &table].concat());
+        // The crate section title is required for an enriched report: an untitled
+        // second table, missing header/separator/rows, or a malformed cell fails closed.
+        cases.push([overview.as_slice(), &table[1..]].concat());
+        cases.push([overview.as_slice(), &table[..1]].concat());
+        cases.push([overview.as_slice(), &table[..2]].concat());
+        cases.push([overview.as_slice(), &table[..3]].concat());
+        for bad in [
+            "| a | 1 | 1 | 1 | 3 | 100% |",
+            "| | 1 | 1 | 1 | 3 | 100% |",
+            "| a | 1 | 1 | 1 | 3 | nope |",
+            "| a | 1000 | 1 | 1 | 3 | 100% |",
+            "| a | 1 | 1 | 1 | 3 |",
+        ] {
+            cases.push([overview.as_slice(), &table[..3], &[bad]].concat());
+        }
+        cases.push([overview.as_slice(), &table, &table[3..]].concat());
+        cases.push([&overview[..3], &table].concat());
         let program = "import importlib.util, json, sys\n\
              spec = importlib.util.spec_from_file_location('pr_lines', sys.argv[1])\n\
              module = importlib.util.module_from_spec(spec)\n\

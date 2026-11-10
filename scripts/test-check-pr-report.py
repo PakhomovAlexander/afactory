@@ -1039,7 +1039,54 @@ def refreshing(pipeline):
                               env=GIT_ENV)
         assert done.returncode == 2 and 'give --diff BASE HEAD' in done.stderr, done.stderr
         assert not into.exists()
-    return len(cases) + len(nowhere) + len(runs) + 1
+        # The same event-range refresh maintains every crate column, even when the
+        # overview and crate totals still match. Inline cfg(test) is path-based main code.
+        files = {'crates/a/src/lib.rs': '#[cfg(test)]\nmod tests {}\n',
+                 'crates/a/src/tests.rs': 'test\n',
+                 'crates/a/tests/data.txt': 'fixture\n',
+                 'crates/b|c/src/lib.rs': 'main\n'}
+        for name, text in files.items():
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        git('add', '-A')
+        git('commit', '-qm', 'crate additions')
+        head = git('rev-parse', 'HEAD')
+        # A new base-side commit must not enter the report.
+        git('checkout', '-qb', 'base-advanced', base)
+        (repo / 'unrelated.txt').write_text('base only\n', encoding='utf-8')
+        git('add', '-A')
+        git('commit', '-qm', 'base advanced')
+        base = git('rev-parse', 'HEAD')
+        enriched = ('<!-- af-pr-lines:v1 -->\n**Lines added: 17**\n\n'
+                    '| Directory | Added | Share |\n|:--|--:|:--|\n'
+                    '| docs | 12 | ████████████ 71% |\n'
+                    '| crates | 4 | ████ 24% |\n| tests | 1 | █ 6% |\n\n'
+                    '**Crate additions**\n\n'
+                    '| Crate | Main code | Tests | Other | Total | Share |\n'
+                    '|:--|--:|--:|--:|--:|--:|\n'
+                    '| a | 2 | 1 | 1 | 4 | 24% |\n| b&#124;c | 1 | 0 | 0 | 1 | 6% |\n'
+                    '<!-- /af-pr-lines -->\n')
+        stale_split = enriched.replace('| a | 2 | 1 | 1 |', '| a | 1 | 2 | 1 |')
+        payload = event(description(BLOCK, stale_split))
+        payload['pull_request']['base']['sha'] = base
+        payload['pull_request']['head']['sha'] = head
+        code, said, wrote = run(None, event_payload=payload)
+        assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
+        code, said, wrote = run(description(BLOCK, enriched))
+        assert code == 0 and wrote is None and 'figures match' in said, said
+        # A directory-only block is stale as well; no crate row can be silently omitted.
+        overview = enriched[:enriched.index('\n\n**Crate additions')] + '\n<!-- /af-pr-lines -->\n'
+        code, said, wrote = run(description(BLOCK, overview))
+        assert code == 0 and wrote == description(BLOCK, enriched), (said, wrote)
+        # With refresh disabled, the category-only mismatch fails the real checker.
+        source.write_text(description(BLOCK, stale_split), encoding='utf-8')
+        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(source),
+                               '--diff', base, head, '--repo', str(repo)],
+                              capture_output=True, text=True, env=GIT_ENV)
+        assert done.returncode == 1 and 'replace it with' in done.stderr, done.stderr
+        assert enriched.strip().split('\n', 1)[1].rsplit('\n', 1)[0] in done.stderr, done.stderr
+    return len(cases) + len(nowhere) + len(runs) + 2
 
 
 if __name__ == '__main__':
