@@ -697,10 +697,10 @@ if mode == 'malformed':
         # are stand-ins; never run a nested real gate from this preflight regression.
         preflight = ['ci-disk', 'adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
                      'test-time-report', 'provider-auth-host', 'pi-host', 'pr-report', 'pr-lines',
-                     'test-classes', 'test-catalog', 'performance-schemas',
+                     'test-classes', 'test-catalog', 'workspace-fixtures', 'performance-schemas',
                      'performance-kernel-harness']
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
-        tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab',
+        tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab', 'workspace-fixture-benchmark',
                  'test-perf-trace', 'test-perf-calibration']
         release = ['release-contract', 'release-contract-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin']
@@ -722,7 +722,8 @@ if mode == 'malformed':
                         'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-scenario-git-workspace.py',
                         'test-scenario-merge-watch.py', 'test-pi-host.py', 'test-check-pr-report.py',
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
-                        'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
+                        'test-performance.py', 'test-workspace-fixtures.py', 'test-workspace-fixture-benchmark.py',
+                        'performance/schemas.py', 'performance/cli.py',
                         'nextest-gate.py', 'changelog-notes.py', 'af-pin.py',
                         'test-changelog-notes.py', 'test-test-quarantine.py',
                         'release-contract.py', 'test-release-contract.py']
