@@ -646,7 +646,9 @@ a matching file list alone does not.
 Release performance is triggered by completed upstream `Release` workflow runs. Verify
 same repository, eligible push to main or release tag, exact published nondraft tag/SHA,
 and successful `sign and publish` job across upstream attempts. Publication success
-with a failed pin job is eligible; main without a published tag is not. The downstream
+with a failed pin job is eligible; main without a published tag is not. The pin job now opens
+a CI-reviewed PR; only a second human merge pins the repository. Its stable job identity remains
+`pin the release in .af/af.lock`, and job success does not mean that merge happened. The downstream
 workflow is read-only and does not execute upstream artifacts as workflow code.
 
 Deduplicate by upstream run ID + tag + SHA, ignoring attempt number. Serialize that
@@ -658,8 +660,9 @@ creates a new measurement. Release results remain advisory for publication.
 The operational runbook must demonstrate the handoff and duplicate behavior in a staging
 repository, including publication success/pin failure, without handing publishing
 credentials to an AF Task. Before making `Performance / aggregate` required, export
-rulesets and verify coexistence with the existing authorized release-pin push. If it
-does not work, remain advisory and propose a separate release/ruleset decision.
+rulesets and verify coexistence with the release pin's CI-reviewed PR and human merge,
+without a direct push or bypass of main. If it does not work, remain advisory and propose a
+separate release/ruleset decision.
 
 An intentional regression remains a regression in the evidence. V1 has no automated
 “accepted means green” switch. An owner may document an exact-head tradeoff naming cases,

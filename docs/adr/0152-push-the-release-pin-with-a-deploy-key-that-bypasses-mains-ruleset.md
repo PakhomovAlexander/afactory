@@ -1,8 +1,10 @@
 # ADR-0152: Push the release pin with a deploy key that bypasses main's ruleset
 
-**Status:** accepted (2026-10-19). Supersedes in part
-[ADR-0138](0138-the-repository-pins-its-newest-release.md): the credential its `pin` job pushes
-with, and the consequence that the pin commit starts no workflow run.
+**Status:** superseded (2026-11-09) by
+[ADR-2026-11-09-review-release-contracts-and-pins-before-merge](2026-11-09-review-release-contracts-and-pins-before-merge.md),
+which requires a CI-reviewed pin PR with a second human merge; direct pin pushes and deploy-key
+bypass are retired. Originally accepted 2026-10-19, superseding ADR-0138's push credential and
+workflow-trigger consequences; retained here as historical rationale.
 
 ## Context
 

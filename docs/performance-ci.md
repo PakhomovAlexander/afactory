@@ -219,7 +219,10 @@ Then the `measure` job calls `performance.yml` with the claim's artifact name al
 the release tier: the published tag against the highest smaller stable release, or a
 prerelease's highest smaller predecessor. It builds both from Git and runs them in the
 unchanged build, shard and aggregate jobs. The measurement is advisory and never gates
-publication.
+publication. The upstream pin job retains its stable display identity,
+`pin the release in .af/af.lock`, for the handoff. Its success now means the pin PR was prepared;
+only a later human merge pins main. Neither a pending merge nor a failed pin job invalidates a
+successful publication's measurement eligibility.
 
 ### Credentials
 
@@ -248,7 +251,7 @@ workflows, without giving any AF Task a publishing credential:
 
 1. In the staging repository, a human operator holds the release signing secret. Cut a release
    whose `sign and publish` succeeds. Confirm the handoff claims it and its `measure` job runs.
-2. Make the `pin` job fail, for example by protecting `main` against its push, and rerun only
+2. Make the `pin` job fail, for example by withholding staging `RELEASE_PIN_TOKEN`, and rerun only
    the failed job. Confirm the second handoff links the first claim's result or reports it
    incomplete. It must not measure again.
 3. Let a second handoff of one identity run while the first still measures, for example by
@@ -260,8 +263,8 @@ workflows, without giving any AF Task a publishing credential:
 
 Keep each run's `perf-release-handoff-*` artifacts and job summaries as the evidence. Before
 `Performance check` becomes required, export the rulesets and verify they coexist with
-the release pin's authorized push (design §12). If they do not, stay advisory and propose a
-separate release and ruleset decision.
+the release pin's CI-reviewed PR and human merge (design §12), without a main bypass. If they
+do not, stay advisory and propose a separate release and ruleset decision.
 
 ## Calibration cohort
 
@@ -536,8 +539,9 @@ runtime or kernel receipts; the tamper refusals remain in the ordinary perf clas
 
 Before `Performance check` becomes a required check, export the `main` rulesets
 (`gh api repos/OWNER/NAME/rulesets` and each ruleset by ID) before and after the proposed
-change, and in the staging repository demonstrate that the release workflow's authorized
-release-pin push still lands with the check required. Keep both exports and the release run as
-evidence. If the push is blocked, stay advisory and propose a separate release and ruleset
+change, and in the staging repository demonstrate that the release workflow opens its pin-only
+PR using `RELEASE_PIN_TOKEN`, its checks run, and a human can merge it with the check required.
+No direct pin push or ruleset bypass is needed. Keep both exports, the pin PR and the release run
+as evidence. If this flow is blocked, stay advisory and propose a separate release and ruleset
 decision. Nothing in the laboratory changes a ruleset or branch protection, and no AF Task
 receives a publishing credential for this.

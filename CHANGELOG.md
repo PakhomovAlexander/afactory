@@ -19,16 +19,17 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.15.1-rc.2] - 2026-11-08
+## [0.15.1-rc.2] - 2026-11-10
 
 ### Authority compatibility
 
-Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.1-rc.2. Re-register machine-local Providers for registry v4 and use fresh runtime state for changed Pi and Task/Review authority generations; older incompatible formats are refused. Review and repin changed model bindings. Unchanged package contracts remain valid.
+Committed .af/ authority and runtime state remain compatible with 0.15.1-rc.1. After publication, review and merge the pin PR to refresh .af/af.lock to the signed 0.15.1-rc.2 digests. Existing machine-local Provider registry v4 bindings remain valid.
 
 ### Changes
 
-- release: v0.15.1-rc.1 (#746)
 - Refactor AF naming and module boundaries (#759)
+- Guard release contracts and review post-release pins (#769)
+- Prepare rc.2 telemetry contract and repair cold-home gate test (#775)
 
 - Name the shared libraries for their AF responsibilities, including `af-contracts`, `af-runtime`,
   `af-pipeline-config` and `af-source-issue`; update source, build, test and performance references
@@ -65,6 +66,36 @@ Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.1-rc.2. Re-register
 
 - Restore the historical triage captures so their recorded issue-body and owner-comment hashes
   identify the original text, and check both hashes and the truncated comment prefix in fixture tests.
+
+- Fix the performance Scenario launcher's test cache setup under a cold private HOME on macOS
+  Python 3.9 by creating missing cache parents; retain source, shadow-module and bytecode checks.
+
+- Release preparation and every CI profile now check explicit telemetry version contracts and
+  exact performance lab schema ownership before merge. Declare `0.15.1-rc.1` against its unchanged
+  receipt and fixture contracts; preserve Rust publication schemas and show captured stderr when
+  the contained telemetry smoke lacks its run artifact.
+  Release contract tests keep mutable fixture copies writable when the AF local gate seals
+  source files read-only, while preserving the source seal and all drift assertions.
+- Published releases now open one pin-only PR for CI and a second human merge, using
+  `scripts/pin-release.sh VERSION --pr` and the scoped `RELEASE_PIN_TOKEN` secret. The old
+  `--push` flag is refused. Direct pin pushes to main and the deploy-key bypass are retired;
+  reruns reuse the PR and moving-main/credential refusals remain bounded and explicit. See the
+  [release decision](../docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+
+- Release pin PRs now require a matching credential-free GitHub HTTPS origin and use the scoped
+  PAT for Git operations. SSH origins, embedded credentials, URL rewrites and scoped credential
+  overrides fail before publication, enforcing the
+  [release decision](../docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+- Retain the current focused performance contract test results and the supplied Linux contained
+  telemetry smoke evidence, bound to the repair-1 Snapshot and binary. The 4 GiB failure and
+  successful current-capacity paths are smoke evidence; hosted rollout remains unproven.
+
+- Release pin PR publication disables Git tag following, so `push.followTags=true` cannot
+  publish an annotated tag alongside the pin branch.
+
+- Declare `0.15.1-rc.2` explicitly under the telemetry `check-receipt@2` fixture contract,
+  retaining the committed package and Pipeline pins and refusing unnamed versions. Record source
+  and fixture evidence in `docs/telemetry.md`; leave the workspace at `0.15.1-rc.1` until release.
 
 ## [0.15.1-rc.1] - 2026-11-07
 

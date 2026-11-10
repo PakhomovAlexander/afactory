@@ -11,8 +11,8 @@
 
 The release pull request cannot pin its own version: the lock binds archive digests copied from
 the signed SHA256SUMS, which exist only once the release is published. The release workflow pins
-it right after publishing (scripts/pin-release.sh --push); until then the previous release is the
-newest one that can be pinned, so the check accepts it.
+it through a CI-reviewed PR after publishing (scripts/pin-release.sh --pr); until a human
+merges that PR the previous release is accepted. Publication alone does not move the pin.
 
 A release that was tagged but never published (its workflow failed after the tag) keeps its
 section, marked `[YANKED]` after the date as Keep a Changelog does; it has no signed digests to
@@ -85,7 +85,7 @@ def check():
         return 1
     problems = []
     if version not in recent:
-        allowed = recent[0] + (f" (or {recent[1]} while {recent[0]} is released)" if len(recent) > 1 else "")
+        allowed = recent[0] + (f" (or {recent[1]} while {recent[0]} awaits its pin PR merge)" if len(recent) > 1 else "")
         problems.append(f"{LOCK} pins af {version}; it must pin the newest release, {allowed}")
     problems += missing_digests(digests)
     if problems:
@@ -93,7 +93,7 @@ def check():
             print(problem, file=sys.stderr)
         print(FIX, file=sys.stderr)
         return 1
-    note = "" if version == recent[0] else f"; the release workflow pins {recent[0]} once it is published"
+    note = "" if version == recent[0] else f"; {recent[0]} awaits its pin PR merge after publication"
     print(f"{LOCK} pins af {version}{note}")
     return 0
 

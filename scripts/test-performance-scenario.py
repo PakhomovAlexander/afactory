@@ -375,7 +375,7 @@ class ScenarioLab(ExecutorFixture):
         poison = installed / "poison.py"
         poison.write_text("raise RuntimeError('BYTECODE-MUST-NOT-RUN')")
         cached = importlib.util.cache_from_source(str(installed / "perflab/values.py"))
-        pathlib.Path(cached).parent.mkdir(exist_ok=True)
+        pathlib.Path(cached).parent.mkdir(parents=True, exist_ok=True)
         py_compile.compile(str(poison), cfile=cached,
             invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
         for directory, _, files in os.walk(installed / "perflab"):

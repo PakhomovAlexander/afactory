@@ -702,7 +702,7 @@ if mode == 'malformed':
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
         tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab',
                  'test-perf-trace', 'test-perf-calibration']
-        release = ['release-resolution', 'changelog-notes-tests', 'changelog-notes',
+        release = ['release-contract', 'release-contract-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin']
         expected = [(label, 'preflight') for label in preflight]
         expected += [(label, 'lint') for label in lint] + [('test-build', 'build')]
@@ -724,7 +724,8 @@ if mode == 'malformed':
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
                         'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
                         'nextest-gate.py', 'changelog-notes.py', 'af-pin.py',
-                        'test-changelog-notes.py', 'test-test-quarantine.py']
+                        'test-changelog-notes.py', 'test-test-quarantine.py',
+                        'release-contract.py', 'test-release-contract.py']
             for name in payloads:
                 path = scripts / name
                 path.parent.mkdir(exist_ok=True)
@@ -828,7 +829,7 @@ if mode == 'malformed':
             tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
-                         'performance/schemas.py', 'performance/cli.py'):
+                         'release-contract.py', 'performance/schemas.py', 'performance/cli.py'):
                 (scripts / name).write_text('pass\n')
             tools = root / 'bin'
             tools.mkdir()
@@ -1047,9 +1048,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py'):
                 (scripts / name).write_text(sample)
-            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
+            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py'):
                 (scripts / name).write_text('pass\n')
             (scripts / 'release-smoke.sh').write_text('[ "$1" = target/debug/af ]\n')
             tools = root / 'bin'
@@ -1074,8 +1075,8 @@ ET.ElementTree(root).write(path, encoding='unicode')
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             records = [json.loads(line) for line in (source / metrics_path).read_text().splitlines()]
             self.assertEqual([r['label'] for r in records], ['fmt', 'lint', 'lint-diagnostic-features',
-                             'release-resolution', 'changelog-notes-tests', 'changelog-notes',
-                             'quarantine-scan-tests', 'af-pin-tests', 'af-pin',
+                             'release-contract', 'release-contract-tests', 'release-resolution',
+                             'changelog-notes-tests', 'changelog-notes', 'quarantine-scan-tests', 'af-pin-tests', 'af-pin',
                              'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke', 'release-smoke'])
             self.assertTrue(all(r['schema'] == 'af.ci-step/1' and r['exit_code'] == 0
                                 and r['elapsed_seconds'] >= 0 and r['started_at'] for r in records))
@@ -1097,9 +1098,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py'):
                 (scripts / name).write_text(sample)
-            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
+            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py'):
                 (scripts / name).write_text('pass\n')
             before = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
             files = [p for p in source.rglob('*') if p.is_file()]
@@ -1120,9 +1121,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
                 result = subprocess.run(['make', 'base-check'], cwd=source, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 6)
+                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 7)
                 records = [json.loads(line) for line in metrics.read_text().splitlines()]
-                self.assertEqual(len(records), 9)
+                self.assertEqual(len(records), 11)
                 self.assertTrue(all(r['exit_code'] == 0 for r in records))
                 after = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)
