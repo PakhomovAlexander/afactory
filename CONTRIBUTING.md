@@ -426,6 +426,45 @@ selections. Direct unbound tags run full. All selected Linux/macOS gates and pac
 architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
 The post-publication Performance measurement is asynchronous, not a publication gate.
 
+Every validation profile, including fast and `no-perf`, runs the cheap offline
+`python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
+runs it after changing the workspace version and before committing or publishing its PR.
+Declare that exact version under the compatible telemetry fixture contract in
+`scripts/telemetry-overhead.py` with source/fixture evidence; unknown versions are refused.
+Lab schema parity excludes only the four exact Rust publication schemas, and still refuses
+missing, stale and retired lab schemas. This is contract validation, not a performance measurement.
+
+After the release PR merges and publication succeeds, the release workflow opens one pin-only
+PR from `release/pin-vVERSION` to `main`. **Review its CI and merge that PR too**: publication
+alone does not pin this repository. The pin binds every target's exact signed archive digest;
+only `.af/af.lock`'s `[af]` and `[af.digests]` may change. No release automation pushes to main.
+See the [binding release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+
+Provision the repository Actions secret **`RELEASE_PIN_TOKEN`** with a fine-grained PAT restricted
+to this repository, owned by an account with repository write access. Grant **Contents: read and
+write** and **Pull requests: read and write**; Metadata read is implicit. Do not grant
+Administration, Actions, Workflows or a ruleset bypass. This credential starts normal push/PR CI;
+`GITHUB_TOKEN` cannot substitute for it. Checkout persists no credentials. Missing/expired tokens,
+branch push refusal or PR creation refusal fail the pin job without claiming main is pinned.
+Rotate by replacing the secret with a newly provisioned token, then revoke the old token.
+Remove the retired `PIN_DEPLOY_KEY` secret and write deploy key, and remove deploy-key bypass
+from `main-protect` in repository settings; the source change does not alter those settings.
+
+Rerun `scripts/pin-release.sh VERSION --pr` with `RELEASE_PIN_TOKEN` and `GH_REPO=OWNER/REPO`
+to reuse the same open PR, or a pin-only branch left after PR creation failed. The checkout's
+`origin` must be `https://github.com/OWNER/REPO` (optionally ending in `.git`), matching
+`GH_REPO`. SSH, embedded credentials, other repositories, URL rewrites and scoped credential
+helpers/HTTP settings are refused before Git network operations. Fetches and pushes use the explicit
+credential-free HTTPS URL with only the PAT helper; interactive authentication and redirects are
+disabled. Use a clean checkout if local credential configuration is refused. Reuse requires
+current main as parent and exact equality to a fresh signed release refresh. Closed or divergent
+PRs are refused, never recreated. Main moving before branch creation restarts preparation up to
+three times; an existing branch on older main, or main moving after branch publication, requires
+human review/rebase of the one PR. The script never force-pushes. If main already has the complete
+pin, rerunning is a no-op; a newer main pin is never downgraded. Without `--pr`, `scripts/pin-release.sh VERSION` prepares the lock in a
+clean checkout for a manual PR; it does not publish. Merge the pin PR before another release would
+put the lock more than one non-yanked release behind (`scripts/af-pin.py --check`).
+
 See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
 and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,
 summed test-seconds and runner cost separate; replay scenarios are estimates, not measured savings.

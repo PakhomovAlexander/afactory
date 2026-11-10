@@ -93,11 +93,14 @@ telemetry-gate:
 	python3 scripts/telemetry-overhead.py --af target/release/af \
 		--report target/telemetry-gate/overhead.json
 
+# Always check explicit telemetry release contracts and lab schema ownership, in every profile.
 # Exercise release selection and tag races against disposable local Git remotes, check that
 # CHANGELOG.md's [Unreleased] holds only its pointer and every changelog.d/ note only bullets,
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
+	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
+	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
 	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check

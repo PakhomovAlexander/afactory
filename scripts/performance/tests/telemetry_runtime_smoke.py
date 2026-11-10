@@ -58,11 +58,11 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         else:
             assert outcome.code == 0, (label, outcome.code, outcome.stdout, outcome.stderr)
         print('real AF setup:', label, 'exit', outcome.code, flush=True)
-        return run, json.loads(outcome.stdout) if outcome.stdout else None
+        return run, json.loads(outcome.stdout) if outcome.stdout else None, outcome.stderr
 
     if refuse:
-        run, _ = execute('overhead', 'overhead')
-        document = json.loads((run / 'bench/telemetry-bench-concurrent/00-off/stdout').read_bytes())
+        run, _, stderr = execute('overhead', 'overhead')
+        document = run_document(run, stderr)
         assert document['phase']['kind'] == 'finished'
         assert document['result']['execution'] == 'exhausted'
         assert document['result']['acceptance'] == 'inconclusive'
@@ -75,15 +75,15 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         # Inspect only public typed receipts, never Worker stdout/stderr or transcripts.
         print('4 GiB reproduces the public check resource failure before any reviewer', flush=True)
     else:
-        _, overhead = execute('overhead', 'overhead')
+        _, overhead, _ = execute('overhead', 'overhead')
         assert overhead['gate']['verdict'] == 'not_judged'
         assert len(overhead['fixtures']) == 3
-        _, invocation = execute('invocation', 'invocation_cost')
+        _, invocation, _ = execute('invocation', 'invocation_cost')
         assert invocation['gate']['verdict'] == 'not_judged'
         assert len(invocation['cases']) == 2
-        corpus, summary = execute('corpus', 'read_latency')
+        corpus, summary, _ = execute('corpus', 'read_latency')
         assert summary['runs'] == 10 and summary['executions'] == 20 and summary['blobs'] == 200
-        _, reads = execute('reads', 'read_latency', lambda run:
+        _, reads, _ = execute('reads', 'read_latency', lambda run:
             shutil.copytree(corpus / 'corpus', run / 'corpus'))
         assert reads['corpus']['runs'] == 10 and reads['corpus']['executions'] == 20
         assert reads['corpus']['blobs'] == 200 and reads['corpus']['segments'] == 20
@@ -100,6 +100,15 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
     if owner is not None:
         owner.filesystem_cleaned()
         owner.work_cleaned()
+
+
+def run_document(run, captured_stderr):
+    path = run / 'bench/telemetry-bench-concurrent/00-off/stdout'
+    try:
+        return json.loads(path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise AssertionError('missing or invalid run artifact %s: %s; captured stderr: %r'
+                             % (path, error, captured_stderr)) from error
 
 
 def outcome_stderr(run):

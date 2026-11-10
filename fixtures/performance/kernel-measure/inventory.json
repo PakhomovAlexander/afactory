@@ -3172,8 +3172,8 @@
   },
   {
    "path": "scripts/performance/perflab/contracts.py",
-   "sha256": "sha256:3390ded6e76a8873ef8b3d3c5ee7d4bf9ca1256655499a1becb6f35f7bdff1ea",
-   "size": 313086
+   "sha256": "sha256:049b3deb649a88831985bdc6e7f005a72256d02c7442e928a454e5d5b4c8b63d",
+   "size": 313652
   },
   {
    "path": "scripts/performance/perflab/costs.py",
@@ -3472,8 +3472,8 @@
   },
   {
    "path": "scripts/performance/schemas.py",
-   "sha256": "sha256:d69448533f4c01110c6c1fb8f12e44eee7a46787df5173afc9972d994ebbd16a",
-   "size": 1675
+   "sha256": "sha256:436bd719aac7acc55729d2434d432564478febef485971f4c8aaa4f39ccafe1d",
+   "size": 1970
   },
   {
    "path": "scripts/performance/service/af-nightly-build.service",
@@ -3642,8 +3642,8 @@
   },
   {
    "path": "scripts/performance/tests/telemetry_runtime_smoke.py",
-   "sha256": "sha256:e1ac34db4aa4c5c3bb0abe28b13a5807d227740c55abc2876a32b4b9d71c6242",
-   "size": 9009
+   "sha256": "sha256:f34a8427a819f0cf521c53e236cafa3de6ce52bf97eebba299e16cedbceb369f",
+   "size": 9359
   },
   {
    "path": "scripts/performance/tests/telemetry_subreaper.py",
@@ -3692,8 +3692,8 @@
   },
   {
    "path": "scripts/performance/tests/test_contracts.py",
-   "sha256": "sha256:229a4abbb45733f59e7f1cd9d8e996aae14396c5e25b371fd50436166a8815b7",
-   "size": 20944
+   "sha256": "sha256:1f4e2c4168c2f8305b154b23e7316a6164ce12b14b345ec19fa8654605b83cb3",
+   "size": 20957
   },
   {
    "path": "scripts/performance/tests/test_costs.py",
@@ -3852,8 +3852,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:c4276b426433ea5dedbcf51929afb53abb3b57e918b8e4d0185f5be47a38902a",
-   "size": 13153
+   "sha256": "sha256:5030e7c6cd0ab53d4343a79736c38417f6ef30d2f45e817c11b40ad9f423153a",
+   "size": 13285
   },
   {
    "path": "scripts/performance/tests/test_telemetry_build_bounds.py",
@@ -3961,7 +3961,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:39583cfe9701584671b300a486295d6b18fd0c0bf982da65924e29b3b1850804",
+ "harness_digest": "sha256:8c62a29016f82975c9b03856fb88257c7a65c33f77d35d10d5df817661ed8af8",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
