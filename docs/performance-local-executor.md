@@ -195,7 +195,9 @@ profile's diagnostic tools (`tools`, with the host observer's actual capability 
 `host_observer`, checked under the machine exclusion) or the configured images (`tools`:
 `build_image`, `sample_image`, `image_toolchain`, `sample_runtime`, or `image_admission` with the
 refusal). A
-ready preflight is not a reservation: submit next.
+ready preflight is not a reservation: submit next. Pass `--output PATH` to write the validated
+receipt to a file instead of stdout, including a refused receipt; readiness exit codes stay
+unchanged. An output write error refuses the command with exit 4.
 
 Preflight, submission and the claim each check the configured `build_image` and
 `sample_image` as the compute account: pinned by digest, present on this host (nothing pulls),

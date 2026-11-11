@@ -1504,10 +1504,10 @@ def cmd_executor(args):
                 _trusted_pair(executor.source_repository(config), args)
                 if args.operation == "preflight":
                     # Every submission check as this account, nothing reserved: a refusal
-                    # prints its exact reason and exits 4 before any claim or build.
+                    # emits its exact reason and exits 4 before any claim or build.
                     doc = journal.preflight(args.work, base, head, args.key, args.kind,
                                             parent=args.parent)
-                    _emit(contracts.write_bytes(doc, "executor-preflight"), None)
+                    _emit(contracts.write_bytes(doc, "executor-preflight"), args.output)
                     return 0 if doc["status"] == "ready" else 4
                 doc = journal.submit(args.work, base, head, args.key, args.kind,
                                      parent=args.parent)
