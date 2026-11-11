@@ -25,9 +25,9 @@ installs it on the first `cargo` invocation, so there is nothing to choose. Edit
 workspace version in `Cargo.toml`. The container probes need Docker; nothing else needs a
 daemon.
 
-`af` supports Linux and macOS only. A `compile_error!` at the root of `review-core` and
-`review-process` refuses every other target: every crate with platform-specific code is one of
-them or depends on `review-core`, so the guard fails the build before any unix-only call does.
+`af` supports Linux and macOS only. A `compile_error!` at the root of `af-contracts` and
+`af-process` refuses every other target: every crate with platform-specific code is one of
+them or depends on `af-contracts`, so the guard fails the build before any unix-only call does.
 Write unix code directly: do not add `#[cfg(unix)]` gates or `#[cfg(not(unix))]` fallbacks.
 Where Linux and macOS differ, split on `target_os`.
 
@@ -78,7 +78,7 @@ The runner is the pinned, checksum-verified binary that `scripts/install-nextest
 into a temporary tools directory (CI) or `cargo install cargo-nextest --locked` (a developer
 machine). `make check TEST_RUNNER=cargo` keeps the sequential libtest path for comparison.
 
-If you touch `crates/review-sandbox`, also run the live probes:
+If you touch `crates/af-sandbox`, also run the live probes:
 
 ```sh
 make review-kernel-container-probes
@@ -169,7 +169,7 @@ that `af` holds); a fixture it does not hold ends by itself, a Worker or a parke
 process that started it is gone, a fixture's escaped child when the test asks it to; and what the
 test recorded is only watched through `crate::common::recorded` (`Recorded::now`,
 `Recorded::from_marker`, `Recorded::ended_within`, the `Leftovers` guard, which reports what is
-still running and signals nothing; `crates/review-process/tests/support/recorded.rs`), or in the
+still running and signals nothing; `crates/af-process/tests/support/recorded.rs`), or in the
 performance laboratory's Python tests `tests.support.held_child_argv` and
 `tests.support.release_recorded`. The laboratory's docker stand-in ends a container from the
 init process that started it, never from `docker rm` by a recorded ID. A holder's signal can
@@ -311,13 +311,54 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   workflow refuses a description without exactly one well-formed block; Dependabot and
   `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
   runs the same check locally.
-- The description also states the lines the pull request adds, per directory
-  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)),
-  in the template's `Lines added` section: the block `python3 scripts/pr-lines.py` prints, a
-  title with the total and a table with one row per directory — its figure, and its share as a
-  bar and a percentage. It counts `git diff --numstat` additions under the first directory of
-  each path, a file under a `tests` directory as `tests`, a root file under its own name,
-  figures rounded past 1000 (`12k`, `1.1k`, `463`). CI maintains the block
+- The description states additions and deletions per area in the template's `Lines added`
+  section ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+  `python3 scripts/pr-lines.py` prints the title and one `Area`/`Changes`/`+`/`−`/`Share of additions`
+  table. Root rows partition both `git diff --numstat BASE...HEAD` counts by actual first path
+  component; root files keep their names except for collision labels described below. Rename
+  changes belong to the destination. Binary, pure-rename 0/0 and other 0/0 entries contribute
+  no numeric rows.
+  `crates` includes all crate tests without a duplicate global test bucket. Crate children have
+  lowercase `main`, `tests`, `other` leaves; direct files remain file children. Rust paths inside
+  any `tests` directory within the crate, or named `tests.rs`, `test_*.rs`, `*_test.rs`, count as
+  tests. Remaining Rust under `src/` is main; everything else is other, including non-Rust test
+  fixtures, manifests, `build.rs` and ordinary examples. Inline `#[cfg(test)]` modules and
+  common/shared source remain main: this classifies paths, not Rust syntax.
+  Every parent reconciles additions and deletions independently with its children. Roots
+  reconcile with both PR totals; repeated subtotals are not additional lines. Nodes with either
+  count positive appear. Siblings sort by descending additions, descending deletions, raw name.
+  All root rows and crate parents are bold across all nonempty cells; terminal children are plain.
+  Children use four `&nbsp;` entities per depth, without arrows or directory suffixes.
+  For a file/directory sibling collision after removing slashes, the directory keeps its name
+  and only the file gets `name (file)`, then `(file2)`, `(file3)`, etc. until unique. Allocation
+  follows raw identity order and reserves all literal bare sibling names and allocated labels.
+  This display projection leaves exact JSON identities and both counters unchanged.
+  Literal Markdown/HTML syntax, whitespace and tree arrows in names are numeric entities,
+  with visible quotes around names containing whitespace, so filenames cannot spoof bold or
+  indentation (literal `&nbsp;` becomes `&#38;nbsp;`).
+  Separate `+` and `−` bar columns share one scale per sibling group: the largest exact
+  added or deleted count among those siblings. Children use their own sibling scale, not
+  their ancestor's scale. Bars have at most twelve full cells, with Unicode eighth blocks
+  (`▏▎▍▌▋▊▉█`) rounded half up using integers. Positive counts have at least a `▏` sliver;
+  zero counts have blank cells, including bold parent rows. Deletion-only rows have a blank
+  `+` cell and a visible `−` bar. Bars are presentation only and never appear in JSON.
+  Changes use compact `+382/−10` syntax. Figures are exact below 1000, rounded half up to 0.1k
+  below 10k and 1k thereafter. Shares use immediate parent additions (PR additions for roots),
+  rounded half up; positive shares below 0.5% show `<1%`. A zero child of a positive parent is
+  `0%`; a zero parent denominator is undefined, shown as `—`.
+  Deletion-only reports retain the table and `**Lines added: 0**` title. Only a diff with both
+  totals zero prints `**Lines added: none**` alone.
+  `--json` emits only `af/PrLines@4` (`schemas/pr-lines-v4.json`): exact `added`, `deleted`
+  totals and ordered `rows`, each with raw `name` (including internal directory suffix), exact
+  `added`, `deleted` and `children` (empty for leaves).
+  Earlier JSON shapes are refused, without aliases. The `af-pr-lines:v1` markers remain the
+  refresh container; there is no second table or schema heading. See the
+  [crate-report decision](docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+  Shape parsing checks parents, unique paths, valid kinds and bounded bar glyphs, including
+  blank zero bars and nonblank positive bars. It refuses the previous three-column human
+  format and never sums rounded figures. The checker regenerates the complete hierarchy
+  from exact commits to judge numeric correctness and each bar length independently.
+  CI maintains the block
   ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)): the `PR report`
   workflow renders it again from the pull request's commits on every opening, edit and push,
   and when the description's block is missing or differs it writes the block into the
@@ -407,8 +448,8 @@ them after 50 runs under load (`docs/test-quarantine-claw.md`).
 The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
 Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored
 manual measurement: run `make perf-kernel-measure` before a pull request changing
-`scripts/performance/`, `crates/review-pipeline/examples/perf-probe/`,
-`crates/review-pipeline/build.rs`, the experiment runtime or kernel receipts
+`scripts/performance/`, `crates/af-runtime/examples/perf-probe/`,
+`crates/af-runtime/build.rs`, the experiment runtime or kernel receipts
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
 `make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
@@ -425,6 +466,45 @@ retry/tag run uses the annotation and ignores moving labels.
 selections. Direct unbound tags run full. All selected Linux/macOS gates and packaged binary, archive,
 architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
 The post-publication Performance measurement is asynchronous, not a publication gate.
+
+Every validation profile, including fast and `no-perf`, runs the cheap offline
+`python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
+runs it after changing the workspace version and before committing or publishing its PR.
+Declare that exact version under the compatible telemetry fixture contract in
+`scripts/telemetry-overhead.py` with source/fixture evidence; unknown versions are refused.
+Lab schema parity excludes only the four exact Rust publication schemas, and still refuses
+missing, stale and retired lab schemas. This is contract validation, not a performance measurement.
+
+After the release PR merges and publication succeeds, the release workflow opens one pin-only
+PR from `release/pin-vVERSION` to `main`. **Review its CI and merge that PR too**: publication
+alone does not pin this repository. The pin binds every target's exact signed archive digest;
+only `.af/af.lock`'s `[af]` and `[af.digests]` may change. No release automation pushes to main.
+See the [binding release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+
+Provision the repository Actions secret **`RELEASE_PIN_TOKEN`** with a fine-grained PAT restricted
+to this repository, owned by an account with repository write access. Grant **Contents: read and
+write** and **Pull requests: read and write**; Metadata read is implicit. Do not grant
+Administration, Actions, Workflows or a ruleset bypass. This credential starts normal push/PR CI;
+`GITHUB_TOKEN` cannot substitute for it. Checkout persists no credentials. Missing/expired tokens,
+branch push refusal or PR creation refusal fail the pin job without claiming main is pinned.
+Rotate by replacing the secret with a newly provisioned token, then revoke the old token.
+Remove the retired `PIN_DEPLOY_KEY` secret and write deploy key, and remove deploy-key bypass
+from `main-protect` in repository settings; the source change does not alter those settings.
+
+Rerun `scripts/pin-release.sh VERSION --pr` with `RELEASE_PIN_TOKEN` and `GH_REPO=OWNER/REPO`
+to reuse the same open PR, or a pin-only branch left after PR creation failed. The checkout's
+`origin` must be `https://github.com/OWNER/REPO` (optionally ending in `.git`), matching
+`GH_REPO`. SSH, embedded credentials, other repositories, URL rewrites and scoped credential
+helpers/HTTP settings are refused before Git network operations. Fetches and pushes use the explicit
+credential-free HTTPS URL with only the PAT helper; interactive authentication and redirects are
+disabled. Use a clean checkout if local credential configuration is refused. Reuse requires
+current main as parent and exact equality to a fresh signed release refresh. Closed or divergent
+PRs are refused, never recreated. Main moving before branch creation restarts preparation up to
+three times; an existing branch on older main, or main moving after branch publication, requires
+human review/rebase of the one PR. The script never force-pushes. If main already has the complete
+pin, rerunning is a no-op; a newer main pin is never downgraded. Without `--pr`, `scripts/pin-release.sh VERSION` prepares the lock in a
+clean checkout for a manual PR; it does not publish. Merge the pin PR before another release would
+put the lock more than one non-yanked release behind (`scripts/af-pin.py --check`).
 
 See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
 and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,

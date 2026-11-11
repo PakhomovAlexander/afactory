@@ -5,14 +5,14 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use review_core::task::optimization::*;
-use review_core::task::usage::DecimalU64;
-use review_store::optimization::{UnavailableSourceReason, unavailable_source_gap};
-use review_store::{Cas, EventStore, content_id};
+use af_contracts::task::optimization::*;
+use af_contracts::task::usage::DecimalU64;
+use af_store::optimization::{UnavailableSourceReason, unavailable_source_gap};
+use af_store::{Cas, EventStore, content_id};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::task_execution;
+use crate::task_commands;
 
 mod optimization_adapters;
 use optimization_adapters::{AdapterState, AdapterVersion, parse_adapter_record};
@@ -175,7 +175,7 @@ fn read_config(repo: &Path, requested: &Path) -> Result<SourceConfig, String> {
             && source_ids.insert(source.source_id.clone())
     });
     if config.schema != "af.optimization-sources/1"
-        || !review_core::is_digest(&config.project_id)
+        || !af_contracts::is_digest(&config.project_id)
         || config.sources.is_empty()
         || config.sources.len() > config.max_sessions as usize
         || !(1..=200).contains(&config.max_sessions)
@@ -348,7 +348,7 @@ fn unavailable_reason(error: &str) -> UnavailableSourceReason {
 fn digest(bytes: &[u8]) -> String {
     format!(
         "sha256:{}",
-        review_core::hex::encode(&Sha256::digest(bytes))
+        af_contracts::hex::encode(&Sha256::digest(bytes))
     )
 }
 
@@ -455,7 +455,8 @@ fn verify_retained_ranges(
             *remaining_raw -= count as u64;
             hash.update(&buffer[..count]);
         }
-        if format!("sha256:{}", review_core::hex::encode(&hash.finalize())) != receipt.prefix_digest
+        if format!("sha256:{}", af_contracts::hex::encode(&hash.finalize()))
+            != receipt.prefix_digest
         {
             return Err("Retained source bytes changed; source rotation or rewriting requires explicit new provenance".into());
         }
@@ -629,7 +630,7 @@ fn capture_source(
     }
     *remaining_raw -= selected;
     complete &= !filtered && !adapter_state.has_coverage_gap();
-    let prefix_digest = format!("sha256:{}", review_core::hex::encode(&hasher.finalize()));
+    let prefix_digest = format!("sha256:{}", af_contracts::hex::encode(&hasher.finalize()));
     let adapter_version = match adapter_state.version() {
         AdapterVersion::Normalized => "normalized-v1",
         AdapterVersion::Native => "native-v1",
@@ -807,7 +808,7 @@ fn optimization_request_digest(
     capture_digest: &str,
     experiment: bool,
     light: bool,
-    candidate: &Option<review_pipeline::task::optimization_configuration::CandidateProposal>,
+    candidate: &Option<af_runtime::task::optimization_configuration::CandidateProposal>,
 ) -> Result<String, String> {
     content_id(&serde_json::json!([
         capture_digest,
@@ -819,7 +820,7 @@ fn optimization_request_digest(
 }
 
 pub(crate) fn run(mut options: Options) -> Result<i32, String> {
-    let (repo, state) = task_execution::state_path(&options.repo, options.state.as_deref())?;
+    let (repo, state) = task_commands::state_path(&options.repo, options.state.as_deref())?;
     let candidate_kind_installed = std::fs::read_to_string(repo.join(".af/task-catalog.toml"))
         .ok()
         .and_then(|text| text.parse::<toml::Table>().ok())
@@ -850,7 +851,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
                 return Err("Candidate proposal exceeds 4 MiB".into());
             }
             serde_json::from_slice::<
-                review_pipeline::task::optimization_configuration::CandidateProposal,
+                af_runtime::task::optimization_configuration::CandidateProposal,
             >(&data)
             .map_err(|e| e.to_string())
         })
@@ -863,7 +864,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
         && options.strategy == "light"
         && candidate_kind_installed
         && repo
-            .join(review_pipeline::task::optimization_configuration::POLICY_PATH)
+            .join(af_runtime::task::optimization_configuration::POLICY_PATH)
             .is_file();
     let history = capture(&options, &repo, &state, &mut std::io::stderr())?;
     let capture_digest =
@@ -919,7 +920,9 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
         .map_err(|error| error.to_string())?;
     serde_json::to_writer(&mut temporary, &file).map_err(|error| error.to_string())?;
     temporary.flush().map_err(|error| error.to_string())?;
-    task_execution::start(task_execution::StartOptions {
+    task_commands::start(task_commands::StartOptions {
+        review_inputs: None,
+        review_selectors: None,
         input_json: Vec::new(),
         file: temporary.path().to_path_buf(),
         bindings: None,
@@ -970,7 +973,7 @@ mod tests {
     #[test]
     fn duplicate_af_exports_keep_both_receipts_but_count_one_incomplete_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let receipt = serde_json::json!({"schema":"af/task-inspection@16","task_id":"task","chargeable_tokens":"12","history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}}],"execution_records":[{"record":{"kind":"settled","attempt_id":"a","charged_tokens":"12"}}]});
+        let receipt = serde_json::json!({"schema":"af/task-inspection@20","task_id":"task","chargeable_tokens":"12","history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}}],"execution_records":[{"record":{"kind":"settled","attempt_id":"a","charged_tokens":"12"}}]});
         std::fs::write(dir.path().join("receipt.json"), receipt.to_string() + "\n").unwrap();
         let project = format!("sha256:{}", "1".repeat(64));
         let config = serde_json::json!({"schema":"af.optimization-sources/1","project_id":project,"sources":[{"adapter":"af","path":"receipt.json","source_id":"first-export","execution_id":"task","attest_project":true},{"adapter":"af","path":"receipt.json","source_id":"duplicate-export","execution_id":"task","attest_project":true}]});
@@ -991,7 +994,7 @@ mod tests {
         let history = capture(&options, dir.path(), &state, &mut Vec::new()).unwrap();
         assert_eq!(history.receipts.len(), 2);
         assert_eq!(history.observations.len(), 2);
-        let economics = review_store::optimization::project_economics(&[(
+        let economics = af_store::optimization::project_economics(&[(
             format!("sha256:{}", "2".repeat(64)),
             history,
         )])
@@ -1190,7 +1193,7 @@ mod tests {
         };
         history.validate().unwrap();
         let economics =
-            review_store::optimization::project_economics(&[(capture_id, history)]).unwrap();
+            af_store::optimization::project_economics(&[(capture_id, history)]).unwrap();
         // Codex's two cumulative snapshots become 100, not 85 + 100; the duplicate Claude
         // message remains 15, not 30. Outer sessions stay separate from AF charges.
         assert_eq!(economics.af_usage.chargeable_tokens.get(), 0);
@@ -1310,7 +1313,7 @@ mod tests {
                 history(Some(ids[1].clone()), third_receipt, third),
             ),
         ];
-        let economics = review_store::optimization::project_economics(&captures).unwrap();
+        let economics = af_store::optimization::project_economics(&captures).unwrap();
         assert_eq!(economics.outer_session_usage.chargeable_tokens.get(), 100);
         assert_eq!(economics.capture_ids, ids);
     }
@@ -1382,7 +1385,7 @@ mod source_tests {
     fn recorded_gap() -> String {
         let gap = format!(
             "unavailable_external_{}",
-            &review_core::hex::encode(&Sha256::digest(b"fixture"))[..12]
+            &af_contracts::hex::encode(&Sha256::digest(b"fixture"))[..12]
         );
         assert_eq!(
             gap,

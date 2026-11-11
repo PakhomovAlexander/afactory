@@ -11,7 +11,7 @@
 //!
 //! The build-free baseline refusals need no successful measurement. The positive comparison is
 //! controlled, never timing noise: the Task's source is a disposable product revision whose
-//! `review_store::validate_envelope` sleeps, and the candidate removes the sleep with the
+//! `af_store::validate_envelope` sleeps, and the candidate removes the sleep with the
 //! protected harness byte-identical. In the ignored manual test, tampered candidates also remove
 //! the sleep, so only the guard stands between them and an improved receipt; each leaves a marker if any
 //! of its code ran. Every Task's public evidence, its result, each output's typed envelope and
@@ -23,11 +23,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_core::task::measurement::{
+use af_contracts::task::measurement::{
     ComparisonObjective, MeasureObjectiveV1, MeasurementComparisonV1, MeasurementV1,
     compare_measurements,
 };
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 
 use crate::schemas;
@@ -37,9 +37,9 @@ const MEASURE: &str = "perf_canonical_validate_small";
 const OBJECTIVE: &str = "perf_canonical_validate_small_elapsed";
 const INSTANCE: &str = "canonical_validate_small__package_small_envelope";
 const STAGED: &str = "fixtures/performance/kernel-measure/code-policy-measures.toml";
-const CANONICAL: &str = "crates/review-store/src/canonical.rs";
+const CANONICAL: &str = "crates/af-store/src/canonical.rs";
 const VALIDATE: &str =
-    "pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(), String> {\n";
+    "pub fn validate_envelope(envelope: &af_contracts::ArtifactEnvelope) -> Result<(), String> {\n";
 /// The controlled slowdown of the successful comparison's disposable baseline revision.
 const SLOW_MS: u64 = 7500;
 /// Refusal scenarios need only a small slowdown; they do not prove improvement.
@@ -397,7 +397,7 @@ impl Consumer {
             "{task_id}: {stderr}\n{}",
             self.explain(&outcome)
         );
-        schemas::valid(&schemas::validator("task-inspection-v16.json"), &outcome);
+        schemas::valid(&schemas::validator("task-inspection-v20.json"), &outcome);
         self.retain(task_id, code, &outcome);
         outcome
     }
@@ -744,7 +744,7 @@ fn retained_stream(cas: &Cas, id: Option<&str>) -> Value {
         return Value::Null;
     };
     let bytes = cas.get(id).unwrap();
-    assert_eq!(review_store::canonical::blob_content_id(&bytes), id);
+    assert_eq!(af_store::canonical::blob_content_id(&bytes), id);
     retained_bytes(id, &bytes)
 }
 
@@ -839,7 +839,7 @@ fn install_authority(workspace: &Path, repo: &Path) {
     ] {
         let package = format!("fixture/{name}");
         catalog["packages"][package.as_str()]["digest"] = toml::Value::String(
-            review_config::lock::package_digest(&package, &packages.join(name)).unwrap(),
+            af_pipeline_config::lock::package_digest(&package, &packages.join(name)).unwrap(),
         );
     }
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -971,7 +971,7 @@ fn failure_diagnostics(cas: &Cas, outcome: &Value) -> Value {
         if bytes.len() <= 2 * STREAM_PART {
             json!({"retained": "whole", "value": value})
         } else {
-            retained_bytes(&review_store::canonical::blob_content_id(&bytes), &bytes)
+            retained_bytes(&af_store::canonical::blob_content_id(&bytes), &bytes)
         }
     }
     const MAX_ARTIFACTS: usize = 64;
@@ -1279,7 +1279,7 @@ fn decode_base64(encoded: &str) -> Vec<u8> {
 /// pair was observed under load; credit only one extra sleep although setup validates too.
 #[test]
 fn guarded_improvement_margin_covers_observed_load_within_sample_timeout() {
-    use review_core::task::measurement::{MeasurementRunV1, summarize};
+    use af_contracts::task::measurement::{MeasurementRunV1, summarize};
 
     let staged: toml::Value =
         toml::from_str(&std::fs::read_to_string(workspace().join(STAGED)).unwrap()).unwrap();
@@ -1415,8 +1415,8 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
             "timing-boundary",
             json!({
                 CANONICAL: unslow,
-                "crates/review-pipeline/examples/perf-probe/cases.rs": {"replace": [
-                    ".and_then(|envelope| review_store::validate_envelope(&envelope).map(|()| envelope))",
+                "crates/af-runtime/examples/perf-probe/cases.rs": {"replace": [
+                    ".and_then(|envelope| af_store::validate_envelope(&envelope).map(|()| envelope))",
                     ".and_then(|envelope| Ok(envelope))"
                 ]},
             }),
@@ -1437,11 +1437,11 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
             json!({
                 CANONICAL: unslow,
                 ".cargo/config.toml": "[build]\nrustflags = [\"-Cdebug-assertions=off\"]\n",
-                "crates/review-store/build.rs": format!(
+                "crates/af-store/build.rs": format!(
                     "fn main() {{ std::fs::write({:?}, b\"ran\").unwrap(); }}\n",
                     build_marker.display().to_string()
                 ),
-                "crates/review-store/examples/extra/Cargo.toml": "[package]\nname = \"extra\"\n",
+                "crates/af-store/examples/extra/Cargo.toml": "[package]\nname = \"extra\"\n",
             }),
             "harness of",
         ),
@@ -1452,7 +1452,7 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
             json!({
                 CANONICAL: unslow,
                 ".CaRgO/config.toml": "[build]\nrustflags = [\"-Cdebug-assertions=off\"]\n",
-                "crates/review-store/BUILD.RS": format!(
+                "crates/af-store/BUILD.RS": format!(
                     "fn main() {{ std::fs::write({:?}, b\"ran\").unwrap(); }}\n",
                     case_marker.display().to_string()
                 ),
@@ -1748,7 +1748,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
             assert_eq!(observed["workspace_fingerprints_invalidated"], 0);
         }
     }
-    let slow = review_core::task::measurement::MeasureDecimal::from_u64(SLOW_MS);
+    let slow = af_contracts::task::measurement::MeasureDecimal::from_u64(SLOW_MS);
     assert!(baseline.summary["wall_ms"].median >= slow);
     assert!(candidate.summary["wall_ms"].median < slow);
     let recorded = comparison(&cas, &outcome);
@@ -1816,8 +1816,8 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
             "timing-boundary",
             json!({
                 CANONICAL: unslow,
-                "crates/review-pipeline/examples/perf-probe/cases.rs": {"replace": [
-                    ".and_then(|envelope| review_store::validate_envelope(&envelope).map(|()| envelope))",
+                "crates/af-runtime/examples/perf-probe/cases.rs": {"replace": [
+                    ".and_then(|envelope| af_store::validate_envelope(&envelope).map(|()| envelope))",
                     ".and_then(|envelope| Ok(envelope))"
                 ]},
             }),
@@ -1838,11 +1838,11 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
             json!({
                 CANONICAL: unslow,
                 ".cargo/config.toml": "[build]\nrustflags = [\"-Cdebug-assertions=off\"]\n",
-                "crates/review-store/build.rs": format!(
+                "crates/af-store/build.rs": format!(
                     "fn main() {{ std::fs::write({:?}, b\"ran\").unwrap(); }}\n",
                     build_marker.display().to_string()
                 ),
-                "crates/review-store/examples/extra/Cargo.toml": "[package]\nname = \"extra\"\n",
+                "crates/af-store/examples/extra/Cargo.toml": "[package]\nname = \"extra\"\n",
             }),
             "harness of",
         ),
@@ -1853,7 +1853,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
             json!({
                 CANONICAL: unslow,
                 ".CaRgO/config.toml": "[build]\nrustflags = [\"-Cdebug-assertions=off\"]\n",
-                "crates/review-store/BUILD.RS": format!(
+                "crates/af-store/BUILD.RS": format!(
                     "fn main() {{ std::fs::write({:?}, b\"ran\").unwrap(); }}\n",
                     case_marker.display().to_string()
                 ),
@@ -1959,7 +1959,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample() {
 
 /// The receipts reader's identities are the kernel's own (ADR-0187): every envelope of the
 /// published valid fixture, whose IDs the laboratory computed in Python, passes
-/// `review_store::validate_envelope`, and each whole stream's ID is its `blob_content_id`; the
+/// `af_store::validate_envelope`, and each whole stream's ID is its `blob_content_id`; the
 /// fixtures that change a payload or a producer under the original IDs fail it, as the reader
 /// refuses them.
 #[test]
@@ -1985,9 +1985,9 @@ fn receipts_fixtures_carry_the_kernel_s_own_envelope_and_stream_identities() {
     let all = envelopes(&valid);
     assert_eq!(all.len(), 4);
     for envelope in &all {
-        let typed: review_core::ArtifactEnvelope =
+        let typed: af_contracts::ArtifactEnvelope =
             serde_json::from_value(envelope.clone()).unwrap();
-        review_store::validate_envelope(&typed).unwrap();
+        af_store::validate_envelope(&typed).unwrap();
         assert_eq!(serde_json::to_value(&typed).unwrap(), *envelope);
     }
     let mut streams = 0;
@@ -2003,7 +2003,7 @@ fn receipts_fixtures_carry_the_kernel_s_own_envelope_and_stream_identities() {
                         stream["tail"].as_str().unwrap()
                     );
                     assert_eq!(
-                        review_store::canonical::blob_content_id(bytes.as_bytes()),
+                        af_store::canonical::blob_content_id(bytes.as_bytes()),
                         stream["id"].as_str().unwrap()
                     );
                     streams += 1;
@@ -2026,9 +2026,9 @@ fn receipts_fixtures_carry_the_kernel_s_own_envelope_and_stream_identities() {
         let refused: Vec<String> = changed
             .iter()
             .filter_map(|envelope| {
-                let typed: review_core::ArtifactEnvelope =
+                let typed: af_contracts::ArtifactEnvelope =
                     serde_json::from_value(envelope.clone()).unwrap();
-                review_store::validate_envelope(&typed).err()
+                af_store::validate_envelope(&typed).err()
             })
             .collect();
         assert_eq!(refused.len(), 1, "{name}: {refused:?}");
@@ -2037,7 +2037,7 @@ fn receipts_fixtures_carry_the_kernel_s_own_envelope_and_stream_identities() {
 }
 
 /// Every envelope and Task result of a receipts document that the kernel's own types refuse:
-/// each envelope through `review_store::validate_envelope` (its `ArtifactEnvelope::validate`
+/// each envelope through `af_store::validate_envelope` (its `ArtifactEnvelope::validate`
 /// first), each result through its `TaskResultV1` deserialization, whose sets are strictly
 /// ascending, and then `TaskResultV1::validate`. Independently of those checks, every
 /// envelope's two IDs are the kernel's own of its content.
@@ -2045,26 +2045,26 @@ fn kernel_refusals(document: &Value) -> Vec<(String, String)> {
     let mut refused = Vec::new();
     for (index, task) in document["tasks"].as_array().unwrap().iter().enumerate() {
         let result =
-            serde_json::from_value::<review_core::task::TaskResultV1>(task["result"].clone())
+            serde_json::from_value::<af_contracts::task::TaskResultV1>(task["result"].clone())
                 .map_err(|error| error.to_string())
                 .and_then(|result| result.validate());
         if let Err(error) = result {
             refused.push((format!("tasks[{index}].result"), error));
         }
         for (port, output) in task["outputs"].as_object().unwrap() {
-            let typed: review_core::ArtifactEnvelope =
+            let typed: af_contracts::ArtifactEnvelope =
                 serde_json::from_value(output["envelope"].clone()).unwrap();
             assert_eq!(
-                review_store::canonical::content_id(&typed.payload).unwrap(),
+                af_store::canonical::content_id(&typed.payload).unwrap(),
                 typed.content_id,
                 "tasks[{index}].{port}"
             );
             assert_eq!(
-                review_store::canonical::artifact_id(&typed).unwrap(),
+                af_store::canonical::artifact_id(&typed).unwrap(),
                 typed.artifact_id,
                 "tasks[{index}].{port}"
             );
-            if let Err(error) = review_store::validate_envelope(&typed) {
+            if let Err(error) = af_store::validate_envelope(&typed) {
                 refused.push((format!("tasks[{index}].{port}"), error));
             }
         }
@@ -2074,7 +2074,7 @@ fn kernel_refusals(document: &Value) -> Vec<(String, String)> {
 
 /// The receipts reader refuses what the kernel itself refuses (ADR-0188). Each fixture below
 /// keeps every identity the kernel recomputes, and exactly the named envelope or Task result
-/// fails its own `review_core` type's validation, with the kernel's message; the valid fixture
+/// fails its own `af_contracts` type's validation, with the kernel's message; the valid fixture
 /// has no such refusal. The whitespace a blank name may hold is Rust's `char::is_whitespace`,
 /// and a whole retained stream is never longer than the exporter below keeps whole.
 #[test]
@@ -2206,7 +2206,7 @@ fn receipts_fixtures_refuse_what_the_kernel_s_own_types_refuse() {
         (accent, "whole", "utf-8", STREAM_PART, STREAM_PART, 0),
         (binary, "head_and_tail", "base64", 43692, 43692, 1),
     ] {
-        let id = review_store::canonical::blob_content_id(&bytes);
+        let id = af_store::canonical::blob_content_id(&bytes);
         let kept = retained_bytes(&id, &bytes);
         assert_eq!(kept["retained"], retained, "{}", bytes.len());
         assert_eq!(kept["encoding"], encoding, "{}", bytes.len());
@@ -2227,7 +2227,7 @@ fn receipts_fixtures_refuse_what_the_kernel_s_own_types_refuse() {
     assert_eq!(bytes.len(), 2 * STREAM_PART + 1);
     assert_eq!(stream["retained"], "whole");
     let id = stream["id"].as_str().unwrap();
-    assert_eq!(review_store::canonical::blob_content_id(&bytes), id);
+    assert_eq!(af_store::canonical::blob_content_id(&bytes), id);
     assert_eq!(retained_bytes(id, &bytes)["retained"], "head_and_tail");
     assert_eq!(kernel_refusals(&fixture), []);
 }
@@ -2236,7 +2236,7 @@ fn receipts_fixtures_refuse_what_the_kernel_s_own_types_refuse() {
 /// (ADR-0189): `unique_set` reads `evidence` and `missing_obligations` only in strictly
 /// ascending `String` order, and an output's `artifact_ids` is a `Vec` in any order. Each
 /// variant of the valid fixture below changes only a result, so every envelope and reference
-/// stays the kernel's own; the laboratory's reader and `review_core`'s own types must agree on
+/// stays the kernel's own; the laboratory's reader and `af_contracts`'s own types must agree on
 /// every one.
 #[test]
 fn receipts_reader_admits_result_sets_as_the_kernel_deserializes_them() {

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 
 use crate::task_cli;
@@ -76,8 +76,11 @@ fn repin_all(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -332,7 +335,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     let before = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v16.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &before,
     );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
@@ -409,7 +412,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     assert!(!stdout.contains("--retry-gate"), "{stdout}");
     let after = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v16.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &after,
     );
     assert_eq!(after["result"]["domain_conclusion"], "verified");
@@ -1145,7 +1148,7 @@ with tempfile.TemporaryDirectory() as tmp:
     classes.CATALOG = classes.ROOT / '.config/test-classes.json'
     classes.audit_source = lambda: None
     classes.catalog = lambda: {'scripts': {'test-sample.py': 'functional'}, 'always_on_scripts': []}
-    entries = [{'binary': 'review-core', 'test': 'functional_case_%03d' % n,
+    entries = [{'binary': 'af-contracts', 'test': 'functional_case_%03d' % n,
                 'class': 'functional', 'ignored': False} for n in range(100)]
     classes.partition = lambda inventory: entries
     classes.report = lambda *args, **kwargs: {}
@@ -1252,7 +1255,7 @@ fn a_passed_gate_s_evidence_is_its_report_s_not_its_preflight_fixtures() {
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-pass");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v16.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &shown,
     );
     let gate = &shown["gate"];
@@ -1319,7 +1322,7 @@ fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
     assert_eq!(code, 5, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-fail");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v16.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &shown,
     );
     assert_eq!(shown["state"]["cause"], "check_failed", "{shown:#}");

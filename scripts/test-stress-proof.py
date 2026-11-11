@@ -5,6 +5,8 @@ reads nextest's JUnit and the sampled load the way the proof prints them."""
 import importlib.util
 import json
 import os
+import re
+from unittest import mock
 from pathlib import Path
 import signal
 import subprocess
@@ -103,7 +105,7 @@ class Table(unittest.TestCase):
     <testcase name="b::fails" classname="af::it" timestamp="2026-10-27T03:00:05.000+00:00"
               time="2.5"><failure message="test failure">panicked</failure>
       <system-err>left: None</system-err></testcase>
-    <testcase name="c::other" classname="review-process::x" time="1.0"></testcase>
+    <testcase name="c::other" classname="af-process::x" time="1.0"></testcase>
   </testsuite>
 </testsuites>
 '''
@@ -196,8 +198,26 @@ class Table(unittest.TestCase):
     def test_the_selection_names_each_test_exactly(self):
         self.assertEqual(stress.filter_expression(['a::b', 'c::d']),
                          'package(af) & binary(it) & (test(=a::b) | test(=c::d))')
-        self.assertIn('review_plan_refusals::first_run_refusals_name_the_fix', stress.FAMILIES)
+        self.assertIn('task_file::native_review_preflight_commands_inspect_real_task_documents_and_refuse_empty_diff', stress.FAMILIES)
+        # Resolve the complete default selection to current #[test] owners. The command also
+        # verifies the actual nextest inventory before starting load; source ownership catches
+        # a retired selection cheaply in the ordinary script gate without another Rust build.
+        for identity in stress.FAMILIES:
+            module, name = identity.split('::')
+            source = (ROOT / 'crates/af/tests/it' / (module + '.rs')).read_text()
+            self.assertRegex(source, r'#\[test\]\s*fn ' + re.escape(name) + r'\(')
         self.assertEqual(len(stress.FAMILIES), 7)
+
+    def test_unknown_default_or_explicit_name_refuses_before_starting_any_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Exercise main's real inventory refusal. Listing zero tests is not a proof,
+            # and neither the default selection nor an explicit typo may start load.
+            with mock.patch.object(stress.subprocess, 'run', return_value=
+                    subprocess.CompletedProcess([], 0, stdout='')):
+                with mock.patch.object(stress.Load, 'start') as start:
+                    self.assertEqual(stress.main(['--keep', directory]), 2)
+                    self.assertEqual(stress.main(['--keep', directory, '--test', 'absent::test']), 2)
+                    start.assert_not_called()
 
 
 if __name__ == '__main__':

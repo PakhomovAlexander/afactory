@@ -276,7 +276,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v5.json", &reported);
+    valid("provider-status-v6.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -500,7 +500,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v5.json", &reported);
+    valid("provider-status-v6.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -515,7 +515,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v5.json", &reported);
+    valid("provider-status-v6.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();
@@ -530,7 +530,14 @@ exit 64
 
 #[test]
 fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
-    for backend in ["openai-codex", "kimi-coding"] {
+    for backend in [
+        "openai-codex",
+        "kimi-coding",
+        "anthropic",
+        "openai",
+        "google-vertex",
+        "team-compatible",
+    ] {
         let root = tempfile::tempdir().unwrap();
         let work = root.path().join("work");
         std::fs::create_dir(&work).unwrap();
@@ -544,6 +551,34 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                 "review"
             },
         );
+        if !matches!(backend, "openai-codex" | "kimi-coding") {
+            let mut data: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+            data["backend"] = serde_json::json!(backend);
+            data["model"] = serde_json::json!("sdk-code");
+            data["api"] = serde_json::json!("openai-completions");
+            std::fs::write(&state, serde_json::to_vec(&data).unwrap()).unwrap();
+            let credential = if backend == "google-vertex" {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({(backend):{"type":"api_key","key":"SYNTHETIC_API_SECRET"}})
+            };
+            std::fs::write(
+                auth.join("auth.json"),
+                serde_json::to_vec(&credential).unwrap(),
+            )
+            .unwrap();
+            if backend == "google-vertex" {
+                let context = auth.join("af-context.json");
+                std::fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
+                std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        if backend == "team-compatible" {
+            let config = auth.join("models.json");
+            let models = (0..70).map(|index| serde_json::json!({"id":format!("~vendor/model-{index}"),"reasoning":true})).collect::<Vec<_>>();
+            std::fs::write(&config,serde_json::to_vec(&serde_json::json!({"providers":{(backend):{"api":"openai-completions","baseUrl":"https://custom.invalid/v1","models":models}}})).unwrap()).unwrap();
+            std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let invoke = |args: &[&str]| {
             crate::common::af()
                 .args(args)
@@ -580,15 +615,15 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             String::from_utf8_lossy(&setup.stderr)
         );
         let value: Value = serde_json::from_slice(&setup.stdout).unwrap();
-        valid("pi-provider-setup-v3.json", &value);
+        valid("pi-provider-setup-v4.json", &value);
         for (args, schema) in [
             (
                 vec!["provider", "status", "--json"],
-                "provider-status-v5.json",
+                "provider-status-v6.json",
             ),
             (
                 vec!["provider", "models", "pi-personal", "--json"],
-                "provider-models-v2.json",
+                "provider-models-v4.json",
             ),
             (
                 vec![
@@ -598,12 +633,16 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                     "--resolve",
                     if backend == "kimi-coding" {
                         "k3/high"
-                    } else {
+                    } else if backend == "openai-codex" {
                         "o3/high"
+                    } else if backend == "team-compatible" {
+                        "~vendor/model-69/high"
+                    } else {
+                        "sdk-code/high"
                     },
                     "--json",
                 ],
-                "provider-models-v2.json",
+                "provider-models-v4.json",
             ),
         ] {
             let out = invoke(&args);
@@ -615,8 +654,8 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             );
             let value: Value = serde_json::from_slice(&out.stdout).unwrap();
             valid(schema, &value);
-            if schema == "provider-status-v5.json" {
-                assert_eq!(value["schema"], "af/provider-status@5");
+            if schema == "provider-status-v6.json" {
+                assert_eq!(value["schema"], "af/provider-status@6");
                 assert_eq!(value["providers"][0]["kind"], "pi");
                 assert_eq!(value["providers"][0]["auth"], "authenticated");
             }
@@ -628,9 +667,33 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                 "SYNTHETIC_KIMI_ACCESS",
                 "SYNTHETIC_KIMI_REFRESH",
                 "DO_NOT_USE_AMBIENT",
+                "SYNTHETIC_API_SECRET",
+                "SYNTHETIC_CLOUD_SECRET",
             ] {
                 assert!(!text.contains(secret));
             }
+        }
+        if backend == "team-compatible" {
+            let page = invoke(&[
+                "provider",
+                "models",
+                "pi-personal",
+                "--page",
+                "1",
+                "--resolve",
+                "~vendor/model-69",
+                "--json",
+            ]);
+            assert!(page.status.success(), "{}", err(&page));
+            let value = document(&page);
+            valid("provider-models-v4.json", &value);
+            assert_eq!(value["providers"][0]["models"].as_array().unwrap().len(), 6);
+            assert_eq!(value["providers"][0]["catalog_page"]["total"], 70);
+            assert_eq!(
+                value["providers"][0]["resolution"]["id"],
+                "~vendor/model-69"
+            );
+            assert!(value["providers"][0]["resolution"]["effort"].is_null());
         }
         // Status JSON deliberately carries stable states, not diagnostic prose. Check
         // the identity limitation on the human status surface that publishes Pi's note.
@@ -651,7 +714,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             !state.with_extension("json.calls").exists(),
             "token-free command started inference"
         );
-        let unsupported = invoke(&[
+        let refused = invoke(&[
             "provider",
             "setup",
             "pi-other",
@@ -665,15 +728,15 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             sdk.to_str().unwrap(),
             "--json",
         ]);
-        assert!(!unsupported.status.success());
-        valid("pi-provider-setup-v3.json", &document(&unsupported));
-        assert!(err(&unsupported).starts_with("af provider setup: "));
+        assert!(!refused.status.success());
+        valid("pi-provider-setup-v4.json", &document(&refused));
+        assert!(err(&refused).starts_with("af provider setup: "));
 
         // Losing one optional SDK installation leaves the registry readable and removable.
         std::fs::remove_file(&sdk).unwrap();
         let status = invoke(&["provider", "status", "--json"]);
         let value: Value = serde_json::from_slice(&status.stdout).unwrap();
-        valid("provider-status-v5.json", &value);
+        valid("provider-status-v6.json", &value);
         assert!(value["registry"]["warning"].is_null());
         assert_ne!(value["providers"][0]["auth"], "authenticated");
         assert!(!String::from_utf8_lossy(&status.stderr).contains("registry"));
@@ -751,7 +814,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             let value = document(&output);
             if args[1] == "setup" {
                 assert_eq!(code(&output), 3, "{}", err(&output));
-                valid("pi-provider-setup-v3.json", &value);
+                valid("pi-provider-setup-v4.json", &value);
                 assert!(
                     value["detail"]
                         .as_str()
@@ -760,7 +823,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
                 );
                 assert!(err(&output).starts_with("af provider setup: "));
             } else {
-                valid("provider-status-v5.json", &value);
+                valid("provider-status-v6.json", &value);
                 assert_ne!(value["providers"][0]["auth"], "authenticated");
                 let human = invoke(absolute_path.as_os_str(), &["provider", "status"]);
                 assert!(
@@ -822,7 +885,7 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
     let refused = |output: Output| {
         assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
         let value = document(&output);
-        valid("pi-provider-setup-v3.json", &value);
+        valid("pi-provider-setup-v4.json", &value);
         assert_eq!(value["outcome"], "human_action_required");
         assert!(err(&output).starts_with("af provider setup: "));
         assert!(err(&output).contains(value["detail"].as_str().unwrap()));
@@ -850,7 +913,7 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
     std::fs::rename(&saved, &sdk).unwrap();
     let output = setup();
     assert_eq!(code(&output), 0, "{} {}", out(&output), err(&output));
-    valid("pi-provider-setup-v3.json", &document(&output));
+    valid("pi-provider-setup-v4.json", &document(&output));
     assert_eq!(document(&output)["outcome"], "registered");
     assert!(err(&output).is_empty());
     let registry = std::fs::read_to_string(root.path().join("providers.toml")).unwrap();
@@ -912,7 +975,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
         );
         if json {
             let value = document(output);
-            valid("pi-provider-setup-v3.json", &value);
+            valid("pi-provider-setup-v4.json", &value);
             assert_eq!(value["outcome"], outcome);
             assert!(err(output).contains(value["detail"].as_str().unwrap()));
         } else {
@@ -940,7 +1003,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
     assert_eq!(code(&setup("pi-one", true)), 0);
     let repeated = setup("pi-one", true);
     assert_eq!(code(&repeated), 0);
-    valid("pi-provider-setup-v3.json", &document(&repeated));
+    valid("pi-provider-setup-v4.json", &document(&repeated));
     assert_eq!(document(&repeated)["outcome"], "already_registered");
     assert!(err(&repeated).is_empty());
     for json in [true, false] {
@@ -973,7 +1036,7 @@ fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invent
         ("pi-one", vec![], true, false),
         (
             "pi-one",
-            vec!["--backend", "RAW_REQUEST_MUST_NOT_ESCAPE"],
+            vec!["--backend", "../RAW_REQUEST_MUST_NOT_ESCAPE"],
             true,
             false,
         ),
@@ -1026,7 +1089,7 @@ fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invent
             .unwrap();
         assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
         let value = document(&output);
-        valid("pi-provider-setup-v3.json", &value);
+        valid("pi-provider-setup-v4.json", &value);
         assert_eq!(!value["id"].is_null(), valid_id);
         assert_eq!(!value["backend"].is_null(), valid_backend);
         assert_eq!(value["outcome"], "human_action_required");
@@ -1043,8 +1106,8 @@ fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invent
 
 #[test]
 fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inference() {
-    use review_runner::task::{RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter};
-    use review_runner_pi::{PiConfig, PiInferenceEvidenceV1, PiTaskAdapter};
+    use af_runner::task::{RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter};
+    use af_runner_pi::{PiConfig, PiInferenceEvidenceV2, PiTaskAdapter};
     use serde_json::json;
     use std::time::Duration;
 
@@ -1068,9 +1131,16 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
             sdk_entrypoint: sdk,
         };
         let ready =
-            review_runner_pi::probe(&node, &config, &auth, Duration::from_secs(30), None).unwrap();
+            af_runner_pi::probe(&node, &config, &auth, Duration::from_secs(30), None).unwrap();
         let adapter = PiTaskAdapter {
-            captured: review_runner_pi::authority(&node, &config, &auth, &ready.models[0]).unwrap(),
+            captured: af_runner_pi::authority(
+                &node,
+                &config,
+                &auth,
+                &ready.models[0],
+                &ready.auth_method,
+            )
+            .unwrap(),
             node,
             config,
             auth_dir: auth,
@@ -1078,7 +1148,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
             model: ready.models[0].id.clone(),
             effort: "high".into(),
         };
-        let cas = review_store::Cas::open(root.path().join("cas")).unwrap();
+        let cas = af_store::Cas::open(root.path().join("cas")).unwrap();
         let event = |usage: Value| json!({"usage":usage});
         let aggregate = json!({"prompt_tokens":12,"completion_tokens":3});
         // Each case starts with no previous usage. Conflicts are per component, never a
@@ -1379,7 +1449,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                     None,
                     &[],
                     RemainingTokenAllowance::new(1000).unwrap(),
-                    review_runner::task::reply_schema::ReplyContract::Request,
+                    af_runner::task::reply_schema::ReplyContract::Request,
                 )
                 .unwrap_or_else(|unstarted| *unstarted.0);
             assert!(returned.message.is_err(), "{name}");
@@ -1404,7 +1474,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                 );
             }
             let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
-            PiInferenceEvidenceV1::decode(&bytes).unwrap();
+            PiInferenceEvidenceV2::decode(&bytes).unwrap();
             let trace: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(trace["started_inferences"], 1, "{name}");
             assert_eq!(trace["completed_inferences"], 0, "{name}");
@@ -1488,14 +1558,14 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                         None,
                         &[],
                         RemainingTokenAllowance::new(1000).unwrap(),
-                        review_runner::task::reply_schema::ReplyContract::Request,
+                        af_runner::task::reply_schema::ReplyContract::Request,
                     )
                     .unwrap_or_else(|unstarted| *unstarted.0);
                 assert!(returned.message.is_ok());
                 assert!(returned.usage_observation.is_none());
                 assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 30);
                 let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
-                PiInferenceEvidenceV1::decode(&bytes).unwrap();
+                PiInferenceEvidenceV2::decode(&bytes).unwrap();
                 let trace: Value = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(trace["completed_inferences"], 2);
                 for inference in trace["inferences"].as_array().unwrap() {

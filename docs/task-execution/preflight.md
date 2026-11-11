@@ -29,7 +29,7 @@ None means accepted, approved or safe to dispatch. The tool does not execute ano
 based on its result. Use `--now-unix-ms` only to reproduce a report at an explicit historical
 clock; the real AF deadline still applies at dispatch.
 
-The helper consumes `af/task-inspection@16` with `plan` and `graph` present, as produced by
+The helper consumes `af/task-inspection@20` with `plan` and `graph` present, as produced by
 `af task explain --json`. `af task show` without these sections is insufficient. Unsupported
 formats are rejected rather than silently guessed. It validates the fields it uses, not the
 entire AF schema or CAS history.
@@ -80,22 +80,18 @@ execute, or that the evidence is sufficient. It is a planning checklist, not a v
 
 For a retained candidate, add `retained_candidate_snapshot_id`. If it equals the captured
 source, the report flags possible candidate-as-source rerooting. Optionally provide
-`--review-plan /tmp/review-plan.json`, exported by `af review plan --json` for the intended
+`--diff /tmp/task-diff.json`, exported by `af task diff TASK_ID --json` for the intended
 base and candidate. Only an exact match of both Snapshot identities permits reporting that
-export's diff as nonempty. An empty diff is flagged; unavailable/mismatched evidence never
-becomes a successful diff check. Replay of the retained bytes into the next implementation
-remains explicitly unverified, even with a matched nonempty diff.
-The consumed format is `af/review-plan@1`, specifically `resolved.base_snapshot_id`,
-`resolved.candidate_snapshot_id` and `subject.kind`, `subject.empty`, `subject.changed_paths`.
-A real capture is retained in `fixtures/task-runtime/preflight/review-plan.json`. The helper
-does not validate the full Review plan schema.
+export's diff as nonempty. An empty diff is flagged; unavailable or mismatched evidence never
+becomes a successful diff check. Replay of retained bytes into the next implementation remains
+explicitly unverified, even with a matched nonempty diff.
+The consumed format is `af/task-diff@1`: `base_snapshot_id`, `snapshot_id`, `files` and `patch`.
+`fixtures/task-runtime/preflight/task-diff.json` is an explicit advisory example, not a captured
+execution receipt. The helper does not validate the full native diff schema or authenticate its
+bytes. It refuses the retired `af/review-plan@1` document.
 
-Three behaviours meet an empty Diff, and they stay distinct. `af review plan` inspects it and
-succeeds: it exits 0, exports `subject.empty` as `true` with no `changed_paths`, and its text
-output marks the subject `EMPTY — run will refuse`. `af review run` is the guard: it refuses
-the empty Diff before Gates, Provider admission or Worker dispatch, so make a real candidate
-change first ([Quickstart](../../README.md#quickstart)). This helper only reads a supplied
-export: a matched summary that is empty, whether native or edited, is the
+Native Review planning and execution refuse an empty Diff before Gates, Provider admission or
+Workers. This helper reads a supplied native diff export; a matched empty export is the
 `empty_intended_diff` conflict (exit 2), never a successful diff check.
 
 ## Budget explanation
@@ -131,7 +127,7 @@ printed separately without summing overlapping caps. Dynamic work produces an ex
 budget unknown; its scheduler admission is not reconstructed by this helper.
 
 The underlying budget semantics are defined in
-`crates/review-attempt/src/task_budget.rs`: `prepare` checks each reservation plus protected
+`crates/af-attempt/src/task_budget.rs`: `prepare` checks each reservation plus protected
 verification against the remaining Run budget, and `begun_attempts` includes begun and retired
 Attempts. The helper's configured-reserve comparison is a conservative explanation rather
 than a replay of `protected_after`, live holds or scope admission.
@@ -143,3 +139,10 @@ regressions for changed source, stale plan, mismatched/empty diff, omitted named
 evidence after evaluation, absent data binding, different source, missing coverage,
 conditional evidence, exact large token counters, protected reserve and malformed input.
 The same tests are included in full `make check` and the repository's fast Task gate.
+
+The advisory report is `af-preflight-report/2`, described by
+[`preflight-report-v2.json`](../../schemas/preflight-report-v2.json). It removes the retired
+Campaign phase projection and hashes an optional native `--diff` input as `input_file_hashes.diff`.
+The actual script's success/error output and refusal of report `/1` are checked by
+`task_public_schemas::preflight_script_prints_only_the_current_closed_native_advisory_contract`.
+This report never supplies Task approval, evidence admission or acceptance authority.

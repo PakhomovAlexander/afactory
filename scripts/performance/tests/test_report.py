@@ -14,7 +14,7 @@ import subprocess
 import sys
 from fractions import Fraction
 
-from perflab import compare, contracts, render, report, schedule, svgsafe, synthetic
+from perflab import evaluate_results, contracts, render, report, schedule, svg_safe, synthetic
 from perflab.values import ContractError
 from tests.support import CLI, TempDir, read, run_dir, synthetic_suite
 
@@ -86,7 +86,7 @@ def assert_script_free_svg(test, data, where):
     an SVG opened on its own is outside the linking page's CSP."""
     test.assertNotRegex(data, rb"(?i)<script|\son[a-z]+\s*=|javascript:|href\s*=\s*[\"']?https?:",
                         where)
-    again = svgsafe.sanitize(data)
+    again = svg_safe.sanitize(data)
     test.assertEqual((again.data, again.removed_elements, again.removed_attributes),
                      (data, 0, 0), where)
 
@@ -119,7 +119,7 @@ class Reports(TempDir):
             return Fraction(21, 2) * (2 if slow else 1)
 
         run, output, doc = self.write(plan, value)
-        verdict = compare.compare(run)
+        verdict = evaluate_results.compare(run)
         self.assertEqual(doc["verdict"], verdict)
         self.assertEqual(json.loads(read(os.path.join(output, report.VERDICT_JSON))), verdict)
         self.assertEqual(report.read(os.path.join(output, report.REPORT_JSON)), doc)
@@ -441,7 +441,7 @@ class Reports(TempDir):
             report.write(run, occupied)
         self.assertEqual(read(os.path.join(occupied, "keep")), b"mine")
         # The run itself is untouched, so it still verifies whole.
-        self.assertEqual(compare.compare(run)["aggregate"]["coverage"]["missing_records"], 0)
+        self.assertEqual(evaluate_results.compare(run)["aggregate"]["coverage"]["missing_records"], 0)
 
     def test_a_tampered_or_partial_run_is_reported_as_incomplete_never_repaired(self):
         plan = synthetic.plan(self.suite)

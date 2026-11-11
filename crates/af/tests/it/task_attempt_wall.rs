@@ -129,7 +129,7 @@ fn pin(repo: &Path, message: &str) {
     let mut catalog: toml::Value = toml::from_str(&source).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
-        let digest = review_config::lock::package_digest(name, &package);
+        let digest = af_pipeline_config::lock::package_digest(name, &package);
         pin["digest"] = toml::Value::String(digest.unwrap());
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -145,15 +145,15 @@ fn implementer_wall(repo: &Path, wall_ms: i64) {
 }
 
 /// The payload of one recorded artifact.
-fn payload(cas: &review_store::Cas, id: &Value) -> Value {
+fn payload(cas: &af_store::Cas, id: &Value) -> Value {
     cas.get_json(id.as_str().unwrap()).unwrap()["payload"].clone()
 }
 
 /// The bytes of `path` in the Snapshot an `af/SourceTree@1` artifact names.
-fn file_in(cas: &review_store::Cas, source_tree: &Value, path: &str) -> Option<Vec<u8>> {
+fn file_in(cas: &af_store::Cas, source_tree: &Value, path: &str) -> Option<Vec<u8>> {
     let snapshot = payload(cas, source_tree)["snapshot_id"].clone();
     let (_, manifest) =
-        review_source_git::task::read_snapshot(cas, snapshot.as_str().unwrap()).unwrap();
+        af_source_git::task::read_snapshot(cas, snapshot.as_str().unwrap()).unwrap();
     let entry = manifest.get(path)?;
     Some(cas.get(&entry.content).unwrap())
 }
@@ -182,7 +182,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
         "{preview}"
     );
     let (planned, _) = json(&repo, &state, &["task", "plan", "--file", "first.json"], 0);
-    valid("task-inspection-v16.json", &planned);
+    valid("task-inspection-v20.json", &planned);
     let implementer = planned["slots"]
         .as_array()
         .unwrap()
@@ -198,7 +198,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
     let plan_id = planned["plan_id"].as_str().unwrap().to_owned();
     let start = ["task", "run", "first", "--confirm-plan", &plan_id];
     let (first, err) = json(&repo, &state, &start, 4);
-    valid("task-inspection-v16.json", &first);
+    valid("task-inspection-v20.json", &first);
     assert_eq!(first["state"]["phase"], "finished", "{first:#}");
     assert_eq!(first["state"]["outcome"], "exhausted", "{first:#}");
     assert_eq!(first["state"]["cause"], "attempt_wall", "{first:#}");
@@ -242,7 +242,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
     let partial = &ends[0]["partial_candidate"];
     valid("task-partial-candidate-v1.json", partial);
     assert_eq!(partial["changed_paths"], 2, "{partial}");
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let first_revision = payload(&cas, &first["revision_id"]);
     assert_eq!(
         partial["parent_snapshot_id"], first_revision["inputs"]["source"]["snapshot_id"],
@@ -340,7 +340,7 @@ fn an_attempt_wall_keeps_the_implementers_edits_and_a_continuation_starts_from_t
     );
     let plan = ["task", "run", "second", "--from", "first"];
     let (planned, _) = json(&repo, &state, &plan, 0);
-    valid("task-inspection-v16.json", &planned);
+    valid("task-inspection-v20.json", &planned);
     let continues = &planned["continues"];
     assert_eq!(continues["task_id"], "first", "{planned:#}");
     assert_eq!(continues["node"], "root.nodes.implement");

@@ -7,7 +7,7 @@ Where to look by what you want to do. The [README](../README.md) covers installi
 ## Try it
 
 `af` with no arguments at a terminal opens a read-first browser over this place's settings,
-Providers, Workers, pipelines, Tasks and review Campaigns; `?` there lists its keys and `:` runs
+Providers, Workers, pipelines and Tasks (including Review); `?` there lists its keys and `:` runs
 any af command ([design](design/tui.md)).
 
 1. [The README Quickstart](../README.md#quickstart) — install, connect a Provider, onboard a
@@ -50,7 +50,7 @@ any af command ([design](design/tui.md)).
 
 | Document | Read it when you want to know |
 |---|---|
-| [`architecture.md`](architecture.md) | How the kernel is built: crates, contracts, the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline definitions, routing, and Attempt budgets. Each section names the test that pins it. |
+| [`architecture.md`](architecture.md) | How AF is built: crate dependencies, shared contracts, Task execution, Review, Scenario/Project Host boundaries, storage, source capture, checks, Workers, sandboxes, configuration and graph planning. Includes internal naming and protected external names. |
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
 | [`providers.md`](providers.md) | How a machine gets model access: finding and registering its logins with `af provider detect`, registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, follow and inspect a run, read its one state and next command (`af help task-states`), resume an interrupted run, retry a failed gate, continue a reviewed Task (`af help task-file`), warm checks, and deliver to a new local worktree. |
@@ -64,7 +64,7 @@ any af command ([design](design/tui.md)).
 | [`task-execution/experiments.md`](task-execution/experiments.md) | How an experiment Task measures a declared command on the source and on a candidate, compares the two under a declared objective, and gates its evaluator on the result: the `[measures]` and `[objectives]` policy tables, the report line, failure reasons and comparison rules. |
 | [`task-execution/remote-checks.md`](task-execution/remote-checks.md) | How a declared check runs as a Remote Check: the policy's `remote` table, the pipeline's `remote_checks`, the operator's machine-local push target, the plan's `publish-gate` effect, the gate branches and draft pull request, the recorded evidence and reasons, cleanup, and what a workflow must allow. |
 | [`task-execution/structured.md`](task-execution/structured.md) | Package-defined typed JSON inputs and outputs, bounded capture, deterministic structural acceptance and provenance, normal Worker execution and native Scenario consumption. |
-| [`task-execution/report.md`](task-execution/report.md) | How a report Task's author reads an exact source Snapshot, how the kernel resolves the report's repository citations against that Snapshot's Manifest, and how an independent verifier on the same Snapshot accepts it: `report_sources`, `af/DocumentDraft@2`, the report policy, checks and output. |
+| [`task-execution/report.md`](task-execution/report.md) | How a report Task's author reads an exact source Snapshot, how the kernel resolves the report's repository citations against that Snapshot's Manifest, and how an independent verifier on the same Snapshot accepts it: `report_sources`, `af/DocumentDraft@3`, the report policy, checks and output. |
 | [`self-management.md`](self-management.md) | What the installer does and prints, how releases are signed and verified, how af updates itself, its stable, rc and nightly channels and `af self channel`, how it checks for newer releases (when the check runs, the bounds on every network call, what the `af/self-check@4` cache records, how a stalled check is reported, and what `af self status` prints for a stable or a pre-release user), shell completions and man pages, source builds, and removing af with or without `--purge`. |
 | [`telemetry.md`](telemetry.md) | What Telemetry records about af's own work and what it never touches: the spans a run records, the four levels, how credentials are withheld, the machine-only `[telemetry]` table, a run's executions and retained history, `af telemetry status`, `reindex`, `runs`, `show`, `tail` and `gc`, telemetry in the Storage Budget, and the layout of the telemetry store. |
 | [`performance-ci.md`](performance-ci.md) | How the continuous performance workflow schedules pull request, main, nightly and dispatch runs from the trusted control: the operator's image and runner variables, the owner-review prerequisite, the hosted sample scratch, each job, reruns, and what has not been demonstrated. |
@@ -99,17 +99,14 @@ a revision), what each means, and what to do. A test checks that `af` still prin
 
 | Message | Meaning | Fix |
 |---|---|---|
-| `af review plan needs --policy-rev REV, the commit whose committed .af/ governs the review` | A review plan was asked for without saying which commit's `.af/` policy to use. | `af review plan --policy-rev HEAD --base HEAD --uncommitted` |
-| `this repository has no .af/ authority at …` | The policy revision holds no `.af/`: the repository was never onboarded, or the policy is not committed yet. | `af onboard`, then `af onboard --apply`, commit `.af/`, and plan again. |
-| `policy revision … is not a git revision of …` | Git does not know the name given to `--policy-rev`; its own line follows. | Name a commit, branch or tag of that repository, usually `HEAD`. |
-| `-> MISSING; fix: …` | A model Worker of the pipeline has no `--provider NODE=ID` binding; the plan names one to use or how to register one. | Add the `--provider` the line names, or `af provider setup ID --kind KIND --login` first. |
-| `EMPTY — run will refuse` | The diff between the base and the candidate changes no file, and `af review run` refuses an empty diff. | Change files and pass `--uncommitted`, or name other revisions with `--base` and `--candidate`. |
-| `Provider … not found in this machine's Provider registry` | A `--provider NODE=ID` names an ID this machine has not registered. | `af provider status` lists the registry; `af provider setup ID --kind KIND` registers one. |
-| `Node … not found in …` | A `--provider NODE=ID` names a node that is not a model Worker of the pipeline; the message lists the ones it has. | Bind one of the model Workers listed. |
-| `model-backed Worker … requires explicit` | `af review run` was started without a binding for a model Worker. | Add `--provider NODE=ID` for every model Worker `af review plan` lists. |
+| `Cannot review an empty Diff Subject` | The selected Base and candidate have no changed paths. Both planning and execution refuse this subject. | Change source bytes, or choose different `--base` and `--candidate` commits; use native Task inspection for advisory exports. |
+| `No native Task catalog` | Onboarding or doctor found no current common Task catalog; retired Campaign definitions are not read. | Review a fresh `af onboard` scaffold in a separate checkout, replace the retired authority and commit the native catalog. |
+| `Expected an exact recorded plan ID` | An archived Proposal export names a malformed plan digest. | Copy the exact plan ID from `af task show ID --json`, then use `af review export ID PROPOSAL_ID --plan PLAN_ID`. |
+| `The requested archived plan has no recorded native execution in this Task` | The selected plan is not an executed plan recorded by this Task. | Inspect a recorded plan with `af review inspect ID --plan PLAN_ID --json`; export only that plan's admitted sealed Proposals. |
+| `Finding … has … applicable sealed Proposals; export by exact Proposal ID` | Finding lookup does not identify exactly one applicable repair. | Select an exact Proposal ID from the recorded Review artifacts; deliberate stale export also requires `--allow-stale`. |
+| `Provider … not found in this machine's Provider registry` | A Task Provider binding names an ID this machine has not registered. | `af provider status` lists the registry; `af provider setup ID --kind KIND` registers one. |
 | `Task … not found in …` | No Task by that ID is in the Task Store the command read. | `af task list` (with the same `--state` or `--workspace`) lists its Tasks. |
 | `Task Store not found in …` | The command reads a Task Store that does not exist yet. | `af task plan --file FILE` creates it; check `--state` or `--workspace`. |
-| `Campaign … not found in …` | No review Campaign by that name exists on this machine. | `af review campaigns` lists them; `af review run --campaign NAME` starts one. |
 | `cannot open Task file …` | The Task file path cannot be opened; the system's reason follows. | Check the path given to `--file`. |
 | `is not a Task file field; its fields are` | The Task file names a field `af.task-file/1` does not have, often a misspelling. | Rename or remove the field; the message lists the fields a Task file takes. |
 | `must be an integer from` | A Task file value has the wrong shape; the message names its field path and what it holds. | Write the value as the message says, for example a number rather than a string. |
@@ -120,7 +117,7 @@ a revision), what each means, and what to do. A test checks that `af` still prin
 | `Stores written by other releases` | A listing met several Stores other releases wrote: one row when one release wrote them all, else one line per release with its own command. | Run each with the `AF_VERSION=…` command of its own release, or `af storage --verbose` to see each. |
 | `could not be measured and` | `af storage` met paths it could not measure, such as a half-made Store a test registered. | `af storage --verbose` names each path and why. |
 | `Output port … not found in the result of Task` | `af task output --port` names a port the Task's result does not have; the message lists the ones it has. | Pass one of the ports listed. |
-| `is not a command; the browser is` | `af review tui` is not a command. | Run `af` alone at a terminal to open the browser. |
+| `Proposal export writes a patch; omit --json` | Patch export is requested with JSON output. | Omit `--json`; inspection commands provide recorded JSON, while export writes the verified sealed patch. |
 | `Spotlight indexes …, which every build and sandbox writes to` | `af doctor` on macOS found Spotlight indexing a root af's builds and sandboxes write to. | Exclude it in Spotlight's Search Privacy, or move it to a directory named `*.noindex` (below). |
 
 ### macOS: Spotlight and Gatekeeper

@@ -34,7 +34,7 @@ fn err(output: &Output) -> String {
 fn foreign_store(dir: &Path, release: Option<&str>, run_id: &str, event: &str, payload: &str) {
     std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
     let path = dir.join("events.sqlite");
-    drop(review_store::EventStore::open(&path).unwrap());
+    drop(af_store::EventStore::open(&path).unwrap());
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("DELETE FROM store_writers;").unwrap();
     // The event's id is the one the Store derives, so replay reaches its type and payload.
@@ -44,7 +44,7 @@ fn foreign_store(dir: &Path, release: Option<&str>, run_id: &str, event: &str, p
         sha2::Digest::update(&mut hasher, run_id.as_bytes());
         sha2::Digest::update(&mut hasher, b"\0");
         sha2::Digest::update(&mut hasher, b"0");
-        review_core::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
+        af_contracts::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
     };
     conn.execute(
         "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,
@@ -129,7 +129,7 @@ fn a_store_another_release_wrote_is_refused_by_name_with_the_fix() {
 }
 
 #[test]
-fn storage_and_campaigns_list_other_releases_stores_in_one_row() {
+fn storage_lists_other_releases_stores_in_one_row_and_retains_review_registration() {
     let tasks = state_home().join("af/task/local");
     task_store(&tasks.join("aaaaaaaaaaaaaaaa"), Some("99.1.0"));
     task_store(&tasks.join("bbbbbbbbbbbbbbbb"), Some("99.1.0"));
@@ -222,30 +222,48 @@ fn storage_and_campaigns_list_other_releases_stores_in_one_row() {
         "{document}"
     );
 
-    // A Campaign another release wrote: one row in `af review campaigns` as well.
+    // Generic inventory retains foreign Review-category Stores. Only their own release may
+    // interpret the historical bytes; current af refuses before parsing or marking the Store.
     let campaigns = state_home().join("af/review/campaigns");
+    let foreign = campaigns.join("old-pr");
     foreign_store(
-        &campaigns.join("old-pr"),
+        &foreign,
         Some("99.1.0"),
-        "campaign-old-pr",
-        "CampaignOpened@1",
-        "{\"opened\":true}",
+        "task:old-review",
+        "TaskTransition@9",
+        "{}",
     );
-    let listed = af(&["review", "campaigns"]);
+    let before = markers(&foreign);
+    let listed = af(&["storage", "--json"]);
     assert!(listed.status.success(), "{}", err(&listed));
-    assert!(
-        out(&listed).contains(
-            "1 Store written by another release: af 99.1.0 (1); run it with AF_VERSION=99.1.0 \
-             af review campaigns"
-        ),
-        "{}",
-        out(&listed)
+    let document: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("storage-v5.json"), &document);
+    let entries = document["entries"].as_array().unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry["kind"] == "unreadable_store")
+            .count(),
+        4
+    );
+    let recorded = entries
+        .iter()
+        .find(|entry| entry["path"] == foreign.to_str().unwrap())
+        .unwrap();
+    assert_eq!(recorded["kind"], "unreadable_store");
+    assert_eq!(recorded["writer_release"], "99.1.0");
+    assert_eq!(
+        recorded["next_action"],
+        "AF_VERSION=99.1.0 af review campaigns"
     );
     assert!(
-        !out(&listed).contains("invalid replayed event payload"),
-        "{}",
-        out(&listed)
+        !recorded["reason"]
+            .as_str()
+            .unwrap()
+            .contains("invalid replayed event payload")
     );
+    assert_eq!(markers(&foreign), before);
+    assert!(foreign.join("events.sqlite").is_file());
 }
 
 /// The releases a Store's writer markers name, oldest first.

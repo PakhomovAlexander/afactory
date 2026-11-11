@@ -14,13 +14,13 @@
   ],
   "properties": {
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "policy_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "outcome": {
       "enum": [
@@ -33,10 +33,10 @@
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
       }
     },
     "stopped": {
@@ -44,7 +44,7 @@
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
         "$ref": "#/$defs/stop"
@@ -60,7 +60,7 @@
       ],
       "properties": {
         "record_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "items": {
           "$ref": "urn:af:schema:task-acceptance:1#/$defs/items"

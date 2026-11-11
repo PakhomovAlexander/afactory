@@ -11,12 +11,12 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use review_core::task::TaskPhaseV1;
-use review_core::task::remote_check::{GateCleanupOutcomeV1, TaskGateCleanupV1};
-use review_pipeline::task::remote_check::github_pr::{self, GithubPrSettings};
-use review_pipeline::task::remote_check::{GithubPrTarget, MAPPING_KNOB, RemoteCheckMapping};
-use review_store::store::task::{TaskLease, TaskProjection};
-use review_store::{Cas, EventStore};
+use af_contracts::task::TaskPhaseV1;
+use af_contracts::task::remote_check::{GateCleanupOutcomeV1, TaskGateCleanupV1};
+use af_runtime::task::remote_check::github_pr::{self, GithubPrSettings};
+use af_runtime::task::remote_check::{GithubPrTarget, MAPPING_KNOB, RemoteCheckMapping};
+use af_store::store::task::{TaskLease, TaskProjection};
+use af_store::{Cas, EventStore};
 use serde::Serialize;
 
 /// How long one cleanup may take: two GitHub calls and one push per Task.
@@ -63,7 +63,7 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
     ) {
         return Ok(None);
     }
-    let evidence = crate::task_execution::remote_check_evidence(cas, state)?;
+    let evidence = crate::task_commands::remote_check_evidence(cas, state)?;
     let pushed: Vec<_> = evidence
         .iter()
         .filter(|evidence| {
@@ -81,12 +81,13 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
         .collect();
     // The latest observation last: its commits are what the branches were last pushed with.
     ours.sort_by_key(|evidence| evidence.observed_unix_ms);
-    let latest =
-        |commit: fn(&review_core::task::remote_check::RemoteCheckEvidenceV1) -> &Option<String>| {
-            ours.iter()
-                .rev()
-                .find_map(|evidence| commit(evidence).clone())
-        };
+    let latest = |commit: fn(
+        &af_contracts::task::remote_check::RemoteCheckEvidenceV1,
+    ) -> &Option<String>| {
+        ours.iter()
+            .rev()
+            .find_map(|evidence| commit(evidence).clone())
+    };
     let mut pull_requests: Vec<u64> = ours
         .iter()
         .filter_map(|evidence| evidence.pull_request.as_ref().map(|pull| pull.number))
@@ -115,7 +116,7 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
 fn target(
     repository_id: &str,
 ) -> Result<Option<(GithubPrTarget, Option<std::path::PathBuf>)>, String> {
-    let Some(path) = crate::task_execution::domain::remote_check_mapping()? else {
+    let Some(path) = crate::task_commands::domain::remote_check_mapping()? else {
         return Ok(None);
     };
     Ok(RemoteCheckMapping::read(&path)?
@@ -167,13 +168,13 @@ fn failed(task_id: &str, leftovers: &Leftovers, reason: String) -> TaskGateClean
     reason.truncate(
         (0..=reason
             .len()
-            .min(review_core::task::remote_check::MAX_REMOTE_DIAGNOSTIC_BYTES))
+            .min(af_contracts::task::remote_check::MAX_REMOTE_DIAGNOSTIC_BYTES))
             .rev()
             .find(|end| reason.is_char_boundary(*end))
             .unwrap_or(0),
     );
     TaskGateCleanupV1 {
-        schema: review_core::task::remote_check::TASK_GATE_CLEANUP_V1.into(),
+        schema: af_contracts::task::remote_check::TASK_GATE_CLEANUP_V1.into(),
         github: leftovers.github.clone(),
         pull_requests: leftovers.pull_requests.clone(),
         branches: TaskGateCleanupV1::branches_of(task_id),
@@ -427,7 +428,7 @@ mod tests {
 
     fn cleanup(outcome: GateCleanupOutcomeV1, pull_requests: Vec<u64>) -> TaskGateCleanupV1 {
         TaskGateCleanupV1 {
-            schema: review_core::task::remote_check::TASK_GATE_CLEANUP_V1.into(),
+            schema: af_contracts::task::remote_check::TASK_GATE_CLEANUP_V1.into(),
             github: "owner/repo".into(),
             pull_requests,
             branches: TaskGateCleanupV1::branches_of("t"),
@@ -451,7 +452,7 @@ mod tests {
             TaskPhaseV1::Running {},
             TaskPhaseV1::Ready {},
             TaskPhaseV1::Waiting {
-                reason: review_core::task::TaskWaitingReasonV1::NeedsHuman,
+                reason: af_contracts::task::TaskWaitingReasonV1::NeedsHuman,
             },
         ] {
             assert!(

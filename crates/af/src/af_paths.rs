@@ -1,6 +1,6 @@
 //! What the CLI says about authority paths the declared `.af/` layout does not name.
 //!
-//! The classification itself is [`review_config::layout::classify_manifest`], a pure function of
+//! The classification itself is [`af_pipeline_config::layout::classify_manifest`], a pure function of
 //! a captured Snapshot manifest and the one declared table: it reads recorded entries, never a
 //! working tree and never a sandbox. This module owns only the sentences — one advisory line at
 //! plan time, and the refusal a project asked for with `[delivery] undeclared_af_paths =
@@ -9,7 +9,7 @@
 //! Neither sentence removes anything. No path is dropped from a Snapshot, from a candidate tree
 //! or from a delivered worktree; under `refuse` the delivery simply does not happen.
 
-use review_config::layout::PathGroup;
+use af_pipeline_config::layout::PathGroup;
 
 /// How many paths the advisory line names before it counts the rest. The advisory is one line,
 /// so it says enough to recognize the problem and leaves the whole list to the `--json` document

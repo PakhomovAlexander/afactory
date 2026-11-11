@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Open the release PR for version X.Y.Z: bump the workspace version, write the CHANGELOG
 # section from the pull requests merged since the last release and the change notes they left
-# under changelog.d/ (which it then removes), commit on release/vX.Y.Z, push, and open the PR. Merging that PR is the one human act of a release; .github/workflows/release.yml
+# under changelog.d/ (which it then removes), commit on release/vX.Y.Z, push, and open the PR. Merging that PR publishes the release; a second pin PR needs a human merge; .github/workflows/release.yml
 # tags, checks, builds, signs, and publishes from there (ADR-0045).
 #
 #   scripts/release.sh X.Y.Z --compat "<one line on authority compatibility>" [--profile fast|full] [--dry-run] [--yes]
@@ -122,6 +122,9 @@ open("Cargo.toml", "w").write(text.replace(needle, f'version = "{version}"\n', 1
 EOF
   cargo update --workspace --quiet
 fi
+
+# Fail before committing, pushing or opening a PR, even for fast/no-perf releases.
+python3 -I scripts/release-contract.py
 
 # CHANGELOG.md: the new section goes right under [Unreleased], followed by the change notes of
 # changelog.d/ (and anything still written under [Unreleased]); the fragments are removed, so the

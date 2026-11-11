@@ -86,7 +86,7 @@ pub(crate) fn setup(
     git(&repo, &["commit", "-qm", "captured issue"]);
     (repo, root.join("state"))
 }
-fn revision(cas: &review_store::Cas, report: &Value) -> Value {
+fn revision(cas: &af_store::Cas, report: &Value) -> Value {
     cas.get_json(report["revision_id"].as_str().unwrap())
         .unwrap()["payload"]
         .clone()
@@ -169,10 +169,10 @@ fn deliver(repo: &Path, state: &Path, target: &Path, branch: &str) -> Value {
 fn interrupted_delivery_blocks_source_refresh(
     repo: &Path,
     state: &Path,
-    cas: &review_store::Cas,
+    cas: &af_store::Cas,
     report: &Value,
 ) {
-    use review_core::task::delivery::*;
+    use af_contracts::task::delivery::*;
     let revision = revision(cas, report);
     let source_id = revision["inputs"]["source"]["snapshot_id"]
         .as_str()
@@ -180,7 +180,7 @@ fn interrupted_delivery_blocks_source_refresh(
     let derived_id = report["result"]["outputs"]["snapshot"]["snapshot_id"]
         .as_str()
         .unwrap();
-    let (source, _) = review_source_git::task::read_snapshot(cas, source_id).unwrap();
+    let (source, _) = af_source_git::task::read_snapshot(cas, source_id).unwrap();
     let origin = cas.get_json(&source.origin_id).unwrap();
     let target = json!({"repository":std::fs::canonicalize(repo).unwrap(),"repository_id":origin["repository_id"],
         "branch":"af/interrupted-source-delivery","worktree":state.parent().unwrap().join("interrupted-delivery")});
@@ -189,7 +189,7 @@ fn interrupted_delivery_blocks_source_refresh(
     let mut receipt = json!({"schema":"af/task-delivery-prepared@1","delivery_id":"delivery-interrupted-test","task_id":"issue-refresh",
         "result_id":result_id,"source_snapshot_id":source_id,"derived_snapshot_id":derived_id,
         "source_revision":origin["source_revision"],"target":target});
-    let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let mut store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
     for status in [TaskDeliveryStatusV1::Prepared, TaskDeliveryStatusV1::Failed] {
         if status == TaskDeliveryStatusV1::Failed {
             receipt["schema"] = json!("af/task-delivery@1");
@@ -211,8 +211,8 @@ fn interrupted_delivery_blocks_source_refresh(
         let record_id = cas
             .put_artifact(
                 TASK_DELIVERY_RECORD_V1,
-                review_core::Producer::KernelOperation {
-                    run_id: review_store::store::task::task_run_id("issue-refresh").unwrap(),
+                af_contracts::Producer::KernelOperation {
+                    run_id: af_store::store::task::task_run_id("issue-refresh").unwrap(),
                     node_id: None,
                     operation_id: "local-delivery@1".into(),
                 },
@@ -263,7 +263,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
     );
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
     assert_eq!(waiting["attempts"], 1);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let original = revision(&cas, &waiting);
     let (old_payload, old_signature) = approve(&repo, &state, root.path(), &key, "old");
     let approved = task(&repo, &state, &["task", "explain", "issue-refresh"], 0);
@@ -300,7 +300,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
         &["task", "explain", "issue-refresh", "--plan", old_plan_id],
         0,
     );
-    assert_eq!(old_plan["schema"], "af/task-plan-inspection@2");
+    assert_eq!(old_plan["schema"], "af/task-plan-inspection@6");
     assert_eq!(old_plan["current_plan"], false);
     assert_eq!(old_plan["revision"], original);
     assert_eq!(old_plan["plan"], approved["plan"]);
@@ -310,8 +310,8 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
     let (unrecorded_id, _) = cas
         .put_artifact(
             recorded.artifact_type,
-            review_core::Producer::KernelOperation {
-                run_id: review_store::store::task::task_run_id("issue-refresh").unwrap(),
+            af_contracts::Producer::KernelOperation {
+                run_id: af_store::store::task::task_run_id("issue-refresh").unwrap(),
                 node_id: None,
                 operation_id: "unrecorded-copy".into(),
             },
@@ -381,7 +381,7 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
         0,
     );
     assert_eq!(first["attempts"], 5);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let original = revision(&cas, &first);
     interrupted_delivery_blocks_source_refresh(&repo, &state, &cas, &first);
     let first_worktree = root.path().join("delivered-v1");
@@ -392,7 +392,7 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
     changed["revision"] = json!("v2");
     changed["acceptance"]["empty"] = json!("An empty input returns an empty list.");
     let external = root.path().join("updated.toml");
-    let data: review_core::task::source::IssueInputV1 =
+    let data: af_contracts::task::source::IssueInputV1 =
         serde_json::from_value(changed.clone()).unwrap();
     std::fs::write(&external, toml::to_string(&data).unwrap()).unwrap();
     // Live project edits are not recaptured as the execution Snapshot or trusted Task policy.
@@ -446,7 +446,7 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
     changed["revision"] = json!("v3");
     write(&repo.join("issue.json"), &changed);
     // Refuse an active writer before reading even malformed source bytes.
-    let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let mut store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
     let lease = store
         .take_task_lease(&cas, "issue-refresh", "fixture-writer", 15000)
         .unwrap();
@@ -489,7 +489,7 @@ fn explicit_relative_refresh_source_uses_the_callers_directory() {
     let root = tempfile::tempdir().unwrap();
     let (repo, state) = setup(root.path(), None, "implementation-small", 3);
     let planned = task(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let before = revision(&cas, &planned);
     let mut selected = issue();
     selected["revision"] = json!("v2");

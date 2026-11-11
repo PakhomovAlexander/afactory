@@ -29,8 +29,8 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts' / 'performance'))
 sys.path.insert(0, str(ROOT / 'scripts' / 'nightly'))
-from perflab import hostlock, contracts as kernel_contracts  # noqa: E402
-from githubrest import GitHub as Rest, Refused as ApiRefused  # noqa: E402
+from perflab import host_lock, contracts as kernel_contracts  # noqa: E402
+from github_rest import GitHub as Rest, Refused as ApiRefused  # noqa: E402
 import publish as nightly_publish  # noqa: E402
 
 
@@ -94,8 +94,8 @@ def check_lease(lease):
 
 
 def anchored_lease():
-    anchor = hostlock.read_anchor(required=True)
-    lease = hostlock.MachineLock(expected_identity=anchor)
+    anchor = host_lock.read_anchor(required=True)
+    lease = host_lock.MachineLock(expected_identity=anchor)
     try:
         # MachineLock reads the anchor again internally. Refuse its disappearance/change
         # between the required read and acquisition, rather than accepting an unanchored slot.
@@ -368,7 +368,7 @@ class Processes:
 
 
 def manifest_path(raw):
-    """review_core::encode_path spelling (crates/review-core/src/path.rs), byte for byte."""
+    """af_contracts::encode_path spelling (crates/af-contracts/src/path.rs), byte for byte."""
     try:
         path = raw.decode('utf-8')
     except UnicodeDecodeError:
@@ -1003,13 +1003,16 @@ class Task:
         journal.save()
         planned = strict_json(self.command('plan', '--file', str(directory / 'task.json'),
                                           '--authority', identity['main_commit'], '--json'))
-        require(planned.get('schema') == 'af/task-inspection@14', 'Task plan schema refused')
+        require(planned.get('schema') == 'af/task-inspection@20', 'Task plan schema refused')
         require(planned['task_id'] == generation['task_id'] and planned['attempts'] == 0, 'plan identity refused')
         plan = planned['plan']
         source = plan['inputs']['source']['snapshot_id']
         snapshot = self.cas(source)
         origin = self.cas(snapshot['origin_id'])
-        require(origin['source_revision'] == identity['main_commit'], 'Task source is not captured main')
+        require(origin.get('schema') == 'af.task-source-origin/3'
+                and origin.get('kind') == 'captured' and 'bound_from' not in origin
+                and origin.get('source_revision') == identity['main_commit'],
+                'Task source is not current captured main')
         source_ids = plan['inputs']['sources']['artifact_ids']
         require(len(source_ids) == 1 and self.envelope(source_ids[0], 'af/ReportSources@1') == generation['bundle'],
                 'Task sources differ from generation')
@@ -1021,7 +1024,7 @@ class Task:
 
     def collect(self, generation, journal, key):
         show = strict_json(self.command('show', generation['task_id'], '--json'))
-        require(show.get('schema') == 'af/task-inspection@14', 'Task show schema refused')
+        require(show.get('schema') == 'af/task-inspection@20', 'Task show schema refused')
         require(show['task_id'] == generation['task_id'], 'Task show identity refused')
         journal.settle(key, show)
         require(show.get('phase', {}).get('kind') == 'finished', 'Task did not finish; no guessed triage')
@@ -1937,7 +1940,7 @@ def main(argv=None):
         else:
             runner.tick(deadline)
         return 0
-    except (Refused, CHECK.Refusal, ApiRefused, hostlock.Refused, OSError, ValueError, KeyError, TypeError):
+    except (Refused, CHECK.Refusal, ApiRefused, host_lock.Refused, OSError, ValueError, KeyError, TypeError):
         # Do not echo untrusted remote messages, issue text or credential-bearing exceptions.
         print('backlog-triage: deferred; inspect private journal/lease and operator runbook', file=sys.stderr)
         return 1
@@ -1958,7 +1961,7 @@ if __name__ == '__main__':
     if sys.argv[1:2] == ['nightly-build']:
         try:
             sys.exit(nightly_build_main(sys.argv[2:]))
-        except (Refused, hostlock.Refused, OSError):
+        except (Refused, host_lock.Refused, OSError):
             print('backlog-triage: nightly lease deferred; inspect shared fence', file=sys.stderr)
             sys.exit(1)
     sys.exit(main())

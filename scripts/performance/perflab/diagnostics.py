@@ -8,14 +8,14 @@ diagnostic budgets, writing everything to one new child-run directory:
   Automatic selection reads the parent's verdict: regressed cases, then inconclusive ones, each
   class by stable instance ID, three by default and eight at most; the rest are listed as not
   selected.
-- **One machine, one supervisor.** The machine's coordination lock (`hostlock`), the one timed
+- **One machine, one supervisor.** The machine's coordination lock (`host_lock`), the one timed
   shards take, is held for the whole child run, and every tool and candidate runs as a request
-  to the authority supervisor of the verified build (`toolrun`), in the explicitly selected
+  to the authority supervisor of the verified build (`tool_run`), in the explicitly selected
   mode, recorded with the containment the plan's environment declares and whether it matches.
   Trusted local mode runs on this host under process-group containment. The contained Linux
   mode takes the shard's own preflight (`runner.contained_host`: the pinned image, a Linux
   runtime with cgroup v2, the scratch filesystem's bound verified by an enforcement fill) and
-  runs every request in its own sample container (`toolrun.Contained`): network none, read-only
+  runs every request in its own sample container (`tool_run.Contained`): network none, read-only
   root, no capabilities, no new privileges, the environment's PID, memory, swap and CPU set,
   with only the run's own directory of that filesystem writable, so the child's private state,
   seeds and staged outputs are bounded by it. Neither mode replaces the other (ADR-0176).
@@ -57,9 +57,9 @@ import sys
 import time
 from fractions import Fraction
 
-from . import (admission, builds, bundle, clicases, contracts, counters, diagcontracts,
-               flamegraph, hostlock, hostobserver, oracle, perfcapture, phasetrace, render, reproduce, seeds,
-               stats, supervise, symbolarchive, telemetrydiag, toolrun, tomlfile)
+from . import (admission, builds, bundle, cli_cases, contracts, counters, diag_contracts,
+               flame_graph, host_lock, host_observer, oracle, perf_capture, phase_trace, render, reproduce, seeds,
+               stats, supervise, symbol_archive, telemetry_diag, tool_run, toml_file)
 from . import budget as deadlines
 from . import limits
 from .values import (ContractError, canonical_bytes, format_decimal, format_rational,
@@ -91,14 +91,14 @@ BUILD_ID_LIST_BYTES = 256 * 1024
 OVER_ROOM = "evidence_over_room"
 TRUSTED_LOCAL = "trusted_local"
 LINUX_CONTAINER = "linux_container"
-# The trusted host CPU observer of a contained run (`hostobserver`): perf on the host,
+# The trusted host CPU observer of a contained run (`host_observer`): perf on the host,
 # attached by frozen PID to the owned gated process; the candidate stays contained.
 HOST_PERF = "host_perf"
 OBSERVERS = (None, HOST_PERF)
 MODES = (TRUSTED_LOCAL, LINUX_CONTAINER)
 # A CLI command's environment, as a shard's (`runner.CLI_ENVIRONMENT`), with its private
 # HOME, XDG directories and TMPDIR and the case's declared AF settings added.
-CLI_ENVIRONMENT = clicases.ENVIRONMENT
+CLI_ENVIRONMENT = cli_cases.ENVIRONMENT
 # A CLI fixture's untimed setup or seed writer: the bound a shard gives it (ADR-0169).
 CLI_SETUP_SECONDS = limits.SAMPLE_TIMEOUT_SECONDS_MAX
 CLI_SEED_LOG_BYTES = 64 * 1024
@@ -142,7 +142,7 @@ def trace_coverage(doc, phase):
 
 
 def load_bytes(data, where=REGISTRY_PATH, suite_doc=None):
-    return diagcontracts.validate_diagnostics(tomlfile.loads(data, where), where, suite_doc)
+    return diag_contracts.validate_diagnostics(toml_file.loads(data, where), where, suite_doc)
 
 
 def load(path, suite_doc=None):
@@ -338,15 +338,15 @@ def probe_tools(registry, configured, host_os, names, supervisor=None, deadline=
             record["detail"] = "not configured on this executor"
         elif not (os.path.isfile(path) and os.access(path, os.X_OK)):
             record["detail"] = "%s is not an executable file" % path
-        elif perfcapture.executable_identity(path) is None:
+        elif perf_capture.executable_identity(path) is None:
             record["detail"] = "%s is larger than any configured tool may be" % path
         else:
             record["state"] = "available"
-            record["executable_sha256"] = perfcapture.executable_identity(path)
+            record["executable_sha256"] = perf_capture.executable_identity(path)
             if "version_argv" in tool and supervisor is None:
                 record["detail"] = "no supervisor was available to ask its version"
             elif "version_argv" in tool:
-                result = toolrun.run(supervisor, [path] + tool["version_argv"], TOOL_ENV,
+                result = tool_run.run(supervisor, [path] + tool["version_argv"], TOOL_ENV,
                                      seconds, 4096, cwd=cwd, deadline=deadline,
                                      binds=binds(path) if binds is not None else ())
                 text = result.stdout.decode("utf-8", "replace").strip().splitlines()
@@ -398,7 +398,7 @@ LAUNCHING = object()
 
 def _cause(error):
     """`reason: detail` of a capture failure, or the type and text of any other error."""
-    if isinstance(error, perfcapture.CaptureError):
+    if isinstance(error, perf_capture.CaptureError):
         return "%s: %s" % (error.reason, error.detail)
     return "%s: %s" % (type(error).__name__, error)
 
@@ -450,7 +450,7 @@ class Profile(object):
     """One diagnostic child run. `probes[side]` and `parent_probes[side]` are (path, sha256) of
     the diagnostic and the verdict build's probe; `authority` holds the registry doc and golden
     entries the probe is judged by; `supervisor` is the verified authority supervisor every
-    execution runs under (`toolrun.Supervisor`)."""
+    execution runs under (`tool_run.Supervisor`)."""
 
     # The host observer (`HOST_PERF`): the authority supervisor on the host that runs the
     # trusted perf and Inferno tools, the run's host-private work for perf's control FIFOs, and
@@ -474,7 +474,7 @@ class Profile(object):
         self.recipe = registry["recipes"][recipe_id]
         # The kind its evidence is classified by is the one its plan froze (ADR-0179).
         require(plan["profile"]["recipe_id"] == recipe_id and plan["diagnostic"]["recipe"]
-                == diagcontracts.frozen_identity(registry, recipe_id),
+                == diag_contracts.frozen_identity(registry, recipe_id),
                 "the child plan does not freeze diagnostic recipe %s as the registry declares "
                 "it" % recipe_id)
         self.selection = selection
@@ -534,13 +534,13 @@ class Profile(object):
         trusted = set(entry[1] for name, entry in self.tools.items()
                       if entry[1] is not None and (name == "perf" or name.startswith("inferno")))
         return bool(argv) and (argv[0] in trusted or (
-            argv[0] == toolrun.SHELL and len(argv) > 3 and argv[3] in trusted
-            and not hostobserver.is_gated(argv)))
+            argv[0] == tool_run.SHELL and len(argv) > 3 and argv[3] in trusted
+            and not host_observer.is_gated(argv)))
 
     def observer(self, staged, unwind, room, gate_root, whole, command_seconds):
         """A host observer of the next contained run: its gate FIFO below `gate_root` (bound
         writable into the container), its control FIFOs in the host-private work, its
-        recording at `staged`. Its perf lives at most `hostobserver.lifetime(command_seconds)`,
+        recording at `staged`. Its perf lives at most `host_observer.lifetime(command_seconds)`,
         the contained run's own bound with its attachment and settlement allowances, within the
         diagnostic deadline; never the whole remaining diagnostic window."""
         self.observers += 1
@@ -553,12 +553,12 @@ class Profile(object):
 
         def container(deadline=self.budget.deadline, clock=self.clock):
             name = getattr(supervisor, "active", None)
-            return hostobserver.inspect(docker, name, deadline, clock) if name else None
-        observer = hostobserver.Observer(
-            hostobserver.supervised_start(self.host, TOOL_ENV, control, self.clock),
+            return host_observer.inspect(docker, name, deadline, clock) if name else None
+        observer = host_observer.Observer(
+            host_observer.supervised_start(self.host, TOOL_ENV, control, self.clock),
             self.tool("perf"), self.event, self.frequency, unwind, staged, control, gate,
             self.budget.deadline, whole, container=container, file_bytes=room,
-            clock=self.clock, seconds=hostobserver.lifetime(command_seconds))
+            clock=self.clock, seconds=host_observer.lifetime(command_seconds))
         observer.make_gate()
         return observer
 
@@ -569,7 +569,7 @@ class Profile(object):
         the capture is already `failing` for its own reason, which then stands."""
         try:
             observer.stop(True)
-        except perfcapture.CaptureError:
+        except perf_capture.CaptureError:
             self.retained.append(observer.control_dir)
             raise
         finally:
@@ -579,7 +579,7 @@ class Profile(object):
             self.write(relative + "/" + observer_name(observer),
                        contracts.write_bytes(doc, "host-observer"))
         if observer.failure() is not None and not failing:
-            raise perfcapture.CaptureError("observer_failed", "host perf: "
+            raise perf_capture.CaptureError("observer_failed", "host perf: "
                                            + observer.failure())
 
     def settle_repetition(self, observer, relative, primary, region="whole_command",
@@ -593,11 +593,11 @@ class Profile(object):
                 self.settle_observer(observer, relative, region, failing=primary is not None)
             if collect:
                 self.collect(relative)
-        except perfcapture.CaptureError as cleanup:
+        except perf_capture.CaptureError as cleanup:
             if primary is None:
                 raise
             if cleanup.reason == "cleanup_uncertain":
-                raise perfcapture.CaptureError("cleanup_uncertain", ("%s; cleanup after it: %s" % (
+                raise perf_capture.CaptureError("cleanup_uncertain", ("%s; cleanup after it: %s" % (
                     _cause(primary), cleanup.detail))[:4096]) from primary
             # The primary cause stands; the later refusal is secondary context only.
 
@@ -658,7 +658,7 @@ class Profile(object):
                 os.close(fd)
         problems = admission.remove_tree(source)
         if problems:
-            raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
+            raise perf_capture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
 
     def binds(self, reads=(), writes=()):
         """The (host path, writable) pairs a contained request binds at their own paths: the
@@ -721,14 +721,14 @@ class Profile(object):
         trusted tool runs on the host under the same authority supervisor and binds nothing.
         `observe(running)` is called once the run started (the host observer's attachment).
         `log_cap` is a CLI command's whole sample log, stdout `cap` and stderr together
-        (`toolrun.request`); other tools keep the default stderr allowance."""
+        (`tool_run.request`); other tools keep the default stderr allowance."""
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
         # The image's own interpreter and shell are the image's: a host file is never bound
         # over them.
-        program = () if self.contained() and (argv[0] == clicases.CONTAINER_PYTHON
-                                              or hostobserver.is_gated(argv)) else (argv[0],)
+        program = () if self.contained() and (argv[0] == cli_cases.CONTAINER_PYTHON
+                                              or host_observer.is_gated(argv)) else (argv[0],)
         host = self.host is not None and self.trusted_argv(argv)
         supervisor = self.host if host else self.supervisor
         binds = () if host else self.binds(tuple(reads) + program, writes)
@@ -738,20 +738,20 @@ class Profile(object):
         error = None
         try:
             if observe is None:
-                result = toolrun.run(supervisor, argv, env or TOOL_ENV, timeout, cap,
+                result = tool_run.run(supervisor, argv, env or TOOL_ENV, timeout, cap,
                                stdin=stdin, cwd=cwd, deadline=self.budget.deadline,
                                clock=self.clock, stdout_path=stdout_path,
                                file_bytes=file_bytes, watch=self.over_room, binds=binds,
                                setup=setup, patterns=patterns, selectors=selectors,
                                log_cap=log_cap)
             else:
-                running = toolrun.start(supervisor, argv, env or TOOL_ENV, timeout, cap,
+                running = tool_run.start(supervisor, argv, env or TOOL_ENV, timeout, cap,
                                stdin=stdin, cwd=cwd, deadline=self.budget.deadline,
                                clock=self.clock, stdout_path=stdout_path,
                                file_bytes=file_bytes, watch=self.over_room, binds=binds,
                                setup=setup, patterns=patterns, selectors=selectors,
                                log_cap=log_cap)
-                if isinstance(running, toolrun.Result):
+                if isinstance(running, tool_run.Result):
                     result = running
                 else:
                     try:
@@ -777,7 +777,7 @@ class Profile(object):
             if error is not None:
                 # The primary cause first, then the cleanup it left unconfirmed.
                 detail = _cause(error) + "; " + detail
-            raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096]) from error
+            raise perf_capture.CaptureError("cleanup_uncertain", detail[:4096]) from error
         if error is not None:
             # The run's end was confirmed by its supervisor although the observer callback
             # failed: the settled Result travels with the primary error, so the caller releases
@@ -826,7 +826,7 @@ class Profile(object):
         if result.exceeded is not None:
             raise Exhausted(OVER_ROOM, "%s: %s" % (what, result.exceeded))
         if result.failure() is not None:
-            raise perfcapture.CaptureError("tool_failed", "%s: %s" % (what, result.failure()))
+            raise perf_capture.CaptureError("tool_failed", "%s: %s" % (what, result.failure()))
         self.settle(what)
         self.collect(relative)
         return self.admitted(self.output, relative, room, what)
@@ -855,18 +855,18 @@ class Profile(object):
                       % namespace.path)
             if why is not None:
                 detail = "%s; %s" % (why, detail)
-            raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096])
+            raise perf_capture.CaptureError("cleanup_uncertain", detail[:4096])
         problems = namespace.remove()
         if problems:
             # Kept for the operator, never removed beneath a live process.
             self.retained.append(namespace.path)
-            raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
+            raise perf_capture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
 
     def halted(self, what):
         """Refuse to start `what` once scratch was kept for recovery: a process of an earlier
         execution may still be live, so the run uses nothing more of its work."""
         if getattr(self, "retained", ()):
-            raise perfcapture.CaptureError(
+            raise perf_capture.CaptureError(
                 "cleanup_uncertain", ("%s was not started: scratch kept for recovery (%s) may "
                                       "still be reached by a live process"
                                       % (what, ", ".join(self.retained)))[:4096])
@@ -885,7 +885,7 @@ class Profile(object):
                 self.seeds[key] = self.write_cli_seed(side, cli_seed, case)
             else:
                 self.seeds[key] = self.write_seed(side, case["seed"], key)
-        except perfcapture.CaptureError as error:
+        except perf_capture.CaptureError as error:
             self.seed_failures[key] = error
             raise
         return self.seeds[key]
@@ -908,10 +908,10 @@ class Profile(object):
         finally:
             self.release(namespace, _uncertain(result))
         if result.supervision_failure() is not None:
-            raise perfcapture.CaptureError("seed_failed", result.supervision_failure())
+            raise perf_capture.CaptureError("seed_failed", result.supervision_failure())
         judged = oracle.judge(self.doc, self.golden, request, result.code, result.stdout)
         if judged["status"] != "passed":
-            raise perfcapture.CaptureError("seed_failed", "the %s side's seed writer failed: %s"
+            raise perf_capture.CaptureError("seed_failed", "the %s side's seed writer failed: %s"
                                            % (side, judged["failure"]["detail"]))
         # A passing message admits no file: the whole tree the writer left is enumerated as
         # confined, bounded directories and regular files before anything reads it, then
@@ -920,9 +920,9 @@ class Profile(object):
             seeds.seal(path, self.seed_bounds(), self.deadlines())
             return path, seeds.tree(path, self.seed_bounds(), self.deadlines())[0]
         except deadlines.Expired as expired:
-            raise perfcapture.CaptureError("diagnostic_deadline", str(expired))
+            raise perf_capture.CaptureError("diagnostic_deadline", str(expired))
         except (ContractError, OSError) as error:
-            raise perfcapture.CaptureError("seed_unadmitted", "the %s side's written seed is "
+            raise perf_capture.CaptureError("seed_unadmitted", "the %s side's written seed is "
                                            "not admitted: %s" % (side, error))
 
     def seed_bounds(self):
@@ -941,13 +941,13 @@ class Profile(object):
                 seed, target, self.seed_bounds(), self.deadlines(),
                 label="the %s side's seed" % side)
         except deadlines.Expired as expired:
-            raise perfcapture.CaptureError("diagnostic_deadline", str(expired))
+            raise perf_capture.CaptureError("diagnostic_deadline", str(expired))
         except (ContractError, OSError) as error:
-            raise perfcapture.CaptureError("seed_unadmitted", "the %s side's seed was not "
+            raise perf_capture.CaptureError("seed_unadmitted", "the %s side's seed was not "
                                            "copied: %s" % (side, error))
         copied = seeds.identity(entries, hashes)[0]
         if copied != digest:
-            raise perfcapture.CaptureError("seed_changed", "the %s side's seed is %s, not the "
+            raise perf_capture.CaptureError("seed_changed", "the %s side's seed is %s, not the "
                                            "%s that was admitted" % (side, copied, digest))
 
     def prepared(self, side, case, namespace):
@@ -970,7 +970,7 @@ class Profile(object):
     def judged(self, request, code, stdout, what):
         judged = oracle.judge(self.doc, self.golden, request, code, stdout)
         if judged["status"] != "passed":
-            raise perfcapture.CaptureError("oracle_failed", "%s failed the oracle: %s"
+            raise perf_capture.CaptureError("oracle_failed", "%s failed the oracle: %s"
                                            % (what, judged["failure"]["detail"]))
         return judged
 
@@ -980,13 +980,13 @@ class Profile(object):
         scratch = os.path.join(namespace.path, "probe")
         problems = admission.remove_tree(scratch)
         if problems:
-            raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
+            raise perf_capture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
         os.mkdir(scratch, 0o700)
         if case["seed"] is not None:
             seed_copy = os.path.join(namespace.path, "seed")
             problems = admission.remove_tree(seed_copy)
             if problems:
-                raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
+                raise perf_capture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
             self.copy_seed(side, case, seed_copy)
 
     def bracketed(self, side, case, argv_for, on_begin, on_end, capture_seconds, repeat=True,
@@ -1035,26 +1035,26 @@ class Profile(object):
 
             try:
                 uncertain = True
-                run = perfcapture.bracketed_run(
+                run = perf_capture.bracketed_run(
                     self.supervisor, argv, supervise.probe_environment(namespace.path),
                     namespace.path, request_path, fifo, on_begin, on_end, on_record,
                     capture_seconds, self.budget.deadline,
                     self.registry["capture"]["handshake_timeout_seconds"],
-                    min(self.budget.tool_seconds, toolrun.TIMEOUT_MS_MAX / 1000.0),
+                    min(self.budget.tool_seconds, tool_run.TIMEOUT_MS_MAX / 1000.0),
                     on_next=on_next if repeat else None, file_bytes=file_bytes,
                     clock=self.clock, watch=self.over_room,
                     binds=self.binds(tuple(reads) + ((self.probes[side][0],)
-                                                     if hostobserver.is_gated(argv)
+                                                     if host_observer.is_gated(argv)
                                                      else (argv[0], self.probes[side][0])),
                                      tuple(writes) + (namespace.path,)),
                     after_start=after_start)
-            except perfcapture.CaptureError as error:
+            except perf_capture.CaptureError as error:
                 uncertain = error.reason == "cleanup_uncertain"
                 raise
             except Exhausted as error:
                 # Raised while it ran: the recording was cancelled and its end confirmed.
                 uncertain = False
-                raise perfcapture.CaptureError(error.reason, error.detail)
+                raise perf_capture.CaptureError(error.reason, error.detail)
             uncertain = False
             run.why = STOPPED.get(run.stopped) or why.get("stop", "single_repetition")
             if stopped:
@@ -1062,7 +1062,7 @@ class Profile(object):
                           "stopped after %d repetitions: %s" % (len(judged),
                                                                 stopped[0].detail))
             if len(judged) != len(run.regions):
-                raise perfcapture.CaptureError("oracle_failed", "%d messages for %d bracketed "
+                raise perf_capture.CaptureError("oracle_failed", "%d messages for %d bracketed "
                                                "repetitions" % (len(judged), len(run.regions)))
             run.region_ms = sum(Fraction(item["metrics"]["wall_ms"]["value"]) for item in judged)
             return run, judged
@@ -1088,7 +1088,7 @@ class Profile(object):
                              "repetitions": 0, "setup_ms": "0", "region_ms": "0",
                              "enabled_ms": "0", "wall_ms": "0", "observed": False,
                              "truncated_at_cap": False, "stopped": "not_started"},
-                  "samples": None, "losses": perfcapture.unknown_losses("nothing recorded"),
+                  "samples": None, "losses": perf_capture.unknown_losses("nothing recorded"),
                   "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                   "symbols": {"state": "missing", "build_ids": [],
                               "binary_build_id_present": None, "archive": None},
@@ -1108,11 +1108,11 @@ class Profile(object):
                     # host recording through the same acknowledged control.
                     holder["observer"] = self.observer(
                         staged, unwind, room, fifo, False,
-                        min(self.budget.tool_seconds, toolrun.TIMEOUT_MS_MAX / 1000.0))
+                        min(self.budget.tool_seconds, tool_run.TIMEOUT_MS_MAX / 1000.0))
                     holder["control"] = holder["observer"]
-                    return hostobserver.gated([self.probes[side][0]], holder["observer"].gate)
-                holder["control"] = perfcapture.PerfControl(fifo)
-                return perfcapture.record_argv(perf, self.event, self.frequency, unwind,
+                    return host_observer.gated([self.probes[side][0]], holder["observer"].gate)
+                holder["control"] = perf_capture.PerfControl(fifo)
+                return perf_capture.record_argv(perf, self.event, self.frequency, unwind,
                                                staged, holder["control"],
                                                [self.probes[side][0]], max_bytes=room)
 
@@ -1146,7 +1146,7 @@ class Profile(object):
                 setup_ms=_ms(run.setup()), region_ms=format_decimal(region),
                 enabled_ms=_ms(run.recorded()), wall_ms=_ms(run.exited - run.launched),
                 stopped=run.why)
-        except (perfcapture.CaptureError, Exhausted) as error:
+        except (perf_capture.CaptureError, Exhausted) as error:
             # perf ends its own session at the byte room ("perf size limit reached").
             reason = ("profile_bytes_exhausted" if "size limit reached" in error.detail
                       and error.reason != OVER_ROOM else error.reason)
@@ -1158,14 +1158,14 @@ class Profile(object):
         try:
             # A partial or refused recording is kept too: admitted into the evidence.
             self.collect(relative + "/capture.data")
-        except (perfcapture.CaptureError, ContractError, OSError) as error:
+        except (perf_capture.CaptureError, ContractError, OSError) as error:
             record["omission"] = record["omission"] or {
                 "reason": "capture_unadmitted", "detail": str(error)[:4096]}
         if os.path.lexists(data) and (record["omission"] or {}).get("reason") != OVER_ROOM:
             # A recording over its room is kept and counted, never analysed as a capture.
             try:
                 self.analyse(record, directory, relative, region)
-            except (perfcapture.CaptureError, flamegraph.RenderError, Exhausted) as error:
+            except (perf_capture.CaptureError, flame_graph.RenderError, Exhausted) as error:
                 record["omission"] = record["omission"] or {"reason": error.reason,
                                                             "detail": error.detail[:4096]}
             except (ContractError, OSError) as error:
@@ -1207,7 +1207,7 @@ class Profile(object):
                 record["artifacts"] = [
                     item for item in self.artifacts(relative)
                     if item["path"] != record["repetitions"]["path"]
-                    and not diagcontracts.repeated_name(item["path"].rsplit("/", 1)[1])]
+                    and not diag_contracts.repeated_name(item["path"].rsplit("/", 1)[1])]
         except (ContractError, OSError, Exhausted) as error:
             # A capture that already failed keeps its own cause first.
             record["artifacts"], record["repetitions"] = [], None
@@ -1242,25 +1242,25 @@ class Profile(object):
                             "region_ns": item["region_ns"] if item["completed"] else None})
             indexed.update(artifact["path"] for artifact in (recording, observer) if artifact)
         stray = sorted(path for path in listed if path not in indexed
-                       and diagcontracts.repeated_name(path.rsplit("/", 1)[1]))
+                       and diag_contracts.repeated_name(path.rsplit("/", 1)[1]))
         require(not stray, "%s: repetition files no repetition names: %s" % (
             relative, ", ".join(stray[:8])))
-        doc = {"schema": diagcontracts.REPETITIONS_SCHEMA, "instance_id": record["instance_id"],
+        doc = {"schema": diag_contracts.REPETITIONS_SCHEMA, "instance_id": record["instance_id"],
                "side": record["side"], "attempt": record["attempt"], "tool": record["tool"],
                "binary_sha256": record["binary_sha256"], "boundary": boundary,
                "repetitions": entries}
-        path = relative + "/" + diagcontracts.REPETITIONS_FILE
+        path = relative + "/" + diag_contracts.REPETITIONS_FILE
         return dict(self.write(path, contracts.write_bytes(doc, "repetitions")), path=path)
 
     def observed_region(self, relative, observer):
         """The nanoseconds of one host-observed repetition's command: its exec to its exit in
-        its trusted recording (`perfcapture.decode_lifetime`), never the supervised child's
+        its trusted recording (`perf_capture.decode_lifetime`), never the supervised child's
         wall, which includes the observer's attachment and the wait at the gate."""
         require(observer.target is not None, "an observed repetition has a frozen target")
         fd, info = admission.open_confined(self.output, relative, relative)
         try:
             self.halted("decoding " + relative)
-            executed, exited = perfcapture.decode_lifetime(
+            executed, exited = perf_capture.decode_lifetime(
                 lambda offset, count: os.pread(fd, count, offset), info.st_size,
                 observer.target.pid)
         finally:
@@ -1290,7 +1290,7 @@ class Profile(object):
                              "repetitions": 0, "setup_ms": "0", "region_ms": "0",
                              "enabled_ms": "0", "wall_ms": "0", "observed": False,
                              "truncated_at_cap": False, "stopped": "not_started"},
-                  "samples": None, "losses": perfcapture.unknown_losses("nothing recorded"),
+                  "samples": None, "losses": perf_capture.unknown_losses("nothing recorded"),
                   "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                   "symbols": {"state": "missing", "build_ids": [],
                               "binary_build_id_present": None, "archive": None},
@@ -1330,11 +1330,11 @@ class Profile(object):
                 writes = (os.path.dirname(staged),)
 
                 def wrap(argv, staged=staged, room=room):
-                    return perfcapture.whole_argv(perf, self.event, self.frequency, unwind,
+                    return perf_capture.whole_argv(perf, self.event, self.frequency, unwind,
                                                   staged, argv, max_bytes=room)
                 if observed:
                     # The trusted host perf records the whole command, attached to the owned
-                    # gated process before the gate lets it execute (`hostobserver`).
+                    # gated process before the gate lets it execute (`host_observer`).
                     # The gate lives in the run's own work, bound writable, never staged
                     # evidence: a FIFO is not evidence.
                     gates = os.path.join(self.work, "gates")
@@ -1344,7 +1344,7 @@ class Profile(object):
                     writes = (gates,)
 
                     def wrap(argv, gate=observer.gate):
-                        return hostobserver.gated(argv, gate)
+                        return host_observer.gated(argv, gate)
 
                     def observe(running, observer=observer):
                         observer.attach(lambda: not running.done())
@@ -1374,7 +1374,7 @@ class Profile(object):
                 region += Fraction(spent, 1000000)
                 if reply["setup"] is not None and reply["setup"]["wall_ns"] is not None:
                     setup_ns += int(reply["setup"]["wall_ns"])
-        except (perfcapture.CaptureError, Exhausted) as error:
+        except (perf_capture.CaptureError, Exhausted) as error:
             reason = ("profile_bytes_exhausted" if "size limit reached" in error.detail
                       and error.reason != OVER_ROOM else error.reason)
             record["omission"] = {"reason": reason, "detail": error.detail[:4096]}
@@ -1385,7 +1385,7 @@ class Profile(object):
         try:
             # A partial or refused recording is kept too: admitted into the evidence.
             self.collect(relative)
-        except (perfcapture.CaptureError, ContractError, OSError) as error:
+        except (perf_capture.CaptureError, ContractError, OSError) as error:
             record["omission"] = record["omission"] or {
                 "reason": "capture_unadmitted", "detail": str(error)[:4096]}
         # The recorded commands' own time at the capture's boundary: the whole process is the
@@ -1398,7 +1398,7 @@ class Profile(object):
             try:
                 self.analyse(record, directory, relative, region, names=names,
                              binary=self.afs[side])
-            except (perfcapture.CaptureError, flamegraph.RenderError, Exhausted) as error:
+            except (perf_capture.CaptureError, flame_graph.RenderError, Exhausted) as error:
                 record["omission"] = record["omission"] or {"reason": error.reason,
                                                             "detail": error.detail[:4096]}
             except (ContractError, OSError) as error:
@@ -1418,12 +1418,12 @@ class Profile(object):
         data = os.path.join(self.output, name)
         if len(names) == 1:
             script = self.tool_output(relative + "/capture.script",
-                                      perfcapture.script_argv(perf, data),
+                                      perf_capture.script_argv(perf, data),
                                       "perf script of " + relative)
         else:
             script = self.scripts(relative, names)
-        parsed = perfcapture.parse_script(script.decode("utf-8", "replace"))
-        perfcapture.check_event(parsed, self.event)
+        parsed = perf_capture.parse_script(script.decode("utf-8", "replace"))
+        perf_capture.check_event(parsed, self.event)
         ids = self.build_ids(relative, names, directory)
         record.update(samples=parsed.samples, frames=parsed.frames,
                       unknown_frames=parsed.unknown)
@@ -1443,8 +1443,8 @@ class Profile(object):
                                        os.path.join(self.output, relative, "capture.script")],
                                       "inferno-collapse-perf of " + name)
             try:
-                flamegraph.check_folded(folded)
-            except flamegraph.RenderError:
+                flame_graph.check_folded(folded)
+            except flame_graph.RenderError:
                 raise
 
     def scripts(self, relative, names):
@@ -1464,10 +1464,10 @@ class Profile(object):
                 try:
                     self.budget.check(what)
                     data = self.tool_output(
-                        part, perfcapture.script_argv(
+                        part, perf_capture.script_argv(
                             perf, os.path.join(self.output, relative, name)), what,
                         limit=SCRIPT_BYTES_MAX - total)
-                except (perfcapture.CaptureError, Exhausted) as error:
+                except (perf_capture.CaptureError, Exhausted) as error:
                     if error.reason != "cleanup_uncertain" and not self.retained:
                         # Whatever the failed decoding wrote is kept and counted, never used.
                         self.collect(part)
@@ -1500,12 +1500,12 @@ class Profile(object):
                                    self.budget.tool_seconds, BUILD_ID_LIST_BYTES, directory,
                                    reads=(self.output,))
             if listed.failure() is not None:
-                raise perfcapture.CaptureError("tool_failed", "%s: %s" % (
+                raise perf_capture.CaptureError("tool_failed", "%s: %s" % (
                     what, listed.failure()))
             try:
-                ids.update(identity for identity, _ in perfcapture.parse_build_ids(
+                ids.update(identity for identity, _ in perf_capture.parse_build_ids(
                     listed.stdout.decode("utf-8", "replace")) if identity)
-            except perfcapture.CaptureError as error:
+            except perf_capture.CaptureError as error:
                 error.detail = "%s: %s" % (what, error.detail)
                 raise
         return ids
@@ -1519,7 +1519,7 @@ class Profile(object):
         binary = self.admitted(os.path.dirname(profiled[0]), os.path.basename(profiled[0]),
                                limits.BUILD_ARTIFACT_BYTES_MAX, "profiled executable")
         require(sha256_bytes(binary) == profiled[1], "profiled executable hash changed")
-        own = perfcapture.elf_build_id(binary)
+        own = perf_capture.elf_build_id(binary)
         unique = sorted(set(ids))[:256]
         symbols = {"state": "referenced", "build_ids": unique,
                    "binary_build_id_present": (own in ids) if own else None, "archive": None}
@@ -1565,23 +1565,23 @@ class Profile(object):
         """The loss records of every recording `names` below `relative`, decoded from each
         (ADR-0175): the records and payloads of each kind summed over the recordings, never one
         kind into the other, and all unknown when any recording cannot be decoded."""
-        totals = dict((key, 0) for key in perfcapture.LOSS_KEYS)
+        totals = dict((key, 0) for key in perf_capture.LOSS_KEYS)
         for name in names:
             path = relative + "/" + name
             fd, info = admission.open_confined(self.output, path, path)
             try:
-                decoded = perfcapture.decode_losses(
+                decoded = perf_capture.decode_losses(
                     lambda offset, count: os.pread(fd, count, offset), info.st_size)
             finally:
                 os.close(fd)
             if decoded["state"] != "decoded":
-                return perfcapture.unknown_losses("%s: %s" % (name, decoded["detail"]))
-            for key in perfcapture.LOSS_KEYS:
+                return perf_capture.unknown_losses("%s: %s" % (name, decoded["detail"]))
+            for key in perf_capture.LOSS_KEYS:
                 totals[key] += decoded[key]
         return dict(totals, state="decoded", detail="")
 
     def inferno_paths(self):
-        paths = dict((name, self.tool(name)) for name in flamegraph.TOOLS)
+        paths = dict((name, self.tool(name)) for name in flame_graph.TOOLS)
         if any(path is None for path in paths.values()):
             return None
         return paths
@@ -1590,7 +1590,7 @@ class Profile(object):
         chosen = {}
         threshold = Fraction(self.registry["capture"]["dwarf_when_unknown_ratio_above"])
         capture = self.perf_capture if case["kind"] == "library" else self.cli_perf_capture
-        for side in diagcontracts.SIDES:
+        for side in diag_contracts.SIDES:
             first = capture(case, side, 1, "frame_pointer")
             chosen[side] = first
             ratio = (Fraction(first["unknown_frames"], first["frames"])
@@ -1624,9 +1624,9 @@ class Profile(object):
         try:
             self.budget.check("rendering " + case["instance_id"])
             self.directory(relative)
-            self.renders.extend(flamegraph.render_case(
+            self.renders.extend(flame_graph.render_case(
                 Renderer(self, paths), relative, case["instance_id"], folded))
-        except (flamegraph.RenderError, Exhausted, perfcapture.CaptureError) as error:
+        except (flame_graph.RenderError, Exhausted, perf_capture.CaptureError) as error:
             self.omit("flamegraph", case, None, error.reason, error.detail)
         except (ContractError, OSError) as error:
             self.omit("flamegraph", case, None, "render_unadmitted", str(error))
@@ -1640,7 +1640,7 @@ class Profile(object):
         cli = case["kind"] != "library"
         subject = "cli_process" if cli else "probe_region"
         binaries = self.afs if cli else self.probes
-        for side in diagcontracts.SIDES:
+        for side in diag_contracts.SIDES:
             relative = "captures/%s/%s/1" % (case["instance_id"], side)
             directory = self.directory(relative)
             available, reason, detail, _ = counters.samply_capability(
@@ -1660,7 +1660,7 @@ class Profile(object):
                                  "enabled_ms": "0", "wall_ms": "0", "observed": False,
                                  "truncated_at_cap": False, "stopped": "not_started"},
                       "samples": 0,
-                      "losses": perfcapture.unknown_losses("samply reports no loss records"),
+                      "losses": perf_capture.unknown_losses("samply reports no loss records"),
                       "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                       "symbols": {"state": "missing", "build_ids": [],
                                   "binary_build_id_present": None, "archive": None},
@@ -1702,13 +1702,13 @@ class Profile(object):
                     counted = counters.samply_samples(self.admitted(
                         directory, name, self.budget.evidence_limit, relative + "/" + name))
                     if counted is None:
-                        raise perfcapture.CaptureError("profile_unparsed", "samply's saved "
+                        raise perf_capture.CaptureError("profile_unparsed", "samply's saved "
                                                        "profile is not in a format this reader "
                                                        "knows; it is kept")
                     record["samples"] += counted
                     record["region"].update(repetitions=repetition, observed=True)
                     attempts.complete()
-            except (perfcapture.CaptureError, Exhausted) as error:
+            except (perf_capture.CaptureError, Exhausted) as error:
                 record["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
             except (ContractError, OSError) as error:
                 record["omission"] = {"reason": "samply_failed", "detail": str(error)[:4096]}
@@ -1721,7 +1721,7 @@ class Profile(object):
             try:
                 # What a failed repetition staged is kept and counted with the rest.
                 self.collect(relative)
-            except (perfcapture.CaptureError, ContractError, OSError) as error:
+            except (perf_capture.CaptureError, ContractError, OSError) as error:
                 record["omission"] = record["omission"] or {
                     "reason": "capture_unadmitted", "detail": str(error)[:4096]}
             try:
@@ -1732,7 +1732,7 @@ class Profile(object):
                     record["artifacts"] = [
                         item for item in self.artifacts(relative)
                         if item["path"] != record["repetitions"]["path"]
-                        and not diagcontracts.repeated_name(item["path"].rsplit("/", 1)[1])]
+                        and not diag_contracts.repeated_name(item["path"].rsplit("/", 1)[1])]
             except (ContractError, OSError, Exhausted) as error:
                 record["artifacts"], record["repetitions"] = [], None
                 record["omission"] = record["omission"] or {
@@ -1762,7 +1762,7 @@ class Profile(object):
                 writes=(namespace.path, os.path.dirname(output)))
             elapsed = self.clock() - started
             if result.supervision_failure() is not None:
-                raise perfcapture.CaptureError("samply_failed", result.supervision_failure())
+                raise perf_capture.CaptureError("samply_failed", result.supervision_failure())
             self.judged(request, result.code, result.stdout, "the sampled probe")
             return elapsed
         finally:
@@ -1772,14 +1772,14 @@ class Profile(object):
 
     def cli_entry(self, side, case):
         _, adapter = self.cli.adapters[side]
-        return clicases.command(adapter, case["case_id"], case["parameters"])
+        return cli_cases.command(adapter, case["case_id"], case["parameters"])
 
     def cli_environment(self, case, scratch):
         environment = dict(CLI_ENVIRONMENT)
         environment.update(supervise.scratch_environment(scratch))
         environment.update(case.get("af_environment") or {})
         if case["timing"]["boundary"] == "reported_interval":
-            environment.update(clicases.tui_home_environment(scratch))
+            environment.update(cli_cases.tui_home_environment(scratch))
         return environment
 
     def cli_run(self, side, case, binary, wrap=None, writes=(), file_bytes=None, trace=False,
@@ -1789,7 +1789,7 @@ class Profile(object):
         declared fixture setup; its seed, if it reads one, is that side's own, admitted and
         copied confined first (ADR-0176). `wrap(argv)` puts a profiler around the command. The
         supervisor observes the command's whole stdout, past any retained log, and the command's
-        oracle (`clicases.judge`) judges it before anything of the run is used; a lifecycle the
+        oracle (`cli_cases.judge`) judges it before anything of the run is used; a lifecycle the
         containment refuses, an unconfirmed cleanup, a timeout or outputs over their room fail
         it first. Returns (Result, the supervised child's wall time in ms as a decimal, the
         admitted trace bytes or None). With `telemetry`, the command records at that level
@@ -1804,7 +1804,7 @@ class Profile(object):
             values = {"af": binary, "probe": probe or "", "scratch": scratch,
                       "fixtures": self.cli.fixtures,
                       "package_version": self.cli.versions[side],
-                      "python": clicases.driver_python(self.contained())}
+                      "python": cli_cases.driver_python(self.contained())}
             environment = self.cli_environment(case, scratch)
             if telemetry is not None:
                 environment[TELEMETRY_LEVEL] = telemetry
@@ -1823,25 +1823,25 @@ class Profile(object):
                     self.copy_seed(side, case, seed_argument, cli_seed=entry["seed"])
                 setup = (["/bin/sh", os.path.join(self.cli.fixtures, "setup.sh"),
                           entry["setup"], scratch, binary, probe or "-",
-                          clicases.setup_argument(entry, self.cli.receipts, side, seed_argument)],
+                          cli_cases.setup_argument(entry, self.cli.receipts, side, seed_argument)],
                          environment, scratch, CLI_SETUP_SECONDS)
-            argv = [clicases.expand(text, values) for text in entry["argv"]]
+            argv = [cli_cases.expand(text, values) for text in entry["argv"]]
             if wrap is not None:
                 argv = wrap(argv)
             log = self.plan["limits"]["sample_log_bytes"]
             result = LAUNCHING
             try:
                 result = self.tool_run(
-                    argv, case["sample_timeout_ms"] / 1000.0, clicases.stdout_bytes(log),
-                    clicases.expand(entry["cwd"], values), env=environment, setup=setup,
-                    patterns=clicases.patterns(entry), selectors=clicases.selectors(entry),
+                    argv, case["sample_timeout_ms"] / 1000.0, cli_cases.stdout_bytes(log),
+                    cli_cases.expand(entry["cwd"], values), env=environment, setup=setup,
+                    patterns=cli_cases.patterns(entry), selectors=cli_cases.selectors(entry),
                     file_bytes=file_bytes, reads=(binary, probe, self.cli.fixtures),
                     writes=(namespace.path,) + tuple(writes), observe=observe, log_cap=log)
             except Exception as error:
                 # Only a Result the supervisor settled proves the run ended; an opaque failure
                 # leaves it launching, so its namespace is kept.
                 settled = getattr(error, "settled", None)
-                if isinstance(settled, toolrun.Result):
+                if isinstance(settled, tool_run.Result):
                     result = settled
                 primary = error
                 raise
@@ -1864,7 +1864,7 @@ class Profile(object):
                 ended = reply["termination"]["kind"]
                 tail = result.stderr.decode("utf-8", "replace")[-512:]
                 if (ended == "exited"
-                        and supervise.returncode(reply) == clicases.DRIVER_UNCONFIRMED_EXIT):
+                        and supervise.returncode(reply) == cli_cases.DRIVER_UNCONFIRMED_EXIT):
                     unconfirmed = ("%s: the PTY driver could not confirm that the browser's "
                                    "session ended: %s" % (what, tail))
                 elif (ended not in ("exited", "setup_failed", "launch_failed")
@@ -1874,17 +1874,17 @@ class Profile(object):
                                    % (what, ended, tail))
                 if unconfirmed is not None:
                     result.uncertain = True
-                    raise perfcapture.CaptureError("cleanup_uncertain", unconfirmed[:4096])
+                    raise perf_capture.CaptureError("cleanup_uncertain", unconfirmed[:4096])
             failure = result.supervision_failure(observed_stream=True)
             if failure is not None:
-                raise perfcapture.CaptureError("cli_failed", "%s: %s" % (what, failure))
+                raise perf_capture.CaptureError("cli_failed", "%s: %s" % (what, failure))
             reply = result.supervised.result
-            passed, why, _ = clicases.judge(entry, values, result.code, result.stdout,
+            passed, why, _ = cli_cases.judge(entry, values, result.code, result.stdout,
                                             reply["stdout"]["truncated"],
                                             reply["stdout_pattern_counts"],
                                             reply["stdout_json"])
             if not passed:
-                raise perfcapture.CaptureError("oracle_failed", "%s failed its oracle: %s"
+                raise perf_capture.CaptureError("oracle_failed", "%s failed its oracle: %s"
                                                % (what, why))
             wall = format_decimal(Fraction(int(reply["timing"]["child_wall_ns"]), 1000000))
             exported = self.exported_trace(staged, room) if trace else None
@@ -1922,12 +1922,12 @@ class Profile(object):
             data = self.admitted(directory, name, min(TRACE_BYTES_MAX, room),
                                  "the exported trace")
         except FileNotFoundError:
-            raise perfcapture.CaptureError("trace_missing", "the perf-trace build exported no "
+            raise perf_capture.CaptureError("trace_missing", "the perf-trace build exported no "
                                            "trace")
         except Exhausted as error:
-            raise perfcapture.CaptureError("trace_over_cap", error.detail)
+            raise perf_capture.CaptureError("trace_over_cap", error.detail)
         except ContractError as error:
-            raise perfcapture.CaptureError("trace_unadmitted", str(error))
+            raise perf_capture.CaptureError("trace_unadmitted", str(error))
         self.unstage(directory)
         return data
 
@@ -1939,9 +1939,9 @@ class Profile(object):
         try:
             self.settle("the exported trace")
         except Exhausted as error:
-            raise perfcapture.CaptureError("trace_over_cap", error.detail)
+            raise perf_capture.CaptureError("trace_over_cap", error.detail)
         except ContractError as error:
-            raise perfcapture.CaptureError("trace_unadmitted", str(error))
+            raise perf_capture.CaptureError("trace_unadmitted", str(error))
 
     def discard_trace(self, staged, result):
         """After a traced execution that was not admitted: its staged trace is removed only
@@ -1966,7 +1966,7 @@ class Profile(object):
         self.halted("removing " + directory)
         problems = admission.remove_tree(directory) if os.path.lexists(directory) else []
         if problems:
-            raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
+            raise perf_capture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
         parent = os.path.dirname(directory)
         try:
             os.rmdir(parent)
@@ -1987,7 +1987,7 @@ class Profile(object):
         that side's own `af telemetry` documents; every other case is an omission that names
         the supported matrix. Never a verdict sample, and never instead of the recipe's own
         evidence."""
-        reason = telemetrydiag.eligibility(case)
+        reason = telemetry_diag.eligibility(case)
         if reason is not None:
             self.omit("telemetry", case, None, reason[0], reason[1], reproduce=False)
             return
@@ -1998,10 +1998,10 @@ class Profile(object):
                       "authority supervisor to run anything under")
             return
         expected = None
-        for rule in self.cli_entry(diagcontracts.SIDES[0], case)["rules"]:
+        for rule in self.cli_entry(diag_contracts.SIDES[0], case)["rules"]:
             if rule["kind"] == "json_equals" and rule["path"] == "task_id":
                 expected = rule["value"]
-        for side in diagcontracts.SIDES:
+        for side in diag_contracts.SIDES:
             relative = "telemetry/%s/%s" % (case["instance_id"], side)
             binary, binary_sha256 = self.afs[side]
             entry = {"instance_id": case["instance_id"], "side": side,
@@ -2025,11 +2025,11 @@ class Profile(object):
                                           after=read_back,
                                           what="the telemetry-recorded command")
                 entry["command_wall_ms"] = wall
-                derived = telemetrydiag.capture(documents, expected)
-                self.write(relative + "/" + telemetrydiag.PERFETTO, telemetrydiag.perfetto(
+                derived = telemetry_diag.capture(documents, expected)
+                self.write(relative + "/" + telemetry_diag.PERFETTO, telemetry_diag.perfetto(
                     documents["show"], "%s %s" % (case["instance_id"], side)))
                 entry.update(derived)
-            except (perfcapture.CaptureError, Exhausted) as error:
+            except (perf_capture.CaptureError, Exhausted) as error:
                 entry["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
             except ContractError as error:
                 entry["omission"] = {"reason": "telemetry_unreadable",
@@ -2057,39 +2057,39 @@ class Profile(object):
         bytes of each document, by kind, into `documents`. Show and config name the one run the
         runs document lists, and any reader that fails stops the capture."""
         run = None
-        for kind in telemetrydiag.DOCUMENT_KINDS:
+        for kind in telemetry_diag.DOCUMENT_KINDS:
             if kind in ("show", "config") and run is None:
-                runs = telemetrydiag.read("runs", documents["runs"], relative + "/runs.json")
-                run = telemetrydiag.select_run(runs, None)
+                runs = telemetry_diag.read("runs", documents["runs"], relative + "/runs.json")
+                run = telemetry_diag.select_run(runs, None)
             target = "%s/%s.json" % (relative, kind)
-            room = min(self.budget.room(), telemetrydiag.DOCUMENT_BYTES_MAX)
+            room = min(self.budget.room(), telemetry_diag.DOCUMENT_BYTES_MAX)
             if room < 1:
                 raise Exhausted("profile_bytes_exhausted", "no evidence room is left for "
                                 + target)
             path = self.produced(target)
-            argv = telemetrydiag.read_argv(binary, kind, run)
+            argv = telemetry_diag.read_argv(binary, kind, run)
             # The namespace owner outlives all readers. Mark the launch before calling
             # the supervisor: an exception after launch has no confirmed cleanup receipt.
             # A later result must never erase uncertainty from any earlier reader.
             prior = getattr(namespace, "reader_uncertain", False)
             if prior:
-                raise perfcapture.CaptureError("cleanup_uncertain",
+                raise perf_capture.CaptureError("cleanup_uncertain",
                                                "an earlier telemetry reader may still be live")
             result = LAUNCHING
             namespace.reader_uncertain = True
             try:
-                result = self.tool_run(argv, telemetrydiag.READ_SECONDS, 4096, namespace.path,
+                result = self.tool_run(argv, telemetry_diag.READ_SECONDS, 4096, namespace.path,
                                        env=environment, stdout_path=path, file_bytes=room,
                                        reads=(binary,), writes=(namespace.path,))
             finally:
                 namespace.reader_uncertain = prior or _uncertain(result)
             if namespace.reader_uncertain:
-                raise perfcapture.CaptureError("cleanup_uncertain",
+                raise perf_capture.CaptureError("cleanup_uncertain",
                                                "af telemetry %s cleanup is uncertain" % kind)
             if result.exceeded is not None:
                 raise Exhausted(OVER_ROOM, "%s: %s" % (target, result.exceeded))
             if result.failure() is not None:
-                raise perfcapture.CaptureError("telemetry_read_failed", "af telemetry %s: %s"
+                raise perf_capture.CaptureError("telemetry_read_failed", "af telemetry %s: %s"
                                                % (kind, result.failure()))
             self.settle(target)
             self.collect(target)
@@ -2102,7 +2102,7 @@ class Profile(object):
         whole tree is then enumerated as confined, bounded entries, sealed and identified."""
         spec = self.cli.doc["seeds"][seed_id]
         if side not in self.probes:
-            raise perfcapture.CaptureError("seed_failed", "the %s side has no diagnostic probe "
+            raise perf_capture.CaptureError("seed_failed", "the %s side has no diagnostic probe "
                                            "to write its %s seed" % (side, seed_id))
         store = os.path.join(self.work, "seeds")
         os.makedirs(store, 0o700, exist_ok=True)
@@ -2115,7 +2115,7 @@ class Profile(object):
             af, probe = self.afs[side][0], self.probes[side][0]
             environment = self.cli_environment(case, scratch)
             script = os.path.join(self.cli.fixtures, "setup.sh")
-            request = canonical_bytes(clicases.seed_request(self.cli.doc, seed_id, scratch))
+            request = canonical_bytes(cli_cases.seed_request(self.cli.doc, seed_id, scratch))
             result = LAUNCHING
             result = self.tool_run(
                 ["/bin/sh", script, "seed_publish", scratch, af, probe, path],
@@ -2126,15 +2126,15 @@ class Profile(object):
         finally:
             self.release(namespace, _uncertain(result))
         if result.failure() is not None:
-            raise perfcapture.CaptureError("seed_failed", "the %s side's %s seed writer "
+            raise perf_capture.CaptureError("seed_failed", "the %s side's %s seed writer "
                                            "failed: %s" % (side, seed_id, result.failure()))
         try:
             seeds.seal(path, self.seed_bounds(), self.deadlines())
             return path, seeds.tree(path, self.seed_bounds(), self.deadlines())[0]
         except deadlines.Expired as expired:
-            raise perfcapture.CaptureError("diagnostic_deadline", str(expired))
+            raise perf_capture.CaptureError("diagnostic_deadline", str(expired))
         except (ContractError, OSError) as error:
-            raise perfcapture.CaptureError("seed_unadmitted", "the %s side's written %s seed "
+            raise perf_capture.CaptureError("seed_unadmitted", "the %s side's written %s seed "
                                            "is not admitted: %s" % (side, seed_id, error))
 
     # Phase traces ------------------------------------------------------------------------
@@ -2162,7 +2162,7 @@ class Profile(object):
             if result.supervision_failure() is not None:
                 # Before any oracle: a truncated stdout whose prefix parses, a refused
                 # lifecycle or a cancellation never becomes a passing probe (ADR-0176).
-                raise perfcapture.CaptureError("probe_failed", result.supervision_failure())
+                raise perf_capture.CaptureError("probe_failed", result.supervision_failure())
             judged = self.judged(request, result.code, result.stdout, "the probe")
             trace = self.exported_trace(staged, room) if trace_path else None
             return judged, judged["metrics"]["wall_ms"]["value"], trace
@@ -2186,7 +2186,7 @@ class Profile(object):
         else:
             binaries, parents, execute = self.afs, self.parent_afs, self.cli_traced
             subject, phase = "cli_process", cli_region_phase(case)
-        for side in diagcontracts.SIDES:
+        for side in diag_contracts.SIDES:
             relative = "traces/%s/%s" % (case["instance_id"], side)
             entry = {"instance_id": case["instance_id"], "side": side, "subject": subject,
                      "region_phase": phase, "region_spans": 0, "coverage": None, "spans": 0,
@@ -2212,17 +2212,17 @@ class Profile(object):
                             (off if kind == "off" else on).append(value)
                             if trace is not None and kept is None:
                                 kept = trace
-                doc = phasetrace.load(kept, relative + "/trace.json")
+                doc = phase_trace.load(kept, relative + "/trace.json")
                 self.directory(relative)
-                perfetto = phasetrace.perfetto(doc, "%s %s" % (case["instance_id"], side))
+                perfetto = phase_trace.perfetto(doc, "%s %s" % (case["instance_id"], side))
                 self.write(relative + "/trace.json", kept)
                 self.write(relative + "/perfetto.json", perfetto)
                 region_spans, coverage = trace_coverage(doc, phase)
                 entry.update(spans=len(doc["spans"]), dropped=doc["dropped"],
-                             open=doc["open"], async_spans=phasetrace.async_count(doc),
+                             open=doc["open"], async_spans=phase_trace.async_count(doc),
                              region_spans=region_spans, coverage=coverage)
                 if off:
-                    overhead = diagcontracts.trace_overhead(off, on)
+                    overhead = diag_contracts.trace_overhead(off, on)
                     entry["overhead"] = {
                         "pairs": pairs,
                         "off_recipe_digest": self.parent_plan["profile"]["recipe_digest"],
@@ -2235,7 +2235,7 @@ class Profile(object):
                                   else "within_target")}
                 entry["artifacts"] = self.artifacts(relative)
                 self.trace_docs.append(doc)
-            except (perfcapture.CaptureError, Exhausted) as error:
+            except (perf_capture.CaptureError, Exhausted) as error:
                 entry["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
             except ContractError as error:
                 entry["omission"] = {"reason": "trace_refused", "detail": str(error)[:4096]}
@@ -2256,7 +2256,7 @@ class Profile(object):
                       reproduce=False)
             return
         valgrind, control = self.tool("valgrind"), self.tool("callgrind_control")
-        for side in diagcontracts.SIDES:
+        for side in diag_contracts.SIDES:
             relative = "counters/%s/%s" % (case["instance_id"], side)
             directory = self.directory(relative)
             base = {"instance_id": case["instance_id"], "side": side,
@@ -2266,12 +2266,12 @@ class Profile(object):
             output = self.produced(relative + "/callgrind.out")
             try:
                 if valgrind is None or control is None:
-                    raise perfcapture.CaptureError("valgrind_unavailable", "valgrind and "
+                    raise perf_capture.CaptureError("valgrind_unavailable", "valgrind and "
                                                    "callgrind_control are not configured")
                 if self.contained():
                     # Its region switch is callgrind_control signalling the profiled process,
                     # which another container's PID namespace cannot reach.
-                    raise perfcapture.CaptureError(
+                    raise perf_capture.CaptureError(
                         "callgrind_switch_not_contained", "callgrind_control switches the "
                         "region of a process in its own PID namespace; each contained request "
                         "has its own, so Callgrind's region count runs only in trusted local "
@@ -2298,7 +2298,7 @@ class Profile(object):
                                                                            "replace")),
                                  duration_ms=_ms(region.disabled - region.enabled))
                 callgrind["artifacts"] = self.artifacts(relative)
-            except (perfcapture.CaptureError, counters.CounterError, Exhausted) as error:
+            except (perf_capture.CaptureError, counters.CounterError, Exhausted) as error:
                 callgrind["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
             except (ContractError, OSError) as error:
                 callgrind["omission"] = {"reason": "callgrind_failed", "detail": str(error)}
@@ -2311,7 +2311,7 @@ class Profile(object):
             dhat = self.counters[-2:]
             try:
                 if valgrind is None:
-                    raise perfcapture.CaptureError("valgrind_unavailable",
+                    raise perf_capture.CaptureError("valgrind_unavailable",
                                                    "valgrind is not configured")
                 self.budget.check("DHAT of " + case["instance_id"])
                 namespace = self.namespace()
@@ -2331,7 +2331,7 @@ class Profile(object):
                                            writes=(namespace.path, os.path.dirname(out)))
                     elapsed = self.clock() - started
                     if result.supervision_failure() is not None:
-                        raise perfcapture.CaptureError("dhat_failed",
+                        raise perf_capture.CaptureError("dhat_failed",
                                                        result.supervision_failure())
                     self.judged(request, result.code, result.stdout, "the DHAT probe")
                 finally:
@@ -2346,7 +2346,7 @@ class Profile(object):
                 dhat[0]["artifacts"] = [item for item in self.artifacts(relative)
                                         if item["path"].rsplit("/", 1)[-1]
                                         in ("dhat.json", "dhat.stderr")]
-            except (perfcapture.CaptureError, counters.CounterError, Exhausted) as error:
+            except (perf_capture.CaptureError, counters.CounterError, Exhausted) as error:
                 for record in dhat:
                     record["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
             except (ContractError, OSError) as error:
@@ -2374,7 +2374,7 @@ class Profile(object):
         """The recipe kind's evidence of one selected case, or its omissions."""
         if case["kind"] != "library" and not self.cli_ready(case, kind):
             return
-        missing = [side for side in diagcontracts.SIDES if side not in self.probes]
+        missing = [side for side in diag_contracts.SIDES if side not in self.probes]
         if missing and case["kind"] == "library":
             self.omit("build", case, None, "no_diagnostic_build", "the %s side has no "
                       "diagnostic probe binary" % ", ".join(missing))
@@ -2421,12 +2421,12 @@ class Profile(object):
             self.omit(OMISSION_KIND[kind], case, None, "no_cli_registry", "the plan's "
                       "authority has no CLI registry for its process cases")
             return False
-        absent = [side for side in diagcontracts.SIDES if side not in self.cli.adapters]
+        absent = [side for side in diag_contracts.SIDES if side not in self.cli.adapters]
         if absent:
             self.omit(OMISSION_KIND[kind], case, None, "no_cli_adapter", "no CLI adapter covers "
                       "the %s side's package version" % ", ".join(absent))
             return False
-        missing = [side for side in diagcontracts.SIDES if side not in self.afs]
+        missing = [side for side in diag_contracts.SIDES if side not in self.afs]
         if missing:
             self.omit("build", case, None, "no_diagnostic_build", "the %s side has no "
                       "diagnostic AF binary" % ", ".join(missing))
@@ -2436,7 +2436,7 @@ class Profile(object):
     def document(self):
         recipe, frozen = self.recipe, self.plan["diagnostic"]["recipe"]
         doc = {
-            "schema": diagcontracts.PROFILES_SCHEMA, "run_id": self.plan["run_id"],
+            "schema": diag_contracts.PROFILES_SCHEMA, "run_id": self.plan["run_id"],
             "parent_run_id": self.parent_plan["run_id"],
             "parent_plan_digest": self.parent_plan["plan_digest"],
             "plan_digest": self.plan["plan_digest"], "registry_sha256": self.registry_sha256,
@@ -2469,7 +2469,7 @@ class Profile(object):
                           "verdict_effect": "none", "captures": self.telemetry},
             "omissions": self.omissions[:256],
         }
-        return diagcontracts.validate_profiles(doc)
+        return diag_contracts.validate_profiles(doc)
 
 
 class Renderer(object):
@@ -2605,8 +2605,8 @@ def page(doc, traces):
                                 if overhead else "not measured")),
             render.table(("phase", "spans", "covered ns (union)", "longest ns"),
                          [(row["phase"], row["spans"], row["covered_ns"], row["longest_ns"])
-                          for row in phasetrace.phase_summary(trace)]),
-            phasetrace.timeline_svg(trace).text))
+                          for row in phase_trace.phase_summary(trace)]),
+            phase_trace.timeline_svg(trace).text))
     sections.append(render.section("Phase timelines", "".join(timelines) or render.paragraph(
         "No trace was captured; see the omissions.", "unavailable")))
     sections.append(render.section("Counters", render.table(
@@ -2614,7 +2614,7 @@ def page(doc, traces):
         [(item["instance_id"], item["side"], item["tool"], item["metric"], item["scope"],
           item["value"], item["interpretation"], (item["omission"] or {}).get("reason", ""))
          for item in doc["counters"]])))
-    sections.append(telemetrydiag.section(doc["telemetry"]))
+    sections.append(telemetry_diag.section(doc["telemetry"]))
     sections.append(render.section("Omissions", render.table(
         ("kind", "case", "side", "reason", "detail", "reproduction"),
         [(item["kind"], item["instance_id"] or "", item["side"] or "", item["reason"],
@@ -2646,7 +2646,7 @@ def finish(output, doc, traces, budget=None):
     hashes = {entry["path"]: entry["sha256"] for entry in manifest["entries"]}
     timing = (deadlines.Budget(budget.deadline, budget.clock, 0)
               if budget is not None else None)
-    symbolarchive.admit(output, doc, hashes, budget=timing)
+    symbol_archive.admit(output, doc, hashes, budget=timing)
     return identity
 
 
@@ -2706,7 +2706,7 @@ class Options(object):
         # (`spans` or `content`), or None for none (ADR-0214).
         self.telemetry = None
         # The CPU observer of a contained run: None runs perf inside the container, `host_perf`
-        # the trusted host observer (`hostobserver`), selected explicitly, never implied.
+        # the trusted host observer (`host_observer`), selected explicitly, never implied.
         self.observer = None
         for key, value in values.items():
             require(hasattr(self, key), "unknown profile option " + key)
@@ -2730,7 +2730,7 @@ def _probes(build_dir, plan, deadline, afs=None):
     doc, paths = builds.verify_artifacts(os.path.abspath(build_dir),
                                          deadlines.Budget(deadline, time.monotonic, 0), manifest)
     out = {}
-    for side in diagcontracts.SIDES:
+    for side in diag_contracts.SIDES:
         artifact = doc["sides"][side]["artifacts"]["probe"]
         if artifact is not None:
             out[side] = (paths[side + "/probe"], artifact["sha256"])
@@ -2780,8 +2780,8 @@ def run_profile(git, options, authority_factory=None, machine_lease=None):
                         limits.DIAGNOSTIC_SECONDS_MAX)
     explicit(options.total_minutes, "--total-minutes", 1, limits.DIAGNOSTIC_RUN_MINUTES_MAX)
     explicit(options.max_cases, "--max-cases", 1, limits.DIAGNOSTIC_CASES_MAX)
-    require(options.telemetry in (None,) + telemetrydiag.LEVELS,
-            "--telemetry: one of " + ", ".join(telemetrydiag.LEVELS))
+    require(options.telemetry in (None,) + telemetry_diag.LEVELS,
+            "--telemetry: one of " + ", ".join(telemetry_diag.LEVELS))
     parent, _ = _read(options.plan, "run")
     require(parent["scope"] != "diagnostic", "--plan: a diagnostic's parent is a comparison")
     mode, declared = check_mode(parent, options.mode, options.host_os)
@@ -2819,8 +2819,8 @@ def run_profile(git, options, authority_factory=None, machine_lease=None):
                                diagnostic_duration_ms=duration * 1000,
                                diagnostic_frequency_hz=frequency)
     plan = planning._diagnostic(git, request, recipe=(
-        options.recipe, diagcontracts.diagnostic_recipe(suite.doc, registry, options.recipe),
-        diagcontracts.frozen_identity(registry, options.recipe)))
+        options.recipe, diag_contracts.diagnostic_recipe(suite.doc, registry, options.recipe),
+        diag_contracts.frozen_identity(registry, options.recipe)))
     require(not os.path.lexists(options.output), "--output %s already exists; a child run "
             "writes a new directory" % options.output)
     # The machine's one coordination lock, the one timed shards take (ADR-0169), from before
@@ -2954,12 +2954,12 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
         work = contained["work"]
         os.mkdir(work, 0o700)
         if supervisor is not None:
-            supervised = toolrun.Contained(
+            supervised = tool_run.Contained(
                 supervisor[0], options.docker, options.image, contained["environment"],
                 contained["scratch_root"], options.uid, options.gid, contained["cpus"],
                 plan["run_id"])
     elif supervisor is not None:
-        supervised = toolrun.Supervisor(supervisor[0])
+        supervised = tool_run.Supervisor(supervisor[0])
     execution = {"mode": mode,
                  "containment": "pid_namespace" if contained else "process_group",
                  "declared_containment": declared,
@@ -2991,7 +2991,7 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
                 "the host observer records a contained CPU profile; recipe %s is a %s recipe "
                 "in %s mode" % (options.recipe, entry["kind"], mode))
         if supervisor is not None:
-            trusted = toolrun.Supervisor(supervisor[0])
+            trusted = tool_run.Supervisor(supervisor[0])
     tools = probe_tools(registry, configured, host, entry["tools"],
                         trusted if observing else supervised, budget.deadline, cwd=checks,
                         binds=None if observing else binds)
@@ -3001,8 +3001,8 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
         elif observing:
             # The actual capability: the host perf attached by PID to an owned gated process
             # and its samples decoded, not a path or a sysctl value.
-            available, reason, detail = hostobserver.probe(
-                hostobserver.supervised_start(trusted, TOOL_ENV, checks, budget.clock),
+            available, reason, detail = host_observer.probe(
+                host_observer.supervised_start(trusted, TOOL_ENV, checks, budget.clock),
                 tools["perf"][1], registry["capture"]["event"], frequency, checks,
                 min(budget.deadline, budget.clock() + budget.tool_seconds), budget.clock)
             if reason == "cleanup_uncertain":
@@ -3015,7 +3015,7 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
                                   "reason": reason, "detail": detail[:4096],
                                   "reproduction": reproduction(None)})
         else:
-            available, reason, detail, _ = perfcapture.probe_capability(
+            available, reason, detail, _ = perf_capture.probe_capability(
                 supervised, tools["perf"][1], registry["capture"]["event"], frequency, checks,
                 TOOL_ENV, budget.tool_seconds, deadline=budget.deadline,
                 binds=binds(tools["perf"][1]))
@@ -3031,14 +3031,14 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
         authority = runner.Authority(git, plan, os.path.join(host_work, "authority"))
         doc, golden = authority.doc, authority.golden
         if authority.cli is not None:
-            versions = clicases.side_versions(git, plan)
+            versions = cli_cases.side_versions(git, plan)
             adapters = {}
             for side, version in versions.items():
-                adapter_id, adapter = clicases.choose_adapter(authority.cli, version)
+                adapter_id, adapter = cli_cases.choose_adapter(authority.cli, version)
                 if adapter_id is not None:
                     adapters[side] = (adapter_id, adapter)
             cli = CliAuthority(authority.cli, authority.fixtures, versions, adapters,
-                               clicases.side_receipts(git, plan))
+                               cli_cases.side_receipts(git, plan))
     else:
         made = authority_factory(plan)
         doc, golden = made[0], made[1]

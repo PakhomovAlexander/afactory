@@ -6,7 +6,7 @@ maps its package name to a machine-local Provider registry label:
 
 ```toml
 [providers]
-"team/implementer" = "claude-main"
+"team/implementer" = "codex-main"
 "team/reviewer" = "codex-main"
 ```
 
@@ -212,6 +212,13 @@ set, because it also disables the model substitution compaction may need. Three 
   it rejected, names the Provider, the nearest exact IDs af knows and `af provider models <id>`,
   and names `af provider status` (token-free) and `af provider doctor` (charged).
 
+A failed native admission or Worker Attempt also keeps its adapter's final closed failure
+category in [`af/NativeFailureEvidence@1`](../../schemas/native-failure-v1.json), produced by the
+Attempt and bound to its context. Task cause selection uses that evidence before diagnostic
+words, independently of complete or incomplete usage. The safe diagnostic stays available for
+display; a conflicting word inside it cannot replace the recorded category. The Attempt wall
+and an explicit Provider environment refusal keep their existing precedence.
+
 For each such failed admission or Worker Attempt, `af task run` and `af review run` print one
 stderr line naming the node, the Provider ID and kind, the bound model and effort, the
 classification and the next step; `af task show` keeps the full diagnostic. See
@@ -237,3 +244,22 @@ fallback. These checks preserve observed usage on refusal.
 
 Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
 refusal, typed output and replay. Their usage figures are synthetic stub evidence, not live-model measurements.
+
+The shipped Codex Worker support audits use the real token-free harness observation in
+[`codex-provider-models-recorded-20261107.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261107.json).
+Its [versioned provenance](../../crates/af/tests/fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json)
+records the observation date, Codex 0.167.0, `codex app-server model/list`, cache freshness and both
+response digests. The original credential-free, token-free CLI response is included byte for byte in
+[`codex-provider-models-raw-20261107.json`](../../crates/af/tests/fixtures/provider-models/codex-provider-models-raw-20261107.json).
+The audit schema-validates both responses and checks their SHA-256 digests against provenance.
+To reproduce the projection, parse the raw JSON and filter `providers[0].models` to entries whose
+`id` is `gpt-6.1-sol` or `gpt-6.1-terra`, preserving order and leaving selected objects and every
+other field unchanged. The audit asserts equality with the recorded JSON and rejects mutations to
+selected objects or unrelated fields. Other raw catalog entries are observational data, not
+configured Pipeline selections.
+It advertises `gpt-6.1-sol` and `gpt-6.1-terra` with `low medium high xhigh max ultra`; it proves
+harness-advertised support, never inference or account access. The synthetic `codex-model-list.json`
+and `codex-models-cache.json` fixtures remain parser and fake-harness inputs, separate from this
+observation. Catalog audits check actual model/effort bindings against the observation, and the
+size/S rubric regression checks selected slot roles and Worker signature roles before comparing
+model/effort guidance across all six copies and the staged example.

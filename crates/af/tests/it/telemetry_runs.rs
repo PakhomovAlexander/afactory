@@ -399,7 +399,7 @@ fn telemetry_default_opens_no_socket() {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let mut sources = Vec::new();
     for root in [
-        workspace.join("crates/review-telemetry/src"),
+        workspace.join("crates/af-telemetry/src"),
         workspace.join("crates/af/src/telemetry"),
     ] {
         let mut pending = vec![root];
@@ -509,7 +509,7 @@ fn telemetry_executions_of_a_resume() {
 fn transitions(state: &Path, kind: &str) -> Vec<u64> {
     events(state)
         .iter()
-        .filter(|row| row[3] == "TaskTransition@5")
+        .filter(|row| row[3] == "TaskTransition@6")
         .filter_map(|row| {
             let payload: Value = serde_json::from_str(&row[10]).unwrap();
             (payload["change"]["kind"] == kind).then(|| payload["epoch"].as_u64().unwrap())
@@ -900,22 +900,22 @@ fn telemetry_stalled_consumer_leaves_recoverable_segment() {
         panic!("{reindexed}");
     };
     let id = recovered["segment_id"].as_str().unwrap();
-    let records = review_telemetry::segment::reader::read_sealed(
-        &review_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(id),
+    let records = af_telemetry::segment::reader::read_sealed(
+        &af_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(id),
     )
     .unwrap();
     assert!(matches!(
         records.first(),
-        Some(review_telemetry::record::Record::Segment(_))
+        Some(af_telemetry::record::Record::Segment(_))
     ));
     assert!(records.iter().any(|record| matches!(
         record,
-        review_telemetry::record::Record::SpanStart(start) if start.name == "af.command"
+        af_telemetry::record::Record::SpanStart(start) if start.name == "af.command"
     )));
     assert!(matches!(
         records.last(),
-        Some(review_telemetry::record::Record::Seal(seal))
-            if seal.exit == review_telemetry::record::SealExit::Recovered
+        Some(af_telemetry::record::Record::Seal(seal))
+            if seal.exit == af_telemetry::record::SealExit::Recovered
     ));
 }
 
@@ -980,11 +980,11 @@ fn telemetry_blocked_terminal_write_leaves_the_segment_unsealed() {
         panic!("{reindexed}");
     };
     assert_eq!(recovered["segment_id"], id.as_str());
-    let records = review_telemetry::segment::reader::read_sealed(
-        &review_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(&id),
+    let records = af_telemetry::segment::reader::read_sealed(
+        &af_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(&id),
     )
     .unwrap();
-    use review_telemetry::record::Record;
+    use af_telemetry::record::Record;
     let started: Vec<(String, String)> = records
         .iter()
         .filter_map(|record| match record {
@@ -1006,7 +1006,7 @@ fn telemetry_blocked_terminal_write_leaves_the_segment_unsealed() {
     let Some(Record::Seal(seal)) = records.last() else {
         panic!("recovered with a seal");
     };
-    assert_eq!(seal.exit, review_telemetry::record::SealExit::Recovered);
+    assert_eq!(seal.exit, af_telemetry::record::SealExit::Recovered);
     assert_eq!(seal.discarded_bytes, 0, "every written line was whole");
     let seals = records
         .iter()
@@ -1023,7 +1023,7 @@ fn telemetry_blocked_terminal_write_leaves_the_segment_unsealed() {
 /// reader recovers its complete prefix: every record before the command's end.
 #[test]
 fn telemetry_command_end_is_inside_the_shutdown_bound() {
-    use review_telemetry::record::Record;
+    use af_telemetry::record::Record;
     let machine = Machine::new();
     let (repo, state) = task_gc::fixture(&machine.root);
     let timed = |file: &str, env: &[(&str, &str)]| {
@@ -1081,8 +1081,8 @@ fn telemetry_command_end_is_inside_the_shutdown_bound() {
         panic!("{reindexed}");
     };
     assert_eq!(recovered["segment_id"], id.as_str());
-    let records = review_telemetry::segment::reader::read_sealed(
-        &review_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(&id),
+    let records = af_telemetry::segment::reader::read_sealed(
+        &af_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(&id),
     )
     .unwrap();
     let started: Vec<(String, String)> = records
@@ -1115,7 +1115,7 @@ fn telemetry_command_end_is_inside_the_shutdown_bound() {
     let Some(Record::Seal(seal)) = records.last() else {
         panic!("recovered with a seal");
     };
-    assert_eq!(seal.exit, review_telemetry::record::SealExit::Recovered);
+    assert_eq!(seal.exit, af_telemetry::record::SealExit::Recovered);
     assert_eq!(seal.discarded_bytes, 0, "every written line was whole");
     let seals = records
         .iter()
@@ -1176,9 +1176,9 @@ fn telemetry_write_failure_is_fail_open() {
             .success()
     );
     json(&locked.af(&repo, &[], &["telemetry", "status", "--json"]));
-    let layout = review_telemetry::layout::Layout::new(locked.telemetry());
+    let layout = af_telemetry::layout::Layout::new(locked.telemetry());
     assert!(layout.index().exists());
-    let held = review_telemetry::layout::exclusive_within(
+    let held = af_telemetry::layout::exclusive_within(
         &layout.index_lock(),
         std::time::Duration::from_secs(2),
     )
@@ -1253,7 +1253,7 @@ fn age(root: &Path, age: std::time::Duration) {
 /// Rewrite every sealed segment beneath the telemetry directory `root` so that its seal record
 /// ended at `when`: a sealed segment's last use is its seal time, never its file's.
 fn backdate_seals(root: &Path, when: std::time::SystemTime) {
-    use review_telemetry::record::Record;
+    use af_telemetry::record::Record;
     let ended = when
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1268,7 +1268,7 @@ fn backdate_seals(root: &Path, when: std::time::SystemTime) {
             continue;
         }
         // A file under a sealed name that is no segment (a fixture's replacement) has no seal.
-        let Ok(mut records) = review_telemetry::segment::reader::read_sealed(&path) else {
+        let Ok(mut records) = af_telemetry::segment::reader::read_sealed(&path) else {
             continue;
         };
         let Some(Record::Seal(seal)) = records.last_mut() else {
@@ -1280,7 +1280,7 @@ fn backdate_seals(root: &Path, when: std::time::SystemTime) {
             bytes.extend(serde_json::to_vec(record).unwrap());
             bytes.push(b'\n');
         }
-        std::fs::write(&path, review_telemetry::blob::compress(&bytes)).unwrap();
+        std::fs::write(&path, af_telemetry::blob::compress(&bytes)).unwrap();
     }
 }
 
@@ -1568,7 +1568,7 @@ fn telemetry_eviction_refuses_a_replaced_manifest() {
     );
     // Nothing of the entry is removed: the compressed segment and the replacement both stay.
     let sealed = segments.join(format!("{id}.jsonl.gz"));
-    review_telemetry::segment::reader::read_sealed(&sealed).unwrap();
+    af_telemetry::segment::reader::read_sealed(&sealed).unwrap();
     assert_eq!(
         std::fs::read(&manifest).unwrap(),
         b"not the manifest the prune inventoried\n"
@@ -1608,8 +1608,8 @@ fn telemetry_sealed_last_use_is_the_seal_time() {
     let sealed = (*sealed).clone();
     let id = sealed.trim_end_matches(".jsonl.gz").to_string();
     let records =
-        review_telemetry::segment::reader::read_sealed(&segments.join(sealed.as_str())).unwrap();
-    let Some(review_telemetry::record::Record::Seal(seal)) = records.last() else {
+        af_telemetry::segment::reader::read_sealed(&segments.join(sealed.as_str())).unwrap();
+    let Some(af_telemetry::record::Record::Seal(seal)) = records.last() else {
         panic!("sealed");
     };
     let sealed_ms = u64::try_from(seal.ended_unix_ns.parse::<u128>().unwrap() / 1_000_000).unwrap();
@@ -1659,24 +1659,22 @@ fn golden_writer(
     root: &Path,
     segment: &str,
     start_ms: u64,
-) -> review_telemetry::segment::writer::Writer {
+) -> af_telemetry::segment::writer::Writer {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     let clock = Arc::new(AtomicU64::new(start_ms * 1_000_000));
-    let mut options = review_telemetry::segment::writer::WriterOptions::new(
-        root,
-        review_telemetry::level::Level::Spans,
-    );
+    let mut options =
+        af_telemetry::segment::writer::WriterOptions::new(root, af_telemetry::level::Level::Spans);
     options.argv = vec!["af".into(), "task".into(), "run".into(), "golden".into()];
     options.cwd = PathBuf::from("/work");
     options.af_version = "0.0.0-golden".into();
     options.af_commit = "0123456789ab".into();
-    options.redactor = review_telemetry::redact::Redactor::new();
+    options.redactor = af_telemetry::redact::Redactor::new();
     options.segment_id = Some(segment.into());
     options.clock = Some(Arc::new(move || {
         u128::from(clock.fetch_add(1_000_000, Ordering::SeqCst))
     }));
-    review_telemetry::segment::writer::Writer::new(options).unwrap()
+    af_telemetry::segment::writer::Writer::new(options).unwrap()
 }
 
 fn digest(fill: char) -> String {
@@ -1692,7 +1690,7 @@ fn golden_execution(
     segment: &str,
     start_ms: u64,
     ordinal: u64,
-    between: &mut dyn FnMut(&review_telemetry::segment::writer::Writer),
+    between: &mut dyn FnMut(&af_telemetry::segment::writer::Writer),
 ) {
     execution_in_store(root, GOLDEN_STORE, segment, start_ms, ordinal, between);
 }
@@ -1704,11 +1702,11 @@ fn execution_in_store(
     segment: &str,
     start_ms: u64,
     ordinal: u64,
-    between: &mut dyn FnMut(&review_telemetry::segment::writer::Writer),
+    between: &mut dyn FnMut(&af_telemetry::segment::writer::Writer),
 ) {
-    use review_telemetry::record::{Attrs, Node, SealExit, SpanKind, SpanStatus};
+    use af_telemetry::record::{Attrs, Node, SealExit, SpanKind, SpanStatus};
     let writer = golden_writer(root, segment, start_ms);
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: store.into(),
         run_id: GOLDEN_RUN.into(),
         execution_id: segment.into(),
@@ -2154,12 +2152,12 @@ fn telemetry_commands_match_their_goldens() {
 /// withheld, and the texts the record names.
 #[test]
 fn telemetry_config_matches_its_golden() {
-    use review_telemetry::record::{Attrs, ConfigRow, SealExit, SpanKind, SpanStatus};
+    use af_telemetry::record::{Attrs, ConfigRow, SealExit, SpanKind, SpanStatus};
     let machine = Machine::new();
     let root = machine.telemetry();
     let segment = "1700000200000-4244-0c1d2e3f";
     let writer = golden_writer(&root, segment, 1_700_000_200_000);
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: GOLDEN_STORE.into(),
         run_id: GOLDEN_RUN.into(),
         execution_id: segment.into(),
@@ -2218,7 +2216,7 @@ fn telemetry_config_matches_its_golden() {
             row(
                 "built-in",
                 &format!("routing.rule_{index:02}"),
-                "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+                "\"crates/af-runtime/src/** → fixture/correctness-reviewer\"",
                 None,
             )
         })
@@ -2247,7 +2245,7 @@ fn telemetry_config_matches_its_golden() {
     // The sections as the runtime writes them: what the command read when the run opened,
     // what the plan resolved to, and the machine.
     let run_span = run.clone();
-    let owner = review_telemetry::segment::writer::ConfigOwner {
+    let owner = af_telemetry::segment::writer::ConfigOwner {
         execution_id: segment,
         run_id: GOLDEN_RUN,
         run_span_id: &run_span,
@@ -2607,10 +2605,9 @@ fn telemetry_task_run_records_its_span_tree() {
     // The command names the run it worked on, once known.
     assert_eq!(spans[0]["attributes"]["process.exit_code"], 0);
     // The plan's node records: one per compiled node, each with the expected count.
-    let mut index = review_telemetry::index::Index::open(&review_telemetry::layout::Layout::new(
-        machine.telemetry(),
-    ))
-    .unwrap();
+    let mut index =
+        af_telemetry::index::Index::open(&af_telemetry::layout::Layout::new(machine.telemetry()))
+            .unwrap();
     index.ingest().unwrap();
     let (records, expected): (i64, i64) = index
         .connection()
@@ -2725,12 +2722,12 @@ fn signal(pid: u32, signal: &str) {
 /// say: it fails, exits non-zero and names the sealed file.
 #[test]
 fn telemetry_tail_refuses_an_unreadable_sealed_segment() {
-    use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+    use af_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
     let machine = Machine::new();
-    let writer = review_telemetry::segment::writer::Writer::new(
-        review_telemetry::segment::writer::WriterOptions::new(
+    let writer = af_telemetry::segment::writer::Writer::new(
+        af_telemetry::segment::writer::WriterOptions::new(
             machine.telemetry(),
-            review_telemetry::level::Level::Spans,
+            af_telemetry::level::Level::Spans,
         ),
     )
     .unwrap();
@@ -3071,13 +3068,13 @@ fn spawn_plain_tail(machine: &Machine, args: &[&str]) -> Following {
 /// flushed prefix and exits 0, the segment recovered — sealed with `exit = "recovered"`.
 #[test]
 fn telemetry_tail_recovers_a_crashed_writer() {
-    use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
+    use af_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
     for started_first in [true, false] {
         let machine = Machine::new();
-        let writer = review_telemetry::segment::writer::Writer::new(
-            review_telemetry::segment::writer::WriterOptions::new(
+        let writer = af_telemetry::segment::writer::Writer::new(
+            af_telemetry::segment::writer::WriterOptions::new(
                 machine.telemetry(),
-                review_telemetry::level::Level::Spans,
+                af_telemetry::level::Level::Spans,
             ),
         )
         .unwrap();
@@ -3097,7 +3094,7 @@ fn telemetry_tail_recovers_a_crashed_writer() {
         writer.span_end(&load, SpanStatus::Ok, Attrs::new(), 1);
         writer.flush();
         let segment = writer.segment_id().unwrap();
-        let layout = review_telemetry::layout::Layout::new(machine.telemetry());
+        let layout = af_telemetry::layout::Layout::new(machine.telemetry());
         let mut lines = Vec::new();
         let (mut tail, received, reader) = if started_first {
             let following = spawn_plain_tail(&machine, &["telemetry", "tail", "--json"]);
@@ -3141,8 +3138,7 @@ fn telemetry_tail_recovers_a_crashed_writer() {
         );
         assert!(!layout.live_segment(&segment).exists(), "{started_first}");
         let records =
-            review_telemetry::segment::reader::read_sealed(&layout.sealed_segment(&segment))
-                .unwrap();
+            af_telemetry::segment::reader::read_sealed(&layout.sealed_segment(&segment)).unwrap();
         let Some(Record::Seal(seal)) = records.last() else {
             panic!("recovered with a seal");
         };
@@ -3157,12 +3153,12 @@ fn telemetry_tail_recovers_a_crashed_writer() {
 /// the invalid line.
 #[test]
 fn telemetry_tail_refuses_interior_corruption_of_a_live_segment() {
-    use review_telemetry::record::{Attrs, SpanKind};
+    use af_telemetry::record::{Attrs, SpanKind};
     let machine = Machine::new();
-    let writer = review_telemetry::segment::writer::Writer::new(
-        review_telemetry::segment::writer::WriterOptions::new(
+    let writer = af_telemetry::segment::writer::Writer::new(
+        af_telemetry::segment::writer::WriterOptions::new(
             machine.telemetry(),
-            review_telemetry::level::Level::Spans,
+            af_telemetry::level::Level::Spans,
         ),
     )
     .unwrap();
@@ -3196,7 +3192,7 @@ fn telemetry_tail_refuses_interior_corruption_of_a_live_segment() {
     writer.flush();
     let bytes = std::fs::read(&path).unwrap();
     assert!(
-        review_telemetry::segment::reader::scan(&bytes).interior_corruption,
+        af_telemetry::segment::reader::scan(&bytes).interior_corruption,
         "an invalid line before a valid one"
     );
     signal(tail.id(), "CONT");
@@ -3308,11 +3304,11 @@ fn telemetry_tail_of_an_unknown_run_exits_1() {
 /// following nothing.
 #[test]
 fn telemetry_tail_refuses_an_unreadable_segment_before_startup() {
-    use review_telemetry::record::{Attrs, SpanKind};
+    use af_telemetry::record::{Attrs, SpanKind};
     let machine = Machine::new();
     let segment = "1700000000000-4242-0a1b2c3d";
     let writer = golden_writer(&machine.telemetry(), segment, 1_700_000_000_000);
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: GOLDEN_STORE.into(),
         run_id: GOLDEN_RUN.into(),
         execution_id: segment.into(),
@@ -3347,7 +3343,7 @@ fn telemetry_tail_refuses_an_unreadable_segment_before_startup() {
     writer.flush();
     let bytes = std::fs::read(&path).unwrap();
     assert!(
-        review_telemetry::segment::reader::scan(&bytes).interior_corruption,
+        af_telemetry::segment::reader::scan(&bytes).interior_corruption,
         "an invalid line before a valid one"
     );
     let path = path.display().to_string();
@@ -3483,12 +3479,12 @@ fn telemetry_tail_of_a_sealed_run_finishes_at_once() {
 /// the `.corrupt` file and exits 1, printing nothing more.
 #[test]
 fn telemetry_tail_refuses_a_segment_recovered_as_corrupt_underneath() {
-    use review_telemetry::record::{Attrs, SpanKind};
+    use af_telemetry::record::{Attrs, SpanKind};
     let machine = Machine::new();
-    let writer = review_telemetry::segment::writer::Writer::new(
-        review_telemetry::segment::writer::WriterOptions::new(
+    let writer = af_telemetry::segment::writer::Writer::new(
+        af_telemetry::segment::writer::WriterOptions::new(
             machine.telemetry(),
-            review_telemetry::level::Level::Spans,
+            af_telemetry::level::Level::Spans,
         ),
     )
     .unwrap();
@@ -3521,10 +3517,10 @@ fn telemetry_tail_refuses_a_segment_recovered_as_corrupt_underneath() {
     writer.flush();
     // Killed before its seal: its lock ends with it.
     writer.abandon();
-    let layout = review_telemetry::layout::Layout::new(machine.telemetry());
+    let layout = af_telemetry::layout::Layout::new(machine.telemetry());
     assert_eq!(
-        review_telemetry::segment::reader::recover(&layout, &segment).unwrap(),
-        review_telemetry::segment::reader::Recovery::Corrupt {
+        af_telemetry::segment::reader::recover(&layout, &segment).unwrap(),
+        af_telemetry::segment::reader::Recovery::Corrupt {
             segment_id: segment.clone()
         },
         "the second reader recovers it as corrupt"
@@ -3560,9 +3556,9 @@ fn telemetry_tail_refuses_a_segment_recovered_as_corrupt_underneath() {
 /// reindex` recovers it, finds the interior corruption and renames it `.corrupt`; the path of
 /// that file.
 fn corrupt_execution(machine: &Machine, segment: &str, start_ms: u64, ordinal: u64) -> PathBuf {
-    use review_telemetry::record::{Attrs, SpanKind};
+    use af_telemetry::record::{Attrs, SpanKind};
     let writer = golden_writer(&machine.telemetry(), segment, start_ms);
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: GOLDEN_STORE.into(),
         run_id: GOLDEN_RUN.into(),
         execution_id: segment.into(),
@@ -3603,8 +3599,7 @@ fn corrupt_execution(machine: &Machine, segment: &str, start_ms: u64, ordinal: u
         serde_json::json!([segment]),
         "{reindexed}"
     );
-    let corrupt =
-        review_telemetry::layout::Layout::new(machine.telemetry()).corrupt_segment(segment);
+    let corrupt = af_telemetry::layout::Layout::new(machine.telemetry()).corrupt_segment(segment);
     assert!(corrupt.is_file() && !path.exists());
     corrupt
 }

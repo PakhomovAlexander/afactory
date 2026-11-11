@@ -1,6 +1,6 @@
-"schema" = "af.pipeline/1"
+"schema" = "af.pipeline/6"
 "name" = "fixture/implementation"
-"version" = "1.0.0"
+version = "1.0.1"
 "max_attempts" = 8
 "max_parallel" = 2
 "contract" = {"inputs" = {"requirements" = {"artifact_type" = "af/Requirements@1", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "unbound"}}, "source" = {"artifact_type" = "af/SourceTree@1", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "unbound"}}, "history" = {"artifact_type" = "af/ReviewHistory@1", "cardinality" = "one", "optional" = false, "root_default" = "empty_review_history", "covers" = [], "affinity" = {"kind" = "unbound"}}}, "outputs" = {"snapshot" = {"artifact_type" = "af/SourceTree@1", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "derived_from", "input" = "source"}}, "verification" = {"artifact_type" = "af/RepairAllowedImplementation@1", "cardinality" = "one", "optional" = false, "covers" = ["verified"], "affinity" = {"kind" = "derived_from", "input" = "source"}}, "evaluation" = {"artifact_type" = "af/VerificationResult@1", "cardinality" = "one", "optional" = false, "covers" = ["goal"], "affinity" = {"kind" = "derived_from", "input" = "source"}}}}

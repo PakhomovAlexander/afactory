@@ -98,7 +98,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     let mut catalog: toml::Value = toml::from_str(&source).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
-        let digest = review_config::lock::package_digest(name, &package);
+        let digest = af_pipeline_config::lock::package_digest(name, &package);
         pin["digest"] = toml::Value::String(digest.unwrap());
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -115,7 +115,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
 
 /// A source refresh replaces the requirements artifact and nothing else. The binding record is
 /// provenance no port carries, so it has to survive the new revision on its own — in the
-/// revision the Store admitted, in the `af/task-inspection@16` document and in every view.
+/// revision the Store admitted, in the `af/task-inspection@20` document and in every view.
 #[test]
 fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
     let root = tempfile::tempdir().unwrap();
@@ -144,7 +144,7 @@ fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
 
     let plan = ["task", "plan", "--file", "successor-issue.json"];
     let planned = json(&repo, &state, &plan, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@16");
+    assert_eq!(planned["schema"], "af/task-inspection@20");
     let binding = &planned["input_bindings"]["bindings"]["history"];
     assert_eq!(binding["artifact_id"], ledger);
 
@@ -153,15 +153,15 @@ fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
     ));
     let refreshed = json(&repo, &state, &["task", "refresh", "chain-issue"], 0);
     assert_ne!(refreshed["revision_id"], planned["revision_id"]);
-    assert_eq!(refreshed["schema"], "af/task-inspection@16");
+    assert_eq!(refreshed["schema"], "af/task-inspection@20");
     let binding = &refreshed["input_bindings"]["bindings"]["history"];
     assert_eq!(binding["artifact_id"], ledger);
     assert_eq!(binding["task"]["task_id"], "chain-base");
     assert_eq!(binding["task"]["port"], "history");
-    valid(&validator("task-inspection-v16.json"), &refreshed);
+    valid(&validator("task-inspection-v20.json"), &refreshed);
 
     // Read back from the revision the Store admitted, not from the one it replaced.
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let id = refreshed["revision_id"].as_str().unwrap();
     let revision = cas.get_json(id).unwrap()["payload"].clone();
     assert_eq!(revision["previous_revision_id"], planned["revision_id"]);
@@ -209,10 +209,10 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     let base = start("base.json");
     assert_eq!(base["result"]["acceptance"], "satisfied");
     assert!(base.get("input_bindings").is_none(), "{base}");
-    // One inspection generation: a Task without bindings prints the same `@11` document it
-    // always did, without the field.
+    // One inspection generation: bound and unbound Tasks both print @19; a Task without
+    // bindings omits the optional binding record.
     assert_eq!(
-        base["schema"], "af/task-inspection@16",
+        base["schema"], "af/task-inspection@20",
         "{}",
         base["schema"]
     );
@@ -227,10 +227,10 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     //    `empty_review_history` root default is suppressed.
     let plan_args = ["task", "plan", "--file", "successor-history.json"];
     let planned = json(&repo, &state, &plan_args, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@16");
-    let inspection = validator("task-inspection-v16.json");
+    assert_eq!(planned["schema"], "af/task-inspection@20");
+    let inspection = validator("task-inspection-v20.json");
     valid(&inspection, &planned);
-    // This real receipt is the conformance corpus of the self-optimizer adapter's `@15` unit
+    // This real receipt is the conformance corpus of the self-optimizer adapter's current unit
     // test; regenerate it with AF_WRITE_INSPECTION_FIXTURE=1 when the document changes.
     if std::env::var_os("AF_WRITE_INSPECTION_FIXTURE").is_some() {
         let path = workspace().join("fixtures/task-runtime/bound-inputs/inspection-bound.json");
@@ -258,7 +258,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     let run_args = ["task", "run", "--execute", "chain-history"];
     let ran = json(&repo, &state, &run_args, 0);
     assert_eq!(ran["result"]["acceptance"], "satisfied");
-    assert_eq!(ran["schema"], "af/task-inspection@16");
+    assert_eq!(ran["schema"], "af/task-inspection@20");
     valid(&inspection, &ran);
     let shown = text(&repo, &state, &["task", "show", "chain-history"]);
     let line = "bound history <- task chain-base/history (satisfied)";
@@ -287,7 +287,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
 
     let bound = start("successor-source.json");
     assert_eq!(bound["result"]["acceptance"], "satisfied");
-    assert_eq!(bound["schema"], "af/task-inspection@16");
+    assert_eq!(bound["schema"], "af/task-inspection@20");
     let binding = bound["input_bindings"]["bindings"]["source"].clone();
     assert_eq!(binding["task"]["task_id"], "chain-base");
     assert_eq!(binding["task"]["port"], "snapshot");

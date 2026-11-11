@@ -7,7 +7,7 @@
                                               [--previous PATH] [--only-plan]
 
 Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date,
-printed on stderr (ADR-0273, scripts/nightly/nightlychain.py). `plan` walks the first parents
+printed on stderr (ADR-0273, scripts/nightly/nightly_chain.py). `plan` walks the first parents
 of the mirror's refs/heads/main from its tip and prints, as an af.nightly-plan/1 document, the
 newest commit whose `check /` check runs are all green, every red commit it walked over, the
 previous night and the stable baseline. `build` builds that
@@ -38,12 +38,12 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
-import nightlychain  # noqa: E402
-import nightlygithub  # noqa: E402
+import nightly_chain  # noqa: E402
+import nightly_github  # noqa: E402
 # The bounds of each GitHub request (ADR-0265, amended by ADR-0271).
-from nightlygithub import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
-from perflab import contracts, gitrefs, tomlfile  # noqa: E402
-from perflab.nightlycontracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402
+from nightly_github import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
+from perflab import contracts, git_refs, toml_file  # noqa: E402
+from perflab.nightly_contracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402
                                       RELEASE_JOBS, SIGNATURE, SUMS, TARGETS, asset_name,
                                       nightly_tag, nightly_version)
 from perflab.values import ContractError, loads_strict, require  # noqa: E402
@@ -67,10 +67,10 @@ def load_config(path):
     """The af.nightly-config/1 TOML at `path`, validated, with `max_walk` defaulted."""
     try:
         with open(path, "rb") as stream:
-            data = stream.read(tomlfile.MAX_TOML_BYTES + 1)
+            data = stream.read(toml_file.MAX_TOML_BYTES + 1)
     except OSError as error:
         raise Refused("--config %s: %s" % (path, error))
-    doc = contracts.validate_nightly_config(tomlfile.loads(data, path), path)
+    doc = contracts.validate_nightly_config(toml_file.loads(data, path), path)
     return dict(doc, max_walk=doc.get("max_walk", MAX_WALK_DEFAULT))
 
 
@@ -80,13 +80,13 @@ class Refused(Exception):
 
 def read_token(config):
     """The GitHub token from `github_token_file`, or None to ask anonymously."""
-    return nightlygithub.read_token(config.get("github_token_file"), Refused)
+    return nightly_github.read_token(config.get("github_token_file"), Refused)
 
 
 # GitHub check runs --------------------------------------------------------------------------
 
-class GitHub(nightlygithub.Client):
-    """The check runs of a commit, every page, through `opener` (`nightlygithub.opener()` by
+class GitHub(nightly_github.Client):
+    """The check runs of a commit, every page, through `opener` (`nightly_github.opener()` by
     default), each request retried once when it fails or the server answers 5xx; a failure
     refuses the night."""
 
@@ -127,12 +127,12 @@ def judge(runs, required_checks):
 
 # The mirror ---------------------------------------------------------------------------------
 
-class Mirror(gitrefs.Git):
+class Mirror(git_refs.Git):
     """Read-only access to the host's bare mirror, which the operator trusts by configuring
     it (as the executor trusts its `repository_path`)."""
 
     def __init__(self, path):
-        gitrefs.Git.__init__(self, path, trusted_repository=True)
+        git_refs.Git.__init__(self, path, trusted_repository=True)
 
     def first_parents(self, ref, count):
         tip = self.exact_ref(ref, "mirror")
@@ -149,7 +149,7 @@ class Mirror(gitrefs.Git):
         mirror (its objects hardlinked, nothing fetched), so `crates/af/build.rs` finds the
         commit and the built af reports it as its own."""
         self._run(["clone", "--quiet", "--no-checkout", self.repo, destination])
-        checkout = gitrefs.Git(destination, trusted_repository=True)
+        checkout = git_refs.Git(destination, trusted_repository=True)
         checkout._run(["checkout", "--quiet", "--detach", sha, "--"])
 
 
@@ -249,7 +249,7 @@ def workspace_members(source):
     version, so rewriting [workspace.package] moves all of them."""
     def load(path):
         with open(path, "rb") as stream:
-            return tomlfile.loads(stream.read(tomlfile.MAX_TOML_BYTES + 1), path)
+            return toml_file.loads(stream.read(toml_file.MAX_TOML_BYTES + 1), path)
     manifest = load(os.path.join(source, "Cargo.toml"))
     paths = manifest.get("workspace", {}).get("members", [])
     require(isinstance(paths, list) and paths, "Cargo.toml: no workspace members")
@@ -339,7 +339,7 @@ def make_plan(config, date, git, github, previous):
     manifest = git.read_file(head, "Cargo.toml")
     require(manifest is not None, "%s has no Cargo.toml" % head)
     cargo_version = workspace_version(manifest.decode("utf-8"))
-    baseline_tag, baseline_sha = gitrefs.nightly_baseline(git, head)
+    baseline_tag, baseline_sha = git_refs.nightly_baseline(git, head)
     tag = nightly_tag(date)
     skipped = previous is not None and previous["head_sha"] == head
     plan = {
@@ -718,7 +718,7 @@ def parse(argv):
                        ("build", "build, package, smoke and sign the plan's commit")):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML")
-        nightlychain.add_night_options(command)
+        nightly_chain.add_night_options(command)
         command.add_argument("--previous", help="the previous night's nightly.json, built or "
                              "skipped, instead of the newest one under builds_root")
         if name == "build":
@@ -734,11 +734,11 @@ def emit(doc):
 
 
 def main(argv=None, github=None, host=None, clock=now_ms, environ=None,
-         show=nightlychain.systemctl_show):
+         show=nightly_chain.systemctl_show):
     args = parse(argv)
     environ = os.environ if environ is None else environ
     try:
-        date, chosen = nightlychain.night(args, clock, show, Refused)
+        date, chosen = nightly_chain.night(args, clock, show, Refused)
         if chosen:
             sys.stderr.write(chosen)
         config = load_config(args.config)

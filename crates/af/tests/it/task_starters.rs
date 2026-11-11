@@ -64,7 +64,7 @@ fn setup(root: &Path, key: Option<&str>) -> (PathBuf, PathBuf) {
     assert_eq!(catalog["review"]["generation"].as_integer(), Some(2));
     for reviewer in ["correctness", "bugs"] {
         let package = &catalog["packages"][format!("builtin/{reviewer}")];
-        let worker: review_config::task::catalog::TaskWorkerManifest = toml::from_str(
+        let worker: af_pipeline_config::task::catalog::TaskWorkerManifest = toml::from_str(
             &std::fs::read_to_string(
                 repo.join(package["path"].as_str().unwrap())
                     .join("worker.toml"),
@@ -74,7 +74,7 @@ fn setup(root: &Path, key: Option<&str>) -> (PathBuf, PathBuf) {
         .unwrap();
         assert_eq!(
             worker.signature.contract.inputs["subject"].artifact_type,
-            "af/TaskReviewSubject@2"
+            "af/TaskReviewSubject@3"
         );
         assert_eq!(
             worker.signature.contract.inputs["assignment"].artifact_type,
@@ -109,7 +109,7 @@ fn repin(repo: &Path) {
             toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
             pin["digest"] = toml::Value::String(
-                review_config::lock::package_digest(
+                af_pipeline_config::lock::package_digest(
                     name,
                     &repo.join(pin["path"].as_str().unwrap()),
                 )
@@ -166,7 +166,7 @@ fn emitted_starters_validate_and_execute_without_credentials_on_one_common_runti
     commit(&repo);
     for (name, attempts, rounds) in [("review-light", 3, 1), ("review-heavy", 6, 2)] {
         let file = format!("{name}.json");
-        let result = task(&repo, &state, &["review", "--file", &file], 0);
+        let result = task(&repo, &state, &["review", "run", "--file", &file], 0);
         assert_eq!(result["result"]["acceptance"], "satisfied");
         assert_eq!(result["attempts"], attempts);
         assert_eq!(result["review_rounds"].as_array().unwrap().len(), rounds);
@@ -205,7 +205,7 @@ fn the_reviewed_starter_leaves_its_kind_defaults_and_plans_with_them() {
             "{planned:#}"
         );
         let id = planned["revision_id"].as_str().unwrap();
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         cas.get_json(id).unwrap()["payload"].clone()
     };
     let mut defaulted = revision(&repo.join("implementation-reviewed.json"), &state);
@@ -501,8 +501,8 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
 }
 
 fn reviewed_implementation_preserves_evidence(failed_review: bool) {
-    use review_config::task::catalog::TaskWorkerManifest;
-    use review_core::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
+    use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1};
+    use af_pipeline_config::task::catalog::TaskWorkerManifest;
     let root = tempfile::tempdir().unwrap();
     let (repo, state) = setup(root.path(), None);
     let author = worker_path(&repo, "builtin/implementer");
@@ -539,7 +539,7 @@ fn reviewed_implementation_preserves_evidence(failed_review: bool) {
                 .unwrap(),
         )
         .join("pipeline.toml");
-    let mut pipeline: PipelineDefinitionV1 =
+    let mut pipeline: PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
     let mut node = pipeline
         .nodes
@@ -560,7 +560,7 @@ fn reviewed_implementation_preserves_evidence(failed_review: bool) {
     pipeline.nodes.push(node);
     pipeline.max_attempts += 1;
     std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
-    let pin = json!({"path":".af/independent-failure","version":"1.0.0","digest":review_config::lock::package_digest(&worker.name,&failure).unwrap()});
+    let pin = json!({"path":".af/independent-failure","version":"1.0.0","digest":af_pipeline_config::lock::package_digest(&worker.name,&failure).unwrap()});
     catalog["packages"].as_table_mut().unwrap().insert(
         worker.name.clone(),
         toml::Value::try_from(pin.clone()).unwrap(),
@@ -747,7 +747,7 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(bin.join("npx"), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":3,"providers":[
+    std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[
         {"id":"pi-kimi","kind":"pi","backend":"kimi-coding","auth_dir":home,"sdk_entrypoint":sdk},
         {"id":"codex-main","kind":"codex","auth_dir":codex_auth}
     ]})).unwrap()).unwrap();
@@ -857,18 +857,18 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let envelope = cas.get_json(result["plan_id"].as_str().unwrap()).unwrap();
-        assert_eq!(envelope["type"], "af/ExecutionPlan@3");
-        let plan: review_core::task::plan::ExecutionPlanV3 =
+        assert_eq!(envelope["type"], "af/ExecutionPlan@4");
+        let plan: af_contracts::task::plan::ExecutionPlan =
             serde_json::from_value(envelope["payload"].clone()).unwrap();
         plan.validate().unwrap();
         let bindings = &envelope["payload"]["bindings"];
         let expected = if kind == "implementation" { 3 } else { 2 };
         assert_eq!(bindings.as_object().unwrap().len(), expected);
         for (slot, model, effort) in [
-            ("correctness", "gpt-6-sol", "high"),
-            ("evaluator", "gpt-6-astra", "medium"),
+            ("correctness", "gpt-6.1-terra", "high"),
+            ("evaluator", "gpt-6.1-terra", "medium"),
         ] {
             let execution = &bindings[format!("root.slots.{slot}")]["execution"];
             assert_eq!(execution["provider_kind"], "codex");

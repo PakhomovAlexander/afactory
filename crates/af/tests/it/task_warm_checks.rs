@@ -5,16 +5,16 @@
 //! on the `PATH` the check receives, so every key is deterministic and nothing here builds Rust.
 //! Like a rustup proxy, the stub answers only when it received the kernel's `RUSTUP_HOME` and
 //! `RUSTUP_AUTO_INSTALL=0`, so a warm key here proves no toolchain download was needed. A Task
-//! without `[warm]` is compared with the documents a kernel without the warm package recorded.
+//! without `[warm]` is compared with exact current-format documents from two independent runs.
 
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_config::lock::package_digest;
-use review_source_git::Manifest;
-use review_store::Cas;
+use af_pipeline_config::lock::package_digest;
+use af_source_git::Manifest;
+use af_store::Cas;
 use serde_json::Value;
 
 use crate::task_cli;
@@ -295,7 +295,7 @@ fn start_with(fixture: &Fixture, extra: &[(&str, &Path)], task_id: &str, expecte
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &outcome);
     outcome
 }
 
@@ -1624,9 +1624,12 @@ fn every_check_of_a_warm_task_has_one_named_group_even_when_the_deadline_skips_i
     assert!(!shown.contains("check not run"), "{shown}");
 }
 
-/// The checked-in documents a kernel without the Warm Check Cache package recorded for the
-/// Task below: its revision, plan, `af task show --json` inspection and delivery receipt,
-/// normalized by [`run_independent`].
+/// The current-format documents for the Task below: its authority, revision, plan,
+/// `af task show --json` inspection, check records, delivery receipt and delivered tree.
+/// [`pinned_fixture`] owns the source bytes and Git history; [`run_independent`] pairs two
+/// real runs without hiding their stable content identities. After an intentional contract
+/// revision, capture the assertion's normalized output and audit every changed literal before
+/// refreshing this golden. Warm-cache changes must still leave these documents identical.
 const NO_WARM_DOCUMENTS: &str = include_str!("../fixtures/task-warm/no-warm-documents.json");
 
 /// Pair two independent runs' documents. A value equal in both is kept literally: the captured
@@ -1756,7 +1759,7 @@ fn no_warm_documents() -> Value {
         "delivery": delivery,
         "delivered_tree": tree(&worktree)
             .into_iter()
-            .map(|(path, bytes)| (path, review_store::canonical::blob_content_id(&bytes)))
+            .map(|(path, bytes)| (path, af_store::canonical::blob_content_id(&bytes)))
             .collect::<std::collections::BTreeMap<_, _>>(),
     });
     // The engine is the digest of the running `af` executable's bytes, so every build has its
@@ -1785,7 +1788,7 @@ fn without_engine(value: Value, engine_id: &Value, authority_id: &Value) -> Valu
 }
 
 #[test]
-fn a_task_without_warm_records_the_documents_a_kernel_without_warm_recorded() {
+fn a_task_without_warm_records_the_exact_current_format_documents() {
     let normalized = run_independent(&no_warm_documents(), &no_warm_documents());
     let expected: Value = serde_json::from_str(NO_WARM_DOCUMENTS).unwrap();
     assert!(
@@ -1833,7 +1836,7 @@ fn no_warm_cache_byte_reaches_a_worker_sandbox_a_snapshot_or_a_delivered_tree() 
     for directory in &directories {
         for (_, bytes) in tree(directory) {
             if !bytes.is_empty() {
-                cached.insert(review_store::canonical::blob_content_id(&bytes));
+                cached.insert(af_store::canonical::blob_content_id(&bytes));
             }
         }
     }
@@ -1909,7 +1912,7 @@ fn no_warm_cache_byte_reaches_a_worker_sandbox_a_snapshot_or_a_delivered_tree() 
             &format!("run {index}: the delivered tree"),
             tree(&worktree)
                 .into_iter()
-                .map(|(path, bytes)| (path, review_store::canonical::blob_content_id(&bytes)))
+                .map(|(path, bytes)| (path, af_store::canonical::blob_content_id(&bytes)))
                 .collect(),
         );
     }
@@ -2015,14 +2018,13 @@ fn native_toolchain(fixture: &Fixture, variant: &str) -> PathBuf {
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let limits = review_sandbox::toolchain::ToolchainLimits {
+    let limits = af_sandbox::toolchain::ToolchainLimits {
         max_bytes: 1_000_000,
         max_entries: 100,
         max_copy_bytes: 1_000_000,
     };
     let seed = fixture.root.join(format!("seed-{variant}"));
-    let digest =
-        review_sandbox::toolchain::snapshot_toolchain(&source, &seed, limits, None).unwrap();
+    let digest = af_sandbox::toolchain::snapshot_toolchain(&source, &seed, limits, None).unwrap();
     std::fs::remove_dir_all(seed).unwrap();
     let mapping = fixture.root.join(format!("rust-toolchain-{variant}.toml"));
     std::fs::write(
@@ -2375,7 +2377,7 @@ fn an_offline_check_passes_with_a_dead_proxy_on_a_pinned_package_filled_once() {
     let fixture = fixture(policy);
     // What npm would fetch: the pinned tarball, filed as npm's cache files it.
     let seed = fixture.root.join("npm-seed");
-    review_pipeline::task::warm_check::offline::cache_tarball(
+    af_runtime::task::warm_check::offline::cache_tarball(
         &seed,
         &review_check_pin("markdownlint-cli2@0.22.1", &sha256),
         tarball,
@@ -2434,8 +2436,8 @@ fn an_offline_check_passes_with_a_dead_proxy_on_a_pinned_package_filled_once() {
     );
 }
 
-fn review_check_pin(spec: &str, sha256: &str) -> review_pipeline::task::warm_check::NpmPin {
-    review_pipeline::task::warm_check::NpmPin {
+fn review_check_pin(spec: &str, sha256: &str) -> af_runtime::task::warm_check::NpmPin {
+    af_runtime::task::warm_check::NpmPin {
         spec: spec.into(),
         sha256: sha256.into(),
     }

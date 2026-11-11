@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum StoreKind {
     /// A Task Store (`af task … --state DIR`).
     Task,
-    /// One review campaign's Store (`af review run --state DIR`).
+    /// An explicitly registered Review Store, retained independently of frontend execution.
     Review,
-    /// A directory of review campaign Stores (`af review … --state-root DIR`).
+    /// An explicitly registered directory of Review Stores; no execution authority.
     ReviewRoot,
     /// A Project Store, `$XDG_STATE_HOME/af/project/<hex>` (ADR-0158). The registry that can hold
     /// it is version 2 (ADR-0145).
@@ -153,9 +153,9 @@ fn update(location: &Path, change: impl FnOnce(&mut Vec<Registered>)) -> Result<
         .parent()
         .ok_or("the Store registry has no directory")?;
     // af's state root: private, whatever the umask (ADR-0144).
-    review_store::local_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
-    let _ = review_store::local_fs::narrow_owned_dir(parent);
-    let lock = review_store::local_fs::private_file_options()
+    af_store::local_fs::create_private_dir_all(parent).map_err(|error| error.to_string())?;
+    let _ = af_store::local_fs::narrow_owned_dir(parent);
+    let lock = af_store::local_fs::private_file_options()
         .create(true)
         .truncate(false)
         .write(true)

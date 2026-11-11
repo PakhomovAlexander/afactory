@@ -15,16 +15,16 @@ policy that install names as `report_policy = ".af/report-policy.toml"`.
 2. Add the four packages to `.af/task-catalog.toml` with the versions and digests in
    `catalog.toml` and the paths under `.af/task-packages/backlog/`.
 3. Add `triage = "backlog/triage-kind"` under `[kinds]`, and the `[providers]` entries
-   `"backlog/triage-author" = "codex-main"` and `"backlog/triage-verifier" = "claude-main"`, so
-   the two triagers run on different Providers and models.
+   `"backlog/triage-author" = "codex-main"` and `"backlog/triage-verifier" = "codex-main"`, so
+   the two triagers use distinct models on one admitted Codex Provider.
 4. Commit the authority.
 
 | Package | What it is |
 |---|---|
-| `backlog/triage-kind` | `af.task-kind/1`: the kind `triage` on the `report` profile |
-| `backlog/triage` | `af.pipeline/1`: the shape of `kernel/report` (author, `report_seal`, `report_check`, verifier, `report_accept`), accepting the kind `triage` |
-| `backlog/triage-author` | Codex `gpt-6-astra`, effort medium, `read-source` only: no shell |
-| `backlog/triage-verifier` | Claude Opus 5.5, effort medium, `read-source` only, independent of the author |
+| `backlog/triage-kind` | `af.task-kind/3`: the kind `triage` on the `report` profile |
+| `backlog/triage` | `af.pipeline/6`: the shape of `kernel/report` (author, `report_seal`, `report_check`, verifier, `report_accept`), accepting the kind `triage` |
+| `backlog/triage-author` | Codex `gpt-6.1-sol`, effort medium, `read-source` only: no shell |
+| `backlog/triage-verifier` | Codex `gpt-6.1-terra`, effort medium, `read-source` only, independent of the author |
 
 Each triager has 40,000 tokens and 500,000 ms per Attempt. The author returns its
 `af/issue-triage@1` document as the one fenced `json` block of its report's `Triage` section,
@@ -59,12 +59,25 @@ human has already taken a step, verifies that what is installed is what is stage
 command, and plans `example/task.json` with zero Attempts: the report shape with the two staged
 Workers bound and the six captured sources of §6.2.
 
+The current-source Python pin check uses the candidate built by the gate, never an installed
+`af` on `PATH`. For a standalone check, build it first:
+
+```sh
+cargo test --workspace --locked --no-run
+python3 -I scripts/test-backlog-check-triage.py
+```
+
+Cargo metadata resolves the build's target directory, including `CARGO_TARGET_DIR` and Cargo
+configuration. A missing candidate binary fails with the build command; there is no installed
+binary fallback or skipped digest assertion. The digest commands use a private HOME and XDG
+directories with offline self-management.
+
 ## Plan one
 
 `example/` holds a Task for issue #432 and its sources, built by hand from this tree and the
 issue on 2026-10-30 in the `af.document-sources/1` shape §6.2 gives: `issue`, `citations`,
 `pulls`, `neighbours`, `excerpts` and `rubric`. Once the packages are installed, on a machine
-whose Provider bindings admit `codex-main` and `claude-main`:
+whose Provider bindings admit `codex-main`:
 
 ```sh
 af task plan --file fixtures/issue-triage/example/task.json --json
@@ -97,7 +110,7 @@ no live triage, backfill, held-issue release, plugin migration or schedule deplo
 
 After a triage Task finishes, `scripts/backlog-check-triage.py` reads the author's report (as
 `af task output TASK --port report` writes it with `--format markdown` or
-`--format canonical-markdown`, or its `af.document-draft/2`) and the verifier's
+`--format canonical-markdown`, or its `af.document-draft/3`) and the verifier's
 `af/ReportEvaluation@1` payload, validates both documents against
 `schemas/issue-triage-v1.json`, applies the hard rules of §6.3 and the merge rule, and prints one
 `af/issue-triage-merged@1` (`schemas/issue-triage-merged-v1.json`):

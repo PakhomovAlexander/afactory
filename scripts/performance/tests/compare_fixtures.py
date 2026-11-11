@@ -19,7 +19,7 @@ if __name__ == "__main__":
     sys.dont_write_bytecode = True
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from perflab import compare, schedule, suite, synthetic  # noqa: E402
+from perflab import evaluate_results, schedule, suite, synthetic  # noqa: E402
 from perflab.values import document_bytes  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -143,7 +143,7 @@ def write_all(target):
         synthetic.write_run(plan, run, recipe["value"](plan), failures=failures, **options)
         if "after" in recipe:
             recipe["after"](run)
-        verdict = compare.compare(run)
+        verdict = evaluate_results.compare(run)
         assert verdict["aggregate"]["exit_code"] == recipe["exit_code"], name
         with open(os.path.join(target, name, "verdict.json"), "wb") as stream:
             stream.write(document_bytes(verdict))

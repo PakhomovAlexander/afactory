@@ -2,14 +2,14 @@
 //! subscriber the Task runtime's spans reach, and the segment's seal at the end.
 //!
 //! Only `af task run`, `af task start --execute`, `af review run`, `af provider doctor` and
-//! `af self optimize --execute` record; every other command opens no telemetry directory. At
+//! `af self optimize --execute`, native Review resume and executing continuation/decision Tasks record; every other command opens no telemetry directory. At
 //! `off` nothing is started. A telemetry-only failure is one line on stderr and the command's
 //! outcome is its own (ADR-0153 clause 7).
 
-use review_pipeline::telemetry::RunKind;
-use review_telemetry::record::{ProblemWhat, SealExit};
-use review_telemetry::subscriber;
-use review_telemetry::{Start, Telemetry};
+use af_runtime::telemetry::RunKind;
+use af_telemetry::record::{ProblemWhat, SealExit};
+use af_telemetry::subscriber;
+use af_telemetry::{Start, Telemetry};
 
 /// One command's recording.
 pub(crate) struct Recording {
@@ -36,7 +36,7 @@ impl Recording {
             return;
         };
         telemetry.begin_terminal();
-        review_pipeline::telemetry::end_runs();
+        af_runtime::telemetry::end_runs();
         if !self.command.is_disabled() {
             self.command.record("process.exit_code", i64::from(code));
             self.command
@@ -62,10 +62,10 @@ impl Recording {
 /// `AF_TEST_TELEMETRY_STALL_COMMAND_END`: the consumer's write of the terminal records (the
 /// `af.command` end) blocks the same way.
 /// `AF_TEST_TELEMETRY_QUOTA`: every write fails as on a full quota.
-fn test_hook() -> Option<review_telemetry::segment::writer::WriteHook> {
+fn test_hook() -> Option<af_telemetry::segment::writer::WriteHook> {
     #[cfg(debug_assertions)]
     {
-        use review_telemetry::segment::writer::{Phase, phase};
+        use af_telemetry::segment::writer::{Phase, phase};
         if std::env::var_os("AF_TEST_TELEMETRY_QUOTA").is_some() {
             return Some(std::sync::Arc::new(|_| {
                 Err(std::io::Error::from_raw_os_error(nix::libc::EDQUOT))
@@ -128,7 +128,7 @@ pub(crate) fn command_chain(argv: &[String]) -> Vec<String> {
 /// ([`command_chain`]). Nothing is opened yet beyond what the first record needs: the segment,
 /// and with it the directory, opens with the `af.command` span.
 pub(crate) fn begin(kind: RunKind, command: Vec<String>) -> Recording {
-    review_pipeline::telemetry::set_run_kind(kind);
+    af_runtime::telemetry::set_run_kind(kind);
     let settings = match super::settings() {
         Ok(settings) => settings,
         Err(refusal) => {
@@ -150,7 +150,7 @@ pub(crate) fn begin(kind: RunKind, command: Vec<String>) -> Recording {
             accounted,
             accounted_unknown,
             af_version: env!("CARGO_PKG_VERSION").to_string(),
-            af_commit: crate::selfmgmt::COMMIT.to_string(),
+            af_commit: crate::self_management::COMMIT.to_string(),
             settings: settings.clone(),
             write_hook: test_hook(),
             command,
@@ -171,14 +171,12 @@ pub(crate) fn begin(kind: RunKind, command: Vec<String>) -> Recording {
     telemetry.install_subscriber();
     // From `spans` on every execution's run starts with its configuration record, whose
     // machine sections the command knows (design §7.4).
-    if settings.level != review_telemetry::level::Level::Metrics {
-        review_pipeline::telemetry::set_machine_config(Box::new(
-            super::config_record::machine_config,
-        ));
+    if settings.level != af_telemetry::level::Level::Metrics {
+        af_runtime::telemetry::set_machine_config(Box::new(super::config_record::machine_config));
     }
     // Every Store this process opens tells the mirror of its commits (design §7.5).
     if telemetry.writer().is_some() {
-        review_pipeline::telemetry::install_store_mirror();
+        af_runtime::telemetry::install_store_mirror();
     }
     let command = tracing::info_span!(
         "af.command",

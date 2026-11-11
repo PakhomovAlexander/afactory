@@ -80,7 +80,7 @@ new work, never deletes original receipts. Provision a filesystem/quota at that 
 as a hard backstop. Keep daemon image/log storage bounded separately; sample/build containers
 retain their existing disabled logging/IPC and write boundaries.
 
-Grant only the trusted account's existing `hostprep` operations through an operator-reviewed
+Grant only the trusted account's existing `host_prep` operations through an operator-reviewed
 sudo policy for loop images/mounts under this journal: noninteractive mount/unmount and
 ownership setup. Candidate containers receive no sudo, Docker socket, credentials or host
 homes. Docker access itself is privileged operator authority, restricted to trusted control.
@@ -233,7 +233,7 @@ too little time left ends the original `failed` with measurement `not_executed` 
 build, nothing measured and no fence kept; an unexpected or unconfirmed cleanup still fences.
 
 Submit telemetry with `--work telemetry` and a new key, then `cycle`. Each side is compiled
-through `telemetrybuild`, each execution is contained, the exact configured overhead,
+through `telemetry_build`, each execution is contained, the exact configured overhead,
 invocation-cost and read-latency settings are used, and the actual installed matching verifier
 admits raw documents. A failed or partial native telemetry result can still be a completed
 measurement. `--work profile` similarly creates a separate native diagnostic child under the
@@ -545,7 +545,7 @@ the operator's to run, not something this change ran.
 
    Create the journal's parent as compute's own, 0700, under the candidate data root:
    `install -d -o af-perf-exec -g af-perf-exec -m 0700 /var/lib/af-perf-candidate`. Scope the
-   reviewed `hostprep` sudo policy for loop images and mounts to that root only (a copy of
+   reviewed `host_prep` sudo policy for loop images and mounts to that root only (a copy of
    production's rule naming `/var/lib/af-perf-candidate/journal`), and remove that rule when the
    validation ends.
 
@@ -797,21 +797,17 @@ read latency is judged only over its declared 10,000 corpus runs: a `corpus_runs
 is valid evidence but `not_judged`, and qualifying it needs `corpus_runs = 10000` that fits the
 profile's timeout. Keep the historical failed report unchanged beside new evidence.
 
-Telemetry overhead and invocation-cost runs select each side's fixture contract from the
-version its `af --version` prints: v0.13.0 measures under `check-receipt@1` (the same packages
-declaring `af/TaskCheckReceipt@1`, re-pinned to the digests the contract declares and its own
-`af catalog digest` prints), v0.14.0-rc.1 through v0.14.0-rc.6 under the committed
-`check-receipt@2`; a release no contract names (v0.11.9, say) is refused, never measured under
-the committed contract. The documents (`af/telemetry-overhead@2`,
-`af/telemetry-invocation-cost@2`) record the contract and every package pin.
-The [RC4/RC5/RC6 source evidence](telemetry.md#performance) records their supported
-receipt contract and fixture pins; unnamed future versions, stable 0.14.0 and nightly version
-strings still refuse.
+Telemetry overhead and invocation-cost runs use one `native-task-review@1` fixture contract.
+Source preflight compares both retained trees' current schema resource identities and constraints
+against the measurement authority (top-level descriptive annotations are not capability) before any claim or build. The measured binaries then reproduce
+committed package pins and plan the exact workload before timing. Equal release strings alone
+supply no capability proof. Unsupported formats retain their diagnostic and receive no alternate
+workload. The documents (`af/telemetry-overhead@3`, `af/telemetry-invocation-cost@3`) record
+the contract, release provenance and every package pin. See [the contract](telemetry.md#performance).
 
-A submission admits the selected releases' declared workloads before anything is reserved,
-claimed or built, from the release each side's retained source declares in its Cargo.lock: a
-telemetry original needs a fixture contract of the installed bench script for both sides, and a
-core original with CLI cases needs the authority's CLI registry and an adapter of it for both
+A submission admits each selected source's workload before anything is reserved, claimed or
+built. Telemetry requires the current schema identity/constraint contract for both sides. A core
+original uses the release each retained source declares in Cargo.lock: CLI cases need the authority's CLI registry and an adapter of it for both
 sides (`af_cli_v1` from 0.12.0-rc.3 on) whose command for every selected case and parameters is
 declared and runnable: `af_cli_v1` declares both `tui_open` fixtures pending, so a 0.12 side
 with a browser case is refused with that reason while its discovery commands stay admitted. Every

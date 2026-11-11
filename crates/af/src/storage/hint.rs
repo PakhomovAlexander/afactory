@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use review_store::store::task::collection::{CollectionDisposition, CollectionPlan};
+use af_store::store::task::collection::{CollectionDisposition, CollectionPlan};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -48,7 +48,10 @@ fn location(roots: &super::Roots, state: &Path) -> Option<PathBuf> {
             .parent()?
             .join("storage")
             .join("hints")
-            .join(format!("{}.json", &review_core::hex::encode(&digest)[..32])),
+            .join(format!(
+                "{}.json",
+                &af_contracts::hex::encode(&digest)[..32]
+            )),
     )
 }
 
@@ -103,7 +106,7 @@ impl Hint {
         };
         let written = path
             .parent()
-            .map_or(Ok(()), review_store::local_fs::create_private_dir_all)
+            .map_or(Ok(()), af_store::local_fs::create_private_dir_all)
             .and_then(|()| {
                 let staged = path.with_extension("json.staged");
                 std::fs::write(&staged, serde_json::to_vec(self).unwrap_or_default())?;

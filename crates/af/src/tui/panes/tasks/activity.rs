@@ -1,6 +1,6 @@
 //! The inspector's independent incremental reader. The key loop only receives bounded snapshots;
 //! dropping a selection stops its reader without waiting for filesystem IO.
-use review_store::activity::{Binding, Error, Reader, Record};
+use af_store::activity::{Binding, Error, Reader, Record};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},

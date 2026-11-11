@@ -32,10 +32,10 @@ def definitions():
         ('size/L', 'F0B429', 'Contract, schema-version, budget or sandbox change, or several Tasks; '
                              'design review first'),
         ('size/XL', 'EE366A', 'Needs a design document and owner decisions before any code'),
-        ('pipeline/light', '36EEA8', 'default-light/implementation: Opus 5.5 medium + correctness + evaluator'),
-        ('pipeline/default', '9BE07A', 'default/implementation: Opus 5.5 high; Terra, Sol, Astra reviewers; '
-                                       'Astra evaluator'),
-        ('pipeline/design', 'F0B429', 'Astra xhigh design review before the first implementing Task'),
+        ('pipeline/light', '36EEA8', 'default-light/implementation: GPT-6.1 Sol high + Terra correctness + evaluator'),
+        ('pipeline/default', '9BE07A', 'default/implementation: GPT-6.1 Sol high; Terra reviewers; '
+                                       'Terra evaluator'),
+        ('pipeline/design', 'F0B429', 'GPT-6.1 Terra high design review before the first implementing Task'),
         ('pipeline/hand', '999999', 'A config edit, doc line or GitHub action; no model Task'),
         ('triage/pending', 'E4E669', 'Not yet triaged, or re-triage requested'),
         ('triage/needs-info', 'FBCA04', 'Triage could not reach a confident class or size; '

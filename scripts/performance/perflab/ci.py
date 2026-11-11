@@ -38,7 +38,7 @@ import json
 import os
 import re
 
-from . import contracts, gitrefs, images, limits, planning
+from . import contracts, git_refs, images, limits, planning
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 MAIN = "main"
@@ -123,10 +123,10 @@ def _branch(git, value, what):
         if sha is not None:
             found[ref] = sha
     if not found:
-        raise gitrefs.Unavailable("unresolved_ref", "%s: neither %s nor the fetched %s%s "
+        raise git_refs.Unavailable("unresolved_ref", "%s: neither %s nor the fetched %s%s "
                                   "names a commit" % (what, value, FETCHED_BRANCHES, name))
     if len(set(found.values())) > 1:
-        raise gitrefs.Unavailable("ambiguous_ref", "%s: %s is ambiguous here: %s; it is never "
+        raise git_refs.Unavailable("ambiguous_ref", "%s: %s is ambiguous here: %s; it is never "
                                   "guessed" % (what, value, ", ".join(
                                       "%s names %s" % item for item in sorted(found.items()))))
     return next(iter(found.values()))
@@ -165,7 +165,7 @@ class _Comparisons(object):
         try:
             try:
                 image = self.build_image(values)
-            except gitrefs.Unavailable as missing:
+            except git_refs.Unavailable as missing:
                 # The event and authority decide first: a missing image is the reason only
                 # when nothing else refuses the plan. This dry plan is never written or used.
                 planning.plan(self.git, planning.Request(trusted_host_build=True, **values))
@@ -173,7 +173,7 @@ class _Comparisons(object):
             record["request"]["build_image"] = image
             values["build_image"] = image
             plan = planning.plan(self.git, planning.Request(**values))
-        except gitrefs.Unavailable as error:
+        except git_refs.Unavailable as error:
             record.update(status="unavailable", reason=error.reason, detail=str(error)[:4096])
         except ContractError as error:
             record.update(status="refused", reason="invalid_plan", detail=str(error)[:4096])
@@ -204,7 +204,7 @@ class _Comparisons(object):
         elif trigger == "pr":
             source = values["pr_base_sha"]
         elif trigger == "main_push":
-            source = gitrefs.first_parent(self.git, self.git.resolve(values["head"], "--head"),
+            source = git_refs.first_parent(self.git, self.git.resolve(values["head"], "--head"),
                                           "pushed commit")
         elif trigger in ("nightly", "release"):
             source = self.git.resolve(values["head"], "--head")
@@ -218,7 +218,7 @@ class _Comparisons(object):
             return None
         image = self.settings.build_images.get(recipe_id)
         if image is None:
-            raise gitrefs.Unavailable("no_build_image", "recipe %s pins no build image and none "
+            raise git_refs.Unavailable("no_build_image", "recipe %s pins no build image and none "
                                       "is configured for it; continuous runs build only in a "
                                       "registry image pinned by digest" % recipe_id)
         return image
@@ -351,7 +351,7 @@ def _policy_changed(git, control, merge):
     for sha in (control, merge):
         try:
             digests.append(planning.read_suite(git, sha).policy_digest)
-        except (gitrefs.Unavailable, ContractError):
+        except (git_refs.Unavailable, ContractError):
             digests.append(None)
     return digests[0] != digests[1]
 
@@ -382,15 +382,15 @@ def _release(git, event, claim, comparisons, runner_label, doc):
     try:
         found = git.exact_ref("refs/tags/" + tag, "the release tag")
         if found != sha:
-            raise gitrefs.Unavailable("tag_moved", "tag %s names %s here, not the claimed %s; "
+            raise git_refs.Unavailable("tag_moved", "tag %s names %s here, not the claimed %s; "
                                       "nothing else is measured" % (tag, found, sha))
         if parent is not None:
             # The same two commits a release comparison resolves, as an explicit manual
             # comparison that names the parent run it repeats.
-            _, _, _, baseline = gitrefs.release_baseline(git, tag)
+            _, _, _, baseline = git_refs.release_baseline(git, tag)
             values = {"trigger": "manual", "tier": "release", "base": baseline, "head": sha,
                       "control": sha, "remeasure_of": parent["lab_run_id"]}
-    except gitrefs.Unavailable as error:
+    except git_refs.Unavailable as error:
         comparisons.items.append(_unplanned(comparisons, values, "unavailable", error.reason,
                                             str(error)))
         return
@@ -495,7 +495,7 @@ def _dispatch(git, event, comparisons, runner_label, settings):
                         % sealed)
                 values["calibration"] = contracts.read_json(raw, "calibration-parameters",
                                                             sealed)
-    except gitrefs.Unavailable as error:
+    except git_refs.Unavailable as error:
         refused(error.reason, str(error))
         return
     except ContractError as error:

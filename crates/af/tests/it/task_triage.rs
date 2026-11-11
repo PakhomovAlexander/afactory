@@ -6,7 +6,7 @@
 //! model Workers. Isolated fake Providers serve only catalog and identity probes. A second test
 //! feeds the report renderer's own bytes to `scripts/backlog-check-triage.py`.
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -20,7 +20,7 @@ const PACKAGES: [(&str, Option<&str>); 4] = [
     ("backlog/triage-kind", None),
     ("backlog/triage", None),
     ("backlog/triage-author", Some("codex-main")),
-    ("backlog/triage-verifier", Some("claude-main")),
+    ("backlog/triage-verifier", Some("codex-main")),
 ];
 
 /// Perform the install steps of `fixtures/issue-triage/README.md` on `repo`'s `.af/`, or, where
@@ -42,8 +42,11 @@ fn install_issue_triage(repo: &Path) {
         let mut pin = staged["packages"][name].clone();
         assert_eq!(
             pin["digest"].as_str().unwrap(),
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap())
+            )
+            .unwrap(),
             "{name}: the staged pin is the staged bytes"
         );
         let path = format!(".af/task-packages/{name}");
@@ -104,7 +107,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
     for (schema, path) in [
         ("task-file-v1.json", "example/task.json"),
         ("document-sources-v1.json", "example/sources.json"),
-        ("catalog-contract-fixtures-v1.json", "contracts.json"),
+        ("catalog-contract-fixtures-v2.json", "contracts.json"),
     ] {
         let value: Value =
             serde_json::from_slice(&std::fs::read(repo.join(STAGED).join(path)).unwrap()).unwrap();
@@ -140,7 +143,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         &bindings,
         "schema = \"af.task-bindings/1\"\n\n[providers]\n\
          \"backlog/triage-author\" = \"fixture-codex\"\n\
-         \"backlog/triage-verifier\" = \"fixture-claude\"\n",
+         \"backlog/triage-verifier\" = \"fixture-codex\"\n",
     )
     .unwrap();
     let state = root.join("state");
@@ -168,7 +171,8 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         json!({"kind": "selected", "pipeline": "backlog/triage"})
     );
 
-    // The report shape: both Provider admissions, then author, seal, check, verify, accept.
+    // The report shape: each Provider admission precedes its Worker; author, seal, check,
+    // verify and accept retain their order.
     let graph = &planned["graph"];
     let operators: Vec<&Value> = graph["order"]
         .as_array()
@@ -180,7 +184,6 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         operators,
         [
             &json!({"kind": "root_inputs"}),
-            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
             &json!({"kind": "provider_admission", "bindings": ["root.slots.author"]}),
             &json!({"kind": "primitive", "operator": {"op": "worker", "slot": "root.slots.author"},
                     "signature": "worker/backlog/triage-author"}),
@@ -188,6 +191,7 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
                     "signature": "operator/report-seal"}),
             &json!({"kind": "primitive", "operator": {"op": "report_check"},
                     "signature": "operator/report-check"}),
+            &json!({"kind": "provider_admission", "bindings": ["root.slots.verifier"]}),
             &json!({"kind": "primitive", "operator": {"op": "verify", "slot": "root.slots.verifier"},
                     "signature": "worker/backlog/triage-verifier"}),
             &json!({"kind": "primitive", "operator": {"op": "report_accept"},
@@ -203,12 +207,12 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
         toml::from_str(&std::fs::read_to_string(repo.join(STAGED).join("catalog.toml")).unwrap())
             .unwrap();
     for (slot, worker, provider_kind, model) in [
-        ("author", "backlog/triage-author", "codex", "gpt-6-astra"),
+        ("author", "backlog/triage-author", "codex", "gpt-6.1-sol"),
         (
             "verifier",
             "backlog/triage-verifier",
-            "claude",
-            "claude-opus-5-5",
+            "codex",
+            "gpt-6.1-terra",
         ),
     ] {
         let slot = format!("root.slots.{slot}");
@@ -296,8 +300,8 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
 /// exactly, through the real renderer and the real script.
 #[test]
 fn the_check_reads_the_triage_block_from_the_report_renderers_bytes() {
-    use review_core::task::document::DocumentDraftV2;
-    use review_pipeline::task::report_task::{ReportDraft, render_report};
+    use af_contracts::task::document::DocumentDraft;
+    use af_runtime::task::report_domain::render_report;
 
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
@@ -315,8 +319,8 @@ fn the_check_reads_the_triage_block_from_the_report_renderers_bytes() {
         "```json\n{}\n```",
         serde_json::to_string_pretty(&triage).unwrap()
     );
-    let draft: DocumentDraftV2 = serde_json::from_value(json!({
-        "schema": "af.document-draft/2",
+    let draft: DocumentDraft = serde_json::from_value(json!({
+        "schema": "af.document-draft/3",
         "title": "Triage of issue #432",
         "sections": [
             {"heading": "Triage", "body": block},
@@ -324,15 +328,14 @@ fn the_check_reads_the_triage_block_from_the_report_renderers_bytes() {
             {"heading": "Findings", "body": "state.rs:483 puts every waiting Task in one group."},
             {"heading": "Recommendation", "body": "Take it on the default pipeline."},
         ],
-        "citations": ["issue"],
-        "repository_citations": [{"path": "crates/review-core/src/task/state.rs", "line": 483}],
+        "citations": [{"kind":"source","name":"issue"},{"kind":"repository","location":{"path":"crates/af-contracts/src/task/state.rs","line":483}}],
     }))
     .unwrap();
     let sources = serde_json::from_slice(
         &std::fs::read(workspace().join(STAGED).join("example/sources.json")).unwrap(),
     )
     .unwrap();
-    let rendered = render_report(&ReportDraft::V2(draft), &sources).unwrap();
+    let rendered = render_report(&draft, &sources).unwrap();
     assert!(
         rendered.contains("\n\\`\\`\\`json\n") && !rendered.contains("\n```"),
         "the renderer escapes the authored fence: {rendered}"

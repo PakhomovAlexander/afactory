@@ -22,13 +22,13 @@
       "const": "af/task-selection@3"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "selection_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "request_revision_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "attempts": {
       "const": 0

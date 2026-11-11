@@ -45,8 +45,8 @@ import json
 import os
 
 from . import adapters as adapters_module
-from . import calibration, contracts, equivalence as equivalence_module, planning, tomlfile
-from . import gitrefs, transport
+from . import calibration, contracts, equivalence as equivalence_module, planning, toml_file
+from . import git_refs, transport
 from .values import ContractError, require
 
 HISTORY_PAGES_MAX = 100
@@ -78,7 +78,7 @@ def read_manifest(git, revision, path=planning.ACTIVATION_PATH):
     raw = git.read_file(revision, path)
     if raw is None:
         return None, None
-    doc = tomlfile.loads(raw, path)
+    doc = toml_file.loads(raw, path)
     require(doc.get("schema") == contracts.ACTIVATION_SCHEMA,
             "%s.schema: expected %s, found %r" % (path, contracts.ACTIVATION_SCHEMA,
                                                   doc.get("schema")))
@@ -148,7 +148,7 @@ def verify(git, revision, manifest_path=planning.ACTIVATION_PATH, evidence=None,
     directory `fetch_evidence` wrote (the retained Actions evidence), readiness is recomputed
     from it and must reproduce the reviewed record; `replan` is the plan check of
     `calibration.collect` (the authority's own replanner by default). Every refusal is a
-    ContractError or `gitrefs.Unavailable`."""
+    ContractError or `git_refs.Unavailable`."""
     manifest, sha = read_manifest(git, revision, manifest_path)
     require(manifest is not None, "%s is not in revision %s" % (manifest_path, revision[:12]))
     where = manifest_path
@@ -240,7 +240,7 @@ def _equivalence(git, revision, manifest, cohort, where):
     require(_sha256(raw) == admission["calibrated_activation_sha256"],
             where + ".admission.calibrated_activation_sha256: %s has SHA-256 %s"
             % (path, _sha256(raw)))
-    base = tomlfile.loads(raw, path)
+    base = toml_file.loads(raw, path)
     require(base.get("schema") == contracts.ACTIVATION_SCHEMA,
             path + ".schema: expected %s" % contracts.ACTIVATION_SCHEMA)
     contracts.validate_activation(base, path)
@@ -349,7 +349,7 @@ def _replanned_bridge(replan, role, plan, at):
     """Refuse a retained bridge plan unless the bridged authority freezes exactly it again."""
     try:
         expected = replan(role, plan)
-    except (ContractError, gitrefs.Unavailable) as error:
+    except (ContractError, git_refs.Unavailable) as error:
         raise ContractError("%s: the bridged authority cannot plan this run again: %s"
                             % (at, error))
     differing = sorted(key for key in set(expected) | set(plan)
@@ -454,7 +454,7 @@ def bridge_provenance(git, root, role, actions_run_id, plan, repository, bridged
             changed = git.changed_paths(bridged, sha, paths)
             require(not changed, "%s %s differs from the bridged authority's: %s"
                     % (what, sha[:12], ", ".join(changed[:8])))
-    except (ContractError, gitrefs.Unavailable) as error:
+    except (ContractError, git_refs.Unavailable) as error:
         raise ContractError("%s: its producer is not the bridged authority's: %s" % (at, error))
     runner = calibration._measuring_runner(None, run, plan, attempt,
                                            os.path.join(directory, BRIDGE_JOBS_FILE))

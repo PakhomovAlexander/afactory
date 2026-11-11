@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-storage-sweep:2",
   "title": "af/TaskStorageSweep@2",
-  "description": "What the Storage Budget's sweep at the end of `af task run` removed and failed to remove (ADR-0144), recorded as an observation of the Task that run executed. Carried inline by one `storage_sweep` TaskTransition@5 that references no artifact; it never changes the Task's result. Bounded like a gate cleanup: at most 256 removals and 64 failures are listed and the rest only counted. A sweep that removed nothing and failed nothing records nothing; every other one is recorded, one whose total after it is unknown included: its `total_after` and its `stop` are then `unknown`, together. Version 2 is the first that can say `unknown` and that carries `freed_bytes`; the superseded af/TaskStorageSweep@1 is refused.",
+  "description": "What the Storage Budget's sweep at the end of `af task run` removed and failed to remove (ADR-0144), recorded as an observation of the Task that run executed. Carried inline by one `storage_sweep` TaskTransition@6 that references no artifact; it never changes the Task's result. Bounded like a gate cleanup: at most 256 removals and 64 failures are listed and the rest only counted. A sweep that removed nothing and failed nothing records nothing; every other one is recorded, one whose total after it is unknown included: its `total_after` and its `stop` are then `unknown`, together. Version 2 is the first that can say `unknown` and that carries `freed_bytes`; the superseded af/TaskStorageSweep@1 is refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -163,7 +163,7 @@
         },
         "task_id": {
           "description": "The collected Task, for a `task` removal and only for one.",
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
         },
         "bytes": {
           "$ref": "#/$defs/count"

@@ -6,7 +6,7 @@
 //! content are never copied into an Observation.
 
 use super::*;
-use review_core::task::usage::TaskTokenUsageV3;
+use af_contracts::task::usage::TaskTokenUsageV3;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +247,7 @@ fn parse_af_inspection(
     state: &mut AdapterState,
     value: &Value,
 ) -> Result<Vec<NormalizedRecord>, String> {
-    if value.get("schema").and_then(Value::as_str) != Some("af/task-inspection@16") {
+    if value.get("schema").and_then(Value::as_str) != Some("af/task-inspection@20") {
         return Err("unsupported AF inspection generation".into());
     }
     let task = value
@@ -526,7 +526,7 @@ fn parse_af_inspection(
         .into_iter()
         .flatten()
     {
-        let evidence: review_core::task::runtime::TaskRuntimeEvidenceV1 =
+        let evidence: af_contracts::task::runtime::TaskRuntimeEvidenceV1 =
             serde_json::from_value(entry["record"].clone())
                 .map_err(|error| format!("invalid AF runtime evidence: {error}"))?;
         evidence.validate()?;
@@ -541,10 +541,10 @@ fn parse_af_inspection(
         let mut spans = Vec::new();
         for span in evidence.spans {
             let kind = match span.kind {
-                review_core::task::runtime::TaskRuntimeSpanKindV1::Check => {
+                af_contracts::task::runtime::TaskRuntimeSpanKindV1::Check => {
                     OptimizationSpanKindV1::Check
                 }
-                review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation => {
+                af_contracts::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation => {
                     OptimizationSpanKindV1::DependencyPreparation
                 }
             };
@@ -620,7 +620,7 @@ fn parse_af_inspection(
     let verifier = result
         .pointer("/outputs/verification/artifact_ids/0")
         .and_then(Value::as_str)
-        .filter(|id| review_core::is_digest(id))
+        .filter(|id| af_contracts::is_digest(id))
         .map(str::to_owned);
     let verified = result["acceptance"] == "satisfied" && verifier.is_some();
     observations.push(NormalizedRecord {
@@ -1256,7 +1256,7 @@ mod tests {
     fn real_inspection_shape_requires_attestation_and_reconciles_cumulative_attempts() {
         let dir = tempfile::tempdir().unwrap();
         let mut adapter = state("af", dir.path());
-        let receipt = serde_json::json!({"schema":"af/task-inspection@16","task_id":"declared-session","chargeable_tokens":"17",
+        let receipt = serde_json::json!({"schema":"af/task-inspection@20","task_id":"declared-session","chargeable_tokens":"17",
             "history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}},
                 {"transition":{"now_unix_ms":2,"change":{"kind":"execution_recorded","record_id":"reserved"}}},
                 {"transition":{"now_unix_ms":3,"change":{"kind":"execution_recorded","record_id":"started"}}},
@@ -1308,7 +1308,11 @@ mod tests {
         let mut foreign = receipt.clone();
         foreign["task_id"] = serde_json::json!("other-task");
         assert!(parse_af_inspection(&mut adapter, &foreign).is_err());
-        for earlier in ["af/task-inspection@3", "af/task-inspection@10"] {
+        for earlier in [
+            "af/task-inspection@3",
+            "af/task-inspection@10",
+            "af/task-inspection@18",
+        ] {
             let mut old = receipt.clone();
             old["schema"] = serde_json::json!(earlier);
             assert_eq!(
@@ -1322,7 +1326,7 @@ mod tests {
     }
 
     /// A Task whose file bound a root input port carries an `input_bindings` record in the same
-    /// `af/task-inspection@16` document. The adapter admits it, and its accounting reads exactly
+    /// `af/task-inspection@20` document. The adapter admits it, and its accounting reads exactly
     /// as the same receipt without the record (ADR-0117). The receipt is a real
     /// `af task plan --json` document from the `bound-inputs` fixture, written by
     /// `crates/af/tests/task_input_bindings.rs` under `AF_WRITE_INSPECTION_FIXTURE=1`.
@@ -1331,7 +1335,7 @@ mod tests {
         let real =
             include_str!("../../../../fixtures/task-runtime/bound-inputs/inspection-bound.json");
         let mut receipt: serde_json::Value = serde_json::from_str(real).unwrap();
-        assert_eq!(receipt["schema"], "af/task-inspection@16");
+        assert_eq!(receipt["schema"], "af/task-inspection@20");
         assert!(receipt["input_bindings"]["bindings"]["history"].is_object());
         // The adapter admits a receipt only for the execution it declared: this Task.
         let task_id = receipt["task_id"].as_str().unwrap().to_owned();
@@ -1365,7 +1369,7 @@ mod tests {
         adapter.attest_project = true;
         let exact = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
         let receipt = serde_json::json!({
-            "schema":"af/task-inspection@16",
+            "schema":"af/task-inspection@20",
             "task_id":"declared-session",
             "chargeable_tokens":"19",
             "history":[],
@@ -1709,7 +1713,7 @@ mod tests {
             SourceCompletenessV1::Complete
         );
         assert!(history.gaps.is_empty(), "{:?}", history.gaps);
-        let economics = review_store::optimization::project_economics(&[(
+        let economics = af_store::optimization::project_economics(&[(
             format!("sha256:{}", "8".repeat(64)),
             history.clone(),
         )])

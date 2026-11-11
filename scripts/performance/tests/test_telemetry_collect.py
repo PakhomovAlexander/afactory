@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from perflab import contracts, gitrefs, telemetrycollect, telemetrylab, tomlfile, transport
+from perflab import contracts, git_refs, telemetry_collect, telemetry_lab, toml_file, transport
 from perflab.values import ContractError, sha256_bytes
 from tests import telemetry_fixtures as fx
 from tests.support import ROOT, Repo, TempDir, read
@@ -59,7 +59,7 @@ def plan_fixtures(test, runs, artifacts, add_plans=True):
         if not add_plans:
             continue
         for item in list(artifacts.get(run["id"], [])):
-            match = telemetrycollect.ARTIFACT.fullmatch(item["name"])
+            match = telemetry_collect.ARTIFACT.fullmatch(item["name"])
             if match is None:
                 continue
             attempt = int(match.group(2))
@@ -141,9 +141,9 @@ class Collection(TempDir):
         self.planned = {}
         # The trusted repository: main holds this checkout's authority files.
         self.repo = Repo(self.path("trusted"))
-        registry, _ = telemetrylab.load_registry()
+        registry, _ = telemetry_lab.load_registry()
         files = dict((relative, read(os.path.join(ROOT, relative)))
-                     for relative in telemetrylab.authority_files(registry))
+                     for relative in telemetry_lab.authority_files(registry))
         self.authority = self.repo.commit("authority", files)
         self.repo.git("checkout", "-q", "-b", "side")
         self.untrusted = self.repo.commit("side", {"README.md": "side branch"})
@@ -167,14 +167,14 @@ class Collection(TempDir):
         self.planned[(run_id, attempt)] = {
             "candidate_sha": settings.candidate_sha, "baseline_sha": settings.baseline_sha,
             "control_sha": settings.authority_sha, "profile": settings.profile}
-        telemetrylab.run(settings)
+        telemetry_lab.run(settings)
         return self.path(output)
 
     def cycle(self, runs, artifacts, now=NOW, add_plans=True):
         runs, artifacts = plan_fixtures(self, runs, artifacts, add_plans)
         fake = FakeApi(runs, artifacts)
         api = transport.Collector(fake, REPOSITORY, TOKEN, api_url=API)
-        doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path), time.time,
+        doc = telemetry_collect.Cycle(self.config, api, git_refs.Git(self.repo.path), time.time,
                                      now).run()
         return doc, fake
 
@@ -249,17 +249,17 @@ class Collection(TempDir):
         self.assertEqual([item["run_id"] for item in doc["runs"]], [1, 2])
         self.assertEqual(doc["status"], "failed")
         self.assertIn("synthetic cycle deadline", doc["detail"])
-        position = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        position = os.path.join(self.config["root"], telemetry_collect.POSITION_JSON)
         self.assertEqual(contracts.read_file(position, "telemetry-collection-position")[
             "after_run_id"], 2)
         # Restart is a fresh Cycle/Collector/HistoryRoot, with a leftover killed write.
-        with open(os.path.join(self.config["root"], telemetrylab.REPORT_STAGE,
-                               telemetrycollect.POSITION_JSON), "wb") as stream:
+        with open(os.path.join(self.config["root"], telemetry_lab.REPORT_STAGE,
+                               telemetry_collect.POSITION_JSON), "wb") as stream:
             stream.write(b"interrupted")
         doc, _ = self.cycle(runs, {})
         self.assertEqual([item["run_id"] for item in doc["runs"]], [3, 4, 5, 1])
-        self.assertFalse(os.path.exists(os.path.join(self.config["root"], telemetrylab.REPORT_STAGE,
-                                                     telemetrycollect.POSITION_JSON)))
+        self.assertFalse(os.path.exists(os.path.join(self.config["root"], telemetry_lab.REPORT_STAGE,
+                                                     telemetry_collect.POSITION_JSON)))
         # If the old position falls outside lookback, IDs alone still order and wrap.
         doc, _ = self.cycle([run_entry(8), run_entry(9)], {})
         self.assertEqual([item["run_id"] for item in doc["runs"]], [8, 9])
@@ -272,18 +272,18 @@ class Collection(TempDir):
     def test_interruption_during_a_run_advances_attempt_position_without_losing_retry(self):
         self.config["runs_max"] = 1
         runs = [run_entry(ident) for ident in (1, 2)]
-        original = telemetrycollect.artifacts
+        original = telemetry_collect.artifacts
 
         def interrupted(api, run_id):
             raise ContractError("synthetic artifact deadline")
 
-        with mock.patch.object(telemetrycollect, "artifacts", interrupted):
+        with mock.patch.object(telemetry_collect, "artifacts", interrupted):
             doc, _ = self.cycle(runs, {})
         self.assertEqual([(item["run_id"], item["outcome"]) for item in doc["runs"]],
                          [(1, "refused")])
         doc, _ = self.cycle(runs, {})
         self.assertEqual([item["run_id"] for item in doc["runs"]], [2])
-        with mock.patch.object(telemetrycollect, "artifacts", wraps=original) as listing:
+        with mock.patch.object(telemetry_collect, "artifacts", wraps=original) as listing:
             doc, _ = self.cycle(runs, {})
         self.assertEqual([item["run_id"] for item in doc["runs"]], [1])
         self.assertEqual(listing.call_args.args[1], 1)
@@ -291,7 +291,7 @@ class Collection(TempDir):
     def test_failed_position_replacement_keeps_original_state_and_verified_evidence(self):
         self.config["runs_max"] = 1
         self.cycle([run_entry(100)], {})
-        position = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        position = os.path.join(self.config["root"], telemetry_collect.POSITION_JSON)
         before = read(position)
         data = zipped(self.result(1))
         artifacts = {1: [artifact_entry(1, 1, "perf-telemetry-1-1", data)]}
@@ -310,11 +310,11 @@ class Collection(TempDir):
         self.assertFalse(os.path.lexists(position + ".tmp"))
         self.assertEqual(doc["runs"][0]["outcome"], "collected")
         bundle = os.path.join(self.config["root"], "results", "tl_1_1")
-        original = telemetrylab.read_bundle(bundle)[1]
+        original = telemetry_lab.read_bundle(bundle)[1]
         doc, fake = self.cycle([run_entry(1), run_entry(100)], artifacts)
         self.assertEqual(doc["runs"][0]["outcome"], "already_collected")
         self.assertFalse(any("/zip" in url for url, _ in fake.requests))
-        self.assertEqual(telemetrylab.read_bundle(bundle)[1], original)
+        self.assertEqual(telemetry_lab.read_bundle(bundle)[1], original)
 
     def test_new_runs_cannot_extend_a_rotation_and_starve_old_missing_runs(self):
         self.config["runs_max"] = 1
@@ -334,7 +334,7 @@ class Collection(TempDir):
 
     def test_incomplete_or_changed_listings_never_process_a_prefix_or_move_position(self):
         self.cycle([run_entry(20)], {})
-        position = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        position = os.path.join(self.config["root"], telemetry_collect.POSITION_JSON)
         before = read(position)
         page = FakeApi.page
         cases = (("changed count", 350), ("duplicate", 350), ("short", 350),
@@ -371,7 +371,7 @@ class Collection(TempDir):
                 self.assertNotIn("rest wait", doc["detail"])
                 self.assertFalse(any("/artifacts?" in url for url, _ in fake.requests))
                 self.assertLessEqual(sum("/runs?" in url for url, _ in fake.requests),
-                                     telemetrycollect.PAGES_MAX)
+                                     telemetry_collect.PAGES_MAX)
                 if kind == "too many pages":
                     self.assertIn("narrow the lookback", doc["detail"])
 
@@ -384,7 +384,7 @@ class Collection(TempDir):
 
     def test_position_is_bounded_versioned_bound_to_identity_and_never_follows_links(self):
         self.cycle([run_entry(1)], {})
-        path = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        path = os.path.join(self.config["root"], telemetry_collect.POSITION_JSON)
         good = read(path)
         doc = contracts.read_json(good, "telemetry-collection-position")
         for mutation in ({"schema": "af.perf-telemetry-collection-position/0"},
@@ -400,7 +400,7 @@ class Collection(TempDir):
                 self.assertEqual(refused["runs"], [])
                 self.assertFalse(any("/runs?" in url for url, _ in fake.requests))
         with open(path, "wb") as stream:
-            stream.write(b" " * (telemetrycollect.POSITION_BYTES_MAX + 1))
+            stream.write(b" " * (telemetry_collect.POSITION_BYTES_MAX + 1))
         refused, _ = self.cycle([run_entry(2)], {})
         self.assertIn("byte bound", refused["detail"])
         os.unlink(path)
@@ -472,11 +472,11 @@ class Collection(TempDir):
             ("overhead", side): {"extra": negative} for side in ("baseline", "candidate")})
         with mock.patch.object(fx, "StandIn", return_value=executor):
             path = self.result(103, rounds=1)
-        result = telemetrylab.read_bundle(path)[0]
+        result = telemetry_lab.read_bundle(path)[0]
         run = result["runs"][0]
         run["measurement_refusal"].update(token="0.125", token_bytes=5,
                                           token_sha256=sha256_bytes(b"0.125"))
-        run["detail"] = telemetrylab.measurement_detail(run, run["measurement_refusal"])
+        run["detail"] = telemetry_lab.measurement_detail(run, run["measurement_refusal"])
         fx.rewrite(path, result)
         data = zipped(path)
         doc, _ = self.cycle([run_entry(103)], {
@@ -536,14 +536,14 @@ class Collection(TempDir):
         data = zipped(self.result(110))
         self.cycle([run_entry(110)], {110: [artifact_entry(10, 110, "perf-telemetry-110-1",
                                                            data)]})
-        with telemetrylab.HistoryRoot(self.config["root"]):
+        with telemetry_lab.HistoryRoot(self.config["root"]):
             with self.assertRaises(ContractError):
                 self.cycle([], {})
         self.config["retention_days"] = 1
         doc, _ = self.cycle([], {}, now=datetime(2100, 1, 1, tzinfo=timezone.utc))
         self.assertEqual(doc["results"], 1)
-        future = telemetrycollect.Cycle(self.config, transport.Collector(
-            FakeApi([], {}), REPOSITORY, TOKEN, api_url=API), gitrefs.Git(self.repo.path),
+        future = telemetry_collect.Cycle(self.config, transport.Collector(
+            FakeApi([], {}), REPOSITORY, TOKEN, api_url=API), git_refs.Git(self.repo.path),
             lambda: 4102444800.0, NOW).run()
         self.assertEqual([item["result_id"] for item in future["pruned"]], ["tl_110_1"])
         self.assertEqual(future["results"], 0)
@@ -553,7 +553,7 @@ class Collection(TempDir):
         artifacts = {302: [artifact_entry(302, 302, "perf-telemetry-302-1", data)]}
         doc, _ = self.cycle([run_entry(302)], artifacts)
         self.assertEqual(doc["runs"][0]["outcome"], "collected", doc)
-        binding_path = os.path.join(self.config["root"], telemetrylab.BINDINGS, "tl_302_1.json")
+        binding_path = os.path.join(self.config["root"], telemetry_lab.BINDINGS, "tl_302_1.json")
         original = read(binding_path)
         binding = json.loads(original)
         for changed in (None, dict(binding, candidate_sha="a" * 40),
@@ -564,7 +564,7 @@ class Collection(TempDir):
                 else:
                     with open(binding_path, "w") as stream:
                         json.dump(changed, stream)
-                with telemetrylab.HistoryRoot(self.config["root"]) as kept:
+                with telemetry_lab.HistoryRoot(self.config["root"]) as kept:
                     history = kept.write()
                 self.assertEqual(history["results"], [])
                 self.assertTrue(history["refused"])
@@ -575,7 +575,7 @@ class Collection(TempDir):
 
     def test_missing_original_plan_and_changed_sources_are_refused_before_import(self):
         directory = self.result(301)
-        result, _, _ = telemetrylab.read_bundle(directory)
+        result, _, _ = telemetry_lab.read_bundle(directory)
         original = copy.deepcopy(result)
         run = run_entry(301, head_sha=self.authority)
         binding = dict(self.planned[(301, 1)], schema=contracts.TELEMETRY_BINDING_SCHEMA,
@@ -602,7 +602,7 @@ class Collection(TempDir):
                     if change == "foreign-files":
                         data = zipped(directory)
                     listed.append(artifact_entry(1301, 301, "telemetry-plan-301-1", data))
-                with mock.patch.object(telemetrylab.HistoryRoot, "import_result") as imported:
+                with mock.patch.object(telemetry_lab.HistoryRoot, "import_result") as imported:
                     doc, _ = self.cycle([run], {301: listed}, add_plans=False)
                 self.assertEqual(doc["runs"][0]["outcome"], "refused", doc)
                 self.assertFalse(imported.called)
@@ -628,8 +628,8 @@ class Collection(TempDir):
                    "run_id": run["id"], "attempt": 1, "event": "pull_request",
                    "event_sha": merge, "run_head_sha": head, "candidate_sha": merge,
                    "baseline_sha": self.authority, "control_sha": self.authority, "profile": "pr"}
-        cycle = telemetrycollect.Cycle(self.config, transport.Collector(
-            FakeApi([], {}), REPOSITORY, TOKEN, api_url=API), gitrefs.Git(self.repo.path),
+        cycle = telemetry_collect.Cycle(self.config, transport.Collector(
+            FakeApi([], {}), REPOSITORY, TOKEN, api_url=API), git_refs.Git(self.repo.path),
             time.time, NOW)
         cycle.bind(run, 1, result, binding)  # Original attempt remains valid after later push.
         result2 = dict(result, result_id="tl_40206196989_2")
@@ -653,7 +653,7 @@ class Collection(TempDir):
 
     def test_the_example_configuration_and_units_are_the_lane_s_own(self):
         path = os.path.join(SERVICE, "telemetry-collector.example.toml")
-        doc = telemetrycollect.load_config(path)
+        doc = telemetry_collect.load_config(path)
         self.assertEqual(doc["workflow"], "performance-telemetry.yml")
         self.assertNotEqual(doc["token_env"], transport.TOKEN_ENV)
         unit = read(os.path.join(SERVICE, "af-perf-telemetry-collect.service")).decode()
@@ -662,7 +662,7 @@ class Collection(TempDir):
         self.assertNotIn("collect.py --root", unit, "the archive lane is left as it is")
         self.assertIn("OnCalendar=hourly", read(os.path.join(
             SERVICE, "af-perf-telemetry-collect.timer")).decode())
-        raw = tomlfile.loads(read(path), path)
+        raw = toml_file.loads(read(path), path)
         for mutate in (lambda d: d.update(workflow="performance.yml"),
                        lambda d: d.update(root=d["authority_repository"] + "/history"),
                        lambda d: d.update(artifact_bytes_max=d["bytes_max"] + 1),

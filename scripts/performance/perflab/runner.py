@@ -10,7 +10,7 @@ pinned Linux sample container per sample (a PID namespace, with only the per-sam
 a verified disk-bounded scratch filesystem writable). Every binary is rehashed against the build
 manifest immediately before its launch.
 
-The machine's one coordination lock (`perflab.hostlock`) is taken before anything shared is
+The machine's one coordination lock (`perflab.host_lock`) is taken before anything shared is
 touched, the run directory and the scratch filesystem's enforcement fill included, and held
 until the terminal record is written. Large fixtures are seeded: before a side's first sample
 that needs a seed (a CLI seed of `cli.toml`, or the native seed a library probe reads), that
@@ -48,7 +48,7 @@ import signal
 import tempfile
 import time
 
-from . import budget, builds, bundle, capability, clicases, contracts, gitrefs, host, hostlock
+from . import budget, builds, bundle, capability, cli_cases, contracts, git_refs, host, host_lock
 from . import limits
 from . import oracle, planning, schedule, seeds, supervise
 from .values import ContractError, canonical_bytes, document_bytes, format_decimal, require
@@ -85,7 +85,7 @@ NATIVE_PROBE_SCRATCH = "probe"
 NATIVE_SEED_COPY = "seed/" + oracle.WORK_DIR
 # Measure the frozen product, with no self-install or detached release update check in
 # either fixture setup or the timed CLI command. Descendant refusal remains unchanged.
-CLI_ENVIRONMENT = clicases.ENVIRONMENT
+CLI_ENVIRONMENT = cli_cases.ENVIRONMENT
 # The calibration loop's control, named only for a preparation or slowdown member (ADR-0181).
 INJECTION_ENV = "AF_PERF_CALIBRATION_ITERATIONS"
 CONTAINER_BINARIES = {"af": "/perf/bin/af", "probe": "/perf/bin/perf-probe"}
@@ -100,7 +100,7 @@ def cli_values(mode, af, probe, scratch, fixtures, package_version):
     else:
         values = dict(CONTAINER_BINARIES)
     values.update(scratch=scratch, fixtures=fixtures, package_version=package_version,
-                  python=clicases.driver_python(mode != TRUSTED_LOCAL))
+                  python=cli_cases.driver_python(mode != TRUSTED_LOCAL))
     return values
 
 
@@ -269,11 +269,11 @@ class Authority(object):
         self.cli = None
         self.fixtures = None
         if any(case["kind"] == "process" for case in plan["cases"]):
-            raw = git.read_file(sha, clicases.CLI_PATH)
+            raw = git.read_file(sha, cli_cases.CLI_PATH)
             if raw is None:
                 raise Unavailable("no_cli_registry", "the authority %s has no %s; its process "
-                                  "cases have no CLI oracle" % (sha[:12], clicases.CLI_PATH))
-            self.cli = clicases.check_registry(clicases.load_bytes(raw), self.doc)
+                                  "cases have no CLI oracle" % (sha[:12], cli_cases.CLI_PATH))
+            self.cli = cli_cases.check_registry(cli_cases.load_bytes(raw), self.doc)
         for case in plan["cases"]:
             if case["seed"] is not None:
                 # The plan's seed is the authority registry's, which the plan froze.
@@ -478,7 +478,7 @@ class Shard(object):
         root = os.path.join(options.run_dir, SHARD_DIR, str(self.index))
         require(not os.path.lexists(root), "%s already exists; a shard runs once, and a rerun "
                 "is a new run" % root)
-        self.git = gitrefs.Git(os.path.abspath(options.repo), budget=self.budget)
+        self.git = git_refs.Git(os.path.abspath(options.repo), budget=self.budget)
         self.work = tempfile.mkdtemp(prefix="af-perf-shard-")
         try:
             self.budget.seconds("reading the plan's authority")
@@ -487,10 +487,10 @@ class Shard(object):
             self.adapters = {}
             self.receipts = {}
             if self.authority.cli is not None:
-                self.versions = clicases.side_versions(self.git, plan)
-                self.receipts = clicases.side_receipts(self.git, plan)
+                self.versions = cli_cases.side_versions(self.git, plan)
+                self.receipts = cli_cases.side_receipts(self.git, plan)
                 for side, version in self.versions.items():
-                    self.adapters[side] = clicases.choose_adapter(self.authority.cli, version)
+                    self.adapters[side] = cli_cases.choose_adapter(self.authority.cli, version)
             self.cpus = None
             self.container_runtime = None
             if self.mode == LINUX_CONTAINER:
@@ -777,7 +777,7 @@ class Shard(object):
         adapter = self.adapters[slot["side"]][1]
         if not isinstance(adapter, dict):
             return None
-        entry = clicases.command(adapter, case["case_id"], case["parameters"])
+        entry = cli_cases.command(adapter, case["case_id"], case["parameters"])
         if entry is None or entry.get("setup") not in ("seed_copy",
                                                        "registry_stores_20x10000"):
             return None
@@ -857,7 +857,7 @@ class Shard(object):
         adapter_id, adapter = self.adapters[side]
         if adapter_id is None:
             return "the %s side has no CLI coverage: %s" % (side, adapter)
-        entry = clicases.command(adapter, case["case_id"], case["parameters"])
+        entry = cli_cases.command(adapter, case["case_id"], case["parameters"])
         if entry is None or "pending" in entry:
             return "CLI adapter %s has no runnable command: %s" % (
                 adapter_id, entry["pending"] if entry else "not declared")
@@ -1163,7 +1163,7 @@ class Shard(object):
     def process_sample(self, slot, case, binary):
         side = slot["side"]
         adapter_id, adapter = self.adapters[side]
-        entry = clicases.command(adapter, case["case_id"], case["parameters"])
+        entry = cli_cases.command(adapter, case["case_id"], case["parameters"])
         seed = None
         if entry["setup"] in ("seed_copy", "registry_stores_20x10000"):
             # Written once per side, before the first sample that copies it.
@@ -1172,7 +1172,7 @@ class Shard(object):
         record = self.base_record(slot, case, binary[1], started_unix_ms)
         record["identity"].update(adapter=adapter_id, contract_id=None)
         if entry["setup"] in ("task_repository", "task_started"):
-            record["identity"]["fixture_digest"] = clicases.fixture_digest(
+            record["identity"]["fixture_digest"] = cli_cases.fixture_digest(
                 os.path.join(self.authority.fixtures, "task-roots"))
         if seed is not None:
             if seed.digest is None:
@@ -1210,21 +1210,21 @@ class Shard(object):
                     seed_argument = supervise.SEED_INPUT
             environment = dict(self.cli_environment(case, scratch),
                                **self.injection_environment(slot))
-            argv = [clicases.expand(text, values) for text in entry["argv"]]
-            cwd = clicases.expand(entry["cwd"], values)
+            argv = [cli_cases.expand(text, values) for text in entry["argv"]]
+            cwd = cli_cases.expand(entry["cwd"], values)
             setup = None
             if entry["setup"] != "none":
-                argument = clicases.setup_argument(entry, self.receipts, side, seed_argument)
+                argument = cli_cases.setup_argument(entry, self.receipts, side, seed_argument)
                 setup = (["/bin/sh", setup_script, entry["setup"], scratch, values["af"],
                           values["probe"] or "-", argument], environment, scratch,
                          SETUP_TIMEOUT_MS)
             log_cap = self.plan["limits"]["sample_log_bytes"]
             order = supervise.request(
                 argv, environment, cwd, "", case["sample_timeout_ms"],
-                clicases.stdout_bytes(log_cap), log_cap, containment=containment,
+                cli_cases.stdout_bytes(log_cap), log_cap, containment=containment,
                 scratch=None if self.mode == TRUSTED_LOCAL else supervise.SCRATCH,
-                grace_ms=GRACE_MS, setup=setup, patterns=clicases.patterns(entry),
-                selectors=clicases.selectors(entry))
+                grace_ms=GRACE_MS, setup=setup, patterns=cli_cases.patterns(entry),
+                selectors=cli_cases.selectors(entry))
             binaries = {"af": af_path}
             if probe_path is not None:
                 binaries["perf-probe"] = probe_path
@@ -1247,7 +1247,7 @@ class Shard(object):
                                "settlement of the browser's session is unconfirmed: %s"
                                % (termination, tail))
             elif (termination == "exited"
-                  and supervise.returncode(result) == clicases.DRIVER_UNCONFIRMED_EXIT):
+                  and supervise.returncode(result) == cli_cases.DRIVER_UNCONFIRMED_EXIT):
                 # Whatever the supervisor refused or confirmed of its own group.
                 unconfirmed = ("the PTY driver could not confirm that the browser's session "
                                "ended: " + tail)
@@ -1255,13 +1255,13 @@ class Shard(object):
             self.fail(record, kind, detail, supervised)
         else:
             returncode = supervise.returncode(result)
-            passed, why, observed = clicases.judge(
+            passed, why, observed = cli_cases.judge(
                 entry, values, returncode, supervised.stdout, result["stdout"]["truncated"],
                 result["stdout_pattern_counts"], result["stdout_json"])
             reported = None
             if passed and case["timing"]["boundary"] == "reported_interval":
                 try:
-                    reported = clicases.tui_report(supervised.stdout)
+                    reported = cli_cases.tui_report(supervised.stdout)
                 except ContractError as error:
                     passed, why = False, str(error)
             record["oracle"].update(status="passed" if passed else "failed",
@@ -1328,7 +1328,7 @@ class Shard(object):
         environment.update(supervise.scratch_environment(scratch))
         environment.update(case["af_environment"])
         if case["timing"]["boundary"] == "reported_interval":
-            environment.update(clicases.tui_home_environment(scratch))
+            environment.update(cli_cases.tui_home_environment(scratch))
         return environment
 
     # Seeds (ADR-0169) ---------------------------------------------------------------------
@@ -1388,7 +1388,7 @@ class Shard(object):
             if self.mode == LINUX_CONTAINER:
                 # The writer's probe prepares the state in its bounded tmpfs (ADR-0170).
                 environment[supervise.FIXTURE_PREP_ENV] = supervise.FIXTURE_PREP
-            request = canonical_bytes(clicases.seed_request(self.authority.cli, seed_id,
+            request = canonical_bytes(cli_cases.seed_request(self.authority.cli, seed_id,
                                                             scratch)).decode("utf-8")
             order = supervise.request(
                 ["/bin/sh", setup_script, "seed_publish", scratch, af, probe, output],
@@ -1628,8 +1628,8 @@ def _remove_work(path):
 def machine_lock(directory=None, register=None, lease=None):
     """The machine's performance coordination lock (ADR-0169), or Unavailable."""
     try:
-        return hostlock.acquire(directory, register=register, lease=lease)
-    except hostlock.Refused as refused:
+        return host_lock.acquire(directory, register=register, lease=lease)
+    except host_lock.Refused as refused:
         raise Unavailable(refused.reason, str(refused))
 
 

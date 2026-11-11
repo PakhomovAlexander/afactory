@@ -66,7 +66,7 @@ fn sign(key: &minisign::KeyPair, bytes: &[u8], path: &Path) {
 }
 fn bytes(value: &Value) -> Vec<u8> {
     let mut bytes = b"af/task-plan-authorization/1\n".to_vec();
-    bytes.extend(review_store::canonicalize(value).unwrap());
+    bytes.extend(af_store::canonicalize(value).unwrap());
     bytes
 }
 fn decisions(value: &Value) -> usize {

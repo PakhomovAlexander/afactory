@@ -1,6 +1,9 @@
 # ADR-2026-11-03-accept-package-defined-structured-tasks: Accept package-defined structured Tasks
 
 Status: accepted, 2026-11-03.
+Partially superseded for feature-selected format identities by the
+[current-contract consolidation](2026-11-08-consolidate-current-contracts-and-task-review.md);
+all other authority and bounds remain in force.
 
 ## Context
 

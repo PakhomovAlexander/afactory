@@ -58,7 +58,7 @@ report renderer described in section 4.
 
 Keep the requested spelling, but change dispatch deliberately: **`self optimize`
 is project-pin-dispatched, unlike binary-management `self` commands.** Today
-`selfmgmt::exempt_from_dispatch` exempts the entire namespace. A new ADR must
+`self_management::exempt_from_dispatch` exempts the entire namespace. A new ADR must
 supersede that clause of ADR-0044 and make the exemption command-specific before
 this entry point ships. Resolve the project selector before dispatch; capture,
 execution and later `af task` inspection must use the same pinned release bytes.
@@ -607,12 +607,12 @@ original configuration after adoption.
 | Report and deliver | Typed artifact output and verified Task delivery | Optimization report renderer, profile-specific acceptance receipts and delivery adapter |
 | Learn across runs | Store/event projection machinery | Case-family/exposure registry, capture cursor and adoption observations |
 
-Place domain contracts under `review-core/src/task/optimization`, configuration
-under `review-config/src/task`, and orchestration entry points in a separate
-`af/src/self_optimizer` module delegating to `task_execution`. History
+Place domain contracts under `af-contracts/src/task/optimization`, configuration
+under `af-pipeline-config/src/task`, and orchestration entry points in a separate
+`af/src/self_optimizer` module delegating to `task_commands`. History
 adapters should have a dependency-neutral module/crate boundary with no Provider
 credentials or execution control. Generic child admission belongs in the common
-runtime, not in `selfmgmt.rs` or a special optimizer executor. The shipped Pipeline
+runtime, not in `self_management.rs` or a special optimizer executor. The shipped Pipeline
 and Workers use the same catalog packaging and version/digest rules as other
 Task kinds. CLI help must distinguish project optimization from `self update`.
 

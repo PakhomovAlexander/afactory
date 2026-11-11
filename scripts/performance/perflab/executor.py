@@ -7,6 +7,7 @@ import contextlib
 import fcntl
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import signal
@@ -15,14 +16,14 @@ import subprocess
 import time
 import types
 
-from . import (admission, archive, budget, builds, calibration, clicases, compare, contracts,
+from . import (admission, archive, budget, builds, calibration, cli_cases, evaluate_results, contracts,
                diagnostics,
-               gitrefs, history, host, hostlock, hostobserver, hostprep, planning, report, runner,
-               telemetrybuild, telemetrylab, tomlfile)
+               git_refs, history, host, host_lock, host_observer, host_prep, planning, report, runner,
+               telemetry_build, telemetry_lab, toml_file)
 from . import adapters as adapters_module
 from .values import ContractError, add_note, canonical_digest, document_bytes, require, sha256_bytes
 
-ROOT = telemetrylab.ROOT
+ROOT = telemetry_lab.ROOT
 TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
 RESERVE = 30
 EVIDENCE_PREFIXES = ("plan.json", "cohort.json", "parameters.json", "parent-verdict.json",
@@ -63,7 +64,7 @@ REUSE_SECONDS = 600
 # Sequential bounds of the steps before and after an original's measurement, shared by
 # preflight, submission and execution (`time_bounds`): retaining the source authority (and a
 # telemetry side's worktree), each contained telemetry build's whole lifetime with its own
-# cleanup (`telemetrybuild.run`), and preparing and cleaning one scratch image.
+# cleanup (`telemetry_build.run`), and preparing and cleaning one scratch image.
 SOURCE_SECONDS = 600
 TELEMETRY_BUILD_SECONDS = 4800
 
@@ -78,16 +79,16 @@ def time_bounds(c, work, plan=None, installed=ROOT):
     parts = [("executor reserve", RESERVE), ("source retention", SOURCE_SECONDS)]
     if work == "telemetry":
         t = c["telemetry"]
-        cfg = telemetrylab.configuration(telemetrylab.load_registry(installed)[0], t["profile"],
+        cfg = telemetry_lab.configuration(telemetry_lab.load_registry(installed)[0], t["profile"],
                                          t["experiments"], t["rounds"], t["pairs"], t["scale"],
                                          t["corpus_runs"])
         parts += [("baseline build", TELEMETRY_BUILD_SECONDS),
                   ("candidate build", TELEMETRY_BUILD_SECONDS),
-                  ("scratch preparation and cleanup", 2 * hostprep.STEP_SECONDS),
+                  ("scratch preparation and cleanup", 2 * host_prep.STEP_SECONDS),
                   ("telemetry profile %s" % t["profile"], cfg["timeout_minutes"] * 60)]
     else:
         parts += [("parent build", plan["limits"]["build_minutes"] * 60),
-                  ("scratch preparation and cleanup", 2 * hostprep.STEP_SECONDS),
+                  ("scratch preparation and cleanup", 2 * host_prep.STEP_SECONDS),
                   ("diagnostic profile", c["diagnostic"]["total_minutes"] * 60)]
     return sum(seconds for _, seconds in parts), parts
 
@@ -118,7 +119,7 @@ def native_reserve(c, work, plan=None, installed=ROOT):
                    + plan["limits"]["build_artifact_bytes"] * 3
                    + plan["limits"]["shard_bundle_bytes"] * len(plan["shards"]) * 4)
     else:
-        registry = telemetrylab.load_registry(installed)[0]
+        registry = telemetry_lab.load_registry(installed)[0]
         reserve = 24 * 1024 ** 3 + registry["profiles"][c["telemetry"]["profile"]]["work_bytes"]
     return reserve + 4 * c["archive_bytes"] + c["history_bytes"]
 
@@ -206,27 +207,46 @@ def source_release(git, sha, side):
     lock = git.read_file(sha, "Cargo.lock")
     require(lock is not None, "the %s source %s has no Cargo.lock: its release, and so its "
             "workload, is unknown" % (side, sha[:12]))
-    return clicases.package_version(lock, "%s:Cargo.lock" % sha[:12])
+    return cli_cases.package_version(lock, "%s:Cargo.lock" % sha[:12])
 
 
 def telemetry_workload(git, sources, experiments, installed=ROOT):
-    """Each side's declared telemetry workload, before any claim or build: the overhead and
-    invocation-cost bench scripts of the installed authority measure a release only under the
-    fixture contract that names the release its retained source declares (`select_contract`),
-    never the current contract by default. The read-latency corpus is one for every release.
-    Returns the admission's detail; raises ContractError."""
+    """Admit both retained sources against the authority's exact current schema contract.
+
+    The unchanged release string cannot prove capability after a breaking consolidation.
+    The scripts also ask each built binary to plan the exact pinned workload before timing.
+    """
     if not set(experiments) & {"overhead", "invocation_cost"}:
         return ""
-    module = telemetrylab.script_module("scripts/telemetry-overhead.py", installed)
+    module = telemetry_lab.script_module("scripts/telemetry-overhead.py", installed)
     named = []
     for side, key in (("baseline", "baseline_sha"), ("candidate", "candidate_sha")):
         version = source_release(git, sources[key], side)
-        try:
-            contract = module.select_contract(version)
-        except module.BenchError as error:
-            raise ContractError("telemetry refused before any claim or build: the %s source "
-                                "%s is af %s: %s" % (side, sources[key][:12], version, error))
-        named.append("%s af %s under %s" % (side, version, contract))
+        for schema in module.CONTRACT_SCHEMAS:
+            relative = "schemas/" + schema
+            expected = json.loads(Path(installed, relative).read_bytes())
+            raw = git.read_file(sources[key], relative)
+            try:
+                actual = json.loads(raw) if raw is not None else None
+            except ValueError:
+                actual = None
+            if isinstance(actual, dict) and any(
+                    annotation in actual and not isinstance(actual[annotation], str)
+                    for annotation in ("title", "description", "$comment")):
+                actual = None
+            # Descriptive top-level annotations do not affect accepted wire values. Resource
+            # identity, references and every constraint remain exact; release equality is not
+            # a substitute. In particular a corrected envelope title need not block an
+            # otherwise identical baseline that the measured binary's planner still accepts.
+            for annotation in ("title", "description", "$comment"):
+                expected.pop(annotation, None)
+                if isinstance(actual, dict):
+                    actual.pop(annotation, None)
+            require(canonical_digest(actual) == canonical_digest(expected), "telemetry refused before any claim or build: the %s "
+                    "source %s is af %s: current fixture contract %s requires exact %s; "
+                    "release equality is not workload admission" %
+                    (side, sources[key][:12], version, module.CURRENT_CONTRACT, relative))
+        named.append("%s af %s under %s" % (side, version, module.CURRENT_CONTRACT))
     return "telemetry workload: " + ", ".join(named)
 
 
@@ -234,28 +254,28 @@ def cli_workload(git, plan, control, suite_doc):
     """Each side's declared CLI workload, before any claim or build: a plan (a core original's,
     or the parent plan a profile diagnoses) with process cases
     needs the authority's CLI registry and, for the release each side's retained source
-    declares, an adapter of it (`clicases.choose_adapter`), as its shards choose, with a
+    declares, an adapter of it (`cli_cases.choose_adapter`), as its shards choose, with a
     runnable command for every selected process case and its parameters: a command the
     adapter does not declare, or declares pending, refuses with its reason. Returns the
     admission's detail; raises ContractError."""
     selected = [case for case in plan["cases"] if case["kind"] == "process"]
     if not selected:
         return ""
-    raw = git.read_file(control, clicases.CLI_PATH)
+    raw = git.read_file(control, cli_cases.CLI_PATH)
     require(raw is not None, "refused before any claim or build: the authority %s has no %s; "
-            "its process cases have no CLI workload" % (control[:12], clicases.CLI_PATH))
+            "its process cases have no CLI workload" % (control[:12], cli_cases.CLI_PATH))
     try:
-        registry = clicases.check_registry(clicases.load_bytes(raw), suite_doc)
+        registry = cli_cases.check_registry(cli_cases.load_bytes(raw), suite_doc)
     except ContractError as error:
         raise ContractError("refused before any claim or build: the authority %s's CLI "
                             "registry declares no admissible workload: %s" % (control[:12], error))
     named = []
-    for side, version in sorted(clicases.side_versions(git, plan).items()):
-        adapter_id, adapter = clicases.choose_adapter(registry, version)
+    for side, version in sorted(cli_cases.side_versions(git, plan).items()):
+        adapter_id, adapter = cli_cases.choose_adapter(registry, version)
         require(adapter_id is not None, "refused before any claim or build: the %s source is "
                 "af %s: %s" % (side, version, adapter))
         for case in selected:
-            entry = clicases.command(adapter, case["case_id"], case["parameters"])
+            entry = cli_cases.command(adapter, case["case_id"], case["parameters"])
             if entry is None or "pending" in entry:
                 raise ContractError(
                     "refused before any claim or build: the %s source is af %s, whose CLI "
@@ -294,7 +314,7 @@ def library_workload(git, plan, control, suite_doc):
         if "seed" in probe:
             needed.setdefault(probe["seed"]["contract_id"], case["instance_id"] + "'s seed")
     named = []
-    for side, version in sorted(clicases.side_versions(git, plan).items()):
+    for side, version in sorted(cli_cases.side_versions(git, plan).items()):
         adapter_id, why = adapters_module.coverage(registry, version, needed)
         require(adapter_id is not None, "refused before any claim or build: the %s source is "
                 "af %s: %s" % (side, version, why))
@@ -308,7 +328,7 @@ def build_recipes(config, work, plan=None, partition=None, installed=ROOT, suite
     a later partition, which reuses the first one's build), a profile's diagnostic recipe's
     base beside it, or a telemetry side's trusted toolchain."""
     if work == "telemetry":
-        channel = tomlfile.loads(telemetrybuild.read_source(installed, "rust-toolchain.toml"),
+        channel = toml_file.loads(telemetry_build.read_source(installed, "rust-toolchain.toml"),
                                  "trusted toolchain")["toolchain"]["channel"]
         return [{"toolchain": channel, "os": "linux", "target": None, "builder": "cargo"}]
     if partition is not None and partition["build_from"] is not None:
@@ -477,15 +497,15 @@ def image_admission(config, recipes, docker="docker"):
 def observer_capability(config, registry, recipe, workdir, seconds=60, clock=time.monotonic):
     """The trusted host observer's actual capability, as the executing account under the held
     machine exclusion, before any build: the configured perf attached by PID to an owned gated
-    process and its samples decoded (`hostobserver.probe`). Returns (record, refusal or None,
+    process and its samples decoded (`host_observer.probe`). Returns (record, refusal or None,
     uncertain). Nothing is checked for a recipe that is not observed on the host."""
     if observed(config, registry, recipe) is None:
         return None, None, False
     d = config["diagnostic"]
     os.mkdir(workdir, 0o700)
     try:
-        available, reason, detail = hostobserver.probe(
-            hostobserver.bounded_start(diagnostics.TOOL_ENV, workdir, clock), d["perf"],
+        available, reason, detail = host_observer.probe(
+            host_observer.bounded_start(diagnostics.TOOL_ENV, workdir, clock), d["perf"],
             registry["capture"]["event"], d["frequency_hz"], workdir, clock() + seconds, clock)
     finally:
         problems = admission.remove_tree(workdir)
@@ -557,7 +577,7 @@ def load_config(path):
     info = os.lstat(path)
     require(stat.S_ISREG(info.st_mode) and info.st_uid in (0, os.geteuid())
             and not info.st_mode & 0o022, "operator configuration is writable by others or a link")
-    return contracts.validate_executor(tomlfile.loads(read(path), path))
+    return contracts.validate_executor(toml_file.loads(read(path), path))
 
 
 def tree_usage(path):
@@ -596,7 +616,7 @@ def source_repository(config, timing=None):
     require(os.path.realpath(path) == path, "operator mirror path must have no links or aliases")
     if timing is None:
         timing = budget.Budget(time.monotonic() + config["cycle_seconds"], time.monotonic, 0)
-    return gitrefs.Git(path, budget=timing, trusted_repository=True)
+    return git_refs.Git(path, budget=timing, trusted_repository=True)
 
 
 def producer(git, control, installed=ROOT):
@@ -605,14 +625,14 @@ def producer(git, control, installed=ROOT):
     No candidate module is imported. Full regular file set, including schemas/telemetry
     scripts, is checked against Git before work is queued; extra executable authority refuses.
     """
-    registry = telemetrylab.load_registry(installed)[0]
-    members = telemetrylab.read_authority(git, control)
-    require(set(telemetrylab.authority_files(registry, installed)) == set(members),
+    registry = telemetry_lab.load_registry(installed)[0]
+    members = telemetry_lab.read_authority(git, control)
+    require(set(telemetry_lab.authority_files(registry, installed)) == set(members),
             "installed authority file set differs from the pinned producer")
-    actual = telemetrylab.read_files(installed, sorted(members), telemetrylab.AUTHORITY_BYTES_MAX)
+    actual = telemetry_lab.read_files(installed, sorted(members), telemetry_lab.AUTHORITY_BYTES_MAX)
     require(members == actual, "installed control bytes differ from the configured control SHA")
     # authority_files additionally refuses links, caches and extra source files.
-    digest, _ = telemetrylab.authority_digest(registry, installed)
+    digest, _ = telemetry_lab.authority_digest(registry, installed)
     return digest
 
 
@@ -772,9 +792,9 @@ class Journal:
         for it and settled: a busy machine refuses the check; an unconfirmed end keeps the
         fence."""
         try:
-            identity = hostlock.read_anchor(required=True) if self.lock_directory is None else None
-            lock = hostlock.MachineLock(self.lock_directory, expected_identity=identity)
-        except hostlock.Refused as refused:
+            identity = host_lock.read_anchor(required=True) if self.lock_directory is None else None
+            lock = host_lock.MachineLock(self.lock_directory, expected_identity=identity)
+        except host_lock.Refused as refused:
             if refused.reason == "concurrent_shard":
                 raise JournalBusy("the %s needs the machine exclusion, which another "
                                   "experiment holds: %s" % (what, refused))
@@ -844,7 +864,7 @@ class Journal:
         head = git.resolve(head, "nightly")
         derived = None
         if base is None:
-            name, sha = gitrefs.nightly_baseline(git, head)
+            name, sha = git_refs.nightly_baseline(git, head)
             base, derived = sha, {"tag": name, "sha": sha}
         key = "nightly:%s:%s" % (tag, work)
         return self.submit(work, base, head, key, "nightly", git=git,
@@ -1011,9 +1031,9 @@ class Journal:
             require(partition_seconds(plan, partition) <= available_seconds(plan, c["run_seconds"]),
                     "the partition does not fit one bounded local original")
         elif work == "telemetry":
-            registry = telemetrylab.load_registry(installed)[0]
+            registry = telemetry_lab.load_registry(installed)[0]
             t = c["telemetry"]
-            chosen = telemetrylab.configuration(registry, t["profile"], t["experiments"],
+            chosen = telemetry_lab.configuration(registry, t["profile"], t["experiments"],
                                                 t["rounds"], t["pairs"], t["scale"],
                                                 t["corpus_runs"])
         if c["backend"] == "local":
@@ -1079,7 +1099,7 @@ class Journal:
             time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0))
         tip = git.exact_ref(self.config["trusted_ref"], "reviewed main")
         require(tip is not None, "reviewed main is unavailable")
-        base = gitrefs.first_parent(git, tip, "reviewed main")
+        base = git_refs.first_parent(git, tip, "reviewed main")
         # Every newly observed reviewed tip is measured once. Skipped intermediate revisions
         # are not claimed as CI coverage; PR/release submissions are explicit operator events.
         return self.submit(work, base, tip, "main:" + tip, "main", git=git, **kwargs)
@@ -1098,9 +1118,9 @@ class Journal:
         lock = None
         if request["backend"] == "local":
             try:
-                identity = hostlock.read_anchor(required=True) if lock_directory is None else None
-                lock = hostlock.MachineLock(lock_directory, expected_identity=identity)
-            except hostlock.Refused as refused:
+                identity = host_lock.read_anchor(required=True) if lock_directory is None else None
+                lock = host_lock.MachineLock(lock_directory, expected_identity=identity)
+            except host_lock.Refused as refused:
                 if refused.reason == "concurrent_shard":
                     return "busy"
                 raise
@@ -1299,8 +1319,8 @@ def execute_local(config, request, path, lease, installed=ROOT):
     run = os.path.join(path, "run")
     scratch = os.path.join(path, "scratch")
     scratch_image = scratch + ".img"
-    preparation_host = hostprep.Host(run=lambda argv: hostprep._run(argv, timeout=terminal.seconds(
-        "scratch preparation and cleanup", hostprep.STEP_SECONDS)))
+    preparation_host = host_prep.Host(run=lambda argv: host_prep._run(argv, timeout=terminal.seconds(
+        "scratch preparation and cleanup", host_prep.STEP_SECONDS)))
     deadline_ms = int(time.time() * 1000 + timing.left() * 1000)
     work = request["work"]
     if work in ("core", "profile"):
@@ -1318,7 +1338,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
         if work == "profile":
             # Tools are checked again as the executing compute user, before the first build:
             # an unavailable capability ends here with its exact reason, nothing built.
-            git = gitrefs.Git(sources, budget=timing)
+            git = git_refs.Git(sources, budget=timing)
             authority = request["sources"]["authority_sha"]
             suite_doc = planning.read_suite(git, authority).doc
             registry = diagnostics.load_bytes(git.read_file(authority, diagnostics.REGISTRY_PATH),
@@ -1365,7 +1385,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
         if work == "core":
             binaries = built_binaries(built)
         with timing.enforce("preparing local sample scratch"):
-            hostprep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
+            host_prep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
                              host=preparation_host)
         if work == "core":
             authority = None
@@ -1390,14 +1410,14 @@ def execute_local(config, request, path, lease, installed=ROOT):
                     continue
                 except runner.Cancelled as cancelled:
                     raise settle_cancellation(cancelled, plan, partition, path, lease, terminal,
-                                              lambda: hostprep.cleanup(scratch_image, scratch,
+                                              lambda: host_prep.cleanup(scratch_image, scratch,
                                                                        host=preparation_host))
                 require(not lease.uncertain, "owned shard cleanup is uncertain")
                 if doc["failure"] and doc["failure"]["reason"] in (
                         "cleanup_uncertain", "seed_cleanup_failed"):
                     raise ContractError("shard cleanup is uncertain; retained original fence")
             with terminal.enforce("rendering and archiving local measurement"):
-                evaluation = compare.evaluate(run)
+                evaluation = evaluate_results.evaluate(run)
                 report.write(run, os.path.join(path, "report"))
                 if partition is not None:
                     # A partition's shards are judged only in its comparison's aggregate,
@@ -1432,7 +1452,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
                 verdict = os.path.join(path, PARENT_VERDICT)
                 require(sha256_bytes(read(verdict)) == request["parent"]["verdict_sha256"],
                         "the frozen parent verdict changed")
-            code, profiles, detail = diagnostics.run_profile(gitrefs.Git(sources, budget=timing),
+            code, profiles, detail = diagnostics.run_profile(git_refs.Git(sources, budget=timing),
                 diagnostics.Options(plan=os.path.join(path, "plan.json"), cases=d["cases"],
                     verdict=verdict, max_cases=d["max_cases"], perf=d["perf"],
                     inferno_bin=d["inferno_bin"],
@@ -1450,7 +1470,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
             measurement = "available" if code == 0 else "unavailable"
         require(not lease.uncertain, "owned shard or diagnostic cleanup is uncertain")
         with terminal.enforce("cleaning local scratch"):
-            problems = hostprep.cleanup(scratch_image, scratch, host=preparation_host)
+            problems = host_prep.cleanup(scratch_image, scratch, host=preparation_host)
             require(not problems, "; ".join(problems))
     else:
         # Before either build: the sequential bounds left must still cover both builds, the
@@ -1478,12 +1498,12 @@ def execute_local(config, request, path, lease, installed=ROOT):
             source = os.path.join(path, side + "-source")
             run_git(sources, ["worktree", "add", "--detach", "--quiet", source, sha], timing)
             output = os.path.join(path, side + "-build")
-            telemetrybuild.run(source, output, config["build_image"], os.path.join(path, side + "-scratch"),
+            telemetry_build.run(source, output, config["build_image"], os.path.join(path, side + "-scratch"),
                                sha, seconds=min(TELEMETRY_BUILD_SECONDS,
                                                 int(timing.seconds("contained telemetry build"))))
             built_af[side] = os.path.join(output, "af")
             record = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": side, "source_sha": sha,
-                "binary_sha256": telemetrylab._binary(built_af[side], side)[1], "image": config["build_image"],
+                "binary_sha256": telemetry_lab._binary(built_af[side], side)[1], "image": config["build_image"],
                 "rustc": read(os.path.join(output, "af-rustc")).decode().strip()[:512],
                 "cargo": read(os.path.join(output, "af-cargo")).decode().strip()[:512],
                 "command": "cargo build --release --locked --offline --bin af --target-dir /state/target"}
@@ -1491,14 +1511,14 @@ def execute_local(config, request, path, lease, installed=ROOT):
             atomic(os.path.join(output, "build.json"), record, "telemetry-build")
             run_git(sources, ["worktree", "remove", "--force", source], terminal)
         t = config["telemetry"]
-        registry = telemetrylab.load_registry(installed)[0]
-        cfg = telemetrylab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
+        registry = telemetry_lab.load_registry(installed)[0]
+        cfg = telemetry_lab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
                                          t["pairs"], t["scale"], t["corpus_runs"])
         require(timing.left() >= cfg["timeout_minutes"] * 60, "remaining local deadline cannot cover telemetry profile")
-        hostprep.prepare(scratch_image, scratch, cfg["work_bytes"], host=preparation_host)
+        host_prep.prepare(scratch_image, scratch, cfg["work_bytes"], host=preparation_host)
         owner_path = os.path.join(path, "telemetry-owner.json")
-        with hostprep.TelemetryOwner(owner_path, scratch, create=True, image=scratch_image) as owner_fence:
-            result = telemetrylab.run(telemetrylab.Settings(profile=t["profile"], trigger="manual",
+        with host_prep.TelemetryOwner(owner_path, scratch, create=True, image=scratch_image) as owner_fence:
+            result = telemetry_lab.run(telemetry_lab.Settings(profile=t["profile"], trigger="manual",
                 baseline_af=built_af["baseline"], candidate_af=built_af["candidate"],
                 baseline_sha=request["sources"]["baseline_sha"], candidate_sha=request["sources"]["candidate_sha"],
                 authority_sha=request["sources"]["authority_sha"], builds=records, output=run,
@@ -1506,10 +1526,10 @@ def execute_local(config, request, path, lease, installed=ROOT):
                 image=config["sample_image"], scratch_fs=scratch, scratch_owner=owner_fence,
                 experiments=t["experiments"], rounds=t["rounds"], pairs=t["pairs"], scale=t["scale"],
                 corpus_runs=t["corpus_runs"]), machine_lease=lease)
-            telemetrylab.verify(run, installed)
+            telemetry_lab.verify(run, installed)
             require(not owner_fence.cleanup(scratch_image, host=preparation_host), "telemetry scratch cleanup unconfirmed")
         with terminal.enforce("retaining local telemetry history"):
-            doc = telemetrylab.history(os.path.join(config["root"], "local-telemetry-history"), [run],
+            doc = telemetry_lab.history(os.path.join(config["root"], "local-telemetry-history"), [run],
                                        installed, bytes_max=config["history_bytes"])
             require(not doc["refused"], "local telemetry history refused original")
         measurement = result["status"]
@@ -1675,7 +1695,7 @@ def verify_original(journal, ident, installed=ROOT, *, evaluated=None):
                     entry["path"], "verifying original") == entry["sha256"], "local raw evidence changed")
         finally:
             os.close(fd)
-    git = gitrefs.Git(os.path.join(path, "sources.git"), budget=budget.Budget(time.monotonic() + 120, time.monotonic, 0))
+    git = git_refs.Git(os.path.join(path, "sources.git"), budget=budget.Budget(time.monotonic() + 120, time.monotonic, 0))
     for sha in set(request["sources"].values()):
         require(git.resolve(sha, "retained source") == sha, "original source object unavailable")
     require(producer(git, request["sources"]["control_sha"], installed) == request["producer_digest"],
@@ -1704,7 +1724,7 @@ def verify_original(journal, ident, installed=ROOT, *, evaluated=None):
             shards=core["shards"], run_id=plan["run_id"], cohort=cohort,
             member=request["member_id"], calibration=sealed, windows=core["windows"]))
         require(expected == plan, "original plan is not what its retained source authority freezes")
-        evaluation = compare.evaluate(os.path.join(path, "run"))
+        evaluation = evaluate_results.evaluate(os.path.join(path, "run"))
         require(evaluation.plan == plan, "measurement changed original plan")
         if evaluated is not None:
             evaluated[ident] = evaluation
@@ -1716,7 +1736,7 @@ def verify_original(journal, ident, installed=ROOT, *, evaluated=None):
             require(sha256_bytes(git.read_file(request["sources"][source], "Cargo.lock")) ==
                     plan["build_inputs"][role]["cargo_lock_sha256"], "original Cargo.lock changed")
     elif request["work"] == "telemetry":
-        measured, _, _ = telemetrylab.verify(os.path.join(path, "run"), installed)
+        measured, _, _ = telemetry_lab.verify(os.path.join(path, "run"), installed)
         require(measured["result_id"] == "local_" + ident[4:]
                 and measured["sources"] == {key: request["sources"][key]
                     for key in ("baseline_sha", "candidate_sha", "authority_sha")},

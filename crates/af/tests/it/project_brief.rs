@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 
 use crate::{schemas, task_cli};
@@ -156,9 +156,8 @@ impl Fixture {
     }
 
     fn write_policy(&self, policy: &str) {
-        let text = format!(
-            "version = 1\n\n[project]\nname = \"fixture\"\nmin_af = \"0.2\"\n\n[defaults]\npipeline = \"p1-review\"\n\n{policy}"
-        );
+        let text =
+            format!("version = 2\n\n[project]\nname = \"fixture\"\nmin_af = \"0.2\"\n\n{policy}");
         std::fs::write(self.repo.join(".af/af.toml"), text).unwrap();
         git(&self.repo, &["add", "-A"]);
         git(&self.repo, &["commit", "-qm", "brief policy"]);
@@ -172,7 +171,7 @@ fn pin_packages(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
-        let digest = review_config::lock::package_digest(name, &package).unwrap();
+        let digest = af_pipeline_config::lock::package_digest(name, &package).unwrap();
         pin["digest"] = toml::Value::String(digest);
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -282,7 +281,7 @@ fn the_wired_worker_alone_receives_the_pinned_brief_and_a_refresh_changes_nothin
     );
     let brief_id = preview["brief_id"].as_str().unwrap().to_owned();
     // The document's Brief is byte for byte the text form.
-    let canonical = review_store::canonicalize(&preview["brief"]).unwrap();
+    let canonical = af_store::canonicalize(&preview["brief"]).unwrap();
     assert_eq!(format!("{}\n", String::from_utf8(canonical).unwrap()), text);
     assert_eq!(preview["manifest"]["required_by"], "port:project");
 
@@ -312,7 +311,7 @@ fn the_wired_worker_alone_receives_the_pinned_brief_and_a_refresh_changes_nothin
     assert_eq!(f.port(&done).as_deref(), Some(brief_id.as_str()));
     let stored = cas.get_json(&brief_id).unwrap();
     assert_eq!(stored["type"], "af/ProjectBrief@1");
-    let payload = review_store::canonicalize(&stored["payload"]).unwrap();
+    let payload = af_store::canonicalize(&stored["payload"]).unwrap();
     assert_eq!(format!("{}\n", String::from_utf8(payload).unwrap()), text);
 
     let implement = context(&cas, &done, "root.nodes.implement");
@@ -500,7 +499,7 @@ fn a_variant_over_max_bytes_drops_its_last_section_and_bad_policy_is_refused_at_
         .unwrap();
     assert!(fits < size);
     assert_eq!(
-        review_store::canonicalize(&under["brief"]).unwrap().len() as u64,
+        af_store::canonicalize(&under["brief"]).unwrap().len() as u64,
         fits
     );
     // The plan binds the same dropped Brief.
@@ -840,7 +839,7 @@ fn a_brief_keeps_an_email_in_a_decision_title_and_sanitizes_an_email_shaped_auth
     f.commit_by("Ada", "ada@example.org", "two.txt");
     let hashed = format!(
         "h:{}",
-        &review_core::hex::encode(&sha2::Sha256::digest(author.as_bytes()))[..16]
+        &af_contracts::hex::encode(&sha2::Sha256::digest(author.as_bytes()))[..16]
     );
     for identity in ["name", "email_hash"] {
         f.write_policy(&format!(
@@ -956,14 +955,14 @@ fn collecting_earlier_tasks_releases_their_pins_and_a_later_task_stays_replayabl
 /// capture. Every installed Pipeline requires a fact the Task file denies, so selection asks for
 /// generation.
 fn planning_fixture() -> (Fixture, minisign::KeyPair) {
-    use review_core::task::pipeline::PipelineDefinitionV1;
+    use af_contracts::task::pipeline::PipelineDefinition;
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let public = key.pk.to_box().unwrap().into_string();
     let f = Fixture::with(|repo| {
         let read = |name: &str| {
             let path = repo.join(format!(".af/task-packages/fixture/{name}/pipeline.toml"));
             let text = std::fs::read_to_string(&path).unwrap();
-            (path, toml::from_str::<PipelineDefinitionV1>(&text).unwrap())
+            (path, toml::from_str::<PipelineDefinition>(&text).unwrap())
         };
         let mut generated = read("oriented").1;
         generated.name = "generated/oriented".into();
@@ -986,7 +985,7 @@ fn planning_fixture() -> (Fixture, minisign::KeyPair) {
         )
         .unwrap();
         let port = |kind: &str| json!({"artifact_type":kind,"cardinality":"one","optional":false,"affinity":{"kind":"unbound"},"covers":[]});
-        let manifest: review_config::task::catalog::TaskWorkerManifest = serde_json::from_value(json!({
+        let manifest: af_pipeline_config::task::catalog::TaskWorkerManifest = serde_json::from_value(json!({
             "schema":"af.worker/1","name":"fixture/planner","version":"1.0.0",
             "signature":{"contract":{"inputs":{"request":port("af/PlanningRequest@1")},"outputs":{"proposal":port("af/PipelineProposal@1")}},"effects":[],"roles":["plan"],"evidence":{},"retains":{"proposal":["request"]},"worker_input_type":"af/PlannerInput@1","worker_output_type":"af/PipelineProposal@1","attempt":{"tokens":0,"wall_ms":5000}},
             "runner":{"kind":"command","command":{"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"@package/worker.py","provenance":"literal"}]}}
@@ -1180,7 +1179,7 @@ fn a_generated_root_renders_the_pinned_survey_after_the_checkout_is_gone() {
 #[test]
 fn a_node_over_the_request_cap_with_its_brief_is_refused_at_plan_time() {
     // Just under the cap on their own; the Brief tips them over.
-    let instructions = "x".repeat(review_runner::task::MAX_WORKER_BYTES - 64);
+    let instructions = "x".repeat(af_runner::task::MAX_WORKER_BYTES - 64);
     let f = Fixture::with(|repo| {
         let path = repo.join(".af/task-packages/fixture/implementer/instructions.md");
         std::fs::write(path, &instructions).unwrap();
@@ -1248,7 +1247,7 @@ fn a_known_request_over_the_cap_only_once_serialized_fails_planning() {
         .unwrap();
     // The payload sum: the raw instructions and the Brief's value, with a generous allowance
     // for the requirements and source values, fits the cap with room to spare.
-    let cap = review_runner::task::MAX_WORKER_BYTES;
+    let cap = af_runner::task::MAX_WORKER_BYTES;
     assert!(quotes + brief_bytes + 64 * 1024 < cap);
     // Serialized, the quotes and the schema alone are over it.
     assert!(2 * quotes + description > cap);
@@ -1466,7 +1465,7 @@ fn no_brief_document_holds_an_email_or_a_host_path_under_either_identity_policy(
 /// comes from the Survey's refusal constant; the Brief's live code never names it.
 #[test]
 fn a_survey_record_of_the_superseded_project_survey_1_label_is_refused_and_feeds_no_brief() {
-    use review_core::project::{PROJECT_SURVEY_V1_SUPERSEDED, PROJECT_SURVEY_V2};
+    use af_contracts::project::{PROJECT_SURVEY_V1_SUPERSEDED, PROJECT_SURVEY_V2};
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
     f.refresh();
@@ -1489,7 +1488,7 @@ fn a_survey_record_of_the_superseded_project_survey_1_label_is_refused_and_feeds
     let current_label = format!("\"schema\":\"{PROJECT_SURVEY_V2}\"");
     assert!(text.contains(&current_label), "{text}");
     let old = text.replace(PROJECT_SURVEY_V2, PROJECT_SURVEY_V1_SUPERSEDED);
-    let old_id = review_store::canonical::blob_content_id(old.as_bytes());
+    let old_id = af_store::canonical::blob_content_id(old.as_bytes());
     std::fs::create_dir_all(object(&old_id).parent().unwrap()).unwrap();
     std::fs::write(object(&old_id), &old).unwrap();
     std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -1606,7 +1605,7 @@ fn af_project_brief_reads_an_unwritable_project_store_and_changes_no_byte() {
         let text = f.ok(&["project", "brief"]);
         let preview = f.preview(&[]);
         assert_eq!(preview["outcome"], "brief", "{preview}");
-        let canonical = review_store::canonicalize(&preview["brief"]).unwrap();
+        let canonical = af_store::canonicalize(&preview["brief"]).unwrap();
         assert_eq!(format!("{}\n", String::from_utf8(canonical).unwrap()), text);
         let survey = preview["brief"]["survey_id"].as_str().unwrap().to_owned();
         let named = f.preview(&["--survey", &survey]);

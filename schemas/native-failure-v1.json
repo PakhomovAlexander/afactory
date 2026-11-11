@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:native-failure:1",
+  "title": "Native failure evidence @1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.native-failure/1"
+    },
+    "kind": {
+      "enum": [
+        "auth_missing",
+        "auth_revoked",
+        "auth_expired",
+        "auth_refresh_contended",
+        "auth_refresh_failed",
+        "auth_rejected",
+        "quota",
+        "capacity",
+        "model_unavailable",
+        "network",
+        "unsupported_invocation",
+        "model_refused",
+        "environment",
+        "unknown"
+      ]
+    }
+  }
+}

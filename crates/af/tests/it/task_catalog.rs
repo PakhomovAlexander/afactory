@@ -49,8 +49,8 @@ fn shared(repo: &Path) {
             .unwrap();
     let kind = repo.join(".af/task-packages/team/feature-kind");
     std::fs::create_dir_all(&kind).unwrap();
-    std::fs::write(kind.join("kind.toml"), "schema = 'af.task-kind/1'\nname = 'team/feature-kind'\nversion = '1.0.0'\nkind = 'implement'\nprofile = 'reviewed_implementation'\n").unwrap();
-    catalog["packages"].as_table_mut().unwrap().insert("team/feature-kind".into(), toml::Value::try_from(json!({"version":"1.0.0","path":".af/task-packages/team/feature-kind","digest":review_config::lock::package_digest("team/feature-kind",&kind).unwrap()})).unwrap());
+    std::fs::write(kind.join("kind.toml"), "schema = 'af.task-kind/3'\nname = 'team/feature-kind'\nversion = '1.0.0'\nkind = 'implement'\nprofile = 'reviewed_implementation'\n").unwrap();
+    catalog["packages"].as_table_mut().unwrap().insert("team/feature-kind".into(), toml::Value::try_from(json!({"version":"1.0.0","path":".af/task-packages/team/feature-kind","digest":af_pipeline_config::lock::package_digest("team/feature-kind",&kind).unwrap()})).unwrap());
     let packages = catalog["packages"].as_table().unwrap();
     let mut roots = toml::map::Map::new();
     let mut workers = toml::map::Map::new();

@@ -1,6 +1,9 @@
 # ADR-0133: Accept reports bound to an exact source Snapshot
 
 Status: accepted, 2026-09-28.
+Draft generations and citation transport superseded by
+[the current-contract consolidation](2026-11-08-consolidate-current-contracts-and-task-review.md);
+current contracts and bounds are documented in the [capability plan](../design/current-contracts-and-task-review.md).
 
 Implements package R3 of [`docs/design/research-pipelines.md`](../design/research-pipelines.md)
 under that plan's §2 ("a report is accepted by an independent verifier, not by its author, and

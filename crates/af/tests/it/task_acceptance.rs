@@ -27,8 +27,11 @@ fn commit(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -130,7 +133,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
         let packages = repo.join(".af/task-packages/fixture");
         if stale {
             let path = packages.join("implementation/pipeline.toml");
-            let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
                 toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             let evaluation = pipeline
                 .nodes
@@ -150,14 +153,14 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
             std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
         } else if case == "review_requirements" {
             let path = packages.join("review/pipeline.toml");
-            let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
                 toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             pipeline
                 .nodes
                 .iter_mut()
                 .find(|n| {
                     n.operator
-                        == review_core::task::pipeline::TaskOperatorV1::Verify {
+                        == af_contracts::task::pipeline::TaskOperatorV1::Verify {
                             slot: "correctness".into(),
                         }
                 })
@@ -167,7 +170,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
             std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
         } else {
             let path = packages.join("evaluator/worker.toml");
-            let mut worker: review_config::task::catalog::TaskWorkerManifest =
+            let mut worker: af_pipeline_config::task::catalog::TaskWorkerManifest =
                 toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             worker
                 .signature
@@ -193,8 +196,8 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
             },
             "{result:#}"
         );
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-        let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         for id in store.task_ids(&cas).unwrap() {
             let task = store.task_projection(&cas, &id).unwrap().unwrap();
             assert!(
@@ -233,7 +236,7 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         .replace("kernel/verification-reviewed", "fixture/implementation")
         .replace("kernel/review-code", "fixture/review")
         .replace("\"kernel/", "\"fixture/")
-        .replace("version = \"1.2.0\"", "version = \"1.0.0\"")
+        .replace("version = \"1.2.1\"", "version = \"1.0.1\"")
         .replace("max_attempts = 2\n", "max_attempts = 1\n")
         .replace(
             "allow_local_replacement = true",
@@ -244,9 +247,9 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         // This test installs the CURRENT shipped verification topology. Its evaluator
         // consumes EvaluationInput@2, including the optional exact diff Subject.
         let path = packages.join("evaluator/worker.toml");
-        let mut evaluator: review_config::task::catalog::TaskWorkerManifest =
+        let mut evaluator: af_pipeline_config::task::catalog::TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let current: review_config::task::catalog::TaskWorkerManifest = toml::from_str(
+        let current: af_pipeline_config::task::catalog::TaskWorkerManifest = toml::from_str(
             include_str!("../../../../.af/task-packages/kernel/evaluator/worker.toml"),
         )
         .unwrap();
@@ -295,7 +298,7 @@ assert change['before']!=change['after']
         let kind = packages.join("verification-kind");
         std::fs::create_dir(&kind).unwrap();
         std::fs::write(kind.join("kind.toml"),
-            "schema = \"af.task-kind/1\"\nname = \"fixture/verification-kind\"\nversion = \"1.0.0\"\nkind = \"verification\"\nprofile = \"implementation\"\n").unwrap();
+            "schema = \"af.task-kind/3\"\nname = \"fixture/verification-kind\"\nversion = \"1.0.0\"\nkind = \"verification\"\nprofile = \"implementation\"\n").unwrap();
         let path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -386,7 +389,7 @@ assert change['before']!=change['after']
         );
         let findings = run(&repo, &state, &["task", "findings", "pagination-cli"], 0);
         assert_eq!(findings["evaluation"]["outcome"], "passed", "{findings:#}");
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let evaluation_receipt = cas
             .get_artifact(
                 result["result"]["outputs"]["verification"]["artifact_ids"][0]
@@ -465,15 +468,15 @@ assert change['before']!=change['after']
 
 /// Revalidate through the domain used by Store finish/replay, without dispatching any Worker.
 fn verification_replay_refuses_hidden_or_overridden_review(state: &Path, inspection: &Value) {
-    use review_core::task::{TaskAcceptanceV1, TaskResultV1};
-    use review_pipeline::task::{host::TaskDomain, review::ReviewTaskDomain};
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    use af_contracts::task::{TaskAcceptanceV1, TaskResultV1};
+    use af_runtime::task::{host::TaskDomain, review::ReviewTaskDomain};
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store
         .task_projection(&cas, "pagination-cli")
         .unwrap()
         .unwrap();
-    let plan: review_core::task::plan::ExecutionPlanV3 = serde_json::from_value(
+    let plan: af_contracts::task::plan::ExecutionPlan = serde_json::from_value(
         cas.get_artifact(projection.plan_id.as_ref().unwrap())
             .unwrap()
             .payload,

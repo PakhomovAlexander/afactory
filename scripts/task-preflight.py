@@ -56,15 +56,15 @@ def operator(node):
     return op.get("operator", {}) if op["kind"] == "primitive" else {}
 
 
-def report(inspection, checklist, now, review_plan=None):
-    require(inspection["schema"] == "af/task-inspection@16", "expected af task explain --json (@16)")
+def report(inspection, checklist, now, diff=None):
+    require(inspection["schema"] == "af/task-inspection@20", "expected af task explain --json (@20)")
     require(checklist["schema"] == "af-preflight-checklist/1", "unsupported checklist schema")
     require(set(checklist) <= {"schema", "plan_id", "original_source_snapshot_id",
                              "retained_candidate_snapshot_id", "criteria"},
             "unknown checklist field")
     plan, graph = inspection["plan"], inspection["graph"]
     nonempty_name(inspection["task_id"])
-    require(graph["schema"] == "af.compiled-task/1", "unsupported compiled graph")
+    require(graph["schema"] == "af.compiled-task/6", "unsupported compiled graph")
     require(plan["task_revision_id"] == inspection["revision_id"], "plan/revision mismatch")
     digest(inspection["plan_id"])
     digest(checklist["plan_id"])
@@ -101,24 +101,23 @@ def report(inspection, checklist, now, review_plan=None):
         issue("replay_unverified", "Export cannot prove retained candidate replay into the next implementation.",
               "unknown")
     diff_status = "not_verified"
-    if review_plan is not None:
-        require(review_plan["schema"] == "af/review-plan@1", "expected af review plan --json (@1)")
-        resolved, subject = review_plan["resolved"], review_plan["subject"]
+    if diff is not None:
+        require(diff["schema"] == "af/task-diff@1", "expected af task diff --json (@1)")
         if not candidate:
             issue("candidate_unbound", "Diff export needs an explicit retained candidate Snapshot in the checklist.", "unknown")
-        elif (resolved["base_snapshot_id"] != expected
-              or resolved["candidate_snapshot_id"] != candidate):
+        elif (diff["base_snapshot_id"] != expected
+              or diff["snapshot_id"] != candidate):
             issue("diff_identity_mismatch", "Diff export does not name the expected original base and retained candidate.")
         else:
-            require(subject["kind"] == "diff" and type(subject["empty"]) is bool
-                    and isinstance(subject["changed_paths"], list), "invalid diff summary")
-            if subject["empty"] or not subject["changed_paths"]:
+            require(isinstance(diff["files"], list) and isinstance(diff["patch"], str),
+                    "invalid native diff summary")
+            if not diff["files"] or not diff["patch"]:
                 issue("empty_intended_diff", "Matched diff export has no changed paths.")
                 diff_status = "empty"
             else:
                 diff_status = "nonempty_export"
     elif candidate:
-        issue("diff_unavailable", "Supply the matched af review plan JSON to inspect the retained diff.", "unknown")
+        issue("diff_unavailable", "Supply the matched af task diff JSON to inspect the retained diff.", "unknown")
 
     limits = plan["limits"]
     cap = integer(limits["tokens"], "token cap")
@@ -144,8 +143,8 @@ def report(inspection, checklist, now, review_plan=None):
         rows.append({"node": name, "category": category, "operation": op.get("op"), **allowance})
     children = graph.get("owned_children", {})
     scopes = graph.get("token_scopes", {})
-    if children or graph.get("review_integration") or graph.get("experimental_slots"):
-        issue("dynamic_budget_unknown", "Dynamic child/Integration/experiment bounds are reported, "
+    if children or graph.get("experimental_slots"):
+        issue("dynamic_budget_unknown", "Dynamic child/experiment bounds are reported, "
               "but remaining admission is not reconstructed.", "unknown")
     if charged > cap or attempts > max_attempts:
         issue("budget_exceeded", "Recorded charge or begun Attempts exceed the captured cap.")
@@ -249,7 +248,7 @@ def report(inspection, checklist, now, review_plan=None):
         issue("unmapped_obligation", obligation + ": no checklist criterion names this acceptance obligation.", "unknown")
 
     return {
-        "schema": "af-preflight-report/1", "advisory_only": True,
+        "schema": "af-preflight-report/2", "advisory_only": True,
         "status": "needs_review" if issues else "no_structural_conflicts",
         "task_id": inspection["task_id"], "plan_id": inspection["plan_id"],
         "revision_id": inspection["revision_id"], "observed_at_unix_ms": now,
@@ -262,7 +261,6 @@ def report(inspection, checklist, now, review_plan=None):
                    "configured_verification_reserve": reserve,
                    "deadline_unix_ms": deadline, "remaining_wall_ms": max(0, deadline - now),
                    "declared_allowances": rows, "owned_child_templates": children, "token_scopes": scopes,
-                   "review_integration": graph.get("review_integration"),
                    "experimental_slots": graph.get("experimental_slots", {})},
         "acceptance": plan["acceptance"], "criteria": evidence, "issues": issues,
         "limitations": ["Exports are not authenticated against the Store and may be stale.",
@@ -290,7 +288,7 @@ def render(value):
     for row in budget["declared_allowances"]:
         lines.append("  {node}: {category}; {tokens_per_attempt} tokens/Attempt, "
                      "{max_attempts} Attempts, {wall_ms_per_attempt} ms/Attempt".format(**row))
-    for field in ("owned_child_templates", "token_scopes", "review_integration", "experimental_slots"):
+    for field in ("owned_child_templates", "token_scopes", "experimental_slots"):
         if budget[field]:
             lines.append(field + " (declared, not additive spend): " + json.dumps(budget[field], sort_keys=True))
     lines.append("Evidence mappings:")
@@ -308,7 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inspection", required=True, help="af task explain TASK_ID --json export")
     parser.add_argument("--checklist", required=True, help="operator-authored evidence mapping")
-    parser.add_argument("--review-plan", help="optional af review plan --json export for the retained diff")
+    parser.add_argument("--diff", help="optional af task diff --json export for the retained diff")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--now-unix-ms", type=int, help="explicit observation clock for reproducible reports")
     args = parser.parse_args()
@@ -316,13 +314,13 @@ def main():
         inspection, ihash = read(args.inspection)
         checklist, chash = read(args.checklist)
         now = integer(args.now_unix_ms if args.now_unix_ms is not None else time.time_ns() // 1000000, "clock")
-        review_plan, rhash = read(args.review_plan) if args.review_plan else (None, None)
-        value = report(inspection, checklist, now, review_plan)
+        diff, rhash = read(args.diff) if args.diff else (None, None)
+        value = report(inspection, checklist, now, diff)
         value["input_file_hashes"] = {"inspection": ihash, "checklist": chash}
         if rhash:
-            value["input_file_hashes"]["review_plan"] = rhash
+            value["input_file_hashes"]["diff"] = rhash
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
-        value = {"schema": "af-preflight-report/1", "advisory_only": True,
+        value = {"schema": "af-preflight-report/2", "advisory_only": True,
                  "status": "invalid_input", "error": str(error)}
         print(json.dumps(value) if args.json else "Invalid preflight input: " + str(error))
         return 1

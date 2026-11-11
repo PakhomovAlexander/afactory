@@ -21,7 +21,7 @@ every research shape breaks one of its invariants:
   such artifacts. The only comparison machinery is the self-optimizer's `optimization_experiment`,
   whose cases, recipes and writable target are fixed to `.af/` configuration and harness files
   (`docs/task-execution/self-optimizer.md`).
-- **Nothing accepts a report.** Seven installed profiles exist (`review_config::task::kind`), and
+- **Nothing accepts a report.** Seven installed profiles exist (`af_pipeline_config::task::kind`), and
   a package cannot add one. The Document profile has no `source` port, so its author cannot read
   the repository; the Optimization profiles accept only the optimizer's own economics. An implement
   Task must end in a `SourceTree` a code policy verified.
@@ -33,7 +33,7 @@ every research shape breaks one of its invariants:
   16.0M tokens and reached `satisfied` twice; each verification Task cost about 500k tokens and
   its check stage a median 15.6 minutes, because every Task check builds cold: `code.rs` gives
   each check a fresh `HOME`, `XDG_CACHE_HOME` and `CARGO_TARGET_DIR`
-  (`crates/review-pipeline/src/task/code.rs`, `checks`), so `scripts/verify.sh`'s external target
+  (`crates/af-runtime/src/task/code.rs`, `checks`), so `scripts/verify.sh`'s external target
   directory is never warm inside a Task. Thirty-five gates spent 8.6 hours compiling the same
   workspace. The Store under `$XDG_STATE_HOME/af` holds 22 GB with no `af task gc`, and about
   14 GB of stray `cargo` targets sit under `/private/tmp`.
@@ -190,7 +190,7 @@ Deliverables:
    observation is a cold check, and an ineligible observation names its reason in `kind`
    (`cargo_target:busy`, `cargo_target:toolchain_unresolved`, `cargo_target:bound_exceeded`).
    `af task show` prints one line per check with elapsed time, cache kind and `warm <bytes>` or
-   `cold <reason>`, and `af/task-inspection@16` carries the observations in its existing
+   `cold <reason>`, and `af/task-inspection@20` carries the observations in its existing
    `runtime_observations` field.
 5. This repository's `.af/code-policy.toml` declares
    `[warm] build_cache = ["cargo_target", "cargo_home"]`; `scripts/verify.sh` honours a
@@ -348,7 +348,7 @@ types R2 installs).
 Deliverables:
 
 1. A new installed profile `TaskKindProfile::Report`, built-in kind string `report`, also
-   reachable through an `af.task-kind/1` package. Root inputs: `requirements`
+   reachable through an `af.task-kind/3` package. Root inputs: `requirements`
    (`af/Requirements@1`), `source` (`af/SourceTree@1`), optional `sources`
    (`af/ReportSources@1`), optional `comparison` (`af/MeasurementComparison@1`,
    `cardinality = "one"`) and optional `measurements` (`af/Measurement@1`,
@@ -367,12 +367,16 @@ Deliverables:
    a shell — to a Worker whose `roles` contain `author` and whose effects are `read-source`
    plus `execute-checks` without `write-source`, exactly as ADR-0118 grants it to the `review`
    role. The effects table in `docs/task-execution.md` gains the row.
-4. `af/DocumentDraft@2`: `af/DocumentDraft@1` plus an optional repository citation of
-   `{ path, line? }`, where `path` is spelled exactly as `review_core::encode_path` spells the
-   Manifest entry it names, that entry is a regular or executable file (not a symlink or a
-   directory) whose first 8 KiB hold no NUL byte, and `line`, when present, is at least 1 and
-   at most the file's line count. The renderer prints such a citation as `path` or `path:line`.
-   The report profile accepts drafts of either version; the Document profile is unchanged.
+4. `af/DocumentDraft@3` (`af.document-draft/3`) is shared by Document and Report Tasks.
+   Its `citations` set distinguishes `{ kind: "source", name }` captured sources from
+   `{ kind: "repository", location: { path, line? } }` repository locations. Document Tasks
+   have no repository Snapshot and refuse repository citations. Report Tasks resolve them
+   against their exact source Snapshot: `path` is spelled exactly as `af_contracts::encode_path`
+   spells its Manifest entry, which must be a regular or executable file with no NUL byte in
+   its first 8 KiB. A `line` is 1-based and must exist. The renderer prints `path` or `path:line`.
+   The bounds remain 32 captured source citations and 64 repository citations. Draft generations
+   1 and 2 and the report seal's `draft_v1` port are retired, with no fallback reader.
+
 5. Three installed operators for the report profile, mirroring the Document ones:
    `report_seal` (renders the draft to `af/Document@1` and records the source Snapshot and
    Manifest IDs), `report_check` (the Document checks plus every repository citation resolved
@@ -400,7 +404,7 @@ Deliverables:
    capture; a negative verifier verdict stays `unsatisfied`; a verifier bound to a different
    Snapshot is refused at admission; a report Task with `write-source` on its author is refused
    at planning; delivery of a satisfied report Task is refused with the named message; schema
-   parity for the three new artifacts, `DocumentDraft@2` and `ReportSources@1`.
+   parity for the three new artifacts, `DocumentDraft@3` and `ReportSources@1`.
 9. One ADR (options rejected: widening the Document profile in place; an implement Pipeline with
    a report side output; a free-form `research` profile with model-judged acceptance), a
    `CHANGELOG.md` entry, `docs/task-execution/report.md` linked from `docs/README.md`, and

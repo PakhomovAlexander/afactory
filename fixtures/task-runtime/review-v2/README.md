@@ -1,7 +1,7 @@
 # Two-Round generic Task Review fixture
 
 This token-free fixture uses `af.task-catalog/2` with `review.generation = 2`, source-scoped
-`af/TaskReviewAssignment@1`, compact `af/TaskReviewSubject@2`, and
+`af/TaskReviewAssignment@1`, compact `af/TaskReviewSubject@3`, and
 `review.kernel/ReviewerResult@2`. Two explicitly configured Review stages share one Task
 and its six original Attempts. The first stage records a Finding and a required Demand;
 the second supplies the exact prior-Finding disposition. The final domain conclusion is

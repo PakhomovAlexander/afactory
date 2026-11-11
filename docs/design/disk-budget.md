@@ -11,25 +11,25 @@ Mac in the week to 2026-10-07:
 - The warm Task-check cache made a new 4.7 GiB key for every check Attempt and never reused or
   removed one: 15 keys (65 GiB) in 26 hours, then 11 more (52 GiB) the next day. With a native
   toolchain mapping, `prepare_native_rust_toolchain` puts the check's fresh `tempfile::tempdir()`
-  into `PATH` and `RUSTUP_HOME` (`crates/review-pipeline/src/task/code.rs:216-279`), and
-  `toolchain_identity` hashes both (`crates/review-pipeline/src/task/warm_check.rs:323-357`). 13 of
+  into `PATH` and `RUSTUP_HOME` (`crates/af-runtime/src/task/code.rs:216-279`), and
+  `toolchain_identity` hashes both (`crates/af-runtime/src/task/warm_check.rs:323-357`). 13 of
   13 kernel checks ran `cold empty`. Without the mapping, one key served about 40 Attempts.
 - `max_bytes` bounds one key. Nothing bounds the number of keys, the review campaign Stores (99,
   17 GiB), the Task Stores, or installed versions. ADR-0131 says "Old toolchain directories stay
   until an operator removes them"; `af task gc`, `af review gc` and `af self prune` exist but only
   run by hand.
 - 14 of 19 Task Stores fail to open with "log was written by another af release"
-  (`crates/review-core/src/event.rs:282`), so `af task gc` cannot collect them. Stores made with
+  (`crates/af-contracts/src/event.rs:282`), so `af task gc` cannot collect them. Stores made with
   `--state` outside the state root are known to nothing.
 - Checks have no writable place af owns. A Go check script copied the tree into
   `mktemp -d /tmp/...` on every gate run (1.1 GiB each, 52 GiB with its caches). Review gate checks
-  run with `env_clear()` and no `HOME` (`crates/review-check/src/runner.rs:262`), so this repo's
+  run with `env_clear()` and no `HOME` (`crates/af-check/src/runner.rs:262`), so this repo's
   `scripts/verify.sh` builds a 16.7 GiB target under `/tmp/.cache`.
 - Claude Workers get the user's real `CLAUDE_CONFIG_DIR` (`crates/af/src/providers/task.rs:99-140`)
   and run in a fresh directory, so every Attempt and every admission probe leaves a new
   `projects/<slug>` directory in the user's Claude history (351 of 404 on this Mac). Remote checks
   push `af-gate/<task>/{base,head}` and open a draft pull request that af never closes
-  (`crates/review-pipeline/src/task/remote_check/github_pr.rs:6,76`).
+  (`crates/af-runtime/src/task/remote_check/github_pr.rs:6,76`).
 
 A user who runs ten Workers for a week should not have to learn any of this. After this package, af
 holds at most a configured budget (20 GiB by default), refuses work instead of filling the disk,
@@ -108,7 +108,7 @@ clause 13).
 | installed version | `$XDG_DATA_HOME/af/versions/<v>` | install time | the default, a pin, or the running binary |
 
 Task Stores are evicted Task by Task through the existing collection (`apply_task_collection`,
-`crates/review-store/src/store/task/collection.rs:626`), so tombstones stay. A Store this release
+`crates/af-store/src/store/task/collection.rs:626`), so tombstones stay. A Store this release
 cannot read is the one exception: it is removed whole, because it cannot be collected in part.
 
 Sizes may come from a record af writes when it last finished writing an entry (a warm check
@@ -145,7 +145,7 @@ visits registered Stores and drops entries whose path no longer holds a Store.
 
 Before a check starts and before a Worker Attempt starts, af reads the free bytes of the volume
 that holds its temp directory and of the volume that holds `$XDG_CACHE_HOME` (`statvfs`; `nix`
-`fs` is already enabled in `af`, `review-sandbox` and `review-store`). Below `min_free_bytes` it
+`fs` is already enabled in `af`, `af-sandbox` and `af-store`). Below `min_free_bytes` it
 runs the sweep once; still below, it refuses that check or Attempt with the typed reason
 `insufficient_disk`. A refused check reports it as its result; a refused Worker Attempt ends before
 the Worker starts and is charged nothing. A debug-only test hook may fake the free bytes, like
@@ -216,7 +216,7 @@ performs it; `--json` on both. The refusal of 3.5 and the docs name this command
   gate checks also get the kernel's `RUSTUP_HOME` with `RUSTUP_AUTO_INSTALL=0`, as Task checks do
   (`code.rs:1116-1119`), so a private `HOME` never downloads a toolchain.
 - Runtime directories are named `af-check-<pid>-<random>` under the temp directory, so the startup
-  crash sweep (`crates/review-sandbox/src/stale.rs:97`) removes those of dead processes, as it does
+  crash sweep (`crates/af-sandbox/src/stale.rs:97`) removes those of dead processes, as it does
   for `af-sandbox-*`. They are removed when the check ends, as today.
 - Docs tell check authors to write to `$AF_CHECK_SCRATCH` or `$TMPDIR`, never to `/tmp`.
 - Tests: a check script sees the four variables, each directory writable and inside the runtime,
@@ -228,12 +228,12 @@ performs it; `--json` on both. The refusal of 3.5 and the docs name this command
 - Claude: the working directory of a Claude Worker Attempt and of an admission probe is a fresh
   directory af created for that Attempt alone, so `<CLAUDE_CONFIG_DIR>/projects/<slug(cwd)>`
   belongs to that Attempt. When the Claude process exits, whatever the outcome, af removes that
-  directory. The slug is the one `crates/review-runner-claude/src/session.rs:72-85` already
+  directory. The slug is the one `crates/af-runner-claude/src/session.rs:72-85` already
   computes. af never removes a directory whose slug does not come from a path af created for the
   Attempt. When the installed CLI accepts `--no-session-persistence` (Claude Code 2.1.292 does,
   with `--print`), af may pass it too; removal stays the contract because the CLI auto-updates.
   `keep_worker_transcripts = true` keeps transcripts.
-- Remote checks: when a Task finishes (`task_execution.rs:2028`), and when collection takes a Task,
+- Remote checks: when a Task finishes (`task_commands.rs:2028`), and when collection takes a Task,
   af closes each draft gate pull request recorded in its `RemoteCheckEvidenceV1` and deletes
   `af-gate/<task>/{base,head}` from the mapping's push URL, with the same `gh` and `git push` tools
   the gate uses. The result is a `gate_cleanup` observation (done, or failed with the reason). A

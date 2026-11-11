@@ -32,7 +32,7 @@ impl Fixture {
     /// The fixture with `fixture/bugs` bound to `models[0]` and `fixture/correctness` to
     /// `models[1]`, both on the one Claude Provider `claude-personal`.
     fn with_models(models: [&str; 2], result: &str) -> Self {
-        use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+        use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let (repo, state) = fixture_named(directory.path(), "review");
@@ -69,7 +69,7 @@ sys.stdout.write(open(home+'/result').read())
         std::fs::write(&installed, crate::provider_cli::with_probe(stub)).unwrap();
         std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
         let registry = home.join("providers.toml");
-        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":3,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -89,12 +89,13 @@ sys.stdout.write(open(home+'/result').read())
             attempt.tokens = 1000;
             attempt.wall_ms = super::NATIVE_REVIEWER_WALL_MS;
             std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
-            catalog["packages"][&package]["digest"] =
-                toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
+            catalog["packages"][&package]["digest"] = toml::Value::String(
+                af_pipeline_config::lock::package_digest(&package, &path).unwrap(),
+            );
             providers.insert(package, toml::Value::String("claude-personal".into()));
         }
         let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-        let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
             toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;
@@ -104,7 +105,7 @@ sys.stdout.write(open(home+'/result').read())
         )
         .unwrap();
         catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
-            review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
+            af_pipeline_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
         );
         catalog
             .as_table_mut()
@@ -221,7 +222,7 @@ fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_std
     ] {
         assert!(line.contains(part), "{part}: {line}");
     }
-    let probe = std::str::from_utf8(review_runner::task::provider::PROBE_INPUT).unwrap();
+    let probe = std::str::from_utf8(af_runner::task::provider::PROBE_INPUT).unwrap();
     for absent in [probe.trim_end(), "developer@example.test", "transport:"] {
         assert!(!line.contains(absent), "{absent}: {line}");
     }
@@ -273,7 +274,7 @@ fn a_malformed_top_level_usage_still_names_the_fallback_on_task_run_stderr() {
     }
     let (shown, diagnostics) = fixture.shown();
     assert_eq!(diagnostics.len(), 1, "{shown}");
-    let found = review_runner_claude::hint::find(&diagnostics[0]).unwrap();
+    let found = af_runner_claude::hint::find(&diagnostics[0]).unwrap();
     assert!(lines[0].ends_with(found), "{}", lines[0]);
     assert!(
         diagnostics[0].contains(&format!(
@@ -302,7 +303,7 @@ fn a_binding_outside_g_is_refused_before_any_process_and_never_printed() {
             "{args:?}: {stderr}"
         );
         assert!(
-            stderr.contains(review_runner_claude::hint::PRINTABLE_RULE),
+            stderr.contains(af_runner::models::diagnostic::PRINTABLE_RULE),
             "{stderr}"
         );
         for text in [&stdout, &stderr] {
@@ -352,7 +353,7 @@ fn a_safeguards_refusal_beside_stringless_errors_is_named_and_not_retried() {
         let (shown, diagnostics) = fixture.shown();
         assert_eq!(diagnostics.len(), 1, "{shown}");
         assert!(
-            review_runner_claude::hint::find(&diagnostics[0]).is_some(),
+            af_runner_claude::hint::find(&diagnostics[0]).is_some(),
             "{}",
             diagnostics[0]
         );
@@ -397,7 +398,7 @@ fn a_foreign_activity_after_32_unused_entries_is_named_on_task_run_stderr() {
     );
     let (shown, diagnostics) = fixture.shown();
     assert_eq!(diagnostics.len(), 1, "{shown}");
-    let found = review_runner_claude::hint::find(&diagnostics[0]).unwrap();
+    let found = af_runner_claude::hint::find(&diagnostics[0]).unwrap();
     assert!(lines[0].ends_with(found), "{}", lines[0]);
     assert!(
         diagnostics[0].contains(&format!(
@@ -489,10 +490,10 @@ fn all_valid_bindings_probe_each_provider_label_once() {
 /// and the business Workers start; the same result answering anything else refuses it before
 /// any business Worker.
 ///
-/// [`PROBE_INPUT`]: review_runner::task::provider::PROBE_INPUT
+/// [`PROBE_INPUT`]: af_runner::task::provider::PROBE_INPUT
 #[test]
 fn the_admission_probe_sends_the_purpose_stating_text_and_passes_only_on_ok() {
-    use review_runner::task::provider::PROBE_INPUT;
+    use af_runner::task::provider::PROBE_INPUT;
     let answer = |reply: &str| {
         format!(
             r#"{{"type":"result","subtype":"success","is_error":false,"result":"{reply}","num_turns":1,"safety_stops":0,"stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":1,"cache_creation_input_tokens":360,"cache_read_input_tokens":0}},"modelUsage":{{"claude-fable-5-1":{{"inputTokens":3,"outputTokens":1,"cacheCreationInputTokens":360,"cacheReadInputTokens":0}}}}}}"#

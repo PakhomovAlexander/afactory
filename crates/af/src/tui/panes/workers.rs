@@ -1,15 +1,14 @@
 //! Workers: the Worker packages `HEAD` commits (docs/design/tui.md section 5.3). Reviewer
-//! Workers are `.af/workers/*/reviewer.toml`; Task Worker packages are every `worker.toml` under
+//! Workers are current Task packages: every `worker.toml` under
 //! `.af/task-packages/`, `.af/packages/` and `.af/vendor/`, however deep. Like the Pipelines pane
 //! it reads one resolved commit with git in a cleared environment, marks a working-tree file
 //! that differs from it, and keeps the last good entries under a failed read.
 //!
 //! One Worker's main pane has three sections. IDENTITY is its declaration and the pin the
-//! committed `af.lock` or `.af/task-catalog.toml` records for it. STATE counts the Attempts of
+//! committed `.af/task-catalog.toml` records for it. STATE counts the Attempts of
 //! this scope's Task Stores whose invocation ran a slot the Task's recorded plan binds to this
 //! Worker, read from the documents behind `af task explain --json`. PROMPT is the file the
-//! kernel sends: `reviewer.md` for a reviewer Worker, `instructions.md` for a Task Worker
-//! package.
+//! kernel sends: `instructions.md` in the current Worker package.
 //!
 //! The folder reads at load in a project scope, on its thread, as the other folders do: a load
 //! records the read and the first poll after the frame starts it (ADR-0240), so the bar lists
@@ -23,14 +22,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use review_runner_claude::models as rules;
+use af_runner::models as rules;
 use serde_json::Value as Json;
 use toml::Value;
 
 use super::pipelines::{CATALOG, blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
 use super::{Effect, Pane, Row};
-use crate::task_execution;
+use crate::task_commands;
 use crate::tui::keymap::Key;
 use crate::tui::paint::{Paint, Span, Tone};
 use crate::tui::scope::Scope;
@@ -39,13 +38,10 @@ use crate::tui::tree::Tab;
 
 /// The columns of a section rule: the main pane beside the bar at 100 columns.
 const RULE: usize = 100 - crate::tui::BAR_WIDTH;
-const LOCK: &str = ".af/af.lock";
 
 /// What a declaration makes: which lock pins it, and which file the kernel sends as its prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
-    /// `.af/workers/<name>/reviewer.toml`, pinned in `af.lock`.
-    Reviewer,
     /// A `worker.toml` package, pinned in `.af/task-catalog.toml`.
     Task,
 }
@@ -54,29 +50,25 @@ impl Kind {
     /// The prompt file the kernel itself sends a Worker of this kind.
     pub(crate) fn prompt(self) -> &'static str {
         match self {
-            Kind::Reviewer => "reviewer.md",
             Kind::Task => "instructions.md",
         }
     }
 
     fn lock(self) -> &'static str {
         match self {
-            Kind::Reviewer => LOCK,
             Kind::Task => CATALOG,
         }
     }
 
     fn word(self) -> &'static str {
         match self {
-            Kind::Reviewer => "reviewer",
             Kind::Task => "Task",
         }
     }
 }
 
 /// The directories Worker packages are declared under, in bar order.
-const SOURCES: [(&str, Kind); 4] = [
-    (".af/workers/", Kind::Reviewer),
+const SOURCES: [(&str, Kind); 3] = [
     (".af/task-packages/", Kind::Task),
     (".af/packages/", Kind::Task),
     (".af/vendor/", Kind::Task),
@@ -90,7 +82,6 @@ fn source_of(path: &str) -> Option<(&'static str, Kind)> {
         };
         let declares = match kind {
             // One directory per reviewer, named by the Worker: the registry looks nowhere else.
-            Kind::Reviewer => rest.split('/').count() == 2 && rest.ends_with("/reviewer.toml"),
             Kind::Task => rest == "worker.toml" || rest.ends_with("/worker.toml"),
         };
         return declares.then_some((source, kind));
@@ -115,12 +106,10 @@ pub(crate) enum Pin {
 type Pinned = (String, Option<String>, Option<String>);
 
 /// Name to pin, as a committed lock records Workers: the catalog's `[packages]` by their
-/// `path`, and `af.lock`'s `[workers]` at `.af/workers/<name>`, where the reviewer registry
-/// looks for them.
+/// `path`. Retired reviewer manifests supply no Worker authority.
 fn pins(kind: Kind, lock: &Value) -> BTreeMap<String, Pinned> {
     let (table, paths) = match kind {
         Kind::Task => (lock.get("packages"), pinned_paths(lock)),
-        Kind::Reviewer => (lock.get("workers"), BTreeMap::new()),
     };
     let mut pins = BTreeMap::new();
     for (name, pin) in table.and_then(Value::as_table).into_iter().flatten() {
@@ -129,7 +118,6 @@ fn pins(kind: Kind, lock: &Value) -> BTreeMap<String, Pinned> {
                 Some(path) => path.clone(),
                 None => continue,
             },
-            Kind::Reviewer => format!(".af/workers/{name}"),
         };
         let field = |key: &str| pin.get(key).and_then(Value::as_str).map(str::to_owned);
         pins.insert(name.clone(), (path, field("version"), field("digest")));
@@ -243,7 +231,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
     }
     // One read of every committed file the pane shows, and one drift check of them all: an
     // open reads again each time, so it must not cost a git process per Worker.
-    let mut wanted: Vec<&str> = vec![CATALOG, LOCK];
+    let mut wanted: Vec<&str> = vec![CATALOG];
     for (_, _, id, _, prompt_path) in &declared_at {
         wanted.push(id);
         wanted.push(prompt_path);
@@ -284,7 +272,6 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         Ok(committed.map_or(Value::Table(toml::map::Map::new()), |text| declared(&text)))
     };
     let catalog = pins(Kind::Task, &lock(CATALOG)?);
-    let reviewers = pins(Kind::Reviewer, &lock(LOCK)?);
     for (source, kind, id, directory, prompt_path) in declared_at {
         let declaration = text(&id)?.ok_or_else(|| format!("{id}: not a file at HEAD"))?;
         let value = declared(&declaration);
@@ -295,7 +282,6 @@ fn discover(root: &Path) -> Result<Discovery, String> {
             .get(prompt_path.as_str())
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
         let pins = match kind {
-            Kind::Reviewer => &reviewers,
             Kind::Task => &catalog,
         };
         found.entries.push(Entry {
@@ -375,34 +361,6 @@ fn recorded_plan(graph: &Json, bindings: &Json) -> Json {
     serde_json::json!({"graph": graph, "bindings": bindings})
 }
 
-/// The artifact type a captured Review binds a reviewer slot to, in place of the package.
-const REVIEW_DEPENDENCY: &str = "af/LegacyReviewDependency@1";
-
-/// A plan's bindings with each `package_digest` as the committed pin would record it. A Task
-/// binds a slot to the package itself, so its digest is the pin's. A captured Review binds a
-/// reviewer slot to a Review dependency whose own digest covers Campaign and pipeline data; the
-/// reviewer package it ran is its `original_package_digest` (none for a slot no reviewer
-/// package fills). `package` reads a recorded artifact.
-fn pinned_bindings(
-    bindings: &Json,
-    package: &mut dyn FnMut(&str) -> Result<Json, String>,
-) -> Result<Json, String> {
-    let mut pinned = bindings.clone();
-    let Some(slots) = pinned.as_object_mut() else {
-        return Ok(pinned);
-    };
-    for binding in slots.values_mut() {
-        let Some(id) = binding["package_artifact_id"].as_str() else {
-            continue;
-        };
-        let artifact = package(id)?;
-        if artifact["type"] == REVIEW_DEPENDENCY {
-            binding["package_digest"] = artifact["payload"]["original_package_digest"].clone();
-        }
-    }
-    Ok(pinned)
-}
-
 /// The Worker a node of a recorded plan runs: the package the plan binds to the node's one
 /// slot. A node that names no slot, or several (a Provider admission, an optimization
 /// experiment), runs no single Worker.
@@ -415,7 +373,6 @@ pub(crate) fn worker_of(plan: &Json, node: &str) -> Option<Worker> {
 fn operator_worker(plan: &Json, operator: &Json) -> Option<Worker> {
     let (kind, slot) = match operator["kind"].as_str()? {
         "primitive" => (Kind::Task, operator["operator"]["slot"].as_str()?),
-        "review_domain" => (Kind::Reviewer, operator["operation"]["slot"].as_str()?),
         _ => return None,
     };
     let worker = plan["graph"]["slots"][slot]["worker"].as_str()?;
@@ -448,7 +405,7 @@ pub(crate) fn tally(
     document: &Json,
     invoked: &mut dyn FnMut(&str) -> Result<Invoked, String>,
     recorded: &mut dyn FnMut(&str) -> Result<Json, String>,
-    package: &mut dyn FnMut(&str) -> Result<Json, String>,
+    _package: &mut dyn FnMut(&str) -> Result<Json, String>,
 ) -> Result<BTreeMap<Worker, Tally>, String> {
     let current = document["plan_id"].as_str();
     let owners = owners(document)?;
@@ -467,7 +424,7 @@ pub(crate) fn tally(
                 let plan = plan.ok_or("a reservation names no plan")?;
                 if !graphs.contains_key(plan) {
                     let compiled = if Some(plan) == current {
-                        let bindings = pinned_bindings(&document["plan"]["bindings"], package)?;
+                        let bindings = document["plan"]["bindings"].clone();
                         recorded_plan(&document["graph"], &bindings)
                     } else {
                         recorded(plan)?
@@ -552,11 +509,10 @@ pub(crate) fn tally(
 
 /// A recorded plan's bindings, and its compiled graph through the plan's `compiled_graph_id`.
 fn plan_of(dir: &Path, plan: &str) -> Result<Json, String> {
-    let plan = task_execution::recorded_artifact(dir, plan)?;
+    let plan = task_commands::recorded_artifact(dir, plan)?;
     let graph = tasks::text(&plan["payload"]["compiled_graph_id"])?;
-    let graph = &task_execution::recorded_artifact(dir, graph)?["payload"];
-    let package = &mut |id: &str| task_execution::recorded_artifact(dir, id);
-    let bindings = pinned_bindings(&plan["payload"]["bindings"], package)?;
+    let graph = &task_commands::recorded_artifact(dir, graph)?["payload"];
+    let bindings = plan["payload"]["bindings"].clone();
     Ok(recorded_plan(graph, &bindings))
 }
 
@@ -565,10 +521,10 @@ fn task_tally(
     task_id: &str,
     cache: &mut Cache,
 ) -> Result<BTreeMap<Worker, Tally>, String> {
-    let document = task_execution::inspection_document(dir, task_id, true)?
+    let document = task_commands::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("not in {}", dir.display()))?;
     let invoked = &mut |id: &str| tasks::node_of(dir, id, cache);
-    let package = &mut |id: &str| task_execution::recorded_artifact(dir, id);
+    let package = &mut |id: &str| task_commands::recorded_artifact(dir, id);
     tally(&document, invoked, &mut |plan| plan_of(dir, plan), package)
 }
 
@@ -584,7 +540,7 @@ fn read_store(target: &Target) -> Store {
     let dir = &target.dir;
     let listed = match tasks::not_a_store(dir) {
         Some(refusal) => Err(refusal),
-        None => task_execution::list_common(dir),
+        None => task_commands::list_common(dir),
     };
     let tallies = listed.and_then(|entries| {
         let mut cache = Cache::default();
@@ -865,7 +821,7 @@ impl WorkersPane {
             return (rows, named);
         }
         if self.entries.is_empty() && self.error.is_none() {
-            let none = "No Worker committed under .af/workers/, .af/task-packages/, \
+            let none = "No Worker committed under .af/task-packages/, \
                         .af/packages/ or .af/vendor/.";
             rows.push(Row::plain(none));
         }
@@ -1086,7 +1042,7 @@ fn words(value: &Value, path: &[&str]) -> String {
 /// has one. A reviewer declares its model and effort in its args,
 /// and they are read the way the kernel reads them.
 fn runner_rows(
-    entry: &Entry,
+    _entry: &Entry,
     value: &Value,
     catalogs: &super::providers::SharedCatalogs,
 ) -> Vec<Row> {
@@ -1097,15 +1053,8 @@ fn runner_rows(
     let command = runner.get("command").unwrap_or(&runner);
     let program = command.get("program").and_then(Value::as_str);
     let provider = runner.get("provider_kind").and_then(Value::as_str);
-    let (mut model, mut effort) = (field(&runner, &["model"]), field(&runner, &["effort"]));
-    let mut judged = provider.and_then(rules::Kind::parse);
-    if entry.kind == Kind::Reviewer
-        && let Ok(manifest) = toml::from_str(&entry.declaration)
-        && let Ok(settings) = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
-    {
-        judged = rules::Kind::parse(&settings.backend.to_string());
-        (model, effort) = (settings.model, settings.effort);
-    }
+    let (model, effort) = (field(&runner, &["model"]), field(&runner, &["effort"]));
+    let judged = provider.and_then(rules::Kind::parse);
     let verdict = judged
         .map(|kind| {
             let label = |verdict: rules::Verdict| verdict.label(kind, &model, Some(&effort));

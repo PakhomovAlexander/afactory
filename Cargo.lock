@@ -10,8 +10,25 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "af"
-version = "0.15.0"
+version = "0.15.1-rc.3"
 dependencies = [
+ "af-attempt",
+ "af-contracts",
+ "af-graph",
+ "af-pipeline-config",
+ "af-process",
+ "af-project",
+ "af-runner",
+ "af-runner-claude",
+ "af-runner-codex",
+ "af-runner-pi",
+ "af-runtime",
+ "af-sandbox",
+ "af-scenario",
+ "af-source-git",
+ "af-source-issue",
+ "af-store",
+ "af-telemetry",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -22,21 +39,6 @@ dependencies = [
  "minisign-verify",
  "nix 0.31.3",
  "portable-pty",
- "review-attempt",
- "review-config",
- "review-core",
- "review-graph",
- "review-pipeline",
- "review-process",
- "review-runner",
- "review-runner-claude",
- "review-runner-codex",
- "review-runner-pi",
- "review-sandbox",
- "review-source-git",
- "review-source-task",
- "review-store",
- "review-telemetry",
  "rusqlite",
  "rustix",
  "semver",
@@ -49,6 +51,309 @@ dependencies = [
  "toml_edit",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "af-attempt"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "serde",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "af-check"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-process",
+ "af-store",
+ "af-telemetry",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "af-contracts"
+version = "0.15.1-rc.3"
+dependencies = [
+ "base64",
+ "jsonschema",
+ "num-bigint 0.5.1",
+ "num-integer",
+ "num-traits",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "af-graph"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-attempt",
+ "af-contracts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "af-parallel"
+version = "0.15.1-rc.3"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
+name = "af-pipeline-config"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-graph",
+ "af-runner",
+ "af-source-git",
+ "af-store",
+ "jsonschema",
+ "nix 0.31.3",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "af-process"
+version = "0.15.1-rc.3"
+dependencies = [
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "af-project"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-graph",
+ "af-pipeline-config",
+ "af-process",
+ "af-runner",
+ "af-runtime",
+ "af-sandbox",
+ "af-source-git",
+ "af-store",
+ "nix 0.31.3",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "af-runner"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-process",
+ "af-store",
+ "af-telemetry",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "af-runner-claude"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-runner",
+ "af-sandbox",
+ "af-store",
+ "af-telemetry",
+ "jsonschema",
+ "nix 0.31.3",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "af-runner-codex"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-runner",
+ "af-store",
+ "af-telemetry",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "af-runner-pi"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-process",
+ "af-runner",
+ "af-store",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "af-runtime"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-attempt",
+ "af-check",
+ "af-contracts",
+ "af-graph",
+ "af-pipeline-config",
+ "af-process",
+ "af-runner",
+ "af-runner-claude",
+ "af-runner-codex",
+ "af-sandbox",
+ "af-source-git",
+ "af-store",
+ "af-telemetry",
+ "comrak",
+ "jsonschema",
+ "nix 0.31.3",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "toml_edit",
+ "tracing",
+]
+
+[[package]]
+name = "af-sandbox"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-check",
+ "af-contracts",
+ "af-parallel",
+ "af-process",
+ "af-source-git",
+ "af-store",
+ "af-telemetry",
+ "exacl",
+ "nix 0.31.3",
+ "reflink-copy",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "xattr",
+]
+
+[[package]]
+name = "af-scenario"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-process",
+ "af-sandbox",
+ "af-store",
+ "fs2",
+ "jsonschema",
+ "minisign",
+ "minisign-verify",
+ "nix 0.31.3",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "af-source-git"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-parallel",
+ "af-process",
+ "af-store",
+ "af-telemetry",
+ "jsonschema",
+ "nix 0.31.3",
+ "notify",
+ "reflink-copy",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "af-source-issue"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-contracts",
+ "af-process",
+ "af-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "af-store"
+version = "0.15.1-rc.3"
+dependencies = [
+ "af-attempt",
+ "af-contracts",
+ "af-graph",
+ "af-telemetry",
+ "nix 0.31.3",
+ "reflink-copy",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "af-telemetry"
+version = "0.15.1-rc.3"
+dependencies = [
+ "flate2",
+ "jsonschema",
+ "nix 0.31.3",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tracing",
+ "tracing-core",
 ]
 
 [[package]]
@@ -1382,271 +1687,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "review-attempt"
-version = "0.15.0"
-dependencies = [
- "review-core",
- "serde",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "review-check"
-version = "0.15.0"
-dependencies = [
- "jsonschema",
- "review-core",
- "review-process",
- "review-store",
- "review-telemetry",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "review-config"
-version = "0.15.0"
-dependencies = [
- "jsonschema",
- "nix 0.31.3",
- "review-attempt",
- "review-check",
- "review-core",
- "review-graph",
- "review-runner",
- "review-source-git",
- "review-store",
- "semver",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "review-core"
-version = "0.15.0"
-dependencies = [
- "base64",
- "jsonschema",
- "num-bigint 0.5.1",
- "num-integer",
- "num-traits",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "review-graph"
-version = "0.15.0"
-dependencies = [
- "review-attempt",
- "review-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "review-parallel"
-version = "0.15.0"
-dependencies = [
- "rayon",
-]
-
-[[package]]
-name = "review-pipeline"
-version = "0.15.0"
-dependencies = [
- "comrak",
- "jsonschema",
- "nix 0.31.3",
- "review-attempt",
- "review-check",
- "review-config",
- "review-core",
- "review-graph",
- "review-process",
- "review-runner",
- "review-runner-claude",
- "review-runner-codex",
- "review-sandbox",
- "review-source-git",
- "review-store",
- "review-telemetry",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "toml_edit",
- "tracing",
-]
-
-[[package]]
-name = "review-process"
-version = "0.15.0"
-dependencies = [
- "nix 0.31.3",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "review-runner"
-version = "0.15.0"
-dependencies = [
- "jsonschema",
- "review-core",
- "review-process",
- "review-store",
- "review-telemetry",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "review-runner-claude"
-version = "0.15.0"
-dependencies = [
- "jsonschema",
- "nix 0.31.3",
- "review-config",
- "review-core",
- "review-runner",
- "review-sandbox",
- "review-store",
- "review-telemetry",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "review-runner-codex"
-version = "0.15.0"
-dependencies = [
- "review-config",
- "review-core",
- "review-runner",
- "review-runner-claude",
- "review-store",
- "review-telemetry",
- "rustix",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "review-runner-pi"
-version = "0.15.0"
-dependencies = [
- "review-core",
- "review-process",
- "review-runner",
- "review-store",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
-name = "review-sandbox"
-version = "0.15.0"
-dependencies = [
- "exacl",
- "nix 0.31.3",
- "reflink-copy",
- "review-check",
- "review-core",
- "review-parallel",
- "review-process",
- "review-source-git",
- "review-store",
- "review-telemetry",
- "rustix",
- "serde_json",
- "tempfile",
- "tracing",
- "xattr",
-]
-
-[[package]]
-name = "review-source-git"
-version = "0.15.0"
-dependencies = [
- "jsonschema",
- "nix 0.31.3",
- "notify",
- "reflink-copy",
- "review-core",
- "review-parallel",
- "review-process",
- "review-store",
- "review-telemetry",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tracing",
- "unicode-normalization",
-]
-
-[[package]]
-name = "review-source-task"
-version = "0.15.0"
-dependencies = [
- "review-core",
- "review-process",
- "review-store",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "review-store"
-version = "0.15.0"
-dependencies = [
- "nix 0.31.3",
- "reflink-copy",
- "review-attempt",
- "review-core",
- "review-graph",
- "review-telemetry",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "review-telemetry"
-version = "0.15.0"
-dependencies = [
- "flate2",
- "jsonschema",
- "nix 0.31.3",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tracing",
- "tracing-core",
-]
 
 [[package]]
 name = "roff"

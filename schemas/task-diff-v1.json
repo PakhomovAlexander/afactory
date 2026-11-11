@@ -18,13 +18,13 @@
       "const": "af/task-diff@1"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "base_snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "files": {
       "type": "array",

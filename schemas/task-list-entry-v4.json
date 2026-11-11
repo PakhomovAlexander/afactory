@@ -22,13 +22,13 @@
       "const": "af/task-list-entry@4"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "kind": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
     },
     "phase": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/taskPhase"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/taskPhase"
     },
     "state": {
       "$ref": "urn:af:schema:task-state:2#/$defs/state"
@@ -53,7 +53,7 @@
     "derived_snapshot_id": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         {
           "type": "null"
@@ -63,7 +63,7 @@
     "delivery": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-inspection:16#/$defs/deliveryReceipt"
+          "$ref": "urn:af:schema:task-inspection:20#/$defs/deliveryReceipt"
         },
         {
           "type": "null"

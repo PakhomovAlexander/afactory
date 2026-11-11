@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use review_config::lock::package_digest;
-use review_source_git::Manifest;
-use review_store::Cas;
+use af_pipeline_config::lock::package_digest;
+use af_source_git::Manifest;
+use af_store::Cas;
 
 use crate::task_cli;
 
@@ -51,12 +51,12 @@ fn worker_context(outcome: &serde_json::Value, cas: &Cas, node: &str) -> serde_j
 
 fn terminal_delivery(state: &Path, task_id: &str) -> &'static str {
     let cas = Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let task = store.task_projection(&cas, task_id).unwrap().unwrap();
     match task.deliveries.last().unwrap().1.status {
-        review_core::task::delivery::TaskDeliveryStatusV1::Failed => "TaskDeliveryFailed@1",
-        review_core::task::delivery::TaskDeliveryStatusV1::Prepared => "TaskDeliveryPrepared@1",
-        review_core::task::delivery::TaskDeliveryStatusV1::Delivered => "TaskDelivered@1",
+        af_contracts::task::delivery::TaskDeliveryStatusV1::Failed => "TaskDeliveryFailed@1",
+        af_contracts::task::delivery::TaskDeliveryStatusV1::Prepared => "TaskDeliveryPrepared@1",
+        af_contracts::task::delivery::TaskDeliveryStatusV1::Delivered => "TaskDelivered@1",
     }
 }
 
@@ -65,11 +65,11 @@ fn forget_terminal_delivery(state: &Path, task_id: &str) {
     // the writer's lease release at the next dense sequence, so recovery exercises delivery
     // ownership immediately without changing clocks or weakening Store replay validation.
     let cas = Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let task = store.task_projection(&cas, task_id).unwrap().unwrap();
     let record = &task.deliveries.last().unwrap().0;
     assert_eq!(terminal_delivery(state, task_id), "TaskDelivered@1");
-    let run_id = review_store::store::task::task_run_id(task_id).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_id).unwrap();
     let mut connection = rusqlite::Connection::open(state.join("events.sqlite")).unwrap();
     let transaction = connection.transaction().unwrap();
     let sequence: i64 = transaction.query_row("SELECT sequence FROM events WHERE run_id = ?1 AND json_extract(payload, '$.change.record_id') = ?2",rusqlite::params![run_id,record],|r|r.get(0)).unwrap();
@@ -186,7 +186,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-inspection@16");
+    assert_eq!(outcome["schema"], "af/task-inspection@20");
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     assert!(outcome.get("delivery").is_none());
     assert_eq!(outcome["attempts"], 3);
@@ -208,7 +208,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     )
     .unwrap();
     let materialized = tempfile::tempdir().unwrap();
-    review_source_git::materialize(&manifest, &cas, materialized.path()).unwrap();
+    af_source_git::materialize(&manifest, &cas, materialized.path()).unwrap();
     assert_eq!(
         std::fs::read_to_string(materialized.path().join("implemented.txt")).unwrap(),
         "derived\n"
@@ -393,7 +393,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@16");
+    assert_eq!(shown["schema"], "af/task-inspection@20");
     assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }
@@ -870,7 +870,7 @@ fn generated_files_the_ignore_rules_exclude_are_left_out_of_the_candidate_unless
         "{stderr}"
     );
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let candidates: Vec<serde_json::Value> = outcome["execution_records"]
         .as_array()
         .unwrap()

@@ -16,10 +16,10 @@
       "$ref": "urn:af:schema:task-invocation:1"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "policy_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "outcome": {
       "enum": [

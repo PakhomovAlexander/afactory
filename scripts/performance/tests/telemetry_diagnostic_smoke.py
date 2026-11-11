@@ -13,15 +13,15 @@ import threading
 import time
 from types import SimpleNamespace
 
-from perflab import budget, builds, diagnostics, supervise, telemetrydiag, toolrun, tomlfile
+from perflab import budget, builds, diagnostics, supervise, telemetry_diag, tool_run, toml_file
 
 
 def native_supervisor(root, mount, image, source, owner):
     """Prepare only dependencies with network; compile the unchanged supervisor offline."""
     crate = root / "supervisor-source"
-    shutil.copytree(source / "crates/review-process/src", crate / "src")
-    shutil.copytree(source / "crates/review-process/examples", crate / "examples")
-    (crate / "Cargo.toml").write_text('[package]\nname="review-process"\nversion="0.0.0"'
+    shutil.copytree(source / "crates/af-process/src", crate / "src")
+    shutil.copytree(source / "crates/af-process/examples", crate / "examples")
+    (crate / "Cargo.toml").write_text('[package]\nname="af-process"\nversion="0.0.0"'
         '\nedition="2024"\n[dependencies]\nnix={version="0.31.3",default-features=false,'
         'features=["fs","signal","process","resource","user"]}\n[dev-dependencies]\n'
         'serde={version="1.0.228",features=["derive"]}\nserde_json="1.0.149"\n')
@@ -29,8 +29,8 @@ def native_supervisor(root, mount, image, source, owner):
     # authority's workspace lock before the network-only, hook-free fetch. Compile is locked
     # and offline. No candidate source is used to prepare this native supervision tool.
     lock_bytes = (source / "scripts/performance/tests/diagnostic-supervisor.lock").read_bytes()
-    trusted = tomlfile.loads((source / "Cargo.lock").read_bytes(), "workspace lock")["package"]
-    locked = tomlfile.loads(lock_bytes, "native smoke lock")["package"]
+    trusted = toml_file.loads((source / "Cargo.lock").read_bytes(), "workspace lock")["package"]
+    locked = toml_file.loads(lock_bytes, "native smoke lock")["package"]
     def identity(package):
         return tuple(package.get(key) for key in ("name", "version", "source", "checksum"))
     admitted = {identity(package) for package in trusted if "source" in package}
@@ -81,7 +81,7 @@ def run(root, mount, image, environment, cpus, source, docker, owner):
     sentinel.write_bytes(b"operator state")
     docs = source / "fixtures/performance/telemetry-diagnostic"
     reader = root / "diagnostic-reader"
-    # Actual executable reader requests go through the Profile method, toolrun.Contained,
+    # Actual executable reader requests go through the Profile method, tool_run.Contained,
     # the native PID-1 supervisor and the shared sample argv builder.
     reader.write_text('''#!/usr/bin/python3
 import json, os, sys, time
@@ -120,7 +120,7 @@ sys.stdout.buffer.write((Path(DOCS) / (kind + '.json')).read_bytes())
     profile.budget = diagnostics.Budget({"total_minutes": 2, "profile_bytes": 8 << 20,
         "builds": 1, "tool_seconds": 30, "tool_output_bytes": 1 << 20}, str(output))
     profile.budget.stage = str(stage)
-    profile.supervisor = toolrun.Contained(str(binary), "docker", image.reference, environment,
+    profile.supervisor = tool_run.Contained(str(binary), "docker", image.reference, environment,
         str(mount), os.getuid(), os.getgid(), cpus, "diagnostic-smoke")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(namespace), "TMPDIR": str(namespace)}
     documents, errors = {}, []
@@ -154,7 +154,7 @@ sys.stdout.buffer.write((Path(DOCS) / (kind + '.json')).read_bytes())
         worker.join(85)
     owner.finish("af-perf-telemetry-diagnostic-reader-smoke", not worker.is_alive() and not errors)
     assert not worker.is_alive() and not errors, errors
-    assert set(documents) == set(telemetrydiag.DOCUMENT_KINDS)
+    assert set(documents) == set(telemetry_diag.DOCUMENT_KINDS)
     assert sentinel.read_bytes() == b"operator state"
     assert profile.supervisor.requests == 4
     assert not profile.retained

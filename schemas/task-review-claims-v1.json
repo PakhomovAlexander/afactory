@@ -11,10 +11,10 @@
   ],
   "properties": {
     "round_report_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "claims": {
       "type": "object",
@@ -36,7 +36,7 @@
         ],
         "properties": {
           "view_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "title": {
             "type": "string"

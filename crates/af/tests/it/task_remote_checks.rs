@@ -84,6 +84,9 @@ fn fixture() -> Fixture {
     .unwrap();
     let local = repo.join(".af/task-packages/fixture/implementation/pipeline.toml");
     let original = std::fs::read_to_string(&local).unwrap();
+    let original_manifest: af_contracts::task::pipeline::PipelineDefinition =
+        af_pipeline_config::task::parse_task_pipeline(&original).unwrap();
+    let version = original_manifest.version;
     let twin = original
         .replace(
             &format!("name = \"{LOCAL}\""),
@@ -97,11 +100,11 @@ fn fixture() -> Fixture {
     let package = repo.join(".af/task-packages/fixture/implementation-remote");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(package.join("pipeline.toml"), twin).unwrap();
-    let digest = review_config::lock::package_digest(REMOTE, &package).unwrap();
+    let digest = af_pipeline_config::lock::package_digest(REMOTE, &package).unwrap();
     let catalog = repo.join(".af/task-catalog.toml");
     let mut text = std::fs::read_to_string(&catalog).unwrap();
     text.push_str(&format!(
-        "\n[packages.\"{REMOTE}\"]\nversion = \"1.0.0\"\ndigest = \"{digest}\"\n\
+        "\n[packages.\"{REMOTE}\"]\nversion = \"{version}\"\ndigest = \"{digest}\"\n\
          path = \".af/task-packages/{REMOTE}\"\n"
     ));
     std::fs::write(&catalog, text).unwrap();
@@ -390,7 +393,7 @@ fn below_the_floor_a_remote_check_is_refused_before_any_push() {
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
     catalog["packages"]["fixture/implementer"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
+        af_pipeline_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
     );
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
     git(&fixture.repo, &["add", "-A"]);
@@ -451,7 +454,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v16.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
@@ -896,7 +899,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
     assert_eq!(fragment["packages"].as_table().unwrap().len(), TWINS.len());
     for (remote, local) in TWINS {
         let pin = &fragment["packages"][remote];
-        let digest = review_config::lock::package_digest(
+        let digest = af_pipeline_config::lock::package_digest(
             remote,
             &workspace.join(STAGED).join("task-packages").join(remote),
         )

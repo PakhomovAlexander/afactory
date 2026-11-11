@@ -18,7 +18,7 @@
       "const": "af/task-findings@2"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "state": {
       "$ref": "urn:af:schema:task-state:2#/$defs/state"
@@ -69,7 +69,7 @@
         "finding_id": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
             },
             {
               "type": "null"
@@ -196,12 +196,12 @@
       ],
       "properties": {
         "reviewer": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
         },
         "result_id": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
             },
             {
               "type": "null"
@@ -243,7 +243,7 @@
           "maximum": 16
         },
         "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "conclusion": {
           "enum": [
@@ -259,7 +259,7 @@
         "missing_reviewers": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
           }
         },
         "counts": {
@@ -299,7 +299,7 @@
           "pattern": "\\S"
         },
         "artifact_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "outcome": {
           "enum": [
@@ -361,7 +361,7 @@
               ]
             },
             "snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
             }
           }
         },
@@ -516,10 +516,10 @@
           "pattern": "\\S"
         },
         "record_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         }
       },
       "$comment": "A finding verified fixed: the positive verification record that says so (an `af/TaskFixReceipt@1` on the Task path, a `FixVerification@1` on the Campaign path) and the Snapshot it was verified on. Nothing else is reported as verified fixed."

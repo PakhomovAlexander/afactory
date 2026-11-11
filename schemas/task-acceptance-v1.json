@@ -36,7 +36,7 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
         },
         "text": {
           "description": "What the result must meet: nonblank, at most 4096 characters, without control characters but newline and tab.",

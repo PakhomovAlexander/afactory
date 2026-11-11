@@ -17,7 +17,7 @@
       "$ref": "urn:af:schema:task-invocation:1"
     },
     "continuation_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "continuation": {
       "$ref": "urn:af:schema:verification-continuation:1"
@@ -26,7 +26,7 @@
       "$ref": "urn:review-kernel:schema:subject:1"
     },
     "previous_snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "claims": {
       "type": "object",
@@ -51,10 +51,10 @@
         ],
         "properties": {
           "original_view_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "current_view_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "title": {
             "type": "string"
@@ -66,7 +66,7 @@
             "type": "string"
           },
           "attestation_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "attestation": {
             "$ref": "urn:review-kernel:schema:change-attestation:1"

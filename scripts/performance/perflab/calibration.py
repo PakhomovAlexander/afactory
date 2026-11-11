@@ -51,12 +51,12 @@ import os
 import re
 from fractions import Fraction
 
-from . import compare, contracts, gitrefs, images, limits, runner, schedule, transport
+from . import evaluate_results, contracts, git_refs, images, limits, runner, schedule, transport
 from .values import (ContractError, canonical_digest, format_decimal, format_rational,
                      loads_strict, require, sha256_bytes)
 
 DAY_MS = 24 * 60 * 60 * 1000
-INJECTED_METRIC = compare.INJECTED_METRIC
+INJECTED_METRIC = evaluate_results.INJECTED_METRIC
 ACTIONS_FILE = "actions.json"
 RUNS_FILE = "runs.json"
 ATTEMPTS_DIR = "attempts"
@@ -736,7 +736,7 @@ def collect(cohort, evidence_dir, scratch, replan, producer):
                 os.makedirs(os.path.dirname(path), 0o700, exist_ok=True)
                 with open(path, "xb") as stream:
                     stream.write(data)
-        run.evaluation = compare.evaluate(run_dir)
+        run.evaluation = evaluate_results.evaluate(run_dir)
         run.replanned = _replanned(replan, member, plan)
     return runs, refused, summary
 
@@ -793,7 +793,7 @@ def producer_check(git, cohort):
                 if changed:
                     return "%s %s differs from the authority's: %s" % (
                         what, sha[:12], ", ".join(changed[:8]))
-        except (ContractError, gitrefs.Unavailable) as error:
+        except (ContractError, git_refs.Unavailable) as error:
             return "the producer cannot be shown: %s" % error
         return None
     return check
@@ -810,7 +810,7 @@ def _replanned(replan, member, plan):
     run ID, control and shard count, freezes exactly the retained plan."""
     try:
         expected = replan(member, plan)
-    except (ContractError, gitrefs.Unavailable):
+    except (ContractError, git_refs.Unavailable):
         return False
     return _frozen_identity(expected) == _frozen_identity(plan)
 

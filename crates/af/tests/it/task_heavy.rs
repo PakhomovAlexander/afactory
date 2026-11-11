@@ -1,7 +1,7 @@
 //! Full S2 discovery consumes independently verified fixes without rewriting closed S1 history.
 use crate::review_memo;
 use crate::task_cli;
-use review_core::task::pipeline::*;
+use af_contracts::task::pipeline::*;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, process::Command};
 
@@ -33,7 +33,7 @@ fn configure(repo: &Path, case: &str) {
     task_cli::load_safe_walls(repo);
     let packages = repo.join(".af/task-packages/fixture");
     let path = packages.join("review/pipeline.toml");
-    let mut review: PipelineDefinitionV1 = read(&path);
+    let mut review: PipelineDefinition = read(&path);
     let mut continuation = review.contract.inputs["source"].clone();
     continuation.artifact_type = "af/TaskReviewContinuation@1".into();
     continuation.affinity = PortAffinityV1::SameAs {
@@ -58,7 +58,7 @@ fn configure(repo: &Path, case: &str) {
         );
     write(&path, &review);
     let path = packages.join("repair/pipeline.toml");
-    let mut repair: PipelineDefinitionV1 = read(&path);
+    let mut repair: PipelineDefinition = read(&path);
     repair
         .nodes
         .iter_mut()
@@ -87,7 +87,7 @@ fn configure(repo: &Path, case: &str) {
     repair.coverage.clear();
     write(&path, &repair);
     let path = packages.join("implementation/pipeline.toml");
-    let mut root: PipelineDefinitionV1 = read(&path);
+    let mut root: PipelineDefinition = read(&path);
     root.max_attempts = 11;
     root.contract
         .outputs
@@ -180,8 +180,11 @@ fn configure(repo: &Path, case: &str) {
     }
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     write(&policy_path, &catalog);
@@ -231,7 +234,7 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
     assert_eq!(rounds[1]["round"], 2);
     assert_eq!(rounds[1]["conclusion"], "pass");
     assert_ne!(rounds[0]["snapshot_id"], rounds[1]["snapshot_id"]);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let before = cas
         .get_json(rounds[0]["finding_set_id"].as_str().unwrap())
         .unwrap();

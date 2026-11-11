@@ -5,13 +5,14 @@
 //! Provider ID and kind, the bound model and effort, then the hint its diagnostic starts with,
 //! which names the classification and the next step. `af task show` keeps the full diagnostic.
 
-use review_core::task::EXECUTION_PLAN_V3;
-use review_core::task::execution::TaskAttemptResultV1;
-use review_core::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
-use review_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
-use review_runner_claude::hint;
-use review_store::store::task::TaskProjection;
-use review_store::{Cas, EventStore};
+use af_contracts::task::EXECUTION_PLAN_V4;
+use af_contracts::task::execution::TaskAttemptResultV1;
+use af_contracts::task::plan::{ExecutionPlan, WorkerExecutionV3};
+use af_graph::task::{CompiledNode, CompiledOperator};
+use af_runner::models::diagnostic;
+use af_runner_claude::hint;
+use af_store::store::task::TaskProjection;
+use af_store::{Cas, EventStore};
 
 /// Print [`lines`] for the Task's Attempts that settled at or after `since_unix_ms`, on stderr.
 /// Reading them is best effort: a Store that cannot be read prints nothing, and never changes
@@ -34,8 +35,8 @@ pub(crate) fn lines(cas: &Cas, state: &TaskProjection, since_unix_ms: u64) -> Ve
     };
     let plan = state.plan_id.as_deref().and_then(|id| {
         let frame = cas.get_artifact(id).ok()?;
-        (frame.artifact_type == EXECUTION_PLAN_V3)
-            .then(|| serde_json::from_value::<ExecutionPlanV3>(frame.payload).ok())
+        (frame.artifact_type == EXECUTION_PLAN_V4)
+            .then(|| serde_json::from_value::<ExecutionPlan>(frame.payload).ok())
             .flatten()
     });
     let mut failed: Vec<_> = execution
@@ -80,7 +81,7 @@ pub(crate) fn lines(cas: &Cas, state: &TaskProjection, since_unix_ms: u64) -> Ve
             ),
             _ => ("?", "?", "?", "?"),
         };
-        lines.push(hint::attempt_line(
+        lines.push(diagnostic::attempt_line(
             node, provider, kind, model, effort, found,
         ));
     }
@@ -94,54 +95,11 @@ fn slot(node: &CompiledNode) -> Option<&str> {
         CompiledOperator::ProviderAdmission { bindings } => bindings.first().map(String::as_str),
         CompiledOperator::Primitive {
             operator:
-                review_core::task::pipeline::TaskOperatorV1::Worker { slot }
-                | review_core::task::pipeline::TaskOperatorV1::Verify { slot }
-                | review_core::task::pipeline::TaskOperatorV1::FixVerify { slot },
-            ..
-        } => Some(slot),
-        CompiledOperator::ReviewDomain {
-            operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
+                af_contracts::task::pipeline::TaskOperatorV1::Worker { slot }
+                | af_contracts::task::pipeline::TaskOperatorV1::Verify { slot }
+                | af_contracts::task::pipeline::TaskOperatorV1::FixVerify { slot },
             ..
         } => Some(slot),
         _ => None,
-    }
-}
-
-/// The hint behind each missing node of an incomplete verdict, for the line after `incomplete (N
-/// missing nodes)`: `reason   NODE: HINT`. A reason without a model hint adds nothing.
-pub(crate) fn missing_node_reasons<'a>(
-    missing: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Vec<String> {
-    missing
-        .into_iter()
-        .filter_map(|(node, reason)| hint::find(reason).map(|found| format!("{node}: {found}")))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_a_reason_with_a_model_hint_is_repeated_and_only_its_hint() {
-        let found = hint::compose(
-            hint::BoundModel {
-                model: "claude-fable-5-1",
-                effort: Some("xhigh"),
-                provider: None,
-            },
-            &hint::ModelOutcome::Unavailable,
-        );
-        let reason = format!(
-            "{}{found}; transport: exited 1; Worker said something",
-            hint::DIAGNOSTIC_PREFIX
-        );
-        assert_eq!(
-            missing_node_reasons([
-                ("root.providers.admit0", reason.as_str()),
-                ("root.review", "upstream missing"),
-            ]),
-            [format!("root.providers.admit0: {found}")]
-        );
     }
 }

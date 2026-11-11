@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "warm/implementer"
-version = "1.3.0"
+version = "1.3.1"
 
 [signature]
 effects = ["write-source"]
@@ -58,6 +58,6 @@ wall_ms = 10800000
 
 [runner]
 kind = "model"
-provider_kind = "claude"
-model = "claude-opus-5-5"
+provider_kind = "codex"
+model = "gpt-6.1-sol"
 effort = "high"

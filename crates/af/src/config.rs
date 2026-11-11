@@ -41,7 +41,7 @@ keep_gate_pull_requests = false
 /// The built-in layer: [`BUILT_IN`] and the `[telemetry]` table with every default, which the
 /// telemetry crate owns with its bounds (ADR-0153).
 fn built_in() -> String {
-    format!("{BUILT_IN}\n{}", review_telemetry::level::built_in_table())
+    format!("{BUILT_IN}\n{}", af_telemetry::level::built_in_table())
 }
 
 /// The tables only machine layers may set: a repository's `.af/af.toml` can steer neither what
@@ -438,8 +438,8 @@ impl Config {
     /// The `[telemetry]` table, typed and bounded (ADR-0153): a value outside its bound, an
     /// unknown key, or `sink = "otlp"` without `sink_endpoint` refuses the load, naming the key.
     /// Only machine layers set it; `max_bytes` is bounded by `[storage] max_bytes`.
-    pub(crate) fn telemetry_policy(&self) -> Result<review_telemetry::level::Settings, String> {
-        use review_telemetry::level::Raw;
+    pub(crate) fn telemetry_policy(&self) -> Result<af_telemetry::level::Settings, String> {
+        use af_telemetry::level::Raw;
         let table = self
             .effective
             .get("telemetry")
@@ -447,7 +447,7 @@ impl Config {
             .ok_or("[telemetry] is missing from the effective configuration")?;
         let storage = self.storage_policy()?;
         let names: Vec<String> = table.keys().cloned().collect();
-        review_telemetry::level::Settings::from_values(
+        af_telemetry::level::Settings::from_values(
             &names,
             |name| {
                 table.get(name).map(|value| match value {
@@ -755,7 +755,7 @@ pub(crate) fn load_rooted(
                 Refusal::naming(
                     "",
                     &path,
-                    &review_config::excerpt::bounded(&format!(": {}", error.message())),
+                    &af_pipeline_config::excerpt::bounded(&format!(": {}", error.message())),
                 )
             })?;
             if matches!(layer, "directory" | "project" | "local")
@@ -849,14 +849,14 @@ fn read_layer(path: &Path) -> Result<String, String> {
 }
 
 /// One authority file (a configuration layer, a project's `.af/af.lock`), whole, within
-/// [`review_config::lock::MAX_AUTHORITY_FILE_BYTES`]: opened by the path as named, never
+/// [`af_pipeline_config::lock::MAX_AUTHORITY_FILE_BYTES`]: opened by the path as named, never
 /// canonicalised first, without following a link at its final component, and read no further
 /// than the bound. A link is refused, and so is a file of gigabytes, before it is read whole;
 /// either in one line. Canonicalisation, where a caller still needs it for display or
 /// ancestry, comes after this read and never decides which file is read.
 pub(crate) fn read_authority(path: &Path) -> Result<String, String> {
     let bytes =
-        review_store::local_fs::read_bounded(path, review_config::lock::MAX_AUTHORITY_FILE_BYTES)
+        af_store::local_fs::read_bounded(path, af_pipeline_config::lock::MAX_AUTHORITY_FILE_BYTES)
             .map_err(|error| error.to_string())?;
     String::from_utf8(bytes).map_err(|error| error.to_string())
 }
@@ -1190,7 +1190,7 @@ pub(crate) fn editor_words(
 pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
     let editor = std::env::var("EDITOR").ok();
     let (program, args) = editor_words(editor.as_deref(), path)?;
-    let status = review_process::reap::status(std::process::Command::new(&program).args(&args))
+    let status = af_process::reap::status(std::process::Command::new(&program).args(&args))
         .map_err(|error| format!("running {program}: {error}"))?;
     if !status.success() {
         return Err(format!("{program} exited with {status}"));
@@ -1601,7 +1601,7 @@ mod tests {
     /// outside its bound refuses the load naming the key.
     #[test]
     fn telemetry_machine_only_table_is_ignored_in_project_layers() {
-        use review_telemetry::level::Level;
+        use af_telemetry::level::Level;
         let temp = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
         let above = root.join("above");
@@ -1632,7 +1632,7 @@ mod tests {
         };
         let config = load_rooted(Some(&repo), false, &roots(Vec::new())).unwrap();
         let policy = config.telemetry_policy().unwrap();
-        assert_eq!(policy, review_telemetry::level::Settings::default());
+        assert_eq!(policy, af_telemetry::level::Settings::default());
         for layer in ["project layer", "local layer", "directory layer"] {
             assert!(
                 config

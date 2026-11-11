@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,23 @@ SCENARIOS = [
     ('over the rerun bound', {'AF_GATE_MANY_FAIL': '1'}, False, [],
      sorted(f'many_{n}' for n in range(MANY)), 'over_bound', MANY),
 ]
+
+# A tiny ignored test with the production selector's identity. It proves report placement and
+# execution through the actual Makefile command, not containment (the real live probe does that).
+PROBE_NAME = 'task_review_execute_checks::a_container_check_executes_on_the_native_task_host'
+PROBE = NL.join([
+    'mod task_review_execute_checks {',
+    '    #[test] #[ignore]',
+    '    fn a_container_check_executes_on_the_native_task_host() {',
+    '        use std::io::Write;',
+    '        let mut marker = std::fs::OpenOptions::new().create(true).append(true)',
+    '            .open(std::env::var_os("AF_GATE_PROBE_MARKER").unwrap()).unwrap();',
+    '        marker.write_all(b"executed").unwrap();',
+    '        assert!(std::env::var_os("AF_GATE_PROBE_FAIL").is_none());',
+    '    }',
+    '}',
+    '',
+])
 
 
 def gate_module():
@@ -151,6 +169,84 @@ def report_lines(path):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def check_full_route(repo, base, env, before):
+    """Execute the actual full wrapper/Make graph, with the shared tiny Rust fixture.
+
+    Only unrelated CI payloads and sandbox probe bodies are controlled stand-ins. The
+    ordinary Rust selection, exact ignored native selection, owner and report writers are real.
+    The host's captured FULL gate must separately execute the actual live container bodies.
+    """
+    target = Path(env['XDG_CACHE_HOME']) / 'af/gate-target'
+    for label, parallel, failure in [('full', False, ''), ('parallel-full', True, ''),
+                                     ('parallel-build-fails', True, 'build'),
+                                     ('missing-runtime', False, 'sandbox'),
+                                     ('timeout-probe-fails', False, 'timeout'),
+                                     ('native-probe-fails', False, 'native')]:
+        marker, events = base / (label + '-native'), base / (label + '-events')
+        report = base / (label + '-report.jsonl')
+        selected = dict(env, FULL_ROUTE='1', AF_GATE_PROBE_MARKER=str(marker),
+                        AF_GATE_ROUTE_EVENTS=str(events), AF_GATE_ROUTE_FAIL=failure,
+                        AF_CHECK_REPORT=str(report))
+        if parallel:
+            selected['MAKEFLAGS'] = '-j4'
+        if failure == 'native':
+            selected['AF_GATE_PROBE_FAIL'] = '1'
+        previous = set(target.glob('nextest-reports/run-*'))
+        result = run(['bash', 'scripts/verify.sh', '--profile', 'full'], repo, selected)
+        assert (result.returncode == 0) == (not failure), (label, result)
+        runs = set(target.glob('nextest-reports/run-*')) - previous
+        assert len(runs) == 1, (label, runs)
+        run_dir = runs.pop()
+        if failure == 'build':
+            assert events.read_text().splitlines() == ['test-build']
+            assert not marker.exists() and not list(run_dir.rglob('junit.xml'))
+            records = report_lines(report)
+            assert [(r['record'], r.get('label'), r.get('exit_code')) for r in records] == [
+                ('step', 'test-build', 19)], records
+            assert 'controlled compilation failure' in result.stderr
+            assert manifest(repo) == before and not (repo / 'target').exists()
+            continue
+        # One build and one ordinary Rust run precede every live probe, even under -j.
+        # Failures stop the remaining probe commands, without an alternate/local fallback.
+        wanted = ['test-build', 'test', 'sandbox']
+        if failure != 'sandbox':
+            wanted.append('timeout')
+        assert events.read_text().splitlines() == wanted, (label, events.read_text())
+        assert marker.exists() == (failure not in ('sandbox', 'timeout')), label
+        if marker.exists():
+            assert marker.read_bytes() == b'executed', label  # No retry or duplicate proof.
+        if failure == 'sandbox':
+            assert 'controlled missing container runtime' in result.stderr
+        if failure == 'timeout':
+            assert 'controlled timeout cleanup failure' in result.stderr
+        records = report_lines(report)
+        assert [(r['record'], r.get('label')) for r in records] == [
+            ('step', 'test-build'), ('step', 'test'), ('tests', None)], (label, records)
+        assert all(r['exit_code'] == 0 for r in records if r['record'] == 'step')
+        tests = records[-1]
+        # Single-run mode reports its own JUnit/status, not an isolation-rerun tests record.
+        # The folded ordinary selection remains clean even when the later proof fails.
+        assert tests['failed_count'] == 0, (label, tests)
+        if failure == 'native':
+            assert 'isolation rerun:' not in result.stdout
+        ordinary = ET.parse(run_dir / 'store/ci/junit.xml').findall('.//testcase')
+        assert len(ordinary) == 4 + MANY, (label, ordinary)
+        assert not any(c.find('failure') is not None for c in ordinary)
+        native_junit = run_dir / 'repeat-1/store/ci/junit.xml'
+        assert native_junit.exists() == marker.exists(), label
+        if native_junit.exists():
+            cases = ET.parse(native_junit).findall('.//testcase')
+            assert [(c.get('classname'), c.get('name')) for c in cases] == [
+                ('af-runtime::it', PROBE_NAME)], (label, cases)
+            assert (cases[0].find('failure') is not None) == (failure == 'native')
+            assert cases[0].find('skipped') is None
+        assert manifest(repo) == before and not (repo / 'target').exists()
+        assert not list(target.rglob('store.toml'))
+    print('PASS: actual full wrapper/Make graph executes ordinary Rust once then all probes; '
+          'parallel build ordering, missing-runtime/cleanup/native failure propagation, '
+          'single execution, external reports and sealed source preserved')
+
+
 def main():
     check_rerun_bounds()
     with tempfile.TemporaryDirectory(prefix='af gate space " ') as tmp:
@@ -159,6 +255,7 @@ def main():
         (repo / 'src').mkdir(parents=True)
         (repo / 'scripts').mkdir()
         (repo / '.config').mkdir()
+        (repo / 'tests').mkdir()
         for name in ['verify.sh', 'verify-body.sh', 'gate-owner.py', 'nextest-gate.py',
                      'ci-step.py', 'test-time-report.py', 'test-classes.py']:
             shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
@@ -176,13 +273,35 @@ def main():
         # `test` depends on `test-build` (the build receipt the kernel's phase monitor waits for),
         # so the slice starts at that target.
         recipe = makefile[makefile.index('test-build:'):makefile.index('# Open the release PR')]
+        probe_recipe = makefile.split('review-kernel-container-probes:\n', 1)[1].split(
+            '\n\n', 1)[0].splitlines()[-1]
+        (repo / 'Full.mk').write_text(makefile)
         (repo / 'Makefile').write_text(NL.join([
+            'ifeq ($(FULL_ROUTE),1)', 'include Full.mk',
+            'CI_STEP = python3 scripts/fixture-step.py',
+            # These unrelated stand-in suites produce no base evidence. Keep their unused
+            # shell arguments simple; the real nextest reports still exercise the quoted path.
+            'BASE_EVIDENCE = unused-fixture-evidence', 'else',
             'TEST_RUNNER = nextest', 'TEST_THREADS = 4',
-            'CI_STEP = python3 scripts/ci-step.py', 'check: test', recipe]))
+            'CI_STEP = python3 scripts/ci-step.py',
+            'check: $(if $(PROBE_ONLY),native-probe-store,test)', recipe,
+            # Only the native recipe applies to this miniature crate; keep its exact selector.
+            'native-probe-store:', probe_recipe, 'endif', '']))
+        # Keep the production full graph and its build/test receipt commands. Unrelated
+        # preflight/lint/Python/feature suites are no-ops, avoiding a nested real gate.
+        (repo / 'scripts/fixture-step.py').write_text(NL.join([
+            'import os, pathlib, subprocess, sys',
+            'if sys.argv[3] not in ("test-build", "test"): sys.exit(0)',
+            'with pathlib.Path(os.environ["AF_GATE_ROUTE_EVENTS"]).open("a") as f:',
+            '    f.write(sys.argv[3] + "\\n")',
+            'sys.exit(subprocess.call([sys.executable, "scripts/ci-step.py", *sys.argv[1:]]))',
+            '',
+        ]))
         (repo / 'Cargo.toml').write_text(NL.join([
-            '[package]', 'name="gate-store-regression"', 'version="0.1.0"',
+            '[package]', 'name="af-runtime"', 'version="0.1.0"',
             'edition="2021"', '']))
         (repo / 'src/lib.rs').write_text(LIB)
+        (repo / 'tests/it.rs').write_text(PROBE)
         # The children's temporary directory is a private one under `base`: under a managed
         # sandbox the platform default (`/var/folders/...`) is not writable, and rustc and
         # cargo fail to create their temporary files without a writable TMPDIR.
@@ -195,6 +314,40 @@ def main():
             env[name] = os.environ.get(name, str(Path.home() / default))
         Path(env['HOME']).mkdir()
         Path(env['TMPDIR']).mkdir()
+        tools = base / 'tools'
+        tools.mkdir()
+        real_cargo = shutil.which('cargo')
+        assert real_cargo
+        # The sandbox bodies are stand-ins only in this routing fixture. Assert the exact
+        # retained commands; all other Cargo calls execute the actual tiny Rust project.
+        sandbox_args = ['test', '--locked', '-p', 'af-sandbox', '--test',
+                        'container_probes', '--', '--ignored']
+        timeout_args = ['test', '--locked', '-p', 'af-sandbox',
+                        'container::tests::a_timed_out_container_is_removed_before_execution_returns',
+                        '--', '--ignored', '--exact']
+        cargo = tools / 'cargo'
+        cargo.write_text(NL.join([
+            f'#!{sys.executable}', 'import os, pathlib, sys',
+            'args = sys.argv[1:]',
+            'if args == ["test", "--locked", "--no-run"] and '
+            'os.environ.get("AF_GATE_ROUTE_FAIL") == "build":',
+            '    print("controlled compilation failure", file=sys.stderr)',
+            '    sys.exit(19)',
+            'if "af-sandbox" in args:',
+            f'    assert args in ({sandbox_args!r}, {timeout_args!r}), args',
+            f'    kind = "sandbox" if args == {sandbox_args!r} else "timeout"',
+            '    with pathlib.Path(os.environ["AF_GATE_ROUTE_EVENTS"]).open("a") as f:',
+            '        f.write(kind + "\\n")',
+            '    if os.environ.get("AF_GATE_ROUTE_FAIL") == kind:',
+            '        print("controlled missing container runtime" if kind == "sandbox" else',
+            '              "controlled timeout cleanup failure", file=sys.stderr)',
+            '        sys.exit(23)',
+            '    sys.exit(0)',
+            f'os.execv({real_cargo!r}, [{real_cargo!r}, *args])', '',
+        ]))
+        cargo.chmod(0o755)
+        env['PATH'] = str(tools) + os.pathsep + env['PATH']
+        env['TEST_THREADS'] = '4'
         assert run(['cargo', 'generate-lockfile', '--offline'], repo, env).returncode == 0
         paths = [repo, *repo.rglob('*')]
         try:
@@ -227,7 +380,7 @@ def main():
                 tail = result.stdout[result.stdout.rindex('gate step timings: '):]
                 assert f'{NL}### Test time: {4 + MANY} tests in ' in tail, (label, tail)
                 assert (f'{NL}Failed tests:{NL}' in tail) == (label != 'passing'), (label, tail)
-                full = lambda names: [f'gate-store-regression {name}' for name in names]
+                full = lambda names: [f'af-runtime {name}' for name in names]
                 assert ((f'{NL}flaky: ' + ', '.join(full(flaky)) + NL) in result.stdout) == \
                     bool(flaky), (label, result.stdout)
                 if rerun == 'isolated' and failed:
@@ -262,12 +415,61 @@ def main():
             isolated = sorted(target.glob('nextest-reports/run-*/isolated-*/store/ci/junit.xml'))
             assert len(isolated) == 4, isolated
             assert all(len(ET.parse(p).findall('.//testcase')) == 1 for p in isolated)
+            # Reproduce the native gate's read-only source condition with the production
+            # probe recipe. verify.sh/gate-owner.py supply the report store and supervision.
+            marker = base / 'native-probe-executed'
+            probe_report = base / 'native-probe-report.jsonl'
+            selected = dict(env, PROBE_ONLY='1', AF_GATE_PROBE_MARKER=str(marker),
+                            AF_CHECK_REPORT=str(probe_report))
+            result = run(['bash', 'scripts/verify.sh'], repo, selected)
+            assert result.returncode == 0, result
+            assert marker.read_bytes() == b'executed'
+            live_runs = set(target.glob('nextest-reports/run-*')) - set(runs)
+            assert len(live_runs) == 1, live_runs
+            junit = next(iter(live_runs)) / 'repeat-1/store/ci/junit.xml'
+            cases = ET.parse(junit).findall('.//testcase')
+            assert [(c.get('classname'), c.get('name')) for c in cases] == [
+                ('af-runtime::it', PROBE_NAME)], cases
+            assert not any(c.find('failure') is not None or c.find('skipped') is not None
+                           for c in cases)
+            marker.unlink()
+            result = run(['bash', 'scripts/verify.sh'], repo,
+                         dict(selected, AF_GATE_PROBE_FAIL='1'))
+            assert result.returncode != 0, result
+            assert marker.read_bytes() == b'executed'  # Exactly one failed execution, no retry.
+            assert 'isolation rerun:' not in result.stdout
+            failure_runs = set(target.glob('nextest-reports/run-*')) - set(runs) - live_runs
+            assert len(failure_runs) == 1, failure_runs
+            failed_junit = next(iter(failure_runs)) / 'repeat-1/store/ci/junit.xml'
+            cases = ET.parse(failed_junit).findall('.//testcase')
+            assert len(cases) == 1 and cases[0].find('failure') is not None, cases
+            assert manifest(repo) == before and not (repo / 'target').exists()
+            assert not list(target.rglob('store.toml'))
+            check_full_route(repo, base, env, before)
             print('PASS: real verify entry, sealed source, external JUnit, failure propagation, '
                   'config cleanup, test-time summary, isolation rerun of failed tests alone '
                   '(flaky forgiven, failed twice fails, over 25 none rerun), check report lines')
         finally:
             for p in paths:
                 p.chmod(0o755 if p.is_dir() else 0o644)
+        # The same recipe also works in a writable checkout without gate report variables.
+        marker.unlink()
+        result = run(['make', 'native-probe-store'], repo,
+                     dict(env, AF_GATE_PROBE_MARKER=str(marker)))
+        assert result.returncode == 0 and marker.read_bytes() == b'executed', result
+        junit = repo / 'target/nextest/ci/junit.xml'
+        cases = ET.parse(junit).findall('.//testcase')
+        assert [(c.get('classname'), c.get('name')) for c in cases] == [
+            ('af-runtime::it', PROBE_NAME)], cases
+        # A removed/renamed exact test must fail rather than claim empty coverage.
+        marker.unlink()
+        command = ['make', '-n', 'native-probe-store']
+        recipe = subprocess.check_output(command, cwd=repo, env=env, text=True)
+        command = shlex.split(recipe.replace(PROBE_NAME, 'retired_native_probe'))
+        result = run(command, repo, dict(env, AF_GATE_PROBE_MARKER=str(marker)))
+        assert result.returncode == 4 and not marker.exists(), result  # nextest NO_TESTS_RUN
+        print('PASS: exact native probe recipe executes on sealed and writable sources; '
+              'gate-owned JUnit records execution; failed proof runs once; obsolete selection fails')
 
 
 if __name__ == '__main__':

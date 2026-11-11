@@ -1,0 +1,55 @@
+[package]
+name = "af-runtime"
+description = "Common Task runtime and Review composition: durable execution, admission, recovery and evidence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# No crate in this workspace has a doctest, and each empty rustdoc run still costs a
+# compile; the first doctest sets this back to true for its crate (ADR-0124).
+doctest = false
+
+[dependencies]
+af-attempt = { path = "../af-attempt" }
+af-check = { path = "../af-check" }
+af-process = { path = "../af-process" }
+af-pipeline-config = { path = "../af-pipeline-config" }
+af-contracts = { path = "../af-contracts" }
+af-graph = { path = "../af-graph" }
+af-runner = { path = "../af-runner" }
+af-sandbox = { path = "../af-sandbox" }
+af-source-git = { path = "../af-source-git" }
+af-store = { path = "../af-store" }
+af-telemetry = { path = "../af-telemetry" }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tempfile = "3.27.0"
+toml = "1.1.6"
+toml_edit = "0.25.15"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+
+[features]
+# Diagnostic builds only, both off by default and in every product build (ADR-0174): phase
+# spans, and the `perf-probe` example's region handshake that lets a profiler record exactly
+# its timed region.
+perf-trace = ["af-contracts/perf-trace", "af-store/perf-trace"]
+perf-control = []
+# The `perf-probe` calibration loop of slowdown trials only (ADR-0181); off in every other build.
+perf-calibration = ["af-contracts/perf-calibration"]
+
+[dev-dependencies]
+# Native Provider tests exercise the actual adapter context and sandbox boundaries.
+af-runner-claude = { path = "../af-runner-claude" }
+af-runner-codex = { path = "../af-runner-codex" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+jsonschema = { version = "0.58.4", default-features = false }
+# A real CommonMark and GFM parser: the human report export is judged by what it renders.
+comrak = { version = "0.55.0", default-features = false }
+# The test executables boundary every crate's tests share (`af-process/tests/support`).
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal"] }
+
+[lints]
+workspace = true

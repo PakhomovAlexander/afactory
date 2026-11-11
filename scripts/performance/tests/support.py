@@ -27,7 +27,7 @@ def read(path):
 
 
 class GitHubOpener:
-    """An opener for the nightly scripts' GitHub reader (scripts/nightly/nightlygithub.py):
+    """An opener for the nightly scripts' GitHub reader (scripts/nightly/nightly_github.py):
     `answer(path, headers)` gives (status, body) or raises, as api.github.com would; every
     request's URL and timeout are recorded, and a body is read only as far as the reader
     asks."""
@@ -213,6 +213,10 @@ def lab_repo(path, suite_bytes=None):
                                                                    "fixtures/performance/cli.toml"))
         files["fixtures/performance/adapters.toml"] = read(
             os.path.join(ROOT, "fixtures/performance/adapters.toml"))
+    from perflab import telemetry_lab
+    module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
+    for name in module.CONTRACT_SCHEMAS:
+        files['schemas/' + name] = read(os.path.join(ROOT, 'schemas', name))
     root = repo.commit("lab", files)
     return repo, root
 

@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 
 use crate::task_cli;
@@ -41,8 +41,11 @@ fn fixture_task(
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (package, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(package, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                package,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();

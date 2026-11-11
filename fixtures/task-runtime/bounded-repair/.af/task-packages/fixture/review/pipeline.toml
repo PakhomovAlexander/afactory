@@ -1,6 +1,6 @@
-"schema" = "af.pipeline/1"
+"schema" = "af.pipeline/6"
 "name" = "fixture/review"
-"version" = "1.0.0"
+version = "1.0.1"
 "max_attempts" = 3
 "max_parallel" = 2
 "contract" = {"inputs" = {"history" = {"artifact_type" = "af/ReviewHistory@1", "cardinality" = "one", "optional" = false, "root_default" = "empty_review_history", "covers" = [], "affinity" = {"kind" = "unbound"}}, "source" = {"artifact_type" = "af/SourceTree@1", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "unbound"}}, "base" = {"artifact_type" = "af/SourceTree@1", "cardinality" = "one", "optional" = true, "covers" = [], "affinity" = {"kind" = "unbound"}}, "requirements" = {"artifact_type" = "af/Requirements@1", "cardinality" = "one", "optional" = true, "covers" = [], "affinity" = {"kind" = "unbound"}}}, "outputs" = {"history" = {"artifact_type" = "af/ReviewHistory@1", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "unbound"}}, "review" = {"artifact_type" = "af/TaskReviewRound@1", "cardinality" = "one", "optional" = false, "covers" = ["reviewed"], "affinity" = {"kind" = "same_as", "input" = "source"}}, "checks" = {"artifact_type" = "af/TaskCheckReceipt@2", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "same_as", "input" = "source"}}, "findings" = {"artifact_type" = "af/TaskReviewClaims@1", "cardinality" = "one", "optional" = false, "covers" = [], "affinity" = {"kind" = "same_as", "input" = "source"}}}}

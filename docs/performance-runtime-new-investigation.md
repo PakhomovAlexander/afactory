@@ -24,9 +24,9 @@ reported, for this case's medians:
 That is historical pull-request evidence. It is not a measurement of current main, and it does
 not identify a cause.
 
-**The code path.** `TaskRuntime::new` (`crates/review-pipeline/src/task.rs`) calls
+**The code path.** `TaskRuntime::new` (`crates/af-runtime/src/task.rs`) calls
 `with_store`, which first calls `begin_execution`. That takes the Store lock and calls
-`EventStore::begin_task_execution` (`crates/review-store/src/store/task.rs`). It computes the
+`EventStore::begin_task_execution` (`crates/af-store/src/store/task.rs`). It computes the
 Task's whole projection (`task_projection`), returns early if this lease already recorded its
 execution marker, and otherwise appends the one `TaskExecutionStarted@1` marker. The append
 passes the projection it already computed (`append_batch_observed(..., Some(&state))`).
@@ -105,8 +105,8 @@ the measured request's validated trace and prints its phase summary and the regi
 breakdown. It never records a verdict sample.
 
 ```sh
-cargo build --locked --release -p review-pipeline --example perf-probe --features perf-trace
-cargo build --locked --release -p review-process --example perf-supervisor
+cargo build --locked --release -p af-runtime --example perf-probe --features perf-trace
+cargo build --locked --release -p af-process --example perf-supervisor
 mkdir -m 700 /scratch/af-runtime-new
 python3 scripts/performance/cli.py probe --trusted-local \
   --supervisor target/release/examples/perf-supervisor \

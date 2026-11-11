@@ -8,18 +8,18 @@
 //! app-server that exits before answering it is refused as the missing protocol capability.
 use super::compatibility::protocol_incompatibility;
 use super::*;
-use review_core::task::plan::WorkerExecutionV3;
-use review_core::task::provider_event::{ProbeSilenceV1, ProviderEventV1};
-use review_runner::native_failure::NativeFailureKind;
-use review_runner::task::reply_schema::ReplyContract;
-use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerModelAdapter};
-use review_runner_claude::models as rules;
+use af_contracts::task::plan::WorkerExecutionV3;
+use af_contracts::task::provider_event::{ProbeSilenceV1, ProviderEventV1};
+use af_runner::models as rules;
+use af_runner::native_failure::NativeFailureKind;
+use af_runner::task::reply_schema::ReplyContract;
+use af_runner::task::{ModelWorkerReturn, Unstarted, WorkerModelAdapter};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct TaskProviderIdentity {
     spec: ProviderSpec,
-    pi_ready: Option<review_runner_pi::Ready>,
+    pi_ready: Option<af_runner_pi::Ready>,
     program: PathBuf,
     principal_id: Option<String>,
     auth_method: String,
@@ -90,7 +90,7 @@ fn method_class(method: &str) -> &str {
 impl TaskProviderIdentity {
     /// Pi uses its adapter's exact-ID grammar and SDK catalog. Claude/Codex use the token-free
     /// static rules of a Model binding on Provider `provider` of kind `kind`, from
-    /// the one validation authority, `review_runner_claude::models` (ADR-0148): grammar G on the
+    /// the one validation authority, `af_runner::models` (ADR-0148): grammar G on the
     /// model and the effort level first (ADR-0147), so a value outside G is refused with G's words
     /// whatever else it fails; a documented alias, refused with its exact ID; a case or separator
     /// variant of a known exact ID; the versioned-ID rule; the kind's effort vocabulary.
@@ -104,7 +104,7 @@ impl TaskProviderIdentity {
         effort: &str,
     ) -> Result<(), String> {
         if kind == "pi" {
-            return review_runner_pi::static_rules(model, effort);
+            return af_runner_pi::static_rules(model, effort);
         }
         let kind = rules::Kind::parse(kind)
             .ok_or("Task Model binding names an unsupported Provider kind")?;
@@ -130,7 +130,7 @@ impl TaskProviderIdentity {
                 spec,
                 program,
                 principal_id: ready.principal.clone(),
-                auth_method: "oauth".into(),
+                auth_method: ready.auth_method.clone(),
                 pi_ready: Some(ready),
                 org: None,
                 cli_version: None,
@@ -187,7 +187,7 @@ impl TaskProviderIdentity {
             .as_ref()
             .map(|ready| {
                 let model = ready.model(model, effort)?;
-                review_runner_pi::authority(
+                af_runner_pi::authority(
                     &self.program,
                     self.spec.pi.as_ref().ok_or("Pi configuration missing")?,
                     self.spec
@@ -195,6 +195,7 @@ impl TaskProviderIdentity {
                         .as_deref()
                         .ok_or("Pi auth directory missing")?,
                     model,
+                    &ready.auth_method,
                 )
             })
             .transpose()?;
@@ -240,7 +241,7 @@ impl TaskProviderIdentity {
             else {
                 return Err("Pi authority missing".into());
             };
-            return Ok(Box::new(review_runner_pi::PiTaskAdapter {
+            return Ok(Box::new(af_runner_pi::PiTaskAdapter {
                 node: self.program.clone(),
                 config: self.spec.pi.clone().ok_or("Pi configuration missing")?,
                 auth_dir: self
@@ -282,14 +283,14 @@ impl TaskProviderIdentity {
                 ),
             ],
         };
-        let command = review_core::Command::new(
+        let command = af_contracts::Command::new(
             program,
-            flags.into_iter().map(review_core::Arg::literal).collect(),
+            flags.into_iter().map(af_contracts::Arg::literal).collect(),
         );
         Ok(match self.spec.kind {
             ProviderKind::Pi => unreachable!("Pi uses the SDK host"),
             ProviderKind::Claude => Box::new(
-                review_runner_claude::task::ClaudeTaskAdapter::new(&command)?
+                af_runner_claude::task::ClaudeTaskAdapter::new(&command)?
                     .for_provider(self.spec.id.clone())
                     .with_auth(
                         Some(auth.into()),
@@ -311,7 +312,7 @@ impl TaskProviderIdentity {
                     ),
             ),
             ProviderKind::Codex => Box::new(
-                review_runner_codex::task::CodexTaskAdapter::new(&command)?
+                af_runner_codex::task::CodexTaskAdapter::new(&command)?
                     .with_codex_home(auth.into()),
             ),
         })
@@ -349,7 +350,7 @@ impl TaskProviderIdentity {
                 deadline.saturating_duration_since(Instant::now()),
             )
             .map_err(Recheck::Unavailable)?;
-            if ready.principal != self.principal_id {
+            if ready.principal != self.principal_id || ready.auth_method != self.auth_method {
                 return Err(Recheck::NotCurrent);
             }
             return Ok(Rechecked::default());
@@ -605,7 +606,7 @@ fn org_digest(kind: &str, org: Option<&str>) -> Option<String> {
     digest.update(org.as_bytes());
     Some(format!(
         "sha256:{}",
-        review_core::hex::encode(&digest.finalize())
+        af_contracts::hex::encode(&digest.finalize())
     ))
 }
 
@@ -830,7 +831,7 @@ impl CurrentTaskProviderAdapter {
     }
 }
 impl WorkerModelAdapter for CurrentTaskProviderAdapter {
-    fn credential_mode(&self) -> review_core::CredentialModeV1 {
+    fn credential_mode(&self) -> af_contracts::CredentialModeV1 {
         self.native().credential_mode()
     }
     fn provider_kind(&self) -> &'static str {
@@ -845,7 +846,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        access: review_runner::task::WorkerAccess,
+        access: af_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -867,10 +868,10 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        access: review_runner::task::WorkerAccess,
+        access: af_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
-        allowance: review_runner::task::RemainingTokenAllowance,
+        allowance: af_runner::task::RemainingTokenAllowance,
         contract: ReplyContract,
     ) -> Result<ModelWorkerReturn, Unstarted> {
         Ok(self.invoke_current(
@@ -892,12 +893,12 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        access: review_runner::task::WorkerAccess,
+        access: af_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
-        allowance: review_runner::task::RemainingTokenAllowance,
+        allowance: af_runner::task::RemainingTokenAllowance,
         contract: ReplyContract,
-        activity: Option<review_runner::activity::Sink>,
+        activity: Option<af_runner::activity::Sink>,
     ) -> Result<ModelWorkerReturn, Unstarted> {
         Ok(self.invoke_current(
             cas,
@@ -921,7 +922,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        access: review_runner::task::WorkerAccess,
+        access: af_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
         contract: ReplyContract,
@@ -951,17 +952,17 @@ impl CurrentTaskProviderAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        access: review_runner::task::WorkerAccess,
+        access: af_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
         contract: ReplyContract,
-        allowance: Option<review_runner::task::RemainingTokenAllowance>,
-        activity: Option<review_runner::activity::Sink>,
+        allowance: Option<af_runner::task::RemainingTokenAllowance>,
+        activity: Option<af_runner::activity::Sink>,
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
             notes: Default::default(),
             message: Err(reason.into()),
-            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+            usage: Some(af_contracts::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
             raw_artifact_ids: vec![],
             native_failure: None,
@@ -1074,7 +1075,7 @@ fn principal(kind: &str, email: Option<&str>) -> Result<String, String> {
     digest.update(normalized.as_bytes());
     Ok(format!(
         "sha256:{}",
-        review_core::hex::encode(&digest.finalize())
+        af_contracts::hex::encode(&digest.finalize())
     ))
 }
 fn claude_principal(status: &serde_json::Value) -> Result<String, String> {
@@ -1170,7 +1171,7 @@ mod tests {
                     refusal.contains(&format!(
                         "(model_not_accepted): its {option} value ({bytes} bytes) is not a model \
                          spelling af accepts: {}",
-                        review_runner_claude::hint::PRINTABLE_RULE
+                        af_runner::models::diagnostic::PRINTABLE_RULE
                     )),
                     "{refusal}"
                 );

@@ -17,10 +17,10 @@
       "const": "af/diff-subject@1"
     },
     "base_snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "base": {
       "const": "../base"
@@ -52,10 +52,10 @@
             "minLength": 1
           },
           "before": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "after": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           }
         }
       }

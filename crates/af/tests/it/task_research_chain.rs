@@ -9,7 +9,7 @@
 //! refused at plan time, because the types differ, and so is every other binding ADR-0134 refuses.
 //! No credential, Provider or model is involved.
 
-use review_store::Cas;
+use af_store::Cas;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -88,7 +88,7 @@ impl Chain {
     /// `af task start --execute` over a Task file, validated as the inspection it prints.
     fn start(&self, file: &str, code: i32) -> Value {
         let done = self.json(&["task", "start", "--execute", "--file", file], code);
-        schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+        schemas::valid(&schemas::validator("task-inspection-v20.json"), &done);
         done
     }
 
@@ -306,7 +306,7 @@ fn a_report_binds_an_experiments_comparison_measurements_and_tree_and_runs_to_ve
     }
 
     let done = chain.json(&["task", "run", "--execute", "research"], 0);
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &done);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(done["result"]["domain_conclusion"], "verified");
     assert_eq!(done["attempts"], 3, "author, checks and verifier");

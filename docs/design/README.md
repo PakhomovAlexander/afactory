@@ -77,11 +77,12 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   step 3 adds the runner, hermetic tests and a staged first-week dry-run schedule, with the
   [operator runbook](../issue-triage-runner.md). Deployment, live backfill and the plugin remain
   later steps; the runner tests claim no live coverage.
-- [`pi-provider.md`](pi-provider.md) — native Pi Provider through AF's embedded SDK host:
-  Pi 1.4.0, Node >=22.19 and explicitly registered `openai-codex` stored OAuth, exact account
-  and model admission, confined file tools and partial accounting. Token-free real SDK and
-  hermetic runtime fixtures cover the boundaries; paid live smoke was not run. Architecture
-  adjustment: proposed [Pi SDK host decision](../adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
+- [`pi-provider.md`](pi-provider.md) — AF's confined Pi SDK host: official Pi 1.4.0,
+  Node >=22.19, provider-neutral chat/auth resolution, explicitly selected private profiles,
+  offline configured/cached catalogs, content-pinned installed provider registration, honest
+  unavailable identity, exact captured authority and native per-inference accounting. See the
+  [provider integration decision](../adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md).
+
 - [`pi-provider-validation.md`](pi-provider-validation.md) — retained original issue #494
   observation, both historical measurement runs, current validation checks and a reproducible
   source-content projection binding the fresh manual measurement without self-reference.

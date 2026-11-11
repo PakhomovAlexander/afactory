@@ -14,10 +14,10 @@
   ],
   "properties": {
     "subject_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "prior_history_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "round": {
       "type": "integer",
@@ -25,7 +25,7 @@
       "maximum": 16
     },
     "reviewer": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "findings": {
       "type": "array",

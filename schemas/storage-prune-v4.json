@@ -181,7 +181,7 @@
             ]
           },
           "path": {
-            "description": "The path as it is when it is UTF-8; otherwise in the canonical percent-encoded spelling of `review_core::encode_path`, with `path_encoded`.",
+            "description": "The path as it is when it is UTF-8; otherwise in the canonical percent-encoded spelling of `af_contracts::encode_path`, with `path_encoded`.",
             "type": "string",
             "minLength": 1
           },

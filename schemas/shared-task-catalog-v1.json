@@ -14,7 +14,7 @@
     "packages": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
       },
       "maxProperties": 128,
       "additionalProperties": {
@@ -31,7 +31,7 @@
             "pattern": "^\\d+\\.\\d+\\.\\d+$"
           },
           "digest": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "path": {
             "type": "string",

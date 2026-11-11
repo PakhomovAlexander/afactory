@@ -15,6 +15,8 @@ protocols the laboratory relies on, so the driver's own logic is what the tests 
   enabled during setup would show `setup_work`. Its recording is a little-endian perf.data
   holding declared LOST and LOST_SAMPLES records; `script` and `buildid-list` print their text
   formats from it, `buildid-list` each recording's configured listing.
+  Whole-command tests may instead declare `whole_samples`, an exact synthetic sample count
+  per completed command independent of the host's scheduling and elapsed capture time.
 - inferno's three tools collapse, diff and render; the renderer writes the `onload` handler and
   `<script>` element the real `--no-javascript` output still carries.
 - `af` answers `--version` and `task show ... --json`, the latter with a document of 10,000
@@ -211,6 +213,11 @@ if args[0] == "record":
     child = subprocess.Popen(command)
     enabled, samples, buffer = not controls, [], b""
     phase_file = config.get("phase_file")
+    if not controls and "whole_samples" in config:
+        # Cache-cleanup tests need decoded evidence, not a scheduling-dependent sample loop.
+        # Still execute and reap the real stand-in command, and retain its exit status.
+        child.wait()
+        samples = [config.get("whole_phase", "af")] * config["whole_samples"]
     while child.poll() is None:
         ready, _, _ = select.select([ctl], [], [], 0.001)
         if ready:

@@ -1342,7 +1342,7 @@ fn status_and_detect_leave_a_fresh_home_without_a_codex_directory() {
     assert_eq!(code(&json), 0, "{}", err(&json));
     let document: Value = serde_json::from_str(out(&json).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v5.json"),
+        &crate::schemas::validator("provider-status-v6.json"),
         &document,
     );
     assert_eq!(document["providers"][0]["auth"], "not_probed");
@@ -1554,7 +1554,7 @@ fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
     assert_eq!(code(&status), 0, "{}", err(&status));
     let document: Value = serde_json::from_str(out(&status).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v5.json"),
+        &crate::schemas::validator("provider-status-v6.json"),
         &document,
     );
     assert_eq!(
@@ -1691,7 +1691,7 @@ fn detect_recognizes_the_default_claude_context_that_status_accepts() {
     assert_eq!(code(&status), 0, "{}", err(&status));
     let status: Value = serde_json::from_str(out(&status).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v5.json"),
+        &crate::schemas::validator("provider-status-v6.json"),
         &status,
     );
     let main = status["providers"]

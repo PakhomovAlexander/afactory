@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use review_runner_claude::models::{Catalog, Kind};
+use af_runner::models::{Catalog, Kind};
 
 use super::{Effect, Pane, Row, SPINNER};
 use crate::providers::models::{self as catalogs, CatalogOutcome, ProviderCatalog};
@@ -1132,7 +1132,7 @@ pub(crate) mod tests {
         assert!(
             rows.iter().any(|row| row.starts_with(
                 "models source codex app-server model/list  version 0.162.1  freshness \
-                 models_cache.json fetched_at 2026-10-15T09:58:12Z  6 exact IDs"
+                 models_cache.json fetched_at 2026-10-15T09:58:12Z  7 exact IDs"
             )),
             "{rows:#?}"
         );

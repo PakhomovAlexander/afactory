@@ -10,16 +10,15 @@ Claude/Codex CLI or AF's embedded Pi SDK host owns them. The machine-local regis
 plus Pi's explicit backend and installed SDK entrypoint. Bootstrap runs in the invoking
 release rather than a repository's pinned one, with atomic registry publication.
 
-Pi uses the official **1.4.0 SDK** on **Node >=22.19** with stored OAuth for
-`openai-codex` or `kimi-coding`. OpenAI requires stable `accountId`; Kimi exposes no account
-principal. Kimi plans record `principal_id: null` and `identity_mode: "unavailable"`, separately
-from the canonical auth context. Account substitution in that context cannot be detected.
-Trusted `distinct_principals` policy refuses Kimi even across differently named profiles or
-backends. Other backends, API keys, ambient credentials and custom endpoints are unsupported.
-Setup/status/catalog are token-free; Task, Review and doctor retain bounded admission and
-confined tools. Kimi Review requires a catalog Task pipeline with explicit context-only policy;
-installed native Review continues to require known account principals.
-Install outside a repository, log in with Pi at a private terminal, then register:
+Pi uses the official **1.4.0 SDK** on **Node >=22.19**. Its real provider/model runtime
+resolves every supported chat backend and explicitly admitted operator catalog, including
+stored OAuth, stored API keys, explicit environment/cloud credential contexts and compatible
+custom endpoints. AF has no backend/model allowlist. Only chat models become Workers.
+Setup/status/catalog are token-free; admission, Task, Review and doctor retain their budgets
+and confined tools. No live provider call is made by setup or status.
+
+Install outside a repository, configure Pi credentials at a private terminal, then register
+the existing private profile with an exact SDK provider ID:
 
 ```sh
 af provider setup pi-personal --kind pi --backend openai-codex \
@@ -27,33 +26,39 @@ af provider setup pi-personal --kind pi --backend openai-codex \
   --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js
 ```
 
-For Kimi, use an existing Pi OAuth profile and register explicitly:
+The same command accepts `anthropic`, `openai`, `google-vertex`, `amazon-bedrock`,
+`kimi-coding` or a provider explicitly registered by an installed, content-pinned capability.
+The selected profile's data-only `models.json` and cached `models-store.json` contribute to
+the effective SDK catalog without network refresh. Configured/cached Kimi `k3.1-pro` stays
+that exact model; AF never substitutes `k3`. Supported thinking levels come from that model's
+catalog and must survive session construction exactly. Unknown IDs/efforts refuse before
+private prompt delivery. Large catalogs use bounded pages within the existing probe deadline.
 
-```sh
-af provider setup pi-kimi --kind pi --backend kimi-coding \
-  --auth-dir /absolute/private/kimi-profile \
-  --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js
-af provider models pi-kimi --resolve k3/high --json
-```
+The private optional `af-context.json` (`af.pi-context/1`) explicitly selects credential
+environment values and an installed provider-registration module, if needed. It never selects
+the whole developer environment. The host starts with cleared environment and private HOME/XDG;
+credential files and module paths must be external, explicit and rechecked. Data-only command
+helpers refuse; executable registration requires an installed module and its exact content pin.
+Project configuration, hooks, general extensions, MCP, tools and warm sessions are not discovered.
+See [the Pi design](design/pi-provider.md#explicit-credentials-and-installed-provider-capabilities)
+for the file format, private-file requirements, cloud-file selection and registration facade.
 
-Only `k3` at the official HTTPS `https://api.kimi.com/coding/v1` endpoint is admitted.
-Supported thinking levels are exactly `low`, `high`, `max`; `medium` and `off` refuse,
-with no fallback. The human status note explicitly says account identity is unavailable and
-auth context only; status JSON retains its stable authentication/credential states. Plans and
-admission receipts capture the typed unavailable identity separately from auth context.
-Pi owns the OAuth record and its additional SDK metadata. AF validates the required OAuth
-mode, nonempty access/refresh strings and finite expiry, preserving opaque metadata through
-refresh without interpreting it as account identity, settings, endpoints or helpers.
-Kimi raw usage is observed from native chunks, including cached-token alternatives; missing
-counters remain unknown. Kimi's captured AF token-budget convention charges total
-`prompt_tokens + completion_tokens` once per inference, with no cache discount even when
-cache counters are present. Reasoning and cache writes are already included, never added
-again. Complete reporting needs valid input/output aggregates for every settled inference;
-absent optional cache/reasoning counters remain unknown. This conservative budget charge is
-not an invoice, uncached-token count or provider cost estimate. OpenAI retains input minus
-cache read plus output and refuses complete accounting without observed cache reads.
-The captured policy digest binds these versioned backend conventions and the host; preceding
-policy identities refuse before private input. No live Kimi inference was run by this Worker.
+OpenAI Codex retains mandatory stable `accountId` and token-routing-account agreement.
+Other contexts record `principal_id: null` and typed `identity_mode: "unavailable"`, separate
+from the canonical auth context. Secrets, keys, tokens, profiles and cloud project labels never
+become account principals. Account substitution across invocations within an unavailable
+context cannot be detected. Trusted `distinct_principals` policy refuses unavailable identities
+across backends and profiles; catalog Task pipelines can explicitly permit context-only identity.
+Installed native Review continues to require known account principals.
+
+Accounting observes native wire usage for each SDK chat transport. OpenAI Codex preserves input
+minus observed cache read plus output. Other contexts charge conservative total input plus output;
+reasoning and included cache components are not charged twice. Missing observations remain unknown;
+unsafe/incomplete accounting refuses success while preserving valid partial charges. Initialized
+SDK zeros are never evidence. These conventions are AF token-budget charges, not provider invoices.
+The captured effective model/configuration and adapter-policy digests refuse drift before private
+input. The [provider integration decision](adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md)
+records this boundary; **paid live provider smoke was not run**.
 
 The kernel passes Pi a trusted remaining token allowance, including admission and format re-asks.
 Before every SDK inference the host checks observed cumulative AF charge and requires safe,
@@ -61,13 +66,22 @@ complete accounting for previous inferences. SDK `maxTokens` is capped by remain
 and the model's output limit. A single inference may still overshoot: native prompt usage arrives
 only afterward. Its full charge is retained; no subsequent inference is allowed after exhaustion
 or unsafe accounting. Worker payloads and environment variables cannot increase the allowance.
-Bounded `af/pi-inference-evidence@1` raw CAS evidence retains per-inference native counters,
+Bounded `af/pi-inference-evidence@2` raw CAS evidence retains per-inference native counters,
 observation/completion counts, a fresh non-secret request nonce and declared tool-name counts,
 separately from aggregate AF charge.
 It excludes prompts, answers, reasoning text, tool arguments/results and credentials, and survives
 failure/cancellation when observed. Capacity exhaustion fails closed. File-only Pi Workers receive
 the actual output schemas and an array-envelope example; typed admission remains authoritative.
 See the [allowance decision](adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
+
+Pi terminal SDK errors, including assistant errors after a completed tool call, retain a bounded,
+sanitized diagnostic for the operator and raw CAS evidence. Complete native usage keeps its exact
+AF charge without an incomplete-billing refusal; the Worker reply still fails. Bounded structured
+error `type` and `code` fields contribute to classification, so `rate_limit_error` or
+`model_not_found` keeps its category even when the message is neutral or withheld for privacy.
+Only the filtered message becomes diagnostic text; provider codes and other payload fields stay
+private. Successful replies still require successful settlement. See the
+[Pi host design](design/pi-provider.md) for the protocol and diagnostic bounds.
 
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
@@ -78,22 +92,22 @@ its JSON (or human result) on stdout and prints an AF-authored detail and outcom
 
 Pi setup does not start login; `--login` and `af provider auth` remain unavailable for Pi.
 `provider detect` scans Claude/Codex contexts; Pi registration is explicit. Writable Pi
-Workers get confined edit/write tools in addition to read/grep/find/ls, with no shell,
-extensions or MCP. Worker packages name `provider_kind = "pi"`, an exact catalog model ID
+Workers get confined edit/write tools in addition to read/grep/find/ls, with no shell or MCP.
+Installed provider registration supplies no model-visible extension resources or tools. Worker packages name `provider_kind = "pi"`, an exact catalog model ID
 and supported thinking level. `af provider models pi-personal` lists those levels.
 See the [Pi design and evidence](design/pi-provider.md) for the protocol, identity,
 accounting and confinement details, supported matrix and limits. The official SDK creation
 and tool test is token-free; **paid live smoke was not run**.
 
-The registry format is version 3; versions 1 and 2 fail closed under ADR-0145. Recreate older
+The registry format is version 4; versions 1, 2 and 3 fail closed under ADR-0145. Recreate older
 registrations with this release. Codex and Claude retain their registration fields and native
 adapter behavior. Pi setup emits a safe typed report for every internal refusal, including early
-validation/discovery failures. Invalid or reserved requested IDs and absent or unsupported
-backends appear as null, never as an invented supported identity or a raw invalid value.
+validation/discovery failures. Invalid or reserved requested IDs and absent or malformed
+backend IDs appear as null, never as an invented supported identity or a raw invalid value.
 Failures repeat the AF-authored detail/outcome on stderr even with `--json`; early refusals
 exit 3 and registry conflicts exit 5. CLI parser errors remain usage errors before Pi setup.
-Pi setup JSON is `af/pi-provider-setup@3`; the shared status and catalog
-versions are `af/provider-status@5` and `af/provider-models@2`.
+Pi setup JSON is `af/pi-provider-setup@4`; the shared status and catalog
+versions are `af/provider-status@6` and `af/provider-models@4`.
 
 ## In a first run
 
@@ -345,7 +359,7 @@ as machine-local bootstrap operations.
 Execution, status and model discovery keep their existing project pin dispatch: an older pinned
 release does **not** honor suspension. Use a pin containing this feature for the work it controls.
 
-Suspensions live separately from registry v1 in
+Suspensions live separately from the Provider registry in
 `$XDG_CONFIG_HOME/af/provider-disables-v1.json` (default
 `~/.config/af/provider-disables-v1.json`), independent of `AF_PROVIDERS_FILE`. They do not edit the
 registry, auth directories or credentials. The file is private, versioned, bounded to 32 entries
@@ -357,7 +371,7 @@ Each new lookup compares the current wall clock to the stored absolute Unix time
 nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
 Changing the system clock changes the remaining suspension. No background process is needed.
 Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
-that Provider, even with `--usage`. JSON is `af/provider-status@5`, with `disabled_until` and `enable_command`
+that Provider, even with `--usage`. JSON is `af/provider-status@6`, with `disabled_until` and `enable_command`
 (non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
 
 Review and model preflights, Task admission and every captured or resumed Task private send
@@ -429,7 +443,7 @@ version it replaced is preserved; the command prints where
 entry goes with it.
 
 The command is all or nothing. An ID that is not registered refuses it with exit 1 and removes
-nothing. `af` does not check whether a pipeline, Campaign or Task still binds a removed ID.
+nothing. `af` does not check whether a Task Pipeline still binds a removed ID.
 
 Two cases come up often:
 
@@ -454,9 +468,9 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@5
+af provider status --json          # the same, as af/provider-status@6
 af provider status --usage         # additionally probe subscription and quota windows
-af provider doctor --campaign NAME --provider correctness=codex-main
+af provider doctor TASK_ID --confirm-plan PLAN_ID
 ```
 
 `status` is deliberately cheap and says only what it checked. A context that does not exist or
@@ -468,7 +482,7 @@ only when a row is authenticated. It reports four independent axes:
 
 | Axis | Values | Means |
 |---|---|---|
-| `registered` | true / false | in the registry, so selectable by `--provider NODE=ID`; false is an ambient discovery label |
+| `registered` | true / false | in the registry, so selectable by a machine-local Task `--bindings FILE` mapping; false is an ambient discovery label |
 | `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about; `not_probed` means the directory is absent or holds no login marker, so the CLI was not asked |
 | `usability` | `usable_or_untested`, `unusable`, `unknown` | status never claims `usable`: only `af provider doctor` dispatches and can prove it |
 | `usage.state` | `not_requested`, `not_applicable`, `unsupported`, `available`, `unavailable` | the optional plan and quota axis |
@@ -495,9 +509,10 @@ refusal that happens anyway is still `model_refused`
 
 ```sh
 af provider models                                        # every registered Provider's catalog
-af provider models claude-work --json                     # the same, as af/provider-models@2
+af provider models claude-work --json                     # the same, as af/provider-models@4
 af provider models claude-work --resolve 'Fable 5.1/xhigh'
-af provider models codex-main --resolve 'GPT-6 Sol/ultra'
+af provider models codex-main --resolve 'GPT-6.1 Sol/ultra'
+af provider models pi-personal --page 1 --json
 ```
 
 `af provider models` lists, for every registered Provider or the named ones, the model catalog
@@ -508,8 +523,16 @@ tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
-| `pi` | AF host `af.pi-host/4` identity/catalog, using installed SDK 1.4.0 static OpenAI and Kimi K3 models | Pinned SDK static catalog; no network refresh |
+| `pi` | AF host `af.pi-host/7` identity/catalog, using installed SDK 1.4.0 effective chat models from the SDK and explicit profile | Pinned SDK plus configured/cached catalogs; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
+
+Pi lists zero-based pages with `--page N`, retaining the 64-row page bound. JSON `catalog_page`
+reports `number`, `next` and `total`; its freshness source is `sdk_profile`, rendered as
+`offline SDK/profile`. `--resolve` checks the complete captured catalog even when the model is
+on another page. Routed SDK IDs such as `~vendor/model` can be resolved with or without `/EFFORT`.
+Account-qualified resource ARNs use generated `af-private-model/<digest>` selectors, keeping
+the native account component inside the host while pinning its exact SDK model. Bind the
+printed selector. Native Claude/Codex spelling rules and catalog bounds are unchanged.
 
 Each Provider gets a header with the source, the harness version and the freshness, one row per
 exact ID with its display name, the aliases that resolve to it and its effort levels (the
@@ -520,24 +543,19 @@ Code's catalog is the account's `/model` picker, which leaves out exact IDs such
 only by the charged `af provider doctor`.
 
 `--resolve SPELLING[/EFFORT]` reads an alias, a display name (case-insensitively), an exact ID
-or a family and version such as `Fable 5.1` or `GPT-6 Sol`, and says what it is: an exact ID
+or a family and version such as `Fable 5.1` or `GPT-6.1 Sol`, and says what it is: an exact ID
 the catalog lists (confirmed), an alias of an exact ID (af binds exact IDs, never the alias), a
 display name or family form of an exact ID, a misspelling with the nearest catalog IDs (the
 same family or at most two edits away), or an exact ID the catalog does not list, which passes
 or fails af's spelling rule and whose usability only `af provider doctor` proves. Pi requires
 an exact catalog ID; unlisted IDs are refused. It then checks
-the effort level against that model's levels and, for a listed pair only, prints the three
-configurations to copy. Each is printed under its label, one table header or key per line, and
-is a TOML document that parses on its own and pastes unchanged into the file it is named for:
-the review package's `[runner]` table for `reviewer.toml`, the Task package's `[runner]` table
-for `worker.toml`, and the `[providers]` table of the Task catalog or a `--bindings` file, with
-the review-time equivalent as a comment line. `af provider models claude-work --resolve
-'Fable 5.1/xhigh'` prints:
+the effort level against that model's levels and, for a listed pair only, prints the two
+configurations to copy. Each is a TOML document that parses on its own: the Task package's
+`[runner]` table for `worker.toml`, and the `[providers]` table of the Task catalog or a
+`--bindings` file. Native Review uses the same Worker and binding authority. For example,
+`af provider models claude-work --resolve 'Fable 5.1/xhigh'` prints:
 
 ```text
-    reviewer.toml  [runner]
-                   program = "claude"
-                   args = [{ value = "--model" }, { value = "claude-fable-5-1" }, { value = "--effort" }, { value = "xhigh" }]
     worker.toml    [runner]
                    kind = "model"
                    provider_kind = "claude"
@@ -545,14 +563,12 @@ the review-time equivalent as a comment line. `af provider models claude-work --
                    effort = "xhigh"
     bindings       [providers]
                    "PACKAGE" = "claude-work"
-                   # af review run … --provider NODE=claude-work
 ```
 
-A Codex reviewer names `program = "codex"` and passes the effort level as `{ value = "-c" },
-{ value = "model_reasoning_effort=\"ultra\"" }` in place of the last two args. With `--json`,
-`configuration.reviewer_runner`, `configuration.worker_runner` and `configuration.binding` each
-carry the text of one block, its lines joined by newlines. af never substitutes a model or an
-effort level, so an alias or an effort level the model does not list prints no configuration.
+With `--json`, `af/provider-models@4` carries these texts in `configuration.worker_runner`
+and `configuration.binding`. There is no Reviewer manifest or `reviewer_runner` template.
+An alias or an effort level the model does not list prints no configuration. Provider capability
+and recorded-evidence checks apply equally to implementation and Review Workers.
 
 In `af tui`, the Providers pane shows under each Provider a `models` section with that
 Provider's own catalog. A Worker declaration names only a Provider kind, never the Provider that
@@ -625,7 +641,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
   environment: a fresh probe directory, the sanitized `PATH`, no credential read or written, and
   no model call. It reads the options the page declares and compares them with the list the
   adapter crate keeps next to the code that builds the command
-  (`review_runner_claude::CLAUDE_INVOCATION`, `review_runner_codex::CODEX_INVOCATION`); a unit test
+  (`af_runner_claude::CLAUDE_INVOCATION`, `af_runner_codex::CODEX_INVOCATION`); a unit test
   holds each list equal to what its command builder emits.
 - The decision is made on the help page, never on a version string, so a wrapper or a fork is
   judged by what it accepts. Only a refused CLI is also asked for `--version`, to report it.
@@ -643,7 +659,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
 
 | What | Value |
 |---|---|
-| af invokes | `claude -p --output-format json [--model M --effort E] --safe-mode --restricted --permission-mode dontAsk --strict-mcp-config --tools … --allowedTools … [--json-schema …]`, prompt on stdin; `--json-schema` carries a typed reply's schema ([ADR-0103](adr/0103-constrain-native-claude-task-replies.md)) or a review-Campaign reviewer's Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
+| af invokes | `claude -p --output-format json [--model M --effort E] --safe-mode --restricted --permission-mode dontAsk --strict-mcp-config --tools … --allowedTools … [--json-schema …]`, prompt on stdin; `--json-schema` carries a typed reply's schema ([ADR-0103](adr/0103-constrain-native-claude-task-replies.md)) or a native Review Worker's Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
 | Attempt environment | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` and `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, for every access mode, beside the auth grants. The third stops Claude Code's automatic model fallback: when the bound model's safety classifier flags a request, the client would otherwise re-run it on another model (Opus 5 or Opus 4.8 for Claude Fable 5.1) and keep the session there; with it a flagged request ends as a refusal on the bound model. `CLAUDE_CODE_NO_MODEL_FALLBACK` is not set, because it also disables the model substitution compaction may need. These are a bounded client mitigation: af still refuses any reply whose usage names a model the Worker did not bind ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)) |
 | Required options (`claude --help`) | `-p`/`--print`, `--output-format`, `--model`, `--effort`, `--safe-mode`, `--restricted`, `--permission-mode`, `--strict-mcp-config`, `--tools`, `--allowedTools`, `--json-schema` |
 | Required protocol | `claude auth status --json` answers the identity probe |
@@ -657,7 +673,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
 
 | What | Value |
 |---|---|
-| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--output-schema <file>] [--model M -c model_reasoning_effort=…] -`, prompt on stdin; `--output-schema` names the typed reply's strict schema ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) or a review-Campaign reviewer's strict Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
+| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--output-schema <file>] [--model M -c model_reasoning_effort=…] -`, prompt on stdin; `--output-schema` names the typed reply's strict schema ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) or a native Review Worker's strict Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
 | Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--output-schema`, `--model`, `-c`/`--config` |
 | Required protocol | `codex app-server`, started bare, answers JSON-RPC `initialize` (id 1) over its default stdio transport, then `account/read` or `account/rateLimits/read` (id 2); `codex login status` answers the status probe |
 | Checked | the options and the `initialize` answer by `af provider status` (with or without `--usage`), `af provider setup` and Task Provider admission; the whole protocol again by the identity probe before every private Worker send, and by `status --usage` |
@@ -746,9 +762,9 @@ reinstalling the CLI cannot grant a host permission. `af doctor` reports the det
 harness, sandbox and network context without treating markers as proof of CLI compatibility.
 
 The versioned documents are [`provider-detect-v4.json`](../schemas/provider-detect-v4.json),
-[`provider-status-v5.json`](../schemas/provider-status-v5.json),
+[`provider-status-v6.json`](../schemas/provider-status-v6.json),
 [`provider-setup-v2.json`](../schemas/provider-setup-v2.json) and
-[`provider-models-v2.json`](../schemas/provider-models-v2.json). They are closed vocabularies; the
+[`provider-models-v4.json`](../schemas/provider-models-v4.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
 can represent an account email, an organization or account identity, a credential, OAuth material,
 or raw Provider output — quota windows carry only the numbers `af` derived itself, and the human
@@ -768,7 +784,7 @@ table keeps the Provider's own window labels.
 | `model_refused` on the stderr of `af task run` or `af review run`, or in an Attempt diagnostic: `the safety classifier of MODEL (effort E) flagged the request and MODEL refused it` | The bound model's safety classifier flagged the Worker's input and Claude Code, with its automatic fallback turned off, ended the turn with a refusal (`safety_stops` above zero, `stop_reason` `refusal`, or `…'s safeguards flagged this message` in the result of an error result, whatever its `errors` holds). It is not a credential or spelling problem. af charged what the result reported and did not retry, because the same input is flagged again. Change the input or bind another model, then rerun ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | `Claude Code switched models, a safety-classifier fallback (model_refused)` or `an unexplained switch (model_switched)` | Claude Code answered with a model the Worker did not bind; the line names the bound model, each model that answered with its output tokens (a model ID outside the printable grammar reads `[not printable]` with its byte length), and `safety_stops` and `num_turns`. The diagnostic in `af task show` starts with it even when the usage was also malformed or listed more than 32 models, and gives those accounting reasons after it; an entry for another model that reports no activity, or only malformed counters, is not a switch. af refused the reply, because it never runs or accepts an unrequested model, and charged what the result reported. af already sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so a client that still switches ignores it: upgrade it with `npm install -g @anthropic-ai/claude-code@latest` and rerun. If the classifier flags the input again, change it or bind another model. |
 | `model_unavailable` after `Claude Code rejected the model`, quoting the model ID | Claude Code answered "There's an issue with the selected model (…). It may not exist or you may not have access to it.": it does not know that model ID or the account cannot use it. The line names the Provider, the nearest exact IDs af knows and `af provider models <id>`. Correct the binding's model ID (Claude IDs use hyphens, such as `claude-fable-5-1`), then check the Provider with `af provider status` (token-free) and `af provider doctor` (charged). |
-| `af refused the binding of model … (model_not_accepted)` from `af task plan`, `af review plan`, `af review render` or a run | A rule refused the binding before any process started: an alias (with the exact ID it resolves to), a misspelling of a known exact ID (with the nearest IDs), an unversioned model, an effort level the Provider kind does not accept or the model does not list (with the levels it lists). Bind the exact ID and an effort level `af provider models <id>` lists; `--resolve` prints the configuration to copy ([ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)). |
+| `af refused the binding of model … (model_not_accepted)` from `af task plan`, `af review plan` or a run | A rule refused the binding before any process started: an alias (with the exact ID it resolves to), a misspelling of a known exact ID (with the nearest IDs), an unversioned model, an effort level the Provider kind does not accept or the model does not list (with the levels it lists). Bind the exact ID and an effort level `af provider models <id>` lists; `--resolve` prints the configuration to copy ([ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)). |
 | `its --model value (N bytes) is not a model spelling af accepts` | The binding's model (or `--effort`) is outside the one grammar af prints: an ASCII letter or digit, then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`, with no `/`, `@` or whitespace. For Claude/Codex, `af task plan`, `af review run` and their adapters refuse it before any process starts and never print the value, prefixed with the Worker or node and its Provider label; every Worker's binding is checked before the first Provider is probed, and this rule before every other. Put the model ID itself in the binding, such as `claude-fable-5-1` or `us.anthropic.claude-opus-5-5-v1:0` ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | exit 7 from `status --usage` | Optional usage probing did not answer. Authentication is unaffected; drop `--usage` if you only needed that. |
 | `auth directory … is writable by another user` | Tighten ownership and permissions on the directory (and its rename-controlling parents) before registering it. |

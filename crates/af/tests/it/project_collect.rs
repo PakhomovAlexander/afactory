@@ -258,8 +258,8 @@ fn repository(machine: &Machine, survey: &str) -> PathBuf {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\n{survey}"
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\n{survey}"
         ),
     );
     for (n, file) in ["src/a.rs", "src/b.rs", "README.md"].iter().enumerate() {
@@ -1026,8 +1026,8 @@ fn the_adversarial_pattern_neither_hangs_nor_matches_the_surveyors_exclude() {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\nexclude = [\"{}\"]\n",
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\nexclude = [\"{}\"]\n",
             "*a".repeat(30)
         ),
     );
@@ -1052,8 +1052,8 @@ fn a_pattern_over_256_bytes_and_a_list_over_64_are_refused_naming_the_key() {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\nagent_trailers = [{}]\n",
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\nagent_trailers = [{}]\n",
             list.join(", ")
         ),
     );
@@ -1076,8 +1076,8 @@ fn a_pattern_over_256_bytes_and_a_list_over_64_are_refused_naming_the_key() {
         &repo,
         ".af/af.toml",
         &format!(
-            "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-             [defaults]\npipeline = \"review\"\n\n[survey]\nagent_trailers = [{}]\n",
+            "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+             [survey]\nagent_trailers = [{}]\n",
             list.join(", ")
         ),
     );
@@ -1534,8 +1534,8 @@ fn a_question_mark_is_one_byte_in_the_surveyors_exclude() {
             &repo,
             ".af/af.toml",
             &format!(
-                "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
-                 [defaults]\npipeline = \"review\"\n\n[survey]\nexclude = [\"{pattern}\"]\n"
+                "version = 2\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+                 [survey]\nexclude = [\"{pattern}\"]\n"
             ),
         );
         // Not `-a`: the index holds paths the working tree does not.
@@ -2007,7 +2007,7 @@ fn a_survey_file_in_a_container_with_a_name_that_is_not_utf8_is_reported_and_lef
     }
     let leftover = container.join(target);
     std::fs::rename(machine.object(target), &leftover).unwrap();
-    let expected = review_core::encode_path(leftover.as_os_str().as_bytes());
+    let expected = af_contracts::encode_path(leftover.as_os_str().as_bytes());
     assert!(
         expected.ends_with(&format!(
             "/0f1e2d3c4b5a69788796a5b4c3d2e1%E9/sha256%3A{}",
@@ -2215,7 +2215,7 @@ fn a_campaign_deeper_than_the_removal_walk_is_left_and_reported() {
         .join("state/af/review/campaigns")
         .join(format!("c-{}", "d".repeat(64)));
     std::fs::create_dir_all(&campaign).unwrap();
-    review_store::EventStore::open(campaign.join("events.sqlite")).unwrap();
+    af_store::EventStore::open(campaign.join("events.sqlite")).unwrap();
     let mut deep = campaign.join("deep");
     for _ in 0..130 {
         deep = deep.join("d");
@@ -2493,7 +2493,7 @@ fn replace_born_later(path: &Path, bytes: &[u8]) {
 
 /// The digest af names the bytes `bytes` by in a CAS.
 fn digest_of(bytes: &[u8]) -> String {
-    review_store::canonical::blob_content_id(bytes)
+    af_store::canonical::blob_content_id(bytes)
 }
 
 /// Put `bytes` into the Project Store's CAS at their digest, as a writer that crashed before its

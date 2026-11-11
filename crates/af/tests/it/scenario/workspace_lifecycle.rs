@@ -23,7 +23,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
 fn hash(path: &Path) -> String {
     format!(
         "sha256:{}",
-        review_core::hex::encode(&Sha256::digest(std::fs::read(path).unwrap()))
+        af_contracts::hex::encode(&Sha256::digest(std::fs::read(path).unwrap()))
     )
 }
 fn preparation(run: &Value, name: &str) -> Value {
@@ -63,7 +63,7 @@ fn assert_task(state: &Path, run: &Value, name: &str, p: &Value) {
         t["result"]["outputs"]["snapshot"]["snapshot_id"],
         p["snapshot_id"]
     );
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let revision = cas
         .get_artifact(t["revision_id"].as_str().unwrap())
         .unwrap();
@@ -73,7 +73,7 @@ fn assert_task(state: &Path, run: &Value, name: &str, p: &Value) {
     );
     assert_eq!(revision.payload["kind"], "implement");
     assert!(
-        review_source_git::task::descends_from(
+        af_source_git::task::descends_from(
             &cas,
             p["snapshot_id"].as_str().unwrap(),
             p["source_snapshot"].as_str().unwrap()
@@ -82,9 +82,9 @@ fn assert_task(state: &Path, run: &Value, name: &str, p: &Value) {
     );
     if !p["source_predecessor"].is_null() {
         let (snapshot, _) =
-            review_source_git::task::read_snapshot(&cas, p["source_snapshot"].as_str().unwrap())
+            af_source_git::task::read_snapshot(&cas, p["source_snapshot"].as_str().unwrap())
                 .unwrap();
-        let origin = review_source_git::task::read_origin(&cas, &snapshot.origin_id).unwrap();
+        let origin = af_source_git::task::read_origin(&cas, &snapshot.origin_id).unwrap();
         assert_eq!(
             origin.bound_from().unwrap().snapshot_id,
             p["source_predecessor"].as_str().unwrap()

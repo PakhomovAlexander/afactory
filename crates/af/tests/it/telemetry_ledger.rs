@@ -7,24 +7,21 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
-use review_pipeline::telemetry::StoreMirror;
-use review_store::store::observer::{Commit, CommitObserver, WallCommit};
-use review_store::{Cas, EventStore};
-use review_telemetry::ledger::Ledger;
-use review_telemetry::level::Level;
-use review_telemetry::record::SealExit;
-use review_telemetry::segment::writer::{Writer, WriterOptions};
-use review_telemetry::subscriber::{TelemetrySubscriber, Typed};
-use review_telemetry::view::{self, Resolved};
+use af_contracts::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
+use af_runtime::telemetry::StoreMirror;
+use af_store::EventStore;
+use af_store::store::observer::{Commit, CommitObserver, WallCommit};
+use af_telemetry::ledger::Ledger;
+use af_telemetry::level::Level;
+use af_telemetry::record::SealExit;
+use af_telemetry::segment::writer::{Writer, WriterOptions};
+use af_telemetry::subscriber::{TelemetrySubscriber, Typed};
+use af_telemetry::view::{self, Resolved};
 use serde_json::Value;
 
-#[path = "telemetry_ledger/campaign_fixture.rs"]
-pub(crate) mod campaign_fixture;
 #[path = "telemetry_ledger/task_fixture.rs"]
 pub(crate) mod task_fixture;
 
-use campaign_fixture as campaign;
 use task_fixture::TaskFixture;
 
 /// One execution recording a run: its writer, the subscriber the kernel's spans reach, and the
@@ -49,11 +46,11 @@ impl Recording {
         ordinal: u64,
     ) -> Self {
         let level = options.level;
-        options.redactor = review_telemetry::redact::Redactor::new();
+        options.redactor = af_telemetry::redact::Redactor::new();
         let writer = Writer::new(options).unwrap();
         let dispatch = tracing::Dispatch::new(TelemetrySubscriber::new(writer.clone()));
-        let store_id = review_telemetry::trace::store_id(store).unwrap();
-        // A Task's log is a Task run; a Campaign's log is a review run.
+        let store_id = af_telemetry::trace::store_id(store).unwrap();
+        // Native Review uses the same Task run identity as every other Task.
         let kind = if run_id.starts_with("task:") {
             "task"
         } else {
@@ -127,7 +124,7 @@ pub fn read_ledger(root: &Path, run_id: &str) -> Ledger {
     else {
         panic!("run {run_id} is not recorded in {}", root.display());
     };
-    review_telemetry::ledger::ledger(
+    af_telemetry::ledger::ledger(
         &index,
         root,
         read,
@@ -176,186 +173,11 @@ fn directories() -> (tempfile::TempDir, PathBuf, tempfile::TempDir) {
     (temp, root, store)
 }
 
-// ------------------------------------------------------------------------------------------
-// Finding and Demand summaries
-
-/// A recorded Campaign: its telemetry directory (in the first), the Findings' statuses as the
-/// Ledger holds them, and its committed events as `(sequence, type, id)`.
-type RecordedCampaign = (
-    tempfile::TempDir,
-    PathBuf,
-    BTreeMap<String, String>,
-    Vec<(u64, String, String)>,
-);
-
-/// The Campaign every summary test records: two reviewers report three claims and a standalone
-/// Demand, a third disputes one claim (`contested`), and two are declined afterwards
-/// (`rejected`, `wontfix`).
-fn record_campaign(level: Level) -> RecordedCampaign {
-    let (temp, root, store_dir) = directories();
-    let recording = Recording::start(&root, level, store_dir.path(), campaign::RUN, 1);
-    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
-    let mut store = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    store.observe_commits(recording.mirror());
-    recording.within(|| {
-        let round = campaign::opened_round(&mut store, &cas);
-        let deep = campaign::stage(
-            r#"{"reports":[{"severity":"major","file":"src/a.rs","line":7,
-                 "title":"Retry loop can spin forever","body":"b","fix":"f","confidence":0.9}],
-                "benchmark_demands":[],"dispositions":[]}"#,
-        );
-        let cross = campaign::stage(
-            r#"{"reports":[
-                  {"severity":"blocker","file":"src/queue.rs","line":3,
-                   "title":"Queue grows without bound","body":"b","fix":"f","confidence":0.8},
-                  {"severity":"minor","file":"src/lib.rs","line":1,
-                   "title":"Misleading comment","body":"b","fix":"f","confidence":0.5}],
-                "benchmark_demands":[{"claim":"Enqueue stays O(1)",
-                   "why":"the queue is on the hot path","suggested_method":"time 10^6 enqueues"}],
-                "dispositions":[]}"#,
-        );
-        campaign::admit(
-            &mut store,
-            &cas,
-            &round,
-            &[
-                ("deep", "01jd8m4qz9k7v3n2p6r8t0w201", &deep),
-                ("cross", "01jd8m4qz9k7v3n2p6r8t0w202", &cross),
-            ],
-        );
-        let ledger = campaign::ledger(&store, &cas);
-        let key = |title: &str| {
-            ledger
-                .findings()
-                .into_iter()
-                .find(|finding| finding.title == title)
-                .unwrap()
-                .key
-                .clone()
-        };
-        let (retry, queue, comment) = (
-            key("Retry loop can spin forever"),
-            key("Queue grows without bound"),
-            key("Misleading comment"),
-        );
-        let positions = campaign::stage(&format!(
-            r#"{{"reports":[],"benchmark_demands":[],
-                "dispositions":[{{"finding_id":"{queue}","position":"dispute",
-                                  "reason":"the producer is bounded"}}]}}"#
-        ));
-        campaign::admit(
-            &mut store,
-            &cas,
-            &round,
-            &[("performance", "01jd8m4qz9k7v3n2p6r8t0w203", &positions)],
-        );
-        campaign::resolve(&mut store, &cas, &round, &retry, "rejected");
-        campaign::resolve(&mut store, &cas, &round, &comment, "wontfix");
-    });
-    let statuses: BTreeMap<String, String> = campaign::ledger(&store, &cas)
-        .findings()
-        .into_iter()
-        .map(|finding| (finding.key.clone(), finding.status.as_str().to_string()))
-        .collect();
-    let events = store
-        .replay(campaign::RUN)
-        .unwrap()
-        .into_iter()
-        .map(|event| {
-            (
-                event.sequence,
-                event.event_type.as_str().to_string(),
-                event.event_id,
-            )
-        })
-        .collect();
-    drop(store);
-    recording.finish();
-    // The Store is gone: every answer below comes from the telemetry directory alone.
-    drop(store_dir);
-    (temp, root, statuses, events)
-}
-
-/// Design §7.5: a Finding summary is recorded when the kernel admits a Report into the Ledger
-/// and whenever its disposition changes, so `af telemetry ledger` answers with no Store: every
-/// committed event in sequence, every Finding with its later dispositions, `complete`.
-#[test]
-fn telemetry_findings_from_summaries_only() {
-    let (_temp, root, statuses, events) = record_campaign(Level::Spans);
-    let ledger = read_ledger(&root, campaign::RUN);
-    assert_eq!(ledger.coverage, "complete", "{:?}", ledger.coverage_reasons);
-    let mirrored: Vec<(u64, String, String)> = ledger
-        .entries
-        .iter()
-        .filter(|entry| entry.entry == "event")
-        .map(|entry| {
-            (
-                entry.sequence.unwrap(),
-                entry.name.clone().unwrap(),
-                entry.event_id.clone().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(mirrored, events, "every committed event, in sequence");
-    assert_eq!(ledger.logs.len(), 1);
-    assert!(ledger.logs[0].missing.is_empty());
-    let summarized: BTreeMap<String, String> = ledger
-        .findings
-        .iter()
-        .map(|finding| (finding.key.clone(), finding.status.clone()))
-        .collect();
-    assert_eq!(summarized, statuses, "the Ledger's own statuses");
-    for finding in &ledger.findings {
-        assert!(
-            finding.report_artifact_id.starts_with("sha256:"),
-            "{finding:?}"
-        );
-        assert!(finding.key.starts_with("sha256:"), "{finding:?}");
-        assert!(!finding.worker.is_empty() && !finding.node_id.is_empty());
-        assert_eq!((finding.round, finding.epoch), (Some(1), Some(1)));
-    }
-    let dispositions: BTreeMap<&str, Vec<(&str, &str)>> = ledger
-        .findings
-        .iter()
-        .map(|finding| {
-            (
-                finding.title.as_str(),
-                finding
-                    .dispositions
-                    .iter()
-                    .map(|d| (d.previous_status.as_str(), d.status.as_str()))
-                    .collect(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        dispositions["Retry loop can spin forever"],
-        [("open", "rejected")]
-    );
-    assert_eq!(
-        dispositions["Queue grows without bound"],
-        [("open", "contested")]
-    );
-    assert_eq!(dispositions["Misleading comment"], [("open", "wontfix")]);
-    // The command prints the same document, valid against its schema.
-    let document = ledger_json(&root, campaign::RUN);
-    assert_eq!(document["coverage"], "complete");
-    assert_eq!(
-        document["findings"].as_array().unwrap().len(),
-        statuses.len()
-    );
-}
-
-// ------------------------------------------------------------------------------------------
-// the mirror's rules
-
-/// Design §7.5: a transaction that rolls back is never mirrored — a Campaign batch refused
-/// inside its transaction, and a generic append the Task's log refuses inside its transaction
-/// — while the Store stays exactly as it was, and what did commit is mirrored once each.
+/// Refused generic appends cannot appear in the Task commit mirror.
 #[test]
 fn telemetry_mirror_skips_rolled_back_transactions() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut fixture = recording
@@ -365,8 +187,8 @@ fn telemetry_mirror_skips_rolled_back_transactions() {
     };
     let before = logs(&fixture.store);
     recording.within(|| {
-        let captured = review_store::NewEvent::new(
-            review_core::EventType::SourceCapturedV1,
+        let captured = af_store::NewEvent::new(
+            af_contracts::EventType::SourceCapturedV1,
             serde_json::json!({}),
         );
         fixture
@@ -380,8 +202,8 @@ fn telemetry_mirror_skips_rolled_back_transactions() {
                 &fixture.cas,
                 &[
                     captured,
-                    review_store::NewEvent::new(
-                        review_core::EventType::GenerationAdvancedV1,
+                    af_store::NewEvent::new(
+                        af_contracts::EventType::GenerationAdvancedV1,
                         serde_json::json!({ "round": 9 }),
                     ),
                 ],
@@ -397,7 +219,20 @@ fn telemetry_mirror_skips_rolled_back_transactions() {
         assert_eq!(log.mirrored, committed.len() as u64, "{}", log.run_id);
         assert_eq!(log.last_sequence + 1, committed.len() as u64);
     }
-    assert_eq!(ledger.logs.len(), 2, "{:?}", ledger.logs);
+    assert_eq!(
+        ledger.logs.len(),
+        1,
+        "only the committed native Task log: {:?}",
+        ledger.logs
+    );
+    assert!(ledger.logs.iter().all(|log| log.run_id == run_id));
+    assert!(
+        fixture
+            .store
+            .replay("campaign-accounting")
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Tells the mirror of every commit, first corrupting the stored bytes of the CAS object it was
@@ -432,7 +267,7 @@ impl CommitObserver for CorruptBeforeMirror {
 #[test]
 fn telemetry_mirror_corrupt_usage_artifact_marks_coverage_incomplete() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let observer = Arc::new(CorruptBeforeMirror {
         mirror: recording.mirror(),
@@ -517,7 +352,7 @@ fn telemetry_mirror_corrupt_usage_artifact_marks_coverage_incomplete() {
 /// the observation is valid.
 fn corrupt_beside_a_valid_observation(corrupt: usize) {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let observer = Arc::new(CorruptBeforeMirror {
         mirror: recording.mirror(),
@@ -701,7 +536,7 @@ fn accounting_scenario(
     check_each_step: bool,
 ) -> (Ledger, TaskFixture, tempfile::TempDir) {
     let (temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, level, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut f = recording
@@ -838,7 +673,7 @@ fn telemetry_aggregates_identical_across_levels() {
 #[test]
 fn telemetry_usage_series_separate() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut f = recording
@@ -883,7 +718,7 @@ fn telemetry_usage_series_separate() {
 #[test]
 fn telemetry_wall_order_is_per_execution() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let store_path = store_dir.path().to_path_buf();
     let predecessor = Recording::start(&root, Level::Spans, &store_path, &run_id, 1);
     let mirror = predecessor.mirror();
@@ -942,7 +777,7 @@ fn telemetry_wall_order_is_per_execution() {
 #[test]
 fn telemetry_usage_exact_above_u64() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut f = recording
@@ -981,461 +816,6 @@ fn telemetry_usage_exact_above_u64() {
     );
 }
 
-// ------------------------------------------------------------------------------------------
-// the golden fixture
-
-fn golden_path(name: &str) -> PathBuf {
-    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    workspace
-        .join("crates/af/tests/it/telemetry_golden")
-        .join(name)
-}
-
-/// Compare `actual` with the golden `name`; `AF_UPDATE_TELEMETRY_GOLDEN=1` rewrites it.
-fn golden(name: &str, actual: &str) {
-    let path = golden_path(name);
-    if std::env::var_os("AF_UPDATE_TELEMETRY_GOLDEN").is_some() {
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    assert_eq!(actual, expected, "{name} differs from its golden");
-}
-
-/// Design §10: `af telemetry ledger` over one recorded fixture Campaign — its committed events,
-/// three Findings with their dispositions, a Demand, and two Attempts' charge snapshots and a
-/// sidecar observation — in text and as `af/telemetry-ledger@1`, against goldens; the document
-/// matches its schema and refuses a member its schema does not name. The Store's directory is
-/// the machine's, so its id, the run's trace and the telemetry directory read as placeholders.
-#[test]
-fn telemetry_ledger_matches_its_golden() {
-    use review_telemetry::record::Attrs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    let (_temp, root, store_dir) = directories();
-    let clock = Arc::new(AtomicU64::new(1_700_000_200_000 * 1_000_000));
-    let mut options = WriterOptions::new(&root, Level::Spans);
-    options.argv = vec!["af".into(), "review".into(), "run".into()];
-    options.cwd = PathBuf::from("/work");
-    options.af_version = "0.0.0-golden".into();
-    options.af_commit = "0123456789ab".into();
-    options.segment_id = Some("1700000200000-4244-0c1d2e3f".into());
-    options.clock = Some(Arc::new(move || {
-        u128::from(clock.fetch_add(1_000_000, Ordering::SeqCst))
-    }));
-    let recording = Recording::with_options(options, store_dir.path(), campaign::RUN, 1);
-    let store_id = review_telemetry::trace::store_id(store_dir.path()).unwrap();
-    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
-    let mut store = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    store.observe_commits(recording.mirror());
-    recording.within(|| {
-        let round = campaign::opened_round(&mut store, &cas);
-        let cross = campaign::stage(
-            r#"{"reports":[
-                  {"severity":"blocker","file":"src/queue.rs","line":3,
-                   "title":"Queue grows without bound","body":"b","fix":"f","confidence":0.8}],
-                "benchmark_demands":[{"claim":"Enqueue stays O(1)",
-                   "why":"the queue is on the hot path","suggested_method":"time 10^6 enqueues"}],
-                "dispositions":[]}"#,
-        );
-        campaign::admit(
-            &mut store,
-            &cas,
-            &round,
-            &[("cross", "01jd8m4qz9k7v3n2p6r8t0w202", &cross)],
-        );
-        let queue = campaign::ledger(&store, &cas).findings()[0].key.clone();
-        campaign::resolve(&mut store, &cas, &round, &queue, "wontfix");
-        // Two Attempts' accounting as the mirror records it: the charge series and, beside
-        // it, one sidecar write.
-        let span = review_telemetry::subscriber::current_recorded()
-            .unwrap()
-            .span_id;
-        let state = |attempt: &str, sequence: i64, source: &'static str, charge: &str| {
-            Attrs::new()
-                .id("af.store_id", store_id.clone())
-                .id("af.run_id", campaign::RUN)
-                .id("af.attempt_id", attempt)
-                .id("af.node_id", "root.nodes.cross")
-                .enumerated("af.usage.source", source)
-                .int("af.usage.sequence", sequence)
-                .decimal("af.usage.chargeable_tokens", charge)
-        };
-        let writer = &recording.writer;
-        writer.event(
-            &span,
-            "af.usage.state",
-            state("attempt-1", 3, "usage_observed", "6")
-                .decimal("af.usage.input_tokens", "6")
-                .enumerated("af.usage.observation", "complete"),
-        );
-        writer.event_with_sequence(
-            &span,
-            "af.usage.wall",
-            Attrs::new()
-                .id("af.store_id", store_id.clone())
-                .id("af.run_id", campaign::RUN)
-                .id("af.attempt_id", "attempt-1")
-                .id("af.node_id", "root.nodes.cross")
-                .enumerated("af.usage.source", "sidecar")
-                .int("af.usage.wall.started_unix_ms", 1_000)
-                .int("af.usage.wall.elapsed_ms", 15)
-                .decimal("af.usage.chargeable_tokens", "8")
-                .decimal("af.usage.input_tokens", "8"),
-            "af.usage.wall.sequence",
-        );
-        writer.event(
-            &span,
-            "af.usage.state",
-            state("attempt-1", 5, "settled", "9")
-                .decimal("af.usage.input_tokens", "9")
-                .enumerated("af.usage.observation", "complete"),
-        );
-        writer.event(
-            &span,
-            "af.usage.state",
-            state("attempt-2", 7, "settled", "0")
-                .enumerated("af.usage.observation", "unknown")
-                .enumerated("af.usage.unknown_cause", "lease_expired"),
-        );
-    });
-    drop(store);
-    recording.finish();
-    let trace_id = review_telemetry::trace::trace_id(&store_id, campaign::RUN);
-    let normalize = |text: String| {
-        text.replace(&root.display().to_string(), "<root>")
-            .replace(&store_id, "<store>")
-            .replace(&store_id[..12], "<store>")
-            .replace(&trace_id, "<trace>")
-    };
-    let document = ledger_json(&root, campaign::RUN);
-    assert_eq!(
-        document["coverage"], "complete",
-        "{}",
-        document["coverage_reasons"]
-    );
-    golden(
-        "ledger.json",
-        &normalize(serde_json::to_string_pretty(&document).unwrap() + "\n"),
-    );
-    let text = af(&root, &["telemetry", "ledger", campaign::RUN]);
-    assert!(text.status.success());
-    golden(
-        "ledger.txt",
-        &normalize(String::from_utf8(text.stdout).unwrap()),
-    );
-    let validator = crate::schemas::validator("telemetry-ledger-v1.json");
-    for pointer in [
-        "",
-        "/run",
-        "/entries/0",
-        "/findings/0",
-        "/demands/0",
-        "/accounting/attempts/0",
-    ] {
-        let mut extended = document.clone();
-        extended
-            .pointer_mut(pointer)
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .insert("unnamed".into(), Value::from(1));
-        assert!(
-            !validator.is_valid(&extended),
-            "{pointer} accepts an unnamed member"
-        );
-    }
-}
-
-// ------------------------------------------------------------------------------------------
-// the ledger's order and the summaries' fields
-
-/// A Campaign with its first Round open and two Findings admitted: the Store directory, its
-/// CAS, the Round and the two Finding keys.
-fn two_findings(store: &mut EventStore, cas: &Cas) -> (campaign::Round, String, String) {
-    let round = campaign::opened_round(store, cas);
-    let reports = campaign::stage(
-        r#"{"reports":[
-              {"severity":"major","file":"src/a.rs","line":7,
-               "title":"Retry loop can spin forever","body":"b","fix":"f","confidence":0.9},
-              {"severity":"minor","file":"src/lib.rs","line":1,
-               "title":"Misleading comment","body":"b","fix":"f","confidence":0.5}],
-            "benchmark_demands":[],"dispositions":[]}"#,
-    );
-    campaign::admit(
-        store,
-        cas,
-        &round,
-        &[("deep", "01jd8m4qz9k7v3n2p6r8t0w201", &reports)],
-    );
-    let ledger = campaign::ledger(store, cas);
-    let key = |title: &str| {
-        ledger
-            .findings()
-            .into_iter()
-            .find(|finding| finding.title == title)
-            .unwrap()
-            .key
-            .clone()
-    };
-    let (retry, comment) = (
-        key("Retry loop can spin forever"),
-        key("Misleading comment"),
-    );
-    (round, retry, comment)
-}
-
-/// The committed events of the ledger's entries, as `(log, sequence)` in entry order.
-fn event_order(ledger: &Ledger) -> Vec<(String, u64)> {
-    ledger
-        .entries
-        .iter()
-        .filter(|entry| entry.entry == "event")
-        .map(|entry| (entry.log.clone().unwrap(), entry.sequence.unwrap()))
-        .collect()
-}
-
-/// Every entry's `(log, sequence)` is in commit order: never decreasing within a log.
-fn assert_commit_order(ledger: &Ledger) {
-    let mut last: BTreeMap<String, u64> = BTreeMap::new();
-    for entry in &ledger.entries {
-        let (Some(log), Some(sequence)) = (&entry.log, entry.sequence) else {
-            panic!("an entry without its log and sequence: {entry:?}");
-        };
-        let previous = last.insert(log.clone(), sequence);
-        assert!(
-            previous.is_none_or(|previous| previous <= sequence),
-            "{entry:?} after sequence {previous:?}: {:?}",
-            ledger.entries
-        );
-    }
-}
-
-/// A commit observer whose callbacks wait at a gate before the mirror sees them, as a Store
-/// connection whose post-commit observer runs late.
-struct Late {
-    mirror: Arc<StoreMirror>,
-    committed: std::sync::mpsc::Sender<()>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-impl review_store::store::observer::CommitObserver for Late {
-    fn committed(&self, commit: &review_store::store::observer::Commit<'_>) {
-        let _ = self.committed.send(());
-        let _ = self.release.lock().unwrap().recv();
-        self.mirror.committed(commit);
-    }
-}
-
-/// Design §7.5 and §10 (P4): `af telemetry ledger` orders one Store log by its committed
-/// sequence, never by record order. Two connections of one execution share its mirror; the
-/// first commits sequence N and its post-commit observer runs only after the second has
-/// committed N+1 and been mirrored. The ledger displays N before N+1, folds the summaries in
-/// that order, and answers identically after a reindex.
-#[test]
-fn telemetry_ledger_orders_reordered_post_commit_callbacks() {
-    let (_temp, root, store_dir) = directories();
-    let recording = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 1);
-    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
-    let mirror = recording.mirror();
-    let mut prompt = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    prompt.observe_commits(mirror.clone());
-    let (round, retry, comment) = recording.within(|| two_findings(&mut prompt, &cas));
-    let (committed, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    let mut late = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    late.observe_commits(Arc::new(Late {
-        mirror: mirror.clone(),
-        committed,
-        release: std::sync::Mutex::new(released),
-    }));
-    std::thread::scope(|scope| {
-        let first = scope.spawn(|| {
-            recording.within(|| campaign::resolve(&mut late, &cas, &round, &retry, "rejected"));
-        });
-        entered.recv().unwrap();
-        recording.within(|| campaign::resolve(&mut prompt, &cas, &round, &comment, "wontfix"));
-        release.send(()).unwrap();
-        first.join().unwrap();
-    });
-    let events = prompt.replay(campaign::RUN).unwrap();
-    let rejected = events
-        .iter()
-        .find(|event| {
-            event.correlation_id.as_deref() == Some(retry.as_str())
-                && event.event_type == review_core::EventType::FindingResolvedV1
-        })
-        .unwrap()
-        .sequence;
-    drop((prompt, late));
-    let segment = recording.writer.segment_id().unwrap();
-    recording.finish();
-    // The record order is the callbacks': the later commit was mirrored first.
-    let (index, _, _) = view::open(&root).unwrap();
-    let recorded: Vec<i64> = index
-        .connection()
-        .prepare(
-            "SELECT json_extract(attributes, '$.\"af.store.event.sequence\"') FROM events
-             WHERE segment_id = ?1 AND name = 'af.store.event' ORDER BY seq",
-        )
-        .unwrap()
-        .query_map([&segment], |row| row.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    drop(index);
-    let at = |sequence: u64| {
-        recorded
-            .iter()
-            .position(|recorded| *recorded == sequence as i64)
-            .unwrap()
-    };
-    assert!(at(rejected + 1) < at(rejected), "{recorded:?}");
-    let ledger = read_ledger(&root, campaign::RUN);
-    assert_eq!(ledger.coverage, "complete", "{:?}", ledger.coverage_reasons);
-    let order = event_order(&ledger);
-    let sequences: Vec<u64> = order.iter().map(|(_, sequence)| *sequence).collect();
-    let mut sorted = sequences.clone();
-    sorted.sort_unstable();
-    assert_eq!(sequences, sorted, "in commit order");
-    assert_eq!(sequences.len() as u64, rejected + 2);
-    assert_commit_order(&ledger);
-    let status = |key: &str| {
-        ledger
-            .findings
-            .iter()
-            .find(|finding| finding.key == key)
-            .unwrap()
-            .status
-            .clone()
-    };
-    assert_eq!(
-        (status(&retry), status(&comment)),
-        ("rejected".into(), "wontfix".into())
-    );
-    let before = ledger_json(&root, campaign::RUN);
-    assert!(af(&root, &["telemetry", "reindex"]).status.success());
-    assert_eq!(
-        ledger_json(&root, campaign::RUN),
-        before,
-        "identical after reindex"
-    );
-}
-
-/// Design §5 and §7.5 (P4): executions overlap (ADR-0089), and the later one may commit first.
-/// Execution 1 opens the Campaign and admits a Finding; execution 2, started later on its own
-/// connection, commits the Finding's `rejected` at sequence N; then execution 1 commits
-/// `wontfix` at N+1 (catching up N on its way). The ledger reads N before N+1 whatever the
-/// segments' starts, the Finding's latest summary is the one of N+1 (`wontfix`), its
-/// dispositions are in commit order, and a reindex answers the same.
-#[test]
-fn telemetry_ledger_orders_overlapping_executions_by_commit() {
-    let (_temp, root, store_dir) = directories();
-    let first = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 1);
-    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
-    let mut ours = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    ours.observe_commits(first.mirror());
-    let (round, retry, _) = first.within(|| two_findings(&mut ours, &cas));
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    let second = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 2);
-    let mut theirs = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    theirs.observe_commits(second.mirror());
-    second.within(|| campaign::resolve(&mut theirs, &cas, &round, &retry, "rejected"));
-    first.within(|| campaign::resolve(&mut ours, &cas, &round, &retry, "wontfix"));
-    drop((ours, theirs));
-    second.finish();
-    first.finish();
-    let ledger = read_ledger(&root, campaign::RUN);
-    let sequences: Vec<u64> = event_order(&ledger)
-        .into_iter()
-        .map(|(_, sequence)| sequence)
-        .collect();
-    let mut sorted = sequences.clone();
-    sorted.sort_unstable();
-    assert_eq!(sequences, sorted, "in commit order");
-    assert_commit_order(&ledger);
-    let finding = ledger
-        .findings
-        .iter()
-        .find(|finding| finding.key == retry)
-        .unwrap();
-    assert_eq!(finding.status, "wontfix", "the latest committed summary");
-    let dispositions: Vec<(&str, &str)> = finding
-        .dispositions
-        .iter()
-        .map(|d| (d.previous_status.as_str(), d.status.as_str()))
-        .collect();
-    assert_eq!(
-        dispositions,
-        [("open", "rejected"), ("rejected", "wontfix")]
-    );
-    let before = ledger_json(&root, campaign::RUN);
-    assert!(af(&root, &["telemetry", "reindex"]).status.success());
-    assert_eq!(read_ledger(&root, campaign::RUN).findings, ledger.findings);
-    assert_eq!(
-        ledger_json(&root, campaign::RUN),
-        before,
-        "identical after reindex"
-    );
-}
-
-/// Design §7.5 (P4): a Finding summary carries the admitting Worker's bound model when the
-/// kernel recorded that binding, and none when it did not: a model-backed reviewer's Report
-/// names the model its node is bound to, a command reviewer's names none.
-#[test]
-fn telemetry_finding_carries_the_bound_model() {
-    let (_temp, root, store_dir) = directories();
-    let recording = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 1);
-    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
-    let mut store = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
-    store.observe_commits(recording.mirror());
-    // The kernel's binding of the model-backed reviewer, as the Task runtime records it.
-    review_pipeline::telemetry::record_binding("cross", None, "claude-opus-5-5");
-    recording.within(|| {
-        let round = campaign::opened_round(&mut store, &cas);
-        let bound = campaign::stage(
-            r#"{"reports":[{"severity":"major","file":"src/a.rs","line":7,
-                 "title":"Retry loop can spin forever","body":"b","fix":"f","confidence":0.9}],
-                "benchmark_demands":[],"dispositions":[]}"#,
-        );
-        let command = campaign::stage(
-            r#"{"reports":[{"severity":"minor","file":"src/lib.rs","line":1,
-                 "title":"Misleading comment","body":"b","fix":"f","confidence":0.5}],
-                "benchmark_demands":[],"dispositions":[]}"#,
-        );
-        campaign::admit(
-            &mut store,
-            &cas,
-            &round,
-            &[
-                ("cross", "01jd8m4qz9k7v3n2p6r8t0w202", &bound),
-                ("deep", "01jd8m4qz9k7v3n2p6r8t0w201", &command),
-            ],
-        );
-    });
-    drop(store);
-    recording.finish();
-    let ledger = read_ledger(&root, campaign::RUN);
-    let model = |title: &str| {
-        ledger
-            .findings
-            .iter()
-            .find(|finding| finding.title == title)
-            .unwrap()
-            .model
-            .clone()
-    };
-    assert_eq!(
-        model("Retry loop can spin forever").as_deref(),
-        Some("claude-opus-5-5")
-    );
-    assert_eq!(model("Misleading comment"), None);
-}
-
-/// Aggregate setup can take longer than the lease without holding any individual operation
-/// beyond it. The fixture renews between operations; expiry/takeover remain real below.
 #[test]
 fn slow_accounting_setup_renews_without_extending_the_lease_policy() {
     let started = std::time::Instant::now();
@@ -1486,7 +866,7 @@ fn slow_accounting_setup_renews_without_extending_the_lease_policy() {
     assert_eq!(recovered.unknown_usage, None);
     assert_eq!(
         recovered.abandoned,
-        Some(review_store::store::task::execution::TaskAbandonCause::WriterLost)
+        Some(af_store::store::task::execution::TaskAbandonCause::WriterLost)
     );
     assert_eq!(execution.budget.committed_tokens(), 7);
     assert_eq!(execution.budget.reserved_tokens(), 0);
@@ -1495,4 +875,109 @@ fn slow_accounting_setup_renews_without_extending_the_lease_policy() {
     assert_eq!(recoveries.len(), 1);
     assert_eq!(recoveries[0].chargeable, 0);
     assert_eq!(recoveries[0].writer_lost, 1);
+}
+
+/// A delayed post-commit callback can arrive after a later committed Task transition.
+struct Late {
+    mirror: Arc<StoreMirror>,
+    committed: std::sync::mpsc::Sender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl CommitObserver for Late {
+    fn committed(&self, commit: &Commit<'_>) {
+        self.committed.send(()).unwrap();
+        self.release.lock().unwrap().recv().unwrap();
+        self.mirror.committed(commit);
+    }
+}
+
+fn assert_native_commit_order(root: &Path, run_id: &str, events: &[af_contracts::RunEvent]) {
+    let ledger = read_ledger(root, run_id);
+    assert_eq!(ledger.coverage, "complete", "{:?}", ledger.coverage_reasons);
+    let order: Vec<_> = ledger
+        .entries
+        .iter()
+        .filter(|e| e.entry == "event")
+        .map(|e| e.sequence.unwrap())
+        .collect();
+    assert_eq!(order, events.iter().map(|e| e.sequence).collect::<Vec<_>>());
+    let before = ledger_json(root, run_id);
+    assert!(af(root, &["telemetry", "reindex"]).status.success());
+    assert_eq!(ledger_json(root, run_id), before);
+}
+
+#[test]
+fn telemetry_ledger_orders_reordered_native_post_commit_callbacks() {
+    let (_temp, root, store_dir) = directories();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
+    let mirror = recording.mirror();
+    let mut fixture = recording
+        .within(|| TaskFixture::new(store_dir, |store| store.observe_commits(mirror.clone())));
+    let mut second = EventStore::open(fixture.store.database_path().unwrap()).unwrap();
+    second.observe_commits(mirror.clone());
+    let (committed, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    fixture.store.observe_commits(Arc::new(Late {
+        mirror,
+        committed,
+        release: std::sync::Mutex::new(released),
+    }));
+    let first_sequence = fixture.store.replay(&run_id).unwrap().len() as u64;
+    let cas = af_store::Cas::open(fixture.directory.path().join("cas")).unwrap();
+    let lease = fixture.lease.clone();
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| recording.within(|| fixture.renew()));
+        entered.recv().unwrap();
+        recording
+            .within(|| second.renew_task_lease(&cas, &lease, 3000))
+            .unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+    });
+    let events = second.replay(&run_id).unwrap();
+    let segment = recording.writer.segment_id().unwrap();
+    recording.finish();
+    let (index, _, _) = view::open(&root).unwrap();
+    let recorded: Vec<i64> = index.connection().prepare(
+        "SELECT json_extract(attributes, '$.\"af.store.event.sequence\"') FROM events WHERE segment_id=?1 AND name='af.store.event' ORDER BY seq"
+    ).unwrap().query_map([segment], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert!(
+        recorded
+            .iter()
+            .position(|s| *s == (first_sequence + 1) as i64)
+            .unwrap()
+            < recorded
+                .iter()
+                .position(|s| *s == first_sequence as i64)
+                .unwrap()
+    );
+    drop(index);
+    assert_native_commit_order(&root, &run_id, &events);
+}
+
+#[test]
+fn telemetry_ledger_orders_overlapping_native_executions_by_commit() {
+    let (_temp, root, store_dir) = directories();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let first = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
+    let mut fixture =
+        first.within(|| TaskFixture::new(store_dir, |store| store.observe_commits(first.mirror())));
+    let second = Recording::start(
+        &root,
+        Level::Spans,
+        fixture.store.database_path().unwrap().parent().unwrap(),
+        &run_id,
+        2,
+    );
+    let mut theirs = EventStore::open(fixture.store.database_path().unwrap()).unwrap();
+    theirs.observe_commits(second.mirror());
+    second
+        .within(|| theirs.renew_task_lease(&fixture.cas, &fixture.lease, 3000))
+        .unwrap();
+    first.within(|| fixture.renew());
+    let events = theirs.replay(&run_id).unwrap();
+    second.finish();
+    first.finish();
+    assert_native_commit_order(&root, &run_id, &events);
 }

@@ -44,7 +44,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(always_at_capacity: bool) -> Self {
-        use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+        use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let (repo, state) = fixture_named(directory.path(), "review");
@@ -103,7 +103,7 @@ sys.stdout.write(open(home+'/reviewed').read())
         std::fs::write(&installed, crate::provider_cli::with_probe(stub)).unwrap();
         std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
         let registry = home.join("providers.toml");
-        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":3,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -123,12 +123,13 @@ sys.stdout.write(open(home+'/reviewed').read())
             attempt.tokens = 1000;
             attempt.wall_ms = super::NATIVE_REVIEWER_WALL_MS;
             std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
-            catalog["packages"][&package]["digest"] =
-                toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
+            catalog["packages"][&package]["digest"] = toml::Value::String(
+                af_pipeline_config::lock::package_digest(&package, &path).unwrap(),
+            );
             providers.insert(package, toml::Value::String("claude-personal".into()));
         }
         let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-        let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
             toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;
@@ -138,7 +139,7 @@ sys.stdout.write(open(home+'/reviewed').read())
         )
         .unwrap();
         catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
-            review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
+            af_pipeline_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
         );
         catalog
             .as_table_mut()
@@ -251,7 +252,7 @@ fn a_model_at_capacity_is_waited_out_in_its_attempt_and_show_names_the_wait() {
     let shown = fixture.show(true);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v16.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &shown,
     );
     let events = shown["provider_events"].as_array().unwrap();

@@ -92,14 +92,14 @@ pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &
 }
 
 /// One topic's body. The configuration page ends with the declared `.af/` layout, rendered from
-/// `review_config::layout` rather than stored a second time here: that table, the one in
+/// `af_pipeline_config::layout` rather than stored a second time here: that table, the one in
 /// the documentation and every classification are the same data.
 pub(crate) fn body(topic: &str, text: &str) -> String {
     match topic {
         "config" => format!(
             "{text}\n\nWhat `.af/` holds\n\n{}\n{}\n\n{UNDECLARED}",
-            review_config::layout::render_table(),
-            review_config::layout::ELSEWHERE,
+            af_pipeline_config::layout::render_table(),
+            af_pipeline_config::layout::ELSEWHERE,
         ),
         // The tables are rendered from the enum every Task rendering prints, so this page and
         // the binary cannot say different things.
@@ -113,22 +113,9 @@ pub(crate) fn body(topic: &str, text: &str) -> String {
     }
 }
 
-/// The bindings line of the `start` page's review command, and the line under it, as the page
-/// is written: what a man page and a machine without a Provider print.
-const START_BINDINGS: &str =
-    "       --provider correctness=PROVIDER --provider architecture=PROVIDER
-   PROVIDER is the ID of a Provider step 1 registered; `af onboard` prints the exact command.";
-
-/// One topic's page as `af help TOPIC` and the browser print it on this machine: [`body`], with
-/// the `start` page's review command bound to the Providers this machine's registry holds, as
-/// `af onboard` binds them. Man pages print [`body`] alone, which no machine's state shapes.
+/// Render help from the same committed topic text as the man pages.
 pub(crate) fn page(topic: &str, text: &str) -> String {
-    let body = body(topic, text);
-    if topic != "start" {
-        return body;
-    }
-    let registry = crate::providers::read_registry_entries();
-    body.replace(START_BINDINGS, &start_bindings(&registry))
+    body(topic, text)
 }
 
 /// The `schema` of the document `af help TOPIC --json` prints (`schemas/help-topic-v1.json`).
@@ -188,41 +175,10 @@ impl HelpPage {
     }
 }
 
-/// The `start` page's bindings line for `registry`: the IDs `af onboard` would bind, or the
-/// placeholder with the reason none can be named.
-fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
-    match crate::onboard::first_review_bindings(registry) {
-        Some(bindings) => {
-            let bound: Vec<String> = bindings
-                .iter()
-                .map(|(node, id)| format!("--provider {node}={id}"))
-                .collect();
-            // Within 100 columns: each binding on a line of its own when both are too long.
-            let mut line = format!("       {}", bound.join(" "));
-            if line.chars().count() > 100 {
-                line = format!("       {}", bound.join(" \\\n       "));
-            }
-            format!(
-                "{line}\n   These are the Providers registered on this machine that `af onboard` \
-                 binds; it\n   prints the same command."
-            )
-        }
-        None if registry.warning.is_some() => "       \
-            --provider correctness=PROVIDER --provider architecture=PROVIDER\n   \
-            The Provider registry cannot be read (`af provider status` names why), so PROVIDER\n   \
-            stands for a Provider's ID; `af onboard` prints the exact command once it can."
-            .to_string(),
-        None => "       --provider correctness=PROVIDER --provider architecture=PROVIDER\n   \
-            No Provider is registered on this machine yet, so PROVIDER stands for the ID step 1\n   \
-            registers; `af onboard` prints the exact command once one is."
-            .to_string(),
-    }
-}
-
 /// The phase, outcome, cause and attention tables of `af help task-states`, from
-/// `review_core::task::state`; `docs/tasks.md` carries the same rows.
+/// `af_contracts::task::state`; `docs/tasks.md` carries the same rows.
 pub(crate) fn task_state_tables() -> String {
-    use review_core::task::state::*;
+    use af_contracts::task::state::*;
     let mut out = String::from("Phases\n\n");
     for phase in TaskStatePhaseV1::ALL {
         out.push_str(&format!(
@@ -268,7 +224,7 @@ pub(crate) fn task_state_tables() -> String {
 
 /// The Task outcome section of `af help exit-codes`.
 fn task_exit_codes() -> String {
-    use review_core::task::state::TaskOutcomeV1;
+    use af_contracts::task::state::TaskOutcomeV1;
     let mut out = String::from(
         "`af task run`, `af task start --execute`, `af task explain` and `af review run --file`\n\
          end with their Task's outcome (`af help task-states`):\n\n",
@@ -389,40 +345,38 @@ in the receipt. Nothing is removed: not from the Snapshot, not from the delivere
 before it prepares a record or touches git. The value is captured when a Task is planned.";
 
 const START: &str = "\
-The first run, in four steps. `af doctor` checks where you are at any point, token-free.
+The first run, in four steps. `af doctor` checks the machine and repository, token-free.
 
-1. Register a Provider: the Claude/Codex CLI or Pi SDK login model Workers run under.
+1. Register a Claude/Codex CLI or Pi SDK authentication context your catalog declares:
      af provider detect --apply
-   finds the logins on this machine (~/.claude, ~/.codex, CLAUDE_CONFIG_DIR, CODEX_HOME) and
-   registers them; without --apply it only lists them. With no login yet, run this at your own
-   terminal, never through an agent: af provider setup claude-main --kind claude --login
-   (or codex-main --kind codex). The Rust kernel never holds raw credentials: the registry keeps
-   non-secret configuration. Pi uses an embedded SDK host; see `af provider setup --help`.
-   `af provider status` shows what is registered and logged in.
+   A login exchange belongs to the human at their own terminal; `af provider status` shows
+   registered authentication contexts without running model work.
 
-2. Onboard a repository. In a clean git checkout:
-     af onboard              preview `.af/`, the review authority (token-free; writes nothing)
-     af onboard --apply      write it; the preview prints the exact command to copy
-   The preview names the reviewers, the Provider each one needs and the Gate: the repository's
-   own acceptance command, such as `make check`. It picks claude or codex Workers from the
-   Provider kinds you registered.
+2. Preview native Task authority and the project's required acceptance checks:
+     af onboard
+   In a repository without .af/, the preview includes Review and implementation Task authority.
+   With existing Task authority, plain af onboard validates it; --tasks refuses existing settings.
+   Supply --gate 'check=make check' when automatic discovery is ambiguous. The preview is
+   token-free. --apply installs absent authority; review every generated byte before committing.
 
-3. Review that authority, then commit it:
+3. Review and commit the authority:
      git add .af && git diff --cached -- .af && git commit -m 'Configure Afactory'
-   Only committed `.af/` is trusted: --policy-rev selects it by revision.
+   --authority selects this trusted commit. The Task catalog pins the Pipeline and its Workers.
 
-4. Review a change. Make one, then:
-     af review plan --policy-rev HEAD --base HEAD --uncommitted        token-free
-     af review --policy-rev HEAD --base HEAD --uncommitted \\
-       --provider correctness=PROVIDER --provider architecture=PROVIDER
-   PROVIDER is the ID of a Provider step 1 registered; `af onboard` prints the exact command.
-   The plan shows the change, the route, the Gate and the bindings the run needs. The run executes
-   the Gate and the reviewers, spending tokens within the budgets `.af/` sets, and prints the
-   verdict and the Findings; `af review report` shows them again.
+4. Write a Task file outside the checkout and plan it:
+     af task plan --file ../ticket.json
+   A standalone Review uses kind review and a native Review Pipeline in the catalog:
+     af review plan --file ../review.json --base HEAD --uncommitted
+     af review run --file ../review.json --base HEAD --uncommitted
+   Review plan records a common Task plan without starting an Attempt. Run uses its captured
+   budgets, Provider bindings, checks and acceptance. Inspect it with af review inspect TASK_ID;
+   read Findings with af review ledger TASK_ID and exact cost with af review report TASK_ID.
+   Campaign selectors and captured Review Pipeline files are retired. The executable example
+   fixtures/task-runtime/review needs no Provider and demonstrates one complete Review Task.
 
-Then an implementation Task: `af catalog init --profile software --destination task-demo`
-creates a token-free starter whose README walks through `af task plan`, `af task run`,
-`af task show` and `af task deliver`. `af help concepts` explains the words used here.";
+For a token-free implementation starter, af catalog init --profile software --destination task-demo
+writes a small project whose README walks through plan, run, show and local delivery.
+Use af help task-file, af help agents and af help concepts for the common lifecycle.";
 
 const CONCEPTS: &str = "\
 Task       One piece of work with typed inputs, required outputs and limits, run by a Pipeline
@@ -434,21 +388,23 @@ Ant        An owner's scheduled Scenario binding, admitted locally by `af ant ti
 Worker     A packaged reviewer, implementer or evaluator: a model (claude, codex) or a command,
            with its prompt and declared inputs. `af onboard` lists a repository's reviewers.
 Attempt    One execution of one Worker or check, charged against its budget; a failed one is
-           still spent. `af review report --campaign NAME` lists each Attempt and its tokens.
+           still spent. `af review inspect TASK_ID` lists each Attempt and its tokens.
 Snapshot   An immutable, content-addressed capture of the repository's files that every Worker
            reads; never the live checkout. `af task show TASK_ID` names a Task's Snapshots.
 Round      One run of a review Pipeline over one exact change; it closes only with a real
-           verdict. `af review campaigns` shows each Campaign's Rounds.
-Campaign   One logical review owning one Ledger of Findings across its Rounds; light by default,
-           one closed Round. `af review campaigns` lists them; `af review ledger` shows one.
-Store      Where af records a Task's or a Campaign's events and artifacts, outside the
+           verdict. `af review inspect TASK_ID` shows the recorded Rounds.
+Review     A native Task owning its immutable Round history and canonical Finding Sets.
+           `af task list` lists Tasks; `af review ledger TASK_ID` shows Findings.
+Campaign   The retired execution representation; canonical Ledger vocabulary and registered
+           storage categories retain their names, without an old executor or fallback reader.
+Store      Where af records a Task's events and artifacts, outside the
            repository under XDG state. `af storage` shows every Store and its size.
-Provider   A named machine-local Claude/Codex CLI or Pi SDK login for model Workers.
+Provider   A named machine-local authentication context for Claude/Codex CLI or Pi SDK Workers.
            The Rust kernel never holds its raw credential. `af provider status` lists them.
 Gate       The checks a Pipeline declares, such as `make check`, that must pass before reviewers
            run; a check that could not run is not a pass. `af onboard` shows the Gate.
 Pipeline   The typed graph of Gates and Workers a review or Task runs, pinned in `.af/`.
-           `af review plan` names the one a change routes to; `af task explain TASK_ID --tree`.
+           `af review plan --file FILE` shows the captured one; `af task explain TASK_ID --tree`.
 Candidate  The change under review: the working tree (--uncommitted) or a revision
            (--candidate REV), compared against --base. `af review plan` shows its Change Set.
 
@@ -459,12 +415,12 @@ const CONFIG: &str = "\
 Everything a human writes is TOML; everything af writes goes to the Store, except `.af/af.lock`
 (machine-written TOML, committed, like Cargo.lock).
 
-The project file is `.af/af.toml` at the git toplevel. `version`, `[project]` `name` and
-`min_af`, and `[defaults]` `pipeline` are required: they name the project, the minimum `af`
-release it needs and its default review pipeline. Optional `[[routes]]` pick a pipeline by the
-changed paths, and an optional `[survey]` table bounds what the Surveyor measures into a Survey
-(`af project refresh --help`). Worker packages live under `.af/workers/`, pinned in
-`.af/af.lock`; pipelines name them.
+The project file is `.af/af.toml` at the git toplevel. `version = 2` and `[project]` `name`
+and `min_af` are required. Optional `[task.defaults]` supplies a Task Pipeline and limits;
+Campaign `[defaults]`, `[[routes]]` and routing tables are refused. Optional `[survey]` bounds
+what the Surveyor measures (`af project refresh --help`), and `[brief.NAME]` declares Project
+Brief variants. Current Worker and Pipeline packages are pinned by `.af/task-catalog.toml`;
+`.af/af.lock` retains the byte-bound af release pin.
 
 A captured Task Command Worker may carry `development.toml` (`af.worker-development/3`)
 inside its pinned package. It requests a private, network-denied tool environment from the
@@ -481,9 +437,9 @@ source and checkpoint to the next Worker; the old source is incompatible. Machin
 dependencies are available-only, and Worker caches never supply Gate evidence. See
 `docs/design/worker-local-development.md` and `fixtures/worker-development/README.md`.
 
-  version = 1
-  [project]   name = \"myrepo\"      min_af = \"0.7\"
-  [defaults]  pipeline = \"review\"
+  version = 2
+  [project]        name = \"myrepo\"      min_af = \"0.7\"
+  [task.defaults]  pipeline = \"kernel/implementation-reviewed\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy, the `[storage]`
@@ -576,7 +532,7 @@ const EXIT_CODES: &str = "  0    pass — the command succeeded; for `review run
 Under --json the same codes apply and the document on stdout carries the typed outcome.
 
 Examples:
-  af review plan --policy-rev HEAD --base HEAD --uncommitted; echo \"exit $?\"
+  af review plan --file ../review.json --base HEAD --uncommitted; echo \"exit $?\"
   af help nonsense   # exit 2";
 
 const JSON: &str = "\
@@ -608,12 +564,12 @@ A command that classifies its own outcomes — `af provider status` and `af prov
 its own versioned document instead, carrying a classified outcome and af-authored detail;
 Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
 one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@4 (`af provider detect`), af/provider-status@5,
-af/provider-setup@2, af/pi-provider-setup@3 and af/provider-models@2; none carries an account,
+documents are af/provider-detect@4 (`af provider detect`), af/provider-status@6,
+af/provider-setup@2, af/pi-provider-setup@4 and af/provider-models@4; none carries an account,
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
-af/task-event@1 document per line while it follows a Task, and its refusal or usage error is one
+af/task-event@2 document per line while it follows a Task, and its refusal or usage error is one
 af/error@2 line with the same exit code.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
@@ -621,16 +577,24 @@ change bumps the version rather than reinterpreting an old one. Nothing af print
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
 never under --json.
 
-Review reading commands:
+Native Review commands use current Task and Ledger documents:
 
-  af review render --json              af/review-render@2 (schemas/review-render-v2.json),
-                                       with the reply schema a model Worker's dispatch passes
-  af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
-  af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
-  af review report --json              af/review-report@5 (schemas/review-report-v5.json)
-                                       --json is --format json; combining them is a usage error
-  af review report --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
-                                       (schemas/findings-sarif-v1.json)
+  af review inspect TASK_ID --json    af/task-inspection@20
+  af review show TASK_ID --json       af/task-inspection@20
+  af review ledger TASK_ID --json     af/review-ledger@2
+  af review ledger TASK_ID --format sarif   SARIF 2.1.0, af/findings-sarif@1
+  af review report TASK_ID --json     af/task-report@3
+  af review decision-context ID --json    af/review-decision-context@1
+  af review decide NEW --from ID --file BATCH --json   af/task-inspection@20 or af/task-selection@3
+  af review export TASK_ID PROPOSAL_ID      exact patch bytes, no JSON envelope
+
+The Ledger carries the complete selected canonical Finding Set and original Report envelopes,
+with current statuses, severity counts and coverage under inspection. Earlier unresolved Findings
+remain visible after not-reproduced/dispute-only Rounds. Task findings remains a current-Round
+report view. The previous Campaign Ledger document is retired and refused.
+
+Campaign selectors and their inspection documents are retired. Review plan captures a native
+Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
   scenario validate: af/scenario-pin@5; start, show, resume, decide, cancel: af/scenario-run@5.
@@ -656,7 +620,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@16; a collected Task:
+  af task show --json                  af/task-inspection@20; a collected Task:
                                        af/task-collected-inspection@3
   af task show --checks --json         af/task-checks@3
   af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
@@ -669,7 +633,7 @@ The Task documents, each named by its `schema`:
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
   af task status --json, wait --json   af/task-status@2
-  af task events                       JSON lines, no --json: one af/task-event@1 per event
+  af task events                       JSON lines, no --json: one af/task-event@2 per event
                                        of the Task's log, with the Store's gap-free
                                        `sequence` (--after N resumes), then one terminal
                                        record with the Task's state and exit_code
@@ -679,10 +643,10 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@16, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-inspection@20, af/task-collected-inspection@3, af/task-checks@3, each
 af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
 af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
-af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+af/task-event@2 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
 selectors the command was given (a report, pasted into a pull request, names no Store path); the
 diff, the materialized candidate and the refused selection describe no Task state. A previous
 version is refused, never read.
@@ -1030,7 +994,7 @@ resolves (a run refused before that has the first two), and af.config.text namin
 pipeline's pipeline.toml, the Task file and .af/af.toml by the SHA-256 of their own bytes and
 their size. A check fingerprint's runtime paths become placeholders only where a value names
 the path or one under it, never a sibling (/tmp/a-extra beside /tmp/a). Every child reap of af goes
-through review-process's one reap lock, so a process's af.rusage.* is never another child's.
+through af-process's one reap lock, so a process's af.rusage.* is never another child's.
 
 At spans and above every event the kernel commits to a Store is mirrored after its commit, on
 any path (an append, a Task transition, a Round publication, an integration), as af.store.event
@@ -1349,6 +1313,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             &["start", "concepts"]
         );
+    }
+
+    #[test]
+    fn first_run_and_concepts_copy_fits_100_columns() {
+        for (name, text) in [("start", START), ("concepts", CONCEPTS)] {
+            for line in text.lines() {
+                assert!(line.chars().count() <= 100, "{name}: `{line}`");
+            }
+            assert!(text.contains("authentication context"), "{name}");
+            assert!(text.contains("Claude/Codex CLI or Pi SDK"), "{name}");
+        }
     }
 
     /// ADR-0259: a page's `af/help-topic@1` document and its text form are one rendering: the

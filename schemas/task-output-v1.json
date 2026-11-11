@@ -10,15 +10,15 @@
   ],
   "properties": {
     "invocation_id": {
-      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "outputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactInput"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactInput"
       }
     }
   }

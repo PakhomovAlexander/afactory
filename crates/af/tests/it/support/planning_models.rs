@@ -15,7 +15,7 @@ impl Providers {
             crate::fake_models::install(kind, &root.join("bin"), &root.join(kind));
         }
         std::fs::create_dir_all(root.join("home")).unwrap();
-        let registry = serde_json::json!({"version": 3, "providers": [
+        let registry = serde_json::json!({"version": 4, "providers": [
             {"id": "fixture-claude", "kind": "claude", "auth_dir": root.join("claude")},
             {"id": "fixture-codex", "kind": "codex", "auth_dir": root.join("codex")},
         ]});
@@ -100,7 +100,7 @@ pub fn pin(directory: &Path, local: &str) -> toml::Value {
         toml::from_str(&std::fs::read_to_string(target.join("worker.toml")).unwrap()).unwrap();
     toml::Value::try_from(serde_json::json!({
         "version": worker["version"].as_str().unwrap(),
-        "digest": review_config::lock::package_digest(local, &target).unwrap(),
+        "digest": af_pipeline_config::lock::package_digest(local, &target).unwrap(),
         "path": local,
     }))
     .unwrap()

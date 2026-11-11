@@ -34,7 +34,7 @@ fn bounded_repair_preserves_one_round_and_delivers_verified_s2() {
         result["review_rounds"][0]["conclusion"],
         "changes_requested"
     );
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let verification = result["result"]["outputs"]["verification"]["artifact_ids"][0]
         .as_str()
         .unwrap();
@@ -108,8 +108,11 @@ fn commit_fixture(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -248,8 +251,8 @@ fn repair_cannot_claim_full_review_omit_verifiers_or_bypass_reserved_budget() {
             }
             "omitted_verifier" | "repair_bound" => {
                 let path = repo.join(".af/task-packages/fixture/repair/pipeline.toml");
-                let mut value: review_core::task::pipeline::PipelineDefinitionV1 =
-                    review_config::task::parse_task_pipeline(
+                let mut value: af_contracts::task::pipeline::PipelineDefinition =
+                    af_pipeline_config::task::parse_task_pipeline(
                         &std::fs::read_to_string(&path).unwrap(),
                     )
                     .unwrap();
@@ -268,7 +271,7 @@ fn repair_cannot_claim_full_review_omit_verifiers_or_bypass_reserved_budget() {
             }
             "self_verify" => {
                 let path = repo.join(".af/task-packages/fixture/fix-verifier/worker.toml");
-                let mut value: review_config::task::catalog::TaskWorkerManifest =
+                let mut value: af_pipeline_config::task::catalog::TaskWorkerManifest =
                     toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
                 value.signature.effects.insert("write-source".into());
                 std::fs::write(path, toml::to_string(&value).unwrap()).unwrap();
@@ -302,7 +305,7 @@ fn clean_review_selects_s1_without_spending_the_repair_allowance() {
     assert_eq!(result["result"]["acceptance"], "satisfied");
     assert_eq!(result["review_rounds"][0]["conclusion"], "pass");
     assert!(result.get("repair_assessments").is_none());
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let id = result["result"]["outputs"]["verification"]["artifact_ids"][0]
         .as_str()
         .unwrap();
@@ -323,8 +326,8 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     std::fs::write(&worker, format!("import time\ntime.sleep(2)\n{source}")).unwrap();
     for name in ["implementation", "repair"] {
         let path = package.join(name).join("pipeline.toml");
-        let mut value: review_core::task::pipeline::PipelineDefinitionV1 =
-            review_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
+        let mut value: af_contracts::task::pipeline::PipelineDefinition =
+            af_pipeline_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
                 .unwrap();
         value.max_attempts += 1;
         value.slots.get_mut("fix-verifier").unwrap().max_attempts = 2;
@@ -359,13 +362,13 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
         .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = af_store::EventStore::open(state.join("events.sqlite")).unwrap();
     let revision = cas.get_json(plan["revision_id"].as_str().unwrap()).unwrap();
     let deadline = revision["payload"]["limits"]["deadline_unix_ms"]
         .as_u64()
         .unwrap();
-    let run_id = review_store::store::task::task_run_id("repair-cli").unwrap();
+    let run_id = af_store::store::task::task_run_id("repair-cli").unwrap();
     let mut next_sequence = 0;
     let mut target_attempts = std::collections::BTreeSet::new();
     // Observe only newly appended records. Full projection replay validates the entire
@@ -373,12 +376,12 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     let interrupted_attempt = 'observe: loop {
         for event in store.replay_from(&run_id, next_sequence).unwrap() {
             next_sequence = event.sequence + 1;
-            if review_store::store::task::is_execution_started(&event) {
+            if af_store::store::task::is_execution_started(&event) {
                 continue;
             }
-            let transition: review_core::task::event::TaskTransitionV1 =
+            let transition: af_contracts::task::event::TaskTransitionV1 =
                 serde_json::from_value(event.payload).unwrap();
-            if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+            if let af_contracts::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
                 transition.change
             {
                 let record = cas.get_json(&record_id).unwrap();

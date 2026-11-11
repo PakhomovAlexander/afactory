@@ -15,9 +15,9 @@ import time
 from types import SimpleNamespace
 from unittest import mock
 
-from perflab import (archive, budget, builds, bundle, calibration, contracts, diagnostics, executor, gitrefs,
-                     hostlock, localcalibration, planning, runner, synthetic, telemetrylab,
-                     tomlfile, telemetryexec)
+from perflab import (archive, budget, builds, bundle, calibration, contracts, diagnostics, executor, git_refs,
+                     host_lock, local_calibration, planning, runner, synthetic, telemetry_lab,
+                     toml_file, telemetry_exec)
 from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes
 from tests import build_fixtures
 from tests import telemetry_fixtures as tf
@@ -52,7 +52,7 @@ def plenty_of_space(test):
 
 
 def config(root, repo, sha):
-    doc = tomlfile.loads(read(os.path.join(LAB, "service/executor.example.toml")), "executor example")
+    doc = toml_file.loads(read(os.path.join(LAB, "service/executor.example.toml")), "executor example")
     doc.update(root=root, repository_path=repo, control_sha=sha,
                sample_image=IMAGE, build_image=IMAGE, cycle_seconds=60, poll_main=False)
     doc["core"].update(shards=1, cases=["canonical_serialize_small"])
@@ -119,8 +119,8 @@ class ExecutorFixture(TempDir):
             os.unlink(image)
             return []
         with mock.patch.object(executor.builds, "Builder", Builder), \
-                mock.patch.object(executor.hostprep, "prepare", prepare), \
-                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.host_prep, "prepare", prepare), \
+                mock.patch.object(executor.host_prep, "cleanup", cleanup), \
                 mock.patch.object(executor.runner, "run_shard", shard), \
                 mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
                 mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
@@ -132,7 +132,7 @@ class Journal(ExecutorFixture):
     def assert_required_anchor_bound(self, cycle):
         with executor.Journal(self.c) as j:
             request = self.submit(j) if cycle else None
-            path = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+            path = os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)
             with open(path, "w"):
                 pass
             os.chmod(path, 0o644)
@@ -149,22 +149,22 @@ class Journal(ExecutorFixture):
                 os.unlink(path)
                 return identity
 
-            check_directory = hostlock._check_directory
+            check_directory = host_lock._check_directory
             def test_system_directory(directory, system_owned):
                 self.assertEqual(directory, os.path.realpath(self.locks))
                 self.assertTrue(system_owned)
                 check_directory(directory, False)  # Only simulate the fixture's root owner.
 
             operation = mock.Mock(side_effect=AssertionError("protected execution"))
-            machine_lock = hostlock.MachineLock
-            with mock.patch.object(hostlock, "MACHINE_LOCK_DIRECTORY", self.locks), \
-                    mock.patch.object(hostlock, "read_anchor", side_effect=disappear) as required, \
-                    mock.patch.object(hostlock, "_check_directory", test_system_directory), \
-                    mock.patch.object(hostlock, "MachineLock", wraps=machine_lock) as acquire, \
-                    mock.patch.object(hostlock.os, "open", wraps=os.open) as opened, \
+            machine_lock = host_lock.MachineLock
+            with mock.patch.object(host_lock, "MACHINE_LOCK_DIRECTORY", self.locks), \
+                    mock.patch.object(host_lock, "read_anchor", side_effect=disappear) as required, \
+                    mock.patch.object(host_lock, "_check_directory", test_system_directory), \
+                    mock.patch.object(host_lock, "MachineLock", wraps=machine_lock) as acquire, \
+                    mock.patch.object(host_lock.os, "open", wraps=os.open) as opened, \
                     mock.patch.object(machine_lock, "guard",
                                       side_effect=AssertionError("must not fence")) as guard:
-                with self.assertRaisesRegex(hostlock.Refused if cycle else ContractError,
+                with self.assertRaisesRegex(host_lock.Refused if cycle else ContractError,
                                             "cannot open the machine lock"):
                     if cycle:
                         j.cycle(execute=operation)
@@ -192,15 +192,15 @@ class Journal(ExecutorFixture):
 
     def test_exclusive_explicit_test_directory_needs_no_anchor_and_settles_fence(self):
         with executor.Journal(self.c) as j, \
-                mock.patch.object(hostlock, "read_anchor", side_effect=AssertionError("anchor")):
+                mock.patch.object(host_lock, "read_anchor", side_effect=AssertionError("anchor")):
             j.lock_directory = self.locks
             def check():
                 self.assertTrue(os.path.isdir(os.path.join(
-                    self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+                    self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
                 return "checked", None, False
             self.assertEqual(j.exclusive("test check", check), ("checked", None))
             self.assertFalse(os.path.exists(os.path.join(
-                self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+                self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
 
     def test_original_identity_and_frozen_backend_survive_switch_and_repeat(self):
         with executor.Journal(self.c) as j:
@@ -241,7 +241,7 @@ class Journal(ExecutorFixture):
     def test_busy_queue_is_unclaimed_then_runs_once_after_cleanup(self):
         with executor.Journal(self.c) as j:
             original = self.submit(j)
-            with hostlock.MachineLock(self.locks) as held:
+            with host_lock.MachineLock(self.locks) as held:
                 held.guard()
                 run = mock.Mock(side_effect=AssertionError("must not launch"))
                 self.assertEqual(j.cycle(execute=run, lock_directory=self.locks), "busy")
@@ -250,7 +250,7 @@ class Journal(ExecutorFixture):
                 run.assert_not_called()
                 held.confirm_clean()
             self.assertEqual(j.cycle(execute=lambda *a: receipt(), lock_directory=self.locks), "complete")
-            with hostlock.MachineLock(self.locks):
+            with host_lock.MachineLock(self.locks):
                 pass
 
     def test_claim_crash_recovery_and_ambiguous_handoff_never_relaunch(self):
@@ -337,9 +337,9 @@ class Journal(ExecutorFixture):
                 lease.uncertain = True
                 return receipt("uncertain", "interrupted")
             self.assertEqual(j.cycle(execute=uncertain, lock_directory=self.locks), "uncertain")
-        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
-            hostlock.MachineLock(self.locks)
-        self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment"):
+            host_lock.MachineLock(self.locks)
+        self.assertTrue(os.path.isdir(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
 
     def test_cancellation_deadline_and_child_failure_keep_original_and_exclusion(self):
         for error in (KeyboardInterrupt("cancel"), budget.Interrupted("deadline"), RuntimeError("child failure")):
@@ -356,8 +356,8 @@ class Journal(ExecutorFixture):
                         j.cycle(execute=failed, lock_directory=locks)
                     self.assertEqual(j.state(request["request_id"])["state"], "uncertain")
                     self.assertEqual(j.cycle(execute=failed, lock_directory=locks), "idle")
-                with self.assertRaises(hostlock.Refused):
-                    hostlock.MachineLock(locks)
+                with self.assertRaises(host_lock.Refused):
+                    host_lock.MachineLock(locks)
 
     def test_main_poll_observes_new_revisions_and_deduplicates_prior_defaults(self):
         with executor.Journal(self.c) as j:
@@ -415,7 +415,7 @@ class Journal(ExecutorFixture):
                 mock.patch.object(executor.Journal, "cycle", cycle), \
                 mock.patch.object(executor, "execute_local", return_value=receipt()), \
                 mock.patch.object(executor.Journal, "poll", side_effect=ContractError("authority failure")) as poll:
-            with hostlock.MachineLock(self.locks):
+            with host_lock.MachineLock(self.locks):
                 self.assertEqual(cli.cmd_executor(args), 0)
                 poll.assert_not_called()
             self.assertEqual(cli.cmd_executor(args), 4)
@@ -434,10 +434,10 @@ class Journal(ExecutorFixture):
                     work = os.path.join(path, "run")
                     os.mkdir(work)
                     now = time.monotonic()
-                    run = telemetryexec.Execution([sys.executable, "-I", "-B", "-c", body],
+                    run = telemetry_exec.Execution([sys.executable, "-I", "-B", "-c", body],
                         {"PATH": "/usr/bin:/bin", "HOME": work, "TMPDIR": work}, work, [work], [],
                         work, "fixture", 65536, now + seconds, 65536, cleanup_deadline=now + seconds + 3)
-                    outcome = telemetryexec.TrustedLocal(sys.executable).run(run)
+                    outcome = telemetry_exec.TrustedLocal(sys.executable).run(run)
                     observed.append(outcome)
                     self.assertEqual(outcome.cleanup, "confirmed", outcome.cleanup_detail)
                     return dict(receipt(measurement=label), evidence=executor.file_manifest(path, ["run"]))
@@ -449,7 +449,7 @@ class Journal(ExecutorFixture):
                 self.assertEqual(observed[0].timed_out, label == "deadline")
                 if label == "failed":
                     self.assertEqual(observed[0].code, 7)
-                with hostlock.MachineLock(self.locks):
+                with host_lock.MachineLock(self.locks):
                     pass
 
     def test_torn_publication_and_changed_config_and_bounds_refuse(self):
@@ -512,8 +512,8 @@ class Journal(ExecutorFixture):
             os.unlink(image)
             return []
         with mock.patch.object(executor.builds, "Builder", Builder), \
-                mock.patch.object(executor.hostprep, "prepare", prepare), \
-                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.host_prep, "prepare", prepare), \
+                mock.patch.object(executor.host_prep, "cleanup", cleanup), \
                 mock.patch.object(executor.runner, "run_shard", shard), \
                 mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
                 mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
@@ -569,10 +569,10 @@ class Journal(ExecutorFixture):
             os.unlink(image)
             return []
         with mock.patch.object(executor.builds, "Builder", Builder), \
-                mock.patch.object(executor.hostprep, "prepare", prepare), \
-                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.host_prep, "prepare", prepare), \
+                mock.patch.object(executor.host_prep, "cleanup", cleanup), \
                 mock.patch.object(executor.runner, "run_shard", shard), \
-                mock.patch.object(executor.compare, "evaluate", side_effect=AssertionError("verdict")), \
+                mock.patch.object(executor.evaluate_results, "evaluate", side_effect=AssertionError("verdict")), \
                 mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
             with self.assertRaises(runner.Cancelled) as raised:
                 j.cycle(lock_directory=self.locks)
@@ -580,7 +580,7 @@ class Journal(ExecutorFixture):
 
     def test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays(self):
         # A serial original fits one shard of this tier; later shards of one original, and
-        # later originals, are `test_comparison`'s whole-controller cancellation.
+        # later originals, are `test_release_comparison`'s whole-controller cancellation.
         with executor.Journal(self.c) as j:
             request = self.submit(j)
             ident = request["request_id"]
@@ -603,7 +603,7 @@ class Journal(ExecutorFixture):
             self.assertNotIn("report/report.html", paths, "a cancelled original has no verdict")
             self.assertEqual(cancelled.result["status"], "interrupted")
             # The confirmed cleanup settled the fence; the original never replays.
-            hostlock.MachineLock(self.locks).release()
+            host_lock.MachineLock(self.locks).release()
             self.assertEqual(j.cycle(execute=lambda *a: self.fail("replayed original"),
                                      lock_directory=self.locks), "idle")
             self.assertEqual(j.state(ident)["state"], "interrupted")
@@ -618,8 +618,8 @@ class Journal(ExecutorFixture):
             self.assertIn("umount exited 32", " ".join(getattr(cancelled, "__notes__", [])))
             self.assertEqual(j.state(request["request_id"])["state"], "uncertain")
             self.assertFalse(os.path.exists(os.path.join(j.path(request["request_id"]), "result.json")))
-        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
-            hostlock.MachineLock(self.locks)
+        with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment"):
+            host_lock.MachineLock(self.locks)
 
     def test_core_path_uses_retained_git_native_archive_and_reports_failed_verdict(self):
         """Real local orchestration; synthetic builder/shards and filesystem stand-ins."""
@@ -839,8 +839,8 @@ class Journal(ExecutorFixture):
                 os.rmdir(mount)
                 return []
             with mock.patch.object(executor.builds, "Builder", Builder), \
-                    mock.patch.object(executor.hostprep, "prepare", prepare), \
-                    mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                    mock.patch.object(executor.host_prep, "prepare", prepare), \
+                    mock.patch.object(executor.host_prep, "cleanup", cleanup), \
                     mock.patch.object(diagnostics, "run_profile", profile_run):
                 self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
             self.assertEqual(seen, ["build", "profile"])
@@ -983,7 +983,7 @@ class Journal(ExecutorFixture):
             # Execution with less time left than both builds and the profile need: a clean
             # terminal refusal before either build, nothing measured and no fence kept.
             with mock.patch.object(executor, "TELEMETRY_BUILD_SECONDS", 25200), \
-                    mock.patch.object(executor.telemetrybuild, "run",
+                    mock.patch.object(executor.telemetry_build, "run",
                                       side_effect=AssertionError("built before admission")):
                 self.assertEqual(j.cycle(lock_directory=self.locks), "failed")
             state = j.state(request["request_id"])
@@ -1027,7 +1027,7 @@ class Journal(ExecutorFixture):
             # Space taken between submission and the claim: the claim refuses before anything
             # is claimed or built, and the original stays queued, never pruned or replayed.
             free["bytes"] = reserve - 1
-            with mock.patch.object(executor.telemetrybuild, "run",
+            with mock.patch.object(executor.telemetry_build, "run",
                                    side_effect=AssertionError("built before admission")):
                 with self.assertRaisesRegex(ContractError, "too little free space"):
                     j.cycle(lock_directory=self.locks)
@@ -1152,8 +1152,8 @@ class Journal(ExecutorFixture):
         with executor.Journal(self.c) as j:
             request = self.submit(j, "profile", "profile_1")
             with mock.patch.object(executor.builds, "Builder", Builder), \
-                    mock.patch.object(executor.hostprep, "prepare", prepare), \
-                    mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                    mock.patch.object(executor.host_prep, "prepare", prepare), \
+                    mock.patch.object(executor.host_prep, "cleanup", cleanup), \
                     mock.patch.object(diagnostics, "run_profile", profile):
                 self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
             self.assertEqual(calls, ["build", "profile", "cleanup"])
@@ -1233,7 +1233,7 @@ class Journal(ExecutorFixture):
                         j.config = dict(c, zigbuild_bin="/other/operator-setting")
                         with mock.patch.object(builds, "Builder", Builder), \
                                 mock.patch.object(builds, "BuildImage", Image), \
-                                mock.patch.object(executor.hostprep, "prepare", side_effect=lambda i, p, *a, **kw: os.mkdir(p)), \
+                                mock.patch.object(executor.host_prep, "prepare", side_effect=lambda i, p, *a, **kw: os.mkdir(p)), \
                                 mock.patch.object(diagnostics, "run_profile", profile), \
                                 self.assertRaises(PreflightReached):
                             j.cycle(lock_directory=locks)
@@ -1282,8 +1282,8 @@ class Journal(ExecutorFixture):
             request = self.submit(j, "profile", "uncertain-profile")
             path = j.path(request["request_id"])
             with mock.patch.object(builds, "Builder", Builder), \
-                    mock.patch.object(executor.hostprep, "prepare", prepare), \
-                    mock.patch.object(executor.hostprep, "cleanup") as cleanup, \
+                    mock.patch.object(executor.host_prep, "prepare", prepare), \
+                    mock.patch.object(executor.host_prep, "cleanup") as cleanup, \
                     mock.patch.object(diagnostics, "run_profile", profile), \
                     mock.patch.object(diagnostics, "probe_tools", checked_tools):
                 with self.assertRaises(diagnostics.Unavailable) as caught:
@@ -1298,8 +1298,8 @@ class Journal(ExecutorFixture):
             self.assertIn(b"af-perf-probe-", read(os.path.join(path, "profile/cleanup-uncertain.txt")))
             self.assertTrue(os.path.isdir(os.path.join(path, "scratch")))
             self.assertEqual(j.cycle(lock_directory=self.locks), "idle")
-        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
-            hostlock.MachineLock(self.locks)
+        with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment"):
+            host_lock.MachineLock(self.locks)
 
     def test_local_telemetry_builds_both_sides_verifies_raw_and_keeps_separate_history(self):
         self.run_local_telemetry(IMAGE)
@@ -1330,7 +1330,7 @@ class Journal(ExecutorFixture):
 
         written = self.path("local.json")
         self.assertEqual(record(LOCAL_IMAGE_ID, written), (0, b""))
-        doc = telemetrylab.read_build(written, "candidate", self.head, sha256_bytes(read(binary)))
+        doc = telemetry_lab.read_build(written, "candidate", self.head, sha256_bytes(read(binary)))
         self.assertEqual((doc["schema"], doc["image"]), ("af.perf-telemetry-build/2", LOCAL_IMAGE_ID))
         for image in ("registry.invalid/sample:latest", "registry.invalid/sample:1.88@sha256:" + "1" * 64,
                       "Registry.invalid/Sample@sha256:" + "1" * 64, "sha256:" + "4f5e1e215d31",
@@ -1346,7 +1346,7 @@ class Journal(ExecutorFixture):
         with open(old, "wb") as f:
             f.write(json.dumps(dict(doc, schema="af.perf-telemetry-build/1", image=IMAGE)).encode())
         with self.assertRaisesRegex(ContractError, "expected af.perf-telemetry-build/2"):
-            telemetrylab.read_build(old, "candidate", self.head, doc["binary_sha256"])
+            telemetry_lab.read_build(old, "candidate", self.head, doc["binary_sha256"])
 
     def run_local_telemetry(self, build_image):
         """One local telemetry original through the real executor, both builds and their
@@ -1372,7 +1372,7 @@ class Journal(ExecutorFixture):
                 os.rmdir(mount)
                 os.unlink(image)
                 return []
-            native_run = telemetrylab.run
+            native_run = telemetry_lab.run
             observed = []
             def run(settings, machine_lease=None):
                 self.assertEqual(settings.mode, "linux_container")
@@ -1384,10 +1384,10 @@ class Journal(ExecutorFixture):
                 settings.host_identity = lambda: tf.HOST
                 settings.free_bytes = lambda path: 1 << 40
                 return native_run(settings, machine_lease=machine_lease)
-            with mock.patch.object(executor.telemetrybuild, "run", build), \
-                    mock.patch.object(executor.hostprep, "prepare", prepare), \
-                    mock.patch.object(executor.hostprep, "cleanup", cleanup), \
-                    mock.patch.object(telemetrylab, "run", run), \
+            with mock.patch.object(executor.telemetry_build, "run", build), \
+                    mock.patch.object(executor.host_prep, "prepare", prepare), \
+                    mock.patch.object(executor.host_prep, "cleanup", cleanup), \
+                    mock.patch.object(telemetry_lab, "run", run), \
                     mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("Actions transport")):
                 self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
             self.assertEqual([i[0] for i in seen], [self.base, self.head])
@@ -1401,7 +1401,7 @@ class Journal(ExecutorFixture):
             self.assertTrue(hist["results"][0]["result_id"].startswith("local_"))
             self.assertFalse(os.path.exists(os.path.join(self.c["root"], "hosted-telemetry-history")))
             path = j.path(request["request_id"])
-            measured, _, _ = telemetrylab.verify(os.path.join(path, "run"), executor.ROOT)
+            measured, _, _ = telemetry_lab.verify(os.path.join(path, "run"), executor.ROOT)
             records = [contracts.read_file(os.path.join(path, side + "-build", "build.json"),
                                            "telemetry-build") for side in contracts.SIDES]
             self.assertEqual([measured["binaries"][side]["build"] for side in contracts.SIDES],
@@ -1513,7 +1513,7 @@ class Nightly(ExecutorFixture):
 
     def test_nightly_freezes_the_head_its_baseline_was_derived_from_when_the_ref_moves(self):
         self.repo.tag("v0.12.0", self.base)
-        derive = gitrefs.nightly_baseline
+        derive = git_refs.nightly_baseline
 
         def derive_then_advance(git, head):
             chosen = derive(git, head)
@@ -1522,7 +1522,7 @@ class Nightly(ExecutorFixture):
             self.repo.tag("v0.13.0", self.repo.commit("advanced main", {"README": "moved"}))
             return chosen
 
-        with mock.patch.object(gitrefs, "nightly_baseline", side_effect=derive_then_advance) as seen:
+        with mock.patch.object(git_refs, "nightly_baseline", side_effect=derive_then_advance) as seen:
             code, out, _ = self.cli("--work", "telemetry", "--tag", self.TAG, "--head", "main")
         self.assertEqual(code, 0)
         self.assertEqual(seen.call_args.args[1], self.head)
@@ -1618,11 +1618,11 @@ class ToolImage(TempDir):
 PROCESS = r'''
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
-from perflab import hostlock, runner, telemetrylab, diagnostics, executor
+from perflab import host_lock, runner, telemetry_lab, diagnostics, executor
 from unittest import mock
 mode, locks = sys.argv[2:4]
 if mode == "hold":
-    with hostlock.MachineLock(locks) as lease:
+    with host_lock.MachineLock(locks) as lease:
         lease.guard()
         print("started", flush=True)
         sys.stdin.readline()
@@ -1631,19 +1631,19 @@ if mode == "hold":
         lease.confirm_clean()
     print("settled", flush=True)
 elif mode == "orphan":
-    from perflab import telemetryexec
+    from perflab import telemetry_exec
     import time
-    class Observed(telemetryexec.TrustedLocal):
+    class Observed(telemetry_exec.TrustedLocal):
         def launch(self, execution, stdout, stderr):
             process = super().launch(execution, stdout, stderr)
             print("started " + str(process.pid), flush=True)
             return process
-    with hostlock.MachineLock(locks) as lease:
+    with host_lock.MachineLock(locks) as lease:
         lease.guard()
         work = sys.argv[4]
         os.mkdir(work)
         now = time.monotonic()
-        execution = telemetryexec.Execution([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"],
+        execution = telemetry_exec.Execution([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"],
             {"PATH": "/usr/bin:/bin", "HOME": work, "TMPDIR": work}, work, [work], [], work,
             "orphan fixture", 65536, now + 125, 65536, cleanup_deadline=now + 128)
         Observed(sys.executable).run(execution)
@@ -1654,12 +1654,12 @@ elif mode == "core":
     except runner.Unavailable as e:
         print(e.reason)
 elif mode == "telemetry":
-    with mock.patch.object(telemetrylab, "_binary", return_value=("/not-executed", "sha256:"+"1"*64)):
+    with mock.patch.object(telemetry_lab, "_binary", return_value=("/not-executed", "sha256:"+"1"*64)):
         try:
-            telemetrylab.run(telemetrylab.Settings(profile="manual", trigger="manual", mode="trusted_local",
+            telemetry_lab.run(telemetry_lab.Settings(profile="manual", trigger="manual", mode="trusted_local",
                 baseline_af="x", candidate_af="y", baseline_sha="1"*40, candidate_sha="2"*40,
                 authority_sha="3"*40, output=sys.argv[4], lock_directory=locks))
-        except telemetrylab.Unavailable as e:
+        except telemetry_lab.Unavailable as e:
             print(e.reason)
 elif mode == "profile":
     # Exercise the actual shared entry lock before _run_locked can launch any tool.
@@ -1668,9 +1668,9 @@ elif mode == "profile":
 elif mode == "scratch":
     import cli
     from types import SimpleNamespace
-    original_lock = hostlock.MachineLock
-    with mock.patch.object(hostlock, "MachineLock", side_effect=lambda *a: original_lock(locks)), \
-            mock.patch.object(cli.hostprep, "prepare", side_effect=AssertionError("second preparation")), \
+    original_lock = host_lock.MachineLock
+    with mock.patch.object(host_lock, "MachineLock", side_effect=lambda *a: original_lock(locks)), \
+            mock.patch.object(cli.host_prep, "prepare", side_effect=AssertionError("second preparation")), \
             mock.patch.object(cli, "_refuse", side_effect=lambda status, reason, detail: print(reason)):
         cli.cmd_ci_scratch(SimpleNamespace(cleanup=False, telemetry_owner=None,
             image=sys.argv[4] + ".img", mount=sys.argv[4], bytes=1024))
@@ -1686,13 +1686,13 @@ def profile_contender(locks, output):
     from tests.support import lab_repo, read
     repo, sha = lab_repo(output + "-repo")
     sha = repo.commit("diagnostics", {diagnostics.REGISTRY_PATH: read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
-    plan = planning.plan(gitrefs.Git(repo.path), planning.Request(scope="partial_scope", trigger="manual", tier="quick",
+    plan = planning.plan(git_refs.Git(repo.path), planning.Request(scope="partial_scope", trigger="manual", tier="quick",
         base=sha, head=sha, cases=["canonical_serialize_small"], build_image=IMAGE))
     path = output + ".json"
     with open(path, "wb") as f:
         f.write(contracts.write_bytes(plan, "run"))
     try:
-        diagnostics.run_profile(gitrefs.Git(repo.path), diagnostics.Options(plan=path, cases=[plan["cases"][0]["instance_id"]],
+        diagnostics.run_profile(git_refs.Git(repo.path), diagnostics.Options(plan=path, cases=[plan["cases"][0]["instance_id"]],
             recipe="linux_gnu_trace", mode="trusted_local", output=output, lock_directory=locks))
     except diagnostics.Unavailable as e:
         print(e.reason)
@@ -1709,46 +1709,86 @@ class WorkloadAdmission(ExecutorFixture):
         self.base = self.repo.commit("baseline " + base, {"Cargo.lock": lock % base})
         self.head = self.repo.commit("candidate " + candidate, {"Cargo.lock": lock % candidate})
 
-    def test_unsupported_selected_releases_refuse_before_any_claim_or_build(self):
-        self.c["core"]["cases"] = ["cli_discovery__command_version"]
-        self.release("0.13.0", "0.11.9")
-        for work, why in (("telemetry", "the candidate source %s is af 0.11.9: af 0.11.9 is "
-                                        "named by no fixture contract"),
-                          ("core", "the candidate source is af 0.11.9: no declared CLI "
-                                   "adapter covers AF 0.11.9")):
-            with self.subTest(work=work), executor.Journal(self.c) as j:
-                why = why % self.head[:12] if "%s" in why else why
-                refused = j.preflight(work, self.base, self.head, "old_" + work)
-                contracts.write_bytes(refused, "executor-preflight")
-                self.assertEqual(refused["status"], "refused")
-                self.assertIn("refused before any claim or build", refused["detail"])
-                self.assertIn(why, refused["detail"])
-                with self.assertRaisesRegex(ContractError, "refused before any claim or build"):
-                    self.submit(j, work, "old_" + work)
-                self.assertEqual(j.names(), [], "a refusal reserves nothing")
+    def test_same_release_changed_or_missing_schema_refuses_before_any_claim_or_build(self):
+        self.release("0.15.1-rc.1", "0.15.1-rc.1")
+        name = 'schemas/' + telemetry_lab.script_module('scripts/telemetry-overhead.py').CONTRACT_SCHEMAS[0]
+        for side in ('baseline', 'candidate'):
+            for mutation in ('changed', 'missing'):
+                with self.subTest(side=side, mutation=mutation):
+                    files = {name: b'{"schema":"retired"}'} if mutation == 'changed' else {}
+                    if mutation == 'missing':
+                        os.unlink(os.path.join(self.repo.path, name))
+                    changed = self.repo.commit(mutation, files)
+                    sources = {'baseline_sha':self.base, 'candidate_sha':self.head}
+                    sources[side + '_sha'] = changed
+                    with self.assertRaisesRegex(ContractError, 'the ' + side + ' source.*requires exact'):
+                        executor.telemetry_workload(git_refs.Git(self.repo.path), sources,
+                                                    ['overhead', 'invocation_cost'])
+                    # Return the worktree to current bytes for the independent mutation.
+                    self.repo.commit('restore current schema', {name:read(os.path.join(ROOT, name))})
+        self.head = self.repo.commit('candidate without declared schema', {name:b'{}'})
+        self.assert_refused('telemetry', 'bad_wire', 'requires exact ' + name)
 
-    def test_the_supported_release_pair_is_admitted_with_each_sides_contract(self):
-        self.c["core"]["cases"] = ["cli_discovery__command_version"]
-        self.release("0.13.0", "0.14.0-rc.1")
+    def test_numeric_to_boolean_schema_mutation_refuses_either_source_before_claim_or_build(self):
+        name = 'schemas/pipeline-definition-v6.json'
+        schema = json.loads(read(os.path.join(ROOT, name)))
+        self.assertIs(type(schema['properties']['nodes']['minItems']), int)
+        self.assertEqual(schema['properties']['nodes']['minItems'], 1)
+        schema['properties']['nodes']['minItems'] = True
+        changed = self.repo.commit('invalid boolean numeric constraint', {name:json.dumps(schema)})
+        current = self.repo.commit('restore current constraint', {name:read(os.path.join(ROOT, name))})
+        for side in ('baseline', 'candidate'):
+            with self.subTest(side=side):
+                self.base, self.head = (changed, current) if side == 'baseline' else (current, changed)
+                self.assert_refused('telemetry', 'bool_' + side,
+                                    'the ' + side + ' source')
+
+    def test_unsupported_cli_release_refuses_either_source_before_claim_or_build(self):
+        self.c['core']['cases'] = ['cli_discovery__command_version']
+        for side in ('baseline', 'candidate'):
+            with self.subTest(side=side):
+                self.release(*(('0.11.9', '0.14.0-rc.1') if side == 'baseline'
+                               else ('0.13.0', '0.11.9')))
+                self.assert_refused('core', 'old_cli_' + side,
+                                    'the ' + side + ' source is af 0.11.9: no declared CLI adapter')
+
+    def test_descriptive_annotations_are_not_capability_but_resource_identity_and_constraints_are(self):
+        name = 'schemas/compiled-task-v6.json'
+        schema = json.loads(read(os.path.join(ROOT, name)))
+        annotated = dict(schema, title='A descriptive title', description='Different prose')
+        self.head = self.repo.commit('same wire constraints, different annotation',
+                                     {name:json.dumps(annotated)})
+        sources = {'baseline_sha':self.base, 'candidate_sha':self.head}
+        self.assertIn('native-task-review@1', executor.telemetry_workload(
+            git_refs.Git(self.repo.path), sources, ['overhead']))
+        for key, value in (('$id', 'urn:af:schema:compiled-task:retired'),
+                           ('additionalProperties', True), ('description', [])):
+            changed = dict(annotated, **{key:value})
+            sources['candidate_sha'] = self.repo.commit('different ' + key, {name:json.dumps(changed)})
+            with self.assertRaisesRegex(ContractError, 'requires exact ' + name):
+                executor.telemetry_workload(git_refs.Git(self.repo.path), sources, ['overhead'])
+
+    def test_current_wire_sources_are_admitted_independently_of_release_strings(self):
+        self.c['core']['cases'] = ['cli_discovery__command_version']
+        self.release('0.13.0', '0.14.0-rc.1')
         with executor.Journal(self.c) as j:
-            for work, named in (("telemetry", "baseline af 0.13.0 under check-receipt@1, "
-                                              "candidate af 0.14.0-rc.1 under check-receipt@2"),
+            for work, named in (("telemetry", "baseline af 0.13.0 under native-task-review@1, "
+                                              "candidate af 0.14.0-rc.1 under native-task-review@1"),
                                 ("core", "baseline af 0.13.0 with af_cli_v2, candidate af "
                                          "0.14.0-rc.1 with af_cli_v3")):
                 ready = j.preflight(work, self.base, self.head, "pair_" + work)
-                self.assertEqual(ready["status"], "ready", ready["detail"])
-                # The admission's figures, as a comparison's member check records them.
-                checked = {"serial": None, "tools": []}
-                j._submit(work, self.base, self.head, "pair_" + work, checked=checked)
-                self.assertIn(named, checked["admission"])
+                self.assertEqual(ready['status'], 'ready', ready['detail'])
+                checked = {'serial':None, 'tools':[]}
+                j._submit(work, self.base, self.head, 'pair_' + work, checked=checked)
+                self.assertIn(named, checked['admission'])
             self.assertEqual(j.names(), [])
-            self.submit(j, "telemetry", "pair_telemetry")
+            self.submit(j, 'telemetry', 'pair_telemetry')
             self.assertEqual(len(j.names()), 1)
 
     def assert_refused(self, work, key, why):
         """`preflight`, then `submit`, refuse with `why` and reserve, build or prepare nothing."""
         with mock.patch.object(executor.builds, "Builder", side_effect=AssertionError("built")), \
-                mock.patch.object(executor.hostprep, "prepare",
+                mock.patch.object(executor.host_prep, "prepare",
                                   side_effect=AssertionError("prepared")), \
                 executor.Journal(self.c) as j:
             refused = j.preflight(work, self.base, self.head, key)
@@ -2058,13 +2098,13 @@ class ScratchCommand(TempDir):
         import cli
         locks = self.path("machine")
         os.mkdir(locks)
-        original_lock = hostlock.MachineLock
+        original_lock = host_lock.MachineLock
         args = SimpleNamespace(cleanup=False, telemetry_owner=None, image=self.path("image"),
                                mount=self.path("mount"), bytes=1024)
-        with mock.patch.object(hostlock, "MachineLock", side_effect=lambda *a: original_lock(locks)), \
-                mock.patch.object(cli.hostprep, "prepare", return_value={"size_bytes": 1024,
+        with mock.patch.object(host_lock, "MachineLock", side_effect=lambda *a: original_lock(locks)), \
+                mock.patch.object(cli.host_prep, "prepare", return_value={"size_bytes": 1024,
                     "mount": args.mount, "free_bytes": 2048}) as prepare, \
-                mock.patch.object(cli.hostprep, "cleanup", return_value=[]) as cleanup:
+                mock.patch.object(cli.host_prep, "cleanup", return_value=[]) as cleanup:
             self.assertEqual(cli.cmd_ci_scratch(args), 0)
             prepare.assert_called_once()
             with original_lock(locks):
@@ -2076,7 +2116,7 @@ class ScratchCommand(TempDir):
                 pass
             cleanup.return_value = ["unmount unconfirmed"]
             self.assertNotEqual(cli.cmd_ci_scratch(args), 0)
-        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
+        with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment"):
             original_lock(locks)
 
 
@@ -2115,7 +2155,7 @@ class Processes(ExecutorFixture):
         out, err = holder.communicate("\n", timeout=30)
         self.assertEqual(out.strip(), "settled", err)
         self.assertEqual(holder.returncode, 0, err)
-        with hostlock.MachineLock(self.locks):
+        with host_lock.MachineLock(self.locks):
             pass
 
     def test_orphaned_owned_child_cannot_release_exclusion_into_live_resources(self):
@@ -2127,8 +2167,8 @@ class Processes(ExecutorFixture):
             controller.kill()
             controller.communicate(timeout=30)
             os.kill(pid, 0)  # It is this fixture's still-live, separately owned child.
-            with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
-                hostlock.MachineLock(self.locks)
+            with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment"):
+                host_lock.MachineLock(self.locks)
         finally:
             if controller.poll() is None:
                 controller.kill()
@@ -2147,20 +2187,20 @@ class Processes(ExecutorFixture):
                 time.sleep(.01)
             self.assertFalse(executing())
         # Cleanup of the child does not itself erase the earlier uncertainty fence.
-        with self.assertRaises(hostlock.Refused):
-            hostlock.MachineLock(self.locks)
+        with self.assertRaises(host_lock.Refused):
+            host_lock.MachineLock(self.locks)
 
     def test_lost_controller_retains_fence_and_rejects_fd_and_path_bypasses(self):
         holder = self.launch("hold", "holder")
         self.assertEqual(holder.stdout.readline().strip(), "started")
         holder.kill()
         holder.communicate(timeout=30)
-        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
-            hostlock.MachineLock(self.locks)
-        with self.assertRaises(hostlock.Refused):
-            hostlock.acquire(lease=0)
-        with self.assertRaises(hostlock.Refused):
-            hostlock.acquire(lease=SimpleNamespace(fd=0))
+        with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment"):
+            host_lock.MachineLock(self.locks)
+        with self.assertRaises(host_lock.Refused):
+            host_lock.acquire(lease=0)
+        with self.assertRaises(host_lock.Refused):
+            host_lock.acquire(lease=SimpleNamespace(fd=0))
 
 
 class AuthorityAndShapes(TempDir):
@@ -2171,9 +2211,9 @@ class AuthorityAndShapes(TempDir):
         def different_owner(argv, **kwargs):
             kwargs["env"] = dict(kwargs["env"], GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
             return actual_run(argv, **kwargs)
-        with mock.patch.object(gitrefs.subprocess, "run", side_effect=different_owner):
-            with self.assertRaises(gitrefs.Unavailable):
-                gitrefs.Git(repo.path).resolve(sha, "untrusted mirror")
+        with mock.patch.object(git_refs.subprocess, "run", side_effect=different_owner):
+            with self.assertRaises(git_refs.Unavailable):
+                git_refs.Git(repo.path).resolve(sha, "untrusted mirror")
             trusted = executor.source_repository(config_doc)
             self.assertEqual(trusted.resolve(sha, "operator mirror"), sha)
             self.assertEqual(trusted.exact_ref("refs/heads/main", "reviewed main"), sha)
@@ -2197,7 +2237,7 @@ class AuthorityAndShapes(TempDir):
         for kind in ("link", "hardlink", "directory", "writable"):
             directory = self.path(kind)
             os.mkdir(directory)
-            path = os.path.join(directory, hostlock.MACHINE_LOCK_NAME)
+            path = os.path.join(directory, host_lock.MACHINE_LOCK_NAME)
             if kind == "link":
                 os.symlink(self.path("missing"), path)
             elif kind == "hardlink":
@@ -2208,8 +2248,8 @@ class AuthorityAndShapes(TempDir):
             else:
                 open(path, "w").close()
                 os.chmod(path, 0o666)
-            with self.subTest(kind=kind), self.assertRaises(hostlock.Refused):
-                hostlock.MachineLock(directory)
+            with self.subTest(kind=kind), self.assertRaises(host_lock.Refused):
+                host_lock.MachineLock(directory)
 
     def test_shipping_tool_directory_is_explicit_canonical_and_changes_environment(self):
         c = config(self.path("journal"), self.tmp, "1" * 40)
@@ -2252,32 +2292,32 @@ class AuthorityAndShapes(TempDir):
                     builder.assert_not_called()
 
     def test_lock_lease_refuses_inode_replacement_and_inherited_capabilities(self):
-        with hostlock.MachineLock(self.tmp) as lease:
+        with host_lock.MachineLock(self.tmp) as lease:
             old = lease.path + ".held"
             os.rename(lease.path, old)  # adversarial fixture, never production cleanup
             with open(lease.path, "w") as f:
                 f.write("replaced")
-            with self.assertRaisesRegex(hostlock.Refused, "inode changed"):
+            with self.assertRaisesRegex(host_lock.Refused, "inode changed"):
                 lease.check()
-        with self.assertRaises(hostlock.Refused):
-            hostlock.acquire(lease=3)
+        with self.assertRaises(host_lock.Refused):
+            host_lock.acquire(lease=3)
 
     def test_machine_inode_anchor_refuses_private_tmp_and_never_creates_a_second_lock(self):
         host = self.path("host")
         private = self.path("private-tmp")
         os.mkdir(host)
         os.mkdir(private)
-        with hostlock.MachineLock(host) as lease:
+        with host_lock.MachineLock(host) as lease:
             info = os.stat(lease.path)
             identity = [info.st_dev, info.st_ino]
-        with hostlock.MachineLock(host, expected_identity=identity):
+        with host_lock.MachineLock(host, expected_identity=identity):
             pass
-        with self.assertRaises(hostlock.Refused):
-            hostlock.MachineLock(private, expected_identity=identity)
+        with self.assertRaises(host_lock.Refused):
+            host_lock.MachineLock(private, expected_identity=identity)
         self.assertEqual(os.listdir(private), [])
-        with mock.patch.object(hostlock, "MACHINE_LOCK_ANCHOR", self.path("absent-anchor")):
-            with self.assertRaisesRegex(hostlock.Refused, "requires root-owned"):
-                hostlock.read_anchor(required=True)
+        with mock.patch.object(host_lock, "MACHINE_LOCK_ANCHOR", self.path("absent-anchor")):
+            with self.assertRaisesRegex(host_lock.Refused, "requires root-owned"):
+                host_lock.read_anchor(required=True)
 
     def test_retained_shallow_sources_feed_the_existing_builder_without_remote_transport(self):
         repo, base = lab_repo(self.path("repo"))
@@ -2293,23 +2333,23 @@ class AuthorityAndShapes(TempDir):
         layout = SimpleNamespace(owner=source, git=self.path("build.git"), home=home)
         self.assertTrue(builds.private_repository(layout, [base, head]))
         for sha in (base, head):
-            self.assertEqual(gitrefs.Git(layout.git).resolve(sha, "builder source"), sha)
+            self.assertEqual(git_refs.Git(layout.git).resolve(sha, "builder source"), sha)
 
     def test_exact_installed_producer_matches_and_candidate_python_is_never_imported(self):
         repo, _ = lab_repo(self.path("repo"))
-        registry = telemetrylab.load_registry()[0]
-        names = telemetrylab.authority_files(registry)
+        registry = telemetry_lab.load_registry()[0]
+        names = telemetry_lab.authority_files(registry)
         files = {name: read(os.path.join(ROOT, name)) for name in names}
         sha = repo.commit("synthetic Git copy of installed authority", files)
-        self.assertTrue(executor.producer(gitrefs.Git(repo.path), sha).startswith("sha256:"))
+        self.assertTrue(executor.producer(git_refs.Git(repo.path), sha).startswith("sha256:"))
         sentinel = self.path("executed-candidate")
         changed = repo.commit("candidate Python data", {"scripts/performance/perflab/executor.py":
             "open(%r, 'w').write('must never execute')" % sentinel})
         with self.assertRaisesRegex(ContractError, "installed control bytes differ"):
-            executor.producer(gitrefs.Git(repo.path), changed)
+            executor.producer(git_refs.Git(repo.path), changed)
         self.assertFalse(os.path.exists(sentinel))
 
     def test_installed_producer_is_checked_against_git_and_refuses_candidate_python(self):
         repo, sha = lab_repo(self.path("repo"))
         with self.assertRaises(ContractError):
-            executor.producer(gitrefs.Git(repo.path), sha)
+            executor.producer(git_refs.Git(repo.path), sha)

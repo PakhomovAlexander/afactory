@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use review_config::layout;
+use af_pipeline_config::layout;
 
 use crate::task_cli;
 
@@ -96,7 +96,7 @@ fn every_authority_path_the_kernel_resolves_is_declared_in_the_layout_table() {
         "af.local.toml",
         "af.lock",
         "pipelines",
-        "workers",
+        "task-packages",
         "task-catalog.toml",
         "code-policy.toml",
     ];

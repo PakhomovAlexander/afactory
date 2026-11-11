@@ -3,17 +3,17 @@ code_policy = ".af/code-policy.toml"
 
 [packages."fixture/bugs"]
 version = "1.0.0"
-digest = "sha256:ed4b593e798cf05cba4e5a327bbc7d1aa52397567ce6ed42ea266656d8d0e5de"
+digest = "sha256:967c525e5ad221be74e43b86729c2fc65c0709e51cfa6677a5f23705a5a9bb82"
 path = ".af/task-packages/fixture/bugs"
 
 [packages."fixture/correctness"]
 version = "1.0.0"
-digest = "sha256:2b4cf4631beb5fef4ceb2c3959b583e4a31e2623434a3a24844408c75d8f3dcb"
+digest = "sha256:12b008aec74721ee9939940a0cbd565d5cf69e32ec996895e67addfa11891abe"
 path = ".af/task-packages/fixture/correctness"
 
 [packages."fixture/review"]
-version = "1.0.0"
-digest = "sha256:68e98c15f56fbee61c6efdc3d0e36abbb8be8bb4df791c806285143520e31523"
+version = "1.0.1"
+digest = "sha256:58f11582db750a707a9ed349cc5ddfdb32f31d93fa6b9fd41370515934ab3aea"
 path = ".af/task-packages/fixture/review"
 
 [independence]

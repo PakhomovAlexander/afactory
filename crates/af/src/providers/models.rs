@@ -13,13 +13,13 @@
 //! A catalog says which spellings af recognises for a Provider: what its harness offers (Claude
 //! Code's picker leaves out exact IDs its API still accepts), never every ID the API accepts,
 //! and never whether this account can run one, which only the charged `af provider doctor`
-//! proves. The rules af applies to a binding live in `review_runner_claude::models`; this module
+//! proves. The rules af applies to a binding live in `af_runner::models`; this module
 //! only reads catalogs and prints them.
 
 use super::installation::{VersionCheck, version_check};
 use super::*;
-use review_runner_claude::hint;
-use review_runner_claude::models::{self as rules, Catalog, CatalogModel, Kind, Resolution};
+use af_runner::models::diagnostic as hint;
+use af_runner::models::{self as rules, Catalog, CatalogModel, Kind, Resolution};
 
 /// The source a Claude catalog is read from.
 pub(crate) const CLAUDE_SOURCE: &str = "claude list_models";
@@ -68,6 +68,9 @@ pub(crate) struct CatalogReport {
 
 impl CatalogReport {
     pub(crate) fn freshness(&self) -> String {
+        if self.source == "AF Pi SDK host catalog" {
+            return "offline SDK/profile".into();
+        }
         match &self.fetched_at {
             Some(at) => format!("models_cache.json fetched_at {at}"),
             None => "live".to_owned(),
@@ -498,9 +501,9 @@ fn claude_catalog(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = review_process::spawn(&mut command)
+    let mut child = af_process::spawn(&mut command)
         .map_err(|error| format!("cannot start the Claude catalog session: {error}"))?;
-    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut watch = af_process::ExitWatch::new(child.id());
     let mut stdin = child.stdin.take();
     let mut stdout = child.stdout.take().expect("catalog stdout was piped");
     let mut stderr = child.stderr.take().expect("catalog stderr was piped");
@@ -548,7 +551,7 @@ fn claude_catalog(
             (Some(Ok(_)), Some(_)) => break Ok((models, version)),
             _ => {}
         }
-        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+        match af_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => {
                 reaped = true;
                 while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
@@ -560,11 +563,11 @@ fn claude_catalog(
                 if let Some(Err(error)) = models {
                     break Err(error);
                 }
-                let (line, _) = review_runner::cli::error_and_fix(&said, &captured);
+                let (line, _) = af_runner::cli::error_and_fix(&said, &captured);
                 let line = line.map(|line| format!(": {line}")).unwrap_or_default();
                 break Err(format!(
                     "claude {} before answering `list_models`{line}",
-                    review_runner::cli::exit_description(&status)
+                    af_runner::cli::exit_description(&status)
                 ));
             }
             Ok(None) => {}
@@ -590,7 +593,7 @@ fn claude_catalog(
     if !reaped {
         let grace = Instant::now() + SESSION_EXIT_GRACE;
         loop {
-            match review_process::try_reap_killing_group(&mut child, &mut watch) {
+            match af_process::try_reap_killing_group(&mut child, &mut watch) {
                 Ok(Some(_)) => break,
                 Ok(None) if Instant::now() < grace => thread::sleep(Duration::from_millis(10)),
                 Ok(None) | Err(_) => {
@@ -655,7 +658,7 @@ fn control_response(captured: &[u8], id: &str) -> Option<Result<serde_json::Valu
                     response
                         .get("error")
                         .and_then(serde_json::Value::as_str)
-                        .map(review_runner::cli::bounded_cli_line)
+                        .map(af_runner::cli::bounded_cli_line)
                         .unwrap_or_else(|| "no message".into())
                 )),
             },
@@ -707,13 +710,80 @@ pub(crate) fn parse_resolve(value: &str) -> Result<ResolveRequest, String> {
     })
 }
 
+/// Pi IDs have a separate bounded grammar, including routed IDs. The catalog disambiguates
+/// a final slash in a model ID from an optional effort suffix; native CLI grammar is unchanged.
+fn parse_pi_resolve(value: &str) -> Result<ResolveRequest, String> {
+    if value.trim().starts_with("arn:")
+        && value
+            .trim()
+            .split(':')
+            .nth(4)
+            .is_some_and(|account| !account.is_empty())
+    {
+        return Err("Pi account-qualified models use private selectors; run af provider models ID and bind its af-private-model selector".into());
+    }
+    if let Ok(request) = parse_resolve(value) {
+        return Ok(request);
+    }
+    let value = value.trim();
+    let (spelling, effort) = match value.rsplit_once('/') {
+        Some((spelling, effort)) if hint::printable(effort) => (spelling, Some(effort.to_owned())),
+        _ => (value, None),
+    };
+    if !af_runner_pi::exact_id(spelling) {
+        return Err(
+            "Pi --resolve requires a bounded exact SDK model ID with an optional /EFFORT".into(),
+        );
+    }
+    Ok(ResolveRequest {
+        spelling: spelling.into(),
+        effort,
+    })
+}
+fn catalog_request<'a>(
+    catalog: &ProviderCatalog,
+    request: &'a ResolveRequest,
+) -> std::borrow::Cow<'a, ResolveRequest> {
+    if catalog.kind == Kind::Pi
+        && let Some(effort) = &request.effort
+    {
+        let full = format!("{}/{effort}", request.spelling);
+        if catalog
+            .outcome
+            .report()
+            .is_some_and(|report| report.catalog.model(&full).is_some())
+        {
+            return std::borrow::Cow::Owned(ResolveRequest {
+                spelling: full,
+                effort: None,
+            });
+        }
+    }
+    std::borrow::Cow::Borrowed(request)
+}
+
 /// `af provider models [ID …] [--json] [--resolve SPELLING[/EFFORT]]`. Returns the documented
 /// exit code: 0, 4 when a Provider CLI cannot start or is incompatible, 7 when a catalog is
 /// unavailable.
-pub fn print_models(ids: &[String], json: bool, resolve: Option<&str>) -> Result<i32, String> {
-    let resolve = resolve.map(parse_resolve).transpose()?;
+pub fn print_models(
+    ids: &[String],
+    json: bool,
+    resolve: Option<&str>,
+    page: usize,
+) -> Result<i32, String> {
     let (specs, _, warning) = load_specs();
     let specs = selected_specs(specs, ids)?;
+    let has_pi = specs.iter().any(|spec| spec.kind == ProviderKind::Pi);
+    if page >= 64 || (page > 0 && !has_pi) {
+        return Err("--page requires a Pi catalog and a page between 0 and 63".into());
+    }
+    let resolve = resolve
+        .map(if has_pi {
+            parse_pi_resolve
+        } else {
+            parse_resolve
+        })
+        .transpose()?;
     let cancelled = AtomicBool::new(false);
     let catalogs = probe_all(&specs, &cancelled, true);
     let code = exit_code(&catalogs);
@@ -721,9 +791,9 @@ pub fn print_models(ids: &[String], json: bool, resolve: Option<&str>) -> Result
         eprintln!("warning: {warning}");
     }
     if json {
-        println!("{}", document(&catalogs, resolve.as_ref(), code));
+        println!("{}", document(&catalogs, resolve.as_ref(), code, page));
     } else {
-        for line in table(&catalogs, resolve.as_ref()) {
+        for line in table(&catalogs, resolve.as_ref(), page) {
             println!("{line}");
         }
     }
@@ -880,7 +950,11 @@ pub(crate) fn static_rules_lines(kind: Kind) -> Vec<String> {
 
 /// The human output: per Provider its header, rows and proof sentence, or why it has no
 /// catalog and the static rules; then each resolution.
-pub(crate) fn table(catalogs: &[ProviderCatalog], resolve: Option<&ResolveRequest>) -> Vec<String> {
+pub(crate) fn table(
+    catalogs: &[ProviderCatalog],
+    resolve: Option<&ResolveRequest>,
+    page: usize,
+) -> Vec<String> {
     let mut lines = Vec::new();
     if catalogs.is_empty() {
         lines.push(
@@ -899,7 +973,31 @@ pub(crate) fn table(catalogs: &[ProviderCatalog], resolve: Option<&ResolveReques
             CatalogOutcome::Listed(report) => {
                 lines.push(format!("{name}  {}", report.header()));
                 lines.push(rows_header());
-                lines.extend(report.catalog.models.iter().map(model_row));
+                let offset = if catalog.kind == Kind::Pi {
+                    page * MAX_CATALOG_MODELS
+                } else {
+                    0
+                };
+                lines.extend(
+                    report
+                        .catalog
+                        .models
+                        .iter()
+                        .skip(offset)
+                        .take(MAX_CATALOG_MODELS)
+                        .map(model_row),
+                );
+                if catalog.kind == Kind::Pi {
+                    let total = report.catalog.models.len();
+                    lines.push(format!("  catalog page {page}; {total} models total"));
+                    if offset + MAX_CATALOG_MODELS < total {
+                        lines.push(format!(
+                            "  next: af provider models {} --page {}",
+                            catalog.id,
+                            page + 1
+                        ));
+                    }
+                }
                 if report.skipped > 0 {
                     lines.push(format!(
                         "  ({} listed entries left out: an ID outside af's printable spelling, or past {MAX_CATALOG_MODELS} models)",
@@ -932,8 +1030,6 @@ pub(crate) fn table(catalogs: &[ProviderCatalog], resolve: Option<&ResolveReques
 /// holds the lines of one TOML document that parses on its own and pastes unchanged into the file
 /// it is named for.
 pub(crate) struct Configuration {
-    /// The review package's `[runner]` table for `reviewer.toml`.
-    pub(crate) reviewer: Vec<String>,
     /// The Task package's `[runner]` table for `worker.toml`.
     pub(crate) worker: Vec<String>,
     /// The Task catalog's (or `--bindings` file's) `[providers]` table, with the review's
@@ -949,31 +1045,7 @@ pub(crate) fn configuration(
 ) -> Configuration {
     // A TOML basic string, as the repository's own manifests spell them.
     let quoted = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
-    let args: Vec<String> = match kind {
-        Kind::Pi | Kind::Claude => vec![
-            "--model".into(),
-            model.into(),
-            "--effort".into(),
-            effort.into(),
-        ],
-        Kind::Codex => vec![
-            "--model".into(),
-            model.into(),
-            "-c".into(),
-            format!("model_reasoning_effort={}", serde_json::Value::from(effort)),
-        ],
-    };
-    let args = args
-        .iter()
-        .map(|value| format!("{{ value = {} }}", quoted(value)))
-        .collect::<Vec<_>>()
-        .join(", ");
     Configuration {
-        reviewer: vec![
-            "[runner]".into(),
-            format!("program = {}", quoted(kind.name())),
-            format!("args = [{args}]"),
-        ],
         worker: vec![
             "[runner]".into(),
             "kind = \"model\"".into(),
@@ -984,7 +1056,6 @@ pub(crate) fn configuration(
         binding: vec![
             "[providers]".into(),
             format!("\"PACKAGE\" = {}", quoted(provider)),
-            format!("# af review run … --provider NODE={provider}"),
         ],
     }
 }
@@ -1022,6 +1093,7 @@ impl EffortCheck {
 }
 
 pub(crate) fn resolved(catalog: &ProviderCatalog, request: &ResolveRequest) -> Resolved {
+    let request = catalog_request(catalog, request);
     let Some(report) = catalog.outcome.report() else {
         let effort = match &request.effort {
             Some(effort) => EffortCheck::Vocabulary {
@@ -1068,6 +1140,7 @@ pub(crate) fn resolved(catalog: &ProviderCatalog, request: &ResolveRequest) -> R
 }
 
 fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<String> {
+    let request = catalog_request(catalog, request);
     let spelling = &request.spelling;
     let asked = match &request.effort {
         Some(effort) => format!("{spelling}/{effort}"),
@@ -1078,7 +1151,7 @@ fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<
         catalog.id,
         catalog.kind.name()
     )];
-    let resolved = resolved(catalog, request);
+    let resolved = resolved(catalog, &request);
     let model = match &resolved.resolution {
         None => format!(
             "no catalog to resolve against; the static rules say: {}",
@@ -1148,7 +1221,6 @@ fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<
     match &resolved.configuration {
         Some(configuration) => {
             for (label, block) in [
-                ("reviewer.toml", &configuration.reviewer),
                 ("worker.toml", &configuration.worker),
                 ("bindings", &configuration.binding),
             ] {
@@ -1174,11 +1246,12 @@ fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<
     lines
 }
 
-/// The versioned `af/provider-models@2` document.
+/// The versioned `af/provider-models@4` document.
 pub(crate) fn document(
     catalogs: &[ProviderCatalog],
     resolve: Option<&ResolveRequest>,
     exit_code: i32,
+    page: usize,
 ) -> serde_json::Value {
     let providers: Vec<serde_json::Value> = catalogs
         .iter()
@@ -1189,9 +1262,22 @@ pub(crate) fn document(
                 CatalogOutcome::Unavailable(_) => ("unavailable", None),
             };
             let models: Vec<serde_json::Value> = report
-                .map(|report| report.catalog.models.iter().map(model_document).collect())
+                .map(|report| {
+                    report
+                        .catalog
+                        .models
+                        .iter()
+                        .skip(if catalog.kind == Kind::Pi {
+                            page * MAX_CATALOG_MODELS
+                        } else {
+                            0
+                        })
+                        .take(MAX_CATALOG_MODELS)
+                        .map(model_document)
+                        .collect()
+                })
                 .unwrap_or_default();
-            serde_json::json!({
+            let mut row = serde_json::json!({
                 "id": catalog.id,
                 "kind": catalog.kind.name(),
                 "state": state,
@@ -1202,7 +1288,9 @@ pub(crate) fn document(
                 },
                 "harness_version": report.and_then(|report| report.version.clone()),
                 "freshness": {
-                    "source": if report.is_some_and(|report| report.fetched_at.is_some()) {
+                    "source": if catalog.kind == Kind::Pi && report.is_some() {
+                        "sdk_profile"
+                    } else if report.is_some_and(|report| report.fetched_at.is_some()) {
                         "models_cache"
                     } else {
                         "live"
@@ -1221,11 +1309,17 @@ pub(crate) fn document(
                         .collect::<Vec<_>>(),
                 },
                 "resolution": resolve.map(|request| resolution_document(catalog, request)),
-            })
+            });
+            if catalog.kind == Kind::Pi {
+                let total = report.map_or(0, |report| report.catalog.models.len());
+                let next = ((page + 1) * MAX_CATALOG_MODELS < total).then_some(page + 1);
+                row["catalog_page"] = serde_json::json!({"number":page,"next":next,"total":total});
+            }
+            row
         })
         .collect();
     serde_json::json!({
-        "schema": "af/provider-models@2",
+        "schema": "af/provider-models@4",
         "exit_code": exit_code,
         "token_free": true,
         "proves": PROOF,
@@ -1245,7 +1339,8 @@ fn model_document(model: &CatalogModel) -> serde_json::Value {
 }
 
 fn resolution_document(catalog: &ProviderCatalog, request: &ResolveRequest) -> serde_json::Value {
-    let resolved = resolved(catalog, request);
+    let request = catalog_request(catalog, request);
+    let resolved = resolved(catalog, &request);
     let (outcome, nearest, spelling_rule) = match &resolved.resolution {
         None => ("unavailable", Vec::new(), None),
         Some(Resolution::Exact { .. }) => ("exact", Vec::new(), None),
@@ -1269,7 +1364,6 @@ fn resolution_document(catalog: &ProviderCatalog, request: &ResolveRequest) -> s
         "effort_check": resolved.effort.name(),
         "effort_levels": resolved.levels,
         "configuration": resolved.configuration.as_ref().map(|configuration| serde_json::json!({
-            "reviewer_runner": configuration.reviewer.join("\n"),
             "worker_runner": configuration.worker.join("\n"),
             "binding": configuration.binding.join("\n"),
         })),

@@ -121,7 +121,7 @@ Root commits as identity have consequences the design accepts and names:
 - Merging an unrelated history later changes `repository_id`, and so the Project ID. af reports
   the former Project beside the new one; joining them is not in v1.
 
-The Project Store reuses the `review-store` layers every other Store has (`cas/` and the
+The Project Store reuses the `af-store` layers every other Store has (`cas/` and the
 SQLite event log; architecture.md, "The store"). It lives at
 `$XDG_STATE_HOME/af/project/<hex>/`, and the Store registry records it so the Storage Budget
 sweep reaches it (ADR-0144). Beside the Store, outside every durable record, sits the
@@ -376,15 +376,13 @@ number descending, then path. `contributors` and `activity` are never part of `o
 implementer does not need names or bills.
 
 A pipeline that wants a Brief declares the root port and wires it only where it is wanted. The
-declaration is a new version of the pipeline shape (ADR-0145 clause 2): a pipeline with the port
-is `af.pipeline/2`, an `af.pipeline/1` pipeline carrying `brief` or `project_brief` is refused,
-and a pipeline without the port stays `af.pipeline/1`, bytes and digest unchanged. The
-containers that list contracts without a version label (`af.planning-request/1`,
-`af.catalog-contract-fixtures/1`) carry no `af.pipeline/2` pipeline, and a Worker manifest never
-declares the root default:
+current `af.pipeline/6` format admits it as an explicit optional capability, alongside bounded
+recovery and structured acceptance. The Planner and shared catalogs still exclude Pipelines with
+Brief ports: their interface fixtures grant no Brief constructor authority. A Worker manifest
+never declares the root default:
 
 ```toml
-schema = "af.pipeline/2"
+schema = "af.pipeline/6"
 
 [contract.inputs.project]
 artifact_type = "af/ProjectBrief@1"
@@ -467,8 +465,8 @@ artifact; `af task plan` and `af task explain` print it beside the port.
 
 What the Worker sees is one more entry in its context manifest — name `project`, required by
 `port:project`, the artifact ID and type, bytes and estimated tokens — and `af project brief
---variant orient` prints the exact bytes before any token is spent, the way `af review render`
-does for a reviewer. On afactory `orient` renders to roughly 6 KiB, about 1,500 tokens, once per
+--variant orient` prints the exact bytes before any token is spent or the native Task
+binds its exact inputs. On afactory `orient` renders to roughly 6 KiB, about 1,500 tokens, once per
 Attempt. For comparison, `CONTEXT.md` alone is 529 lines, about 8,000 tokens, and the implementer
 is told to read it in full today; PJ3 measures the Attempt spend with and without the Brief on
 the kernel's own Tasks before `orient` is wired into `kernel/implementer`.
@@ -574,7 +572,8 @@ max_bytes = 8192
 ```
 
 Patterns use the semantics of the matcher the `.af/af.toml` routes already use (`glob_matches`
-in `crates/af/src/project.rs`), which PJ2 re-implements for both by dynamic programming, so a
+in `crates/af-pipeline-config/src/path_glob.rs`, shared by `project_policy` and `af_project`),
+implemented for both by dynamic programming, so a
 match costs pattern length times text length and never backtracks (the recursive form takes
 billions of steps on `*a` thirty times followed by `b` against thirty `a`s, a failing match
 inside the string limits and outside
@@ -681,7 +680,7 @@ Deliverables: the Project ID derivation; the Project Store and its registry entr
 `workspaces.toml`; lazy registration from `onboard`, `task plan|start` and `review run`
 (registration only); `af project show|workspaces|workspace new|add|remove`; `--workspace` on
 every `af task` subcommand that takes `--state` and on no review command; delivered worktrees
-registered; the `ELSEWHERE` paragraph of `review_config::layout`
+registered; the `ELSEWHERE` paragraph of `af_pipeline_config::layout`
 and `docs/task-execution/task-file.md` pointing Task files at the Workspace directory.
 ADR: *Give a repository one Project identity and register its checkouts as Workspaces.*
 
@@ -787,7 +786,7 @@ releases their pinned Survey data while a later Task remains replayable; a varia
 table and `contributors` in `orient`, an unknown requested variant is a plan-time error, a schema-valid Worker-authored Brief is
 refused at admission and at binding while a forwarded constructed one binds, and a node whose
 serialized known request exceeds the renderer cap is refused at plan time, even when its
-payloads alone would fit; a pipeline carrying the port under `af.pipeline/1` is refused; a Task
+payloads alone would fit; a pipeline carrying the port under a retired format is refused; a Task
 invoked in one repository with `source` bound to another never receives the invoking
 repository's Survey; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer

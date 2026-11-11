@@ -71,10 +71,10 @@ declares more. Within the allowance, the next `af task run` dispatches the node 
 interrupted check runs its check again. A node whose abandoned Attempts exceed the allowance
 is not dispatched again, and the Task cannot continue.
 
-An ordinary Pipeline's slot recovery allowance uses `af.pipeline/3`:
+An ordinary Pipeline's slot recovery allowance uses `af.pipeline/6`:
 
 ```toml
-schema = "af.pipeline/3"
+schema = "af.pipeline/6"
 # ...
 
 [slots.implementer]
@@ -89,14 +89,12 @@ allow_local_replacement = true
 independent_from = []
 ```
 
-`recovery_attempts` is 0 to 8. Outside the structured profile, a pipeline whose slots declare none keeps `af.pipeline/1`, or
-`af.pipeline/2` with a Project Brief port, and its bytes; an `af.pipeline/1` or `af.pipeline/2`
-pipeline that declares one is refused when it loads, naming `af.pipeline/3`
-([`pipeline-definition-v3`](../../schemas/pipeline-definition-v3.json)). Its compiled graph is
-`af.compiled-task/2` ([`compiled-task-v2`](../../schemas/compiled-task-v2.json)). A child slot
-bound to a parent slot may not allow more recoveries than the child declares.
-The [structured profile](structured.md) keeps `af.pipeline/4` and compiled graph
-`af.compiled-task/3`, including when its one Worker slot declares a recovery allowance.
+`recovery_attempts` is 0 to 8; absence means one recovery. Every Pipeline uses
+[`af.pipeline/6`](../../schemas/pipeline-definition-v6.json), and every compiled graph uses
+[`af.compiled-task/6`](../../schemas/compiled-task-v6.json), with or without a Brief, recovery
+allowance or structured acceptance. The capability fields remain explicit. Retired Pipeline `/1`
+through `/4` and compiled-graph `/1` through `/3` inputs are refused without migration. A child
+slot bound to a parent slot may not allow more recoveries than the child declares.
 
 ## What `af task run` says first
 
@@ -119,7 +117,7 @@ A node past its allowance stops the run before anything is dispatched, on its fi
 exit code 1:
 
 ```text
-af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)
+af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/6)
 ```
 
 Under `--json` the same refusal is one `af/error@2` document whose typed fields a script
@@ -143,7 +141,7 @@ next: af task run pagination-cli
 ```
 
 `af task list` prints the same state and `run` as its next command. Their `--json` documents,
-`af/task-inspection@16` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
+`af/task-inspection@20` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
 `outcome` `cancelled`, `cause` `writer_lost` or `host_cancelled`, and `next_action`; the
 top-level `phase` keeps the phase the Task recorded. A node past its allowance makes
 `next_action` `af task start --file TASK_FILE`.
@@ -152,10 +150,10 @@ top-level `phase` keeps the phase the Task recorded. A node past its allowance m
 
 | Part | Location |
 |---|---|
-| Heartbeat cadence, the lease and writer loss | `crates/review-pipeline/src/task/lease.rs` |
-| Settling an interrupted Attempt as abandoned | `crates/review-pipeline/src/task.rs` |
-| Settling a lost writer's Attempt, the cause and the recovery count | `crates/review-store/src/store/task/execution.rs` |
-| Attempt limits, recovery allowance and the dispatch guards' refusals | `crates/review-attempt/src/task_budget.rs` |
-| The resume's first line, the wait and the abandoned view | `crates/af/src/task_execution/recovery.rs` |
+| Heartbeat cadence, the lease and writer loss | `crates/af-runtime/src/task/lease.rs` |
+| Settling an interrupted Attempt as abandoned | `crates/af-runtime/src/task.rs` |
+| Settling a lost writer's Attempt, the cause and the recovery count | `crates/af-store/src/store/task/execution.rs` |
+| Attempt limits, recovery allowance and the dispatch guards' refusals | `crates/af-attempt/src/task_budget.rs` |
+| The resume's first line, the wait and the abandoned view | `crates/af/src/task_commands/recovery.rs` |
 | The power assertion | `crates/af/src/power.rs` |
-| Tests | `crates/af/tests/it/task_recovery.rs`, `crates/review-store/src/store/task/tests/recovery.rs`, `crates/review-pipeline/tests/it/task_runtime/control.rs` |
+| Tests | `crates/af/tests/it/task_recovery.rs`, `crates/af-store/src/store/task/tests/recovery.rs`, `crates/af-runtime/tests/it/task_runtime/control.rs` |

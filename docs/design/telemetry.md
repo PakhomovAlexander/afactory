@@ -106,7 +106,7 @@ These are the clauses proposed for ADR-0153. Each is pinned by a test named in �
    is configured explicitly, pushes after the result is printed, is bounded in time and never
    changes an exit code.
 6. **Credentials are withheld at every level, and identities survive.** Every untrusted string
-   passes the one redaction implementation (the rules review-runner applies to Provider-authored
+   passes the one redaction implementation (the rules af-runner applies to Provider-authored
    text today, moved to the leaf crate) before any truncation, so a bound never removes the
    evidence that makes a fragment a credential, and a line or document too long to be judged
    whole is withheld whole, never cut; a harness's untrusted content, from its streams or its
@@ -152,7 +152,7 @@ daemon, a Prometheus endpoint, sampling.
 ### Runs and traces
 
 A **Telemetry Run** is the work one kernel run id covers inside one Store: a Task run
-(`af task run`, a resume), a Campaign run (`af review run`), a self-optimizer run, a kernel
+(`af task run`, a resume, or native `af review run`), a self-optimizer run, a kernel
 measurement. A kernel run id is not machine-global — `task_run_id` hashes only the Task ID under
 a fixed namespace, and two Stores may hold the same Task ID — so Telemetry namespaces every run
 by its Store instance: `af.store_id` is `SHA-256` of the Store directory's canonical absolute
@@ -358,7 +358,7 @@ redacts them whole under the current redaction version — line by line for text
 for JSON — and only then, when needed, truncates the redacted result to `content_max_blob_bytes`
 (head and tail halves), so a bound never removes the assignment name or the JSON structure a
 credential is judged by; a single line or JSON document longer than `content_max_blob_bytes`
-cannot be judged whole and is withheld whole, as review-runner withholds a line it cannot bound.
+cannot be judged whole and is withheld whole, as af-runner withholds a line it cannot bound.
 The `digest` is `SHA-256` of the retained bytes before compression. Fixtures place a credential
 across each truncation boundary and an oversized line. The same source captured under another
 bound or another redaction version yields
@@ -510,7 +510,7 @@ test (`telemetry_span_catalogue`) fails when a name is emitted that the table do
 
 ### 7.2 Processes and resources
 
-Every process `review-process` supervises gets a `process` span. `nix` 0.31 does not expose
+Every process `af-process` supervises gets a `process` span. `nix` 0.31 does not expose
 `wait4`, so the supervisor's one reap (`Child::wait` and `try_wait` today, after its `waitid` and
 kqueue observation) becomes `libc::wait4` on both platforms, and the supervisor carries the
 child's `ru_utime`, `ru_stime` and `ru_maxrss` (the last normalised to bytes per platform) as
@@ -518,9 +518,9 @@ child's `ru_utime`, `ru_stime` and `ru_maxrss` (the last normalised to bytes per
 (the model Attempt path through `ModelRunner::capture_process` and the cancellable check path),
 `SupervisedOutput`, and `SupervisedDuplexOutput` (the streaming git path), including the results
 of a timed-out, killed or cancelled process and every conversion between them; a value the
-platform did not deliver is `None`. `review-process` stays the dependency-neutral leaf of
-ADR-0026 and links no telemetry: the crates that already receive those results (`review-runner`,
-`review-check`, `review-source-git`, `review-sandbox`, `review-pipeline`) record the span from
+platform did not deliver is `None`. `af-process` stays the dependency-neutral leaf of
+ADR-0026 and links no telemetry: the crates that already receive those results (`af-runner`,
+`af-check`, `af-source-git`, `af-sandbox`, `af-runtime`) record the span from
 them, with the stdout and stderr byte counts and `stderr_held`. Fixtures cover a successful model
 process, a cancelled process, a timed-out check and a duplex git operation. The streams
 themselves reach the Store exactly as today and reach Telemetry only as §7.3 and `content` say.
@@ -528,13 +528,13 @@ Host facts (`load1`, `free_bytes`) are read once per segment, at open.
 
 ### 7.3 Harness streams
 
-**Streaming observer.** `review-process` drains a child's pipes on its own threads into complete
+**Streaming observer.** `af-process` drains a child's pipes on its own threads into complete
 `Vec<u8>` streams, without arrival times; when a drain does not finish within its grace period
 it kills the process group and, for stdout, reports the transport failure `OutputHeld`, while for
 stderr it keeps the process status and sets the `stderr_held` flag, retaining the bytes either
 way (ADR-0072); and `ModelRunner::capture_filtered` sees the complete streams only after the
 process has ended. A live tail and arrival-based turn and tool timings need the bytes as they
-arrive, so `review-process` gains a bounded `OutputObserver` whose one operation is a
+arrive, so `af-process` gains a bounded `OutputObserver` whose one operation is a
 **non-blocking enqueue**: for every chunk the drain thread reads it offers `(process, stream,
 byte_offset, bytes, arrival_mono_ns)` to a bounded queue of `observer_queue_bytes`, the offset
 being the chunk's position in that stream; a full queue drops the chunk at once, and the drop is
@@ -580,8 +580,8 @@ correlation id with its original string, each original having passed the credent
 and challenge-shaped values in every id position of both harnesses
 (`telemetry_harness_ids_never_published_live`). **The release decision** is Telemetry's own
 and unconditional: the adapters decide whole-capture privacy only for a failed completion
-(`crates/review-runner-claude/src/task.rs` returns before `redact_capture` for a successful
-envelope, `crates/review-runner-codex/src/task.rs` for a successful final message), so a
+(`crates/af-runner-claude/src/task.rs` returns before `redact_capture` for a successful
+envelope, `crates/af-runner-codex/src/task.rs` for a successful final message), so a
 successful capture can carry a device code beside a challenge URL. When the process has ended,
 before any pending byte is published, Telemetry evaluates `carries_auth_material` over the
 complete stdout, the complete stderr and the Attempt's pending native content (§7.6), and
@@ -931,7 +931,7 @@ There is no telemetry `keep_days`: collection by age is `[storage] keep_days` un
 
 **Redaction** is structured, at every level and on every path (attributes, blobs, excerpts, the
 `config` record, received native telemetry, exports), with one implementation in the leaf crate
-that review-runner re-exports for its own use:
+that af-runner re-exports for its own use:
 
 - A **typed field** the kernel produced and validated — a digest (`sha256:` and 64 hex), a run,
   attempt, node, segment or span id, a numeric counter, a timestamp, an enumerated value — is
@@ -1089,7 +1089,7 @@ print for the selected Task; it reads only what those commands read.
 writes one file, or for `dir` one directory; `--content` includes blobs, as the blob files of a
 `dir` export or as a sidecar directory for `perfetto`, and is refused for the other formats.
 **Selection.** A segment belongs to a process, and one process may serve several runs (a Task
-whose review node runs a Campaign writes both streams to one segment), so `--run` and `--since`
+with native Review nodes writes their spans to the same segment), so `--run` and `--since`
 never copy a segment whole: the export writes, for each source segment, a derived segment that
 keeps the source's header, segment id and record sequences and holds only the records of the
 selected runs (their spans, events, `config` parts, `node`, `finding`, `demand`, `blob` and
@@ -1267,13 +1267,13 @@ earlier ones. The change note `changelog.d/telemetry.md` is created by P1 and ex
 later package; ADR-0153 lands with P1 and no package adds another ADR.
 
 **P1 — the crate: records, segments, blobs, redaction, levels, index, status.** A new leaf
-workspace crate `review-telemetry` (depending on `serde`, `serde_json`, `tracing-core`, `flate2`
+workspace crate `af-telemetry` (depending on `serde`, `serde_json`, `tracing-core`, `flate2`
 with its pure-Rust backend, `rusqlite`, and nothing in the workspace; linked by `af` in this
-package, later by `review-pipeline`, `review-runner`, `review-check`, `review-source-git` and
-`review-sandbox`, never by `review-process`): the records of §5 with the record bound, the
+package, later by `af-runtime`, `af-runner`, `af-check`, `af-source-git` and
+`af-sandbox`, never by `af-process`): the records of §5 with the record bound, the
 locked segment writer with its total limit, terminal reserve, `.refs` manifest, sealing and
 recovery, blob objects and occurrences with retained-bytes identity, redaction before truncation
-and the publication protocol, structured redaction moved from review-runner (which re-exports
+and the publication protocol, structured redaction moved from af-runner (which re-exports
 it), the `tracing` subscriber, the trace and execution identities, the directory registry with
 its overlap rule, the index with its lifecycle lock, the `[telemetry]` table with
 `af help telemetry`, `af telemetry status` and `reindex`, ADR-0153, `docs/telemetry.md`.
@@ -1316,7 +1316,7 @@ for the four commands.
 
 **P3 — full span coverage, process resource use, the configuration record, the check
 fingerprint.** The remaining spans of §7.1 except `af.turn`, `af.tool` and `af.sink`, with the
-catalogue table in `docs/architecture.md`; `libc::wait4` rusage through every `review-process`
+catalogue table in `docs/architecture.md`; `libc::wait4` rusage through every `af-process`
 result type and its recording by the supervising crates; the `config` parts and
 `af telemetry config`; `af/check-fingerprint@1` and `af.check.status`; measurements under
 `af.run`. Acceptance: `telemetry_span_catalogue`, `telemetry_rusage_on_every_result_type`
@@ -1346,7 +1346,7 @@ with the paired protocol and the gate rule, `make telemetry-gate`, the one-pair 
 and the measured report in the pull request.
 
 **P6 — harness streams: the observer, the tap, Claude stream-json, Codex items, turns and
-tools.** `OutputObserver` in `review-process` with the non-blocking enqueue and byte offsets;
+tools.** `OutputObserver` in `af-process` with the non-blocking enqueue and byte offsets;
 the consumer tap with frame withholding, live structure only with correlation ids, pending
 content, Telemetry's own release decision and the gap protocol; Claude `stream-json --verbose`
 with the raw-output

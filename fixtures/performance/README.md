@@ -15,7 +15,7 @@ The data of the continuous performance laboratory
   expands it and checks that the golden entries cover every native instance. Every recipe,
   environment and case is executable where its host provides it (ADR-0169); a host that cannot
   refuses at run time with its reason, which `cli.py capabilities` lists.
-- `cli.toml` — the whole-CLI commands (`af.perf-cli/6`, ADR-0168 to ADR-0172): per CLI adapter
+- `cli.toml` — the whole-CLI commands (`af.perf-cli/7`, ADR-0168 to ADR-0172): per CLI adapter
   and process instance, the actual AF argv, its untimed fixture setup and the independent
   oracle rules, and the seeds each side writes once per shard. `task show`'s whole output must
   be one complete JSON document whose `task_id`, history numbered exactly 0..9999 in order and
@@ -56,7 +56,7 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
-- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/3`, ADR-0214): each
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/4`, ADR-0214): each
   exactly a bench script of the telemetry design's §12 with its document, the product schema it
   is read through, its levels and the inputs that identify its measurement authority, and one
   bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and
@@ -85,7 +85,7 @@ The data of the continuous performance laboratory
 
 - `kernel-measure/` — the staged policy of guarded kernel experiments (ADR-0185), for a
   reviewed human installation into `.af/`: the measures that run the literal isolated bootstrap
-  of `scripts/performance/perflab/kernelguard.py` with the protected harness digest it expects,
+  of `scripts/performance/perflab/kernel_guard.py` with the protected harness digest it expects,
   their `elapsed_ms` objectives, and the inventory of every protected file
   (`af.perf-kernel-inventory/1`). It is the only subtree the harness digest excludes, holds only
   nonexecuted `.md`, `.toml` and `.json` data, and is re-pinned by
@@ -312,8 +312,8 @@ build IDs.
 
 ## Running the native probe
 
-The probe is the `perf-probe` example of `review-pipeline`; the supervisor is the
-`perf-supervisor` example of `review-process`. A diagnostic sample runs in explicitly trusted
+The probe is the `perf-probe` example of `af-runtime`; the supervisor is the
+`perf-supervisor` example of `af-process`. A diagnostic sample runs in explicitly trusted
 local mode only. It takes both binaries from a verified build, after rehashing them:
 
 ```sh

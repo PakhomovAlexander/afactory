@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/review-core", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-source-task", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-pi", "crates/review-runner-codex", "crates/review-runner-claude", "crates/review-telemetry", "crates/af"]
+members = ["crates/af-contracts", "crates/af-parallel", "crates/af-process", "crates/af-store", "crates/af-source-git", "crates/af-source-issue", "crates/af-check", "crates/af-runner", "crates/af-sandbox", "crates/af-graph", "crates/af-runtime", "crates/af-pipeline-config", "crates/af-attempt", "crates/af-runner-pi", "crates/af-runner-codex", "crates/af-runner-claude", "crates/af-telemetry", "crates/af-scenario", "crates/af-project", "crates/af"]
 
 [workspace.package]
-version = "0.15.0"
+version = "0.15.1-rc.3"
 edition = "2024"
 rust-version = "1.88"
 publish = false
@@ -33,7 +33,7 @@ opt-level = 3
 # Durable Task replay repeatedly validates typed envelopes and canonical JSON. Keep these
 # hot paths optimized in developer/CI builds, with debug assertions and overflow checks intact.
 # Crash-recovery tests retain the same Task deadline, lease wait and verification reserve.
-[profile.dev.package.review-store]
+[profile.dev.package.af-store]
 opt-level = 2
 
 [profile.dev.package.serde_json]
@@ -42,5 +42,5 @@ opt-level = 3
 # Telemetry judges every released harness content by the credential rules (design §8) line by
 # line on its consumer thread, each content renewing the run's 2 s shutdown bound. Keep the
 # redactor at production speed in debug/CI too: a 1 MiB content in tens of milliseconds.
-[profile.dev.package.review-telemetry]
+[profile.dev.package.af-telemetry]
 opt-level = 2

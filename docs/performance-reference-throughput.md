@@ -158,7 +158,7 @@ Completed checks:
   were selected inside this implementer.
 - `tests.test_reference` and `tests.test_oracle`: 60 tests passed on Python 3.9.6 and 60 on
   Python 3.12.13.
-- `tests.test_contracts`, `tests.test_suite`, `tests.test_kernelguard`: 56 tests passed on
+- `tests.test_contracts`, `tests.test_suite`, `tests.test_kernel_guard`: 56 tests passed on
   Python 3.9.6, with the two existing `tomllib`-requires-3.11 skips. The initial sandboxed run
   could not launch `ps` for a descendant assertion; the same unchanged tests passed with
   process-inspection permission. No test or timeout changed.
@@ -215,7 +215,7 @@ Focused checks in this macOS sandbox passed without skips: `tests.test_admission
 `tests.test_diagnostics`, 87 tests on Python 3.9.6 with inherited umask `0022` (156.404 s),
 and the same 87 on Python 3.14.7 with inherited umask `0077` (118.121 s). The loader used
 `-I -B` with HOME, XDG and temporary directories under `target/fixture-repair/`; it also
-asserted normal and exceptional umask restoration. The three `tests.test_kernelguard.Staged`
+asserted normal and exceptional umask restoration. The three `tests.test_kernel_guard.Staged`
 tests passed on Python 3.14.7. Markdown lint 0.22.1 checks both changed Markdown files.
 The golden oracle and frozen workflow/cohort SHA-256s match the pre-edit bytes listed above.
 The existing `harness-digest --write` tool regenerated the inventory and staged policy;

@@ -1,5 +1,5 @@
 {
-  "schema": "af.catalog-contract-fixtures/1",
+  "schema": "af.catalog-contract-fixtures/2",
   "pipelines": {
     "kernel/report": {
       "contract": {
@@ -162,7 +162,7 @@
         },
         "outputs": {
           "draft": {
-            "artifact_type": "af/DocumentDraft@2",
+            "artifact_type": "af/DocumentDraft@3",
             "cardinality": "one",
             "optional": false,
             "affinity": {
@@ -192,7 +192,7 @@
         "author"
       ],
       "worker_input_type": "af/ReportInput@2",
-      "worker_output_type": "af/DocumentDraft@2",
+      "worker_output_type": "af/DocumentDraft@3",
       "attempt": {
         "tokens": 1500000,
         "wall_ms": 10800000

@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
-use review_store::local_fs;
+use af_store::local_fs;
 
 /// The owner marker: af created this Store directory and may remove it whole.
 pub(crate) const MARKER: &str = ".af-store";
@@ -58,12 +58,12 @@ const AF_ENTRIES: [&str; 14] = [
 
 /// Whether `name` is an entry af itself writes directly in the opened Store directory `store`:
 /// exactly one of [`AF_ENTRIES`], or a claim a removal of one of them left, as
-/// `review_sandbox::claim_owner_at` proves it against what is on disk (its name binds the very
+/// `af_sandbox::claim_owner_at` proves it against what is on disk (its name binds the very
 /// directory it holds). No prefix, suffix or extension makes a name af's: `notes.lock`,
 /// `backup.lock`, `events.sqlite.notes` and a claim-shaped `.af-removing-1-2-3` that binds no
 /// directory there are the user's.
 pub(crate) fn is_af_entry(store: impl AsFd, name: &OsStr) -> bool {
-    is_af_name(name) || review_sandbox::claim_owner_at(store, name).is_some()
+    is_af_name(name) || af_sandbox::claim_owner_at(store, name).is_some()
 }
 
 /// Whether `name` is exactly one of [`AF_ENTRIES`].
@@ -106,7 +106,7 @@ fn holdings(path: &Path) -> Result<Option<Holdings>, String> {
         })
         .map_err(|error| format!("listing {}: {error}", path.display()))?;
     names.sort();
-    let directory = review_sandbox::open_anchor(path)
+    let directory = af_sandbox::open_anchor(path)
         .map_err(|error| format!("opening {}: {error}", path.display()))?;
     Ok(Some(Holdings { directory, names }))
 }
@@ -202,12 +202,12 @@ pub(crate) fn af_bytes(state: &Path) -> std::io::Result<u64> {
 /// directory among them (the Store itself at level 0): what a Store outside af's roots counts
 /// against the budget. Anything else in the directory is not af's to count.
 pub(crate) fn af_bytes_and_depth(state: &Path) -> std::io::Result<(u64, u32)> {
-    let directory = review_sandbox::open_anchor(state)?;
+    let directory = af_sandbox::open_anchor(state)?;
     let (mut bytes, mut depth) = (0_u64, 0_u32);
     for entry in std::fs::read_dir(state)? {
         let entry = entry?;
         if is_af_entry(&directory, &entry.file_name()) {
-            let (held, below) = review_sandbox::storage::allocated_bytes_and_depth(&entry.path())?;
+            let (held, below) = af_sandbox::storage::allocated_bytes_and_depth(&entry.path())?;
             bytes = bytes.saturating_add(held);
             if entry.file_type()?.is_dir() {
                 depth = depth.max(below.saturating_add(1));
@@ -235,10 +235,11 @@ pub(crate) struct Removed {
 /// directory, and the rest is left. The directory itself goes too when it is marked, held
 /// nothing but af's entries, and is empty once they went: it is removed by `rmdir`, which a
 /// file created in it meanwhile refuses, so such a file is never removed with it.
+#[cfg(test)]
 pub(crate) fn remove(
     anchor: &Path,
     path: &Path,
-    identity: review_sandbox::Identity,
+    identity: af_sandbox::Identity,
 ) -> Result<Removed, String> {
     remove_with(anchor, path, identity).map_err(|failure| failure.reason)
 }
@@ -247,17 +248,17 @@ pub(crate) fn remove(
 pub(crate) fn remove_with(
     anchor: &Path,
     path: &Path,
-    identity: review_sandbox::Identity,
+    identity: af_sandbox::Identity,
 ) -> Result<Removed, super::plan::Failed> {
     let relative = path
         .strip_prefix(anchor)
         .map_err(|_| format!("{} is not below {}", path.display(), anchor.display()))?;
-    let opened = review_sandbox::open_anchor(anchor)
-        .and_then(|anchor| review_sandbox::open_beneath(&anchor, relative))
+    let opened = af_sandbox::open_anchor(anchor)
+        .and_then(|anchor| af_sandbox::open_beneath(&anchor, relative))
         .map_err(|error| {
             format!("its path cannot be followed without a link, so it is left: {error}")
         })?;
-    let found = review_sandbox::Identity::of_descriptor(&opened)
+    let found = af_sandbox::Identity::of_descriptor(&opened)
         .map_err(|error| format!("inspecting it: {error}"))?;
     if found != identity {
         return Err(
@@ -293,7 +294,7 @@ pub(crate) fn remove_with(
         if !failures.is_empty() && last(name) > 0 {
             continue;
         }
-        let bytes = review_sandbox::storage::allocated_bytes(&path.join(name)).unwrap_or(0);
+        let bytes = af_sandbox::storage::allocated_bytes(&path.join(name)).unwrap_or(0);
         match remove_entry_at(&opened, name) {
             Ok(()) => removed.bytes = removed.bytes.saturating_add(bytes),
             Err(error) => failures.push(format!("{}: {error}", name.to_string_lossy())),
@@ -351,16 +352,16 @@ pub(crate) fn remove_with(
 fn remove_emptied(
     anchor: &Path,
     path: &Path,
-    identity: review_sandbox::Identity,
+    identity: af_sandbox::Identity,
 ) -> std::io::Result<()> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(std::io::Error::other("a Store has a parent"));
     };
     let relative = parent.strip_prefix(anchor).map_err(std::io::Error::other)?;
-    let parent = review_sandbox::open_beneath(review_sandbox::open_anchor(anchor)?, relative)?;
+    let parent = af_sandbox::open_beneath(af_sandbox::open_anchor(anchor)?, relative)?;
     let stat = nix::sys::stat::fstatat(&parent, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
         .map_err(std::io::Error::from)?;
-    let found = review_sandbox::Identity::of_stat(&stat);
+    let found = af_sandbox::Identity::of_stat(&stat);
     if (found.device, found.inode) != (identity.device, identity.inode) {
         return Err(std::io::Error::other("it changed since it was measured"));
     }
@@ -369,18 +370,14 @@ fn remove_emptied(
 }
 
 /// Remove the entry `name` of the opened directory: a directory through
-/// [`review_sandbox::remove_tree_at`], anything else (a link included) unlinked itself.
+/// [`af_sandbox::remove_tree_at`], anything else (a link included) unlinked itself.
 fn remove_entry_at(directory: &std::os::fd::OwnedFd, name: &OsStr) -> std::io::Result<()> {
     let stat = nix::sys::stat::fstatat(directory, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
         .map_err(std::io::Error::from)?;
     if nix::sys::stat::SFlag::from_bits_truncate(stat.st_mode) & nix::sys::stat::SFlag::S_IFMT
         == nix::sys::stat::SFlag::S_IFDIR
     {
-        review_sandbox::remove_tree_at(
-            directory,
-            name,
-            Some(review_sandbox::Identity::of_stat(&stat)),
-        )
+        af_sandbox::remove_tree_at(directory, name, Some(af_sandbox::Identity::of_stat(&stat)))
     } else {
         nix::unistd::unlinkat(directory, name, nix::unistd::UnlinkatFlags::NoRemoveDir)
             .map_err(std::io::Error::from)
@@ -419,11 +416,11 @@ mod tests {
     #[test]
     fn af_entries_are_the_ones_af_writes_and_nothing_else() {
         let root = tempfile::tempdir().unwrap();
-        let store = review_sandbox::open_anchor(root.path()).unwrap();
+        let store = af_sandbox::open_anchor(root.path()).unwrap();
         // A claim af made: its name binds the directory it holds.
         std::fs::create_dir(root.path().join("cas")).unwrap();
-        let identity = review_sandbox::Identity::of(&root.path().join("cas")).unwrap();
-        let claim = review_sandbox::claim_name(12, identity);
+        let identity = af_sandbox::Identity::of(&root.path().join("cas")).unwrap();
+        let claim = af_sandbox::claim_name(12, identity);
         std::fs::rename(root.path().join("cas"), root.path().join(&claim)).unwrap();
         assert!(is_af_entry(&store, OsStr::new(&claim)), "{claim}");
         // Claim-shaped names that bind no directory there are the user's (audit C2).
@@ -538,12 +535,12 @@ mod tests {
     fn a_partial_removal_keeps_the_marker_and_the_log_and_accounts_what_went() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
-        let identity = |path: &Path| review_sandbox::Identity::of(path).unwrap();
+        let identity = |path: &Path| af_sandbox::Identity::of(path).unwrap();
         let stuck = root.join("stuck");
         store(&stuck, true);
         std::fs::write(stuck.join("git-home/config"), vec![3; 8192]).unwrap();
         // A tree grown deeper than the removal walk stops the removal of `cas` part way.
-        let deep = (0..=review_sandbox::REMOVAL_MAX_DEPTH)
+        let deep = (0..=af_sandbox::REMOVAL_MAX_DEPTH)
             .fold(stuck.join("cas/deep"), |path, _| path.join("d"));
         std::fs::create_dir_all(&deep).unwrap();
         let failed = remove_with(&root, &stuck, identity(&stuck)).unwrap_err();
@@ -577,7 +574,7 @@ mod tests {
         let root = root.path().canonicalize().unwrap();
         let emptied = root.join("emptied");
         std::fs::create_dir(&emptied).unwrap();
-        let identity = review_sandbox::Identity::of(&emptied).unwrap();
+        let identity = af_sandbox::Identity::of(&emptied).unwrap();
         std::fs::write(emptied.join("notes.txt"), b"mine").unwrap();
         assert!(remove_emptied(&root, &emptied, identity).is_err());
         assert_eq!(std::fs::read(emptied.join("notes.txt")).unwrap(), b"mine");
@@ -585,7 +582,7 @@ mod tests {
 
         let replaced = root.join("replaced");
         std::fs::create_dir(&replaced).unwrap();
-        let measured = review_sandbox::Identity::of(&replaced).unwrap();
+        let measured = af_sandbox::Identity::of(&replaced).unwrap();
         // The measured directory stays alive beside it, so its replacement cannot reuse its
         // inode (Linux file systems hand a freed inode straight back).
         std::fs::rename(&replaced, root.join("measured")).unwrap();
@@ -601,7 +598,7 @@ mod tests {
     fn a_marked_af_only_store_goes_whole_and_anything_else_keeps_what_is_not_afs() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
-        let identity = |path: &Path| review_sandbox::Identity::of(path).unwrap();
+        let identity = |path: &Path| af_sandbox::Identity::of(path).unwrap();
 
         let whole = root.join("whole");
         store(&whole, true);
@@ -661,6 +658,6 @@ mod tests {
         let af = af_bytes(&state).unwrap();
         std::fs::write(state.join("big.iso"), vec![3; 1 << 20]).unwrap();
         assert_eq!(af_bytes(&state).unwrap(), af);
-        assert!(review_sandbox::storage::allocated_bytes(&state).unwrap() > af + (1 << 19));
+        assert!(af_sandbox::storage::allocated_bytes(&state).unwrap() > af + (1 << 19));
     }
 }

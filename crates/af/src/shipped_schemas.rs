@@ -46,15 +46,13 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("performance-pr-proof-request", 1),
     schema!("performance-pr-proof", 1),
     schema!("performance-publication-activation", 1),
-    schema!("pi-provider-setup", 3),
+    schema!("pi-provider-setup", 4),
     schema!("provider-detect", 4),
-    schema!("provider-models", 2),
+    schema!("provider-models", 4),
     schema!("provider-setup", 2),
-    schema!("provider-status", 5),
-    schema!("review-ledger", 1),
-    schema!("review-render", 2),
-    schema!("review-report", 5),
-    schema!("review-show", 1),
+    schema!("provider-status", 6),
+    schema!("review-decision-context", 1),
+    schema!("review-ledger", 2),
     schema!("scenario-adapter-request", 4),
     schema!("scenario-adapter-response", 1),
     schema!("scenario-bundle", 5),
@@ -82,9 +80,9 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-collected-inspection", 3),
     schema!("task-detached", 3),
     schema!("task-diff", 1),
-    schema!("task-event", 1),
+    schema!("task-event", 2),
     schema!("task-findings", 2),
-    schema!("task-inspection", 16),
+    schema!("task-inspection", 20),
     schema!("task-list-entry", 4),
     schema!("task-list", 4),
     schema!("task-materialized", 1),
@@ -216,19 +214,19 @@ mod tests {
     }
 
     #[test]
-    fn schema_listing_names_provider_status_v5_and_its_sdk_host_scope() {
+    fn schema_listing_names_provider_status_v6_and_its_sdk_host_scope() {
         let line = listing()
             .lines()
-            .find(|line| line.starts_with("af/provider-status@5 "))
+            .find(|line| line.starts_with("af/provider-status@6 "))
             .unwrap()
             .to_owned();
         assert_eq!(
             line.split_whitespace().collect::<Vec<_>>(),
-            ["af/provider-status@5", "Provider", "status@5"]
+            ["af/provider-status@6", "Provider", "status@6"]
         );
         let (_, _, text) = SCHEMAS
             .iter()
-            .find(|(id, _, _)| *id == "af/provider-status@5")
+            .find(|(id, _, _)| *id == "af/provider-status@6")
             .unwrap();
         let schema: serde_json::Value = serde_json::from_str(text).unwrap();
         assert!(schema["$comment"].as_str().unwrap().contains("Pi SDK host"));
@@ -245,6 +243,7 @@ mod tests {
             refusal("task-status-v2.json"),
             "this af ships no schema task-status-v2.json; `af schema show` lists the ids it ships"
         );
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
         assert!(listing.starts_with("af/ant-list@5  "), "{listing}");

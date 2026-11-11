@@ -33,6 +33,16 @@ impl Fixture {
             &repo.join("custom-tasks/triage/worker/outputs/triage.schema.json"),
             &contract["outputs"]["triage"]["schema"],
         );
+        let pipeline = repo.join("custom-tasks/triage/pipeline/pipeline.toml");
+        let text = std::fs::read_to_string(&pipeline).unwrap();
+        std::fs::write(
+            &pipeline,
+            text.replace(
+                "role = \"triage\"",
+                "role = \"triage\"\nrecovery_attempts = 2",
+            ),
+        )
+        .unwrap();
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
                 .unwrap();
@@ -44,7 +54,13 @@ impl Fixture {
             for part in ["kind", "worker", "pipeline"] {
                 let name = format!("custom/{kind}-{part}");
                 let path = format!("custom-tasks/{kind}/{part}");
-                catalog["packages"][&name] = json!({"version":"1.0.0","path":path,"digest":review_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
+                let manifest: Value = toml::from_str(
+                    &std::fs::read_to_string(repo.join(&path).join(format!("{part}.toml")))
+                        .unwrap(),
+                )
+                .unwrap();
+                let version = manifest["version"].as_str().unwrap();
+                catalog["packages"][&name] = json!({"version":version,"path":path,"digest":af_pipeline_config::lock::package_digest(&name,&repo.join(path)).unwrap()});
             }
             catalog["kinds"][kind] = json!(format!("custom/{kind}-kind"));
             catalog["providers"][format!("custom/{kind}-worker")] = json!("codex-personal");
@@ -110,7 +126,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
         )
         .unwrap();
         let registry = root.path().join("providers.toml");
-        std::fs::write(registry,toml::to_string(&json!({"version":3,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":auth}]})).unwrap()).unwrap();
+        std::fs::write(registry,toml::to_string(&json!({"version":4,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":auth}]})).unwrap()).unwrap();
         let path = std::env::join_paths(
             std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
@@ -161,7 +177,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         let planned = f.plan(kind);
         assert_eq!(planned["attempts"], 0);
         assert_eq!(planned["plan"]["authority"]["allowed_effects"], json!([]));
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let authority = cas
             .get_json(planned["plan"]["authority"]["policy_id"].as_str().unwrap())
             .unwrap();
@@ -174,46 +190,67 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
             assert!(authority.get(name).is_none(), "{authority}");
         }
 
-        assert_eq!(planned["graph"]["schema"], "af.compiled-task/3");
+        assert_eq!(planned["graph"]["schema"], "af.compiled-task/6");
         crate::schemas::valid(
-            &crate::schemas::validator("compiled-task-v3.json"),
+            &crate::schemas::validator("compiled-task-v6.json"),
             &planned["graph"],
         );
-        let mut old_graph: review_graph::task::CompiledTask =
-            serde_json::from_value(planned["graph"].clone()).unwrap();
-        old_graph.schema = "af.compiled-task/2".into();
-        assert!(old_graph.validate_schema().is_err());
+        for retired in [
+            "af.compiled-task/1",
+            "af.compiled-task/2",
+            "af.compiled-task/3",
+        ] {
+            let mut old_graph: af_graph::task::CompiledTask =
+                serde_json::from_value(planned["graph"].clone()).unwrap();
+            old_graph.schema = retired.into();
+            assert!(old_graph.validate_schema().is_err());
+            assert!(
+                !crate::schemas::validator("compiled-task-v6.json")
+                    .is_valid(&serde_json::to_value(old_graph).unwrap())
+            );
+        }
+        if kind == "triage" {
+            assert_eq!(
+                planned["graph"]["slots"]["root.slots.triage"]["recovery_attempts"],
+                2
+            );
+        }
         let pipeline_path = f
             .repo
             .join(format!("custom-tasks/{kind}/pipeline/pipeline.toml"));
-        let pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-            review_config::task::parse_task_pipeline(
+        let pipeline: af_contracts::task::pipeline::PipelineDefinition =
+            af_pipeline_config::task::parse_task_pipeline(
                 &std::fs::read_to_string(pipeline_path).unwrap(),
             )
             .unwrap();
         crate::schemas::valid(
-            &crate::schemas::validator("pipeline-definition-v4.json"),
+            &crate::schemas::validator("pipeline-definition-v6.json"),
             &serde_json::to_value(&pipeline).unwrap(),
         );
-        let mut old_pipeline = pipeline;
-        old_pipeline.schema = review_core::task::pipeline::PipelineSchema::V1;
-        assert!(old_pipeline.validate().is_err());
+        let mut old_pipeline = serde_json::to_value(&pipeline).unwrap();
+        old_pipeline["schema"] = json!("af.pipeline/4");
+        assert!(
+            serde_json::from_value::<af_contracts::task::pipeline::PipelineDefinition>(
+                old_pipeline
+            )
+            .is_err()
+        );
         let kind_path = f.repo.join(format!("custom-tasks/{kind}/kind/kind.toml"));
-        let mut kind_manifest: review_config::task::kind::TaskKindManifest =
+        let mut kind_manifest: af_pipeline_config::task::kind::TaskKindManifest =
             toml::from_str(&std::fs::read_to_string(kind_path).unwrap()).unwrap();
         kind_manifest.validate().unwrap();
         crate::schemas::valid(
-            &crate::schemas::validator("task-kind-v2.json"),
+            &crate::schemas::validator("task-kind-v3.json"),
             &serde_json::to_value(&kind_manifest).unwrap(),
         );
         let mut report_alias = kind_manifest.clone();
         report_alias.kind = "report".into();
         assert!(report_alias.validate().is_err());
         assert!(
-            !crate::schemas::validator("task-kind-v2.json")
+            !crate::schemas::validator("task-kind-v3.json")
                 .is_valid(&serde_json::to_value(report_alias).unwrap())
         );
-        kind_manifest.schema = "af.task-kind/1".into();
+        kind_manifest.schema = "af.task-kind/2".into();
         assert!(kind_manifest.validate().is_err());
         // Mutable source files cannot alter what the recorded plan delivers to its Worker.
         let input_name = if kind == "triage" { "issue" } else { "note" };
@@ -224,7 +261,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         )
         .unwrap();
         let binding = &planned["plan"]["bindings"];
-        assert!(binding.to_string().contains("gpt-6-astra"), "{binding}");
+        assert!(binding.to_string().contains("gpt-6.1-sol"), "{binding}");
         assert!(binding.to_string().contains("medium"), "{binding}");
         assert!(binding.to_string().contains("codex-personal"), "{binding}");
         assert_eq!(binding.as_object().unwrap().len(), 1);
@@ -280,7 +317,7 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
         assert!(!refused.status.success());
         assert!(text(&refused).contains("structural data validation only"));
         let validation = &done["result"]["outputs"]["validation"]["artifact_ids"][0];
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let receipt = cas.get_artifact(validation.as_str().unwrap()).unwrap();
         crate::schemas::valid(
             &crate::schemas::validator("structured-validation-v1.json"),
@@ -845,10 +882,10 @@ fn structured_single_attempt_makes_one_worker_call_and_fails_closed() {
         assert_eq!(done["attempts"], 2, "{done}");
         let rows = accounting(&f, mode);
         assert_eq!(rows.len(), 2);
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         for row in rows {
             if mode != "good" && row.reservation.node.ends_with(".work") {
-                let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+                let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
                     diagnostic_id,
                     feedback_id: Some(feedback_id),
                 }) = &row.result
@@ -896,9 +933,9 @@ fn structured_single_attempt_makes_one_worker_call_and_fails_closed() {
 fn accounting(
     f: &Fixture,
     task: &str,
-) -> Vec<review_store::store::task::execution::TaskAttemptAccounting> {
-    let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
-    review_store::EventStore::open_read_only(f.state.join("events.sqlite"))
+) -> Vec<af_store::store::task::execution::TaskAttemptAccounting> {
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    af_store::EventStore::open_read_only(f.state.join("events.sqlite"))
         .unwrap()
         .task_projection(&cas, task)
         .unwrap()

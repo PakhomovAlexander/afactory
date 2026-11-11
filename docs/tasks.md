@@ -46,12 +46,20 @@ automatic Integration are outside this path.
 - a reviewed Task catalog committed in the repository: `.af/task-catalog.toml`, the Pipeline and
   Worker packages it pins, and `.af/code-policy.toml` with the required checks. Run
   `af onboard --tasks` to preview the generic model-driven catalog and the exact
-  `[task.defaults]` text. `af onboard --tasks --apply` writes it with review authority
-  in a new repository, or adds absent Task files and appends the table to an existing
-  `.af/`. It refuses an existing target or `[task]` table without writing. Review the
-  diff and commit `.af/` before planning; local, uncommitted files are not authority.
-  With both Provider kinds registered, the generated implementer uses Claude and the
-  reviewers use Codex; with one kind, distinct models under that login serve all Workers.
+  `[task.defaults]` text in a repository without Task authority.
+  `af onboard --tasks --apply` writes it in a new repository, or adds absent Task files
+  and appends the table to an existing `.af/` without Task settings, catalog, code policy
+  or target packages. Both preview and apply refuse an existing target or `[task]` table
+  without writing. Default onboarding already emits this authority; use plain `af onboard`
+  to validate it. Review the diff and commit `.af/` before planning; local, uncommitted files
+  are not authority.
+  The generated implementer uses Codex `gpt-6.1-sol` at high effort; independent
+  evaluator uses `gpt-6.1-terra` at high effort, both on `codex-main`.
+  Native Review Workers follow `--runner`; with Codex they use `gpt-6.1-terra` at high effort.
+  Default `af onboard` emits the same common catalog and an explicit standalone Review example.
+  A combined new-repository preview reports missing Providers for both the selected Review
+  profile and the Codex Task Workers. Adding Task files to existing authority reports only
+  the Codex Task requirement; it preserves existing Review authority regardless of `--runner`.
 
 `af catalog init --profile software --destination task-demo` creates a new starter directory,
 which must not exist yet, holding a working, credential-free catalog and runnable Task files
@@ -263,7 +271,7 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@1` document per
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@2` document per
 event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
 record with its state and exit code; `--after N` prints only the events after sequence N, so a
 follower that reconnects gets the rest, and the command takes no `--json`
@@ -461,7 +469,7 @@ it lost its writer lease (the lease the one `af` process recording on a Task hol
 interrupted Attempt is settled as *abandoned*: it is charged only the usage its Provider reported
 before it stopped, never its reservation, which goes back to the Task's remaining tokens, and it
 uses none of its node's Attempts. The node runs again, once by default; a slot that declares
-`recovery_attempts` in an `af.pipeline/3` pipeline allows more. The run's first line says what
+`recovery_attempts` in an `af.pipeline/6` pipeline allows more. The run's first line says what
 it does:
 
 ```text
@@ -471,7 +479,7 @@ resuming Task pagination-cli: node root.nodes.implement was interrupted at 17:41
 or why it cannot continue, with exit code 1:
 
 ```text
-af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)
+af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/6)
 ```
 
 A killed run holds its 60 s lease until it expires; `af task run` waits that out and says so.
@@ -572,7 +580,7 @@ round the selected Pipeline must declare `findings` (the kernel's
 do [`default/implementation`](#the-default-pipeline) and
 [`default-light/implementation`](#the-light-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@16`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@20`), and `af task report` names it in NEW's row.
 
 ### An Attempt wall keeps the edits
 
@@ -599,8 +607,8 @@ af task run pagination-3 --from pagination-cli --execute   # starts from the par
 
 `--from` binds the partial tree as the new Task's source when TASK recorded no review round; the
 new Task runs its whole pipeline on it, and its own result is what can be delivered. `af task
-plan` prints each Worker slot's Attempt wall beside its model (`implementer: claude-opus-5/high
-via claude, Attempt wall 30 min`), and `--json` lists them as `slots`, so a wall too short for
+plan` prints each Worker slot's Attempt wall beside its model (`implementer: gpt-6.1-sol/high
+via codex-main, Attempt wall 30 min`), and `--json` lists them as `slots`, so a wall too short for
 the goal is visible before the Task runs.
 
 ## The default pipeline
@@ -619,11 +627,11 @@ existing candidate read-only.
 
 | Slot | Package | Model | Effort | What it does |
 |---|---|---|---|---|
-| `implementer` | `default/implementer` | `claude-opus-5-5` | `high` | one implementing iteration (`default/implementation` only) |
-| `bugs` | `default/bugs` | `gpt-5.6-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
-| `correctness` | `default/correctness` | `gpt-6-sol` | `high` | required reviewer: requirements, contracts and architecture |
-| `uix` | `default/advisor` | `gpt-6-astra` | `medium` | advisory reviewer: gate time and quality |
-| `evaluator` | `default/evaluator` | `gpt-6-astra` | `high` | independent evaluator of the requirements |
+| `implementer` | `default/implementer` | `gpt-6.1-sol` | `high` | one implementing iteration (`default/implementation` only) |
+| `bugs` | `default/bugs` | `gpt-6.1-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
+| `correctness` | `default/correctness` | `gpt-6.1-terra` | `high` | required reviewer: requirements, contracts and architecture |
+| `uix` | `default/advisor` | `gpt-6.1-terra` | `medium` | advisory reviewer: gate time and quality |
+| `evaluator` | `default/evaluator` | `gpt-6.1-terra` | `high` | independent evaluator of the requirements |
 
 The catalog's `[review.reviewers]` marks the `uix` slot advisory, and the `bugs` slot advisory
 so that [the light default pipeline](#the-light-default-pipeline) may leave it unbound.
@@ -660,15 +668,15 @@ allowances, and `af task plan --fit` prints the smallest that do:
 }
 ```
 
-The catalog binds `default/implementer` to the Provider label `claude-main` and the other four
-packages to `codex-main`. When your machine-local registry does not carry those labels, map them
+The catalog binds all five `default/*` model packages to the Provider label `codex-main`.
+When your machine-local registry does not carry that label, map the packages
 in a [local bindings](task-execution/local-bindings.md) file and pass it with `--bindings FILE`:
 
 ```toml
 schema = "af.task-bindings/1"
 
 [providers]
-"default/implementer" = "claude-personal"
+"default/implementer" = "codex-personal"
 "default/bugs" = "codex-personal"
 "default/correctness" = "codex-personal"
 "default/advisor" = "codex-personal"
@@ -687,9 +695,9 @@ two judging slots and no implementer.
 
 | Slot | Package | Model | Effort | Attempt allowance |
 |---|---|---|---|---|
-| `implementer` | `default-light/implementer` | `claude-opus-5-5` | `medium` | 1,000,000 tokens, 2 h (`default-light/implementation` only) |
-| `correctness` | `default-light/correctness` | `gpt-6-sol` | `high` | 300,000 tokens, 30 min |
-| `evaluator` | `default-light/evaluator` | `gpt-6-astra` | `high` | 200,000 tokens, 20 min |
+| `implementer` | `default-light/implementer` | `gpt-6.1-sol` | `high` | 1,000,000 tokens, 2 h (`default-light/implementation` only) |
+| `correctness` | `default-light/correctness` | `gpt-6.1-terra` | `high` | 300,000 tokens, 30 min |
+| `evaluator` | `default-light/evaluator` | `gpt-6.1-terra` | `high` | 200,000 tokens, 20 min |
 
 It gives up the bug-bounty reviewer (`bugs`) and the gate-time and quality reviewer (`uix`). The
 correctness reviewer's prompt makes the concrete functional defects on the paths the change
@@ -715,14 +723,14 @@ These Task limits fit it; the local gate alone reserves 2 h 10 min of the wall:
 }
 ```
 
-The catalog binds `default-light/implementer` to `claude-main` and the two judges to
-`codex-main`; map them in your local bindings file as for the default pipeline:
+The catalog binds the implementer and both judges to `codex-main`; map them in your local
+bindings file as for the default pipeline:
 
 ```toml
 schema = "af.task-bindings/1"
 
 [providers]
-"default-light/implementer" = "claude-personal"
+"default-light/implementer" = "codex-personal"
 "default-light/correctness" = "codex-personal"
 "default-light/evaluator" = "codex-personal"
 ```
@@ -761,7 +769,7 @@ Attempt accounting. Provider Admission remains separate; see
   admitted as that object. Any other reply that does not parse is re-asked once from the same
   Worker, with the parser's message, line, column and the offending excerpt. Both replies are
   kept, and a second failure names them in the diagnostic: `raw reply kept: sha256:…`.
-- **A structurally wrong reply.** A typed reply, and a review-Campaign reviewer's Reviewer
+- **A structurally wrong reply.** A typed reply, and a native Review Worker's Reviewer
   Result, travels under a native schema: `--json-schema` for Claude Code, `--output-schema` for
   Codex ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)).
   The CLI refuses a reply of the wrong shape inside the same call, charged to it; the kernel
@@ -1140,8 +1148,8 @@ af task report implement-x verify-x --json
 
 The block leads with one line per pipeline the Tasks ran: `**name@version**:` and its steps in
 dependency order, each named by its role with its Worker in parentheses (`codex
-gpt-6-sol/high`, or `command`), the gate with its check names, and parallel steps of one role
-grouped (`review (bugs, correctness: codex gpt-6-sol/high)`); Provider admission is left out.
+gpt-6.1-terra/high`, or `command`), the gate with its check names, and parallel steps of one role
+grouped (`review (bugs, correctness: codex gpt-6.1-terra/high)`); Provider admission is left out.
 A Task whose plan is no longer retained (it was collected) or that never reached planning names
 no pipeline, and one line `**unknown pipeline**: not retained` stands for all such Tasks.
 Then each Task is a round, numbered in the order given, with one row: its state as `task show`
@@ -1217,9 +1225,17 @@ between `<!-- af-pr-lines:v1 -->` and
 by default). A checkout without the script keeps the template's block as it is; one whose script
 cannot print its block gets no body, and the command exits 1 naming `--base REF`; a block
 `scripts/check-pr-report.py` would refuse gets no body either, and the exit 1 names what is
-missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the
-header `| Directory | Added | Share |`, its separator and at least one directory row, each
-directory once, or `**Lines added: none**` alone, then the end marker.
+missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the header
+`| Area | Changes | + | − | Share of additions |`, its separator and at least one row, each area
+once per parent. Roots and parents are bold; children use four `&nbsp;` entities per depth. Changes use
++N/−N. Separate `+` and `−` bars share the largest sibling addition or deletion count as their
+scale, up to twelve cells with half-up eighths and a minimum positive sliver. Zero bars are
+blank, including bold parents. Children use their own sibling scale. Shares use parent additions
+(0% for a zero child, — for a zero parent). The crates row
+contains crate children and their main, tests, other leaves in the same table; direct files stay
+plain children. Deletion-only changes retain the table with title `**Lines added: 0**`; an empty
+diff uses `**Lines added: none**` alone, then the end marker.
+The hierarchy, classification and rounding are documented in [Contributing](../CONTRIBUTING.md).
 `scripts/check-pr-report.py --body` accepts it as it is.
 
 ## Troubleshooting

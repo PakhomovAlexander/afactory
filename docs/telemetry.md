@@ -15,7 +15,8 @@ at load as not implemented.
 ## What this release records
 
 A command that runs a kernel run records it: `af task run`, `af task start --execute`,
-`af review run`, `af provider doctor` and `af self optimize --execute`. Every other command —
+`af review run`, `af review resume`, `af review continue --execute`,
+`af review decide --execute`, `af provider doctor` and `af self optimize --execute`. Every other command —
 `af --help`, `af --version`, every read command but `af storage` and `af telemetry` — records
 nothing and opens no telemetry directory, and at `off` nothing is opened at all. A recording
 process writes one segment, opened at its first record:
@@ -115,7 +116,7 @@ nothing.
 `af.process` — carries `process.pid`, `process.command` (the program, never its arguments),
 `process.exit_code` or `process.signal`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`,
 and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
-(`review-process`, which links no telemetry) carries them through every result it returns, a
+(`af-process`, which links no telemetry) carries them through every result it returns, a
 timed-out, killed or cancelled process included; the crates that receive the result record the
 span. A process span ends after its caller judged the capture: an Attempt, check, gate call or
 container command whose output went past the capture cap ends it with `error.type = "failed"`
@@ -125,9 +126,9 @@ per-child `wait4(2)` (`nix` 0.31 and `rustix` expose none), so the figures come 
 `getrusage(RUSAGE_CHILDREN)`: the change of the process's children totals across a reap is the
 reaped child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports
 it) only when no other child of the process is reaped between the two readings. So every child
-reap of the workspace's non-test code goes through `review-process`'s one reap lock: the
+reap of the workspace's non-test code goes through `af-process`'s one reap lock: the
 supervisor's own reaps, and every other — a login adapter's, the TUI's hand-off, `$EDITOR`,
-`gh`, `git` and `tar` — through `review_process::reap`, whose `wait`, `try_wait`,
+`gh`, `git` and `tar` — through `af_process::reap`, whose `wait`, `try_wait`,
 `wait_with_output`, `output`, `status` and non-blocking `wait_pid` do what the standard
 library's do under that lock, polling a non-blocking reap so the lock is never held while a
 child runs. A source test fails on a direct `wait`, `try_wait`, `wait_with_output`, `output()`,
@@ -195,8 +196,7 @@ the credential rules (a secret-named key withholds its value); a row keyed by an
 position (`af.policy_rev`, `af.pipeline.digest`, `af.af_toml.digest`, `af.af_lock.digest`) keeps
 a value that is exactly a digest. At every level that records the configuration, `spans`
 included, the record names three texts by the event `af.config.text`, each by the SHA-256 of
-its own bytes and their size: the pipeline's `pipeline.toml` as its package declares it (a
-Review Campaign's pipeline file as captured), the Task file as `af task start --file` read it,
+its own bytes and their size: the pipeline's `pipeline.toml` as its native Task package declares it, the Task file as `af task start --file` read it,
 and `.af/af.toml` — never the CAS artifacts that carry them. A text whose bytes are not at hand
 (a Task no Task file made) is named by its kind alone. Their bytes are blobs only at
 [`content`](#content).
@@ -226,7 +226,7 @@ A run is one kernel run id within one Store: `af.store_id` is the SHA-256 of the
 directory's canonical path, and two Stores holding the same Task are two runs. Each process that
 worked on the run is an execution, numbered by `af.execution.ordinal`. Every lease that begins
 kernel execution commits one execution marker to the Task's log, its own event kind
-`TaskExecutionStarted@1` beside `TaskTransition@5` (`af/TaskExecutionStarted@1`, naming the
+`TaskExecutionStarted@1` beside `TaskTransition@6` (`af/TaskExecutionStarted@1`, naming the
 lease's writer and epoch,
 [`schemas/task-execution-started-v1.json`](../schemas/task-execution-started-v1.json); the
 Store refuses it on a finished Task), before its `af.run` span opens, at every level `off` included — the Store never learns the level — and
@@ -472,8 +472,7 @@ Every query answers the same before and after: the index is derived state, never
 af telemetry runs [--since D] [--kind K] [--json] [--dir PATH]
 ```
 
-One entry per run, newest activity first: its Store (`af.store_id`), run id, kind, Task or
-Campaign, its retained executions and first start, its active, execution and elapsed time, the
+One entry per run, newest activity first: its Store (`af.store_id`), run id, kind and Task, its retained executions and first start, its active, execution and elapsed time, the
 latest execution's own outcome — the execution with the greatest committed ordinal, never the
 latest start; none while that execution's `af.run` has not ended, never an earlier execution's,
 and none when no execution carries an ordinal — the Attempts' exact usage counters and charge, each
@@ -564,7 +563,7 @@ and the Store's read API: no transaction is longer for it, nothing it does is a 
 and the Store's event log is byte-identical at `off` and `content`. From `spans` on each
 committed event becomes the event `af.store.event` on the current span (the run's, or, for a
 commit before the execution's `af.run` opened, the command's) with `af.store_id`, `af.run_id`
-(the Store log: a Task's `task:…` or a Campaign's run id), `af.store.event.type`,
+(the Task Store log, `task:…`), `af.store.event.type`,
 `af.store.event.sequence`, `af.store.event.id`, `af.store.event.causation_id`, `artifact_refs`,
 and the payload's digest and size (`af.store.event.payload_digest`,
 `af.store.event.payload_bytes`); the payload itself is not recorded. A mirror failure is one
@@ -573,9 +572,9 @@ and the payload's digest and size (`af.store.event.payload_digest`,
 `complete`. `AF_TEST_TELEMETRY_MIRROR_FAIL` (a debug build's fixture setting, never read by a
 release binary) makes every mirror write fail.
 
-**Finding and Demand summaries.** From `spans` on, a Campaign log's committed events are folded
-into its Ledger projection — the Reports they reference read from the CAS, as the Ledger reads
-them — so that `af telemetry ledger` needs no Store. For every Report admitted into the Ledger
+**Finding and Demand summaries.** From `spans` on, complete published native Task Review outputs
+are reconstructed into their canonical Ledger from checked history and CAS records, so that
+`af telemetry ledger` needs no Store. For every Report admitted into the Ledger
 — a duplicate, or one that raises the effective severity of a Finding that stays `open`,
 included — and whenever any summarized field of a Finding changes, a `finding` record
 (`af/TelemetryFinding@2`) carries the Store log (`log`) and the committed `sequence` of the
@@ -591,12 +590,13 @@ and sequence, its kind (`required` or `advisory`), whether it is required, the D
 Subject and the Snapshot bound to that Subject — in every later status summary too, never the
 head of a Subject a later Round reviews — and its status (`open`, `satisfied`, `stale`,
 `waived`), and its lifecycle is the events `af.demand.opened`, `af.demand.evidence_satisfied`
-(with `af.evidence.id`: a satisfaction, or an admitted Evidence reuse that takes a stale Demand
-back to `satisfied`, with the reused satisfaction's Evidence id), `af.demand.stale` and
-`af.demand.waived`, each with `af.demand.id`, never a Finding key. A change committed by a command that records no
-Telemetry (an operator's `af review evidence satisfy`, a resolution) is summarized by the next
-recording execution that commits to that Campaign's log, at the committed event's own sequence;
-the event itself was not mirrored, and the ledger says so (below).
+(with `af.evidence.id` and, for explicit reuse, `af.evidence.reuse_admission_id`),
+`af.demand.stale` and `af.demand.waived`, each with `af.demand.id`, never a Finding key.
+`af review decide --execute` records human dispositions at their committed Task publication;
+the comparison starts from the checked original Ledger and preserves original Demand provenance.
+Later human Tasks recover the admitting Worker and model from that original captured plan,
+including across processes. Missing recording coverage remains missing: planning followed by
+recorded resume does not invent telemetry for the earlier planning prefix.
 
 **Accounting: two series, never merged.** From `metrics` on, after every committed Task event
 that changes an Attempt's accounting — `UsageObserved`, `Settled` (a recovery's included: usage
@@ -664,7 +664,7 @@ Stores share without `--store`, or a refused `[telemetry]` key.
 ## Harness streams
 
 At `spans` and above every Claude and Codex Attempt's streams are tapped as they arrive. The
-supervisor (`review-process`, which links no telemetry) still drains each pipe into the complete
+supervisor (`af-process`, which links no telemetry) still drains each pipe into the complete
 stream the adapter reads; for every chunk it reads it also makes one **non-blocking offer** of
 `(process, stream, byte offset, bytes, arrival)` to a queue of at most `observer_queue_bytes`.
 The offer takes no lock: the room is reserved by one atomic operation, the chunk goes through a
@@ -1032,7 +1032,7 @@ SHA-256, the `af.config.text.digest` every level records, as its `source_digest`
   feedback value's `artifact_id` and `snapshot_id`, and inside its payload only the identity
   positions the schema of an artifact type `af` owns declares (`af/SourceTree@1`,
   `af/TaskCheckReceipt@2`, `af/TaskAcceptance@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
-  `af/TaskReviewSubject@2`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
+  `af/TaskReviewSubject@3`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
   `af/DocumentContext@1`, `af/WorkerNotes@1`, `af/WorkerReplyReask@1`,
   `af/ReportDraftValidation@1`); every other payload — the Task's requirements
   (`af/Requirements@1`, its `specification` included), another Worker's output — is untrusted
@@ -1150,8 +1150,8 @@ baseline and a candidate binary, and records CLI cases' telemetry in its diagnos
 fixtures of [`fixtures/telemetry-bench/`](../fixtures/telemetry-bench/README.md) through the Task
 runtime with scripted harnesses: `telemetry-bench-concurrent` (four concurrent Attempts),
 `telemetry-bench-dense` (one Attempt writing 50 MiB of stream-json-shaped output at pipe speed)
-and `telemetry-bench-store` (a Task-backed Review whose 1,000 checks and four reviewers append
-about 1,180 Store events; the fixture's README says why not 10,000). Each measurement is a pair,
+and `telemetry-bench-store` (native Review with 1,000 actual checks and four reviewers; Store
+event counts follow the native Task transitions and canonical Round publication). Each measurement is a pair,
 one command at `off` and one at `spans` on the same machine and fixture, in an order drawn at
 random per pair, 20 pairs per fixture. A command's wall time runs from exec to exit, so the
 seal, the compression and the sweep's telemetry inventory are inside it. Every command runs in a
@@ -1189,78 +1189,47 @@ python3 scripts/telemetry-overhead.py --af target/release/af --pairs 5 --fixture
 python3 scripts/telemetry-overhead.py --judge target/telemetry-gate/overhead.json
 ```
 
-Each release is measured on the workload it accepts (`fixture_contract`, ADR-0240): the
-committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
-`FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
-artifact type renamed and each re-pinned with the digest the contract declares, which the
-measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
-that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6 and rc.7), and a release
-no contract names is refused, never measured under the committed contract. The contract is
-selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
-refused when the version selects another. It is benchmark fixture
-production, never a reader of state an earlier release wrote.
+The current benchmark fixture contract is `native-task-review@1`. It declares the native
+Task Pipeline `/6`, compiled graph `/6`, TaskKind `/3`, `TaskReviewSubject@3` and
+`TaskCheckReceipt@2` boundaries. Both retained source sides must contain the exact current
+schema identities and constraints before the laboratory reserves or builds anything; top-level
+descriptive annotations do not establish capability. Each measured binary must also
+reproduce every committed package pin with its own `af catalog digest` and plan the exact
+fixture as a current zero-Attempt Task before timing. Invocation planning uses the same private
+scripted Provider as execution. These are complementary checks: a release string alone cannot
+prove that two binaries accept the same workload.
 
-**RC4, RC5 and RC6 source evidence.** The exact release revisions are
-[RC4, `443c998c8231f4d88d3c98b55adebca4c23cd713`](https://github.com/PakhomovAlexander/afactory/commit/443c998c8231f4d88d3c98b55adebca4c23cd713)
-and
-[RC5, `88a524eb1e10cd738cc8086d9f4bf3164d180b09`](https://github.com/PakhomovAlexander/afactory/commit/88a524eb1e10cd738cc8086d9f4bf3164d180b09).
-Their `Cargo.toml` workspace versions are `0.14.0-rc.4` and `0.14.0-rc.5`, respectively.
-The following Git blob IDs record those revisions and the RC6 tree (`git hash-object PATH`);
-`Cargo.toml` at RC6 names `0.14.0-rc.6`. The receipt definition still names
-`TASK_CHECK_RECEIPT_V2 = "af/TaskCheckReceipt@2"`, and the schema is byte-identical. Although
-the writer and catalog modules have changed, RC6 still
-constructs `TaskCheckReceiptV2` in `CodeDomain::check`, publishes it with
-`TASK_CHECK_RECEIPT_V2`, and checks captured package bytes with `package_digest_from_files` in
-`TaskPlanCompiler::capture_package`; the digest implementation and canonical serialization are unchanged.
+`--fixture-contract native-task-review@1` asserts that contract. There are no historical
+release tables, receipt rewrites or alternate pin overlays. Unsupported or malformed workloads
+retain their original refusal diagnostics; no fallback workload is measured. Release versions
+remain recorded as provenance. This does not change historical AF installation, dispatch,
+signatures, rollback, retention or storage management. Historical benchmark documents `/2` are
+refused by the current `/3` readers.
 
-| Source path | Git blob ID in RC4 and RC5 | Git blob ID in RC6 |
-| --- | --- | --- |
-| [`crates/review-core/src/task/verification.rs`](../crates/review-core/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
-| [`schemas/task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json) | `49e71c04c24222cc9855135785d540644a73b7dc` | `49e71c04c24222cc9855135785d540644a73b7dc` |
-| [`crates/review-pipeline/src/task/code.rs`](../crates/review-pipeline/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` | `15cbd9d55bedd0dbc993bf55dce16ea44deb9924` |
-| [`crates/af/src/task_execution/catalog.rs`](../crates/af/src/task_execution/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
-| [`crates/review-config/src/task/catalog.rs`](../crates/review-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` | `8a047a34fc3f880a982ae4fd541ac9ed11b48c15` |
-| [`crates/review-config/src/lock.rs`](../crates/review-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
-| [`crates/review-store/src/canonical.rs`](../crates/review-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
+All five fixture repositories use pinned native Task packages. The Store workload runs two sequential native Review Tasks, each with 500 checks and four
+reviewers with 25 minor Findings each: 1,000 checks and 200 Findings total. Typed Selects preserve
+failure/inconclusive receipts on every branch within the existing 64-node bound. Each last check
+receipt covers every required named check. Smoke retains five checks per Task and ten Findings per
+reviewer: ten checks and 80 Findings total. Both Task finalizations are timed, peak RSS is the maximum
+of their `wait4` high-water marks, and a failed first Task prevents the second. Counts of canonical Store transitions are measured from each run rather than assumed
+from the retired Campaign event representation. The fixture's checks and Findings remain real;
+only the native orchestration and its resulting event count change.
 
-All four catalogs under `fixtures/telemetry-bench/<fixture>/repo/.af/task-catalog.toml` are
-also byte-identical in RC4, RC5 and RC6:
-
-| Fixture | Catalog Git blob ID in RC4, RC5 and RC6 |
-| --- | --- |
-| `telemetry-bench-concurrent` | `f622b8be465473c2996e4b2732e08b954187a61e` |
-| `telemetry-bench-dense` | `519c86f7f4d00861cfc2bb355502f275f3ec52f4` |
-| `telemetry-bench-invocation-four` | `2ce950520f0fccc55764c1b27ee73645a0e0636f` |
-| `telemetry-bench-invocation-one` | `1d7343d30e7df83ed938f18dd031bbb8a8c694b5` |
-
-**RC7 source evidence.** The RC6 tag points to commit
-`ebc7c4406592d0c635f8b70a2c15d90036ac36a4`; the RC7 version-bump revision is
-`25b15d1253e8c1c78b74ba366a5b8b392403a378`, whose workspace version is `0.14.0-rc.7`.
-Comparing these revisions leaves every source blob in the table above unchanged except
-`crates/review-config/src/task/catalog.rs`, now
-`264204a593451a0e4a096026ed4297764c3bc155`. The receipt definition, JSON schema and writer
-are byte-identical to RC6: `CodeDomain::check` still constructs `TaskCheckReceiptV2` and
-publishes `TASK_CHECK_RECEIPT_V2`. The catalog still admits `af.task-package/1`, and captures
-packages with `package_digest_from_files`; its new development/knowledge companion checks
-and reserved cache-output rules do not affect these fixtures, which have no such companions,
-symbolic `@tool/` runners or reserved cache outputs. The digest implementation and canonical
-serialization retain the blob IDs above. The entire `fixtures/telemetry-bench` tree is
-byte-identical to RC6, including all four catalogs and their package manifests and schemas.
-Thus RC7 explicitly selects the same receipt contract and committed package pins.
-
-This supports using `check-receipt@2` with `pins = None`: keep the committed package pins,
-perform no receipt-type renaming, and still require each measured binary's `af catalog digest`
-to match each committed pin. The Store fixture has no Task catalog. The focused regression
-`test_rc4_through_rc7_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
-fixture for all four versions and checks that every copied file stays byte-identical. This evidence
-admits only the named releases; RC8, stable 0.14.0, nightly and unknown build-metadata
-version strings remain unnamed.
-`test_workspace_release_has_an_explicit_valid_telemetry_contract` reads the workspace version
-and requires an explicit current contract, so a version bump must declare its workload before shipping.
+Release preparation explicitly declares `0.15.1-rc.1`, `0.15.1-rc.2` and `0.15.1-rc.3` for this current
+native workload. `scripts/release-contract.py` checks that declaration and exact laboratory
+schema ownership in always-run `release-check` and `base-check`, including fast and `no-perf`
+PRs. Release preparation invokes it after the version bump, before committing or publishing the
+PR. A future version requires a reviewed declaration; that declaration does not replace source
+schema checks, exact package pins or the measured binary's planner admission. The regression
+`test_workspace_and_rc2_rc3_release_guard_keep_the_current_native_contract` binds RC2 and RC3 preparation
+to the native contract. `test_every_fixture_has_exact_current_package_pins_and_no_rewrite`
+checks all five catalogs against actual package bytes and verifies that contract admission
+changes no fixture file. The contained smoke retains captured stderr, exit status and stdout
+when its measured Task artifact is missing or invalid, preserving the original setup refusal.
 
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
-writes the `af/telemetry-overhead@2` document
-([`schemas/telemetry-overhead-v2.json`](../schemas/telemetry-overhead-v2.json)) to
+writes the `af/telemetry-overhead@3` document
+([`schemas/telemetry-overhead-v3.json`](../schemas/telemetry-overhead-v3.json)) to
 `target/telemetry-gate/overhead.json`; `--json` prints the document instead, `--judge`
 recomputes every figure and the verdict from a recorded document's own pairs, and `--keep`
 keeps every run's directory. `make check` runs only a one-pair smoke of the script
@@ -1352,8 +1321,8 @@ the stream's bytes plus 16 MiB; a failed gate keeps two shapes, `json` at `off` 
 and `stream-json` at `spans` and `content`, which the envelope-parity fixtures
 (`claude_stream_result_envelope_is_the_json_envelope`, `claude_accounting_identical_at_every_level`)
 pin to the same accounting, classification and Store bytes. `--json` prints the
-`af/telemetry-invocation-cost@2` document
-([`schemas/telemetry-invocation-cost-v2.json`](../schemas/telemetry-invocation-cost-v2.json)),
+`af/telemetry-invocation-cost@3` document
+([`schemas/telemetry-invocation-cost-v3.json`](../schemas/telemetry-invocation-cost-v3.json)),
 `--judge` recomputes a recorded one, and `make check` runs its one-pair smoke
 (`telemetry_stream_json_cost_gate`), always `not_judged`.
 

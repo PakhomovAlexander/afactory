@@ -1,49 +1,49 @@
 version = 1
 
 [af]
-version = "0.14.0-rc.7"
+version = "0.15.1-rc.1"
 
 [af.digests]
-aarch64-apple-darwin = "sha256:b1debca3cb785a92c48df321d4262c55728fc9d9353f5af86c1e1ad13909c6f1"
-aarch64-unknown-linux-musl = "sha256:04eaeb208edd7de83960fa201f8899269ee875d1d8e4d2ef1a67038be0786171"
-x86_64-unknown-linux-musl = "sha256:48f2914c17bbe93ca53abbcdb1dbc08006d360292aa3102f8ca4f4f674ddac6e"
+aarch64-apple-darwin = "sha256:50b3f9e741aebaf475523566388a762fabb6af4e96ca4c39c3dcb9da5801275b"
+aarch64-unknown-linux-musl = "sha256:fdbceea0c9debad5f05c6655cd773aa8d8c8afb1862029c10da499d64526ff16"
+x86_64-unknown-linux-musl = "sha256:bb4bf79fbcb0861014f3ae0a4f3c1992a8abde335ed59efa736419d8ab93327e"
 
 [workers.bugs]
-version = "1.0.0"
-digest = "sha256:628f116e7ec713c30349e4ac6c4fbad28da42bd753def43b55e302db681fafdd"
+version = "1.0.1"
+digest = "sha256:b806c91bfcc2498948e4e978255afe8e4c9feac87d57184df87963f5948506bd"
 
 [workers.bugs-xhigh]
-version = "1.0.0"
-digest = "sha256:b1e0f54ab9ad9ff5b862cc85251ecb8a13fcc8f91bd17cfc3fc9888571978457"
+version = "1.0.1"
+digest = "sha256:5f9e19c10c74a5e654db6e10464b82c883f13c2671ce2ef65d00fa779efa7fe8"
 
 [workers.correctness]
-version = "1.2.0"
-digest = "sha256:f10028c8e1f6b37238c5818b0b75c55e2daba7c5f497116b87e604865eec171f"
+version = "1.2.1"
+digest = "sha256:efdd2101734696114cc9f7b78a5b9d1a7568743bec126a3c571c40e29f5c0c48"
 
 [workers.correctness-sol]
-version = "1.0.0"
-digest = "sha256:5e8328803396ff67dca66330a5b967b0bb06719098f06b9041bf9dff81e60ea7"
+version = "1.0.1"
+digest = "sha256:67f14e56a7f043894dd940af89cc42316797693f6d15da29bdda4c77c4e84e97"
 
 [workers.design-sol]
-version = "1.0.0"
-digest = "sha256:69e8d385c1ea4b0914edb51fbf1365a6eadc23875d499bf2946768acfd9638db"
+version = "1.0.1"
+digest = "sha256:7faec5b6e3dc462db3e7b8491900996f826cc5ad3f769097ad891232b53885f4"
 
 [workers.performance]
-version = "1.1.0"
-digest = "sha256:e514535d498e11ea05d38830c8944f24b1e3c198da941d37e304f86ff7c801f7"
+version = "1.1.1"
+digest = "sha256:2f6d74e9dc0af9a0a2f5d286e141c968eff899c1e0d3389d56a1e6c574c34f7b"
 
 [pipelines.design-review]
 version = "1.0.0"
-digest = "sha256:6d0fc6c14b0127b20da7a3f5e01411c721770216746f2ed65a5e29ea11b9c7ea"
+digest = "sha256:764fe4f6fb9aa464e694cf26d90fc342f1083dc9810ea42eb81f506d07df00cb"
 
 [pipelines.p1-review]
 version = "1.0.0"
-digest = "sha256:6abd7c85de90ea56885f2816a24c26fc77cfadeb632cc8a4087fdb2fa27d7e89"
+digest = "sha256:d5edb86cc98f409efcedb4fb327a9f2420dcd0d2c49bbc1872422d9014ac5405"
 
 [pipelines.review]
 version = "1.0.0"
-digest = "sha256:2bfa18588d5b19fe01e8ec6cc18d010d0f51645e6b7105db7201f98d9b642d46"
+digest = "sha256:51e4c701e9cb23490efbebdeba353a99151949da4d7ad4ec36b657823f2517e4"
 
 [pipelines.review-pr2-whole-tree]
 version = "1.0.0"
-digest = "sha256:1304b79e268b3d1254f063636a0de8f957df925ae651ac05bacc2ae4c3123df9"
+digest = "sha256:24b8daf40ae1a679657338c2306f3d01b07771fe4b43a1eb42c57f1b61be42fd"

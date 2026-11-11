@@ -174,7 +174,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
 
 /// The first 16 hex digits of SHA-256 of `bytes`.
 fn hex16(bytes: &[u8]) -> String {
-    review_core::hex::encode(&Sha256::digest(bytes))[..16].to_string()
+    af_contracts::hex::encode(&Sha256::digest(bytes))[..16].to_string()
 }
 
 /// A contributor's key under `identity = "name"`: the hash of the exact author-name bytes.
@@ -267,7 +267,7 @@ fn fixture(root: &Path) -> PathBuf {
     write(
         &repo,
         ".af/af.toml",
-        b"version = 1\n\n[project]\nname = \"survey-fixture\"\nmin_af = \"0.1\"\n\n[defaults]\n\
+        b"version = 2\n\n[project]\nname = \"survey-fixture\"\nmin_af = \"0.1\"\n\n[defaults]\n\
           pipeline = \"review\"\n\n[survey]\nmax_file_bytes = 512\n\n[survey.languages]\n\
           \"*.rs\" = \"rust\"\n\"src/**\" = \"source\"\n",
     );
@@ -449,7 +449,7 @@ fn refs_digest(repo: &Path) -> String {
     assert!(output.status.success());
     format!(
         "sha256:{}",
-        review_core::hex::encode(&Sha256::digest(&output.stdout))
+        af_contracts::hex::encode(&Sha256::digest(&output.stdout))
     )
 }
 
@@ -457,9 +457,9 @@ fn refs_digest(repo: &Path) -> String {
 fn committed_digest(repo: &Path) -> String {
     let scratch = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(scratch.path().join("home")).unwrap();
-    let source = review_source_git::Repo::open(repo, scratch.path().join("home"));
-    let cas = review_store::Cas::open(scratch.path().join("cas")).unwrap();
-    review_source_git::Capture::new(&source, &cas)
+    let source = af_source_git::Repo::open(repo, scratch.path().join("home"));
+    let cas = af_store::Cas::open(scratch.path().join("cas")).unwrap();
+    af_source_git::Capture::new(&source, &cas)
         .committed("HEAD")
         .unwrap()
         .content_digest
@@ -4361,7 +4361,7 @@ fn a_superseded_survey_record_is_listed_unreadable_kept_and_never_reused() {
     let text = String::from_utf8(bytes).unwrap();
     assert!(text.contains("\"schema\":\"af/ProjectSurvey@2\""), "{text}");
     let old = text.replace("af/ProjectSurvey@2", "af/ProjectSurvey@1");
-    let old_id = review_store::canonical::blob_content_id(old.as_bytes());
+    let old_id = af_store::canonical::blob_content_id(old.as_bytes());
     let hex = old_id.trim_start_matches("sha256:");
     let object = machine
         .store()

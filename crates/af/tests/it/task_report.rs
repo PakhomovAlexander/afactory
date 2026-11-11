@@ -5,8 +5,8 @@
 //! credential, Provider or model is involved. Every case edits the starter the way a developer
 //! would, re-pins its packages and commits, so the kernel captures the edit as authority.
 
-use review_core::task::report_task::*;
-use review_store::Cas;
+use af_contracts::task::report_domain::*;
+use af_store::Cas;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -107,8 +107,11 @@ pub(crate) fn repin_and_commit(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -154,7 +157,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &done);
     done
 }
 
@@ -310,7 +313,7 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
         checks
             .checks
             .values()
-            .all(|outcome| *outcome == review_core::task::pipeline::ReceiptOutcomeV1::Passed)
+            .all(|outcome| *outcome == af_contracts::task::pipeline::ReceiptOutcomeV1::Passed)
     );
     let recorded: Value = cas.get_json(&snapshot).unwrap();
     assert_eq!(checks.manifest_id, recorded["manifest_id"]);
@@ -336,16 +339,26 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
     let draft = payload(
         &cas,
         document["payload"]["draft_id"].as_str().unwrap(),
-        "af/DocumentDraft@2",
+        "af/DocumentDraft@3",
     );
-    schemas::valid(&schemas::validator("document-draft-v2.json"), &draft);
+    schemas::valid(&schemas::validator("document-draft-v3.json"), &draft);
     let lines = std::fs::read_to_string(repo.join("README.md"))
         .unwrap()
         .lines()
         .count();
     assert_eq!(
-        draft["repository_citations"],
-        json!([{"path":"README.md"},{"path":"README.md","line":lines},{"path":"report.json"}])
+        draft["citations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "repository")
+            .map(|c| c["location"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"path":"README.md"}),
+            json!({"path":"README.md","line":lines}),
+            json!({"path":"report.json"})
+        ]
     );
     let report = document["payload"]["text"].as_str().unwrap();
     assert!(report.ends_with(&format!(
@@ -471,7 +484,7 @@ fn a_citation_that_does_not_name_a_text_line_fails_report_check_before_the_verif
         assert!(verification.evaluation_id.is_none(), "{case}");
         assert_eq!(
             checks.checks["repository_citations"],
-            review_core::task::pipeline::ReceiptOutcomeV1::Failed,
+            af_contracts::task::pipeline::ReceiptOutcomeV1::Failed,
             "{case}"
         );
         assert_eq!(checks.citation_failures.len(), 1, "{case}");
@@ -571,7 +584,7 @@ fn a_negative_verdict_stays_unsatisfied() {
     let (verification, _) = receipts(&cas, &done);
     assert_eq!(
         verification.outcome,
-        review_core::task::pipeline::ReceiptOutcomeV1::Failed
+        af_contracts::task::pipeline::ReceiptOutcomeV1::Failed
     );
     assert_eq!(
         without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 3)),
@@ -589,7 +602,7 @@ fn a_negative_verdict_stays_unsatisfied() {
 /// must not hide committed resource exhaustion when the Task is finished or read again.
 #[test]
 fn report_acceptance_followed_by_a_verifier_reservation_overrun_finishes_and_resumes() {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -635,7 +648,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
     let providers = home.join("providers.toml");
     std::fs::write(
         &providers,
-        toml::to_string(&json!({"version":3,"providers":[{
+        toml::to_string(&json!({"version":4,"providers":[{
             "id":"codex-fixture","kind":"codex","auth_dir":home
         }]}))
         .unwrap(),
@@ -657,7 +670,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
     std::fs::write(worker_path, toml::to_string(&worker).unwrap()).unwrap();
     // The model verifier adds one Provider admission Attempt to the three-command starter.
     let pipeline_path = package(&repo, "builtin/report").join("pipeline.toml");
-    let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
     pipeline.max_attempts = 4;
     std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
@@ -688,7 +701,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let done = cli(&["task", "start", "--execute", "--file", "report.json"]);
-    schemas::valid(&schemas::validator("task-inspection-v16.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &done);
     assert_eq!(done["state"]["phase"], "finished", "{done}");
     assert_eq!(done["state"]["outcome"], "exhausted");
     assert_eq!(done["state"]["cause"], "budget");
@@ -707,16 +720,16 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
     let (verification, _) = receipts(&cas, &done);
     assert_eq!(
         verification.outcome,
-        review_core::task::pipeline::ReceiptOutcomeV1::Passed
+        af_contracts::task::pipeline::ReceiptOutcomeV1::Passed
     );
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store.task_projection(&cas, TASK).unwrap().unwrap();
     assert_eq!(projection.revision.limits.tokens, 50000);
     assert_eq!(projection.revision.limits.verification.tokens, 20000);
     // Result revalidation still checks the passing receipt and exact report, and refuses to
     // call an exhausted result verified. Changing execution alone cannot bypass the Store's
     // separate committed-budget fence (exercised by finalization on the unfixed tree).
-    use review_pipeline::task::host::TaskDomain;
+    use af_runtime::task::host::TaskDomain;
     let authority = cas
         .get_json(&projection.revision.authority.policy_id)
         .unwrap();
@@ -724,19 +737,19 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
     let graph = cas
         .get_artifact(plan.payload["compiled_graph_id"].as_str().unwrap())
         .unwrap();
-    let domain = review_pipeline::task::report_task::ReportTaskDomain::captured(
+    let domain = af_runtime::task::report_domain::ReportTaskDomain::captured(
         &cas,
         authority["report_policy_id"].as_str().unwrap(),
         serde_json::from_value(graph.payload).unwrap(),
     )
     .unwrap();
-    let result: review_core::task::TaskResultV1 =
+    let result: af_contracts::task::TaskResultV1 =
         serde_json::from_value(done["result"].clone()).unwrap();
     domain
         .validate_result(&cas, &projection.revision, &result)
         .unwrap();
     let mut forged = result.clone();
-    forged.acceptance = review_core::task::TaskAcceptanceV1::Satisfied;
+    forged.acceptance = af_contracts::task::TaskAcceptanceV1::Satisfied;
     forged.domain_conclusion = "verified".into();
     assert!(
         domain
@@ -871,7 +884,7 @@ pub(crate) fn workspace() -> PathBuf {
 
 const KERNEL_PACKAGES: [(&str, Option<&str>); 3] = [
     ("kernel/report", None),
-    ("kernel/analyst", Some("claude-main")),
+    ("kernel/analyst", Some("codex-main")),
     ("kernel/report-verifier", Some("codex-main")),
 ];
 
@@ -911,8 +924,11 @@ fn install_kernel_report(repo: &Path) {
         let mut pin = staged["packages"][name].clone();
         assert_eq!(
             pin["digest"].as_str().unwrap(),
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap())
+            )
+            .unwrap(),
             "{name}: the staged pin is the staged bytes"
         );
         let path = format!(".af/task-packages/{name}");
@@ -981,7 +997,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
     let installed: toml::Value = toml::from_str(&catalog).unwrap();
     assert_eq!(
         installed["providers"]["kernel/analyst"],
-        "claude-main".into()
+        "codex-main".into()
     );
     assert_eq!(
         installed["providers"]["kernel/report-verifier"],
@@ -1030,7 +1046,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         analyst["signature"]["effects"],
         toml::Value::try_from(["execute-checks", "read-source"]).unwrap()
     );
-    assert_eq!(analyst["runner"]["model"], "claude-opus-5-5".into());
+    assert_eq!(analyst["runner"]["model"], "gpt-6.1-sol".into());
     assert_eq!(analyst["signature"]["attempt"]["tokens"], 1_500_000.into());
     assert_eq!(
         analyst["signature"]["attempt"]["wall_ms"],
@@ -1041,7 +1057,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         verifier["signature"]["effects"],
         toml::Value::try_from(["read-source"]).unwrap()
     );
-    assert_eq!(verifier["runner"]["model"], "gpt-6-sol".into());
+    assert_eq!(verifier["runner"]["model"], "gpt-6.1-terra".into());
     let local = root.join("local");
     std::fs::create_dir_all(&local).unwrap();
     let mut packages = toml::map::Map::new();
@@ -1141,7 +1157,7 @@ fn a_task_kind_package_maps_another_business_kind_to_the_report_profile() {
     std::fs::create_dir_all(&kind).unwrap();
     std::fs::write(
         kind.join("kind.toml"),
-        "schema = \"af.task-kind/1\"\nname = \"fixture/research-kind\"\nversion = \"1.0.0\"\n\
+        "schema = \"af.task-kind/3\"\nname = \"fixture/research-kind\"\nversion = \"1.0.0\"\n\
          kind = \"research\"\nprofile = \"report\"\n",
     )
     .unwrap();

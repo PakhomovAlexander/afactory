@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from perflab import adapters, builds, contracts, diagcontracts, diagnostics, tomlfile
+from perflab import adapters, builds, contracts, diag_contracts, diagnostics, toml_file
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
 from tests import build_fixtures
@@ -25,7 +25,7 @@ PLENTY = lambda path: 1 << 50  # noqa: E731 - the free-disk probe of a test with
 
 
 def registry():
-    return contracts.validate_adapters(tomlfile.loads(build_fixtures.ADAPTERS.encode("utf-8"),
+    return contracts.validate_adapters(toml_file.loads(build_fixtures.ADAPTERS.encode("utf-8"),
                                                       "fixture adapters"))
 
 
@@ -124,8 +124,8 @@ class FakeBuild(TempDir):
             committed = self.repo.git("show", "%s:%s" % (self.authority, item["path"]))
             self.assertEqual(item["sha256"], sha256_bytes(committed.encode("utf-8") + b"\n"))
         self.assertEqual([item["path"] for item in overlay["files"]],
-                         ["crates/review-pipeline/examples/perf-probe.rs",
-                          "crates/review-pipeline/examples/perf-probe/helper.rs"])
+                         ["crates/af-runtime/examples/perf-probe.rs",
+                          "crates/af-runtime/examples/perf-probe/helper.rs"])
         # The failed adapter's overlay was restored: the baseline probe is the older bridge.
         self.assertIn(b"older public API", read(paths["baseline/probe"]))
 
@@ -140,7 +140,7 @@ class FakeBuild(TempDir):
         self.assertTrue(doc["adapter_binding"]["equivalent"])
 
     def test_a_source_no_adapter_compiles_against_has_unavailable_coverage(self):
-        old = self.repo.commit("history", {"crates/review-pipeline/src/lib.rs":
+        old = self.repo.commit("history", {"crates/af-runtime/src/lib.rs":
                                            "pub fn unrelated() {}\n"})
         authority = self.repo.commit("authority again", {"README": "authority\n"})
         self.authority = authority
@@ -236,7 +236,7 @@ class FakeBuild(TempDir):
             stream.write(b"owned probe bytes outside the target\n")
         os.chmod(marker, 0o600)
         head = self.repo.commit("hostile probe", {
-            "crates/review-pipeline/src/lib.rs":
+            "crates/af-runtime/src/lib.rs":
                 "pub fn answer() -> u32 { 42 }\npub fn answer_v2() -> u32 { 43 }\n"
                 "// SYMLINK_EXAMPLE:%s\n" % marker})
         authority = self.repo.commit("authority over the hostile probe",
@@ -267,7 +267,7 @@ class FakeBuild(TempDir):
         for index, marker in enumerate(("MUTATE_OVERLAY", "MUTATE_OVERLAY_AND_FAIL")):
             with self.subTest(marker=marker):
                 head = self.repo.commit(marker, {
-                    "crates/review-pipeline/src/lib.rs":
+                    "crates/af-runtime/src/lib.rs":
                         "pub fn answer() -> u32 { 42 }\npub fn answer_v2() -> u32 { 43 }\n"
                         "// %s\n" % marker})
                 authority = self.repo.commit("authority %d" % index, {
@@ -280,7 +280,7 @@ class FakeBuild(TempDir):
                     builder.build()
                 self.assertEqual(raised.exception.reason, "overlay_integrity")
                 detail = str(raised.exception)
-                self.assertIn("crates/review-pipeline/examples/perf-probe/helper.rs", detail)
+                self.assertIn("crates/af-runtime/examples/perf-probe/helper.rs", detail)
                 self.assertIn("during candidate's fixture_probe_v2 compile", detail)
                 logs = sorted(os.listdir(builder.layout.logs))
                 self.assertIn("candidate-probe-fixture_probe_v2.log", logs)
@@ -343,7 +343,7 @@ class FakeBuild(TempDir):
         self.assertEqual(doc["sides"]["candidate"]["chosen_adapter"], "fixture_probe_v2")
         broken = self.repo.commit("drop helper", {
             "fixtures/performance/adapters.toml": build_fixtures.ADAPTERS.replace(
-                ', "crates/review-pipeline/examples/perf-probe/helper.rs"', "")})
+                ', "crates/af-runtime/examples/perf-probe/helper.rs"', "")})
         self.authority = broken
         with self.assertRaises(ContractError) as caught:
             self.build(run_id="incomplete_closure")
@@ -454,11 +454,11 @@ class FakeBuild(TempDir):
         declared = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH), loaded.doc)
         for recipe_id, features in (("macos_arm64_trace", ["perf-trace"]),
                                     ("macos_arm64_samply", [])):
-            recipe = diagcontracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
+            recipe = diag_contracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
             plan = plan_for(self.repo, self.base, self.head, self.authority,
                             run_id="diag_" + recipe_id, diagnostic_recipe=(
                                 recipe_id, recipe,
-                                diagcontracts.frozen_identity(declared, recipe_id)))
+                                diag_contracts.frozen_identity(declared, recipe_id)))
             self.assertEqual((plan["scope"], plan["profile"]["recipe_id"]),
                              ("diagnostic", recipe_id))
             builder = builds.Builder(self.repo.path, plan, self.toolchain, registry(),
@@ -511,7 +511,7 @@ class FakeBuild(TempDir):
         loaded = suite_module.load(SUITE)
         declared = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH), loaded.doc)
         recipe_id = "linux_gnu_cpu_profile"
-        recipe = diagcontracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
+        recipe = diag_contracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
         toolchain = builds.Toolchain(fake_toolchain(self.path("linux-toolchain"),
                                                    "x86_64-unknown-linux-gnu"), "1.88.0")
         for shared in (False, True):
@@ -519,7 +519,7 @@ class FakeBuild(TempDir):
                             self.authority, run_id="gnu_cpu_%s" % str(shared).lower(), tier="quick",
                             environment="linux_x86_64_gnu_hosted", trusted_host_build=True,
                             diagnostic_recipe=(recipe_id, recipe,
-                                diagcontracts.frozen_identity(declared, recipe_id)))
+                                diag_contracts.frozen_identity(declared, recipe_id)))
             builder = builds.Builder(self.repo.path, plan, toolchain, registry(),
                                      free_bytes=PLENTY)
             doc = builder.build()
@@ -570,7 +570,7 @@ class FakeBuild(TempDir):
         loaded = suite_module.load(SUITE)
         declared = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH), loaded.doc)
         recipe_id = "linux_musl_cpu_profile"
-        recipe = diagcontracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
+        recipe = diag_contracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
         base = loaded.doc["recipes"]["linux_musl_shipping"]
         self.assertEqual((recipe["builder"], recipe["linker"], recipe["target"]),
                          ("cargo_zigbuild", "zig_cc", "x86_64-unknown-linux-musl"))
@@ -583,7 +583,7 @@ class FakeBuild(TempDir):
         plan = plan_for(self.repo, self.base, self.head, self.authority, run_id="musl_cpu",
                         environment="linux_x86_64_musl_hosted", trusted_host_build=True,
                         diagnostic_recipe=(recipe_id, recipe,
-                                           diagcontracts.frozen_identity(declared, recipe_id)))
+                                           diag_contracts.frozen_identity(declared, recipe_id)))
         builder = builds.Builder(self.repo.path, plan, toolchain, registry(),
                                  free_bytes=PLENTY, zigbuild_bin=zig)
         doc = builder.build()
@@ -836,7 +836,7 @@ class ContainerBuild(TempDir):
             # The authority's closure is bound read-only over the overlay in the worktree.
             self.assertEqual(len(overlays), 2, call)
             for mount in overlays:
-                self.assertIn("/crates/review-pipeline/examples/perf-probe", mount)
+                self.assertIn("/crates/af-runtime/examples/perf-probe", mount)
         # Every container was removed and its removal confirmed.
         names = [call[call.index("--name") + 1] for call in runs]
         removed = [call[-1] for call in build_fixtures.docker_calls(self.docker_dir)
@@ -910,7 +910,7 @@ class ContainerBuild(TempDir):
         # The real container binds the closure read-only, so a rewrite fails there with EROFS;
         # the stand-in cannot, and the integrity check still refuses the build.
         repo, base, head, authority = self.repo, self.base, self.head, self.authority
-        mutated = repo.commit("mutating", {"crates/review-pipeline/src/lib.rs":
+        mutated = repo.commit("mutating", {"crates/af-runtime/src/lib.rs":
                                            "pub fn answer_v2() -> u32 { 43 } // MUTATE_OVERLAY\n"})
         def linux(recipe):
             recipe.update(os="linux", target="x86_64-unknown-linux-gnu", linker="system_cc")
@@ -995,7 +995,7 @@ class Registry(TempDir):
     def test_a_closure_without_its_helper_modules_is_refused(self):
         doc = adapters.load(os.path.join(ROOT, adapters.ADAPTERS_PATH))
         entry = doc["adapters"]["native_probe_public_api_v1"]
-        entry["closure"] = ["crates/review-pipeline/examples/perf-probe.rs"]
+        entry["closure"] = ["crates/af-runtime/examples/perf-probe.rs"]
         with self.assertRaises(ContractError) as caught:
             adapters.check_closure(doc, ROOT)
         self.assertIn("perf-probe/cases.rs", str(caught.exception))
@@ -1034,22 +1034,22 @@ class RealToolchain(TempDir):
         files = {
             ".gitignore": "/target\n",
             "Cargo.toml": ('[workspace]\nresolver = "2"\nmembers = ["crates/af", '
-                           '"crates/review-pipeline", "crates/review-process"]\n'),
+                           '"crates/af-runtime", "crates/af-process"]\n'),
             "crates/af/Cargo.toml": ('[package]\nname = "af"\nversion = "0.0.0"\n'
                                      'edition = "2021"\npublish = false\n'),
             "crates/af/build.rs": AF_BUILD_RS,
             "crates/af/src/main.rs": 'fn main() { println!("{}", env!("AF_GIT_COMMIT")); }\n',
-            "crates/review-pipeline/Cargo.toml": ('[package]\nname = "review-pipeline"\n'
+            "crates/af-runtime/Cargo.toml": ('[package]\nname = "af-runtime"\n'
                                                   'version = "0.0.0"\nedition = "2021"\n'
                                                   'publish = false\n'),
-            "crates/review-pipeline/src/lib.rs": "pub fn answer() -> u32 { 42 }\n",
-            "crates/review-pipeline/examples/perf-probe.rs":
-                'fn main() { println!("own {}", review_pipeline::answer()); }\n',
-            "crates/review-process/Cargo.toml": ('[package]\nname = "review-process"\n'
+            "crates/af-runtime/src/lib.rs": "pub fn answer() -> u32 { 42 }\n",
+            "crates/af-runtime/examples/perf-probe.rs":
+                'fn main() { println!("own {}", af_runtime::answer()); }\n',
+            "crates/af-process/Cargo.toml": ('[package]\nname = "af-process"\n'
                                                  'version = "0.0.0"\nedition = "2021"\n'
                                                  'publish = false\n'),
-            "crates/review-process/src/lib.rs": "pub fn supervise() {}\n",
-            "crates/review-process/examples/perf-supervisor.rs": "fn main() {}\n",
+            "crates/af-process/src/lib.rs": "pub fn supervise() {}\n",
+            "crates/af-process/examples/perf-supervisor.rs": "fn main() {}\n",
         }
         for relative, data in files.items():
             repo.write(relative, data)
@@ -1058,18 +1058,18 @@ class RealToolchain(TempDir):
         subprocess.run([REAL.cargo, "generate-lockfile", "--offline"], cwd=repo.path, env=env,
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         base = repo.commit("base")
-        head = repo.commit("head", {"crates/review-pipeline/src/lib.rs":
+        head = repo.commit("head", {"crates/af-runtime/src/lib.rs":
                                     "pub fn answer() -> u32 { 42 }\n"
                                     "pub fn answer_v2() -> u32 { 43 }\n"})
         authority = repo.commit("authority", {
-            "crates/review-pipeline/examples/perf-probe.rs":
+            "crates/af-runtime/examples/perf-probe.rs":
                 '#[path = "perf-probe/helper.rs"]\nmod helper;\n'
                 'fn main() { println!("authority {}", helper::value()); '
                 'std::process::exit(3); }\n',
-            "crates/review-pipeline/examples/perf-probe/helper.rs":
-                "pub fn value() -> u32 { review_pipeline::answer_v2() }\n",
-            "crates/review-pipeline/examples/perf-probe-v1.rs":
-                'fn main() { println!("bridge {}", review_pipeline::answer()); }\n'})
+            "crates/af-runtime/examples/perf-probe/helper.rs":
+                "pub fn value() -> u32 { af_runtime::answer_v2() }\n",
+            "crates/af-runtime/examples/perf-probe-v1.rs":
+                'fn main() { println!("bridge {}", af_runtime::answer()); }\n'})
         tier, environment = REAL_PROFILES[REAL.host]
         # This fixture intentionally compiles on the test host. Its purpose is commit and
         # adapter provenance, and it makes no container-isolation claim on Linux either.

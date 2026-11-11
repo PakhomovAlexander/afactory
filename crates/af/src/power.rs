@@ -43,7 +43,7 @@ pub(crate) struct Held(Child);
 impl Drop for Held {
     fn drop(&mut self) {
         let _ = self.0.kill();
-        let _ = review_process::reap::wait(&mut self.0);
+        let _ = af_process::reap::wait(&mut self.0);
     }
 }
 

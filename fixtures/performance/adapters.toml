@@ -17,11 +17,11 @@ description = "Native public-API probe adapters, by fixed priority."
 
 [adapters.native_probe_public_api_v1]
 kind = "native_probe"
-description = "The authority's perf-probe example and its complete helper-module closure, built in the measured source's review-pipeline package."
+description = "The authority's perf-probe example and its complete helper-module closure, built in the measured source's af-runtime package."
 priority = 1
 equivalence_group = "native_probe_public_api_v1"
 min_version = "0.12.0-rc.3"
-package = "review-pipeline"
+package = "af-runtime"
 example = "perf-probe"
 contracts = [
   "authority_plan_check_v3",
@@ -39,10 +39,10 @@ contracts = [
   "state_projection_v2",
 ]
 closure = [
-  "crates/review-pipeline/examples/perf-probe.rs",
-  "crates/review-pipeline/examples/perf-probe/authority.rs",
-  "crates/review-pipeline/examples/perf-probe/cases.rs",
-  "crates/review-pipeline/examples/perf-probe/control.rs",
-  "crates/review-pipeline/examples/perf-probe/fixtures.rs",
-  "crates/review-pipeline/examples/perf-probe/protocol.rs",
+  "crates/af-runtime/examples/perf-probe.rs",
+  "crates/af-runtime/examples/perf-probe/authority.rs",
+  "crates/af-runtime/examples/perf-probe/cases.rs",
+  "crates/af-runtime/examples/perf-probe/control.rs",
+  "crates/af-runtime/examples/perf-probe/fixtures.rs",
+  "crates/af-runtime/examples/perf-probe/protocol.rs",
 ]

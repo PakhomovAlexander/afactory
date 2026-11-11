@@ -5,8 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use review_config::CacheKindSpec;
-use review_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheSource};
+use af_pipeline_config::CacheKindSpec;
+use af_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheSource};
 use serde::Deserialize;
 
 const MAX_POLICY_BYTES: u64 = 64 * 1024;

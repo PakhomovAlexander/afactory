@@ -1,9 +1,29 @@
 # Afactory — shared language
 
-The vocabulary of Afactory's Review Kernel and the `af review` command behind it. These words are
+Installed Review uses native Task state and canonical ReviewHistory. Campaign manifests and
+bootstrap events are retired; shared Ledger, Finding and `review.kernel/*` domain contracts
+remain canonical. Project authority uses `.af/af.toml` version 2 and `[task.defaults]`.
+
+The vocabulary of Afactory's Task runtime, Review Kernel, Scenarios and Projects. These words are
 load-bearing: the kernel's guarantees are stated in them, and several of its invariants are
 only expressible because two nearby concepts are kept apart. The mechanism itself is
 documented in [`docs/architecture.md`](docs/architecture.md); this file defines only the terms.
+
+Native Review execution now belongs to one Task lifecycle: `af review` is a thin interface to
+Task planning, execution, state, Findings, accounting and continuation. `--authority` selects
+trusted authority independently of source/Base. Campaign execution selectors, captured hosts and
+phase DTOs are retired on this interface; native Review has no Campaign execution fallback. Canonical Ledger,
+Report, Finding, Subject and `review.kernel/*` domain terms retain their identities. Campaign
+terminology below describes that historical canonical model, not an alternate installed executor.
+A standalone Review scaffold is committed Task authority: `af onboard` emits the common catalog,
+current Worker/Pipeline packages and an explicit Review Task file. Human Evidence, Demand,
+resolution, challenge, policy-time and grouping decisions are exact-plan-approved native Tasks;
+`af review decision-context` reads their canonical identities and `af review decide` captures a
+bounded decision batch. Fix verification retains the independent native repair path. Doctor inspects that same
+captured authority without parsing retired Campaign definitions.
+The current commands and retained capability mapping are in
+[Review Tasks](docs/task-execution/review-task.md) and the
+[capability record](docs/design/current-contracts-and-task-review.md).
 
 ## Language
 
@@ -108,7 +128,7 @@ acceptance an independent verifier on the same Snapshot decides. Every one of it
 that Snapshot; it writes no source and is never delivered.
 _Avoid_: **Document** for it — a Document Task carries no Snapshot identity and its author
 cannot read the repository. And **Report** — a Report is one reviewer's immutable claim in a
-Campaign; a Report Task's output is a Document.
+Review Round; a Report Task's output is a Document.
 
 **Human presentation**:
 The readable Markdown `af task output --format human-markdown` derives from a Document's exact
@@ -265,8 +285,9 @@ negative requirements verdict; every verifier retains the requirements it consum
 
 **Task Review Continuation**:
 Exact independently verified repair evidence projected into the next admitted discovery Round.
-It retains the original Round and claim identities, grants no complete-Review coverage and does
-not create Campaign Resolution authority. Later discovery can reopen a previously fixed claim.
+It retains the original Round and claim identities and grants no complete-Review coverage or
+authority for arbitrary Finding Resolutions. Fixed claims require the recorded independent repair
+verification; later discovery can reopen a previously fixed claim.
 
 **Task continuation**:
 A new Task planned from a finished reviewed one (`af task run NEW --from TASK`, or a Task file's
@@ -363,7 +384,7 @@ an unstable or missing sentinel makes its shard's cases incomplete, and sentinel
 gate family.
 
 **Performance Probe**:
-The `perf-probe` example of `review-pipeline`: one process per library Performance Sample. It
+The `perf-probe` example of `af-runtime`: one process per library Performance Sample. It
 generates the case's fixture through the product's public writers, times one production
 operation per declared repetition, reports setup separately, and writes one `af.perf-probe/1`
 message ([ADR-0163](docs/adr/0163-measure-native-workloads-through-a-public-api-probe-and-independent-golden-oracles.md)).
@@ -371,7 +392,7 @@ Its own `passed` is never the oracle.
 _Avoid_: "benchmark harness" — the probe asserts nothing about speed.
 
 **Performance Supervisor**:
-The `perf-supervisor` example of `review-process`, built once from the measuring authority and
+The `perf-supervisor` example of `af-process`, built once from the measuring authority and
 launched as the same bytes for both sides. One process supervises one sample. It brackets child
 launch through the observed exit with a monotonic clock, drains capped output and forwards
 termination signals. It establishes what its containment can about descendants: a whole Linux
@@ -425,7 +446,7 @@ _Avoid_: counting setup inside a Performance Sample's primary metric.
 
 **Seed**:
 A large fixture one side's own writers write once per shard, under the Performance Supervisor
-and in the shard's containment: CLI Task and Campaign state, or the repository and event log a
+and in the shard's containment: CLI Task state including native Review, or the repository and event log a
 library probe reads, or an admitted Task whose setup leases were released while live. Authority
 readers restore a private copy, capture a fresh validator and take a fresh production lease;
 the original revision deadline is preserved
@@ -559,9 +580,9 @@ byte digest; identical trees have the same Tree Digest even when their Snapshots
 _Avoid_: using a Tree Digest where repository or capture provenance is required.
 
 **Review Selector**:
-The mutable, human-facing inputs used to locate what should be reviewed — branch name, PR
-number, base ref, and authority ref — resolved into Snapshots and holding no authority over
-identity.
+The mutable, human-facing inputs used to locate what should be reviewed — authority, candidate
+and Base refs, or an explicit working-tree selection — resolved into Snapshots and holding no
+authority over identity.
 _Avoid_: treating a selector as the thing reviewed; `origin/HEAD` is a Review Selector input,
 never a Snapshot or Subject.
 
@@ -572,14 +593,16 @@ _Avoid_: "the change" used bare — it is only meaningful under a `diff` Subject
 under `whole-tree` describes something that does not exist.
 
 **Base**:
-The Snapshot a `diff` Subject is measured against, resolved once from the Review Selector's ref
-at a Campaign's first Round and pinned by Snapshot ID for the Campaign's life.
+The Snapshot a `diff` Subject is measured against, resolved from a declared source input or the
+Review Selector's Base ref and pinned by Snapshot ID. Native continuation retains that exact
+Base through checked ReviewHistory; moving a ref never changes an earlier Subject.
 _Avoid_: "parent" — `parent_snapshot_id` already means patch-integration lineage (S1 produced
 by integrating a validated patch into S0) and cannot carry this relation.
 
 **Proposal Base**:
-The exact head Snapshot from which a reviewer's sandbox and Proposal patch were derived,
-carried by the `base_snapshot_id` field of `PatchProposal@1`.
+The exact head Snapshot from which a source-writing Worker's sandbox and Proposal were derived.
+Native proposal admission checks the candidate's `parent_snapshot_id` against the author's
+source input and the selected original Round; `TaskReviewIntegration@1` records `base_snapshot_id`.
 _Avoid_: **Base** — for a diff Subject, Base is the comparison Snapshot and Proposal Base is the
 current head.
 
@@ -591,14 +614,16 @@ _Avoid_: "the diff" when identity matters — a Change Set is an artifact with a
 command's transient output.
 
 **Authority Snapshot**:
-The trusted Snapshot from which a Campaign resolves its pipeline, reviewer lock, and project
-policy before candidate content can influence execution authority.
-_Avoid_: assuming Authority Snapshot and Base are synonyms; a diff Campaign commonly uses one
-Snapshot for both roles, while a whole-tree Campaign still needs authority without having a Base.
+The trusted Snapshot from which a Task captures its catalog, Pipeline, Worker packages and project
+policy before candidate content can influence execution authority. Native Review selects it with
+`--authority`, independently of candidate and Base.
+_Avoid_: assuming Authority Snapshot and Base are synonyms; a diff Review may use one Snapshot
+for both roles, while a whole-tree Review still needs authority without having a Base.
 
 **Campaign Manifest**:
-The immutable resolved authority of one Campaign: exact Authority Snapshot, pipeline, lock,
+The retired immutable resolved authority of one Campaign: exact Authority Snapshot, pipeline, lock,
 reviewer package, policy, convergence, budget, focus, and genesis-root artifact IDs.
+Native Review captures authority in its Task revision and Execution Plan instead.
 _Avoid_: calling it the Authority Snapshot; one trusted source Snapshot can resolve different
 Campaign Manifests under different trusted invocation policies.
 
@@ -608,10 +633,20 @@ Attached deterministically to each Report claim from its exact Round Subject, ne
 the reviewer and never stamped on the Finding, because a file this branch has not touched yet may
 be touched by a later Round. A Report with no derivable exact Round Subject is presented as
 `unknown`; that is fail-closed metadata, not a third Report Scope.
-An unavailable Subject or Report authority is counted in the active clean window and is persisted
-as `authority_unavailable` in `RunReport@6` conclusions only when no real Finding or failed
-Gate is already the cause; terminal output alone is never the only explanation for a failed
-convergence decision.
+The shared Ledger counts unavailable scope authority in the active clean window; unresolved
+unreadable Reports continue to block after their original window. Native Review validates the
+exact Subject, Change Set and complete original history before reduction: unavailable authority
+cannot become a clean Round or a partial authoritative Ledger. Missing required reviewer/check
+evidence yields `incomplete`; failed reduction leaves the public obligation missing. A complete
+Round passes only with passed checks and canonical Ledger convergence; otherwise it records
+`changes_requested`, or `convergence_exhausted` at the captured multi-Round limit.
+For standalone Review, `af-store/src/store/task/review_integration.rs::native_review_conclusion` writes
+`af/TaskReviewConclusion@1` (`schemas/task-review-conclusion-v1.json`), binding that verdict to
+the exact Task revision, plan, Task report, selected Round IDs, checked log prefix and cumulative
+accounting. It has no separate unavailable-authority reason tag. Persisted explanation comes from
+the referenced `TaskReviewRound@1` inputs, selected results, missing reviewers and canonical views,
+and the `TaskRunReport@3` node outcomes with referenced failure diagnostics or suppression reasons;
+terminal output alone never supplies the explanation.
 _Avoid_: unqualified "scope" or "out of scope" as a dismissal; an out-of-set Finding is real,
 recorded, and triageable — it simply does not block this Subject's convergence.
 
@@ -624,24 +659,21 @@ and dynamic slicing requires whole-Subject closeout.
 ### How a review runs
 
 **Campaign**:
-One logical review, spanning as many Rounds as it takes to converge, owning one event log and
-one Ledger.
-_Avoid_: starting a second Campaign to escape an inconvenient Ledger; re-invoking the same
-name continues the same review.
+The retired Review execution representation. Historical decisions and generic storage inventory
+retain this name; installed Review has no Campaign manifest, bootstrap reader or execution path.
 
-**Campaign Mode**:
-The trusted invocation choice that bounds how many closed Rounds a Campaign may dispatch.
-`light` is the default and closes after exactly one completed review Round; its next step after
-Findings is deterministic repair and project Gates, not another Campaign. `heavy` is explicit
-human-directed opt-in and retains the pipeline's full convergence window. The effective policy is
-pinned in the Campaign Manifest and cannot change on resume.
-_Avoid_: interpreting a finding-bearing light result as a request to open a fresh Campaign.
+**Review Task**:
+A native Task owning exact source/Base inputs, immutable Round history, canonical Ledger views,
+required-reviewer closure and cumulative Attempt accounting. Light Review is the default: one
+closed Round, followed by concrete repair and deterministic project Gates. Explicit heavy
+convergence uses the captured Pipeline policy and existing bounds. Resume keeps the original
+Task and plan; continuation creates a new authorized Task with exact prior history and Base.
+Neither operation may reset history bounds or rewrite earlier charges.
 
 **Round**:
-One immutable Subject/input-Set execution of the pipeline within a Campaign. Only a Round that
-reaches a real verdict *closes*; an incomplete one resumes those exact inputs unless explicitly
-superseded, and never consumes a clean/cap slot merely for failing to complete.
-_Avoid_: "run" as a synonym - an `af review run` invocation may fail to close a Round at all.
+One immutable Subject/input-Set execution within native Review. Missing required siblings leave
+it incomplete and never produce a partial authoritative Ledger or a clean convergence slot.
+_Avoid_: "run" as a synonym; an `af review run` invocation may fail to close a Round at all.
 
 **Gate**:
 The Check nodes that must pass before any reviewer is dispatched. A Check that could not run
@@ -685,7 +717,7 @@ incomplete.
 A durable, snapshot-scoped obligation to measure a performance claim, naming the claim in prose
 rather than a Finding because it may live in a commit message or comment instead of the Ledger.
 _Avoid_: treating a Demand as attached to a Finding or as disposable round output; it is an
-independent Campaign obligation.
+independent Review obligation retained through native ReviewHistory.
 
 **Evidence**:
 The content-addressed measurement artifact linked to the exact Demand or resolution it supports
@@ -710,8 +742,10 @@ _Avoid_: an unqualified status toggle; `wontfix-tracked` also carries a severity
 expiry.
 
 **Ledger**:
-The projection of a Campaign's Findings, rebuilt from the event log and the immutable artifacts
-its events reference.
+The canonical projection of Findings and their original Reports, dispositions and history.
+Native Review rebuilds it from checked immutable Rounds and ReviewHistory under their original
+plans, policies and selected inputs; Task logs fence publication and accounting. Shared canonical
+event reducers retain their domain semantics without a Campaign executor.
 _Avoid_: treating it as storage — it is never written directly, and hand-edited state has no
 way in.
 
@@ -726,8 +760,9 @@ reduction boundary.
 _Avoid_: a list of whatever Demand events happen to exist when a node starts.
 
 **Proposal**:
-A reviewer-authored atomic patch linked to one or more Report/Finding claims, admitted only when
-it equals the diff the kernel computed by sealing that reviewer's sandbox.
+A Worker-authored atomic patch linked to one or more Report/Finding claims, admitted only when
+it equals the diff the kernel computed by sealing that Worker's sandbox. Native Task Review keeps
+its source-writing Proposal author independent from the verification Workers.
 _Avoid_: "the fix" — a `fix` is the prose remedy every Report must carry; a Proposal is the
 executable one, and a Finding can have the first without the second. Export is human-directed;
 automatic Integration, when policy permits it, advances only an internal derived Snapshot.
@@ -755,7 +790,7 @@ _Avoid_: "owner" or "session" — a Writer is one lease epoch, not a person or a
 
 **Recovery Allowance**:
 How many abandoned Attempts one node may have and still be dispatched again: one, unless its
-slot declares `recovery_attempts` (`af.pipeline/3`). Past it the Task cannot continue, and
+slot declares `recovery_attempts` (`af.pipeline/6`). Past it the Task cannot continue, and
 `af task run` says so on its first line.
 _Avoid_: counting it as an Attempt limit; Attempt limits count only Attempts that answered or
 failed.
@@ -876,7 +911,7 @@ _Avoid_: a second full patch in the prompt; the marks exist to keep context mini
 
 ## Relationships
 
-- A **Campaign** has many **Rounds**; a Round produces many **Reports**; Reports fold into
+- A **Review Task** owns bounded **Rounds**; a Round produces many **Reports**; Reports fold into
   **Findings**, many-to-many across reviewers and Rounds.
 - A new **Report** creates a new **Finding** unless it explicitly corroborates an existing one or
   exactly matches a trusted semantic occurrence key; path and title are grouping hints only.
@@ -895,10 +930,11 @@ _Avoid_: a second full patch in the prompt; the marks exist to keep context mini
 - Every executable node resolves one **Execution Binding** before dispatch. A reviewer that can
   read reusable credentials is `trusted_unsafe` and cannot authorize `auto_apply`.
 - A configured **Provider** dispatches a Worker only after its Task's **Provider Admission**
-  succeeded, and the native account is rechecked before every private send. Pi Kimi explicitly
-  records unavailable account identity, rechecks auth context and OAuth mode instead, and refuses
-  trusted principal-independence policy; account substitution within that context is undetectable
-  ([ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
+  succeeded, and the native account is rechecked before every private send. Pi contexts without an admitted native account identity explicitly
+  record unavailable identity, recheck the selected auth context and credential mode, and refuse
+  trusted principal-independence policy; account substitution across invocations within that context is undetectable
+  ([Pi integration decision](docs/adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md),
+  [ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
   [ADR-0091](docs/adr/0091-capture-explicit-task-provider-admission-costs.md)).
 - **Convergence** reads only the Round's exact final Finding Set and Demand Set plus recorded graph,
   gate, closure, and budget state; it never queries ambient latest projections.
@@ -911,15 +947,16 @@ _Avoid_: a second full patch in the prompt; the marks exist to keep context mini
   [ADR-0020](docs/adr/0020-stream-cas-materialization-and-clone-duplicates.md).
 - A **Proposal** applies only to its **Proposal Base**, which is the Subject's head Snapshot for
   that Attempt and is not the diff Subject's Base.
-- A **Review Selector** resolves the Authority Snapshot and optional Base once per Campaign, then
-  resolves each Round's head Snapshot into that Round's immutable **Subject**. Its labels may be
-  retained as metadata but never participate in identity.
-- A Campaign pins one **Authority Snapshot** and one **Campaign Manifest**. Later Rounds
-  may advance the Subject's head Snapshot but cannot silently change pipeline or reviewer
-  authority.
-- The **Ledger** is a function of the event log and its referenced immutable artifacts. Delete
-  the projection, replay those sources, same answer; a missing referenced artifact is corruption,
-  not an empty field.
+- Native capture resolves **Review Selectors** into independent authority, candidate and optional
+  **Base** inputs. Each Round binds an immutable **Subject** to its exact source and history;
+  selector labels never participate in identity.
+- A **Review Task** captures its **Authority Snapshot** and exact **Execution Plan**. Later Rounds
+  may advance the Subject's head Snapshot only through admitted source lineage; resume cannot
+  silently change Pipeline or Worker authority. Authorized continuation records a new Task and
+  plan while restoring earlier Rounds under their original authority.
+- The **Ledger** is a function of checked canonical history and its referenced immutable artifacts.
+  Delete the projection, reconstruct those sources, same answer; a missing referenced artifact
+  is corruption, not an empty field.
 - **Finding Sets** and **Demand Sets** are immutable views produced by deterministic reducers;
   graph edges deliver exact view IDs and nodes never consume ambient "latest" state.
 - **Report Scope** is derived for each **Report** claim from its exact Round Subject. Convergence
@@ -933,10 +970,11 @@ _Avoid_: a second full patch in the prompt; the marks exist to keep context mini
 > Should I re-run against the new base?"
 >
 > **Domain expert:** "No — you're describing a **Review Selector** moving, not a **Base**
-> changing. The Base was pinned by Snapshot ID when the **Campaign** opened, so every
+> changing. The Base was pinned by Snapshot ID when the **Review Task** was captured, so every
 > **Round** measures the same delta and convergence reflects your fixes and nothing else. If
-> you genuinely want to review against newer upstream, that's a new Campaign, because the
-> **Findings** in this one are keyed to a **Subject** that no longer exists."
+> you want to review against newer upstream, capture a separately authorized Review with that
+> Base. Native continuation retains the original Base and **ReviewHistory**; it does not retarget
+> earlier claims."
 
 ## Flagged ambiguities
 

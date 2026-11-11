@@ -1204,8 +1204,8 @@ class StateAndAdmission(Fixture):
         self.assertEqual(self.tasks.calls, 4)
 
     def test_busy_or_uncertain_shared_lease_defers_before_any_work(self):
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]), \
-                mock.patch.object(R.hostlock, 'MachineLock', side_effect=R.hostlock.Refused('concurrent_shard', 'busy')), \
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]), \
+                mock.patch.object(R.host_lock, 'MachineLock', side_effect=R.host_lock.Refused('concurrent_shard', 'busy')), \
                 mock.patch.object(R, 'Journal') as journal, mock.patch.object(R, 'GitHub') as api:
             code = R.main(['--repo', str(self.repo), '--state-root', str(self.root), '--principal', 'runner',
                            '--github-token-file', str(self.root / 'absent-token')])
@@ -1752,7 +1752,8 @@ class RealAdapter(Fixture):
         def envelope(kind, payload, **extras):
             return put(dict(type=kind, payload=payload, artifact_id='', content_id='', input_artifacts=[],
                             producer=dict(kind='kernel_operation', run_id='test-triage', operation_id='fixture'), **extras))
-        origin = put(dict(schema='af.task-source-origin/1', source_revision=self.main))
+        origin = put(dict(schema='af.task-source-origin/3', kind='captured', source_revision=self.main,
+                          repository_id='fixture', content_digest='sha256:' + 'a' * 64))
         source = put(dict(schema='af.task-snapshot/1', origin_id=origin))
         sources = envelope('af/ReportSources@1', bundle)
         author = HELPERS.doc(body_sha256=R.text_hash(row['body']))
@@ -1772,10 +1773,10 @@ class RealAdapter(Fixture):
                        verification=dict(snapshot_id=source, artifact_ids=[verification_id]))
         plan_id = 'sha256:' + 'a' * 64
         config = dict(key=key, task_id=gen['task_id'],
-                      plan=dict(schema='af/task-inspection@14', task_id=gen['task_id'], attempts=0, plan_id=plan_id,
+                      plan=dict(schema='af/task-inspection@20', task_id=gen['task_id'], attempts=0, plan_id=plan_id,
                                 plan=dict(inputs=dict(source=dict(snapshot_id=source),
                                                       sources=dict(artifact_ids=[sources])))),
-                      show=dict(schema='af/task-inspection@14', task_id=gen['task_id'], chargeable_tokens='1234',
+                      show=dict(schema='af/task-inspection@20', task_id=gen['task_id'], chargeable_tokens='1234',
                                 phase=dict(kind='finished'), result=dict(outputs=outputs)), report=report)
         (self.root / 'cli.json').write_bytes(R.encoded(config))
         fake = self.root / 'fake-af'
@@ -1836,6 +1837,23 @@ else:
         self.assertEqual([a[1] for a in calls], ['plan', 'run', 'show', 'output'])
         self.assertEqual(calls[0][calls[0].index('--authority') + 1], self.main)
         self.assertFalse(self.processes.children)
+
+    def test_planning_refuses_a_bound_origin_that_claims_the_captured_main_commit(self):
+        key, gen, task, _, _ = self.adapter()
+        real_cas = task.cas
+
+        def forged_origin(artifact_id):
+            value = real_cas(artifact_id)
+            if value.get('schema') == 'af.task-source-origin/3':
+                value = dict(value, kind='bound')
+            return value
+
+        with mock.patch.object(task, 'cas', side_effect=forged_origin):
+            with self.assertRaisesRegex(R.Refused, 'not current captured main'):
+                task.execute(gen, self.journal, key, NOW)
+        calls = [json.loads(line) for line in (self.root / 'argv.log').read_text().splitlines()]
+        self.assertEqual([args[1] for args in calls], ['plan'])
+        self.assertEqual(self.api.writes, [])
 
     def test_changed_cas_bytes_and_invalid_artifact_paths_are_refused(self):
         key, gen, task, _, evaluation_id = self.adapter()
@@ -2066,8 +2084,8 @@ class FinalGuards(Fixture):
 
     def test_anchor_disappearance_between_required_read_and_acquisition_defers(self):
         lease = mock.Mock(expected_identity=None, uncertain=False)
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]), \
-                mock.patch.object(R.hostlock, 'MachineLock', return_value=lease):
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]), \
+                mock.patch.object(R.host_lock, 'MachineLock', return_value=lease):
             with self.assertRaisesRegex(R.Refused, 'anchor changed'):
                 R.anchored_lease()
         lease.release.assert_called_once()
@@ -3332,32 +3350,32 @@ class ReminderBootstrap(Fixture):
 
 
 class JournalReader(Fixture):
-    def test_v3_schema_identity_and_aborted_checkpoint_are_distinct_from_v2(self):
+    def test_current_schema_identity_and_aborted_checkpoint_refuse_retired_shapes(self):
         self.assertEqual(R.STATE_SCHEMA, 'af.issue-triage-runner/3')
-        validators = {}
-        for version in (2, 3):
-            path = ROOT / ('schemas/issue-triage-runner-v%d.json' % version)
-            schema = json.loads(path.read_text(encoding='utf-8'))
-            self.assertEqual(schema['$schema'], 'https://json-schema.org/draft/2020-12/schema')
-            self.assertEqual(schema['$id'], 'urn:af:schema:issue-triage-runner:%d' % version)
-            self.assertEqual(schema['properties']['schema']['const'], 'af.issue-triage-runner/%d' % version)
-            validators[version] = C.Validator(path)
+        path = ROOT / 'schemas/issue-triage-runner-v3.json'
+        schema = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(schema['$schema'], 'https://json-schema.org/draft/2020-12/schema')
+        self.assertEqual(schema['$id'], 'urn:af:schema:issue-triage-runner:3')
+        self.assertEqual(schema['properties']['schema']['const'], R.STATE_SCHEMA)
+        validator = C.Validator(path)
         state = self.journal.issue(432)
         state['sweeps']['evidence'] = 'aborted'
         state['aux_bodies']['evidence'] = 'recorded auxiliary body'
         state['aux_labels']['evidence'] = ['triage/maybe-fixed']
         self.journal.save()
         doc = R.strict_json(self.journal.path.read_bytes())
-        self.assertEqual(validators[3].errors(doc, 'urn:af:schema:issue-triage-runner:3'), [])
-        self.assertTrue(validators[2].errors(doc, 'urn:af:schema:issue-triage-runner:2'))
-        # Relabel to isolate the phase rejection from the schema identity rejection.
-        doc['schema'] = 'af.issue-triage-runner/2'
-        errors = validators[2].errors(doc, 'urn:af:schema:issue-triage-runner:2')
+        self.assertEqual(validator.errors(doc, 'urn:af:schema:issue-triage-runner:3'), [])
+        for version in (1, 2):
+            doc['schema'] = 'af.issue-triage-runner/%d' % version
+            self.assertTrue(validator.errors(doc, 'urn:af:schema:issue-triage-runner:3'))
+        # Phase validation remains closed independently of the version discriminator.
+        doc['schema'] = R.STATE_SCHEMA
+        doc['issues']['432']['sweeps']['evidence'] = 'unknown'
+        errors = validator.errors(doc, 'urn:af:schema:issue-triage-runner:3')
         self.assertEqual(len(errors), 1)
         self.assertIn('$.issues.432.sweeps.evidence: must be one of', errors[0])
-        self.assertTrue(validators[3].errors(doc, 'urn:af:schema:issue-triage-runner:3'))
         doc['issues']['432']['sweeps']['evidence'] = 'done'
-        self.assertEqual(validators[2].errors(doc, 'urn:af:schema:issue-triage-runner:2'), [])
+        self.assertEqual(validator.errors(doc, 'urn:af:schema:issue-triage-runner:3'), [])
 
     def test_v3_reader_round_trips_every_current_auxiliary_checkpoint(self):
         self.queue()
@@ -3385,6 +3403,7 @@ class JournalReader(Fixture):
         reader = R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
         self.assertEqual(reader.data, expected)
         reader.close()
+        schema = C.Validator(ROOT / 'schemas/issue-triage-runner-v3.json')
         for version in (1, 2, 0):
             with self.subTest(version=version):
                 prior = copy.deepcopy(expected)
@@ -3392,9 +3411,7 @@ class JournalReader(Fixture):
                 if version == 1:
                     for state in prior['issues'].values():
                         state.pop('aux_labels')
-                if version in (1, 2):
-                    old_schema = C.Validator(ROOT / ('schemas/issue-triage-runner-v%d.json' % version))
-                    self.assertEqual(old_schema.errors(prior, 'urn:af:schema:issue-triage-runner:%d' % version), [])
+                self.assertTrue(schema.errors(prior, 'urn:af:schema:issue-triage-runner:3'))
                 self.journal.path.write_bytes(R.encoded(prior))
                 before = self.journal.path.read_bytes()
                 with self.assertRaisesRegex(R.Refused, 'journal schema refused'):
@@ -3420,8 +3437,8 @@ class NightlyLease(Fixture):
         builder = mock.Mock()
         builder.main.return_value = 3
         lease = mock.Mock(uncertain=False, expected_identity=[1, 2])
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]) as anchor, \
-                mock.patch.object(R.hostlock, 'MachineLock', return_value=lease) as lock, \
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]) as anchor, \
+                mock.patch.object(R.host_lock, 'MachineLock', return_value=lease) as lock, \
                 mock.patch.object(R, 'NightlyHost') as host:
             result = R.nightly_build_main(['--config', '/operator/nightly.toml'], builder=builder)
         self.assertEqual(result, 3)
@@ -3438,8 +3455,8 @@ class NightlyLease(Fixture):
         builder = mock.Mock()
         builder.main.return_value = 0
         lease = Lease()
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]), \
-                mock.patch.object(R.hostlock, 'MachineLock', return_value=lease), \
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]), \
+                mock.patch.object(R.host_lock, 'MachineLock', return_value=lease), \
                 mock.patch.object(R, 'NightlyHost') as host:
             host.return_value.clean.side_effect = R.Refused('unconfirmed container cleanup')
             with self.assertRaises(R.Refused):

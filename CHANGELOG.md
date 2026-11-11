@@ -19,7 +19,406 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.15.0] - 2026-11-06
+## [0.15.1-rc.3] - 2026-11-11
+
+### Authority compatibility
+
+Committed .af authority needs manual updates to the current native Task contracts (including af.pipeline/6 and af.task-kind/3), followed by refreshed package pins; see docs/design/current-contracts-and-task-review.md. Retired formats are refused without migration. Release installation, dispatch, rollback and retention remain supported.
+
+### Changes
+
+- release: v0.15.1-rc.2 (#761)
+- refactor: consolidate current contracts and native Task Review (#787)
+- Prepare rc.3 contract and deterministic diagnostic sample test (#793)
+
+- Validate staged triage package pins with the current source build, using Cargo's configured
+  target directory. An installed `af` on `PATH` can no longer select an older contract reader;
+  missing build output fails explicitly. Digest assertions, private state and offline behavior
+  remain required. Refresh the performance CLI receipt overlay's nested pins to the current
+  Pipeline and TaskKind packages. See the
+  [current-format consolidation](../docs/design/current-contracts-and-task-review.md).
+
+- Remove 31 schema files with no current producer or reader, retain four candidates with concrete
+  consumers and all feature-selected current formats, and repair performance schema ownership and
+  earlier-version rejection checks. Record the
+  [staged plan](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md),
+  preserving release dispatch, rollback, retention, provenance and generic storage behavior.
+
+- Consolidate Document and Report drafts into `af/DocumentDraft@3` with explicit source and
+  repository citation kinds; Document Tasks still have no repository Snapshot and Report citations
+  still resolve against their exact captured Snapshot. Retired draft formats are refused. See the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+- Use `af/TaskReviewSubject@3` with shared borrowed validation, retaining complete changed paths,
+  exact base/head identities, bounded readable patches and reviewer assignments. Task source origins
+  use `af.task-source-origin/3`, tagged `captured` or `bound`; bound outputs cannot claim a commit.
+- Remove obsolete DTO conversions and correct internal Pipeline, plan and Provider admission names
+  without changing their wire identities. Release dispatch, retention and storage remain unchanged.
+
+- Re-pin Task runtime and telemetry fixture packages after the current contract consolidation,
+  so locked review fixtures plan successfully and published package pins reproduce. Preserve
+  test-populated placeholders and the assembled historical receipt overlay.
+
+- Refresh the exact cold-Task document golden from two independent candidate runs after the
+  intentional Task Pipeline format revision. Keep the full comparison, literal content identities
+  and cold-cache checks; warm checks still preserve the current documents. See the
+  [consolidation record](../docs/design/current-contracts-and-task-review.md).
+
+- Align the Pipeline browser's exact declaration-tree regression with the current `1.0.1`
+  fixture package, preserving nested-call, contract and authority assertions. See the
+  [consolidation record](../docs/design/current-contracts-and-task-review.md).
+
+- Use one current format for every Task Pipeline (`af.pipeline/6`), compiled graph
+  (`af.compiled-task/5`, `af/CompiledTask@3`) and installed kind (`af.task-kind/3`). Project Briefs,
+  bounded recovery and structural acceptance retain their explicit capabilities, authority and
+  validation. The Pipeline discriminator requires its canonical string form. Retired formats are
+  refused without migration; shipped packages and starters use
+  the current formats. Task inspection is `af/task-inspection@19`, recorded-plan inspection is
+  `af/task-plan-inspection@5`, and catalog contract fixtures use `af.catalog-contract-fixtures/2`.
+  See the [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Use one current native Task benchmark contract, with exact source-schema, package-pin and
+  binary-planner admission. Retire historical telemetry fixture overlays; retain release dispatch,
+  rollback, retention, signing and generic storage management. Benchmark documents are `/3` and
+  the experiment registry is `/4`.
+- Port the Store benchmark to native Review with 1,000 checks over two bounded Tasks, each with four reviewers.
+  Preserve original early-exit and disk-refusal diagnostics, canonical Evidence lifecycle telemetry,
+  and exact negative human-decision proofs. Parse copyable onboarding commands across legitimate
+  shell continuations, including long repository paths. See the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Run the existing live sandbox probes, timeout cleanup and exact native Task/Review containment
+  test from full `make check` and `scripts/verify.sh --profile full`, with hard failure when a
+  runtime or proof is unavailable. Preserve Rust-only `make test`, selective e2e execution and
+  gate-owned reports; regress actual sequential/parallel full routing and failure propagation.
+
+- Restore human Review evidence, Demand satisfaction/reuse/waiver, resolutions, challenges,
+  policy time and grouping through exact-plan-approved native decision Tasks. Original Review
+  history, source/Base, charges and independent fix verification remain authoritative; no
+  Campaign executor or generic Store append returns. This completes the human-operation part of
+  the [native Review decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+- Record native satisfaction/reuse and disposition telemetry from checked domain history,
+  retaining original Evidence, Subject, Snapshot and producer/model attribution. Keep telemetry
+  readers in the CLI consumer and retain truthful missing-prefix coverage.
+- Update release-lock regression fixtures to the generated native Review scaffold and current
+  zero-spend selection refusal without changing version enforcement or release management.
+
+- Route the live native Task/Review containment test through the gate-owned nextest report
+  store so it can execute against a read-only source Snapshot.
+
+- Restore contained native Task checks through the shared container provider, with pinned-image
+  admission and execution evidence, fail-closed runtime refusal and live Task/Review proof.
+  The live target refuses an empty test selection and retains the sandbox escape probes.
+- Keep unresolved original Findings visible in Review Ledger text, SARIF and versioned JSON
+  (`af/review-ledger@2`), including current statuses, exact counts and original Report provenance.
+- Replace retired stress-proof selections with native reuse, head-change waiver and actionable
+  selector-refusal tests; retain dynamic-budget advisories and correct architecture/capability
+  records under the [native consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Require a complete Review Round over every native Integration commit before Task acceptance,
+  including embedded implementation and verification. Keep each Scatter child's exact Diff Subject,
+  accept complete sharded Review through the common acceptance path, and deduplicate identical sealed
+  edits while retaining original claims and refusing distinct overlaps.
+- Version current Task Pipelines as `af.pipeline/6` and compiled graphs as `af.compiled-task/5` in
+  `af/CompiledTask@3`, with closed shared schema definitions v4, real compiler parity and refreshed
+  package pins and fixtures. Retired formats fail closed, as required by the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Route `af review` planning, execution, inspection, Findings, accounting and continuation through
+  native Tasks. Remove the Campaign execution/phase bridge and its separate browser pane; refuse
+  retired Campaign selectors. Preserve shared canonical Review and generic storage contracts.
+- Export admitted sealed proposed repairs independently of passing whole-Task acceptance or
+  automatic nomination, checking their exact original Report/Finding, candidate and base.
+- Version the changed closed graph, engine, inspection, transition, report and event contracts;
+  add current native Review performance fixtures. The deletion-stage capability record identifies
+  completed validation and remaining consumer/policy retirement work under the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Correct active native Review guidance for fail-closed Report Scope, persisted Task conclusions,
+  bounded convergence, Task state, typed proposals and checked Integration; preserve human
+  authorization and canonical history/accounting guarantees. See the
+  [native Review decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Generate standalone native Review and implementation authority in the common committed Task
+  catalog during onboarding. Doctor validates current Task packages, reports bounded file
+  locations and refuses links; retired Review definitions are no longer parsed by onboarding
+  or the pipeline browser. Keep release pins and additive authority protection.
+- Port release smoke and release-dispatch probes to current native commands and exact
+  zero-Attempt Provider-refusal receipts, preserving release integrity assertions.
+- Refuse empty native Review Diffs during planning as well as execution, document exact-plan
+  resume, and show native Findings, coverage, accounting and history in the Tasks browser.
+- Export sealed proposed repairs from negative Review Tasks, including credential-bearing
+  authors and archived current-format plans. Check durable commit publication order for stale
+  bases; `--allow-stale` grants patch export alone. This continues the
+  [native Review consolidation](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md);
+  Campaign Store lifecycle retirement remains incomplete in this candidate.
+
+- Finish native Review retirement: remove Campaign bootstrap and Registry readers, retain shared
+  canonical Ledger integrity, and continue standalone Reviews with exact Base, history, prior
+  claims and truthful Task accounting within existing bounds. See the
+  [decision](../docs/adr/2026-11-10-retire-campaign-bootstrap-and-continue-native-review.md).
+- Project authority now requires `af.toml` version 2 and Task defaults; Campaign routing is
+  refused. Provider model configuration prints current Worker and binding templates. Changed
+  closed contracts use RunEvent@3 and provider-models@4; retired formats fail closed.
+
+- Native Task Review acceptance now consumes the selected committed successor Round, or a later
+  canonical Round carrying its exact history. A Select condition cannot hide successor Findings
+  behind an earlier passing Review; embedded acceptance and Store finish/replay enforce the same
+  boundary. Campaign Review remains available during the staged port.
+- Captured engines use `af.task-engine/3`, Task inspection uses `af/task-inspection@19`, recorded
+  plan inspection uses `af/task-plan-inspection@5`, and Experimental execution plans use
+  `af/ExperimentExecutionPlan@2` with `af.experiment-execution-plan/2`. Their retired generations
+  fail closed. See the [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md)
+  and [implementation evidence](../docs/design/current-contracts-and-task-review.md).
+
+- Native Review acceptance now preserves a committed Integration's Snapshot ancestry through
+  later canonical Rounds and returns the selected checked head. Original-source, sibling and
+  mismatched public-Snapshot substitutions are refused at assembly and Store finish/replay.
+- Preserve no-commit source transport for an admitted SourceTree from an earlier Task while
+  retaining exact authoritative Review evidence checks and embedded Snapshot binding.
+
+- Record reproducible current native Review source counts: 396,961 Rust/Python source lines,
+  a net reduction of 44,249 from original main, with tests, schemas and fixtures counted separately.
+
+- Restore browser usage guidance for `af review tui` and its `tu` near miss without adding a
+  Review command. The browser command line shows the same refusal.
+- Clarify Task onboarding examples and validate them under their documented preconditions.
+  Default onboarding already includes Task authority; use plain `af onboard` to validate it.
+  `--tasks` continues to refuse existing Task settings without writing.
+
+- Remove orphaned Campaign reviewer DTOs, package adapters and flat reply transport. Native
+  Task adapters retain captured schemas, security flags, accounting and recovery.
+- Refuse type-changed telemetry source schemas before reservation or build, preserve Evidence
+  satisfaction before a same-batch waiver, and prove specific human-decision and unsupported
+  core CLI release refusals. See the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Add native Task Proposal Integration, owned review Scatter and whole-Subject closure, with
+  exact cumulative conclusion accounting, Worker disk-floor admission and recovery from
+  interrupted publication. Preserve
+  the temporary Campaign frontend while its CLI cutover is isolated in the next stage of the
+  [contract and review consolidation](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Resolve ordinary, Project Brief and recovery parser fixtures through the runtime
+  `AF_WORKSPACE_ROOT`, so cached test binaries use the current sandbox's current-format fixtures.
+  See the [consolidation record](../docs/design/current-contracts-and-task-review.md).
+
+- Keep fake Provider catalogs writable in their test-owned directories when the source fixtures
+  are read-only, so generated tutorials can install them repeatedly.
+- Execute generated light and heavy Review starter regressions through `af review run --file`,
+  preserving their shared Task runtime, acceptance, Attempt and Round checks.
+
+- Admit exactly `0.15.1-rc.3` to the current native Task Review telemetry fixture contract;
+  undeclared releases still fail the offline release preflight.
+- Make the diagnostic cache-cleanup test's whole-command samples deterministic under host load,
+  preserving diagnostic sample requirements, capture budgets and cleanup assertions.
+
+- Resolve the current-contract integration's performance harness fixture conflicts by regenerating
+  the inventory and content pins from the combined tree. Preserve native Task Review contracts,
+  explicit release fixture admission, macOS deadline fixes and equal paired benchmark test counts.
+
+- Integrate the native Task and Review contracts with RC2 release preflight, exact laboratory
+  schema ownership, system Python fixture support and hierarchical PR line reporting.
+- Preserve original telemetry setup diagnostics when a measured Task artifact is absent or invalid;
+  require current native fixture pins and planner admission without historical receipt rewrites.
+
+- Regenerate guarded performance fixture pins for the integrated native Task Review contracts
+  and 0.15.1-rc.2 release, preserving current release fixture admission and paired sample counts.
+
+## [0.15.1-rc.2] - 2026-11-10 [YANKED]
+
+Tagged but never published: the release workflow failed its macOS performance check before
+publication. No GitHub release or signed assets were published; 0.15.1-rc.3 supersedes it.
+
+### Authority compatibility
+
+Committed .af/ authority and runtime state remain compatible with 0.15.1-rc.1. After publication, review and merge the pin PR to refresh .af/af.lock to the signed 0.15.1-rc.2 digests. Existing machine-local Provider registry v4 bindings remain valid.
+
+### Changes
+
+- Refactor AF naming and module boundaries (#759)
+- Guard release contracts and review post-release pins (#769)
+- Prepare rc.2 telemetry contract and repair cold-home gate test (#775)
+- feat: visualize per-crate additions and deletions in PR reports (#770)
+- Optimize macOS workspace fixture Python while preserving Linux behavior (#772)
+- Fix macOS release performance deadline failures (#781)
+
+- Name the shared libraries for their AF responsibilities, including `af-contracts`, `af-runtime`,
+  `af-pipeline-config` and `af-source-issue`; update source, build, test and performance references
+  and document all adapters, including Pi. Runtime behavior, CLI commands and persisted contracts
+  remain unchanged
+  ([decision](../docs/adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md)).
+
+- Clarify internal Rust module names for Project policy, Task commands and delivery, Review
+  accounting, run reports, execution summaries, Report Task domains, Warm Workspaces and
+  self-management. CLI commands, persisted contracts and runtime behavior are unchanged.
+
+- Clarify shared AF crate boundaries and internal naming. Performance tooling now separates
+  offline result evaluation from durable release comparisons and uses snake_case Python modules.
+  Public script paths, CLI commands and persisted contracts are unchanged. See the
+  [library naming decision](../docs/adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md).
+- Integrate current-main GPT-6.1 catalogs, owner-default Workers, onboarding guidance, model
+  provenance and Scenario performance coverage with the renamed libraries and Host boundaries.
+  Refresh the default implementer instruction pins without changing their upstream authority.
+
+- Extract Project identity, Stores, Workspace management, Survey and Brief services into the
+  internal `af-project` library with explicit application dependencies. CLI output, stored records
+  and authority remain unchanged. See the
+  [boundary decision](../docs/adr/2026-11-06-separate-project-services-from-cli.md).
+
+- Separate Scenario contracts, durable coordination and Ant scheduling into `af-scenario`, with
+  explicit native Task and machine Store adapters in the CLI. Commands, wire contracts and
+  publication authority remain unchanged. See the
+  [decision](../docs/adr/2026-11-06-separate-scenario-domain-from-cli.md).
+
+- Move shared model/effort validation and binding diagnostics into `af-runner`, removing
+  Codex's dependency on the Claude adapter while preserving validation and diagnostic wording.
+  Claude's native refusal and model-switch diagnostics stay in its adapter
+  ([decision](../docs/adr/2026-11-06-share-model-validation-outside-provider-adapters.md)).
+
+- Restore the historical triage captures so their recorded issue-body and owner-comment hashes
+  identify the original text, and check both hashes and the truncated comment prefix in fixture tests.
+
+- Fix the performance Scenario launcher's test cache setup under a cold private HOME on macOS
+  Python 3.9 by creating missing cache parents; retain source, shadow-module and bytecode checks.
+
+- Release preparation and every CI profile now check explicit telemetry version contracts and
+  exact performance lab schema ownership before merge. Declare `0.15.1-rc.1` against its unchanged
+  receipt and fixture contracts; preserve Rust publication schemas and show captured stderr when
+  the contained telemetry smoke lacks its run artifact.
+  Release contract tests keep mutable fixture copies writable when the AF local gate seals
+  source files read-only, while preserving the source seal and all drift assertions.
+- Published releases now open one pin-only PR for CI and a second human merge, using
+  `scripts/pin-release.sh VERSION --pr` and the scoped `RELEASE_PIN_TOKEN` secret. The old
+  `--push` flag is refused. Direct pin pushes to main and the deploy-key bypass are retired;
+  reruns reuse the PR and moving-main/credential refusals remain bounded and explicit. See the
+  [release decision](../docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+
+- Release pin PRs now require a matching credential-free GitHub HTTPS origin and use the scoped
+  PAT for Git operations. SSH origins, embedded credentials, URL rewrites and scoped credential
+  overrides fail before publication, enforcing the
+  [release decision](../docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+- Retain the current focused performance contract test results and the supplied Linux contained
+  telemetry smoke evidence, bound to the repair-1 Snapshot and binary. The 4 GiB failure and
+  successful current-capacity paths are smoke evidence; hosted rollout remains unproven.
+
+- Release pin PR publication disables Git tag following, so `push.followTags=true` cannot
+  publish an annotated tag alongside the pin branch.
+
+- Declare `0.15.1-rc.2` explicitly under the telemetry `check-receipt@2` fixture contract,
+  retaining the committed package and Pipeline pins and refusing unnamed versions. Record source
+  and fixture evidence in `docs/telemetry.md`; leave the workspace at `0.15.1-rc.1` until release.
+
+- Show PR additions and deletions in one readable Area/Changes/+/−/Share of additions table, with
+  bold parents, NBSP-indented crate/main/tests/other children and compact +N/−N counts.
+  Deletion-only rows remain visible; shares use parent additions and show — for zero denominators.
+  CI repairs the whole report from exact commits; PR-body parsing and help match the new shape.
+  File/directory name collisions label only the file `(file)`, `(file2)`, etc., skipping
+  literal sibling names while preserving exact counts and JSON identities.
+  JSON emits only `af/PrLines@4` with exact added/deleted totals and nested counts. See the
+  [crate-report decision](../docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+- Compare addition and deletion bars on one common scale per sibling group; each column uses
+  up to twelve cells with eighth blocks, positive slivers and blank zeros, including bold rows.
+  Reject empty or overlapping bold wrappers in zero bar cells so CI repairs them to blanks.
+- Scope workspace test launchers' selected canonical Python to macOS. Linux and other supported
+  non-Darwin platforms retain explicit `/usr/bin/python3 -IS`, independent of the suite runner's
+  interpreter path. Both policies preserve isolated, no-site execution; production adapters and
+  complete-suite benchmark evidence contracts are unchanged. Paired hosted benchmark evidence for
+  the release repair is recorded in PR #781.
+- Workspace test launchers use the selected Python's canonical path on macOS and explicit
+  `/usr/bin/python3` elsewhere, with isolated, no-site execution. A read-only macOS/Linux PR
+  benchmark compares three alternating pairs of complete lifecycle suites at exact base/head commits,
+  retaining counts, logs and timing evidence without
+  enforcing a performance threshold. Production adapter installation and release gates are unchanged.
+- Keep performance collection accounting incomplete when an authority Git subprocess reaches the
+  cycle deadline before the cycle alarm; retain the refusal and terminate the stalled process.
+- Reduce macOS performance Scenario publication test overhead by executing ordinary Git reads
+  directly, preserving the publication deadline and lost commit, push and PR response recovery checks.
+- Verify the performance Git fixture launcher against the canonical platform interpreter policy,
+  isolated execution, and remote route refusal while retaining direct execution of ordinary Git reads.
+- Keep launcher policy checks in the separate fixture policy suite, preserving the paired workspace
+  benchmark's 87-test count and the existing performance publication recovery integration.
+
+## [0.15.1-rc.1] - 2026-11-07
+
+### Authority compatibility
+
+Refresh .af/af.lock with af onboard --refresh-lock --af 0.15.1-rc.1. Re-register machine-local Providers for registry v4 and use fresh runtime state for changed Pi and Task/Review authority generations; older incompatible formats are refused. Review and repin changed model bindings. Unchanged package contracts remain valid.
+
+### Changes
+
+- release: v0.15.0 (#710)
+- feat: commit owner Worker authority for performance loops (#724)
+- Update all AF pipeline workers to GPT-6.1 (#725)
+- Support Pi SDK providers and explicit authentication contexts (#735)
+- Repair staged harness pins for release preflight (#739)
+
+- Keep owner performance judges within their declared delivered evidence inputs; native pipeline
+  and publication acceptance retain responsibility for complete team results. Check prompt evidence
+  declarations against Worker signatures and candidate/verification node bindings.
+
+- Add digest-pinned owner performance Workers and inert Codex bindings for implementation,
+  independent verification and read-only reporting. All four production templates can capture
+  committed authority and plan without model inference, preserving the accepted research Document
+  handoff and existing native budgets, gates and publication boundaries.
+
+- Align owner performance Worker instructions with the actual native Task goal, evidence and
+  accepted research handoff. Preserve the committed review policy in four-stage planning and
+  handoff fixtures while keeping the complete production review team mandatory.
+
+- Move declared Review and Task pipelines to GPT-6.1 Codex Workers: Sol/high implements,
+  Terra independently reviews and evaluates, with judging effort preserved. Keep the Pi
+  implementer and re-pin native packages, staged examples and legacy Review packages.
+- `af onboard --tasks` now generates Sol/high and Terra/high Workers on `codex-main` for every
+  review-authority profile. Performance Scenarios use Terra for all independent judging roles.
+- Audit the entire shipped Worker catalog and legacy pipeline pins for model and effort drift.
+
+- Use GPT-6.1 Terra for owner-default correctness review (high effort) and evaluation
+  (medium effort), with refreshed package versions and catalog pins. Owner implementation and
+  Report authoring retain GPT-6.1 Sol medium, and bug review retains GPT-6.1 Terra high;
+  development judges remain model-independent from the implementer. Other Worker families
+  are unchanged.
+
+- Integrate the GPT-6.1 Worker updates while preserving owner-default Sol/medium implementation
+  authority. Align the native performance report-verifier check with Terra/high and retain the
+  onboarding Gate and Reviewer Result regression coverage after its helper signature change.
+  Refresh custom Worker fixture versions, staged Report model/Provider expectations and the exact
+  triage admission order for the new models.
+- Correct current performance Report, pi-light and triage setup guidance to match the
+  pinned GPT-6.1 models, Providers and effort levels. Preserve historical execution records.
+- State the light pipeline's Sol/high implementer and Terra/high correctness reviewer and
+  evaluator explicitly in every current size/S rubric and staged example input. Check those
+  roles against the selected Worker manifests and refresh the triage package versions and pins.
+- Audit declared Codex model support against the recorded token-free harness observation and its
+  versioned provenance, separately from synthetic parser fixtures. Verify selected slot and Worker
+  signature roles before comparing size/S guidance, with independent negative role mutations.
+
+- Include the original credential-free, token-free Codex catalog response and verify its digest,
+  schema and unchanged two-model projection in the Worker support audit. Other advertised models
+  remain observational data; the catalog does not prove inference or account access.
+- Combined Task onboarding reports missing Providers for the selected Review profile as well as
+  Codex Task Workers. Adding Tasks to existing authority keeps its Codex-only setup guidance.
+
+- Resolve Pi Workers through the official SDK's effective chat catalog and explicit private
+  credential contexts, supporting OAuth, API keys, cloud contexts and installed custom provider
+  registration. Preserve exact configured/cached models, including Kimi `k3.1-pro`, with native
+  accounting, confined tools and honest unavailable account identity. Explicit AWS INI credential
+  contexts work. Anthropic native usage accepts omitted/null optional cache counters as initial
+  zeros and preserves observed caches on partial deltas; mandatory usage and invalid-counter
+  refusals retain safe charge floors. Earlier incompatible Pi authority/report and Provider registry
+  versions fail closed. Current triage and telemetry setup helpers use the matching inspection and
+  registry versions. See the
+  [provider integration decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-07-generalize-pi-provider-authority-with-explicit-profile-capabilities.md).
+- Keep first-run and concepts help within 100 columns while describing Providers as
+  authentication contexts for Claude/Codex CLI or Pi SDK Workers.
+
+- Repair release preflight by regenerating the staged protected-harness digest and inventory
+  for the existing authority adapter bytes. This metadata repair adds no measurement or performance
+  claim and changes no benchmark, guard, metric, threshold, repetition or installed authority
+  ([ADR-0185](../docs/adr/0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)).
+
+## [0.15.0] - 2026-11-06 [YANKED]
+
+The tag was never published because macOS validation failed before publication (run 42260592343).
 
 ### Authority compatibility
 

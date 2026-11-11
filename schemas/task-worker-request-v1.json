@@ -23,7 +23,7 @@
     "inputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
         "type": "array",
@@ -37,13 +37,13 @@
           ],
           "properties": {
             "artifact_id": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
             },
             "artifact_type": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactType"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
             },
             "snapshot_id": {
-              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
             },
             "payload": {}
           }
@@ -63,13 +63,13 @@
         ],
         "properties": {
           "artifact_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "artifact_type": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactType"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/artifactType"
           },
           "snapshot_id": {
-            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
           },
           "payload": {}
         }
@@ -80,7 +80,7 @@
       "minProperties": 1,
       "maxProperties": 32,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
       },
       "additionalProperties": {
         "anyOf": [

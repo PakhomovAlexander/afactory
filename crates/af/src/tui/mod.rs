@@ -24,7 +24,6 @@ mod tree;
 
 use keymap::{Action, Key, KeyMap, Prompt, PromptEvent};
 use paint::{Frame, Paint, Span};
-use panes::campaigns::CampaignsPane;
 use panes::pipelines::PipelinesPane;
 use panes::providers::ProvidersPane;
 use panes::settings::SettingsPane;
@@ -46,13 +45,12 @@ const IDLE: std::time::Duration = std::time::Duration::from_secs(4);
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Every pane: the root's settings, then the five folders.
-const PANES: [Option<Tab>; 6] = [
+const PANES: [Option<Tab>; 5] = [
     None,
     Some(Tab::Providers),
     Some(Tab::Workers),
     Some(Tab::Pipelines),
     Some(Tab::Tasks),
-    Some(Tab::Campaigns),
 ];
 
 /// What `?` shows first: the panes, and that the `:` line runs any af command.
@@ -66,10 +64,9 @@ PANES  select one in the bar (j/k, ]] [[); Enter opens it
   pipelines/   af task plan and af task explain --tree, token-free
   tasks/       the Tasks of every Task Store: this scope's, every
                --state DIR the Store registry records, and :state DIR
-  campaigns/   every review Campaign, as af review campaigns lists it
 
 : <af command>   runs any af command line here (:task list,
-                 :review campaigns, :provider status), with the
+                 :task list, :provider status), with the
                  terminal handed to it; Enter comes back.
 ";
 
@@ -111,8 +108,6 @@ tasks: f lists the running Tasks only, latest first, in the bar and the
        r fills the : line with `task run ID --confirm-plan PLAN`,
        D on a verified Task with `task deliver ID ... --confirm `
        (type the Task id to confirm); Enter on the line runs it
-campaigns: Enter on a COMMANDS or finding row fills the : line with
-           that `review ...` command; y copies the Campaign's name
 
 :e user|directory|project|local   af config edit --layer ...
 :help [TOPIC|COMMAND]             af help ...
@@ -224,7 +219,7 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
 }
 
 /// The scope, resolved, and every pane loaded: what the splash waits for. No Store is read
-/// here: the Tasks, Campaigns and Workers panes read theirs on threads of their own once the
+/// here: the Tasks and Workers panes read theirs on threads of their own once the
 /// browser shows, so this takes milliseconds whatever the machine holds (ADR-0240).
 fn load(repo: Option<&Path>) -> Result<App, String> {
     let scope = match repo {
@@ -306,7 +301,6 @@ pub(crate) struct Panes {
     pipelines: PipelinesPane,
     workers: WorkersPane,
     tasks: TasksPane,
-    campaigns: CampaignsPane,
 }
 
 impl Panes {
@@ -321,7 +315,6 @@ impl Panes {
             pipelines: PipelinesPane::default(),
             workers: WorkersPane::with_catalogs(catalogs),
             tasks: TasksPane::default(),
-            campaigns: CampaignsPane::default(),
         }
     }
 
@@ -333,7 +326,6 @@ impl Panes {
             Some(Tab::Workers) => &self.workers,
             Some(Tab::Pipelines) => &self.pipelines,
             Some(Tab::Tasks) => &self.tasks,
-            Some(Tab::Campaigns) => &self.campaigns,
         }
     }
 
@@ -344,7 +336,6 @@ impl Panes {
             Some(Tab::Workers) => &mut self.workers,
             Some(Tab::Pipelines) => &mut self.pipelines,
             Some(Tab::Tasks) => &mut self.tasks,
-            Some(Tab::Campaigns) => &mut self.campaigns,
         }
     }
 }
@@ -518,7 +509,6 @@ impl App {
             self.apply_name(&root, answer);
         }
         self.panes.tasks.settle();
-        self.panes.campaigns.settle();
         self.panes.workers.settle();
         self.sync();
         self.follow_listing();
@@ -813,10 +803,6 @@ impl App {
                 };
                 format!("{}/{path}", Tab::Tasks.name())
             }
-            NodeKind::Item(Tab::Campaigns) => {
-                let label = self.panes.campaigns.label(&row.id);
-                format!("{}/{}", Tab::Campaigns.name(), label.unwrap_or(row.label))
-            }
             NodeKind::Group(tab) | NodeKind::Item(tab) => {
                 format!("{}/{}", tab.name(), row.label)
             }
@@ -1080,7 +1066,6 @@ impl App {
             NodeKind::Folder(_) | NodeKind::Group(_) => None,
             NodeKind::Item(Tab::Tasks) => self.panes.tasks.task_id(&row.id),
             NodeKind::Item(Tab::Workers) => self.panes.workers.entry_name(&row.id),
-            NodeKind::Item(Tab::Campaigns) => self.panes.campaigns.label(&row.id),
             NodeKind::Item(_) => Some(row.label),
         }
     }
@@ -1536,7 +1521,7 @@ impl App {
     /// child with the terminal handed to it.
     fn run_command(&mut self, words: &[String], host: &mut dyn Host) {
         let argv = std::iter::once("af").chain(words.iter().map(String::as_str));
-        let parsed = match cli::Af::try_parse_from(argv) {
+        let parsed = match cli::Af::try_parse_from(argv).map_err(cli::usage_error) {
             Ok(parsed) => parsed,
             Err(error) => {
                 let rendered = error.render().to_string();
@@ -1622,7 +1607,7 @@ impl App {
                 return;
             }
         };
-        let (name, value) = crate::selfmgmt::undispatched_child();
+        let (name, value) = crate::self_management::undispatched_child();
         let child = HandOff {
             program,
             args: words.to_vec(),
@@ -1672,13 +1657,13 @@ impl App {
         }
     }
 
-    /// After a handed-off command: the scope and settings, and the Tasks, Campaigns, Workers
+    /// After a handed-off command: the scope and settings, and the Tasks, Workers
     /// and Providers panes whether opened or not, read again; the opened pane and the pane behind
     /// the bar's selection too, as after an editor. What is opened stays opened, and the bar
     /// keeps its selection where it still exists. `Err` names why the settings are stale.
     fn reread(&mut self) -> Result<(), String> {
         let reloaded = self.reload();
-        let mut touched = vec![Tab::Providers, Tab::Workers, Tab::Tasks, Tab::Campaigns];
+        let mut touched = vec![Tab::Providers, Tab::Workers, Tab::Tasks];
         for tab in [self.opened_tab(), self.selected_tab()]
             .into_iter()
             .flatten()

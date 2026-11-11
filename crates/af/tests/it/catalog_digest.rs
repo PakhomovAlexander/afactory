@@ -103,6 +103,467 @@ fn every_published_package_pin_reproduces() {
         checked += assert_reproduces(&repo, &catalog);
     }
     assert!(checked >= 28, "fixture catalogs held {checked} pins");
+    let mut telemetry = 0;
+    for entry in std::fs::read_dir(root.join("fixtures/telemetry-bench")).unwrap() {
+        let repo = entry.unwrap().path().join("repo");
+        let catalog = repo.join(".af/task-catalog.toml");
+        if catalog.is_file() {
+            telemetry += assert_reproduces(&repo, &catalog);
+        }
+    }
+    assert_eq!(
+        telemetry, 20,
+        "every current telemetry fixture package is pinned"
+    );
+}
+
+const RAW_CODEX_MODELS: &[u8] =
+    include_bytes!("../fixtures/provider-models/codex-provider-models-raw-20261107.json");
+const PROJECTED_CODEX_MODELS: &[u8] =
+    include_bytes!("../fixtures/provider-models/codex-provider-models-recorded-20261107.json");
+
+fn codex_observation_provenance() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../fixtures/provider-models/codex-provider-models-recorded-20261107.provenance.json"
+    ))
+    .unwrap()
+}
+
+fn response_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    format!(
+        "sha256:{}",
+        af_contracts::hex::encode(&Sha256::digest(bytes))
+    )
+}
+
+/// Validate both recorded byte streams before reproducing the projection. Filtering the raw
+/// array preserves model objects, their order and every field outside that array.
+fn validate_recorded_codex_projection(
+    raw_bytes: &[u8],
+    bytes: &[u8],
+    provenance: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    static SCHEMAS: std::sync::OnceLock<(jsonschema::Validator, jsonschema::Validator)> =
+        std::sync::OnceLock::new();
+    let (schema, provider_schema) = SCHEMAS.get_or_init(|| {
+        (
+            crate::schemas::validator("codex-model-catalog-observation-v1.json"),
+            crate::schemas::validator("provider-models-v2.json"),
+        )
+    });
+    if !schema.is_valid(provenance) {
+        return Err("invalid observation provenance schema".into());
+    }
+    for (label, content, digest) in [
+        ("raw", raw_bytes, "raw_response_sha256"),
+        ("projected", bytes, "recorded_projection_sha256"),
+    ] {
+        let document: serde_json::Value =
+            serde_json::from_slice(content).map_err(|error| error.to_string())?;
+        if !provider_schema.is_valid(&document) {
+            return Err(format!("invalid {label} provider-models schema"));
+        }
+        if provenance[digest] != response_digest(content) {
+            return Err(format!("{label} response digest mismatch"));
+        }
+    }
+    let mut projected: serde_json::Value = serde_json::from_slice(raw_bytes).unwrap();
+    let providers = projected["providers"].as_array_mut().unwrap();
+    if providers.len() != 1 {
+        return Err("expected exactly one raw Provider".into());
+    }
+    providers[0]["models"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|model| matches!(model["id"].as_str(), Some("gpt-6.1-sol" | "gpt-6.1-terra")));
+    let observation: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    if projected != observation {
+        return Err("recorded projection differs from filtered raw response".into());
+    }
+    Ok(observation)
+}
+
+/// The coordinator's real token-free observation is separate from the synthetic parser
+/// fixtures. It proves harness-advertised support only; inference access needs admission.
+fn recorded_codex_models() -> Vec<serde_json::Value> {
+    let provenance = codex_observation_provenance();
+    let observation =
+        validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
+            .unwrap();
+    let schema = crate::schemas::validator("codex-model-catalog-observation-v1.json");
+    let mut old = provenance.clone();
+    old["schema"] = "af.codex-model-catalog-observation/0".into();
+    assert!(!schema.is_valid(&old));
+    assert_eq!(
+        provenance["raw_response_sha256"],
+        "sha256:840e259bf064b579ff4d9362d38ef6bde3c9592e11b893b9ce5f3beb9f5d3ffe"
+    );
+    assert_eq!(observation["exit_code"], 0);
+    assert_eq!(observation["token_free"], true);
+    let providers = observation["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 1);
+    let provider = &providers[0];
+    assert_eq!(provider["kind"], "codex");
+    assert_eq!(provider["state"], "listed");
+    for field in ["source", "harness_version", "freshness"] {
+        assert_eq!(provider[field], provenance[field], "{field}");
+    }
+    let models = provider["models"].as_array().unwrap();
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["gpt-6.1-sol", "gpt-6.1-terra"]
+    );
+    models.clone()
+}
+
+#[test]
+fn recorded_codex_projection_rejects_changed_selected_models_and_other_fields() {
+    let provenance = codex_observation_provenance();
+    validate_recorded_codex_projection(RAW_CODEX_MODELS, PROJECTED_CODEX_MODELS, &provenance)
+        .unwrap();
+    let mut reformatted = PROJECTED_CODEX_MODELS.to_vec();
+    reformatted.push(b'\n');
+    assert_eq!(
+        validate_recorded_codex_projection(RAW_CODEX_MODELS, &reformatted, &provenance)
+            .unwrap_err(),
+        "projected response digest mismatch"
+    );
+    // Each mutation remains schema-valid. Update its digest too: the equality check must
+    // detect a rewritten selected model or unrelated field, independently of byte hashing.
+    for (pointer, replacement) in [
+        (
+            "/providers/0/models/0/display_name",
+            serde_json::json!("changed Sol"),
+        ),
+        (
+            "/providers/0/models/1/effort_levels",
+            serde_json::json!(["high"]),
+        ),
+        ("/proves", serde_json::json!("changed scope")),
+        ("/providers/0/skipped_entries", serde_json::json!(1)),
+        (
+            "/providers/0/freshness/fetched_at",
+            serde_json::json!("2026-11-06T00:00:00Z"),
+        ),
+        (
+            "/providers/0/static_rules/effort_levels",
+            serde_json::json!(["high"]),
+        ),
+    ] {
+        let mut altered: serde_json::Value =
+            serde_json::from_slice(PROJECTED_CODEX_MODELS).unwrap();
+        *altered.pointer_mut(pointer).unwrap() = replacement;
+        let bytes = serde_json::to_vec(&altered).unwrap();
+        let mut updated = provenance.clone();
+        updated["recorded_projection_sha256"] = response_digest(&bytes).into();
+        let error =
+            validate_recorded_codex_projection(RAW_CODEX_MODELS, &bytes, &updated).unwrap_err();
+        assert_eq!(
+            error, "recorded projection differs from filtered raw response",
+            "{pointer}"
+        );
+    }
+
+    let mut raw: serde_json::Value = serde_json::from_slice(RAW_CODEX_MODELS).unwrap();
+    raw["providers"][0]["models"][2]["default_effort"] = "high".into();
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    assert_eq!(
+        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &provenance)
+            .unwrap_err(),
+        "raw response digest mismatch"
+    );
+    let mut updated = provenance.clone();
+    updated["raw_response_sha256"] = response_digest(&bytes).into();
+    assert_eq!(
+        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &updated).unwrap_err(),
+        "recorded projection differs from filtered raw response"
+    );
+    raw["token_free"] = false.into();
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    updated["raw_response_sha256"] = response_digest(&bytes).into();
+    assert_eq!(
+        validate_recorded_codex_projection(&bytes, PROJECTED_CODEX_MODELS, &updated).unwrap_err(),
+        "invalid raw provider-models schema"
+    );
+}
+
+fn assert_recorded_codex_support(
+    models: &[serde_json::Value],
+    name: &str,
+    model: &str,
+    effort: &str,
+) {
+    let listed = models
+        .iter()
+        .find(|row| row["id"].as_str() == Some(model))
+        .unwrap_or_else(|| panic!("{name}: {model} absent from recorded observation"));
+    assert!(
+        listed["effort_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|level| level.as_str() == Some(effort)),
+        "{name}: {model}/{effort} absent from recorded observation"
+    );
+}
+
+/// Audit every shipped Task package, including packages not used by today's default, against
+/// the supported Codex catalog. Judges share Terra, while source/document authors use Sol.
+#[test]
+fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() {
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+
+    let root = workspace();
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    let models = recorded_codex_models();
+    let mut checked = 0;
+    for (name, pin) in catalog["packages"].as_table().unwrap() {
+        let package = root.join(pin["path"].as_str().unwrap());
+        let path = package.join("worker.toml");
+        if !path.is_file() {
+            continue;
+        }
+        let worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(&worker.name, name);
+        assert_eq!(
+            pin["version"].as_str(),
+            Some(worker.version.as_str()),
+            "{}",
+            worker.name
+        );
+        assert_eq!(
+            pin["digest"].as_str().unwrap(),
+            af_pipeline_config::lock::package_digest(&worker.name, &package).unwrap(),
+            "{}",
+            worker.name
+        );
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            continue;
+        };
+        if provider_kind == "pi" {
+            assert_eq!(worker.name, "pi-light/implementer");
+            assert_eq!((model.as_str(), effort.as_str()), ("k3", "high"));
+            assert_eq!(catalog["providers"][&worker.name].as_str(), Some("pi-kimi"));
+            continue;
+        }
+        assert_eq!(provider_kind, "codex", "{}", worker.name);
+        let author = worker
+            .signature
+            .roles
+            .iter()
+            .any(|role| role == "implement" || role == "author");
+        assert_eq!(
+            model,
+            if author {
+                "gpt-6.1-sol"
+            } else {
+                "gpt-6.1-terra"
+            },
+            "{}",
+            worker.name
+        );
+        if worker
+            .signature
+            .roles
+            .iter()
+            .any(|role| role == "implement")
+        {
+            // Owner performance authority already uses Sol/medium; only the replaced
+            // Claude implementers require high effort.
+            assert_eq!(
+                effort,
+                if worker.name == "owner-default/implementer" {
+                    "medium"
+                } else {
+                    "high"
+                },
+                "{}",
+                worker.name
+            );
+        }
+        if let Some(provider) = catalog["providers"].get(worker.name.as_str()) {
+            assert_eq!(provider.as_str(), Some("codex-main"), "{}", worker.name);
+        }
+        assert_recorded_codex_support(&models, &worker.name, model, effort);
+        checked += 1;
+    }
+    assert!(checked >= 25, "audited only {checked} model Workers");
+    assert_eq!(
+        catalog["independence"]["distinct_models"].as_bool(),
+        Some(true)
+    );
+}
+
+const LIGHT_ROLES: [(&str, &str, &str); 3] = [
+    ("implementer", "implement", "Implementer"),
+    ("correctness", "review", "correctness reviewer"),
+    ("evaluator", "evaluate", "evaluator"),
+];
+
+fn selected_light_workers() -> (
+    af_contracts::task::pipeline::PipelineDefinition,
+    BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
+) {
+    let root = workspace();
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    let package = |name: &str| root.join(catalog["packages"][name]["path"].as_str().unwrap());
+    let pipeline = af_pipeline_config::task::parse_task_pipeline(
+        &std::fs::read_to_string(package("default-light/implementation").join("pipeline.toml"))
+            .unwrap(),
+    )
+    .unwrap();
+    let workers = LIGHT_ROLES
+        .into_iter()
+        .map(|(slot, _, _)| {
+            let worker = toml::from_str(
+                &std::fs::read_to_string(package(&pipeline.slots[slot].worker).join("worker.toml"))
+                    .unwrap(),
+            )
+            .unwrap();
+            (pipeline.slots[slot].worker.clone(), worker)
+        })
+        .collect();
+    (pipeline, workers)
+}
+
+/// Shared by the positive cross-artifact audit and independent role mutations below. Display
+/// labels are emitted only after the selected slot and Worker agree on the expected role.
+fn validate_small_issue_rubrics(
+    pipeline: &af_contracts::task::pipeline::PipelineDefinition,
+    workers: &BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
+) -> Result<(), String> {
+    use af_pipeline_config::task::catalog::TaskWorkerRunner;
+
+    let mut expected = Vec::new();
+    for (slot_name, role, label) in LIGHT_ROLES {
+        let slot = &pipeline.slots[slot_name];
+        if slot.role != role {
+            return Err(format!(
+                "{slot_name}: slot.role must be {role}, got {}",
+                slot.role
+            ));
+        }
+        let worker = &workers[&slot.worker];
+        if worker.signature.roles != std::collections::BTreeSet::from([role.to_owned()]) {
+            return Err(format!(
+                "{slot_name}: Worker.signature.roles must be [{role}], got {:?}",
+                worker.signature.roles
+            ));
+        }
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            return Err(format!("{slot_name}: must select a model Worker"));
+        };
+        let expected_model = if role == "implement" {
+            "gpt-6.1-sol"
+        } else {
+            "gpt-6.1-terra"
+        };
+        if provider_kind != "codex" || model != expected_model || effort != "high" {
+            return Err(format!(
+                "{slot_name}: expected codex {expected_model}/high, got {provider_kind} {model}/{effort}"
+            ));
+        }
+        expected.push(format!("{label}: `{model}` {effort}"));
+    }
+    let expected = expected.join("; ");
+    for path in [
+        ".af/task-packages/backlog/triage-author/instructions.md",
+        ".af/task-packages/backlog/triage-verifier/instructions.md",
+        "fixtures/issue-triage/task-packages/backlog/triage-author/instructions.md",
+        "fixtures/issue-triage/task-packages/backlog/triage-verifier/instructions.md",
+        "fixtures/custom-tasks/triage/worker/instructions.md",
+        "docs/design/issue-triage.md",
+        "fixtures/issue-triage/example/task.json",
+    ] {
+        let text = std::fs::read_to_string(workspace().join(path)).unwrap();
+        let text = if path.ends_with(".json") {
+            let task: serde_json::Value = serde_json::from_str(&text).unwrap();
+            task["requirements"]["rubric"].as_str().unwrap().to_owned()
+        } else {
+            text
+        };
+        let rows: Vec<_> = text
+            .lines()
+            .filter(|line| line.starts_with("| `S` |"))
+            .collect();
+        if rows.len() != 1 {
+            return Err(format!("{path}: expected exactly one size/S rubric"));
+        }
+        let cells: Vec<_> = rows[0].split('|').map(str::trim).collect();
+        if cells.len() != 6 {
+            return Err(format!("{path}: expected size/S rubric columns"));
+        }
+        if cells[3] != format!("`light` (`{}`, ADR-0262)", pipeline.name) {
+            return Err(format!("{path}: selected pipeline differs"));
+        }
+        if cells[4] != expected {
+            return Err(format!(
+                "{path}: size/S Worker guidance differs: expected {expected}, got {}",
+                cells[4]
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// All six current size/S rubrics and the staged example agree with actual selected roles,
+/// models and efforts, rather than merely matching hard-coded display labels.
+#[test]
+fn every_small_issue_rubric_matches_the_selected_light_worker_models_efforts_and_roles() {
+    let (pipeline, workers) = selected_light_workers();
+    validate_small_issue_rubrics(&pipeline, &workers).unwrap();
+}
+
+#[test]
+fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently() {
+    let (pipeline, workers) = selected_light_workers();
+    validate_small_issue_rubrics(&pipeline, &workers).unwrap();
+    for (slot_name, role, _) in LIGHT_ROLES {
+        let wrong_role = if role == "implement" {
+            "review"
+        } else {
+            "implement"
+        };
+        let mut wrong_pipeline = pipeline.clone();
+        wrong_pipeline.slots.get_mut(slot_name).unwrap().role = wrong_role.into();
+        let error = validate_small_issue_rubrics(&wrong_pipeline, &workers).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{slot_name}: slot.role")),
+            "{error}"
+        );
+
+        let mut wrong_workers = workers.clone();
+        wrong_workers
+            .get_mut(&pipeline.slots[slot_name].worker)
+            .unwrap()
+            .signature
+            .roles = std::collections::BTreeSet::from([wrong_role.into()]);
+        let error = validate_small_issue_rubrics(&pipeline, &wrong_workers).unwrap_err();
+        assert!(
+            error.starts_with(&format!("{slot_name}: Worker.signature.roles")),
+            "{error}"
+        );
+    }
 }
 
 /// A copy of a read-only package is writable, so the mutations below never need the checkout
@@ -450,12 +911,12 @@ fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
 /// than only the kernel pipelines selected by the performance Scenario.
 #[test]
 fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
-    use review_config::task::catalog::TaskPlanCompiler;
-    use review_core::task::pipeline::TaskOperatorV1;
+    use af_contracts::task::pipeline::TaskOperatorV1;
+    use af_pipeline_config::task::catalog::TaskPlanCompiler;
 
     let root = workspace();
     let temporary = tempfile::tempdir().unwrap();
-    let cas = review_store::Cas::open(temporary.path().join("cas")).unwrap();
+    let cas = af_store::Cas::open(temporary.path().join("cas")).unwrap();
     let policy = cas.put(b"catalog-contract-test").unwrap();
     let mut compiler = TaskPlanCompiler::new(
         policy.clone(),
@@ -469,7 +930,8 @@ fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
     for (name, value) in catalog["packages"].as_table().unwrap() {
-        let pin: review_config::task::catalog::TaskPackagePin = value.clone().try_into().unwrap();
+        let pin: af_pipeline_config::task::catalog::TaskPackagePin =
+            value.clone().try_into().unwrap();
         let package = root.join(&pin.path);
         let mut files = BTreeMap::new();
         for (path, (bytes, _)) in tree(&package) {
@@ -536,15 +998,15 @@ fn complete_catalog_captures_current_contracts_and_consistent_child_slots() {
 /// Regenerate with AF_WRITE_CATALOG_CONTRACT_FIXTURES=1; the normal gate only compares.
 #[test]
 fn staged_catalog_contract_fixtures_match_native_interfaces() {
-    use review_config::task::catalog::TaskPlanCompiler;
-    use review_config::task::catalog::export::CatalogContractFixtures;
+    use af_pipeline_config::task::catalog::TaskPlanCompiler;
+    use af_pipeline_config::task::catalog::export::CatalogContractFixtures;
 
     let root = workspace();
     let temporary = tempfile::tempdir().unwrap();
-    let cas = review_store::Cas::open(temporary.path().join("cas")).unwrap();
+    let cas = af_store::Cas::open(temporary.path().join("cas")).unwrap();
     let policy = cas.put(b"staged-catalog-contract-test").unwrap();
     for directory in ["fixtures/kernel-experiment", "fixtures/kernel-report"] {
-        let catalog: review_config::task::shared::SharedTaskCatalog = toml::from_str(
+        let catalog: af_pipeline_config::task::shared::SharedTaskCatalog = toml::from_str(
             &std::fs::read_to_string(root.join(directory).join("catalog.toml")).unwrap(),
         )
         .unwrap();
@@ -576,7 +1038,7 @@ fn staged_catalog_contract_fixtures_match_native_interfaces() {
         }
         compiler.validate_dependency_closure().unwrap();
         let expected = CatalogContractFixtures {
-            schema: "af.catalog-contract-fixtures/1".into(),
+            schema: "af.catalog-contract-fixtures/2".into(),
             pipelines: compiler
                 .pipelines()
                 .iter()
@@ -620,7 +1082,7 @@ fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
 
     for name in ["implementer", "correctness", "evaluator"] {
         let package = workspace().join(".af/task-packages/pi-light").join(name);
-        let worker: review_config::task::catalog::TaskWorkerManifest =
+        let worker: af_pipeline_config::task::catalog::TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
         let schema: Value =
             serde_json::from_slice(&std::fs::read(package.join("input.schema.json")).unwrap())
@@ -670,7 +1132,7 @@ fn pi_light_input_schemas_match_contracts_and_preserve_predecessor_snapshots() {
             } else if contract.artifact_type != "af/SourceTree@1"
                 && matches!(
                     contract.affinity,
-                    review_core::task::pipeline::PortAffinityV1::Unbound {}
+                    af_contracts::task::pipeline::PortAffinityV1::Unbound {}
                 )
             {
                 inputs[port][0]

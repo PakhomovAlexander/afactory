@@ -18,8 +18,8 @@ import struct
 from fractions import Fraction
 from unittest import mock
 
-from perflab import (bundle, contracts, diagnostics, hostobserver, perfcapture, phasetrace, report,
-                     symbolarchive, synthetic, toolrun)
+from perflab import (bundle, contracts, diagnostics, host_observer, perf_capture, phase_trace, report,
+                     symbol_archive, synthetic, tool_run)
 from perflab import suite as suite_module
 from perflab.values import ContractError, document_bytes
 from tests import diagnostic_fixtures as fakes
@@ -58,7 +58,7 @@ class LinkedChildren(diag.ChildRunBase):
         # a 5% overhead, above the 2% target, so the trace is labelled perturbing.
         plain = fakes.probe(self.path("plain"), self.golden, wall_ms={"plain": "10"})
         parents = dict((side, (plain, diag.sha256_bytes(read(plain))))
-                       for side in diag.diagcontracts.SIDES)
+                       for side in diag.diag_contracts.SIDES)
         return self.made(name, "linux_gnu_trace", {},
                          {"trace": diag.ChildRun.TRACE, "wall_ms": {"trace": "10.5"}},
                          parent_probes=parents)
@@ -435,7 +435,7 @@ class Admission(LinkedChildren):
         for entry in doc["traces"]:
             named = [artifact["path"] for artifact in entry["artifacts"]
                      if artifact["path"].endswith("/trace.json")]
-            traces.append(None if entry["omission"] is not None else phasetrace.load(
+            traces.append(None if entry["omission"] is not None else phase_trace.load(
                 read(os.path.join(directory, *named[0].split("/"))), named[0]))
         with open(os.path.join(directory, report.PAGE), "wb") as stream:
             stream.write(diagnostics.page(doc, traces))
@@ -673,7 +673,7 @@ class RetainedSymbols(diag.ChildRunBase):
         self.assertEqual(len(os.listdir(os.path.join(child, "symbols"))), 1)
         archives = [item["symbols"]["archive"] for item in doc["captures"]]
         self.assertTrue(all(item == archives[0] for item in archives))
-        with mock.patch.object(symbolarchive.lzma, "LZMADecompressor",
+        with mock.patch.object(symbol_archive.lzma, "LZMADecompressor",
                                wraps=lzma.LZMADecompressor) as decode:
             report.admit_child(child, self.parent)
         self.assertEqual(decode.call_count, 1)
@@ -750,7 +750,7 @@ class RetainedSymbols(diag.ChildRunBase):
         for constant, value, needle in (("DECOMPRESSED_BYTES", 100, "decompressed byte bound"),
                                          ("MEMORY_BYTES", 100, "invalid XZ"),
                                          ("SECONDS", 0, "deadline")):
-            with self.subTest(bound=constant), mock.patch.object(symbolarchive, constant, value):
+            with self.subTest(bound=constant), mock.patch.object(symbol_archive, constant, value):
                 with self.assertRaisesRegex(ContractError, needle):
                     report.admit_child(child, self.parent)
         def size(target):
@@ -822,7 +822,7 @@ class RetainedSymbols(diag.ChildRunBase):
         copied = json.loads(json.dumps(doc))
         copied["budgets"]["bytes"]["limit"] = artifact["bytes"] - 1
         with self.assertRaisesRegex(ContractError, "compressed byte bound"):
-            symbolarchive.admit(child, copied, hashes)
+            symbol_archive.admit(child, copied, hashes)
         # Valid XZ of the same original still has to match the admitted compressed hash.
         path = os.path.join(child, artifact["path"])
         data = lzma.compress(lzma.decompress(read(path)), check=lzma.CHECK_SHA256)
@@ -831,7 +831,7 @@ class RetainedSymbols(diag.ChildRunBase):
         for capture in doc["captures"]:
             capture["symbols"]["archive"]["bytes"] = len(data)
         with self.assertRaisesRegex(ContractError, "compressed archive hash differs"):
-            symbolarchive.admit(child, doc, hashes)
+            symbol_archive.admit(child, doc, hashes)
 
 
 # A host-observed recording as the trusted perf writes it, for `RepeatedCaptures`: its header,
@@ -868,7 +868,7 @@ def observed_recording(pid, executed, exited, samples, event, exec_flag=True, co
 
 
 def lifetime(data, pid):
-    return perfcapture.decode_lifetime(lambda offset, count: data[offset:offset + count],
+    return perf_capture.decode_lifetime(lambda offset, count: data[offset:offset + count],
                                        len(data), pid)
 
 
@@ -899,7 +899,7 @@ class ObservedBoundary(diag.unittest.TestCase):
         cases.append(("record past its section", bytes(overrun), 4242, "data section"))
         for name, data, pid, needle in cases:
             with self.subTest(name=name):
-                with self.assertRaises(perfcapture.CaptureError) as caught:
+                with self.assertRaises(perf_capture.CaptureError) as caught:
                     lifetime(data, pid)
                 self.assertEqual(caught.exception.reason, "command_boundary_unknown")
                 self.assertIn(needle, caught.exception.detail)
@@ -934,22 +934,22 @@ class RepeatedCaptures(diag.ChildRunBase):
             tag = "%04d-%s" % (profile.observers, os.urandom(4).hex())
             control = test.path("observer-control", tag)
             os.makedirs(control)
-            item = hostobserver.Observer(None, perf, profile.event, profile.frequency, unwind,
+            item = host_observer.Observer(None, perf, profile.event, profile.frequency, unwind,
                                          staged, control, os.path.join(gate_root, "gate-" + tag),
                                          profile.budget.deadline, whole)
             item.make_gate()
             # What `attach` froze and confirmed, and its perf's confirmed end.
-            item.target = hostobserver.Target(5000 + profile.observers, 77, os.getuid(),
+            item.target = host_observer.Target(5000 + profile.observers, 77, os.getuid(),
                                                "sha256:" + "c" * 64, "f" * 64, 1)
             item.attached_ms, item.released = 3, True
-            item.result = toolrun.Result([perf], code=0)
+            item.result = tool_run.Result([perf], code=0)
             made.append(item)
             return item
 
         def cli_run(profile, side, case, binary, wrap=None, writes=(), file_bytes=None,
                     observe=None, what=None, **_):
             item = made[-1]
-            self.assertTrue(hostobserver.is_gated(wrap(["af", "--help"])))
+            self.assertTrue(host_observer.is_gated(wrap(["af", "--help"])))
             spent = 3000000 + 1000 * len(runs)
             runs.append(spent)
             executed = 10 ** 9 * len(runs)
@@ -957,7 +957,7 @@ class RepeatedCaptures(diag.ChildRunBase):
                 stream.write(observed_recording(item.target.pid, executed, executed + spent,
                                                 ["af"] * 2, profile.event))
             reply = {"timing": {"child_wall_ns": spent + self.GATE_NS}, "setup": None}
-            result = toolrun.Result(["af"], code=0)
+            result = tool_run.Result(["af"], code=0)
             result.supervised = type("Supervised", (), {"result": reply})()
             return result, "unused", None
 
@@ -982,15 +982,15 @@ class RepeatedCaptures(diag.ChildRunBase):
         doc, child, runs = self.observed_child()
         self.assertEqual(len(doc["captures"]), 2, "both sides")
         self.assertEqual(len(runs), 2 * self.REPETITIONS)
-        for side, capture in zip(diagnostics.diagcontracts.SIDES, doc["captures"]):
+        for side, capture in zip(diagnostics.diag_contracts.SIDES, doc["captures"]):
             self.assertEqual(capture["side"], side)
             self.assertIsNone(capture["omission"], capture["omission"])
             self.assertEqual((capture["region"]["repetitions"], capture["region"]["stopped"]),
                              (self.REPETITIONS, "repetition_cap"))
-            directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+            directory = os.path.join(child, diagnostics.diag_contracts.capture_directory(
                 capture))
             raw = [name for name in os.listdir(directory)
-                   if diagnostics.diagcontracts.repeated_name(name)]
+                   if diagnostics.diag_contracts.repeated_name(name)]
             self.assertEqual(len(raw), 2 * self.REPETITIONS, "every recording and observer "
                              "record is kept")
             self.assertEqual(sorted(item["path"].rsplit("/", 1)[1]
@@ -1014,7 +1014,7 @@ class RepeatedCaptures(diag.ChildRunBase):
                       for item in index["repetitions"]]
             self.assertEqual([argv for argv in self.decodings()
                               if os.path.dirname(argv[argv.index("-i") + 1]) == directory],
-                             [perfcapture.script_argv("perf", path)[1:] for path in listed])
+                             [perf_capture.script_argv("perf", path)[1:] for path in listed])
         self.assertEqual(sorted(item["kind"] for item in doc["renders"]),
                          ["baseline", "candidate", "difference_forward", "difference_reverse"])
         report.admit_child(child, self.parent)
@@ -1033,7 +1033,7 @@ class RepeatedCaptures(diag.ChildRunBase):
         index = self.index_of(child, capture)
         recording = index["repetitions"][40 % self.REPETITIONS]["recording"]["path"]
         observer = index["repetitions"][2]["observer"]["path"]
-        directory = diagnostics.diagcontracts.capture_directory(capture)
+        directory = diagnostics.diag_contracts.capture_directory(capture)
 
         def remove(path):
             return lambda target: os.remove(os.path.join(target, path))
@@ -1105,7 +1105,7 @@ class RepeatedCaptures(diag.ChildRunBase):
             self.assertIn("recording 5 of %d" % self.REPETITIONS, detail)
             self.assertIn("rep-0005.data", detail)
             self.assertIn("keeps the 4 recordings decoded before it", detail)
-            directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+            directory = os.path.join(child, diagnostics.diag_contracts.capture_directory(
                 capture))
             # Decoding stopped at the failed recording: no later one, and no retry of it.
             self.assertEqual([os.path.basename(argv[argv.index("-i") + 1])
@@ -1147,7 +1147,7 @@ class RepeatedCaptures(diag.ChildRunBase):
         listed["rep-0001.data"] = []
         listed["rep-%04d.data" % self.FEW] = last
         listed.update(perf_config.pop("build_ids", {}))
-        with mock.patch.object(perfcapture, "elf_build_id", return_value=self.AF_ID):
+        with mock.patch.object(perf_capture, "elf_build_id", return_value=self.AF_ID):
             return self.observed_child(build_ids=listed, **perf_config)
 
     def test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none(self):
@@ -1191,7 +1191,7 @@ class RepeatedCaptures(diag.ChildRunBase):
         self.REPETITIONS = self.FEW
         listed = dict(("rep-%04d.data" % number, ["%s /usr/lib/libc.so.6" % self.LIBC_ID])
                       for number in range(1, self.FEW + 1))
-        with mock.patch.object(perfcapture, "elf_build_id", return_value=None):
+        with mock.patch.object(perf_capture, "elf_build_id", return_value=None):
             doc, child, _ = self.observed_child(build_ids=listed)
         for capture in doc["captures"]:
             self.assertIsNone(capture["omission"], capture["omission"])
@@ -1220,17 +1220,17 @@ class RepeatedCaptures(diag.ChildRunBase):
                     # Every raw recording and observer record is still kept and indexed.
                     self.assertEqual(len(self.index_of(child, capture)["repetitions"]),
                                      self.FEW)
-                    directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+                    directory = os.path.join(child, diagnostics.diag_contracts.capture_directory(
                         capture))
                     self.assertEqual(len([item for item in os.listdir(directory)
-                                          if diagnostics.diagcontracts.repeated_name(item)]),
+                                          if diagnostics.diag_contracts.repeated_name(item)]),
                                      2 * self.FEW)
                 self.assertEqual(doc["renders"], [])
                 report.admit_child(child, self.parent)
 
     def test_a_repetition_its_recording_does_not_bound_stops_the_capture_honestly(self):
-        with mock.patch.object(perfcapture, "decode_lifetime",
-                               side_effect=perfcapture.CaptureError(
+        with mock.patch.object(perf_capture, "decode_lifetime",
+                               side_effect=perf_capture.CaptureError(
                                    "command_boundary_unknown", "it holds no exec of it")):
             doc, child, runs = self.observed_child()
         self.assertEqual(len(runs), 2, "one repetition per side, then the capture stops")

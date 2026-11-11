@@ -666,7 +666,7 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
     return result, stderr
 
 
-# The phase trace a perf-trace probe exports when asked (review_core::perf_trace::OUTPUT_ENV).
+# The phase trace a perf-trace probe exports when asked (af_contracts::perf_trace::OUTPUT_ENV).
 TRACE_OUTPUT = "AF_PERF_TRACE_OUTPUT"
 TRACE_FILE = "probe-trace.json"
 TRACE_BYTES_MAX = 16 * 1024 * 1024

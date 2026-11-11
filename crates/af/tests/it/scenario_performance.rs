@@ -1,6 +1,6 @@
 //! The shipped production loop, with real model bindings and deterministic fake Provider IO.
 use super::*;
-use review_store::Cas;
+use af_store::Cas;
 use std::os::unix::fs::MetadataExt;
 
 fn executable_digest(path: &Path) -> String {
@@ -15,7 +15,7 @@ fn executable_digest(path: &Path) -> String {
         }
         digest.update(&buffer[..count]);
     }
-    format!("sha256:{}", review_core::hex::encode(&digest.finalize()))
+    format!("sha256:{}", af_contracts::hex::encode(&digest.finalize()))
 }
 
 // Installed native readers are bounded at 256 MiB. Linux debug builds can exceed
@@ -160,6 +160,11 @@ impl Performance {
             "kernel/analyst",
             "kernel/report-verifier",
             "warm/verification-kind",
+            "owner-default/implementer",
+            "owner-default/bugs",
+            "owner-default/correctness",
+            "owner-default/evaluator",
+            "owner-default/report-author",
         ];
         catalog["packages"]
             .as_table_mut()
@@ -178,44 +183,20 @@ impl Performance {
             let path = pin["path"].as_str().unwrap();
             crate::task_cli::copy_tree(&source.join(path), &f.repo.join(path));
         }
-        catalog["review"]["reviewers"]["bugs"] = toml::Value::String("required".into());
-        for (role, model, effort) in [
-            ("implementer", "gpt-6.1-sol", "medium"),
-            ("bugs", "gpt-6.1-terra", "high"),
-            ("correctness", "gpt-6-sol", "high"),
-            ("evaluator", "gpt-6-astra", "medium"),
-            ("analyst", "gpt-6.1-sol", "medium"),
-            ("report-verifier", "gpt-6-sol", "high"),
-        ] {
-            let name = format!("kernel/{role}");
-            let package = f
-                .repo
-                .join(catalog["packages"][&name]["path"].as_str().unwrap());
-            let mut worker: review_config::task::catalog::TaskWorkerManifest =
-                toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap())
-                    .unwrap();
-            worker.runner = review_config::task::catalog::TaskWorkerRunner::Model {
-                provider_kind: "codex".into(),
-                model: model.into(),
-                effort: effort.into(),
-            };
-            std::fs::write(
-                package.join("worker.toml"),
-                toml::to_string(&worker).unwrap(),
-            )
-            .unwrap();
-            catalog["providers"][&name] = toml::Value::String("codex-personal".into());
-        }
-        for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
-            pin["digest"] = toml::Value::String(
-                review_config::lock::package_digest(
-                    name,
-                    &f.repo.join(pin["path"].as_str().unwrap()),
-                )
-                .unwrap(),
-            );
-        }
-        std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        // Keep the shipped manifests and catalog digests exact. Role/account selection is
+        // supplied only by the same slot/provider bindings the operator captures.
+        std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        let fixture: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        let shipped: toml::Value =
+            toml::from_str(&std::fs::read_to_string(source.join(".af/task-catalog.toml")).unwrap())
+                .unwrap();
+        let committed: toml::Value = toml::from_str(
+            &std::fs::read_to_string(workspace().join(".af/task-catalog.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fixture["review"], shipped["review"]);
+        assert_eq!(fixture["review"], committed["review"]);
         crate::task_report::git(&f.repo, &["init", "-q", "-b", "main"]);
         crate::task_report::git(&f.repo, &["add", "-A"]);
         crate::task_report::git(&f.repo, &["commit", "-qm", "pinned owner authority"]);
@@ -263,7 +244,7 @@ else:
   if 'research_report' in i:
    assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
    text+=' Final report retains research artifact '+i['research_report'][0]['artifact_id']+' and its evidence: '+i['research_report'][0]['payload']['text']
-  reply={'draft':[{'schema':'af.document-draft/2','title':'Research chain','sections':[{'heading':'Findings','body':text},{'heading':'Recommendation','body':text}],'citations':[],'repository_citations':[{'path':'subject.txt','line':1}]}]}
+  reply={'draft':[{'schema':'af.document-draft/3','title':'Research chain','sections':[{'heading':'Findings','body':text},{'heading':'Recommendation','body':text}],'citations':[{'kind':'repository','location':{'path':'subject.txt','line':1}}]}]}
  elif 'report' in ports:
   assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()
@@ -283,7 +264,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
         .unwrap();
         std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
-        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":3,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
         let path = std::env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
             .unwrap();
         let task_state = f.machine.join("tasks");
@@ -309,6 +290,17 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
     }
     fn cli(&self, state: &Path, args: &[&str]) -> Value {
         value(self.output(state, args), 0)
+    }
+    fn bindings(&self, kind: &str) -> PathBuf {
+        let name = match kind {
+            "implement" => "implementation",
+            "verification" => "verification",
+            "report" => "report",
+            _ => panic!("unexpected production stage {kind}"),
+        };
+        workspace().join(format!(
+            "fixtures/scenarios/performance-{name}-bindings.json"
+        ))
     }
     fn bundle(&self) -> Value {
         self.bundle_from("performance-candidate.json")
@@ -340,6 +332,11 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
                 .machine
                 .join(format!("{}-template.json", step["id"].as_str().unwrap()));
             write(&file, &step["operation"]["template"]["document"]);
+            let bindings = self.bindings(
+                step["operation"]["template"]["document"]["kind"]
+                    .as_str()
+                    .unwrap(),
+            );
             let pinned = self.cli(
                 &self.f.state,
                 &[
@@ -353,6 +350,8 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
                     self.task_state.to_str().unwrap(),
                     "--authority-commit",
                     &self.commit,
+                    "--bindings",
+                    bindings.to_str().unwrap(),
                 ],
             );
             step["operation"]["template"] = pinned["template"].clone();
@@ -403,7 +402,7 @@ print(json.dumps(o))
         );
         std::fs::write(&adapter, &text).unwrap();
         std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
-        policy["adapters"] = json!({"lab":{"executable":adapter,"digest":format!("sha256:{}", review_core::hex::encode(&Sha256::digest(text.as_bytes()))),"operations":["observe","experiment_submit_v1"],"destinations":["native:claw"],"max_wall_ms":30000,"max_output_bytes":65536}});
+        policy["adapters"] = json!({"lab":{"executable":adapter,"digest":format!("sha256:{}", af_contracts::hex::encode(&Sha256::digest(text.as_bytes()))),"operations":["observe","experiment_submit_v1"],"destinations":["native:claw"],"max_wall_ms":30000,"max_output_bytes":65536}});
         write(&self.f.policy, &policy);
         let mut proposal: Value = serde_json::from_slice(
             &std::fs::read(workspace().join("fixtures/scenarios/performance-native-roadmap.json"))
@@ -476,6 +475,397 @@ print(json.dumps(o))
             ],
         )
     }
+}
+
+/// These are instruction/contract assertions, not fake Provider compliance claims. The
+/// captured production template has a goal and scenario_mode, with no campaign package plan.
+fn assert_owner_performance_instruction_contracts(repo: &Path, candidate: &Value) {
+    assert_eq!(candidate["kind"], "implement");
+    assert_eq!(
+        candidate["requirements"],
+        json!({"scenario_mode": "candidate"})
+    );
+    let goal = candidate["goal"].as_str().unwrap();
+    for obligation in [
+        "code correctness and guardrails only",
+        "Do not claim measured improvement here",
+        "Consume the accepted research_report artifact",
+        "retain its recommendation and provenance",
+    ] {
+        assert!(goal.contains(obligation), "{obligation}: {goal}");
+    }
+    for role in ["implementer", "bugs", "correctness", "evaluator"] {
+        let prompt = std::fs::read_to_string(repo.join(format!(
+            ".af/task-packages/owner-default/{role}/instructions.md"
+        )))
+        .unwrap();
+        let prompt = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+        for obligation in [
+            "actual Task goal and requirements",
+            "`scenario_goal`",
+            "`scenario_evidence`",
+            "only when the actual requirements or binding decisions require",
+            "evidence, never execution or publication authority",
+            "research_report",
+            "code correctness and guardrails",
+        ] {
+            assert!(prompt.contains(obligation), "{role}: missing {obligation}");
+        }
+        for invented in [
+            "one kernel campaign package",
+            "requirements payload names the plan document",
+            "plan's fixed requirements",
+            "One ADR under",
+            "ADR and changelog entries exist",
+            "no edits to `.af/`",
+        ] {
+            assert!(!prompt.contains(invented), "{role}: invented {invented}");
+        }
+    }
+}
+
+/// Prompts name the evidence actually available to independent judges, not team results
+/// that only native acceptance can gather. Compare both stages' real node bindings with
+/// the shipped Worker signatures; diff_subject is optional kernel-derived context.
+#[test]
+fn owner_judge_evidence_matches_candidate_and_verification_input_contracts() {
+    let repo = workspace();
+    let pipeline = |name: &str| -> toml::Value {
+        toml::from_str(
+            &std::fs::read_to_string(
+                repo.join(format!(".af/task-packages/kernel/{name}/pipeline.toml")),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let review = pipeline("review-code");
+    for stage in ["implementation-reviewed", "verification-reviewed"] {
+        let manifest = pipeline(stage);
+        let nodes = manifest["nodes"].as_array().unwrap();
+        let call = nodes
+            .iter()
+            .find(|n| n["id"].as_str() == Some("review"))
+            .unwrap();
+        assert_eq!(
+            call["operator"]["pipeline"].as_str(),
+            Some("kernel/review-code")
+        );
+        for role in ["bugs", "correctness", "evaluator"] {
+            let package = repo.join(format!(".af/task-packages/owner-default/{role}"));
+            let worker: toml::Value =
+                toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap())
+                    .unwrap();
+            let prompt = std::fs::read_to_string(package.join("instructions.md")).unwrap();
+            let declared: std::collections::BTreeSet<_> = prompt
+                .lines()
+                .find_map(|line| line.strip_prefix("Declared evidence inputs: "))
+                .unwrap()
+                .strip_suffix('.')
+                .unwrap()
+                .split(", ")
+                .collect();
+            let inputs = worker["signature"]["contract"]["inputs"]
+                .as_table()
+                .unwrap();
+            assert_eq!(
+                declared,
+                inputs
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                "{stage}/{role}"
+            );
+            for port in inputs.values() {
+                assert!(
+                    ![
+                        "review.kernel/ReviewerResult@2",
+                        "af/TaskEvaluation@1",
+                        "af/ImplementationReport@1"
+                    ]
+                    .contains(&port["artifact_type"].as_str().unwrap())
+                );
+            }
+            assert_eq!(inputs["diff_subject"]["optional"].as_bool(), Some(true));
+            let prompt = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            for obligation in [
+                "Judge only your declared delivered inputs",
+                "Do not require your own future result or sibling judge results",
+                "The native pipeline and publication acceptance enforce the complete selected bugs, correctness and evaluator team and its results",
+                "Consume each delivered artifact on these ports; optional inputs apply only when present",
+            ] {
+                assert!(prompt.contains(obligation), "{stage}/{role}: {obligation}");
+            }
+            assert!(
+                !prompt.contains("Require the selected bugs, correctness and evaluator results")
+            );
+            let node = if role == "evaluator" {
+                nodes
+                    .iter()
+                    .find(|n| n["id"].as_str() == Some("evaluate_goal"))
+                    .unwrap()
+            } else {
+                assert_eq!(call["operator"]["bindings"][role].as_str(), Some(role));
+                review["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|n| n["id"].as_str() == Some(role))
+                    .unwrap()
+            };
+            assert_eq!(node["operator"]["slot"].as_str(), Some(role));
+            let bound = node["inputs"].as_table().unwrap();
+            assert_eq!(
+                bound
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                declared
+                    .into_iter()
+                    .filter(|p| *p != "diff_subject")
+                    .collect(),
+                "{stage}/{role}"
+            );
+            let expected = if role == "evaluator" {
+                json!({
+                    "checks": {"kind":"node", "node":"final_checks", "port":"output"},
+                    "requirements": {"kind":"input", "port":"requirements"},
+                    "source": {"kind":"node", "node":"accept", "port":"snapshot"}
+                })
+            } else {
+                json!({
+                    "assignment": {"kind":"node", "node":"bind", "port":role},
+                    "checks": {"kind":"node", "node":"checks", "port":"result"},
+                    "history": {"kind":"input", "port":"history"},
+                    "requirements": {"kind":"input", "port":"requirements"},
+                    "source": {"kind":"input", "port":"source"},
+                    "subject": {"kind":"node", "node":"bind", "port":"subject"}
+                })
+            };
+            assert_eq!(
+                serde_json::to_value(bound).unwrap(),
+                expected,
+                "{stage}/{role}"
+            );
+        }
+    }
+}
+
+/// Exercise the shipped templates and captured catalog without Provider inference. Native
+/// planning still checks CLI installation/account identity; the fake accepts only those
+/// token-free checks and traps every other invocation. No package or budget is rewritten.
+#[test]
+fn committed_owner_catalog_plans_all_four_production_stages_without_provider_inference() {
+    let p = Performance::new();
+    let marker = p.home.join("unexpected-provider-inference");
+    let trap = format!(
+        r#"#!/usr/bin/python3 -B
+import json,sys,pathlib
+if sys.argv[1:]==['--version']:
+ print('codex-cli 0.121.0'); sys.exit(0)
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  r=json.loads(line)
+  if r.get('id')==1: print(json.dumps({{'id':1,'result':{{}}}}),flush=True)
+  if r.get('id')==2: print(json.dumps({{'id':2,'result':{{'account':{{'type':'chatgpt','email':'scenario@example.invalid'}}}}}}),flush=True)
+ sys.exit(0)
+pathlib.Path({marker:?}).write_text('unexpected inference')
+sys.exit(99)
+"#,
+        marker = marker.display().to_string()
+    );
+    let bin = p.f.machine.join("bin");
+    for name in ["codex", "claude"] {
+        let executable = bin.join(name);
+        std::fs::write(&executable, crate::provider_cli::with_help(name, &trap)).unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let bundle = p.bundle();
+    let mut stages = Vec::new();
+    for step in bundle["definitions"]["performance"]["steps"]
+        .as_array()
+        .unwrap()
+    {
+        if step["operation"]["kind"] != "fresh_task" {
+            continue;
+        }
+        let stage = step["id"].as_str().unwrap();
+        stages.push(stage);
+        let template = &step["operation"]["template"];
+        assert_eq!(template["authority_commit"], p.commit);
+        let bindings = &template["bindings"];
+        assert!(bindings.get("packages").is_none());
+        assert_eq!(bindings.as_object().unwrap().len(), 3);
+        let document = &template["document"];
+        let kind = document["kind"].as_str().unwrap();
+        if kind == "implement" {
+            assert_owner_performance_instruction_contracts(&p.f.repo, document);
+        }
+        let file = p.f.machine.join(format!("{stage}-template.json"));
+        let binding_file = p.bindings(kind);
+        let planned = p.cli(
+            &p.task_state,
+            &[
+                "task",
+                "plan",
+                "--file",
+                file.to_str().unwrap(),
+                "--authority",
+                &p.commit,
+                "--bindings",
+                binding_file.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(planned["attempts"], 0, "{planned:#}");
+        assert_eq!(planned["chargeable_tokens"], "0");
+        // Native planning consumes part of the requested wall before admission. As in
+        // scenario_template::validate_recorded_plan, its recorded allowance can only shrink.
+        assert!(
+            planned["clock"]["wall_ms"].as_u64().unwrap()
+                <= document["limits"]["wall_ms"].as_u64().unwrap()
+        );
+        let plan = &planned["plan"];
+        for field in ["tokens", "max_attempts", "verification"] {
+            assert_eq!(plan["limits"][field], document["limits"][field]);
+        }
+        assert_eq!(plan["generated_origins"], json!([]));
+        let expected: Vec<_> = if kind == "report" {
+            vec![
+                (
+                    "author",
+                    "owner-default/report-author",
+                    "gpt-6.1-sol",
+                    "medium",
+                ),
+                (
+                    "verifier",
+                    "kernel/report-verifier",
+                    "gpt-6.1-terra",
+                    "high",
+                ),
+            ]
+        } else {
+            let mut roles = vec![
+                ("bugs", "owner-default/bugs", "gpt-6.1-terra", "high"),
+                (
+                    "correctness",
+                    "owner-default/correctness",
+                    "gpt-6.1-terra",
+                    "high",
+                ),
+                (
+                    "evaluator",
+                    "owner-default/evaluator",
+                    "gpt-6.1-terra",
+                    "medium",
+                ),
+            ];
+            if kind == "implement" {
+                roles.push((
+                    "implementer",
+                    "owner-default/implementer",
+                    "gpt-6.1-sol",
+                    "medium",
+                ));
+            }
+            roles
+        };
+        assert_eq!(plan["bindings"].as_object().unwrap().len(), expected.len());
+        for (role, worker, model, effort) in expected {
+            let slot = format!("root.slots.{role}");
+            assert_eq!(planned["graph"]["slots"][&slot]["worker"], worker);
+            let execution = &plan["bindings"][&slot]["execution"];
+            assert_eq!(execution["kind"], "model");
+            assert_eq!(execution["provider"], "codex-personal");
+            assert_eq!(execution["provider_kind"], "codex");
+            assert_eq!(execution["model"], model);
+            assert_eq!(execution["effort"], effort);
+            let manifest: toml::Value = toml::from_str(
+                &std::fs::read_to_string(
+                    p.f.repo
+                        .join(format!(".af/task-packages/{worker}/worker.toml")),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let effects: Vec<_> = manifest["signature"]["effects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(
+                effects,
+                if role == "implementer" {
+                    vec!["write-source", "execute-checks"]
+                } else {
+                    vec!["read-source"]
+                }
+            );
+            if kind == "implement" && role != "implementer" {
+                assert_eq!(
+                    planned["graph"]["slots"][&slot]["independent_from"],
+                    json!(["root.slots.implementer"])
+                );
+            }
+            if role == "verifier" {
+                assert_eq!(
+                    planned["graph"]["slots"][&slot]["independent_from"],
+                    json!(["root.slots.author"])
+                );
+            }
+        }
+        let graph = &planned["graph"];
+        if kind == "verification" {
+            assert!(plan["bindings"].get("root.slots.implementer").is_none());
+        } else {
+            let consumers: &[&str] = if kind == "implement" {
+                &["implement"]
+            } else {
+                &["author", "verify"]
+            };
+            assert_eq!(
+                graph["nodes"]["root.inputs"]["contract"]["outputs"]["research_report"]["artifact_type"],
+                "af/Document@1"
+            );
+            assert_eq!(
+                graph["nodes"]["root.inputs"]["contract"]["outputs"]["research_report"]["optional"],
+                true
+            );
+            // With no predecessor bound yet the compiler omits optional edges. Check
+            // their authoring here; the complete loop below proves actual Document delivery.
+            let pipeline = document["pipeline"]["name"].as_str().unwrap();
+            let manifest: toml::Value = toml::from_str(
+                &std::fs::read_to_string(
+                    p.f.repo
+                        .join(format!(".af/task-packages/{pipeline}/pipeline.toml")),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            for consumer in consumers {
+                let node = manifest["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|node| node["id"].as_str() == Some(*consumer))
+                    .unwrap();
+                assert_eq!(
+                    node["inputs"]["research_report"]["kind"].as_str(),
+                    Some("input")
+                );
+                assert_eq!(
+                    node["inputs"]["research_report"]["port"].as_str(),
+                    Some("research_report")
+                );
+            }
+        }
+    }
+    assert_eq!(stages, ["research", "candidate", "verification", "report"]);
+    assert!(
+        !marker.exists(),
+        "template capture and native planning must invoke no Provider inference"
+    );
 }
 
 #[test]
@@ -599,7 +989,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         // Exercise the shipped Python/native bridge, including its distinct request and CAS
         // digest domains. Replacing this bridge with a fake capture would miss that mismatch.
         let output = std::process::Command::new("/usr/bin/python3").arg("-I").arg("-c")
-            .arg("import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import scenariosource; from perflab.values import canonical_digest; c=json.loads(pathlib.Path(sys.argv[2]).read_text()); p=sys.argv[3]; r=json.loads((pathlib.Path(p)/'source-request.json').read_text()); print(json.dumps(scenariosource.capture(c,p,canonical_digest(r))))")
+            .arg("import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); from perflab import scenario_source; from perflab.values import canonical_digest; c=json.loads(pathlib.Path(sys.argv[2]).read_text()); p=sys.argv[3]; r=json.loads((pathlib.Path(p)/'source-request.json').read_text()); print(json.dumps(scenario_source.capture(c,p,canonical_digest(r))))")
             .arg(workspace().join("scripts/performance")).arg(&source_config).arg(&source_intent)
             .output().unwrap();
         assert!(
@@ -686,6 +1076,47 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         .lines()
         .map(|s| serde_json::from_str(s).unwrap())
         .collect();
+    let candidate_template =
+        &bundle["definitions"]["performance"]["steps"][2]["operation"]["template"]["document"];
+    assert_owner_performance_instruction_contracts(&p.f.repo, candidate_template);
+    let candidate_context = requests
+        .iter()
+        .find(|r| r["output_schemas"].get("report").is_some())
+        .unwrap();
+    let inputs = &candidate_context["inputs"];
+    let requirements = &inputs["requirements"][0]["payload"];
+    assert!(
+        requirements["text"]
+            .as_str()
+            .unwrap()
+            .starts_with(candidate_template["goal"].as_str().unwrap())
+    );
+    assert_eq!(requirements["specification"]["scenario_mode"], "candidate");
+    assert!(!requirements["specification"]["scenario_goal"].is_null());
+    assert!(!requirements["specification"]["scenario_evidence"].is_null());
+    assert_eq!(
+        inputs["research_report"][0]["artifact_type"],
+        "af/Document@1"
+    );
+    assert_eq!(inputs["research_report"][0]["artifact_id"], id);
+    let cas = Cas::open_existing(p.task_state.join("cas")).unwrap();
+    assert_eq!(
+        inputs["research_report"][0]["payload"],
+        cas.get_artifact(id).unwrap().payload,
+        "candidate consumes the exact accepted native research Document"
+    );
+    let input_schema: Value = serde_json::from_slice(
+        &std::fs::read(
+            p.f.repo
+                .join(".af/task-packages/owner-default/implementer/input.schema.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    jsonschema::validator_for(&input_schema)
+        .unwrap()
+        .validate(inputs)
+        .unwrap();
     let consumers: Vec<_> = requests
         .iter()
         .filter(|r| r["inputs"].get("research_report").is_some())
@@ -795,6 +1226,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         .unwrap();
     let commit = String::from_utf8(out.stdout).unwrap();
     let file = p.f.machine.join("candidate-template.json");
+    let bindings = p.bindings("implement");
     let pin = p.cli(
         &p.f.state,
         &[
@@ -808,6 +1240,8 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
             p.task_state.to_str().unwrap(),
             "--authority-commit",
             commit.trim(),
+            "--bindings",
+            bindings.to_str().unwrap(),
         ],
     );
     refused_bundle["definitions"]["performance"]["steps"][2]["operation"]["template"] =
@@ -944,7 +1378,7 @@ fn native_prior_packet(root: &Path) -> (PathBuf, PathBuf, Value, Value) {
 import copy, json, os, sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv[1])
-from perflab import scenarioadapter, researchevidence
+from perflab import scenario_adapter, research_evidence
 from perflab.values import canonical_digest
 root, binary, digest, repo, state, index_path = sys.argv[2:]
 os.mkdir(root, 0o700)
@@ -952,7 +1386,7 @@ spool, evidence = root+'/spool', root+'/evidence'
 os.mkdir(spool, 0o700); os.mkdir(evidence, 0o700)
 # Only observation is under test: no executor configuration or experiment is needed.
 # Retain the real writer, capacity checks, native reader and packet bounds.
-a = scenarioadapter.Adapter.__new__(scenarioadapter.Adapter)
+a = scenario_adapter.Adapter.__new__(scenario_adapter.Adapter)
 a.root = spool
 a.native_config = dict(root=root, max_bytes=1<<30)
 a.config = dict(root=spool, evidence_root=evidence, max_bytes=1<<30,
@@ -961,8 +1395,8 @@ a.config = dict(root=spool, evidence_root=evidence, max_bytes=1<<30,
     evidence_max_items=32, evidence_max_bytes=24576)
 index = json.load(open(index_path))
 def observe(records):
-    current = researchevidence.rebuild(records)
-    a.config['evidence_index'] = researchevidence.retain(evidence, current, 'evidence-index')
+    current = research_evidence.rebuild(records)
+    a.config['evidence_index'] = research_evidence.retain(evidence, current, 'evidence-index')
     a.config['evidence_index_digest'] = canonical_digest(current)
     text = lambda v: dict(type='text', value=v)
     return a.request(dict(schema='af/scenario-adapter-request@4', method='observe',
@@ -1014,7 +1448,7 @@ fn native_findings_reach_bounded_research_packet_and_fabricated_artifacts_are_re
     let (fabricated, _) = cas
         .put_artifact(
             "af/TaskReviewFindings@1",
-            review_core::Producer::KernelOperation {
+            af_contracts::Producer::KernelOperation {
                 run_id: "fabricated".into(),
                 node_id: None,
                 operation_id: "fabricated".into(),
@@ -1046,7 +1480,7 @@ fn native_findings_reach_bounded_research_packet_and_fabricated_artifacts_are_re
     let (adoption, _) = cas
         .put_artifact(
             "af/OptimizationAdoptionObservation@1",
-            review_core::Producer::KernelOperation {
+            af_contracts::Producer::KernelOperation {
                 run_id: "fabricated".into(),
                 node_id: None,
                 operation_id: "fabricated".into(),
@@ -1157,7 +1591,7 @@ fn performance_publication_proof_and_installed_adapter(
     let revision = cas
         .get_artifact(candidate["revision_id"].as_str().unwrap())
         .unwrap();
-    let baseline = review_source_git::task::read_snapshot(
+    let baseline = af_source_git::task::read_snapshot(
         &cas,
         revision.payload["inputs"]["source"]["snapshot_id"]
             .as_str()

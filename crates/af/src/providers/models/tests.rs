@@ -3,8 +3,9 @@
 //! fields the recording elided (descriptions, the effort levels of the alias entries, the efforts
 //! of the Codex models other than `gpt-6.1-sol` and `gpt-6-luna`) are filled to match what was
 //! recorded; every exact ID, alias, display name and the effort facts the requirements cite are
-//! verbatim. `gpt-5.6-terra`, which the catalog's `default/bugs` binds, is added after the
-//! recording with `gpt-5.6-sol`'s effort levels, so a plan of the default pipeline verifies it.
+//! verbatim. `gpt-6.1-terra`, which the catalog's independent judges bind, is added after the
+//! recording as a synthetic entry covering low/medium/high/xhigh, so plans verify the shipped
+//! bindings without claiming a new live catalog recording.
 use super::*;
 
 const CLAUDE: &str =
@@ -45,7 +46,7 @@ fn listed(id: &str, kind: Kind, report: CatalogReport) -> ProviderCatalog {
 
 fn resolve(catalog: &ProviderCatalog, spelling: &str) -> Vec<String> {
     let request = parse_resolve(spelling).unwrap();
-    table(std::slice::from_ref(catalog), Some(&request))
+    table(std::slice::from_ref(catalog), Some(&request), 0)
         .into_iter()
         .skip_while(|line| !line.starts_with("  resolve"))
         .collect()
@@ -97,6 +98,7 @@ fn the_codex_catalog_keeps_each_models_levels_and_default() {
         ids,
         [
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -122,7 +124,7 @@ fn an_entry_outside_g_is_left_out_and_counted() {
     list["data"][0]["id"] = "gpt 6/sol".into();
     let (catalog, skipped) = parse_codex_model_list(&list).unwrap();
     assert_eq!(skipped, 1);
-    assert_eq!(catalog.models.len(), 5);
+    assert_eq!(catalog.models.len(), 6);
     assert!(parse_codex_model_list(&serde_json::json!({})).is_err());
     assert!(parse_claude_list_models(&serde_json::json!({"models": 1})).is_err());
 }
@@ -135,6 +137,7 @@ fn the_table_prints_the_header_the_rows_and_what_the_list_proves() {
             listed("codex-main", Kind::Codex, codex()),
         ],
         None,
+        0,
     );
     let text = lines.join("\n");
     for part in [
@@ -163,7 +166,7 @@ fn an_unavailable_catalog_prints_the_static_rules_and_invents_nothing() {
         outcome: CatalogOutcome::Unavailable("claude exited 1".into()),
     }];
     assert_eq!(exit_code(&catalogs), EXIT_USAGE_UNAVAILABLE);
-    let text = table(&catalogs, None).join("\n");
+    let text = table(&catalogs, None, 0).join("\n");
     assert!(text.contains("catalog unavailable"), "{text}");
     assert!(text.contains("low, medium, high, xhigh, max"), "{text}");
     assert!(text.contains("fable → claude-fable-5-1"), "{text}");
@@ -173,7 +176,7 @@ fn an_unavailable_catalog_prints_the_static_rules_and_invents_nothing() {
         ..catalogs[0].clone()
     }];
     assert_eq!(exit_code(&refused), EXIT_PROVIDER_CLI_MISSING);
-    let document = document(&catalogs, None, 7);
+    let document = document(&catalogs, None, 7, 0);
     assert_eq!(document["providers"][0]["state"], "unavailable");
     assert_eq!(document["providers"][0]["models"], serde_json::json!([]));
 }
@@ -186,9 +189,8 @@ fn resolve_names_the_exact_id_and_prints_both_configurations() {
         "resolve  `Fable 5.1/xhigh` on claude-work (claude)",
         "`Fable 5.1` is the display name of the exact ID claude-fable-5-1",
         "xhigh: confirmed, claude-fable-5-1 lists low, medium, high, xhigh, max",
-        "    reviewer.toml  [runner]\n                   program = \"claude\"\n                   args = [{ value = \"--model\" }, { value = \"claude-fable-5-1\" }, { value = \"--effort\" }, { value = \"xhigh\" }]\n",
         "    worker.toml    [runner]\n                   kind = \"model\"\n                   provider_kind = \"claude\"\n                   model = \"claude-fable-5-1\"\n                   effort = \"xhigh\"\n",
-        "    bindings       [providers]\n                   \"PACKAGE\" = \"claude-work\"\n                   # af review run … --provider NODE=claude-work",
+        "    bindings       [providers]\n                   \"PACKAGE\" = \"claude-work\"",
     ] {
         assert!(lines.contains(part), "{part}:\n{lines}");
     }
@@ -214,10 +216,10 @@ fn resolve_names_the_exact_id_and_prints_both_configurations() {
     let lines = resolve(&codex, "GPT-6 Sol/ultra").join("\n");
     assert!(lines.contains("names the exact ID gpt-6-sol"), "{lines}");
     assert!(lines.contains("ultra: confirmed"), "{lines}");
-    assert!(
-        lines.contains("{ value = \"model_reasoning_effort=\\\"ultra\\\"\" }"),
-        "{lines}"
-    );
+    assert!(lines.contains("provider_kind = \"codex\""), "{lines}");
+    assert!(lines.contains("model = \"gpt-6-sol\""), "{lines}");
+    assert!(lines.contains("effort = \"ultra\""), "{lines}");
+    assert!(!lines.contains("reviewer.toml"), "{lines}");
     let lines = resolve(&codex, "gpt-6-luna/ultra").join("\n");
     assert!(
         lines.contains(
@@ -242,26 +244,15 @@ fn the_configurations_parse_as_afs_own_schemas() {
     ] {
         let configuration = configuration("p-1", kind, model, effort);
         let runner: toml::Value = toml::from_str(&configuration.worker.join("\n")).unwrap();
-        let runner: review_config::task::catalog::TaskWorkerRunner =
+        let runner: af_pipeline_config::task::catalog::TaskWorkerRunner =
             runner["runner"].clone().try_into().unwrap();
         assert_eq!(
             runner,
-            review_config::task::catalog::TaskWorkerRunner::Model {
+            af_pipeline_config::task::catalog::TaskWorkerRunner::Model {
                 provider_kind: kind.name().into(),
                 model: model.into(),
                 effort: effort.into(),
             }
-        );
-        let reviewer = configuration.reviewer.join("\n");
-        toml::from_str::<toml::Value>(&reviewer).unwrap();
-        let manifest =
-            format!("name = \"x\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n{reviewer}\n");
-        let manifest: review_config::lock::PackageManifest = toml::from_str(&manifest).unwrap();
-        let settings =
-            review_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
-        assert_eq!(
-            (settings.model.as_str(), settings.effort.as_str()),
-            (model, effort)
         );
         let binding: toml::Value = toml::from_str(&configuration.binding.join("\n")).unwrap();
         assert_eq!(
@@ -322,4 +313,75 @@ fn a_control_response_is_found_by_its_request_id() {
         ))
     );
     assert_eq!(control_response(captured.as_bytes(), VERSION_REQUEST), None);
+}
+
+#[test]
+fn pi_catalog_pages_keep_sixty_four_rows_and_resolve_exact_routed_ids_across_pages() {
+    let report = CatalogReport {
+        source: "AF Pi SDK host catalog",
+        version: Some("1.4.0".into()),
+        fetched_at: None,
+        skipped: 0,
+        catalog: Catalog {
+            models: (0..70)
+                .map(|index| CatalogModel {
+                    id: format!("~vendor/model-{index}"),
+                    display_name: format!("Model {index}"),
+                    other_names: vec![],
+                    aliases: vec![],
+                    efforts: vec!["high".into()],
+                    default_effort: None,
+                    hidden: false,
+                })
+                .collect(),
+        },
+    };
+    let catalog = listed("pi-explicit", Kind::Pi, report);
+    let request = parse_pi_resolve("~vendor/model-69/high").unwrap();
+    let first = document(std::slice::from_ref(&catalog), Some(&request), 0, 0);
+    let second = document(std::slice::from_ref(&catalog), Some(&request), 0, 1);
+    assert_eq!(
+        first["providers"][0]["models"].as_array().unwrap().len(),
+        64
+    );
+    assert_eq!(
+        second["providers"][0]["models"].as_array().unwrap().len(),
+        6
+    );
+    assert_eq!(
+        first["providers"][0]["catalog_page"],
+        serde_json::json!({"number":0,"next":1,"total":70})
+    );
+    assert_eq!(
+        second["providers"][0]["catalog_page"],
+        serde_json::json!({"number":1,"next":null,"total":70})
+    );
+    assert_eq!(
+        first["providers"][0]["resolution"]["id"],
+        "~vendor/model-69"
+    );
+    assert!(first["providers"][0]["resolution"]["configuration"].is_object());
+    assert_eq!(first["providers"][0]["freshness"]["source"], "sdk_profile");
+    let exact = parse_pi_resolve("~vendor/model-69").unwrap();
+    let output = resolution_document(&catalog, &exact);
+    assert_eq!(output["spelling"], "~vendor/model-69");
+    assert!(output["effort"].is_null());
+    assert_eq!(output["outcome"], "exact");
+    assert!(
+        table(&[catalog], Some(&request), 0)
+            .join("\n")
+            .contains("next: af provider models pi-explicit --page 1")
+    );
+    assert!(
+        parse_resolve("~vendor/model-69/high").is_err(),
+        "native CLI query grammar stays unchanged"
+    );
+    for invalid in [
+        "../model/high",
+        "/absolute/model/high",
+        "~vendor/model;command/high",
+        "~vendor/model\n/high",
+    ] {
+        assert!(parse_pi_resolve(invalid).is_err(), "{invalid:?}");
+    }
 }

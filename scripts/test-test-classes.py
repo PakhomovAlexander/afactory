@@ -51,6 +51,27 @@ def setUpModule():
 
 
 class Selection(unittest.TestCase):
+    def test_live_native_probe_refuses_zero_tests_and_has_current_catalog_authority(self):
+        tc.audit_source()
+        make = (ROOT / 'Makefile').read_text()
+        target = make.split('review-kernel-container-probes:\n', 1)[1].split('\n\n', 1)[0]
+        self.assertIn('python3 scripts/nextest-gate.py --repeat 1 --workspace --locked --profile ci '
+                      '--run-ignored only --no-tests fail -E ', target)
+        self.assertNotIn('cargo nextest run', target)
+        self.assertEqual(target.splitlines()[:2], [
+            '\tcargo test --locked -p af-sandbox --test container_probes -- --ignored',
+            '\tcargo test --locked -p af-sandbox '
+            'container::tests::a_timed_out_container_is_removed_before_execution_returns '
+            '-- --ignored --exact'])
+        self.assertIn('--no-tests fail', target)
+        self.assertNotIn('task_campaign_review', target)
+        name = 'task_review_execute_checks::a_container_check_executes_on_the_native_task_host'
+        self.assertIn('test(=' + name + ')', target)
+        self.assertEqual(tc.catalog()['ignored']['af-runtime::it ' + name], 'live-container')
+        source = (ROOT / 'crates/af-runtime/tests/it/task_review_execute_checks.rs').read_text()
+        self.assertIn('fn ' + name.split('::')[-1] + '()', source)
+
+
     def test_defaults_and_profiles(self):
         self.assertEqual(tc.resolve(context='pr')['selected'], tc.FAST)
         self.assertEqual(tc.resolve(context='release')['selected'], list(tc.CLASSES))
@@ -635,6 +656,7 @@ if mode == 'malformed':
                 destination = root / source.relative_to(ROOT)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
+            (root / 'Makefile').write_text((ROOT / 'Makefile').read_text())
             workflow = root / '.github/workflows/validate.yml'
             workflow.parent.mkdir(parents=True)
             shutil.copy2(ROOT / '.github/workflows/validate.yml', workflow)
@@ -697,12 +719,12 @@ if mode == 'malformed':
         # are stand-ins; never run a nested real gate from this preflight regression.
         preflight = ['ci-disk', 'adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
                      'test-time-report', 'provider-auth-host', 'pi-host', 'pr-report', 'pr-lines',
-                     'test-classes', 'test-catalog', 'performance-schemas',
+                     'test-classes', 'test-catalog', 'workspace-fixtures', 'performance-schemas',
                      'performance-kernel-harness']
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
-        tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab',
+        tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab', 'workspace-fixture-benchmark',
                  'test-perf-trace', 'test-perf-calibration']
-        release = ['release-resolution', 'changelog-notes-tests', 'changelog-notes',
+        release = ['release-contract', 'release-contract-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin']
         expected = [(label, 'preflight') for label in preflight]
         expected += [(label, 'lint') for label in lint] + [('test-build', 'build')]
@@ -722,9 +744,11 @@ if mode == 'malformed':
                         'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-scenario-git-workspace.py',
                         'test-scenario-merge-watch.py', 'test-pi-host.py', 'test-check-pr-report.py',
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
-                        'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
+                        'test-performance.py', 'test-workspace-fixtures.py', 'test-workspace-fixture-benchmark.py',
+                        'performance/schemas.py', 'performance/cli.py',
                         'nextest-gate.py', 'changelog-notes.py', 'af-pin.py',
-                        'test-changelog-notes.py', 'test-test-quarantine.py']
+                        'test-changelog-notes.py', 'test-test-quarantine.py',
+                        'release-contract.py', 'test-release-contract.py']
             for name in payloads:
                 path = scripts / name
                 path.parent.mkdir(exist_ok=True)
@@ -738,11 +762,17 @@ if mode == 'malformed':
                 '        subprocess.run([sys.executable, "scripts/ci-step.py", "--stage",\n'
                 '                        "tests", "class-" + kind, sys.executable, "-c", "pass"],\n'
                 '                       check=True)\n')
+            (scripts / 'nextest-gate.py').write_text(
+                'import json, os, pathlib, sys\n'
+                'with pathlib.Path(os.environ["COMMAND_LOG"]).open("a") as f:\n'
+                '    f.write(json.dumps(["native", *sys.argv[1:]]) + "\\n")\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
             cargo = tools / 'cargo'
-            cargo.write_text(f'#!{sys.executable}\nimport os, sys\n'
+            cargo.write_text(f'#!{sys.executable}\nimport json, os, pathlib, sys\n'
+                             'with pathlib.Path(os.environ["COMMAND_LOG"]).open("a") as f:\n'
+                             '    f.write(json.dumps(["cargo", *sys.argv[1:]]) + "\\n")\n'
                              'sys.exit(int(os.environ["BUILD_STATUS"]) if '
                              'sys.argv[1:] == ["test", "--locked", "--no-run"] else 0)\n')
             cargo.chmod(0o755)
@@ -750,15 +780,17 @@ if mode == 'malformed':
                    if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
             report = root / 'check.jsonl'
             metrics = root / 'metrics.jsonl'
+            commands = root / 'commands.jsonl'
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
                        AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report),
-                       AF_CI_METRICS=str(metrics))
+                       AF_CI_METRICS=str(metrics), COMMAND_LOG=str(commands))
             for runner in ('nextest', 'cargo'):
                 for entry, status in (('check', 0), ('check', 19), ('test', 0),
                                       ('fast', 0), ('fast', 19)):
                     with self.subTest(runner=runner, entry=entry, build_status=status):
                         report.unlink(missing_ok=True)
                         metrics.unlink(missing_ok=True)
+                        commands.unlink(missing_ok=True)
                         env.update(TEST_RUNNER=runner, BUILD_STATUS=str(status))
                         command = (['bash', str(scripts / 'verify.sh'),
                                     *(['--profile', 'fast'] if entry == 'fast' else [])]
@@ -767,6 +799,23 @@ if mode == 'malformed':
                                                 capture_output=True, text=True, timeout=20)
                         self.assertEqual(result.returncode == 0, status == 0,
                                          result.stdout + result.stderr)
+                        invoked = [json.loads(line) for line in commands.read_text().splitlines()]
+                        probes = [c for c in invoked if c[0] == 'native' or 'af-sandbox' in c]
+                        if entry == 'check' and not status:
+                            self.assertEqual(probes, [
+                                ['cargo', 'test', '--locked', '-p', 'af-sandbox', '--test',
+                                 'container_probes', '--', '--ignored'],
+                                ['cargo', 'test', '--locked', '-p', 'af-sandbox',
+                                 'container::tests::a_timed_out_container_is_removed_before_execution_returns',
+                                 '--', '--ignored', '--exact'],
+                                ['native', '--repeat', '1', '--workspace', '--locked', '--profile',
+                                 'ci', '--run-ignored', 'only', '--no-tests', 'fail', '-E',
+                                 'binary_id(=af-runtime::it) & '
+                                 'test(=task_review_execute_checks::a_container_check_executes_on_the_native_task_host)']])
+                        else:
+                            # In particular, standalone `make test` has no live probes in
+                            # either runner mode, and a failed build never reaches them.
+                            self.assertEqual(probes, [])
                         records = [json.loads(line) for line in report.read_text().splitlines()]
                         if entry == 'fast':
                             wanted = [('test-build', 'build')]
@@ -828,20 +877,20 @@ if mode == 'malformed':
             tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
-                         'performance/schemas.py', 'performance/cli.py'):
+                         'release-contract.py', 'performance/schemas.py', 'performance/cli.py'):
                 (scripts / name).write_text('pass\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
             inventory = {'rust-suites': {
-                'review-core': {'testcases': {'functional': {'ignored': False},
+                'af-contracts': {'testcases': {'functional': {'ignored': False},
                                               'perf_trace::perf_case': {'ignored': False}}},
-                'review-process': {'testcases': {'e2e_case': {'ignored': False}}},
+                'af-process': {'testcases': {'e2e_case': {'ignored': False}}},
                 'af::it': {'testcases': {'cli_surface::uix_case': {'ignored': False}}},
-                'review-pipeline::perf_probe': {'testcases': {
+                'af-runtime::perf_probe': {'testcases': {
                     'calibration_build_case': {'ignored': False}}}}}
             # A realistic generated class filter exceeds the strict per-argument bound.
-            inventory['rust-suites']['review-core']['testcases'].update(
+            inventory['rust-suites']['af-contracts']['testcases'].update(
                 {f'functional_case_{n:03}': {'ignored': False} for n in range(100)})
             tc.write(root / 'inventory.json', inventory)
             cargo = tools / 'cargo'
@@ -849,7 +898,7 @@ if mode == 'malformed':
 import json, os, pathlib, sys
 if sys.argv[1:3] == ['nextest', 'list']:
     args = sys.argv[1:]
-    variant = ('trace' if 'review-core/perf-trace,review-core/perf-calibration' in args
+    variant = ('trace' if 'af-contracts/perf-trace,af-contracts/perf-calibration' in args
                else 'calibration' if '--features' in args else 'default')
     report = pathlib.Path(os.environ['AF_CHECK_REPORT'])
     records = [json.loads(line) for line in report.read_text().splitlines()]
@@ -864,21 +913,30 @@ if sys.argv[1:3] == ['nextest', 'list']:
             (scripts / 'nextest-gate.py').write_text("""
 import json, os, pathlib, sys, xml.etree.ElementTree as ET
 args = sys.argv[1:]
-expression = pathlib.Path(args[args.index('--filterset-file') + 1]).read_text()
-if '--features' in args:
-    cases = ([('review-core', 'perf_trace::perf_case')] if 'test(perf_)' in expression
-             else [('review-pipeline::perf_probe', 'calibration_build_case')])
-elif 'review-process' in expression:
-    cases = [('review-process', 'e2e_case')]
+if '--filterset-file' in args:
+    expression = pathlib.Path(args[args.index('--filterset-file') + 1]).read_text()
+else:
+    expression = ('binary_id(=af-runtime::it) & '
+                  'test(=task_review_execute_checks::a_container_check_executes_on_the_native_task_host)')
+    assert args == ['--repeat', '1', '--workspace', '--locked', '--profile', 'ci', '--run-ignored', 'only',
+                    '--no-tests', 'fail', '-E', expression], args
+if '--run-ignored' in args:
+    cases = [('af-runtime::it',
+              'task_review_execute_checks::a_container_check_executes_on_the_native_task_host')]
+elif '--features' in args:
+    cases = ([('af-contracts', 'perf_trace::perf_case')] if 'test(perf_)' in expression
+             else [('af-runtime::perf_probe', 'calibration_build_case')])
+elif 'af-process' in expression:
+    cases = [('af-process', 'e2e_case')]
 elif 'af::it' in expression:
     cases = [('af::it', 'cli_surface::uix_case')]
 elif 'functional' in expression:
-    names = json.loads(pathlib.Path('inventory.json').read_text())['rust-suites']['review-core']['testcases']
-    cases = [('review-core', name) for name in names if name.startswith('functional')]
+    names = json.loads(pathlib.Path('inventory.json').read_text())['rust-suites']['af-contracts']['testcases']
+    cases = [('af-contracts', name) for name in names if name.startswith('functional')]
     assert len(expression) > 1024
 else:
-    cases = [('review-core', 'perf_trace::perf_case'),
-             ('review-pipeline::perf_probe', 'calibration_build_case')]
+    cases = [('af-contracts', 'perf_trace::perf_case'),
+             ('af-runtime::perf_probe', 'calibration_build_case')]
 root = ET.Element('testsuites')
 suite = ET.SubElement(root, 'testsuite')
 for binary, name in cases:
@@ -1047,9 +1105,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py'):
                 (scripts / name).write_text(sample)
-            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
+            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py'):
                 (scripts / name).write_text('pass\n')
             (scripts / 'release-smoke.sh').write_text('[ "$1" = target/debug/af ]\n')
             tools = root / 'bin'
@@ -1074,8 +1132,8 @@ ET.ElementTree(root).write(path, encoding='unicode')
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             records = [json.loads(line) for line in (source / metrics_path).read_text().splitlines()]
             self.assertEqual([r['label'] for r in records], ['fmt', 'lint', 'lint-diagnostic-features',
-                             'release-resolution', 'changelog-notes-tests', 'changelog-notes',
-                             'quarantine-scan-tests', 'af-pin-tests', 'af-pin',
+                             'release-contract', 'release-contract-tests', 'release-resolution',
+                             'changelog-notes-tests', 'changelog-notes', 'quarantine-scan-tests', 'af-pin-tests', 'af-pin',
                              'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke', 'release-smoke'])
             self.assertTrue(all(r['schema'] == 'af.ci-step/1' and r['exit_code'] == 0
                                 and r['elapsed_seconds'] >= 0 and r['started_at'] for r in records))
@@ -1097,9 +1155,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py'):
                 (scripts / name).write_text(sample)
-            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
+            for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py'):
                 (scripts / name).write_text('pass\n')
             before = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
             files = [p for p in source.rglob('*') if p.is_file()]
@@ -1120,9 +1178,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
                 result = subprocess.run(['make', 'base-check'], cwd=source, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 6)
+                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 7)
                 records = [json.loads(line) for line in metrics.read_text().splitlines()]
-                self.assertEqual(len(records), 9)
+                self.assertEqual(len(records), 11)
                 self.assertTrue(all(r['exit_code'] == 0 for r in records))
                 after = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)
@@ -1171,6 +1229,7 @@ class Catalog(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / 'Makefile').write_text((ROOT / 'Makefile').read_text())
             workflow = root / '.github/workflows/validate.yml'
             workflow.parent.mkdir(parents=True)
             source = (ROOT / '.github/workflows/validate.yml').read_text()
@@ -1251,7 +1310,7 @@ class Quarantine(unittest.TestCase):
         suites = fixture['rust-suites']
         for name in ('cli_surface::help_lists_every_command', 'cli_surface::version_prints_one_line'):
             suites['af::it']['testcases'][name] = {'ignored': False}
-        suites['review-process::cancellation']['testcases']['cancellation_after_exit_is_a_noop'] = {
+        suites['af-process::cancellation']['testcases']['cancellation_after_exit_is_a_noop'] = {
             'ignored': False}
         return fixture
 
@@ -1302,7 +1361,7 @@ class Quarantine(unittest.TestCase):
                                  tc.filterset(tc.partition(fixture, held={}), plan['selected']))
 
     def test_a_quarantined_test_leaves_the_fast_and_full_filters_but_its_siblings_stay(self):
-        other = 'review-process::cancellation cancellation_before_spawn_cannot_execute_the_command'
+        other = 'af-process::cancellation cancellation_before_spawn_cannot_execute_the_command'
         self.held_file({self.held: self.entry(), other: self.entry(state='flaky', issue=None)})
         entries = tc.partition(self.inventory())
         classes = {e['binary'] + ' ' + e['test']: e['class'] for e in entries}
@@ -1317,8 +1376,8 @@ class Quarantine(unittest.TestCase):
                 self.assertFalse(self.selects(expression, *other.split(' ')))
                 for binary, name in [('af::it', 'cli_surface::help_lists_every_command'),
                                      ('af::it', 'cli_surface::version_prints_one_line'),
-                                     ('review-process::cancellation', 'cancellation_after_exit_is_a_noop'),
-                                     ('review-core::schema_parity',
+                                     ('af-process::cancellation', 'cancellation_after_exit_is_a_noop'),
+                                     ('af-contracts::schema_parity',
                                       'a_gate_cleanup_is_one_closed_transition_referencing_no_artifact')]:
                     self.assertTrue(self.selects(expression, binary, name), (binary, name))
         full = tc.filterset(entries, list(tc.CLASSES))
@@ -1406,7 +1465,7 @@ class Quarantine(unittest.TestCase):
                      'an #[ignore] test cannot be quarantined', inventory=fixture)
 
     def test_a_feature_only_identity_is_refused_as_outside_the_default_feature_inventory(self):
-        feature_only = ('review-pipeline::perf_probe calibration_build::'
+        feature_only = ('af-runtime::perf_probe calibration_build::'
                         'calibration_build_probe_injects_once_inside_the_region_and_keeps_its_oracle')
         needles = ('covers the default-feature inventory only',
                    'fix the test, or exclude it from its feature selector by hand')
@@ -1415,7 +1474,7 @@ class Quarantine(unittest.TestCase):
         # At partition time too, before the generic absent-identity guard could name it.
         self.refusal({feature_only: self.entry()}, *needles, inventory=self.inventory())
         self.assertNotIn('not in the test inventory', str(self.held_refusal(feature_only)))
-        trace = 'review-core perf_trace::tests::a_recorder_test'
+        trace = 'af-contracts perf_trace::tests::a_recorder_test'
         self.refusal({trace: self.entry()}, '.config/test-quarantine.json: ' + trace,
                      'trace feature build', *needles)
 
@@ -1434,12 +1493,16 @@ class Quarantine(unittest.TestCase):
         return (binary, name) in held
 
     def test_the_full_gate_route_runs_nextest_without_the_quarantined_test(self):
-        # make check (verify.sh --profile full) reaches nextest only through the `test` recipe.
+        # The ordinary full selection keeps its quarantine exclusion. The separate live
+        # proof runs only the exact ignored native test, once, after the full prerequisites.
         dry = subprocess.run(['make', '-n', 'check', 'TEST_THREADS=4'], cwd=ROOT, capture_output=True,
                              text=True, check=True).stdout
         route = 'scripts/test-classes.py nextest-gate -- --locked --profile ci --test-threads 4'
         self.assertIn(route, dry)
-        self.assertNotIn('scripts/nextest-gate.py', dry)  # No other, unfiltered nextest run.
+        self.assertEqual(dry.count(route), 1)
+        self.assertEqual(dry.count('scripts/nextest-gate.py'), 1)
+        self.assertIn('--repeat 1 --workspace --locked --profile ci --run-ignored only '
+                      '--no-tests fail', dry)
         argv = ['test-classes.py', *route.split(' ')[1:]]
         caller = argv[argv.index('--') + 1:]
 

@@ -1,6 +1,6 @@
 """Independent reference fixtures and golden oracle entries of the native probe (ADR-0163).
 
-The native probe (`crates/review-pipeline/examples/perf-probe.rs`) generates its workload
+The native probe (`crates/af-runtime/examples/perf-probe.rs`) generates its workload
 fixtures through the product's own writers and reports what each timed operation produced.
 This module never runs the product. It constructs, from the same fixture *inputs*, the bytes
 the product must produce, with an encoder of its own, and derives every golden digest, count
@@ -32,7 +32,7 @@ TASK_LEASE_MS = 60000
 ENVELOPE_CAP_BYTES = 8 * 1024 * 1024
 SAFE_INTEGER = 2 ** 53 - 1
 
-# Fixture inputs. They mirror crates/review-pipeline/examples/perf-probe/fixtures.rs byte for
+# Fixture inputs. They mirror crates/af-runtime/examples/perf-probe/fixtures.rs byte for
 # byte; the probe's golden test fails when the two disagree, because the probe's envelopes would
 # no longer carry these artifact IDs.
 POLICY_DOCUMENT = {"perf_probe": "trusted fixture policy"}
@@ -106,7 +106,7 @@ OUTPUT_SCHEMA = ('{"type":"object","additionalProperties":false,"required":["out
                  '"text":{"type":"string"}}}')
 INSTRUCTIONS = "Performance fixture Worker. It is never executed.\n"
 
-PIPELINE_TOML = """schema = "af.pipeline/1"
+PIPELINE_TOML = """schema = "af.pipeline/6"
 name = "perf/two-node"
 version = "1.0.0"
 max_attempts = 3
@@ -564,7 +564,7 @@ def golden_entry(doc, instance, contract_id, cache):
             return _entry(instance, contract_id, blob, blob,
                           persistence_logical_bytes("cas_write_read"), None,
                           "the reference object read back; count is logical bytes written+read")
-        semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@5"],
+        semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@6"],
                     "prefix_events": PERSISTENCE_PREFIX_EVENTS}
         return _entry(instance, contract_id, None, _digest_of(semantic), PERSISTENCE_EVENTS,
                       semantic, "explicit facts of the appended and read-back lease renewals")
@@ -649,7 +649,7 @@ def golden_document(doc):
         elif fixture["kind"] == "event_log":
             fixtures[fixture_id] = {
                 "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
-                "relevant_events": "TaskTransition@5 opened, plan proposed, plan admitted, then "
+                "relevant_events": "TaskTransition@6 opened, plan proposed, plan admitted, then "
                                    "production 60000 ms lease renewals"}
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"

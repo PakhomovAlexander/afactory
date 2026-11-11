@@ -17,7 +17,7 @@ never `complete`. A complete comparison may still hold a real regression.
 import html
 import os
 
-from . import contracts, stats, telemetrylab
+from . import contracts, stats, telemetry_lab
 from .values import ContractError, require
 
 SCHEMA = "af.perf-comparison-overview/1"
@@ -52,7 +52,7 @@ def _profile_kind(path):
 
 
 def _telemetry(path):
-    result, _, _ = telemetrylab.read_bundle(os.path.join(path, "run"))
+    result, _, _ = telemetry_lab.read_bundle(os.path.join(path, "run"))
     runs = result["runs"]
     failed = sum(run["status"] in ("failed", "timeout", "refused_document") for run in runs)
     missing = sum(run["status"] == "not_run" for run in runs)

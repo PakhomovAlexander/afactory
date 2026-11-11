@@ -7,17 +7,17 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[path = "../../../../review-process/tests/support/executables.rs"]
+#[path = "../../../../af-process/tests/support/executables.rs"]
 mod executables;
 
 /// A process a test only read the ID of, signalled only while that ID still names it (issue
 /// #331 item 7).
-#[path = "../../../../review-process/tests/support/recorded.rs"]
+#[path = "../../../../af-process/tests/support/recorded.rs"]
 pub mod recorded;
 
 /// The binary under test as this test process starts it: its own link to the `af` cargo built
 /// for these tests, taken under the boundary every test builder and launcher of a workspace
-/// output shares (ADR-0174). `review-pipeline`'s tests build `af` again, and every cargo build
+/// output shares (ADR-0174). `af-runtime`'s tests build `af` again, and every cargo build
 /// replaces `CARGO_BIN_EXE_af` (on macOS it removes and copies the file), so starting that path
 /// itself could meet a missing file; the link is the same inode, whatever replaces the path.
 pub fn af_binary() -> &'static Path {
@@ -254,7 +254,7 @@ pub fn write(path: &Path, text: &str) {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    review_core::hex::encode(&<sha2::Sha256 as sha2::Digest>::digest(bytes))
+    af_contracts::hex::encode(&<sha2::Sha256 as sha2::Digest>::digest(bytes))
 }
 
 /// A minisign key pair for signing test releases; `AF_RELEASE_KEY` points the binary at it.
@@ -773,8 +773,8 @@ pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
         .tempdir_in(parent)
         .unwrap()
         .keep();
-    let identity = review_sandbox::Identity::of(&made).unwrap();
-    let claim = parent.join(review_sandbox::claim_name(pid, identity));
+    let identity = af_sandbox::Identity::of(&made).unwrap();
+    let claim = parent.join(af_sandbox::claim_name(pid, identity));
     std::fs::rename(&made, &claim).unwrap();
     claim
 }

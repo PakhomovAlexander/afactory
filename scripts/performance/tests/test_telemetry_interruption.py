@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from unittest import mock
 
-from perflab import budget, telemetrylab, transport
+from perflab import budget, telemetry_lab, transport
 from perflab.values import ContractError
 from tests.support import TempDir
 
@@ -220,7 +220,7 @@ class Interruption(TempDir):
         for boundary in ("open", "flock"):
             with self.subTest(boundary=boundary):
                 root = self.path(boundary)
-                kept = telemetrylab.HistoryRoot(root, sweep=False)
+                kept = telemetry_lab.HistoryRoot(root, sweep=False)
                 owned = []
                 previous_handler = signal.getsignal(signal.SIGALRM)
                 previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
@@ -253,7 +253,7 @@ class Interruption(TempDir):
                     os.fstat(owned[0])
                 self.assertEqual(caught.exception.errno, errno.EBADF)
                 # An independent open description must now acquire a real flock.
-                with telemetrylab.HistoryRoot(root, sweep=False):
+                with telemetry_lab.HistoryRoot(root, sweep=False):
                     pass
                 self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
                 self.assertEqual(signal.getitimer(signal.ITIMER_REAL), previous_timer)
@@ -261,7 +261,7 @@ class Interruption(TempDir):
 
     def test_live_cancelled_resolver_and_real_timer_cannot_interrupt_descriptor_publication(self):
         root = self.path("live-resolver")
-        kept = telemetrylab.HistoryRoot(root, sweep=False)
+        kept = telemetry_lab.HistoryRoot(root, sweep=False)
         original_open, owned, returned = os.open, [], []
         previous_handler = signal.getsignal(signal.SIGALRM)
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
@@ -298,7 +298,7 @@ class Interruption(TempDir):
                 os.fstat(owned[0])
             self.assertEqual(caught.exception.errno, errno.EBADF)
             self.assertLess(time.monotonic() - started, 0.5, "no renewed deadline after transfer")
-            with telemetrylab.HistoryRoot(root, sweep=False):
+            with telemetry_lab.HistoryRoot(root, sweep=False):
                 pass
             self.assertFalse(exchanges[0].done.is_set(), "lock safety cannot assume DNS stopped")
         self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
@@ -330,16 +330,16 @@ class Interruption(TempDir):
 
     def test_failed_acquisition_never_unlocks_the_other_owner(self):
         root = self.path("history")
-        with telemetrylab.HistoryRoot(root, sweep=False) as owner:
-            other = telemetrylab.HistoryRoot(root, sweep=False)
+        with telemetry_lab.HistoryRoot(root, sweep=False) as owner:
+            other = telemetry_lab.HistoryRoot(root, sweep=False)
             with self.assertRaises(ContractError):
                 other.__enter__()
             other.__exit__()
             self.assertIsNone(other.fd)
             os.fstat(owner.fd)
             with self.assertRaises(ContractError):
-                telemetrylab.HistoryRoot(root, sweep=False).__enter__()
-        with telemetrylab.HistoryRoot(root, sweep=False):
+                telemetry_lab.HistoryRoot(root, sweep=False).__enter__()
+        with telemetry_lab.HistoryRoot(root, sweep=False):
             pass
 
     def test_descriptor_transfer_preserves_the_outer_mask_and_flock_is_unmasked(self):
@@ -356,7 +356,7 @@ class Interruption(TempDir):
 
         try:
             with mock.patch.object(fcntl, "flock", locked):
-                with telemetrylab.HistoryRoot(self.path("masked"), sweep=False):
+                with telemetry_lab.HistoryRoot(self.path("masked"), sweep=False):
                     pass
             self.assertTrue(observed)
             self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()),
