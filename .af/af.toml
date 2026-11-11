@@ -1,33 +1,21 @@
-version = 2
+"version" = 2
 
-[project]
-name = "afactory"
-min_af = "0.2"
+["project"]
+"name" = "afactory"
+"min_af" = "0.2"
 
+["task"]
 
-[task.defaults]
-# Every Afactory change runs through the catalog's default pipeline (ADR-0253); it accepts
-# implement Tasks. Other kinds choose their own Pipeline; an explicitly selected Pipeline
-# still takes precedence.
-pipeline = "default/implementation"
-fallback = "refuse"
+["task"."defaults"]
+"pipeline" = "bugfix/default-codex"
+"fallback" = "refuse"
 
-[task.defaults.limits]
-# The limits of the default-pipeline example in docs/tasks.md. The smallest that fit
-# default/implementation before Provider admission are 4600000 tokens, 6 Attempts and
-# 37805000 ms, as af 0.13.0's `af task plan --fit` measured them; twelve hours leaves room
-# for admission, the compiled work and confirmation.
-tokens = 8000000
-max_attempts = 16
-wall_ms = 43200000
+["task"."defaults"."limits"]
+"tokens" = 8000000
+"max_attempts" = 16
+"wall_ms" = 43200000
 
-[task.defaults.limits.verification]
-# The reviewers, the evaluator and the repository Gate needed at least 1600000 tokens and
-# 16200000 ms in the same measurement, and five hours protects their declared upper bounds.
-# 9 Attempts covers every judging node (checks, bugs, correctness, uix, evaluator)
-# and its protected Provider admissions. Judges sharing the same exact Terra model/effort
-# and invocation policy share an admission; this allowance is not a measured minimum.
-tokens = 2000000
-attempts = 9
-wall_ms = 18000000
-
+["task"."defaults"."limits"."verification"]
+"tokens" = 2000000
+"attempts" = 9
+"wall_ms" = 18000000

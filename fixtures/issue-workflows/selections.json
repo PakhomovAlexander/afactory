@@ -1,0 +1,76 @@
+{
+  "schema": "af.issue-workflows/1",
+  "default": "bugfix/default-codex",
+  "verification": "issue-internal/verification",
+  "selections": {
+    "bugfix/light-kimi-terra-sol": {
+      "pipeline": "bugfix/light-kimi-terra-sol",
+      "light": true,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "bugfix/light-codex": {
+      "pipeline": "bugfix/light-codex",
+      "light": true,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "bugfix/default-codex": {
+      "pipeline": "bugfix/default-codex",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "bugfix/research-fix-codex": {
+      "pipeline": "bugfix/research-fix-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/report",
+      "stages": [
+        "diagnosis",
+        "implementation",
+        "verification"
+      ]
+    },
+    "impl/default-codex": {
+      "pipeline": "impl/default-codex",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "impl/design-codex": {
+      "pipeline": "impl/design-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/design",
+      "stages": [
+        "design",
+        "implementation",
+        "verification"
+      ]
+    },
+    "perf/research-experiment-codex": {
+      "pipeline": "perf/research-experiment-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/report",
+      "stages": [
+        "baseline",
+        "research",
+        "implementation",
+        "verification",
+        "measurement",
+        "comparison"
+      ]
+    }
+  }
+}

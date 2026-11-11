@@ -1,397 +1,191 @@
-schema = "af.task-catalog/2"
-report_policy = ".af/report-policy.toml"
-# Campaign catalog for the kernel's own campaigns. warm/* served the Worker warm layers plan;
-# kernel/* is the generic family later plans use. Every package of a plan runs through one
-# implementation-reviewed Pipeline with the same four native Workers. Provider labels here
-# are neutral; a developer's local bindings file maps them to admitted machine-local accounts.
-code_policy = ".af/code-policy.toml"
-no_match = "refuse"
-
-[review]
-generation = 2
-gate = "major"
-clean_rounds = 1
-max_rounds = 2
-allow_targeted_repairs = false
-
-[review.reviewers]
-# `bugs` is advisory so that a pipeline may leave it unbound (default-light/*); a pipeline
-# that binds it counts its findings and its missing result exactly as before, but a benchmark
-# Demand it files is advisory and no longer blocks convergence (ADR-0262).
-bugs = "advisory"
-correctness = "required"
-uix = "advisory"
-
-[packages."warm/implementer"]
-version = "1.3.1"
-digest = "sha256:420b174da9a7192fd75d16aaa468c3a621cf9956e15fd10263a2ce6330d343d6"
-path = ".af/task-packages/warm/implementer"
-
-[packages."warm/correctness"]
-version = "1.0.1"
-digest = "sha256:8c8e0453f002c5d1bb2371f8e474f3a83b0c5bf55dbb0c88d10e2cf25e9ff943"
-path = ".af/task-packages/warm/correctness"
-
-[packages."warm/bugs"]
-version = "1.0.1"
-digest = "sha256:a751e25080ba788172012f46f05a91741a0b6f01dc0eb791d4b0a6bdae20da8f"
-path = ".af/task-packages/warm/bugs"
-
-[packages."warm/evaluator"]
-version = "1.0.1"
-digest = "sha256:44d0fef533b9868c9e4b1697cee9a68a0eee0e2ada1629d496b1aa6d2637d38c"
-path = ".af/task-packages/warm/evaluator"
-
-[packages."warm/review-light"]
-version = "1.0.1"
-digest = "sha256:1b0a0acc08da5f12795b727df10a83138364b3b4d52352a4ca3939f529fb8018"
-path = ".af/task-packages/warm/review-light"
-
-[packages."warm/implementation-reviewed"]
-version = "1.0.1"
-digest = "sha256:2b4f317189021fc760d0b7a0e8cc98dd28eebff3e03bd299a10c086ae67fdaff"
-path = ".af/task-packages/warm/implementation-reviewed"
-
-[packages."warm/verification"]
-version = "1.0.1"
-digest = "sha256:157702e0ec66e0661eb12008c919d078ffb55b910ce9d9b56eee038a38656cc9"
-path = ".af/task-packages/warm/verification"
-
-[packages."warm/verification-kind"]
-version = "1.0.1"
-digest = "sha256:a6c787092d77542548d9c56a1929ef0a878f7aa40faa27d2c3f14b6b42c1b998"
-path = ".af/task-packages/warm/verification-kind"
-
-[packages."kernel/implementer"]
-version = "1.8.3"
-digest = "sha256:325df992bec17f691a52e80f758ff1879285613fac077b9006435b7401ba7648"
-path = ".af/task-packages/kernel/implementer"
-
-[packages."kernel/correctness"]
-version = "1.4.1"
-digest = "sha256:3f165ed5a646e6cd0afc9c3f4ee775859b8e3d6bd26c67cfeb7ea1eb3f5086ae"
-path = ".af/task-packages/kernel/correctness"
-
-[packages."kernel/bugs"]
-version = "1.6.1"
-digest = "sha256:e3b0ac5bf8d62490c59248a2ae08a5d8d5ce16ea0cdd4fe97af3bbcfcd53a1ce"
-path = ".af/task-packages/kernel/bugs"
-
-[packages."kernel/evaluator"]
-version = "1.3.1"
-digest = "sha256:1d42d5c56c5ffa084254879426488af00fd138b7c22b1266479e95ab1d74336a"
-path = ".af/task-packages/kernel/evaluator"
-
-[packages."kernel/uix"]
-version = "1.6.1"
-digest = "sha256:17498b7608124d8327792b7624f6b9325aa7a2eccb81228a74661d631ffeb753"
-path = ".af/task-packages/kernel/uix"
-
-[packages."kernel/ux"]
-version = "1.2.1"
-digest = "sha256:c6048a559383502e48a169bbd591470571a52f863c929dfd88f52786ef40cd3b"
-path = ".af/task-packages/kernel/ux"
-
-[packages."kernel/implementation-ux"]
-version = "1.2.1"
-digest = "sha256:b618fb8d31c881bf8469549850d65753ebcef9c582cb328aca413ddd2f22168c"
-path = ".af/task-packages/kernel/implementation-ux"
-
-[packages."kernel/implementer-long"]
-version = "1.3.3"
-digest = "sha256:1857defe5d3ec2c5c7ad821e434714c4b692281a6102bc669cfaca223dd4fcbb"
-path = ".af/task-packages/kernel/implementer-long"
-
-[packages."kernel/review-light"]
-version = "1.3.1"
-digest = "sha256:7391cd92e939fa27cd9edd4607fb998f40a6ee17a45711cc2125a76a69c38148"
-path = ".af/task-packages/kernel/review-light"
-
-[packages."kernel/implementation-reviewed"]
-version = "1.4.1"
-digest = "sha256:3a0d4d181458f3f0e4894213f03990ff1cc331787d9e2c0895793a693b75d1b0"
-path = ".af/task-packages/kernel/implementation-reviewed"
-
-[packages."kernel/review-code"]
-version = "1.1.1"
-digest = "sha256:b4f4e5ac3c30c1e632365f6b1de8c2544c08700b2047fef5b1181560f3104c36"
-path = ".af/task-packages/kernel/review-code"
-
-[packages."kernel/verification-reviewed"]
-version = "1.2.1"
-digest = "sha256:8257a710dfde4567788187fbf90095b090a4305a5a93748b7279af0fa3c71836"
-path = ".af/task-packages/kernel/verification-reviewed"
-
-[packages."kernel/verification"]
-version = "1.0.1"
-digest = "sha256:c0f07e1ecae127953f6544c5f03dbe8704a2ce2dbbba905f6ef10e3c60c2003a"
-path = ".af/task-packages/kernel/verification"
-
-[packages."kernel/gate-accept"]
-version = "1.0.0"
-digest = "sha256:265fa432640093fec3a6cf5a52ea9e85b7e884d771827d49110b2cbf70847ec1"
-path = ".af/task-packages/kernel/gate-accept"
-
-[packages."kernel/gate-bench"]
-version = "1.0.1"
-digest = "sha256:ec5312b166ff461da4f835ed23746de8f99ede57f0e161e9d3393aac1840ced3"
-path = ".af/task-packages/kernel/gate-bench"
-
-[kinds]
-verification = "warm/verification-kind"
-triage = "backlog/triage-kind"
-
-[packages."kernel/experiment"]
-version = "1.0.1"
-digest = "sha256:49cec99a2d68e86b490ac9417dc377bac580b07ed868446ebba5fece62cbba36"
-path = ".af/task-packages/kernel/experiment"
-
-[packages."kernel/experiment-evaluator"]
-version = "1.0.1"
-digest = "sha256:84c6cfb422e87f25fb7d4a8e554c458c2d477af404d27e961fb704c64d0839fa"
-path = ".af/task-packages/kernel/experiment-evaluator"
-
-[packages."kernel/experiment-trial"]
-version = "1.0.1"
-digest = "sha256:13a9a23cff4a4978b66a21eb2edc5bfc7e8b0182715f5beabd416ac6f42a1e9d"
-path = ".af/task-packages/kernel/experiment-trial"
-
-[packages."kernel/report"]
-version = "1.0.1"
-digest = "sha256:e25ffad24c118e69be2662d0f8e9ec0e5413499228189077f42cc5f004ef3b28"
-path = ".af/task-packages/kernel/report"
-
-[packages."kernel/analyst"]
-version = "1.0.1"
-digest = "sha256:f26fdb07ae6ecbbe6d4e79ef9f4c6286334d8ce8d56a5bfab8c3b1bcfb508e30"
-path = ".af/task-packages/kernel/analyst"
-
-[packages."kernel/report-verifier"]
-version = "1.0.1"
-digest = "sha256:09de80f3c990b42c6c80fab74e5170d7582e8ecd3a5232624a5510c35ee71304"
-path = ".af/task-packages/kernel/report-verifier"
-
-[packages."backlog/triage"]
-version = "1.0.1"
-digest = "sha256:d919ff2ba7f99162949780b6ff6bb2c4594ba9cd5625b5c73845adcbead5eee1"
-path = ".af/task-packages/backlog/triage"
-
-[packages."backlog/triage-author"]
-version = "1.0.2"
-digest = "sha256:7b736bd5d7524cb151f69fa17c0bd5b649951b166c745e31ada5876270634e56"
-path = ".af/task-packages/backlog/triage-author"
-
-[packages."backlog/triage-kind"]
-version = "1.0.1"
-digest = "sha256:3b6c592792c37c3f904385fc2cf30a87e7419b9ae08f0cfdffd746c19070cd2f"
-path = ".af/task-packages/backlog/triage-kind"
-
-[packages."backlog/triage-verifier"]
-version = "1.0.2"
-digest = "sha256:c040156a030229389a5396c9ec8f955e91095359f539eb885fa8193b274af391"
-path = ".af/task-packages/backlog/triage-verifier"
-
-# Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
-# Each version is its local original's; the path is where the README installs it. Add each
-# entry to `.af/task-catalog.toml` beside the original, never in place of it.
-
-[packages."kernel/gate-bench-remote"]
-version = "1.0.1"
-digest = "sha256:b651610009e0ba2509896d7ecc1fae8765c7ce459d2f9cb443d46d6ae17e69d3"
-path = ".af/task-packages/kernel/gate-bench-remote"
-
-[packages."kernel/implementation-reviewed-remote"]
-version = "1.4.1"
-digest = "sha256:caaf578074fc4174d694b877031c75a619dbb7c24060ca8c835e38bb4bfd6b9f"
-path = ".af/task-packages/kernel/implementation-reviewed-remote"
-
-[packages."kernel/verification-reviewed-remote"]
-version = "1.2.1"
-digest = "sha256:8be249b37c65de40ad36b4bc90d76ccfd9938ecef700fea9b79f27470218daee"
-path = ".af/task-packages/kernel/verification-reviewed-remote"
-
-[packages."kernel/review-code-remote"]
-version = "1.1.1"
-digest = "sha256:16a144b7e7d96f02485439b2c19d31b4b971f8a8145cab2611e8f3d86d595f65"
-path = ".af/task-packages/kernel/review-code-remote"
-
-# The repository's default Task pipeline (owner's decision, 27 October 2026): one implementing
-# iteration by GPT-6.1 Sol/high, two bound reviewers (bugs: gpt-6.1-terra, correctness: gpt-6.1-terra), one
-# advisory reviewer for gate time and quality in the `uix` slot (gpt-6.1-terra medium) and an
-# evaluator (gpt-6.1-terra high); `default/verification` judges an existing candidate the same way.
-
-[packages."default/implementer"]
-version = "1.0.2"
-digest = "sha256:a79deef1c22027b579b7c1a2cb5ade314e008a0f8e2854fccead6172f25efaee"
-path = ".af/task-packages/default/implementer"
-
-[packages."default/bugs"]
-version = "1.1.2"
-digest = "sha256:0140f6b8bb8f20893c472afda6a3f14ff1ac63e4758f95c6bfcd064bbfc78400"
-path = ".af/task-packages/default/bugs"
-
-[packages."default/correctness"]
-version = "1.1.2"
-digest = "sha256:2eb6d7e7b44f07b60986453fe33f38d602180329439843a5d938291e32e75558"
-path = ".af/task-packages/default/correctness"
-
-[packages."default/advisor"]
-version = "1.1.2"
-digest = "sha256:2af190acad34ce7783a45f8d9cfce71a8fbc5cd160e727f4382e57770c40e292"
-path = ".af/task-packages/default/advisor"
-
-[packages."default/evaluator"]
-version = "1.1.2"
-digest = "sha256:d8ac68d1542eb7ffb5077f2dc14b7f338bc3da233fa285dcba7a4dc5062a7934"
-path = ".af/task-packages/default/evaluator"
-
-[packages."default/implementation"]
-version = "1.0.1"
-digest = "sha256:b66f16b7df3c1dbc0c3c72523c080b1b2e91ee1d0142ebd4aaa2b6613daee080"
-path = ".af/task-packages/default/implementation"
-
-[packages."default/verification"]
-version = "1.0.1"
-digest = "sha256:b29e3063b2715009934a26256d67a48f66cafe6cb053cd6bb198f0d9ab07ca14"
-path = ".af/task-packages/default/verification"
-
-# The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
-# implementing iteration by GPT-6.1 Sol at high effort, the correctness reviewer and the
-# evaluator of the default pipeline with smaller Attempt allowances, no bugs or advisory reviewer.
-# The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
-
-[packages."default-light/implementer"]
-version = "1.0.4"
-digest = "sha256:de30bbd065c0d44e52e3db968ada5c5443a679796135c788c01350809c04c6dd"
-path = ".af/task-packages/default-light/implementer"
-
-[packages."default-light/correctness"]
-version = "1.0.2"
-digest = "sha256:b7850296253b09f5c761d98518065174c9f82a5e8798f3988ed0277ecbd2b397"
-path = ".af/task-packages/default-light/correctness"
-
-[packages."default-light/evaluator"]
-version = "1.0.2"
-digest = "sha256:1de685745cb57ea2fd058b9389faaed05a77350f922f4c5b6bd2886c24f7e46f"
-path = ".af/task-packages/default-light/evaluator"
-
-[packages."default-light/review"]
-version = "1.0.1"
-digest = "sha256:0b9491815c4fcc56a8cab37e325debdfeaccf6ccc3d011077955d3aeba183307"
-path = ".af/task-packages/default-light/review"
-
-[packages."default-light/implementation"]
-version = "1.0.1"
-digest = "sha256:ac588bbff1313c4704646b90a911cb01ede18ceb430a6de8c554f58f89e7a859"
-path = ".af/task-packages/default-light/implementation"
-
-[packages."default-light/verification"]
-version = "1.0.1"
-digest = "sha256:845b448305bc6a7b37d95a8c28e72d14bf0a0a35269362ef9a3c1ce18a1e3ba2"
-path = ".af/task-packages/default-light/verification"
-
-[packages."pi-light/implementer"]
-version = "1.1.0"
-digest = "sha256:4fbbec8c0ad4158999428d3c3557030e1301b5a17916edba08af60bd97de01c1"
-path = ".af/task-packages/pi-light/implementer"
-
-[packages."pi-light/correctness"]
-version = "1.1.1"
-digest = "sha256:438d31d8b03bb9d8bddad8482e7bb1cbdb1f06e158b3b4df0d29e830bc6f456e"
-path = ".af/task-packages/pi-light/correctness"
-
-[packages."pi-light/evaluator"]
-version = "1.1.1"
-digest = "sha256:ec4e1b0248036587789732bde354b6a2a8ed7cecfbe1e3d516a9d6fcb7b2b978"
-path = ".af/task-packages/pi-light/evaluator"
-
-[packages."pi-light/review"]
-version = "1.1.1"
-digest = "sha256:558519fb6f3f29fab996dd4e1cde09ed8b46307c3b76b775233540567c14b9a4"
-path = ".af/task-packages/pi-light/review"
-
-[packages."pi-light/implementation"]
-version = "1.1.1"
-digest = "sha256:1b4492643f71bd37da2e26a7472cfeab6b47d58975faef5da39025be19cf1506"
-path = ".af/task-packages/pi-light/implementation"
-
-[packages."pi-light/verification"]
-version = "1.1.1"
-digest = "sha256:c2087354cd629b7bac6cb83eed2fa13e16df9c29e9e24455dee5268190cc7b47"
-path = ".af/task-packages/pi-light/verification"
-
-[independence]
-command_workers_by_package = true
-distinct_principals = false
-distinct_providers = false
-distinct_models = true
-
-[providers]
-"warm/implementer" = "codex-main"
-"warm/correctness" = "codex-main"
-"warm/bugs" = "codex-main"
-"warm/evaluator" = "codex-main"
-"kernel/implementer" = "codex-main"
-"kernel/implementer-long" = "codex-main"
-"kernel/correctness" = "codex-main"
-"kernel/bugs" = "codex-main"
-"kernel/evaluator" = "codex-main"
-"kernel/experiment-evaluator" = "codex-main"
-"kernel/analyst" = "codex-main"
-"kernel/report-verifier" = "codex-main"
-"backlog/triage-author" = "codex-main"
-"backlog/triage-verifier" = "codex-main"
-"default/implementer" = "codex-main"
-"default/bugs" = "codex-main"
-"default/correctness" = "codex-main"
-"default/advisor" = "codex-main"
-"default/evaluator" = "codex-main"
-"default-light/implementer" = "codex-main"
-"default-light/correctness" = "codex-main"
-"default-light/evaluator" = "codex-main"
-
-"pi-light/implementer" = "pi-kimi"
-"pi-light/correctness" = "codex-main"
-"pi-light/evaluator" = "codex-main"
-
-[provider_admission]
-tokens = 32768
-wall_ms = 45000
-
-[packages."kernel/verification-ux"]
-version = "1.0.1"
-digest = "sha256:03868014d617d047f62e009e3f8d9707a62566b7c40e4c8d208d3e80faf99434"
-path = ".af/task-packages/kernel/verification-ux"
-
-
-# Owner-selected performance authority. Inert examples in fixtures/scenarios select these
-# packages and codex-personal explicitly; generic defaults and Provider aliases stay unchanged.
-[packages."owner-default/implementer"]
-version = "1.0.0"
-digest = "sha256:9aed8b01432ad4abc2e895af45832b7c96954ab9cd528cd8213645547edc6911"
-path = ".af/task-packages/owner-default/implementer"
-
-[packages."owner-default/bugs"]
-version = "1.0.0"
-digest = "sha256:f77033b629be9ea605f3bbbd1274f1c075ec0d506b5c5b87e1d82f3c062d5dae"
-path = ".af/task-packages/owner-default/bugs"
-
-[packages."owner-default/correctness"]
-version = "1.0.1"
-digest = "sha256:6143c57ce6adceac6a1bfb8763a890797d61d6e7f8def22f19e5faae6560b017"
-path = ".af/task-packages/owner-default/correctness"
-
-[packages."owner-default/evaluator"]
-version = "1.0.1"
-digest = "sha256:c301322bcaa3c3c99a128928cd2d8ff8058e02e7c7202b67a7aef871d08e9968"
-path = ".af/task-packages/owner-default/evaluator"
-
-[packages."owner-default/report-author"]
-version = "1.0.0"
-digest = "sha256:2c5e211826d8a47a1cd627d293e8046d03d4dea2b99ebc175cc25e2487b06906"
-path = ".af/task-packages/owner-default/report-author"
-
-[packages."kernel/review-decisions"]
-version = "1.0.0"
-digest = "sha256:073d237ff95b6292a2d666090200516af2c951645de698781cb606d3fd757d5c"
-path = ".af/task-packages/kernel/review-decisions"
+"schema" = "af.task-catalog/2"
+"code_policy" = ".af/code-policy.toml"
+"report_policy" = ".af/report-policy.toml"
+"no_match" = "refuse"
+
+["review"]
+"generation" = 2
+"gate" = "major"
+"clean_rounds" = 1
+"max_rounds" = 2
+"allow_targeted_repairs" = false
+
+["review"."reviewers"]
+"bugs" = "advisory"
+"correctness" = "required"
+
+["packages"]
+
+["packages"."backlog/triage"]
+"version" = "1.0.1"
+"digest" = "sha256:d919ff2ba7f99162949780b6ff6bb2c4594ba9cd5625b5c73845adcbead5eee1"
+"path" = ".af/task-packages/backlog/triage"
+
+["packages"."backlog/triage-author"]
+"version" = "1.0.2"
+"digest" = "sha256:7b736bd5d7524cb151f69fa17c0bd5b649951b166c745e31ada5876270634e56"
+"path" = ".af/task-packages/backlog/triage-author"
+
+["packages"."backlog/triage-kind"]
+"version" = "1.0.1"
+"digest" = "sha256:3b6c592792c37c3f904385fc2cf30a87e7419b9ae08f0cfdffd746c19070cd2f"
+"path" = ".af/task-packages/backlog/triage-kind"
+
+["packages"."backlog/triage-verifier"]
+"version" = "1.0.2"
+"digest" = "sha256:c040156a030229389a5396c9ec8f955e91095359f539eb885fa8193b274af391"
+"path" = ".af/task-packages/backlog/triage-verifier"
+
+["packages"."bugfix/default-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:6b8208466b341d8d0f65fe3c3d3e1e4beddca292e28ca910b6ddf8f50e51a3d4"
+"path" = ".af/task-packages/bugfix/default-codex"
+
+["packages"."bugfix/light-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:cb2e659ea68ae30aa6faf3f843e8a70262fd5c02e5e46e3ca59bd53a8645cd65"
+"path" = ".af/task-packages/bugfix/light-codex"
+
+["packages"."bugfix/light-kimi-terra-sol"]
+"version" = "1.0.0"
+"digest" = "sha256:c70425eeb5087fbcee4f4d979b8c2ab378164628ea4b6e713107ea3e6e43b263"
+"path" = ".af/task-packages/bugfix/light-kimi-terra-sol"
+
+["packages"."bugfix/research-fix-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:9151de11bbfe87386db9bbcbc2d03229f70aba0fb6f2bbc770b3a03cd68dc148"
+"path" = ".af/task-packages/bugfix/research-fix-codex"
+
+["packages"."impl/default-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:c64af1ec949f7dfbf39945c969409c1aa73792ba3944bdb6d0ed540094fee5ed"
+"path" = ".af/task-packages/impl/default-codex"
+
+["packages"."impl/design-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:c491bf5ad76747e6cc4a5075f2cd5858b3a6abc2de0dc56a0f9f67c9ae774c4d"
+"path" = ".af/task-packages/impl/design-codex"
+
+["packages"."issue-internal/bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:ecf80b0383322cdc07d16f8e85390681f8726342ad57dc5c8d3aa8e8d874945f"
+"path" = ".af/task-packages/issue-internal/bugs"
+
+["packages"."issue-internal/correctness"]
+"version" = "1.0.0"
+"digest" = "sha256:9fd6d80e47509f4b368889d2cba3f2f6d586ddffe4a0a9b4a7b2b4f3c0ffce23"
+"path" = ".af/task-packages/issue-internal/correctness"
+
+["packages"."issue-internal/design"]
+"version" = "1.0.0"
+"digest" = "sha256:25183a05bff912801a3bc4fb872bcdfaf57ce060dc388d0e80378a935902d825"
+"path" = ".af/task-packages/issue-internal/design"
+
+["packages"."issue-internal/designer"]
+"version" = "1.0.0"
+"digest" = "sha256:2fc8af4351e86c63906f22b0d0ca936f0cf5ca7d5c132492f8c7578a235a324e"
+"path" = ".af/task-packages/issue-internal/designer"
+
+["packages"."issue-internal/evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:cc54f7713c4fe09e42319cbca653fbf3abd88656a4e65bea0164000ab5f1d9a3"
+"path" = ".af/task-packages/issue-internal/evaluator"
+
+["packages"."issue-internal/experiment-evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:0262d8f45f7c28cdba4a9388d413d13c2be8ecc2045e38aff016e05997c78689"
+"path" = ".af/task-packages/issue-internal/experiment-evaluator"
+
+["packages"."issue-internal/experiment-trial"]
+"version" = "1.0.0"
+"digest" = "sha256:b7b15adb8f7857d211e091aaf11d8d936abf773dcb71bfb40af520f9c61b3178"
+"path" = ".af/task-packages/issue-internal/experiment-trial"
+
+["packages"."issue-internal/implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:929fc6e09268577fb5f5edfee974e226c605d50fff03f1a53bd6fe27576c39c0"
+"path" = ".af/task-packages/issue-internal/implementer"
+
+["packages"."issue-internal/investigator"]
+"version" = "1.0.0"
+"digest" = "sha256:87e1577d9e9dcdb0c44d57cf947c63a1bb0593c7e22be16aefe49d2ef02bf0b5"
+"path" = ".af/task-packages/issue-internal/investigator"
+
+["packages"."issue-internal/kimi"]
+"version" = "1.0.0"
+"digest" = "sha256:3240bc75117d201bfabd8a96ca68fec321936b179894f6aa09d90950d195f143"
+"path" = ".af/task-packages/issue-internal/kimi"
+
+["packages"."issue-internal/light-evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:97401c852b73e1429e972a5da6e17422f39e942a6240a6ad18c6921bedb013aa"
+"path" = ".af/task-packages/issue-internal/light-evaluator"
+
+["packages"."issue-internal/light-review"]
+"version" = "1.0.0"
+"digest" = "sha256:17fbb7013d3a1d46524febacc19553e0e74df1479ed6ead1f4b1ce1219cf56df"
+"path" = ".af/task-packages/issue-internal/light-review"
+
+["packages"."issue-internal/report"]
+"version" = "1.0.0"
+"digest" = "sha256:c39f812f339ab6347f824ebec7d68b896a878f991e2c2ca575c8f5aa86b3787a"
+"path" = ".af/task-packages/issue-internal/report"
+
+["packages"."issue-internal/report-verifier"]
+"version" = "1.0.0"
+"digest" = "sha256:c05af8da093b9f391073ccab6809c96cbe37cde8f8897ad0f6b488c84bd8d081"
+"path" = ".af/task-packages/issue-internal/report-verifier"
+
+["packages"."issue-internal/researched-implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:82cd4f0c0b0ecf39452beb7a903dbe9291e84999e13e08915e420e2c35cadda9"
+"path" = ".af/task-packages/issue-internal/researched-implementer"
+
+["packages"."issue-internal/review"]
+"version" = "1.0.0"
+"digest" = "sha256:2a4a69f3b0b3c7a7405800eff7f4e6e702c1f4d2f129319fa88a5d57f8059273"
+"path" = ".af/task-packages/issue-internal/review"
+
+["packages"."issue-internal/verification"]
+"version" = "1.0.0"
+"digest" = "sha256:cd7294c3406773733446b2a69b6cec0b840385c20a83d8289cd6ed8d8bd936b8"
+"path" = ".af/task-packages/issue-internal/verification"
+
+["packages"."issue-internal/verification-kind"]
+"version" = "1.0.0"
+"digest" = "sha256:87eafcea78225121ecde7cff46c7e66808871eebe1f4725d3bd4765c075ed98f"
+"path" = ".af/task-packages/issue-internal/verification-kind"
+
+["packages"."perf/research-experiment-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:e4e4d1900a8a193e7e70ab883d8bfec78e927c277dceb9b0d01c1905758d3d60"
+"path" = ".af/task-packages/perf/research-experiment-codex"
+
+["kinds"]
+"verification" = "issue-internal/verification-kind"
+"triage" = "backlog/triage-kind"
+
+["independence"]
+"command_workers_by_package" = true
+"distinct_principals" = false
+"distinct_providers" = false
+"distinct_models" = true
+
+["providers"]
+"backlog/triage-author" = "codex-personal"
+"backlog/triage-verifier" = "codex-personal"
+"issue-internal/bugs" = "codex-personal"
+"issue-internal/correctness" = "codex-personal"
+"issue-internal/designer" = "codex-personal"
+"issue-internal/evaluator" = "codex-personal"
+"issue-internal/experiment-evaluator" = "codex-personal"
+"issue-internal/implementer" = "codex-personal"
+"issue-internal/investigator" = "codex-personal"
+"issue-internal/kimi" = "pi-personal"
+"issue-internal/light-evaluator" = "codex-personal"
+"issue-internal/report-verifier" = "codex-personal"
+"issue-internal/researched-implementer" = "codex-personal"
+
+["provider_admission"]
+"tokens" = 32768
+"wall_ms" = 45000

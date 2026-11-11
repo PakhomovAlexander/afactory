@@ -1,0 +1,22 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "pilot-verify",
+  "kind": "verification",
+  "goal": "Verify the complete candidate against the original issue acceptance and original source Base. Read-only. Retain required bugs, correctness and goal evaluation.",
+  "pipeline": {
+    "name": "issue-internal/verification",
+    "fallback": "refuse"
+  },
+  "strategy": "light",
+  "limits": {
+    "tokens": 16000000,
+    "max_attempts": 64,
+    "wall_ms": 172800000,
+    "verification": {
+      "tokens": 8000000,
+      "attempts": 40,
+      "wall_ms": 86400000
+    }
+  },
+  "verification": "evaluation"
+}

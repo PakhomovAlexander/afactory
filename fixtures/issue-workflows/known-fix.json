@@ -1,0 +1,22 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "pilot-known-fix",
+  "kind": "implement",
+  "goal": "Replace with one known-cause, narrow, deterministic regression. State the issue URL, failing reproduction and exact acceptance. No authority, contract, security, accounting, persistence or uncertain concurrency changes.",
+  "pipeline": {
+    "name": "bugfix/light-codex",
+    "fallback": "refuse"
+  },
+  "strategy": "reviewed",
+  "limits": {
+    "tokens": 16000000,
+    "max_attempts": 64,
+    "wall_ms": 172800000,
+    "verification": {
+      "tokens": 8000000,
+      "attempts": 40,
+      "wall_ms": 86400000
+    }
+  },
+  "verification": "review"
+}

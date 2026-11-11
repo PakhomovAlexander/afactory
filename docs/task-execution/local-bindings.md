@@ -68,3 +68,12 @@ The plan includes the effective package and every default package whose contract
 its replacement. Resume recompiles those captured bytes and settings; it does not read the
 local file again. The integration fixture runs Alice and Bob against the same Pipeline,
 changes their local files after planning, and verifies both captured executions.
+
+## Afactory operator catalog migration
+
+Afactory's staged [issue-oriented catalog](../../fixtures/issue-workflows/README.md) owns its
+seven execution selections, exact role definitions and pins. Its launcher admits only personal
+account aliases in local bindings; it refuses slot/package replacements for these selections.
+This consuming policy leaves the generic native binding capability above available to other
+projects. Use the read-only migration inventory before changing machine-local workstream
+choices; do not rewrite the captured bindings or package bytes of historical Tasks.

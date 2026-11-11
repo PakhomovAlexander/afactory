@@ -1,0 +1,73 @@
+{
+  "title": "Issue Workflow pilot manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "issue",
+    "pull_request",
+    "source_commit",
+    "selection",
+    "tasks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.issue-workflow-pilot/1"
+    },
+    "issue": {
+      "type": "string",
+      "pattern": "^https://github.com/[^/]+/[^/]+/issues/[1-9][0-9]*$"
+    },
+    "pull_request": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^https://github.com/[^/]+/[^/]+/pull/[1-9][0-9]*$"
+        }
+      ]
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "selection": {
+      "enum": [
+        "bugfix/light-kimi-terra-sol",
+        "bugfix/light-codex",
+        "bugfix/default-codex",
+        "bugfix/research-fix-codex",
+        "impl/default-codex",
+        "impl/design-codex",
+        "perf/research-experiment-codex"
+      ]
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      }
+    },
+    "research_tasks": {
+      "type": "array",
+      "maxItems": 15,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "verification_task": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:issue-workflow-pilot:1"
+}

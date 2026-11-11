@@ -155,6 +155,13 @@ and are not issue labels.
 
 ## 5. The size rubric
 
+The replacement operator catalog and its exact model roles are staged in
+[Issue-oriented operator Pipelines](../../fixtures/issue-workflows/README.md). After its reviewed
+installation, `pipeline/light`, `pipeline/default` and `pipeline/design` remain classification
+hints; the launcher chooses concrete issue-oriented names and checks scope facts. The table
+below retains the original triage rubric quoted by captured packages, rather than supplying
+selectable aliases for retired Pipelines. New execution uses the versioned catalog.
+
 The rubric is what makes two models and the owner reach the same estimate. Sizes are evaluated
 in descending order, `XL`, `L`, `M`, `S`, and the first match wins. Insufficient evidence
 produces `needs-info`, never an invented size.

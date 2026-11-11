@@ -1,0 +1,12 @@
+{
+  "schema": "af.issue-workflow-pilot/1",
+  "issue": "https://github.com/OWNER/REPO/issues/1",
+  "pull_request": null,
+  "source_commit": "0000000000000000000000000000000000000000",
+  "selection": "bugfix/light-codex",
+  "tasks": [
+    "pilot-original"
+  ],
+  "verification_task": "pilot-verify",
+  "research_tasks": []
+}

@@ -1,0 +1,11 @@
+{
+  "known_cause": true,
+  "deterministic_regression": true,
+  "narrow_change": true,
+  "authority": false,
+  "contract": false,
+  "security": false,
+  "accounting": false,
+  "persistence": false,
+  "uncertain_concurrency": false
+}

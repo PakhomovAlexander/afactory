@@ -1,0 +1,21 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "pilot-design",
+  "kind": "report",
+  "goal": "Design the requested change against the pinned source. Supply Findings and Recommendation, interfaces, invariants, rejected alternatives, repository citations and testable acceptance. No implementation before independent acceptance.",
+  "pipeline": {
+    "name": "issue-internal/design",
+    "fallback": "refuse"
+  },
+  "strategy": "report",
+  "limits": {
+    "tokens": 16000000,
+    "max_attempts": 64,
+    "wall_ms": 172800000,
+    "verification": {
+      "tokens": 8000000,
+      "attempts": 40,
+      "wall_ms": 86400000
+    }
+  }
+}
