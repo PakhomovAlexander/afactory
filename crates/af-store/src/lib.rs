@@ -12,6 +12,7 @@
 //! native Task receipts cannot rebuild. `Ledger::for_task_subject` binds canonical identity and
 //! exact Subject authority before a native Task reduction can run.
 
+pub mod activity;
 pub mod canonical;
 pub mod cas;
 pub mod ingest;

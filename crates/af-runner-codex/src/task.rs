@@ -116,6 +116,60 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         environment: &[(String, String)],
         contract: ReplyContract,
     ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_activity(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            contract,
+            None,
+        )
+    }
+
+    fn invoke_with_activity(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+        _allowance: af_runner::task::RemainingTokenAllowance,
+        contract: ReplyContract,
+        activity: Option<af_runner::activity::Sink>,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_activity(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            contract,
+            activity,
+        )
+    }
+}
+
+impl CodexTaskAdapter {
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_activity(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+        contract: ReplyContract,
+        activity: Option<af_runner::activity::Sink>,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
                 notes: Default::default(),
@@ -201,7 +255,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         };
         let mut runner = ModelRunner::new(workdir, timeout)
             .with_env("HOME", home)
-            .with_harness("openai", self.model_settings().map(|(model, _)| model));
+            .with_harness("openai", self.model_settings().map(|(model, _)| model))
+            .with_activity(activity);
         if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.
             runner = runner.killing_process_group_on_exit();

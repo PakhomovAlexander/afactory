@@ -737,6 +737,35 @@ pub trait WorkerModelAdapter: Send + Sync {
         }
     }
 
+    /// Optional live metadata for an exact host-bound Attempt. Unsupported adapters ignore it;
+    /// they never receive a path or permission to publish raw content through this channel.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_with_activity(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: RemainingTokenAllowance,
+        contract: reply_schema::ReplyContract,
+        _activity: Option<crate::activity::Sink>,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_with_allowance(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            allowance,
+            contract,
+        )
+    }
+
     /// `invoke`, with a program that could not be started told apart from every other return.
     /// An adapter that spawns a native client overrides this; the default never reports one.
     #[allow(clippy::too_many_arguments)]
@@ -892,6 +921,38 @@ pub fn invoke_model_with_policy(
     environment: &[(String, String)],
     policy: ModelCallPolicy,
 ) -> WorkerReturn {
+    invoke_model_with_activity(
+        cas,
+        workdir,
+        adapter,
+        contract,
+        context_id,
+        timeout,
+        access,
+        cancellation,
+        reserved_tokens,
+        environment,
+        policy,
+        None,
+    )
+}
+
+/// Task runtime entry with an optional, exact Attempt activity binding.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_with_activity(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    access: WorkerAccess,
+    cancellation: Option<&AtomicBool>,
+    reserved_tokens: u64,
+    environment: &[(String, String)],
+    policy: ModelCallPolicy,
+    activity: Option<crate::activity::Sink>,
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
@@ -918,6 +979,7 @@ pub fn invoke_model_with_policy(
         reserved_tokens,
         environment,
         policy,
+        activity,
     )
 }
 

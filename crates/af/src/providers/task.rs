@@ -884,6 +884,33 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             environment,
             contract,
             Some(allowance),
+            None,
+        ))
+    }
+    fn invoke_with_activity(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: af_runner::task::WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: af_runner::task::RemainingTokenAllowance,
+        contract: ReplyContract,
+        activity: Option<af_runner::activity::Sink>,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        Ok(self.invoke_current(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            contract,
+            Some(allowance),
+            activity,
         ))
     }
     /// Sandbox-local environment (a carried Build Cache location), the kernel-derived access and
@@ -910,6 +937,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             environment,
             contract,
             None,
+            None,
         ))
     }
 }
@@ -929,6 +957,7 @@ impl CurrentTaskProviderAdapter {
         environment: &[(String, String)],
         contract: ReplyContract,
         allowance: Option<af_runner::task::RemainingTokenAllowance>,
+        activity: Option<af_runner::activity::Sink>,
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
             notes: Default::default(),
@@ -986,7 +1015,7 @@ impl CurrentTaskProviderAdapter {
                 return refuse(&reason);
             }
             let invoke = |allowance| match allowance {
-                Some(allowance) => native.invoke_with_allowance(
+                Some(allowance) => native.invoke_with_activity(
                     cas,
                     workdir,
                     input.clone(),
@@ -996,6 +1025,7 @@ impl CurrentTaskProviderAdapter {
                     environment,
                     allowance,
                     contract,
+                    activity.clone(),
                 ),
                 None => native.invoke_constrained(
                     cas,

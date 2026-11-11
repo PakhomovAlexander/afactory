@@ -9,6 +9,7 @@
 //! [`models`] owns Provider-neutral model/effort validation and binding diagnostics; native
 //! Provider outcome interpretation stays in each adapter.
 
+pub mod activity;
 pub mod cli;
 pub mod model;
 pub mod models;
