@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "af"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-attempt",
  "af-contracts",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "af-attempt"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "serde",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "af-check"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-process",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "af-contracts"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "base64",
  "jsonschema",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "af-graph"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-attempt",
  "af-contracts",
@@ -103,14 +103,14 @@ dependencies = [
 
 [[package]]
 name = "af-parallel"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "af-pipeline-config"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-graph",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "af-process"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "nix 0.31.3",
  "serde",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "af-project"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-graph",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "af-runner"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-process",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "af-runner-claude"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-runner",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "af-runner-codex"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-runner",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "af-runner-pi"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-process",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "af-runtime"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-attempt",
  "af-check",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "af-sandbox"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-check",
  "af-contracts",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "af-scenario"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-process",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "af-source-git"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-parallel",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "af-source-issue"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-contracts",
  "af-process",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "af-store"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "af-attempt",
  "af-contracts",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "af-telemetry"
-version = "0.15.1-rc.1"
+version = "0.15.1-rc.2"
 dependencies = [
  "flate2",
  "jsonschema",
