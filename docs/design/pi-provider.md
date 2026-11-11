@@ -229,6 +229,10 @@ Success still requires the same final assistant text and successful settlement.
 Diagnostics are judged whole before truncation: non-string/empty errors get a fixed explanation;
 inputs above 4,096 characters are withheld. The host remembers bounded initial/refreshed credential
 values and selected private auth/environment/header values (including properties named `type`).
+For `Authorization` and `Proxy-Authorization` headers (case-insensitive), it also remembers the
+Bearer token or the Basic encoded credentials, decoded credentials, username and password, so a
+credential echoed without its scheme is still withheld. Unsupported schemes, compound values or
+unrepresentable Basic credentials cause all diagnostic text to be withheld.
 It also remembers credential-file contents, JSON string values, INI values and opaque token lines
 from the complete captured file-reference closure. For credential-source URLs it also remembers
 every decoded query value whose key contains `token`, `key`, `secret`, `signature`, `password` or
@@ -308,6 +312,8 @@ neutral messages, including the distinctive safe diagnostic in operator output a
 evidence. Both real-host paths also supply selected OAuth access and refresh values, profile
 headers, AWS credential-file values, ADC private-key material and linked subject-token values as
 terminal diagnostics, alongside a short secret echoed alone from a credential-source URL query.
+They also echo a short configured Bearer token without its scheme. In-process callback tests cover
+Basic credential components and fail-closed handling of unsupported authorization schemes.
 The adapter checks that they stay out of operator errors and every retained
 CAS artifact, and that withheld quota, authentication and network errors keep their categories
 and complete charge. A common Task CLI regression proves that a completely accounted rate-limit

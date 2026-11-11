@@ -494,7 +494,7 @@ mod process {
         private(
             &auth.join("models.json"),
             &json!({"providers":{"kimi-coding":{
-                "headers":{"type":"violet aardvark"}
+                "headers":{"type":"violet aardvark","Authorization":"Bearer zebra-123"}
             }}})
             .to_string(),
         );
@@ -570,6 +570,12 @@ mod process {
             ),
             (
                 "provider rejected briefvalue".into(),
+                "[Pi diagnostic withheld: sensitive text]",
+                NativeFailureKind::Environment,
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "provider rejected zebra-123".into(),
                 "[Pi diagnostic withheld: sensitive text]",
                 NativeFailureKind::Environment,
                 TaskCauseV1::ProviderEnvironment,
@@ -705,6 +711,7 @@ mod process {
                 "silver marigold",
                 "teal-juniper-73",
                 "briefvalue",
+                "zebra-123",
                 "https://api.example.com",
                 "rate_limit_error",
                 "model_not_found",

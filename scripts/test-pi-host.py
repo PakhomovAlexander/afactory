@@ -378,6 +378,7 @@ async function invoke(options = {}) {
   const model = {id:'k3',provider:'kimi-coding',api:'openai-completions',maxTokens:32768};
   const diagnostic = host.diagnosticFilter();
   diagnostic.remember({access:'private-access',refresh:'private-refresh',type:'oauth'});
+  diagnostic.remember(options.headers);
   const state = {request:{backend:model.provider},diagnostic,verifyContext:()=>{},
     credentials:{read:async()=>{}},checkAuth:async()=>{},effectiveIdentity:()=> 'pinned-model'};
   const message = {role:'assistant',provider:model.provider,model:options.wrongModel ? 'wrong-model' : model.id,
@@ -450,6 +451,39 @@ filter.remember({headers:{type:'violet aardvark'}});
 assert(filter.safe('violet aardvark').includes('withheld'));
 filter.remember({headers:{nested:{type:'\x1b[31mshort\x1b[0m\0credential'}}});
 assert(filter.safe('short credential').includes('withheld'));
+// Authorization schemes can be echoed as just their private credential components.
+// Exercise the real terminal callback as well as the filter, including case and OWS.
+const basic = Buffer.from('dapple-user:ochre-pass').toString('base64');
+for (const [name, value, secrets] of [
+  ['Authorization', 'Bearer zebra-123', ['Bearer zebra-123', 'zebra-123']],
+  ['authorization', ' \tbEaReR\t wren-456 \t', ['wren-456']],
+  ['Proxy-Authorization', 'Basic '+basic, [basic, 'dapple-user:ochre-pass', 'dapple-user', 'ochre-pass']],
+  ['AUTHORIZATION', 'basic\t'+basic.replace(/=+$/, ''), ['ochre-pass']],
+]) {
+  const headers = {[name]:value};
+  const privateHeader = host.diagnosticFilter();
+  privateHeader.remember(headers);
+  assert.equal(privateHeader.safe('Distinctive terminal error'), 'Distinctive terminal error');
+  for (const secret of secrets) {
+    const diagnostic = 'provider rejected '+secret;
+    assert(privateHeader.safe(diagnostic).includes('withheld'), name);
+    const terminal = (await invoke({headers, diagnostic})).at(-1);
+    assert.equal(terminal.diagnostic, '[Pi diagnostic withheld: sensitive text]');
+    assert.equal(terminal.failure_kind, 'environment');
+    assert(terminal.accounting_complete);
+  }
+}
+// Unsupported compound schemes or unrepresentable Basic credentials must not
+// guess at which components a provider might echo. Withhold all diagnostic text.
+for (const value of ['Digest username="small", response="tiny"', 'Custom small tiny',
+  'Bearer zebra-123, another', 'Bearer', 'Basic invalid!', 'Basic '+Buffer.from('no-colon').toString('base64'),
+  'Basic '+Buffer.from([0xff,0x3a,0x61]).toString('base64'), 'Bearer '+'x'.repeat(4097)]) {
+  const headers = {Authorization:value};
+  const privateHeader = host.diagnosticFilter();
+  privateHeader.remember({headers});
+  assert(privateHeader.safe('provider rejected tiny').includes('withheld'));
+  assert((await invoke({headers,diagnostic:'Distinctive terminal error'})).at(-1).diagnostic.includes('withheld'));
+}
 for (const [text, expected] of [
   ['HTTP 429 rate limit exceeded at https://api.example.com','quota'],
   ['\x1b[31mrate\x1b[0m\nlimit reached at https://api.example.com','quota'],
@@ -557,7 +591,7 @@ assert(overflow.safe('short SDK error').includes('withheld'));
                                                 'credential_source': {'file': token,
                                                                       'url': 'https://auth.example/path?token=briefvalue'}}))
             private('auth/models.json', json.dumps({'providers': {'kimi-coding': {
-                'headers': {'type': 'violet aardvark'}}}}))
+                'headers': {'type': 'violet aardvark', 'Authorization': 'Bearer zebra-123'}}}}))
             private('auth/af-context.json', json.dumps({'schema': 'af.pi-context/1', 'environment': {
                 'AWS_SHARED_CREDENTIALS_FILE': aws, 'GOOGLE_APPLICATION_CREDENTIALS': adc}}))
             init = {'schema': 'af.pi-host/7', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
@@ -616,14 +650,14 @@ assert(overflow.safe('short SDK error').includes('withheld'));
             # The real credential filter also recognizes short literal credentials.
             for unsafe in ['PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'violet aardvark',
                            'orange-lantern-47', 'silver marigold', 'teal-juniper-73',
-                           'provider rejected briefvalue']:
+                           'provider rejected briefvalue', 'provider rejected zebra-123']:
                 state.write_text(json.dumps({**base, 'lateError': unsafe}))
                 records = invoke([{**init, 'probe': False}, prepare, prompt])
                 diagnostic = records[-1]['diagnostic']
                 self.assertIn('withheld', diagnostic)
                 self.assertLessEqual(len(diagnostic), 240)
                 self.assertTrue(records[-1]['accounting_complete'])
-                for secret in [unsafe, 'briefvalue', 'PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'PRIVATE_WORKER_REQUEST']:
+                for secret in [unsafe, 'briefvalue', 'zebra-123', 'PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'PRIVATE_WORKER_REQUEST']:
                     self.assertNotIn(secret, json.dumps(records))
 
     def test_official_catalog_invariant_covers_every_chat_provider_transport_and_native_usage(self):

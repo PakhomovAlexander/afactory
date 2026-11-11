@@ -29,6 +29,29 @@ export function diagnosticFilter() {
     if (!secret || value.includes('\ufffd')) overflow = true;
     else secrets.add(secret);
   };
+  const rememberAuthorization = (value) => {
+    if (typeof value !== 'string') { overflow = true; return; }
+    rememberScalar(value);
+    if (value.length > 4096) return;
+    // Providers may echo the credential without its scheme. Only parse schemes
+    // whose private components we can identify; unknown/compound values withhold
+    // all diagnostics rather than guessing what part might have been echoed.
+    const authorization = /^[ \t]*(Bearer|Basic)[ \t]+([A-Za-z0-9._~+/-]+=*)[ \t]*$/i.exec(value);
+    if (!authorization) { overflow = true; return; }
+    const [, scheme, token] = authorization;
+    rememberScalar(token);
+    if (scheme.toLowerCase() === 'basic') {
+      const bytes = Buffer.from(token, 'base64');
+      const decoded = bytes.toString('utf8');
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(token) ||
+          bytes.toString('base64').replace(/=+$/, '') !== token.replace(/=+$/, '') ||
+          decoded.includes('\ufffd') || !decoded.includes(':')) { overflow = true; return; }
+      rememberScalar(decoded);
+      const colon = decoded.indexOf(':');
+      rememberScalar(decoded.slice(0, colon));
+      rememberScalar(decoded.slice(colon + 1));
+    }
+  };
   const remember = (value) => {
     if (typeof value === 'string') {
       rememberScalar(value);
@@ -41,7 +64,10 @@ export function diagnosticFilter() {
         }
       }
     } else if (value && typeof value === 'object') {
-      for (const child of Object.values(value)) remember(child);
+      for (const [key, child] of Object.entries(value)) {
+        if (/^(?:proxy-)?authorization$/i.test(key)) rememberAuthorization(child);
+        else remember(child);
+      }
     }
   };
   const safe = (value) => {
