@@ -37,7 +37,9 @@ by every selection; it is an internal capability, not seven extra selectable pro
 
 `catalog.toml` pins the staged package bytes. `contracts.json` retains native public contracts.
 `replacement-catalog.toml` is complete replacement authority; `replacement-af.toml` selects
-`bugfix/default-codex` by default with the existing limits and reserves. Package definitions,
+`bugfix/default-codex` by default with the existing limits and reserves. This ordinary native
+default accepts a Task containing only `task_id`, `kind` and `goal`, without a `standard` selector
+fact. Other staged selectors and the launcher's routing attestations remain required. Package definitions,
 role choices and pins are versioned here; local bindings may supply only personal account aliases.
 
 ## Review and install the hard migration

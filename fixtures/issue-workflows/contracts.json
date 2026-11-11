@@ -173,9 +173,7 @@
         "kinds": [
           "implement"
         ],
-        "required_facts": {
-          "standard": true
-        }
+        "required_facts": {}
       },
       "coverage": {
         "goal": {

@@ -9,3 +9,10 @@ The catalog pins every package through `af catalog digest`; production operator 
 [issue-workflows](../issue-workflows/README.md). Retired installed directories can be removed
 without deleting these generic API regression contracts. The kernel experiment fixture also
 uses this explicit implementer contract. No compatibility reader or runtime fallback is added.
+
+The remote twin regression uses this explicit authority rather than installed operator choices.
+Its local `kernel/gate-bench` and deterministic `kernel/gate-accept` packages are exact bytes
+from historical baseline `060b00ad`, with that baseline's versions and digest pins. The other
+local twins were already retained here. Remote definitions remain staged under
+[remote-checks/packages](../remote-checks/packages/README.md); tests install them only in a
+disposable repository and plan with zero Attempts. No remote gate executes.

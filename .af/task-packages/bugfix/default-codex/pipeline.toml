@@ -81,7 +81,6 @@
 "kinds" = ["implement"]
 
 ["accepts"."required_facts"]
-"standard" = true
 
 ["slots"]
 

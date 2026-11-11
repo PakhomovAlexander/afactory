@@ -154,3 +154,13 @@
 ["provider_admission"]
 "tokens" = 32768
 "wall_ms" = 45000
+
+["packages"."kernel/gate-bench"]
+"path" = ".af/task-packages/kernel/gate-bench"
+"version" = "1.0.1"
+"digest" = "sha256:ec5312b166ff461da4f835ed23746de8f99ede57f0e161e9d3393aac1840ced3"
+
+["packages"."kernel/gate-accept"]
+"path" = ".af/task-packages/kernel/gate-accept"
+"version" = "1.0.0"
+"digest" = "sha256:265fa432640093fec3a6cf5a52ea9e85b7e884d771827d49110b2cbf70847ec1"

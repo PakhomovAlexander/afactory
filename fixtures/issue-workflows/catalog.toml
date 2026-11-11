@@ -24,7 +24,7 @@
 
 ["packages"."bugfix/default-codex"]
 "version" = "1.0.0"
-"digest" = "sha256:6b8208466b341d8d0f65fe3c3d3e1e4beddca292e28ca910b6ddf8f50e51a3d4"
+"digest" = "sha256:2e784c56eae775c0f243e723c4443b8c9bc4fcfa360a31b9a90c14840c140204"
 "path" = "fixtures/issue-workflows/task-packages/bugfix/default-codex"
 
 ["packages"."bugfix/light-codex"]

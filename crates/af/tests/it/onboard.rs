@@ -994,7 +994,7 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
     assert_eq!(
         project["task"]["defaults"]["pipeline"].as_str(),
-        Some("default/implementation")
+        Some("bugfix/default-codex")
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["tokens"].as_integer(),
@@ -1029,18 +1029,13 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     .unwrap();
     let providers = registry(
         &root.path().join("providers"),
-        &[("codex-main", "codex"), ("claude-main", "claude")],
+        &[("codex-personal", "codex")],
     );
     let bin = root.path().join("bin");
     crate::fake_models::install(
         "codex",
         &bin,
-        &root.path().join("providers/auth-codex-main"),
-    );
-    crate::fake_models::install(
-        "claude",
-        &bin,
-        &root.path().join("providers/auth-claude-main"),
+        &root.path().join("providers/auth-codex-personal"),
     );
     let path = std::env::join_paths(
         std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -1051,6 +1046,7 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         .args([
             "task",
             "plan",
+            "--json",
             "--file",
             ticket.to_str().unwrap(),
             "--state",
@@ -1070,26 +1066,35 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     assert!(
         stderr(&planned).contains("limits (tokens 8000000, max_attempts 16, wall_ms 43200000)")
     );
-    assert!(
-        stdout(&planned).contains("default/implementation"),
-        "{}",
-        stdout(&planned)
+    let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(
+        document["selection"]["assessment"]["decision"],
+        serde_json::json!({"kind": "selected", "pipeline": "bugfix/default-codex"})
     );
-    // Every default-pipeline binding is checked against the recorded catalogs: the Codex
-    // fixture lists `gpt-5.6-terra`, which `default/bugs` binds.
-    for worker in [
-        "default/implementer",
-        "default/bugs",
-        "default/correctness",
-        "default/advisor",
-        "default/evaluator",
+    let bindings = document["plan"]["bindings"].as_object().unwrap();
+    assert_eq!(bindings.len(), 4, "{bindings:?}");
+    for (role, model, effort) in [
+        ("implementer", "gpt-6.1-sol", "medium"),
+        ("bugs", "gpt-6.1-terra", "high"),
+        ("correctness", "gpt-6-sol", "high"),
+        ("evaluator", "gpt-6-astra", "medium"),
     ] {
+        let binding = &bindings[&format!("root.slots.{role}")];
+        assert_eq!(binding["execution"]["provider_kind"], "codex");
+        assert_eq!(binding["execution"]["provider"], "codex-personal");
+        assert_eq!(binding["execution"]["model"], model);
+        assert_eq!(binding["execution"]["effort"], effort);
         assert!(
-            stderr(&planned).contains(&format!("model {worker} ")),
-            "{worker}: {}",
+            stderr(&planned).contains(&format!("model issue-internal/{role} {model} {effort}  ok")),
+            "{role}: {}",
             stderr(&planned)
         );
     }
+    assert_eq!(
+        crate::fake_models::turns(&root.path().join("providers/auth-codex-personal")),
+        ""
+    );
     assert!(
         !stderr(&planned).contains("unverified against the catalog"),
         "{}",

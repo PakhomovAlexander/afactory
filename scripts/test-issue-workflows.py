@@ -71,6 +71,18 @@ class Workflows(unittest.TestCase):
         self.assertEqual(files, ['design.json', 'diagnose.json', 'known-fix.json',
                                  'research-fix.json', 'verify.json'])
 
+    def test_only_ordinary_default_drops_the_standard_selector_fact(self):
+        staged = ROOT / 'fixtures/issue-workflows'
+        contracts = w.read(staged / 'contracts.json')['pipelines']
+        for name in w.catalog()['selections']:
+            pipeline = w.toml(staged / 'task-packages' / name / 'pipeline.toml')
+            facts = pipeline['accepts']['required_facts']
+            self.assertEqual(facts, contracts[name]['accepts']['required_facts'])
+            if name == 'bugfix/default-codex':
+                self.assertEqual(facts, {})
+            elif '/light-' not in name:
+                self.assertIs(facts['standard'], True)
+
     def test_old_public_names_are_refused_without_aliases(self):
         for family in ('default', 'default-light', 'pi-light', 'warm', 'kernel', 'owner-default'):
             with self.assertRaises(ValueError):
