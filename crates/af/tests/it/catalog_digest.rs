@@ -97,7 +97,7 @@ fn every_published_package_pin_reproduces() {
             &root.join("fixtures/native-catalog-contracts"),
             &root.join("fixtures/native-catalog-contracts/.af/task-catalog.toml")
         ),
-        22
+        24
     );
     for catalog in [
         "fixtures/issue-workflows/catalog.toml",
