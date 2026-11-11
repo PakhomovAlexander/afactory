@@ -388,6 +388,31 @@ class Deadlines(TempDir):
         self.assert_incomplete(doc)
         self.assertFalse(os.path.exists(os.path.join(self.config['root'], 'results', 'tl_1_1')))
 
+    def test_git_timeout_before_cycle_alarm_does_not_complete_accounting(self):
+        data = tc.zipped(self.result(1))
+        artifacts = {1: [tc.artifact_entry(1, 1, 'perf-telemetry-1-1', data)]}
+        real_run = subprocess.run
+        observed = []
+
+        def timeout(argv, **kwargs):
+            if argv[3:5] == ['cat-file', '--batch']:
+                observed.append(kwargs['timeout'])
+                # subprocess.run's timeout can win the race with the outer SIGALRM.
+                # Exercise that ordering without waiting or depending on host speed.
+                raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+            return real_run(argv, **kwargs)
+
+        with mock.patch.object(git_refs.subprocess, 'run', side_effect=timeout):
+            doc = self.bounded_cycle(artifacts, seconds=10)
+        self.assertTrue(observed)
+        self.assertTrue(all(0 < value <= 9.6 for value in observed))
+        self.assert_incomplete(doc)
+        self.assertIn('total deadline ended git cat-file', doc['detail'])
+        self.assertEqual(doc['runs'][0]['outcome'], 'refused')
+        self.assertIn('total deadline ended git cat-file', doc['runs'][0]['reason'])
+        self.assertFalse(os.path.exists(os.path.join(self.config['root'], 'history.json')))
+        self.assertFalse(os.path.exists(os.path.join(self.config['root'], 'results', 'tl_1_1')))
+
     def test_expiry_interrupts_verification_retention_and_history_instead_of_accepting_partials(self):
         data = tc.zipped(self.result(1))
         artifacts = {1: [tc.artifact_entry(1, 1, 'perf-telemetry-1-1', data)]}
