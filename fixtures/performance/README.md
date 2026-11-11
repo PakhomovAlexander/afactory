@@ -91,7 +91,7 @@ The data of the continuous performance laboratory
 
 - `kernel-measure/` — the staged policy of guarded kernel experiments (ADR-0185), for a
   reviewed human installation into `.af/`: the measures that run the literal isolated bootstrap
-  of `scripts/performance/perflab/kernelguard.py` with the protected harness digest it expects,
+  of `scripts/performance/perflab/kernel_guard.py` with the protected harness digest it expects,
   their `elapsed_ms` objectives, and the inventory of every protected file
   (`af.perf-kernel-inventory/1`). It is the only subtree the harness digest excludes, holds only
   nonexecuted `.md`, `.toml` and `.json` data, and is re-pinned by
@@ -318,8 +318,8 @@ build IDs.
 
 ## Running the native probe
 
-The probe is the `perf-probe` example of `review-pipeline`; the supervisor is the
-`perf-supervisor` example of `review-process`. A diagnostic sample runs in explicitly trusted
+The probe is the `perf-probe` example of `af-runtime`; the supervisor is the
+`perf-supervisor` example of `af-process`. A diagnostic sample runs in explicitly trusted
 local mode only. It takes both binaries from a verified build, after rehashing them:
 
 ```sh

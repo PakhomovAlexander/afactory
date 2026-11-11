@@ -10,7 +10,7 @@ import os
 import re
 import unittest
 
-from perflab import adapters, clicases, contracts, diagnostics, suite, tomlfile
+from perflab import adapters, cli_cases, contracts, diagnostics, suite, toml_file
 from perflab.values import ContractError
 from tests.support import ROOT, read
 
@@ -122,7 +122,7 @@ def parse(entry):
     path = os.path.normpath(os.path.join(FIXTURES, entry["path"]))
     data = read(path)
     if entry["contract"] in TOML_CONTRACTS:
-        return tomlfile.loads(data, path), data
+        return toml_file.loads(data, path), data
     return json.loads(data.decode("utf-8")), data
 
 
@@ -133,19 +133,19 @@ def read_with_contract(entry):
     if contract == "suite":
         return suite.load_bytes(data, path).doc
     if contract == "activation":
-        return contracts.validate_activation(tomlfile.loads(data, path), path)
+        return contracts.validate_activation(toml_file.loads(data, path), path)
     if contract == "adapters":
         return adapters.load_bytes(data, path)
     if contract == "cli":
-        return clicases.load_bytes(data, path)
+        return cli_cases.load_bytes(data, path)
     if contract == "diagnostics":
         return diagnostics.load_bytes(data, path)
     if contract == "telemetry-lab":
-        return contracts.validate_telemetry_lab(tomlfile.loads(data, path), path)
+        return contracts.validate_telemetry_lab(toml_file.loads(data, path), path)
     if contract == "telemetry-collector":
-        return contracts.validate_telemetry_collector(tomlfile.loads(data, path), path)
+        return contracts.validate_telemetry_collector(toml_file.loads(data, path), path)
     if contract == "nightly-config":
-        return contracts.validate_nightly_config(tomlfile.loads(data, path), path)
+        return contracts.validate_nightly_config(toml_file.loads(data, path), path)
     doc = contracts.read_json(data, contract, path)
     if "companion" in entry:
         cohort = contracts.read_file(os.path.join(FIXTURES, entry["companion"]), "cohort")
@@ -164,8 +164,12 @@ class Parity(unittest.TestCase):
 
     def test_committed_schemas_are_generated_from_the_readers_definitions(self):
         generated = contracts.schema_documents()
-        committed = sorted(name for name in os.listdir(SCHEMAS) if name.startswith("performance-"))
-        self.assertEqual(committed, sorted(set(generated) | PUBLICATION_SCHEMAS))
+        committed = contracts.lab_schema_names(SCHEMAS)
+        self.assertEqual(committed, sorted(generated))
+        self.assertEqual(contracts.RUST_OWNED_SCHEMAS, PUBLICATION_SCHEMAS)
+        self.assertEqual(sorted(name for name in os.listdir(SCHEMAS)
+                                if name.startswith("performance-")),
+                         sorted(set(generated) | PUBLICATION_SCHEMAS))
         for name, doc in generated.items():
             on_disk = json.loads(read(os.path.join(SCHEMAS, name)))
             self.assertEqual(on_disk, doc, "%s is stale: run python3 scripts/performance/"
@@ -310,28 +314,36 @@ class Parity(unittest.TestCase):
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],
                               str(caught.exception))
         # Only the laboratory's own files: another family's schema may share a suffix
-        # (the current `performance-publication-activation-v1.json` is not the old
-        # laboratory `performance-activation-v1.json`).
-        old_names = (
-            "run-v1.json", "run-v2.json", "run-v3.json",
-            "run-v4.json", "run-v5.json", "readiness-v4.json",
-            "profiles-v4.json", "profiles-v5.json", "report-v2.json",
-            "activation-v2.json", "activation-verification-v1.json", "cost-v1.json",
-            "shipping-v1.json", "cohort-v1.json", "activation-verification-v2.json",
-            "cost-v2.json", "shipping-v2.json", "builds-v5.json",
-            "cohort-v2.json", "cohort-v3.json", "activation-v1.json",
-            "readiness-v3.json", "calibration-parameters-v1.json", "readiness-v1.json",
-            "readiness-v2.json", "builds-v1.json", "builds-v2.json",
-            "builds-v3.json", "builds-v4.json", "verdict-v1.json",
-            "sample-v1.json", "shard-v1.json", "shard-v2.json",
-            "shard-v3.json", "cli-v1.json", "cli-v2.json",
-            "cli-v3.json", "cli-v4.json", "supervisor-request-v2.json",
-            "supervisor-request-v3.json", "supervisor-result-v3.json", "supervisor-result-v4.json",
-            "suite-v1.json", "suite-v2.json", "golden-v1.json",
-            "probe-request-v1.json", "supervisor-request-v1.json", "supervisor-result-v1.json",
-            "supervisor-result-v2.json",
-        )
-        self.assertFalse(set(os.listdir(SCHEMAS)) & {"performance-" + name for name in old_names})
+        # (`performance-publication-activation-v1.json` ends in `activation-v1.json`).
+        # Match the complete lab basename, never another contract's suffix.
+        self.assertFalse(any(name[len("performance-"):] in ("run-v1.json", "run-v2.json", "run-v3.json",
+                                                "run-v4.json", "run-v5.json", "readiness-v4.json",
+                                                "profiles-v4.json", "profiles-v5.json", "report-v2.json",
+                                                "activation-v2.json",
+                                                "activation-verification-v1.json", "cost-v1.json",
+                                                "shipping-v1.json", "cohort-v1.json",
+                                                "activation-verification-v2.json", "cost-v2.json",
+                                                "shipping-v2.json", "builds-v5.json",
+                                                "cohort-v2.json", "cohort-v3.json",
+                                                "activation-v1.json", "readiness-v3.json",
+                                                "calibration-parameters-v1.json",
+                                                "readiness-v1.json", "readiness-v2.json",
+                                                "builds-v1.json",
+                                                "builds-v2.json", "builds-v3.json",
+                                                "builds-v4.json", "verdict-v1.json",
+                                                "sample-v1.json", "shard-v1.json", "shard-v2.json",
+                                                "shard-v3.json", "cli-v1.json", "cli-v2.json",
+                                                "cli-v3.json", "cli-v4.json",
+                                                "supervisor-request-v2.json",
+                                                "supervisor-request-v3.json",
+                                                "supervisor-result-v3.json",
+                                                "supervisor-result-v4.json",
+                                                "suite-v1.json", "suite-v2.json",
+                                                "golden-v1.json", "probe-request-v1.json",
+                                                "supervisor-request-v1.json",
+                                                "supervisor-result-v1.json",
+                                                "supervisor-result-v2.json")
+                                 for name in contracts.lab_schema_names(SCHEMAS)))
 
     def test_probe_control_messages_are_bounded(self):
         entry = [e for e in self.index if e["contract"] == "probe" and e["valid"]][0]
@@ -356,7 +368,7 @@ class TelemetryLabVersion(unittest.TestCase):
         # The accepted document identities moved to @2, so the registry is af.perf-telemetry-lab/3;
         # the /2 registry, which named other documents, is refused with no adapter.
         path = os.path.join(ROOT, "fixtures/performance/telemetry.toml")
-        doc = tomlfile.loads(read(path), path)
+        doc = toml_file.loads(read(path), path)
         self.assertEqual(doc["schema"], "af.perf-telemetry-lab/3")
         contracts.validate_telemetry_lab(doc, path)
         self.assertEqual(contracts.schema_file("telemetry-lab"), "performance-telemetry-lab-v3.json")

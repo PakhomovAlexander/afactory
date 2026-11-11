@@ -4,7 +4,7 @@ from pathlib import Path
 from types import MappingProxyType
 from unittest import mock
 
-from perflab import gitrefs, telemetrylab
+from perflab import git_refs, telemetry_lab
 from perflab.values import ContractError
 from tests import test_telemetry_collect as tc
 from tests.allocation_observer import observe
@@ -21,36 +21,36 @@ class PreparedAdmission(TempDir):
             1: [tc.artifact_entry(1, 1, 'perf-telemetry-1-1', data)]})[0]
 
     def test_git_reuse_is_bound_and_immutable_and_materializes_every_admitted_byte(self):
-        git = gitrefs.Git(self.repo.path)
-        prepared = telemetrylab._GitAuthority(git, self.authority)
+        git = git_refs.Git(self.repo.path)
+        prepared = telemetry_lab._GitAuthority(git, self.authority)
         target = self.path('expanded')
         with self.assertRaises(TypeError):
             prepared.members['Cargo.lock'] = b'changed'
         for reader, sha, evidence in ((git, self.untrusted, prepared),
-                                      (gitrefs.Git(self.repo.path), self.authority, prepared),
+                                      (git_refs.Git(self.repo.path), self.authority, prepared),
                                       (git, self.authority, dict(prepared.members))):
             with self.subTest(sha=sha, reader=reader, evidence=type(evidence)):
                 with self.assertRaises(ContractError):
-                    telemetrylab.materialize_authority(reader, sha, target, _prepared=evidence)
+                    telemetry_lab.materialize_authority(reader, sha, target, _prepared=evidence)
                 self.assertFalse(os.path.lexists(target))
-        telemetrylab.materialize_authority(git, self.authority, target, _prepared=prepared)
-        registry, _ = telemetrylab.load_registry(target)
-        self.assertEqual(set(telemetrylab.authority_files(registry, target)), set(prepared.members))
+        telemetry_lab.materialize_authority(git, self.authority, target, _prepared=prepared)
+        registry, _ = telemetry_lab.load_registry(target)
+        self.assertEqual(set(telemetry_lab.authority_files(registry, target)), set(prepared.members))
         for name, data in prepared.members.items():
             self.assertEqual(Path(target, name).read_bytes(), data)
-        self.assertEqual(telemetrylab.authority_digest(registry, target),
+        self.assertEqual(telemetry_lab.authority_digest(registry, target),
                          (prepared.digest, len(prepared.members)))
         # Even corrupted internal evidence must fail before mkdir, rather than trust a map.
         altered = dict(prepared.members, **{'Cargo.lock': b'corrupted reusable bytes'})
         object.__setattr__(prepared, 'members', MappingProxyType(altered))
         with self.assertRaisesRegex(ContractError, 'bytes changed'):
-            telemetrylab.materialize_authority(git, self.authority, self.path('corrupt'),
+            telemetry_lab.materialize_authority(git, self.authority, self.path('corrupt'),
                                                _prepared=prepared)
         self.assertFalse(os.path.lexists(self.path('corrupt')))
 
     def test_corrupted_preparation_is_refused_then_clean_cycle_can_be_verified_offline(self):
         data = tc.zipped(self.result(1))
-        original = telemetrylab.read_files
+        original = telemetry_lab.read_files
         changed = []
 
         def corrupted(root, *args, **kwargs):
@@ -64,7 +64,7 @@ class PreparedAdmission(TempDir):
             return members
 
         with observe(self, self.config['root'], lambda: self.config['bytes_max']), \
-                mock.patch.object(telemetrylab, 'read_files', corrupted):
+                mock.patch.object(telemetry_lab, 'read_files', corrupted):
             doc = self.attempt(data)
         self.assertTrue(changed)
         self.assertEqual(doc['runs'][0]['outcome'], 'refused', doc)
@@ -73,22 +73,22 @@ class PreparedAdmission(TempDir):
         with observe(self, self.config['root'], lambda: self.config['bytes_max']):
             good = self.attempt(data)
         self.assertEqual(good['status'], 'ok', good)
-        history = telemetrylab.history(self.config['root'])
+        history = telemetry_lab.history(self.config['root'])
         self.assertEqual([r['result_id'] for r in history['results']], ['tl_1_1'])
         retained = os.path.join(self.config['root'], history['results'][0]['authority_path'])
-        result, _, _ = telemetrylab.verify(os.path.join(self.config['root'], 'results', 'tl_1_1'),
+        result, _, _ = telemetry_lab.verify(os.path.join(self.config['root'], 'results', 'tl_1_1'),
                                           retained)
         self.assertEqual(result['result_id'], 'tl_1_1')
         # Persisted trees are mutable inputs on the next operation, never a global cache.
         with open(os.path.join(retained, 'Cargo.lock'), 'ab') as stream:
             stream.write(b'\nchanged after the first operation\n')
-        history = telemetrylab.history(self.config['root'])
+        history = telemetry_lab.history(self.config['root'])
         self.assertEqual(history['results'], [])
         self.assertTrue(history['refused'])
 
     def test_mutation_between_verification_and_capture_is_refused(self):
         data = tc.zipped(self.result(1))
-        original = telemetrylab.verify
+        original = telemetry_lab.verify
         mutated = []
 
         def changed(source, root=None):
@@ -99,7 +99,7 @@ class PreparedAdmission(TempDir):
                 mutated.append(True)
             return result
 
-        with mock.patch.object(telemetrylab, 'verify', changed):
+        with mock.patch.object(telemetry_lab, 'verify', changed):
             doc = self.attempt(data)
         self.assertTrue(mutated)
         self.assertEqual(doc['runs'][0]['outcome'], 'refused', doc)
@@ -108,11 +108,11 @@ class PreparedAdmission(TempDir):
 
     def test_retention_reuse_refuses_wrong_root_and_corruption_before_any_copy(self):
         source = self.result(1)
-        result, _, _ = telemetrylab.verify(source)
-        prepared = telemetrylab._AuthorityCopy(telemetrylab.ROOT, None)
-        with telemetrylab.HistoryRoot(self.config['root']) as kept:
+        result, _, _ = telemetry_lab.verify(source)
+        prepared = telemetry_lab._AuthorityCopy(telemetry_lab.ROOT, None)
+        with telemetry_lab.HistoryRoot(self.config['root']) as kept:
             for root, evidence in ((self.repo.path, prepared),
-                                   (telemetrylab.ROOT, dict(prepared.members))):
+                                   (telemetry_lab.ROOT, dict(prepared.members))):
                 with self.assertRaises(ContractError):
                     kept.retain_authority(result, root, _prepared=evidence)
                 self.assertFalse(os.path.lexists(kept.authority_path(result)))
@@ -120,8 +120,8 @@ class PreparedAdmission(TempDir):
             del altered['Cargo.lock']
             object.__setattr__(prepared, 'members', MappingProxyType(altered))
             with self.assertRaisesRegex(ContractError, 'authority changed'):
-                kept.retain_authority(result, telemetrylab.ROOT, _prepared=prepared)
+                kept.retain_authority(result, telemetry_lab.ROOT, _prepared=prepared)
             self.assertFalse(os.path.lexists(kept.authority_path(result)))
-        with mock.patch.object(telemetrylab, 'AUTHORITY_BYTES_MAX', 10):
+        with mock.patch.object(telemetry_lab, 'AUTHORITY_BYTES_MAX', 10):
             with self.assertRaises(ContractError):
-                telemetrylab._AuthorityCopy(telemetrylab.ROOT, None)
+                telemetry_lab._AuthorityCopy(telemetry_lab.ROOT, None)

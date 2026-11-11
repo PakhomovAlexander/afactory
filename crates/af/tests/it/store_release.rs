@@ -34,7 +34,7 @@ fn err(output: &Output) -> String {
 fn foreign_store(dir: &Path, release: Option<&str>, run_id: &str, event: &str, payload: &str) {
     std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
     let path = dir.join("events.sqlite");
-    drop(review_store::EventStore::open(&path).unwrap());
+    drop(af_store::EventStore::open(&path).unwrap());
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("DELETE FROM store_writers;").unwrap();
     // The event's id is the one the Store derives, so replay reaches its type and payload.
@@ -44,7 +44,7 @@ fn foreign_store(dir: &Path, release: Option<&str>, run_id: &str, event: &str, p
         sha2::Digest::update(&mut hasher, run_id.as_bytes());
         sha2::Digest::update(&mut hasher, b"\0");
         sha2::Digest::update(&mut hasher, b"0");
-        review_core::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
+        af_contracts::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
     };
     conn.execute(
         "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,

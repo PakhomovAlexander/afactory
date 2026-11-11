@@ -1,6 +1,6 @@
 """Independent reference fixtures and golden oracle entries of the native probe (ADR-0163).
 
-The native probe (`crates/review-pipeline/examples/perf-probe.rs`) generates its workload
+The native probe (`crates/af-runtime/examples/perf-probe.rs`) generates its workload
 fixtures through the product's own writers and reports what each timed operation produced.
 This module never runs the product. It constructs, from the same fixture *inputs*, the bytes
 the product must produce, with an encoder of its own, and derives every golden digest, count
@@ -32,7 +32,7 @@ TASK_LEASE_MS = 60000
 ENVELOPE_CAP_BYTES = 8 * 1024 * 1024
 SAFE_INTEGER = 2 ** 53 - 1
 
-# Fixture inputs. They mirror crates/review-pipeline/examples/perf-probe/fixtures.rs byte for
+# Fixture inputs. They mirror crates/af-runtime/examples/perf-probe/fixtures.rs byte for
 # byte; the probe's golden test fails when the two disagree, because the probe's envelopes would
 # no longer carry these artifact IDs.
 POLICY_DOCUMENT = {"perf_probe": "trusted fixture policy"}

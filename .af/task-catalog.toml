@@ -221,8 +221,8 @@ path = ".af/task-packages/kernel/review-code-remote"
 # evaluator (gpt-6.1-terra high); `default/verification` judges an existing candidate the same way.
 
 [packages."default/implementer"]
-version = "1.0.1"
-digest = "sha256:c2df1a662b10b22797b1386da48977bafed92ffcb9c4cc49bf4403fc661e2abe"
+version = "1.0.2"
+digest = "sha256:a79deef1c22027b579b7c1a2cb5ade314e008a0f8e2854fccead6172f25efaee"
 path = ".af/task-packages/default/implementer"
 
 [packages."default/bugs"]
@@ -261,8 +261,8 @@ path = ".af/task-packages/default/verification"
 # The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
 
 [packages."default-light/implementer"]
-version = "1.0.3"
-digest = "sha256:785fc384e50620dd89d979092a377c4fe034fa22cac070d351799cf852a5b81b"
+version = "1.0.4"
+digest = "sha256:de30bbd065c0d44e52e3db968ada5c5443a679796135c788c01350809c04c6dd"
 path = ".af/task-packages/default-light/implementer"
 
 [packages."default-light/correctness"]

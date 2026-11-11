@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use review_telemetry::record::Record;
-use review_telemetry::trace::sha256_digest;
+use af_telemetry::record::Record;
+use af_telemetry::trace::sha256_digest;
 use serde_json::{Value, json};
 
 use crate::telemetry_runs::{Machine, copy_tree};
@@ -48,7 +48,7 @@ fn records(telemetry: &Path) -> Vec<Record> {
         .flatten()
     {
         if entry.file_name().to_string_lossy().ends_with(".jsonl.gz") {
-            records.extend(review_telemetry::segment::reader::read_sealed(&entry.path()).unwrap());
+            records.extend(af_telemetry::segment::reader::read_sealed(&entry.path()).unwrap());
         }
     }
     records
@@ -83,7 +83,7 @@ fn run_and_attempt(machine: &Machine, cwd: &Path, level: &str) -> (String, Strin
 }
 
 /// Every event named `name` in the directory's sealed segments.
-fn events_named(telemetry: &Path, name: &str) -> Vec<review_telemetry::record::Event> {
+fn events_named(telemetry: &Path, name: &str) -> Vec<af_telemetry::record::Event> {
     records(telemetry)
         .into_iter()
         .filter_map(|record| match record {
@@ -96,7 +96,7 @@ fn events_named(telemetry: &Path, name: &str) -> Vec<review_telemetry::record::E
 /// Every blob file's retained bytes beneath a telemetry directory, each read and verified
 /// against its digest by the crate's blob reader.
 fn blob_texts(telemetry: &Path) -> Vec<String> {
-    let layout = review_telemetry::layout::Layout::new(telemetry);
+    let layout = af_telemetry::layout::Layout::new(telemetry);
     let mut texts = Vec::new();
     for prefix in std::fs::read_dir(telemetry.join("v1/blobs"))
         .into_iter()
@@ -108,11 +108,11 @@ fn blob_texts(telemetry: &Path) -> Vec<String> {
             let Some(hex) = name.strip_suffix(".gz") else {
                 continue;
             };
-            match review_telemetry::blob::reader::read(&layout, &format!("sha256:{hex}")) {
-                review_telemetry::blob::reader::Content::Bytes(bytes) => {
+            match af_telemetry::blob::reader::read(&layout, &format!("sha256:{hex}")) {
+                af_telemetry::blob::reader::Content::Bytes(bytes) => {
                     texts.push(String::from_utf8(bytes).unwrap());
                 }
-                review_telemetry::blob::reader::Content::Unavailable(reason) => {
+                af_telemetry::blob::reader::Content::Unavailable(reason) => {
                     panic!("{name}: {reason}")
                 }
             }
@@ -342,11 +342,7 @@ fn telemetry_content_reads_back_on_the_claude_fake() {
     assert_eq!(thoughts[0]["kind"], "thinking");
     assert_eq!(
         thoughts[0]["part"]["content"],
-        format!(
-            "{}\n{}",
-            THOUGHTS[0],
-            review_telemetry::redact::WITHHELD_LINE
-        )
+        format!("{}\n{}", THOUGHTS[0], af_telemetry::redact::WITHHELD_LINE)
     );
     assert_eq!(thoughts[1]["part"]["content"], THOUGHTS[1]);
     assert_eq!(thoughts[0]["turn_ordinal"], 1);
@@ -755,13 +751,13 @@ fn record_content_golden(root: &Path) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use review_telemetry::blob::{Document, Media};
-    use review_telemetry::content::{Scope, event};
-    use review_telemetry::level::Level;
-    use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
-    use review_telemetry::segment::writer::{Writer, WriterOptions};
-    use review_telemetry::stream::{Harness, Release, Stream, Tap, TapOptions};
-    use review_telemetry::subscriber::{RecordedSpan, SpanIdentity};
+    use af_telemetry::blob::{Document, Media};
+    use af_telemetry::content::{Scope, event};
+    use af_telemetry::level::Level;
+    use af_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+    use af_telemetry::segment::writer::{Writer, WriterOptions};
+    use af_telemetry::stream::{Harness, Release, Stream, Tap, TapOptions};
+    use af_telemetry::subscriber::{RecordedSpan, SpanIdentity};
 
     let clock = Arc::new(AtomicU64::new(1_700_000_400_000 * 1_000_000));
     let mut options = WriterOptions::new(root, Level::Content);
@@ -769,13 +765,13 @@ fn record_content_golden(root: &Path) {
     options.cwd = PathBuf::from("/work");
     options.af_version = "0.0.0-golden".into();
     options.af_commit = "0123456789ab".into();
-    options.redactor = review_telemetry::redact::Redactor::new();
+    options.redactor = af_telemetry::redact::Redactor::new();
     options.segment_id = Some(GOLDEN_SEGMENT.into());
     options.clock = Some(Arc::new(move || {
         u128::from(clock.fetch_add(1_000_000, Ordering::SeqCst))
     }));
     let writer = Writer::new(options).unwrap();
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: GOLDEN_STORE.into(),
         run_id: GOLDEN_RUN.into(),
         execution_id: GOLDEN_SEGMENT.into(),
@@ -972,7 +968,7 @@ fn telemetry_content_commands_match_their_goldens() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("telemetry");
     record_content_golden(&root);
-    let trace = review_telemetry::trace::trace_id(GOLDEN_STORE, GOLDEN_RUN);
+    let trace = af_telemetry::trace::trace_id(GOLDEN_STORE, GOLDEN_RUN);
     let normalize = |text: String| {
         text.replace(&root.display().to_string(), "<root>")
             .replace(&trace, "<trace>")
@@ -1097,8 +1093,8 @@ fn telemetry_content_commands_match_their_goldens() {
 #[test]
 fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
     use crate::telemetry_ledger::campaign_fixture as campaign;
-    use review_store::{Cas, EventStore};
-    use review_telemetry::level::Level;
+    use af_store::{Cas, EventStore};
+    use af_telemetry::level::Level;
 
     for level in [Level::Spans, Level::Content] {
         let temp = tempfile::tempdir().unwrap();
@@ -1141,15 +1137,15 @@ fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
         let path = writer
             .layout()
             .sealed_segment(&writer.segment_id().unwrap());
-        let records = review_telemetry::segment::reader::read_sealed(&path).unwrap();
-        let references: Vec<review_telemetry::record::BlobRef> = records
+        let records = af_telemetry::segment::reader::read_sealed(&path).unwrap();
+        let references: Vec<af_telemetry::record::BlobRef> = records
             .iter()
             .filter_map(|record| match record {
                 Record::BlobRef(occurrence) => Some(occurrence.clone()),
                 _ => None,
             })
             .collect();
-        let events: Vec<&review_telemetry::record::Event> = records
+        let events: Vec<&af_telemetry::record::Event> = records
             .iter()
             .filter_map(|record| match record {
                 Record::Event(event) if event.name == "af.store.event" => Some(event),
@@ -1157,7 +1153,7 @@ fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
             })
             .collect();
         assert_eq!(events.len(), payloads.len());
-        let bodies: Vec<&review_telemetry::record::Event> = records
+        let bodies: Vec<&af_telemetry::record::Event> = records
             .iter()
             .filter_map(|record| match record {
                 Record::Event(event) if event.name == "af.finding.body" => Some(event),
@@ -1170,15 +1166,15 @@ fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
             assert!(references.is_empty());
             continue;
         }
-        let layout = review_telemetry::layout::Layout::new(&root);
+        let layout = af_telemetry::layout::Layout::new(&root);
         let read = |occurrence: &str| -> Vec<u8> {
             let reference = references
                 .iter()
                 .find(|reference| reference.occurrence_id == occurrence)
                 .unwrap();
-            match review_telemetry::blob::reader::content(&layout, reference) {
-                review_telemetry::blob::reader::Content::Bytes(bytes) => bytes,
-                review_telemetry::blob::reader::Content::Unavailable(reason) => panic!("{reason}"),
+            match af_telemetry::blob::reader::content(&layout, reference) {
+                af_telemetry::blob::reader::Content::Bytes(bytes) => bytes,
+                af_telemetry::blob::reader::Content::Unavailable(reason) => panic!("{reason}"),
             }
         };
         for (event, payload) in events.iter().zip(&payloads) {
@@ -1208,7 +1204,7 @@ fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
                     }
                     Value::String(text)
                         if (name.ends_with("_id") || name.ends_with("_ids"))
-                            && review_telemetry::redact::is_kernel_identity(text) =>
+                            && af_telemetry::redact::is_kernel_identity(text) =>
                     {
                         out.push(text.clone());
                     }
@@ -1222,13 +1218,13 @@ fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
         }
         assert_eq!(bodies.len(), 1, "one body for the one admitted Finding");
         let key = bodies[0].attributes["af.finding.id"].as_str().unwrap();
-        assert!(review_telemetry::redact::is_digest(key), "{key}");
+        assert!(af_telemetry::redact::is_digest(key), "{key}");
         let body = String::from_utf8(read(bodies[0].blob.as_deref().unwrap())).unwrap();
         assert_eq!(
             body,
             format!(
                 "The retry loop never yields.\n{}\n",
-                review_telemetry::redact::WITHHELD_LINE
+                af_telemetry::redact::WITHHELD_LINE
             )
         );
         let joined: String = records.iter().map(|record| format!("{record:?}")).collect();
@@ -1260,7 +1256,7 @@ fn telemetry_config_texts_are_the_file_bytes() {
         claude_run(&machine, "run", level, &json!({}), &[]);
         let telemetry = machine.telemetry();
         let texts = events_named(&telemetry, "af.config.text");
-        let occurrences: Vec<review_telemetry::record::BlobRef> = records(&telemetry)
+        let occurrences: Vec<af_telemetry::record::BlobRef> = records(&telemetry)
             .into_iter()
             .filter_map(|record| match record {
                 Record::BlobRef(occurrence) => Some(occurrence),
@@ -1268,7 +1264,7 @@ fn telemetry_config_texts_are_the_file_bytes() {
             })
             .collect();
         for (kind, bytes) in &files {
-            let named: Vec<&review_telemetry::record::Event> = texts
+            let named: Vec<&af_telemetry::record::Event> = texts
                 .iter()
                 .filter(|event| event.attributes["af.config.text.kind"] == *kind)
                 .collect();
@@ -1289,14 +1285,14 @@ fn telemetry_config_texts_are_the_file_bytes() {
                         assert_eq!(occurrence.source_digest, sha256_digest(bytes));
                         // The file's bytes as the credential rules keep them: the Task
                         // file's `"tokens": …` lines fall under the secret-name rule.
-                        let kept = review_telemetry::redact::redact_text(
+                        let kept = af_telemetry::redact::redact_text(
                             &String::from_utf8(bytes.clone()).unwrap(),
                         )
                         .0;
-                        let layout = review_telemetry::layout::Layout::new(&telemetry);
+                        let layout = af_telemetry::layout::Layout::new(&telemetry);
                         assert_eq!(
-                            review_telemetry::blob::reader::content(&layout, occurrence),
-                            review_telemetry::blob::reader::Content::Bytes(kept.into_bytes()),
+                            af_telemetry::blob::reader::content(&layout, occurrence),
+                            af_telemetry::blob::reader::Content::Bytes(kept.into_bytes()),
                             "{kind}: the blob holds the file's bytes, redacted"
                         );
                     }

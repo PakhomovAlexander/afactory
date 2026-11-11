@@ -1,10 +1,10 @@
 //! SIGINT to `af` running a Task stops its Worker process group, records the cancelled
 //! Attempt, exits 130 and leaves the Task resumable (ADR-0129). Command Workers only.
 use crate::task_cli;
+use af_contracts::task::TaskPhaseV1;
+use af_contracts::task::execution::TaskAttemptResultV1;
+use af_store::{Cas, EventStore};
 use nix::sys::signal::Signal;
-use review_core::task::TaskPhaseV1;
-use review_core::task::execution::TaskAttemptResultV1;
-use review_store::{Cas, EventStore};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -43,8 +43,11 @@ pub(crate) fn commit_fixture(repo: &Path) {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
-            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
-                .unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap()),
+            )
+            .unwrap(),
         );
     }
     std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
@@ -302,7 +305,7 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
         };
         assert_eq!(
             started[0].abandoned,
-            Some(review_store::store::task::execution::TaskAbandonCause::HostCancelled)
+            Some(af_store::store::task::execution::TaskAbandonCause::HostCancelled)
         );
         let diagnostic = cas.get_json(diagnostic_id).unwrap();
         assert!(diagnostic.to_string().contains("cancelled"), "{diagnostic}");
@@ -347,7 +350,7 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
 
 /// The interrupted Attempt's invocation: the first started Attempt is the implementer's.
 fn attempts_invocation(
-    attempts: &[review_store::store::task::execution::TaskAttemptAccounting],
+    attempts: &[af_store::store::task::execution::TaskAttemptAccounting],
 ) -> String {
     attempts
         .iter()

@@ -1,7 +1,7 @@
 """The supervisor's framed reply, the Linux sample container and host capabilities (ADR-0166).
 
 Results here are constructed by the tests; the real supervisor's processes are exercised by the
-Rust integration test `crates/review-process/tests/perf_supervisor.rs`.
+Rust integration test `crates/af-process/tests/perf_supervisor.rs`.
 """
 import collections
 import copy
@@ -16,7 +16,7 @@ import threading
 import time
 from unittest import mock
 
-from perflab import capability, contracts, supervise, telemetrybuild
+from perflab import capability, contracts, supervise, telemetry_build
 from perflab import suite as suite_module
 from perflab.values import ContractError
 from tests.support import (CLI, FAKE_SUPERVISOR_EXECUTE, ROOT, SUITE, TempDir, fake_supervisor,
@@ -687,7 +687,7 @@ class Capabilities(TempDir):
         # its time bound with 1,458,569,216 bytes written. Modelled here, storing nothing: a
         # sync costs a fixed 60.7 ms plus its unsynced bytes at 250 MB/s, and the nested ext4
         # holds 160 MiB less than its size.
-        size = telemetrybuild.BUILD_BYTES
+        size = telemetry_build.BUILD_BYTES
         capacity = size - (160 << 20)
 
         def claw():
@@ -1324,8 +1324,8 @@ class ContainedSample(TempDir):
         self.assertIn("lost supervisor reply; container af-perf-run-0-1 removal unconfirmed: "
                       "container was not removed", str(failure))
         # The same through the tool boundary diagnostics use: the result stays uncertain.
-        from perflab import toolrun
-        outcome = toolrun._result(["x"], ("failure", failure), None, time.monotonic,
+        from perflab import tool_run
+        outcome = tool_run._result(["x"], ("failure", failure), None, time.monotonic,
                                   time.monotonic(), False)
         self.assertTrue(outcome.uncertain)
         # An unconfirmed outcome worded as a removal is unconfirmed too, on both paths.

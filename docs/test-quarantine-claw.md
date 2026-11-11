@@ -154,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
                 committed[member.name] = (data, member.mode & 0o111)
                 with destination.open("xb") as output:
                     output.write(data)
-    if not {package + "/__init__.py", package + "/hostlock.py"} <= set(committed):
+    if not {package + "/__init__.py", package + "/host_lock.py"} <= set(committed):
         sys.exit("Refusing confirmation: incomplete host authority archive")
     checkout = Path(work) / "run/src"
     actual = set()
@@ -178,11 +178,11 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
     except OSError:
         dirty_source()
     sys.path.insert(0, os.path.join(authority, "scripts/performance"))
-    from perflab import hostlock
+    from perflab import host_lock
 
     try:
-        identity = hostlock.read_anchor(required=True)
-        with hostlock.MachineLock(expected_identity=identity) as lock:
+        identity = host_lock.read_anchor(required=True)
+        with host_lock.MachineLock(expected_identity=identity) as lock:
             lock.guard()
             result = subprocess.run([
                 "docker", "run", "--rm", "--name", "afq-confirm",
@@ -204,7 +204,7 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
                 sys.exit("Refusing confirmation: container absence is unconfirmed; retaining machine fence; "
                          "operator recovery must confirm all owned resources stopped before fence cleanup")
             lock.confirm_clean()
-    except hostlock.Refused as refused:
+    except host_lock.Refused as refused:
         if refused.reason != "concurrent_shard":
             print("Refusing confirmation: %s. Missing or unsafe coordination state requires "
                   "operator provisioning/recovery; operator recovery must confirm all owned "
@@ -216,7 +216,7 @@ CLAW
 ```
 
 Claw also hosts the performance laboratory, whose experiments take a non-blocking exclusive
-`flock` on `/tmp/af-perf-machine.lock` (`scripts/performance/perflab/hostlock.py`,
+`flock` on `/tmp/af-perf-machine.lock` (`scripts/performance/perflab/host_lock.py`,
 [`performance-local-executor.md`](performance-local-executor.md)). The confirmation holds that
 lock for its whole run, so an experiment started meanwhile refuses to start rather than measure
 under load, and the confirmation does not start while an experiment holds the lock: `MachineLock`

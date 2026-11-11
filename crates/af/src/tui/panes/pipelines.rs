@@ -16,15 +16,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use review_config::{CommandSpec, Definition as ReviewDefinition, NodeKindSpec, SeveritySpec};
-use review_core::DemandRequirement;
-use review_core::task::pipeline::{
+use af_contracts::DemandRequirement;
+use af_contracts::task::pipeline::{
     PipelineDefinitionV1, ReceiptOutcomeV1, TaskOperatorV1, WorkerSlotV1,
 };
+use af_pipeline_config::{CommandSpec, Definition as ReviewDefinition, NodeKindSpec, SeveritySpec};
 use toml::Value;
 
 use super::{Effect, Pane, Row, SPINNER};
-use crate::task_execution::{self, TreePreview};
+use crate::task_commands::{self, TreePreview};
 use crate::tui::keymap::Key;
 use crate::tui::paint::Paint;
 use crate::tui::scope::Scope;
@@ -657,7 +657,7 @@ fn plan(root: &Path, task: &serde_json::Value, commit: &str) -> Compiled {
     let file = scratch.path().join("pipeline-preview.json");
     let bytes = serde_json::to_vec_pretty(task).map_err(|error| error.to_string())?;
     std::fs::write(&file, bytes).map_err(|error| error.to_string())?;
-    task_execution::plan_tree_preview_at(&file, root, commit)
+    task_commands::plan_tree_preview_at(&file, root, commit)
 }
 
 /// The commit `HEAD` names, or an empty string for an unborn `HEAD`: a symbolic `HEAD` whose
@@ -1105,7 +1105,7 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
     // Written from another thread, so a large answer never blocks on a full request pipe.
     let mut stdin = child.stdin.take().ok_or("git cat-file has no stdin")?;
     let writer = std::thread::spawn(move || stdin.write_all(&requests));
-    let output = review_process::reap::wait_with_output(child)
+    let output = af_process::reap::wait_with_output(child)
         .map_err(|error| format!("running git: {error}"))?;
     let written = writer
         .join()
@@ -1185,8 +1185,8 @@ fn holds(full: &Path, mode: &str, id: &str) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(full) else {
         return false;
     };
-    match review_source_git::EntryKind::from_mode(mode) {
-        Some(review_source_git::EntryKind::Symlink) if meta.file_type().is_symlink() => {
+    match af_source_git::EntryKind::from_mode(mode) {
+        Some(af_source_git::EntryKind::Symlink) if meta.file_type().is_symlink() => {
             std::fs::read_link(full).is_ok_and(|target| {
                 let target = target.as_os_str().as_bytes();
                 blob_id(id, target.len() as u64, &mut &target[..]).as_deref() == Some(id)
@@ -1194,7 +1194,7 @@ fn holds(full: &Path, mode: &str, id: &str) -> bool {
         }
         Some(kind) if meta.is_file() => {
             let executable = meta.permissions().mode() & 0o111 != 0;
-            executable == (kind == review_source_git::EntryKind::Executable)
+            executable == (kind == af_source_git::EntryKind::Executable)
                 && std::fs::OpenOptions::new()
                     .read(true)
                     .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
@@ -1248,8 +1248,8 @@ fn blob_id(like: &str, len: u64, reader: &mut impl std::io::Read) -> Option<Stri
         return None;
     }
     Some(match hasher {
-        Hasher::Sha1(hasher) => review_core::hex::encode(&hasher.finish()),
-        Hasher::Sha256(hasher) => review_core::hex::encode(&hasher.finalize()),
+        Hasher::Sha1(hasher) => af_contracts::hex::encode(&hasher.finish()),
+        Hasher::Sha256(hasher) => af_contracts::hex::encode(&hasher.finalize()),
     })
 }
 
@@ -1360,21 +1360,21 @@ fn listed_paths(
 const GIT_HOME: &str = "/dev/null";
 
 /// One git command against exactly this repository, isolated as capture isolates it
-/// ([`review_source_git::git::isolated_command`]): the environment cleared, so an inherited
+/// ([`af_source_git::git::isolated_command`]): the environment cleared, so an inherited
 /// `GIT_DIR` or `GIT_WORK_TREE` cannot point it at another repository, no global or system
 /// configuration, and every capture override ahead of the subcommand, so the checkout's own
 /// `.git/config` cannot run a hook, an fsmonitor or a filter.
 fn git_command(root: &Path, args: &[&str]) -> Command {
     #[cfg(test)]
     spawned::note(root);
-    let mut command = review_source_git::git::isolated_command(root, Path::new(GIT_HOME));
+    let mut command = af_source_git::git::isolated_command(root, Path::new(GIT_HOME));
     command.args(args);
     command
 }
 
 /// The command's stdout, or its stderr trimmed (empty when it said nothing).
 pub(crate) fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = review_process::reap::output(&mut git_command(root, args))
+    let output = af_process::reap::output(&mut git_command(root, args))
         .map_err(|error| format!("running git: {error}"))?;
     if output.status.success() {
         Ok(output.stdout)
@@ -1513,7 +1513,7 @@ mod tests {
         // The checkout's own configuration cannot select a hook, an fsmonitor or a filter: every
         // capture override precedes the subcommand.
         let args: Vec<&OsStr> = command.get_args().collect();
-        let overrides = review_source_git::git::CAPTURE_OVERRIDES;
+        let overrides = af_source_git::git::CAPTURE_OVERRIDES;
         assert_eq!(
             args[..overrides.len()],
             *overrides.iter().map(OsStr::new).collect::<Vec<_>>()
@@ -1722,13 +1722,13 @@ mod tests {
         let mut abc = Sha1::default();
         abc.update(b"abc");
         assert_eq!(
-            review_core::hex::encode(&abc.finish()),
+            af_contracts::hex::encode(&abc.finish()),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
         );
         let mut long = Sha1::default();
         long.update(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
         assert_eq!(
-            review_core::hex::encode(&long.finish()),
+            af_contracts::hex::encode(&long.finish()),
             "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
         );
     }

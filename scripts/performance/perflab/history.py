@@ -21,7 +21,7 @@ import os
 import shutil
 import tempfile
 
-from . import archive, compare, contracts, limits, render, report
+from . import archive, evaluate_results, contracts, limits, render, report
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 HISTORY_HTML = "history.html"

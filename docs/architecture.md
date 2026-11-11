@@ -1,55 +1,134 @@
 # Architecture
 
-How the Review Kernel behind `af review` is built, and why each boundary sits where it does.
+How Afactory's Task runtime, Review Kernel, Scenarios and Projects are built, and why each
+boundary sits where it does.
 This is the long-form companion to the [README](../README.md): the crate layout, the contracts,
 the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline
 definitions, routing, and Attempt budgets. The vocabulary it uses is defined in
 [`CONTEXT.md`](../CONTEXT.md); the decisions it rests on are recorded as ADRs under
 [`adr/`](adr/README.md); the values that order its trade-offs are in [`values.md`](values.md).
 
-Every section names the test that pins the property it describes, because a documented boundary
-that no test enforces is a wish.
+Behavioral sections name the tests that pin their boundaries; crate manifests and source
+inventories record the implementation structure.
 
 ## Layout
 
 ```text
 schemas/     the language-neutral contracts (JSON Schema 2020-12)
 crates/
-  review-core/   the Rust view of those contracts, plus the flat reviewer-result reader
-  review-parallel/ bounded executor shared by
+  af-contracts/   shared Task, Snapshot, Worker and Review contracts,
+                 plus the flat reviewer-result reader
+  af-parallel/ bounded executor shared by
                  filesystem-heavy infrastructure
-  review-process/ bounded subprocess supervision shared by source capture,
+  af-process/ bounded subprocess supervision shared by source capture,
                  reviewers, checks, and sandbox providers
-  review-store/  canonical identity, the artifact CAS, the append-only log,
+  af-store/  canonical identity, the artifact CAS, the append-only log,
                  and the rebuildable Findings Ledger projection
-  review-source-git/  offline, read-only capture of a tree as an immutable
+  af-source-git/  offline, read-only capture of a tree as an immutable
                  content-identified snapshot, and materialization into a sandbox
-  review-check/  typed Check nodes: trusted programs with typed argument slots,
+  af-check/  typed Check nodes: trusted programs with typed argument slots,
                  per-attempt CheckResult records, and a gate that never passes
                  what it did not verify
-  review-runner/ reviewer adapters: command and model runners behind one
-                 contract
-  review-sandbox/ materialized sandboxes, sealed mutation capture, and an
+  af-runner/ Worker transport: command and model runners behind one
+                 contract, plus shared model/effort validation and binding diagnostics
+  af-sandbox/ materialized sandboxes, sealed mutation capture, and an
                  isolation level a pipeline can refuse
-  review-graph/  the typed pipeline: named ports, deterministic planning, and
+  af-graph/  the typed pipeline: named ports, deterministic planning, and
                  gates compiled into Task conditions
-  review-pipeline/ composition — the graph driving real capture, sandboxes,
-                 checks, reviewers and the ledger
-  review-config/ the pipeline definition format
-  review-attempt/ attempt fencing and budgets that reserve before they spend
-  review-runner-claude/, review-runner-codex/  the model adapters: digest-pinned
-                 Worker packages driving `claude -p` and `codex exec`
-  review-source-task/ read-only capture of external issue sources into typed data
-  review-telemetry/ Telemetry's leaf crate: segments and their consumer thread, blobs,
-                 structured redaction (the credential rules review-runner re-exports), the
+  af-runtime/ common Task execution: admission, recovery, acceptance and accounting,
+                 plus Review composition over capture, sandboxes, checks and the ledger
+  af-project/ Project identity and Stores, registered Workspaces, Surveys and Brief services
+  af-pipeline-config/ pipeline definitions, validation and captured authority
+  af-attempt/ attempt fencing and budgets that reserve before they spend
+  af-runner-claude/, af-runner-codex/, af-runner-pi/  the model adapters:
+                 digest-pinned Worker packages driving `claude -p`, `codex exec`
+                 and Pi's structured host protocol
+  af-source-issue/ read-only capture of external issue sources into typed data
+  af-scenario/ Scenario contracts, durable Runs, Ant scheduling and admission, and
+                 bounded orchestration through explicit application adapters
+  af-telemetry/ Telemetry's leaf crate: segments and their consumer thread, blobs,
+                 structured redaction (the credential rules af-runner re-exports), the
                  tracing subscriber, the rebuildable index, the run views and the telemetry
                  kind of the Storage Budget; never read by the kernel (ADR-0153)
-  af/            the `af` binary: onboarding, review, task, provider and self-management
+  af/            CLI presentation and application services: onboarding, Review, Tasks,
+                 Scenario/Ant and Project Host adapters, machine policy, Providers,
+                 storage and self-management
 fixtures/
   self-optimizer/ the credential-free Worker catalog and native examples the optimizer uses
   task-contracts/ the additive Task contract corpus
   task-runtime/  Task runtime scenarios (review, embedded review, bounded repair)
 ```
+
+Library package, directory and Rust import names follow their shared AF responsibilities
+([naming decision](adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md)). The `af`
+package and binary retain their names. These implementation names do not rename the Review
+Kernel's domain terms, persisted `review.kernel/*` or `af/*` identities, schema IDs or CLI commands.
+
+The dependency direction is from application services toward shared libraries. This map groups
+the principal workspace dependencies; each crate's `Cargo.toml` lists its direct edges.
+
+| Boundary | Responsibility and dependencies |
+| --- | --- |
+| `af-contracts`, `af-process`, `af-parallel`, `af-telemetry` | Independent leaves: shared typed evidence, subprocess supervision, bounded filesystem work and observational telemetry. None depends on another AF crate. |
+| `af-attempt`, `af-graph` | Attempts depend on contracts; graph planning depends on contracts and Attempts. Neither executes Workers. |
+| `af-store`, `af-source-git`, `af-check`, `af-sandbox`, `af-runner` | Storage and execution infrastructure built on shared leaves; source capture, checks, sandboxes and runners retain their own boundaries. |
+| `af-pipeline-config` | Parses and validates definitions, packages, pins and authority using contracts, graph and infrastructure. It has no runtime dependency. |
+| `af-runtime`, Provider adapters | Runtime depends on config, graph and infrastructure and receives Worker adapters. Claude, Codex and Pi depend on shared runner contracts and storage, with no dependency on runtime or each other. |
+| `af-scenario`, `af-project` | Scenario depends on contracts, Store, process and sandbox; Project also uses config, graph, runtime, runner and source capture. Each receives application services through its own `Host`; neither depends on `af`. |
+| `af` | Composes the libraries, implements their Host interfaces, owns machine policy and Provider bindings, and presents the CLI/TUI. `af-source-issue` supplies bounded issue capture. |
+
+`af_runner::models` owns model/effort validation for Claude, Codex and Pi, including
+catalog resolution, and `models::diagnostic` owns grammar G and binding-refusal wording.
+Adapters and neutral consumers (Provider validation, planning, onboarding and TUI) use this common
+API; Codex has no dependency on the Claude adapter. Claude retains native refusal, model-switch
+and unavailable-model handling, including its diagnostics in `af_runner_claude::hint`.
+The common `models::tests` and `models::diagnostic::tests` preserve validation and printed words;
+Claude's `hint::tests` and `task_model_fallback` tests preserve native outcome diagnostics and
+hint extraction. See the [ownership decision](adr/2026-11-06-share-model-validation-outside-provider-adapters.md).
+
+Within `af`, `project_policy` parses `.af/af.toml`; `af_project` owns Projects, their Stores,
+registered Workspaces, identity-bound creation/removal, Surveys and `af_project::brief`.
+The library's `Host` injects state roots, default Task Store paths, path resolution, machine Store
+registration, declaration validation and effective policy tables; `af::project::Application` wires
+these to the existing machine services. The configuration ladder and the full `project_policy`
+parser stay in `af`, while the bounded path-pattern grammar shared by routing and Surveys lives in
+`af_pipeline_config::path_glob`. Isolated worktree Git construction is shared by Project operations
+and Task delivery through `af_project::worktree_git`; `af_process` still owns supervision.
+`crates/af/src/project/` retains clap dispatch, JSON/text presentation and concrete Task adapters.
+The library's Brief resolver reads captured authority only; live capture receives its Host explicitly,
+and receipt assembly receives the existing recorded-input-bindings reader from the application.
+Domain tests live under `crates/af-project/src/`; CLI integration tests stay in
+`crates/af/tests/it/project*.rs`. The two `environment::tests` pin explicit state/registry/declaration
+and effective-policy dependencies. See the
+[Project boundary decision](adr/2026-11-06-separate-project-services-from-cli.md).
+
+`task_commands` captures authority and handles the Task CLI lifecycle; `task_delivery` inspects
+results and delivers verified candidates. The actual `TaskRuntime` remains in `af_runtime::task`.
+`review_accounting` joins Review evidence to Task accounting, and `self_management` handles the
+installed releases. Existing Project, Brief, Task delivery and accounting tests exercise these
+boundaries under their corresponding modules.
+
+`af_scenario` owns Scenario/Ant contracts, pins, journal replay, scheduling, roadmap admission
+and execution orchestration. Its `Host` interface injects native Task validation, planning,
+receipts, cancellation and accounting, plus machine Store locations, ownership, registration and
+collection holds. `crates/af/src/scenario.rs` retains clap parsing and terminal/JSON
+presentation; `crates/af/src/scenario/host.rs` implements native Task and Storage calls using
+existing application services. The library retains authority, signature, bounds, recovery and
+publication controls, and never depends on the binary. Domain tests live in `crates/af-scenario/src/`; Scenario CLI
+integration tests remain in `crates/af/tests/it/scenario*`. The library tests
+`native_template_validation_is_required_at_admission_and_every_journal_replay` and
+`recovered_host_accounting_retains_unknown_reservations_exact_overruns_and_monotonicity` pin the
+injected validation and accounting boundaries; the CLI host test
+`native_template_host_keeps_the_task_file_parser_and_binding_refusals` retains native grammar
+coverage, including the shipped templates. See the
+[boundary decision](adr/2026-11-06-separate-scenario-domain-from-cli.md).
+
+The Task `run_report` modules in `af-contracts` and `af-runtime` describe and assemble run
+outcomes; `af_contracts::task::execution_summary` defines the `af task report` document, and the
+Task `report_domain` modules own Report Task contracts and execution. `warm_workspace` in
+`af-contracts` and `af-sandbox` names Campaign template roots, distinct from the registered
+Project Workspaces in `af_project`. The existing report schema parity and workspace tests preserve
+those contracts and both workspace ID algorithms.
 
 ## Worker local development
 
@@ -86,7 +165,7 @@ provenance and experiment isolation; the existing live container probes own cont
 | `remote-check-evidence-v1.json` | every remote fact one Remote Check's decision used: refused, published or observed (ADR-0140) |
 | `reviewer-result-v2.json` | what one reviewer attempt returned: reports, demands, and one disposition per assigned prior Finding |
 
-The schemas are the contract; the Rust types are one view of them. `crates/review-core/tests/schema_parity.rs`
+The schemas are the contract; the Rust types are one view of them. `crates/af-contracts/tests/schema_parity.rs`
 checks both directions — a populated value must validate, and a value the design forbids must be
 rejected — because a schema that accepts everything passes a one-directional test.
 
@@ -104,7 +183,7 @@ because a claim with no proposed remedy is one a triager cannot act on. An empty
 literal `(change-wide)` sentinel, is a change-wide claim and becomes an empty location list,
 because the sentinel shares a namespace with real paths. One violation refuses every result at
 that barrier, so a blocking Finding cannot degrade into an empty pass
-(`crates/review-store/tests/canonical_identity.rs`).
+(`crates/af-store/tests/it/canonical_identity.rs`).
 
 ## The store
 
@@ -129,7 +208,7 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
   replay a Store another one wrote (ADR-0145), and the refusal names that release and the fix,
   `AF_VERSION=<v> af …`. A Store with history and no marker was written before markers and is
   named as an older release's; no replay reads the table
-  (`crates/review-store/src/store/writers.rs`, `crates/af/tests/it/store_release.rs`).
+  (`crates/af-store/src/store/writers.rs`, `crates/af/tests/it/store_release.rs`).
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
 
@@ -142,12 +221,12 @@ blocks convergence.
 
 ### Replay and convergence
 
-`crates/review-store/tests/crash_replay.rs` kills the process at each boundary of a canonical
+`crates/af-store/tests/it/crash_replay.rs` kills the process at each boundary of a canonical
 Round: the projection after reopening equals the projection before, a crash between publishing
 an artifact and appending its event leaves collectible garbage rather than a dangling reference,
 and a refused append does not consume a sequence.
 
-`crates/review-store/tests/ledger_convergence.rs` pins how the Ledger fold moves one Finding: a
+`crates/af-store/tests/it/ledger_convergence.rs` pins how the Ledger fold moves one Finding: a
 fix that did not hold reopens, a higher-severity re-report escalates in place and is news, a
 same-severity re-report is not, a rejected or `wontfix` claim is not reopened by a re-report,
 `contested` blocks like `open`, a fix needs a clean Round before convergence, an open blocker at
@@ -159,7 +238,7 @@ Those scenarios set status with a bare-status `FindingResolved@1`, which a Revie
 only as `contested`. Operator decisions are typed Resolutions, and they add one rule: an
 in-scope re-report challenges a `rejected` or tracked-`wontfix` Resolution when its severity is
 above what the Resolution accepted or its Subject is not the one the Resolution was decided on,
-and the Finding becomes `contested` (`crates/review-store/tests/canonical_identity.rs`).
+and the Finding becomes `contested` (`crates/af-store/tests/it/canonical_identity.rs`).
 
 ## The source adapter
 
@@ -181,7 +260,7 @@ providers, because the problem differs:
 
 ### The hostile-configuration case
 
-`crates/review-source-git/tests/hostile_git_config.rs` found a real hole on its first run.
+`crates/af-source-git/tests/it/hostile_git_config.rs` found a real hole on its first run.
 
 The premise is that the repository *is* the attacker: `.git/config`, `.gitattributes` and hooks
 are all candidate-controlled, and capture runs before any sandbox exists, with the operator's
@@ -199,7 +278,7 @@ plain `git status` over the same repository first, proving the marker *would* ha
 
 The same premise holds wherever af runs git against a checkout, not only in capture. The
 browser that bare `af` opens and the Task file advice run git through
-`review_source_git::git::isolated_command`, the cleared environment and full `-c` override set
+`af_source_git::git::isolated_command`, the cleared environment and full `-c` override set
 capture uses. The browser marks drift by comparing `ls-tree`/`cat-file` blobs with working-tree
 bytes itself, never through `git diff` or `git hash-object`. Review selector suggestions compare
 committed and worktree captures through that same isolated path; their default-branch metadata
@@ -212,8 +291,8 @@ any ASCII case or NTFS/HFS+ spelling, a symlinked
 
 ## Check nodes
 
-Two properties. `crates/review-check/tests/check_runner.rs` pins them against real processes;
-the vacuous-gate rule is pinned by `a_vacuous_gate_blocks` in `crates/review-check/src/gate.rs`.
+Two properties. `crates/af-check/tests/check_runner.rs` pins them against real processes;
+the vacuous-gate rule is pinned by `a_vacuous_gate_blocks` in `crates/af-check/src/gate.rs`.
 
 **Nothing overwrites.** A gate that runs five times in one round leaves five records: each
 execution is its own immutable `CheckResult@1`. `check_runner.rs` runs one check twice and
@@ -260,10 +339,10 @@ who owns a finding, and a replay would not reproduce the run it replays. So resu
 in canonical order (by node ID), never in arrival order.
 
 The pipeline's gather node is that barrier. It runs only once every reviewer has finished, and
-`ReviewDomainState::run_gather` (`crates/review-pipeline/src/review_domain.rs`) flushes the
+`ReviewDomainState::run_gather` (`crates/af-runtime/src/review_domain.rs`) flushes the
 buffered reviewer events in node order; Ledger reduction then ingests the gathered results sorted
 by reviewer node ID. The Task-host domain suite
-(`crates/review-pipeline/tests/task_campaign_review/host/domain.rs`) checks the outcome: a Finding
+(`crates/af-runtime/tests/it/task_campaign_review/host/domain.rs`) checks the outcome: a Finding
 that two reviewers report lists its sources in canonical order, not completion order.
 
 ### Seeing exactly what a Worker receives
@@ -305,7 +384,7 @@ capture already happened, so the snapshot under review cannot be altered by anyt
 does), and every mutation is captured. Note what that is not — an absolute-path write to the
 checkout on disk is not prevented, and the case records that as open rather than calling it
 covered. The environment a check runs with is not the sandbox's doing: the check runner
-(`review_check::CheckRunner`) clears it and rebuilds it from an allowlist, with a `PATH` of
+(`af_check::CheckRunner`) clears it and rebuilds it from an allowlist, with a `PATH` of
 existing absolute directories only, and a container run starts from `--env-file /dev/null` plus
 the declared variables. A host-local check ends with its process group, and on Linux with every
 descendant that left the group (`setsid`) but kept the `AF_PROCESS_TREE` value it inherited,
@@ -396,9 +475,10 @@ properties are proved with a recording stub — no models, no checks, no filesys
 
 ## One review, end to end
 
-`review-pipeline` is the composition layer, and the only thing it adds is wiring. That was the
-test of the boundaries underneath: if composing them had required new rules, the split would have
-been wrong.
+`af-runtime` executes the common Task lifecycle: admission, reservations, context binding,
+dispatch, recovery, output acceptance and accounting. It composes the lower libraries under
+captured authority and hosts Review with its canonical Findings and closure rules. Configuration
+loading stays in `af-pipeline-config`, while typed dependency planning stays in `af-graph`.
 
 ```text
   capture ── snapshot ──> gate (admitted, ephemeral-write clone) ──decision──┐
@@ -407,7 +487,7 @@ been wrong.
                            └───────────────┴──> gather ──> ledger ──> convergence
 ```
 
-The Task-host suites (`crates/review-pipeline/tests/task_campaign_review/host/`) run it through the
+The Task-host suites (`crates/af-runtime/tests/it/task_campaign_review/host/`) run it through the
 common Task runtime — real sandboxes, real check and reviewer processes. The only stub is the
 reviewers' *judgement*, which is a `command` runner emitting fixed findings: the one thing a test
 cannot supply honestly, and the one thing the kernel deliberately knows nothing about.
@@ -624,14 +704,14 @@ Telemetry records what `af` does in a store of its own and is never read by the 
 it; a span that does not name the run's identity (`af.store_id`, `af.run_id`, `af.run.kind`,
 `af.execution_id`) takes it from its parent, and a phase that belongs to a run (a Store
 operation, a git process, a capture, a check) is recorded only inside a span of one.
-`review-process` links no telemetry (ADR-0026): the crates that receive its results record the
+`af-process` links no telemetry (ADR-0026): the crates that receive its results record the
 process spans from them.
 
 ### Telemetry span catalogue
 
 Every span name af emits is a row here; `telemetry_span_catalogue` fails when a source names
 one that is not. `af.turn` and `af.tool` are written by the harness stream tap
-(`review_telemetry::stream`) at the arrival times of the lines that open and close them;
+(`af_telemetry::stream`) at the arrival times of the lines that open and close them;
 `af.sink` joins with the sink package of the design note.
 
 | Span | Kind | Parent | Attributes |
@@ -665,3 +745,19 @@ The process attributes of every `process` span: `process.pid`, `process.command`
 only), `process.exit_code`, `process.signal`, `af.rusage.user_ms`, `af.rusage.system_ms`,
 `af.rusage.max_rss_bytes`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`. A figure the
 platform did not deliver is absent, never zero.
+
+## Internal naming and protected external names
+
+Workspace library packages and directories use responsibility names in kebab-case (`af-runtime`,
+`af-pipeline-config`); Rust imports and modules use snake_case (`af_runtime`, `run_report`).
+Importable Python modules also use snake_case, including compound names: `kernel_measure`,
+`scenario_adapter`, `nightly_chain`, `evaluate_results` for offline recorded-result evaluation,
+and `release_comparison` for durable release-comparison orchestration. Executable script paths
+retain their public invocation spelling, including existing kebab-case entrypoints.
+
+Internal navigation changes do not rename CLI commands or flags, `review.kernel/*` and `af/*`
+artifact identities, persisted type strings, events, schema IDs or JSON shapes. Accepted ADRs
+and raw captured historical evidence retain the names of the code they describe. Active examples
+and navigation use current internal names. Worker instruction
+references are active code navigation: a change to their bytes requires the corresponding package
+version and native `af catalog digest` pin refresh, without changing Worker authority or budgets.

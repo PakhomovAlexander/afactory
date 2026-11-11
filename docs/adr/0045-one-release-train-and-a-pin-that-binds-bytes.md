@@ -8,7 +8,10 @@ shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, the `.review/` to `.af/` co
 (`af onboard --migrate`), replay of `.review/` Campaigns, and §1's consumer fixtures (each built
 binary now onboards and plans a fresh repository instead). Extended by
 [ADR-0138](0138-the-repository-pins-its-newest-release.md): the train ends by pinning the
-published release in this repository's own lock.
+published release in this repository's own lock. Partially superseded by
+[ADR-2026-11-09-review-release-contracts-and-pins-before-merge](2026-11-09-review-release-contracts-and-pins-before-merge.md),
+which requires an always-run release contract preflight and CI-reviewed pin PR with a second
+human merge; direct pin pushes and deploy-key bypass are retired.
 
 **Amended 2026-10-20** (security audit, finding H3). Part 2's on-demand install no longer trusts
 the lock's digest alone: it fetches the release's `SHA256SUMS` and `SHA256SUMS.minisig`, verifies

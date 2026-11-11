@@ -12,9 +12,9 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use review_telemetry::content_view::{self, Context, Part, Reasoning, Search};
-use review_telemetry::level::Level;
-use review_telemetry::view;
+use af_telemetry::content_view::{self, Context, Part, Reasoning, Search};
+use af_telemetry::level::Level;
+use af_telemetry::view;
 
 use super::views::{iso_ns, print_json, resolve, root_of};
 use crate::storage::human_bytes;
@@ -22,7 +22,7 @@ use crate::storage::human_bytes;
 /// What `context` and `reasoning` read: the directory's index, the run, and how it was read.
 struct Opened {
     root: PathBuf,
-    index: review_telemetry::index::Index,
+    index: af_telemetry::index::Index,
     read: view::IndexRead,
     unreadable: Vec<view::Unreadable>,
     found: super::views::Found,
@@ -175,7 +175,7 @@ pub(crate) fn search(
         Some(text) => {
             let window = view::parse_since(text)
                 .ok_or_else(|| format!("--since {text}: a duration such as 30m, 12h, 14d or 2w"))?;
-            let now = review_telemetry::layout::unix_ns_now();
+            let now = af_telemetry::layout::unix_ns_now();
             Some(i64::try_from(now.saturating_sub(window.as_nanos())).unwrap_or(i64::MAX))
         }
         None => None,
@@ -235,7 +235,7 @@ pub(crate) fn search(
     Ok(0)
 }
 
-fn heading(out: &mut String, what: &str, run: &review_telemetry::turns::HarnessRun) {
+fn heading(out: &mut String, what: &str, run: &af_telemetry::turns::HarnessRun) {
     let _ = writeln!(
         out,
         "{what}  {} run {}  history {} — {}",

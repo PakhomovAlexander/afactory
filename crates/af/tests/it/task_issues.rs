@@ -54,7 +54,7 @@ fn setup(root: &Path) -> (PathBuf, PathBuf) {
     git(&repo, &["config", "user.email", "fixture@example.invalid"]);
     (repo, root.join("state"))
 }
-fn issue() -> review_core::task::source::IssueInputV1 {
+fn issue() -> af_contracts::task::source::IssueInputV1 {
     serde_json::from_value(json!({"schema":"af.issue-input/1","id":"10042","key":"AF-42","revision":"2026-09-12T10:00:00Z",
         "summary":"Offset and limit pagination","description":"Preserve the original input values.","acceptance":{"customfield_1":"Reject noninteger and negative bounds."}})).unwrap()
 }
@@ -99,7 +99,7 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
         let file = format!("task-{format}.json");
         let planned = task(&repo, &state, &["task", "plan", "--file", &file], 0);
         assert_eq!(planned["attempts"], 0);
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let revision = cas
             .get_json(planned["revision_id"].as_str().unwrap())
             .unwrap();
@@ -190,7 +190,7 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
     assert_eq!(reviewed["attempts"], 3);
     assert_eq!(reviewed["result"]["acceptance"], "satisfied");
     assert_eq!(reviewed["result"]["domain_conclusion"], "pass");
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let revision = cas
         .get_json(reviewed["revision_id"].as_str().unwrap())
         .unwrap();

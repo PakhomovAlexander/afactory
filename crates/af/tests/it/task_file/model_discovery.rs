@@ -25,7 +25,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(kind: &str, model: &str, effort: &str) -> Self {
-        use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+        use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
         let directory = tempfile::tempdir().unwrap();
         let (repo, state) = fixture_named(directory.path(), "review");
         let home = directory.path().join("home");
@@ -63,13 +63,14 @@ impl Fixture {
             attempt.tokens = 1000;
             attempt.wall_ms = super::NATIVE_REVIEWER_WALL_MS;
             std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
-            catalog["packages"][&package]["digest"] =
-                toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
+            catalog["packages"][&package]["digest"] = toml::Value::String(
+                af_pipeline_config::lock::package_digest(&package, &path).unwrap(),
+            );
             providers.insert(package, toml::Value::String(provider.into()));
         }
         // Room for verification and the mandatory Provider admission, as the fallback fixture.
         let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-        let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
             toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;
@@ -79,7 +80,7 @@ impl Fixture {
         )
         .unwrap();
         catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
-            review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
+            af_pipeline_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
         );
         catalog
             .as_table_mut()

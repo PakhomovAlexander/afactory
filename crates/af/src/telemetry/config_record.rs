@@ -9,8 +9,8 @@
 
 use std::path::Path;
 
-use review_pipeline::telemetry::{ConfigText, MachineConfig, row};
-use review_telemetry::record::ConfigRow;
+use af_runtime::telemetry::{ConfigText, MachineConfig, row};
+use af_telemetry::record::ConfigRow;
 
 use crate::config;
 
@@ -48,7 +48,7 @@ pub(crate) fn machine_config() -> MachineConfig {
 
 /// `af --version --json`, one row per member.
 fn version() -> Vec<ConfigRow> {
-    let document = crate::selfmgmt::version_document();
+    let document = crate::self_management::version_document();
     let Some(members) = document.as_object() else {
         return vec![row("version", "version", "unknown", None)];
     };
@@ -121,10 +121,10 @@ fn policy_files(toplevel: Option<&Path>) -> (Vec<ConfigRow>, Vec<ConfigText>) {
         };
         match std::fs::read(toplevel.join(".af").join(name)) {
             Ok(bytes) => {
-                let digest = review_telemetry::trace::sha256_digest(&bytes);
+                let digest = af_telemetry::trace::sha256_digest(&bytes);
                 if name == "af.toml" {
                     // Its bytes are a blob at `content` only (design §7.4).
-                    let content = review_telemetry::content::recording().then(|| bytes.clone());
+                    let content = af_telemetry::content::recording().then(|| bytes.clone());
                     texts.push(ConfigText {
                         kind: "af_toml",
                         digest: digest.clone(),

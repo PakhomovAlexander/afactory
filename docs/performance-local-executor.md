@@ -80,7 +80,7 @@ new work, never deletes original receipts. Provision a filesystem/quota at that 
 as a hard backstop. Keep daemon image/log storage bounded separately; sample/build containers
 retain their existing disabled logging/IPC and write boundaries.
 
-Grant only the trusted account's existing `hostprep` operations through an operator-reviewed
+Grant only the trusted account's existing `host_prep` operations through an operator-reviewed
 sudo policy for loop images/mounts under this journal: noninteractive mount/unmount and
 ownership setup. Candidate containers receive no sudo, Docker socket, credentials or host
 homes. Docker access itself is privileged operator authority, restricted to trusted control.
@@ -233,7 +233,7 @@ too little time left ends the original `failed` with measurement `not_executed` 
 build, nothing measured and no fence kept; an unexpected or unconfirmed cleanup still fences.
 
 Submit telemetry with `--work telemetry` and a new key, then `cycle`. Each side is compiled
-through `telemetrybuild`, each execution is contained, the exact configured overhead,
+through `telemetry_build`, each execution is contained, the exact configured overhead,
 invocation-cost and read-latency settings are used, and the actual installed matching verifier
 admits raw documents. A failed or partial native telemetry result can still be a completed
 measurement. `--work profile` similarly creates a separate native diagnostic child under the
@@ -545,7 +545,7 @@ the operator's to run, not something this change ran.
 
    Create the journal's parent as compute's own, 0700, under the candidate data root:
    `install -d -o af-perf-exec -g af-perf-exec -m 0700 /var/lib/af-perf-candidate`. Scope the
-   reviewed `hostprep` sudo policy for loop images and mounts to that root only (a copy of
+   reviewed `host_prep` sudo policy for loop images and mounts to that root only (a copy of
    production's rule naming `/var/lib/af-perf-candidate/journal`), and remove that rule when the
    validation ends.
 

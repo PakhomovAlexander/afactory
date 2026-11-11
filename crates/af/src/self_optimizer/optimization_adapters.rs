@@ -6,7 +6,7 @@
 //! content are never copied into an Observation.
 
 use super::*;
-use review_core::task::usage::TaskTokenUsageV3;
+use af_contracts::task::usage::TaskTokenUsageV3;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -526,7 +526,7 @@ fn parse_af_inspection(
         .into_iter()
         .flatten()
     {
-        let evidence: review_core::task::runtime::TaskRuntimeEvidenceV1 =
+        let evidence: af_contracts::task::runtime::TaskRuntimeEvidenceV1 =
             serde_json::from_value(entry["record"].clone())
                 .map_err(|error| format!("invalid AF runtime evidence: {error}"))?;
         evidence.validate()?;
@@ -541,10 +541,10 @@ fn parse_af_inspection(
         let mut spans = Vec::new();
         for span in evidence.spans {
             let kind = match span.kind {
-                review_core::task::runtime::TaskRuntimeSpanKindV1::Check => {
+                af_contracts::task::runtime::TaskRuntimeSpanKindV1::Check => {
                     OptimizationSpanKindV1::Check
                 }
-                review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation => {
+                af_contracts::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation => {
                     OptimizationSpanKindV1::DependencyPreparation
                 }
             };
@@ -620,7 +620,7 @@ fn parse_af_inspection(
     let verifier = result
         .pointer("/outputs/verification/artifact_ids/0")
         .and_then(Value::as_str)
-        .filter(|id| review_core::is_digest(id))
+        .filter(|id| af_contracts::is_digest(id))
         .map(str::to_owned);
     let verified = result["acceptance"] == "satisfied" && verifier.is_some();
     observations.push(NormalizedRecord {
@@ -1709,7 +1709,7 @@ mod tests {
             SourceCompletenessV1::Complete
         );
         assert!(history.gaps.is_empty(), "{:?}", history.gaps);
-        let economics = review_store::optimization::project_economics(&[(
+        let economics = af_store::optimization::project_economics(&[(
             format!("sha256:{}", "8".repeat(64)),
             history.clone(),
         )])

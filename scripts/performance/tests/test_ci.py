@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 
-from perflab import ci, contracts, gitrefs, planning, suite
+from perflab import ci, contracts, git_refs, planning, suite
 from perflab.values import ContractError, canonical_digest
 from tests import test_planning
 from tests.support import CLI, SUITE, fetched_checkout, read
@@ -242,7 +242,7 @@ class Events(test_planning.History):
         for name in ("dispatch_baseline", "dispatch_candidate"):
             self.assertEqual(checkout.git("for-each-ref", "refs/heads/" + name), "")
             self.assertNotEqual(checkout.git("for-each-ref", "refs/remotes/origin/" + name), "")
-        self.git = gitrefs.Git(checkout.path)
+        self.git = git_refs.Git(checkout.path)
 
         def dispatch(**inputs):
             doc, plans = self.schedule(ci.Event("workflow_dispatch", {"inputs": dict(

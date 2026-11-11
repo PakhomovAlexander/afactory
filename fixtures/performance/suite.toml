@@ -39,7 +39,7 @@ description = "Production Task lease and CAS artifact envelope cap at the design
 [probe]
 # One process per sample: one af.perf-probe-request/2 on stdin, one af.perf-probe/1 line out.
 # Its own `passed` is never the verdict; the driver checks each side against golden/native.json.
-source = "crates/review-pipeline/examples/perf-probe.rs"
+source = "crates/af-runtime/examples/perf-probe.rs"
 request = "af.perf-probe-request/2"
 message = "af.perf-probe/1"
 golden = "golden/native.json"

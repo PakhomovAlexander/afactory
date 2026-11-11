@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-use review_config::lock::{AfPin, Lockfile};
+use af_pipeline_config::lock::{AfPin, Lockfile};
 
 use crate::common;
 use common::{Sandbox, Signer, TARGET, VERSION};

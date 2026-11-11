@@ -1,7 +1,7 @@
 //! Actual common CLI/Store capture and replay, using a deterministic local native protocol.
 //! The synthetic cached/cold observations are sizing controls, not future Provider guarantees.
 use super::*;
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 use serde_json::{Value, json};
 
 struct Fixture {
@@ -110,7 +110,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
     fn calls(&self) -> String {
         std::fs::read_to_string(self.home.join("codex-auth/calls")).unwrap_or_default()
     }
-    fn projection(&self, id: &str) -> review_store::store::task::TaskProjection {
+    fn projection(&self, id: &str) -> af_store::store::task::TaskProjection {
         let cas = Cas::open_existing(Path::new(&self.state).join("cas")).unwrap();
         EventStore::open_read_only(Path::new(&self.state).join("events.sqlite"))
             .unwrap()
@@ -184,8 +184,8 @@ fn common_review_captures_admission_cost_and_retains_exact_overruns() {
         assert_eq!(
             attempts.iter().any(|a| matches!(
                 &e.graph.nodes[&a.reservation.node].operator,
-                review_graph::task::CompiledOperator::ReviewDomain {
-                    operation: review_graph::task::ReviewOperation::Reviewer { .. },
+                af_graph::task::CompiledOperator::ReviewDomain {
+                    operation: af_graph::task::ReviewOperation::Reviewer { .. },
                     ..
                 }
             ) && a.started),
@@ -206,7 +206,7 @@ fn common_review_captures_admission_cost_and_retains_exact_overruns() {
         if accepted {
             assert_eq!(
                 serde_json::from_slice::<Value>(&schema.unwrap()).unwrap(),
-                review_runner::task::reply_schema::ReplyContract::ReviewerResult
+                af_runner::task::reply_schema::ReplyContract::ReviewerResult
                     .strict(&[])
                     .unwrap()
                     .unwrap()
@@ -266,7 +266,7 @@ fn doctor_resume_keeps_old_cost_and_refuses_changed_tokens_or_wall_before_events
         ],
     ] {
         let store = EventStore::open_read_only(Path::new(&f.state).join("events.sqlite")).unwrap();
-        let run = review_store::store::task::task_run_id(id).unwrap();
+        let run = af_store::store::task::task_run_id(id).unwrap();
         let campaign = first["run_id"].as_str().unwrap();
         let prefix = (store.replay(&run).unwrap(), store.replay(campaign).unwrap());
         assert!(!prefix.0.is_empty());
@@ -341,7 +341,7 @@ fn a_restarted_campaign_without_a_task_stays_on_the_common_runtime() {
     assert!(
         restarted
             .iter()
-            .any(|event| event.event_type == review_core::EventType::RoundInputSupersededV1)
+            .any(|event| event.event_type == af_contracts::EventType::RoundInputSupersededV1)
     );
     for mode in [["review", "run"], ["provider", "doctor"]] {
         refused_by_common_capture(f.cli(&mode, NEW));
@@ -377,11 +377,11 @@ fn a_task_captured_after_a_pre_task_restart_of_a_changed_candidate_resumes() {
         0,
     );
     let store = EventStore::open_read_only(Path::new(&f.state).join("events.sqlite")).unwrap();
-    let starts: Vec<review_core::RoundStartedPayloadV1> = store
+    let starts: Vec<af_contracts::RoundStartedPayloadV1> = store
         .replay("campaign-admission-cost")
         .unwrap()
         .into_iter()
-        .filter(|event| event.event_type == review_core::EventType::RoundStartedV1)
+        .filter(|event| event.event_type == af_contracts::EventType::RoundStartedV1)
         .map(|event| serde_json::from_value(event.payload).unwrap())
         .collect();
     drop(store);
@@ -442,7 +442,7 @@ fn a_campaign_holding_a_retired_event_type_is_refused_before_any_work() {
             rusqlite::params![
                 campaign,
                 sequence,
-                &review_core::hex::encode(&id.finalize())[..26],
+                &af_contracts::hex::encode(&id.finalize())[..26],
                 round.event_id,
                 selection.to_string(),
             ],
@@ -549,12 +549,12 @@ fn an_invalid_second_captured_reviewer_is_refused_before_any_provider_process() 
             workers.join("tester-two/reviewer.md"),
         )
         .unwrap();
-        let registry = review_config::lock::Registry::new(&workers);
-        let mut lockfile = review_config::lock::Lockfile::empty();
+        let registry = af_pipeline_config::lock::Registry::new(&workers);
+        let mut lockfile = af_pipeline_config::lock::Lockfile::empty();
         for name in ["tester", "tester-two"] {
             lockfile.workers.insert(
                 name.into(),
-                review_config::lock::Lockfile::pin(name, &registry).unwrap(),
+                af_pipeline_config::lock::Lockfile::pin(name, &registry).unwrap(),
             );
         }
         std::fs::write(repo.join(".af/af.lock"), lockfile.to_toml()).unwrap();

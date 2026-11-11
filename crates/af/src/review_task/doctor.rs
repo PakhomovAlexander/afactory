@@ -1,34 +1,34 @@
 //! Capability-only entry into the Campaign's existing captured Task. The observations
 //! describe this doctor invocation; they never assert the business graph was completed.
 use super::*;
-use review_core::task::usage::{DecimalU64, DecimalU128};
-use review_graph::NodeOutcome;
-use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-use review_pipeline::task::{TaskProviderAdmissionReport, TaskRuntime};
-use review_store::store::task::TaskProjection;
+use af_contracts::task::usage::{DecimalU64, DecimalU128};
+use af_graph::NodeOutcome;
+use af_runtime::task::campaign_review::host::CampaignReviewTaskHost;
+use af_runtime::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
+use af_runtime::task::{TaskProviderAdmissionReport, TaskRuntime};
+use af_store::store::task::TaskProjection;
 use serde_json::{Value, json};
 
 pub(crate) fn run(
     options: &Options,
     cas: &Cas,
     store: &mut EventStore,
-    repo: &review_source_git::Repo,
+    repo: &af_source_git::Repo,
     campaign: &str,
 ) -> Result<i32, String> {
     let session = lifecycle::prepare_session(options, cas, store, repo, campaign)?;
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let work = {
-        let shared = review_store::SharedEventStore::new(&mut *store);
+        let shared = af_store::SharedEventStore::new(&mut *store);
         crate::interrupt::forwarding(&cancellation, || {
-            review_pipeline::task::lease::with_heartbeat_supervised(
+            af_runtime::task::lease::with_heartbeat_supervised(
                 &shared,
                 cas,
                 &session.lease,
-                review_pipeline::task::lease::HeartbeatControl {
+                af_runtime::task::lease::HeartbeatControl {
                     cancellation: Some(&cancellation),
                     writer_lost: None,
-                    timing: crate::task_execution::recovery::timing(),
+                    timing: crate::task_commands::recovery::timing(),
                 },
                 || {
                     let captured = &session.captured;
@@ -52,7 +52,7 @@ pub(crate) fn run(
                         &host,
                     )?
                     .with_cancellation(&cancellation)
-                    .with_lease_timing(crate::task_execution::recovery::timing());
+                    .with_lease_timing(crate::task_commands::recovery::timing());
                     let report = runtime.execute_provider_admissions()?;
                     // Interrupted admissions are not reported as the doctor's outcome (ADR-0129).
                     crate::interrupt::check()?;

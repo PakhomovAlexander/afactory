@@ -1,18 +1,18 @@
 //! CLI sequencing for one captured Review Task. All execution and continuation authority
 //! stays in the common Store, compiler and domain host.
 use super::*;
-use review_core::task::TaskPhaseV1;
-use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-use review_store::store::task::{TaskLease, TaskProjection};
+use af_contracts::task::TaskPhaseV1;
+use af_contracts::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
+use af_runtime::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
+use af_store::store::task::{TaskLease, TaskProjection};
 
 pub(crate) fn run(
     options: &Options,
     cas: &Cas,
     store: &mut EventStore,
-    repo: &review_source_git::Repo,
+    repo: &af_source_git::Repo,
     campaign: &str,
-) -> Result<review_pipeline::RunVerdict, String> {
+) -> Result<af_runtime::RunVerdict, String> {
     let started = now_ms()?;
     let PreparedReviewSession {
         mut captured,
@@ -66,8 +66,8 @@ fn prepare_presentation(
     captured: &CapturedReviewTask,
     execution: &RoundExecution,
 ) -> Result<presentation::PreparedPresentation, String> {
-    let shared = review_store::SharedEventStore::new(store);
-    review_pipeline::task::lease::with_heartbeat(&shared, cas, lease, || {
+    let shared = af_store::SharedEventStore::new(store);
+    af_runtime::task::lease::with_heartbeat(&shared, cas, lease, || {
         let reader =
             EventStore::open_read_only(options.resolved_state_dir()?.join("events.sqlite"))
                 .map_err(|e| e.to_string())?;
@@ -105,11 +105,11 @@ pub(super) fn prepare_session(
     options: &Options,
     cas: &Cas,
     store: &mut EventStore,
-    repo: &review_source_git::Repo,
+    repo: &af_source_git::Repo,
     campaign: &str,
 ) -> Result<PreparedReviewSession, String> {
     let id = task_id(campaign);
-    let engine = crate::task_execution::engine(cas)?;
+    let engine = crate::task_commands::engine(cas)?;
     let existing = store.task_projection(cas, &id).map_err(|e| e.to_string())?;
     let (captured, prepared, lease, resumed) = if let Some(state) = existing {
         let binding = recorded_round(cas, &state.revision)?;
@@ -127,7 +127,7 @@ pub(super) fn prepare_session(
         }
         let captured = restore(options, cas, store, &state, &prepared, &engine)?;
         // A run that died holds its lease until it expires: wait it out (ADR-0209).
-        let lease = crate::task_execution::recovery::take_lease(cas, store, &id, &writer())?;
+        let lease = crate::task_commands::recovery::take_lease(cas, store, &id, &writer())?;
         let admitted = store
             .recover_task_attempts(cas, &lease)
             .map_err(|e| e.to_string())
@@ -312,12 +312,12 @@ fn preflight_inputs(
 fn check_inputs(
     options: &Options,
     cas: &Cas,
-    loaded: &review_config::Loaded,
-    authority: &review_pipeline::RoundAuthority,
+    loaded: &af_pipeline_config::Loaded,
+    authority: &af_runtime::RoundAuthority,
     focus: Option<&str>,
     fallback: u64,
 ) -> Result<(), String> {
-    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+    let manifest: af_contracts::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(authority.campaign_manifest_id())
             .map_err(|e| e.to_string())?,
     )
@@ -325,7 +325,7 @@ fn check_inputs(
     let bytes = cas
         .get(&manifest.pipeline.artifact_id)
         .map_err(|e| e.to_string())?;
-    let definition = review_config::Definition::from_toml(
+    let definition = af_pipeline_config::Definition::from_toml(
         std::str::from_utf8(&bytes).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
@@ -424,7 +424,7 @@ fn round_closed(
         .iter()
         .filter(|e| e.causation_id.as_deref() == Some(&binding.round_event_id))
         .try_fold(false, |closed, e| {
-            review_core::run_report_closes_round(e)
+            af_contracts::run_report_closes_round(e)
                 .map(|v| closed || v.unwrap_or(false))
                 .map_err(|e| e.to_string())
         })
@@ -439,7 +439,7 @@ fn successor(
     let compiler = CampaignReviewPlanCompiler::reopen(
         cas,
         round,
-        &crate::task_execution::engine(cas)?,
+        &crate::task_commands::engine(cas)?,
         &previous.revision.authority.policy_id,
     )?;
     let revision =
@@ -471,7 +471,7 @@ fn successor(
         vec![revision_id.clone()],
         &plan,
     )?;
-    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+    let manifest: af_contracts::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(compiler.round().authority().campaign_manifest_id())
             .map_err(|e| e.to_string())?,
     )
@@ -501,16 +501,16 @@ fn advance(
     options: &Options,
     cas: &Cas,
     store: &mut EventStore,
-    repo: &review_source_git::Repo,
+    repo: &af_source_git::Repo,
     previous: &CapturedReviewTask,
     lease: &TaskLease,
 ) -> Result<CapturedReviewTask, String> {
-    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
-    use review_store::store::task::review_round_publication::TaskReviewRoundSuccessor;
+    use af_runtime::task::campaign_review::host::CampaignReviewTaskHost;
+    use af_store::store::task::review_round_publication::TaskReviewRoundSuccessor;
     let next = {
-        let shared = review_store::SharedEventStore::new(store);
+        let shared = af_store::SharedEventStore::new(store);
         let (host, prepared, preview, next) =
-            review_pipeline::task::lease::with_heartbeat(&shared, cas, lease, || {
+            af_runtime::task::lease::with_heartbeat(&shared, cas, lease, || {
                 let host = CampaignReviewTaskHost::new(
                     cas,
                     shared.clone(),
@@ -588,7 +588,7 @@ fn advance(
             .prepare_handoff(cas, &next.plan_id)
             .map_err(|e| e.to_string())?;
         let handoff_id =
-            review_store::store::task::review_handoff::capture_task_review_handoff(cas, &handoff)
+            af_store::store::task::review_handoff::capture_task_review_handoff(cas, &handoff)
                 .map_err(|e| e.to_string())?;
         let next_authority =
             CapturedTaskAuthority::for_campaign_review(&next.compiler, &host, &NoTaskDeveloper);
@@ -626,15 +626,15 @@ fn recover_handoff(
     store: &mut EventStore,
     previous: &CapturedReviewTask,
     lease: &TaskLease,
-    latest: &review_core::RunEvent,
+    latest: &af_contracts::RunEvent,
 ) -> Result<CapturedReviewTask, String> {
-    use review_core::task::review_handoff::{
+    use af_contracts::task::review_handoff::{
         TaskReviewHandoffEvidenceV1 as Evidence, TaskReviewHandoffV1,
     };
-    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
+    use af_runtime::task::campaign_review::host::CampaignReviewTaskHost;
     let next = {
-        let shared = review_store::SharedEventStore::new(&mut *store);
-        review_pipeline::task::lease::with_heartbeat(&shared, cas, lease, || {
+        let shared = af_store::SharedEventStore::new(&mut *store);
+        af_runtime::task::lease::with_heartbeat(&shared, cas, lease, || {
             // Hydration uses a separate autocommit reader so renewal can retain the
             // original writer. The transition below still checks both current prefixes.
             let reader =
@@ -670,7 +670,7 @@ fn recover_handoff(
                 let event = history
                     .iter()
                     .find(|e| {
-                        e.event_type == review_core::EventType::RoundInputSupersededV1
+                        e.event_type == af_contracts::EventType::RoundInputSupersededV1
                             && e.causation_id.as_deref() == Some(&old.round_event_id)
                             && latest.causation_id.as_deref() == Some(&old.round_event_id)
                     })
@@ -698,8 +698,8 @@ fn recover_handoff(
                     .rev()
                     .find(|e| {
                         e.causation_id.as_deref() == Some(&old.round_event_id)
-                            && e.event_type == review_core::EventType::RunReportV6
-                            && review_core::run_report_closes_round(e)
+                            && e.event_type == af_contracts::EventType::RunReportV6
+                            && af_contracts::run_report_closes_round(e)
                                 .is_ok_and(|v| v == Some(true))
                     })
                     .ok_or("Recorded Review successor has no exact closed predecessor")?;
@@ -718,10 +718,8 @@ fn recover_handoff(
                 evidence,
             };
             let handoff_id =
-                review_store::store::task::review_handoff::capture_task_review_handoff(
-                    cas, &handoff,
-                )
-                .map_err(|e| e.to_string())?;
+                af_store::store::task::review_handoff::capture_task_review_handoff(cas, &handoff)
+                    .map_err(|e| e.to_string())?;
             let host = CampaignReviewTaskHost::new(
                 cas,
                 shared.clone(),
@@ -746,7 +744,7 @@ fn recover_handoff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use review_core::task::{
+    use af_contracts::task::{
         AcceptanceObligationV1, RequiredOutputV1, TaskAuthorityV1, TaskLimitsV1, TaskProvenanceV1,
         VerificationReserveV1,
     };
@@ -779,7 +777,7 @@ mod tests {
                 "document".into(),
                 RequiredOutputV1 {
                     artifact_type: "af/Document@1".into(),
-                    cardinality: review_core::PortCardinality::One,
+                    cardinality: af_contracts::PortCardinality::One,
                 },
             )]),
             acceptance: BTreeMap::from([(

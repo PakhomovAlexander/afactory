@@ -1,8 +1,8 @@
 //! Fresh CLI inspection of an actual selected-output recovery after its original deadline.
 use super::captured_continuation as captured_review;
 use super::*;
-use review_store::{Cas, EventStore};
-#[path = "../../../../review-pipeline/tests/it/support/captured_review_recovery.rs"]
+use af_store::{Cas, EventStore};
+#[path = "../../../../af-runtime/tests/it/support/captured_review_recovery.rs"]
 mod recovery;
 
 #[test]
@@ -18,7 +18,7 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
     let state = directory.path();
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let run = review_store::store::task::task_run_id(&task_id).unwrap();
+    let run = af_store::store::task::task_run_id(&task_id).unwrap();
     let before_task = store.replay(&run).unwrap();
     let before_review = store.replay("review").unwrap();
     let database = std::fs::read(state.join("events.sqlite")).unwrap();

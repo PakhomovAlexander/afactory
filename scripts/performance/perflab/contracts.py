@@ -6,9 +6,10 @@ schedules, cross-field identities and resource bounds. Unknown versions and fiel
 nothing migrates an earlier shape.
 """
 from fractions import Fraction
+import os
 import re
 
-from . import diagcontracts, images, limits, reference, schedule, stats, suite
+from . import diag_contracts, images, limits, reference, schedule, stats, suite
 from .spec import (AnyOf, Arr, Bool, COUNT, Const, DECIMAL, DIGEST, Field, GIT_SHA, ID, Int,
                    JsonObject, Map, METRIC, Nullable, Obj, RATIONAL, REL_PATH, SHORT_TEXT, Str,
                    TEXT, Tagged, UNIT, json_schema, tagged_variant)
@@ -133,9 +134,9 @@ RUN_HEALTH = Obj(
 # What a diagnostic plan freezes of its registry recipe beside the suite-shaped recipe
 # (ADR-0179): the declared kind its evidence is classified by, the verdict recipe it is built
 # like and its tools; null for a diagnostic plan that froze its parent's verdict recipe.
-PLAN_DIAGNOSTIC_RECIPE = Obj(Field("kind", Str(enum=diagcontracts.RECIPE_KINDS)),
+PLAN_DIAGNOSTIC_RECIPE = Obj(Field("kind", Str(enum=diag_contracts.RECIPE_KINDS)),
                              Field("base_recipe", ID),
-                             Field("tools", Arr(Str(enum=diagcontracts.TOOL_NAMES), 0, 8,
+                             Field("tools", Arr(Str(enum=diag_contracts.TOOL_NAMES), 0, 8,
                                                 unique=True)))
 
 # Calibration members (ADR-0181). Every slowdown member's candidate runs the declared loop count of
@@ -448,7 +449,7 @@ def validate_run(plan, where="run.json"):
         at = where + ".diagnostic.recipe"
         require(profile["recipe"]["instrumented"], at + ": a frozen diagnostic recipe is an "
                 "instrumented build, never the verdict recipe")
-        diagcontracts.check_kind(frozen["kind"], profile["recipe"], frozen["tools"], at)
+        diag_contracts.check_kind(frozen["kind"], profile["recipe"], frozen["tools"], at)
     return plan
 
 
@@ -1180,15 +1181,15 @@ def validate_verdict(doc, where="verdict.json"):
 # af.perf-profiles/7 (ADR-0224), af.perf-repetitions/1, af.perf-trace/1 and
 # af.perf-diagnostics/1 (ADR-0174) -----------------------------------------------------------
 
-PROFILES_SCHEMA = diagcontracts.PROFILES_SCHEMA
-PROFILES = diagcontracts.PROFILES
-validate_profiles = diagcontracts.validate_profiles
-REPETITIONS_SCHEMA = diagcontracts.REPETITIONS_SCHEMA
-validate_repetitions = diagcontracts.validate_repetitions
-TRACE_SCHEMA = diagcontracts.TRACE_SCHEMA
-validate_trace = diagcontracts.validate_trace
-DIAGNOSTICS_SCHEMA = diagcontracts.DIAGNOSTICS_SCHEMA
-validate_diagnostics = diagcontracts.validate_diagnostics
+PROFILES_SCHEMA = diag_contracts.PROFILES_SCHEMA
+PROFILES = diag_contracts.PROFILES
+validate_profiles = diag_contracts.validate_profiles
+REPETITIONS_SCHEMA = diag_contracts.REPETITIONS_SCHEMA
+validate_repetitions = diag_contracts.validate_repetitions
+TRACE_SCHEMA = diag_contracts.TRACE_SCHEMA
+validate_trace = diag_contracts.validate_trace
+DIAGNOSTICS_SCHEMA = diag_contracts.DIAGNOSTICS_SCHEMA
+validate_diagnostics = diag_contracts.validate_diagnostics
 
 
 # Calibration cohort, parameters, readiness and activation (ADR-0181 to ADR-0183) -----------
@@ -3081,14 +3082,14 @@ DIAGNOSTIC_STATE = Obj(
                                Field("detail", TEXT)), 0, 64)))
 REPORT_CHILD = Obj(
     Field("run_id", ID), Field("plan_digest", DIGEST),
-    Field("recipe_id", ID), Field("kind", Str(enum=diagcontracts.RECIPE_KINDS)),
-    Field("mode", Str(enum=diagcontracts.MODES)),
+    Field("recipe_id", ID), Field("kind", Str(enum=diag_contracts.RECIPE_KINDS)),
+    Field("mode", Str(enum=diag_contracts.MODES)),
     # The child bundle's manifest identity and its profiles.json, as verified.
     Field("bundle_sha256", DIGEST), Field("profiles_sha256", DIGEST),
     Field("cases", Arr(ID, 0, limits.DIAGNOSTIC_CASES_MAX, unique=True)),
     Field("retained_scratch", COUNT),
     # The telemetry level the child selected explicitly, or null (ADR-0214).
-    Field("telemetry_level", Nullable(Str(enum=diagcontracts.TELEMETRY_LEVELS))),
+    Field("telemetry_level", Nullable(Str(enum=diag_contracts.TELEMETRY_LEVELS))),
     # The verified copy of the child's own page and bundle below the report.
     Field("page", REL_PATH), Field("directory", REL_PATH))
 BINARY_IDENTITY = Obj(Field("af", Nullable(DIGEST)), Field("probe", Nullable(DIGEST)),
@@ -3893,7 +3894,7 @@ def validate_build_pack(doc, where="build-pack.json"):
 KERNEL_INVENTORY_SCHEMA = "af.perf-kernel-inventory/1"
 KERNEL_INVENTORY = Obj(
     Field("schema", Const(KERNEL_INVENTORY_SCHEMA)),
-    # The digest the literal bootstrap of perflab.kernelguard computes over exactly these files.
+    # The digest the literal bootstrap of perflab.kernel_guard computes over exactly these files.
     Field("harness_digest", DIGEST),
     Field("files", Arr(Obj(Field("path", REL_PATH), Field("size", COUNT),
                            Field("sha256", DIGEST)), 1, 8192)),
@@ -3908,17 +3909,17 @@ def validate_kernel_inventory(doc, where="inventory.json"):
     """The files are sorted, unique and exclude the staged subtree, and the digest is the
     bootstrap's own digest of them."""
     KERNEL_INVENTORY.validate(doc, where)
-    from . import kernelguard
+    from . import kernel_guard
     paths = [item["path"] for item in doc["files"]]
     require(paths == sorted(set(paths), key=lambda path: path.encode("utf-8")),
             where + ".files: sorted unique paths")
-    require(not any(kernelguard.RULES["staged"](path) for path in paths)
-            and all(kernelguard.RULES["protected"](path) for path in paths),
+    require(not any(kernel_guard.RULES["staged"](path) for path in paths)
+            and all(kernel_guard.RULES["protected"](path) for path in paths),
             where + ".files: only protected paths, never the staged policy subtree")
-    require(set(kernelguard.RULES["REQUIRED"]) <= set(paths),
+    require(set(kernel_guard.RULES["REQUIRED"]) <= set(paths),
             where + ".files: every required protected file")
     import hashlib
-    digest = hashlib.sha256((kernelguard.RULES["SCHEMA"] + "\n").encode("utf-8"))
+    digest = hashlib.sha256((kernel_guard.RULES["SCHEMA"] + "\n").encode("utf-8"))
     for item in doc["files"]:
         digest.update(("%s\0%d\0%s\n" % (item["path"], item["size"], item["sha256"]))
                       .encode("utf-8"))
@@ -3954,7 +3955,7 @@ KERNEL_TEXT = Str(min_len=1, max_len=1024)
 KERNEL_NAME = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
 KERNEL_ARTIFACT_TYPE = Str(pattern=r"^[a-z][a-z0-9.]*/[A-Za-z][A-Za-z0-9]*@[1-9][0-9]*$",
                            max_len=256)
-# `review_core::ArtifactEnvelope`, closed as the kernel's serde form is: a producer is an
+# `af_contracts::ArtifactEnvelope`, closed as the kernel's serde form is: a producer is an
 # Attempt or a kernel operation, and an absent subject Snapshot is omitted, never null.
 KERNEL_ENVELOPE = Obj(
     Field("type", Str(enum=tuple(sorted(set(KERNEL_OUTPUT_TYPES.values()))))),
@@ -3980,7 +3981,7 @@ KERNEL_RECEIPT_OUTPUT = Obj(
     Field("streams", Arr(Obj(Field("repetition", Int(1, 1000)),
                              Field("stdout", Nullable(KERNEL_STREAM)),
                              Field("stderr", Nullable(KERNEL_STREAM))), 0, 1000)))
-# `review_core::task::TaskResultV1` as `af task start --json` prints it: each output port's
+# `af_contracts::task::TaskResultV1` as `af task start --json` prints it: each output port's
 # exact artifact IDs, type, cardinality and Snapshot, an absent Snapshot omitted.
 KERNEL_TASK_RESULT = Obj(
     Field("task_revision_id", DIGEST),
@@ -4009,7 +4010,7 @@ KERNEL_RECEIPTS = Obj(
                              Field("comparison", KERNEL_RECEIPT_OUTPUT, required=False)))),
         1, 64)))
 
-# The kernel's domain separators (`review_store::canonical`): a payload's or a blob's content
+# The kernel's domain separators (`af_store::canonical`): a payload's or a blob's content
 # ID, and an envelope's artifact ID over everything but that ID.
 KERNEL_CONTENT_DOMAIN = b"review.kernel/content-id/v1\0"
 KERNEL_ARTIFACT_DOMAIN = b"review.kernel/artifact-id/v1\0"
@@ -4017,7 +4018,7 @@ _KERNEL_SAFE_INTEGER = 2 ** 53 - 1
 
 
 def _kernel_canonical(value, out, where):
-    """RFC 8785 as `review_store::canonical` writes it: members ordered by UTF-16 code units,
+    """RFC 8785 as `af_store::canonical` writes it: members ordered by UTF-16 code units,
     strings escaped only where JSON requires, integers in the interoperable range. A float is
     refused, as the laboratory's JSON reader already refuses it."""
     import json
@@ -4495,7 +4496,7 @@ def validate_telemetry_result(doc, where="result.json"):
     """A telemetry result's identities and accounting: its configuration digest, its host
     observed the same at both ends to call itself one host, every planned run present once in
     its alternating position, its status following from them, and every comparison's figures
-    following from its rounds. The raw documents are checked again by `telemetrylab.verify`."""
+    following from its rounds. The raw documents are checked again by `telemetry_lab.verify`."""
     TELEMETRY_RESULT.validate(doc, where)
     configuration = doc["configuration"]
     require(configuration["digest"] == telemetry_configuration_digest(configuration),
@@ -4805,19 +4806,19 @@ CONTRACTS = {
                  "measured overhead; counters as explanatory proxies; and every omission with "
                  "its reason and reproduction. A capture of fresh processes lists its own "
                  "files and names its repetition index for the per-repetition ones."),
-    "repetitions": (REPETITIONS_SCHEMA, diagcontracts.REPETITIONS, validate_repetitions,
+    "repetitions": (REPETITIONS_SCHEMA, diag_contracts.REPETITIONS, validate_repetitions,
                     "The repetition index of one capture of fresh processes, repetitions.json: "
                     "every repetition once and in order with its raw recording, its host "
                     "observer record and the region time it contributed, and the boundary that "
                     "time was measured at (the gated command's exec to its exit decoded from "
                     "the trusted host recording, the supervised child's wall, or samply's "
                     "driver wall). Every listed file is bound by its size and SHA256."),
-    "trace": (TRACE_SCHEMA, diagcontracts.TRACE, validate_trace,
+    "trace": (TRACE_SCHEMA, diag_contracts.TRACE, validate_trace,
               "The metadata-only phase spans a perf-trace diagnostic build exports (ADR-0174): "
               "the process, the recorder's monotonic clock and wall epoch, its capacity, the "
               "spans dropped and still open, and each kept span's identity, parent, closed "
               "phase name, thread and interval. No payload, path, prompt or credential."),
-    "diagnostics": (DIAGNOSTICS_SCHEMA, diagcontracts.DIAGNOSTICS, validate_diagnostics,
+    "diagnostics": (DIAGNOSTICS_SCHEMA, diag_contracts.DIAGNOSTICS, validate_diagnostics,
                     "fixtures/performance/diagnostics.toml as parsed TOML (ADR-0174): diagnostic "
                     "case selection, capture defaults within the hard caps, the declared event "
                     "and DWARF alternative, trace overhead target, counter cases, resource "
@@ -5067,6 +5068,21 @@ def schema_file(name, schema_id=None):
     return "performance-%s-v%d.json" % (name, schema_version(name, schema_id))
 
 
+# These performance-prefixed schemas belong to the Rust publication API, not the lab.
+# Keep this exact allowlist: an unknown/retired lab schema must still fail parity.
+RUST_OWNED_SCHEMAS = frozenset({
+    "performance-pr-content-v1.json",
+    "performance-pr-proof-request-v1.json",
+    "performance-pr-proof-v1.json",
+    "performance-publication-activation-v1.json",
+})
+
+
+def lab_schema_names(directory):
+    return sorted(name for name in os.listdir(directory)
+                  if name.startswith("performance-") and name not in RUST_OWNED_SCHEMAS)
+
+
 def schema_documents():
     out = {}
     for name, (schema_id, node, _, description) in sorted(CONTRACTS.items()):
@@ -5107,10 +5123,10 @@ def write_bytes(doc, name):
 
 
 # Register separately named local contracts after the shared measurement contracts.
-from . import executorcontracts as _executorcontracts
+from . import executor_contracts as _executor_contracts
 import sys as _sys
-_executorcontracts.register(_sys.modules[__name__])
-from . import nightlycontracts as _nightlycontracts
-_nightlycontracts.register(_sys.modules[__name__])
-from . import scenariocontracts as _scenariocontracts
-_scenariocontracts.register(_sys.modules[__name__])
+_executor_contracts.register(_sys.modules[__name__])
+from . import nightly_contracts as _nightly_contracts
+_nightly_contracts.register(_sys.modules[__name__])
+from . import scenario_contracts as _scenario_contracts
+_scenario_contracts.register(_sys.modules[__name__])

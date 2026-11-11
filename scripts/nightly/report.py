@@ -40,11 +40,11 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
-import nightlychain  # noqa: E402
-import nightlygithub  # noqa: E402
-from perflab import contracts, executor, hostlock, render, tomlfile  # noqa: E402
+import nightly_chain  # noqa: E402
+import nightly_github  # noqa: E402
+from perflab import contracts, executor, host_lock, render, toml_file  # noqa: E402
 from perflab import report as labreport  # noqa: E402
-from perflab.nightlycontracts import (HISTORY_NIGHTS_DEFAULT, PULL_REQUESTS_MAX,  # noqa: E402
+from perflab.nightly_contracts import (HISTORY_NIGHTS_DEFAULT, PULL_REQUESTS_MAX,  # noqa: E402
                                       SECTIONS, TELEMETRY_SHOWN, UNCHANGED, number)
 from perflab.values import (ContractError, canonical_digest, document_bytes,  # noqa: E402
                             parse_rational, sha256_bytes)
@@ -91,10 +91,10 @@ def load_config(path):
     """The af.nightly-config/1 TOML at `path` with its `[report]` table, defaults applied."""
     try:
         with open(path, "rb") as stream:
-            data = stream.read(tomlfile.MAX_TOML_BYTES + 1)
+            data = stream.read(toml_file.MAX_TOML_BYTES + 1)
     except OSError as error:
         raise Refused("--config %s: %s" % (path, error))
-    doc = contracts.validate_nightly_config(tomlfile.loads(data, path), path)
+    doc = contracts.validate_nightly_config(toml_file.loads(data, path), path)
     if "report" not in doc:
         raise Refused("%s has no [report] table: compose needs its executor_config and "
                       "headline_instances (docs/nightly.md)" % path)
@@ -368,7 +368,7 @@ def bind(request, key, head, record=None):
 
 # GitHub -------------------------------------------------------------------------------------
 
-class GitHub(nightlygithub.Client):
+class GitHub(nightly_github.Client):
     """The reads the daily report makes; a failure leaves its section unavailable."""
 
     error = Unavailable
@@ -389,9 +389,9 @@ class GitHub(nightlygithub.Client):
     def compare(self, base, head):
         """[(sha, committed unix ms)] of every commit after `base` up to `head`."""
         commits, total = [], None
-        for page in range(1, nightlygithub.PAGES_MAX + 1):
+        for page in range(1, nightly_github.PAGES_MAX + 1):
             doc = self.request("/repos/%s/compare/%s...%s?per_page=%d&page=%d" % (
-                self.repository, base, head, nightlygithub.PER_PAGE, page))
+                self.repository, base, head, nightly_github.PER_PAGE, page))
             batch = doc.get("commits") if isinstance(doc, dict) else None
             total = doc.get("total_commits") if isinstance(doc, dict) else None
             if not isinstance(batch, list) or type(total) is not int:
@@ -826,7 +826,7 @@ def compose(config, date, github, host, clock):
     # The machine.
     sections["machine"] = {
         "free_bytes": _fact(host.free_bytes, config["builds_root"]),
-        "lock_held": _fact(host.lock_held, hostlock.default_path()),
+        "lock_held": _fact(host.lock_held, host_lock.default_path()),
         "failed_units": _fact(host.failed_units)}
     gaps = ["%s: %s" % (name, fact["reason"]) for name, fact in sections["machine"].items()
             if fact["reason"] is not None]
@@ -1251,7 +1251,7 @@ def parse(argv):
                                   "digest.md of one night into a new directory")
     command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
                          "its [report] table")
-    nightlychain.add_night_options(command)
+    nightly_chain.add_night_options(command)
     directory = command.add_mutually_exclusive_group()
     directory.add_argument("--output", help="the new directory to write into")
     directory.add_argument("--output-root", help="write into ROOT/DATE, or ROOT/DATE.K "
@@ -1260,10 +1260,10 @@ def parse(argv):
     return parser.parse_args(argv)
 
 
-def main(argv=None, github=None, host=None, clock=now_ms, show=nightlychain.systemctl_show):
+def main(argv=None, github=None, host=None, clock=now_ms, show=nightly_chain.systemctl_show):
     args = parse(argv)
     try:
-        date, chosen = nightlychain.night(args, clock, show, Refused)
+        date, chosen = nightly_chain.night(args, clock, show, Refused)
         if chosen:
             sys.stderr.write(chosen)
         if args.output is not None and os.path.lexists(args.output):
@@ -1282,7 +1282,7 @@ def main(argv=None, github=None, host=None, clock=now_ms, show=nightlychain.syst
             raise Refused("--output-root %s is not a directory" % root)
         if github is None:
             try:
-                token = nightlygithub.read_token(config.get("github_token_file"), Unavailable)
+                token = nightly_github.read_token(config.get("github_token_file"), Unavailable)
             except Unavailable as error:
                 github = Offline(str(error))
             else:

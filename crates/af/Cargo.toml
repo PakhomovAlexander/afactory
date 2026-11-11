@@ -1,6 +1,6 @@
 [package]
 name = "af"
-description = "The af command: Afactory's CLI"
+description = "Afactory CLI and application services for Tasks, Review, Scenarios, Projects and machine policy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,22 +12,24 @@ name = "af"
 path = "src/main.rs"
 
 [dependencies]
+af-project = { path = "../af-project" }
+af-scenario = { path = "../af-scenario" }
 fs2 = "0.4.3"
-review-config = { path = "../review-config" }
-review-attempt = { path = "../review-attempt" }
-review-core = { path = "../review-core" }
-review-graph = { path = "../review-graph" }
-review-pipeline = { path = "../review-pipeline" }
-review-process = { path = "../review-process" }
-review-runner = { path = "../review-runner" }
-review-runner-claude = { path = "../review-runner-claude" }
-review-runner-pi = { path = "../review-runner-pi" }
-review-runner-codex = { path = "../review-runner-codex" }
-review-source-git = { path = "../review-source-git" }
-review-source-task = { path = "../review-source-task" }
-review-store = { path = "../review-store" }
-review-telemetry = { path = "../review-telemetry" }
-review-sandbox = { path = "../review-sandbox" }
+af-pipeline-config = { path = "../af-pipeline-config" }
+af-attempt = { path = "../af-attempt" }
+af-contracts = { path = "../af-contracts" }
+af-graph = { path = "../af-graph" }
+af-runtime = { path = "../af-runtime" }
+af-process = { path = "../af-process" }
+af-runner = { path = "../af-runner" }
+af-runner-claude = { path = "../af-runner-claude" }
+af-runner-pi = { path = "../af-runner-pi" }
+af-runner-codex = { path = "../af-runner-codex" }
+af-source-git = { path = "../af-source-git" }
+af-source-issue = { path = "../af-source-issue" }
+af-store = { path = "../af-store" }
+af-telemetry = { path = "../af-telemetry" }
+af-sandbox = { path = "../af-sandbox" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # `termios` drives the `af` browser's raw-mode terminal session (ADR-0119).
 rustix = { version = "1.1.4", features = ["fs", "termios"] }
@@ -56,12 +58,12 @@ zeroize = { version = "1.9.0", features = ["serde"] }
 [features]
 # Phase spans of `af` itself for the performance laboratory's diagnostic builds (ADR-0174); off
 # by default and in every shipped binary.
-perf-trace = ["review-core/perf-trace", "review-store/perf-trace", "review-pipeline/perf-trace"]
+perf-trace = ["af-contracts/perf-trace", "af-store/perf-trace", "af-runtime/perf-trace"]
 # The diagnostic recipes name one feature list for `af` and the probe alike; `af` has no region.
-perf-control = ["review-pipeline/perf-control"]
+perf-control = ["af-runtime/perf-control"]
 # The calibration loop inside the `af` process of slowdown trials only (ADR-0181); off in every
 # shipped binary, which refuses the loop's control.
-perf-calibration = ["review-core/perf-calibration", "review-pipeline/perf-calibration"]
+perf-calibration = ["af-contracts/perf-calibration", "af-runtime/perf-calibration"]
 
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }

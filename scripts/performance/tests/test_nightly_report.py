@@ -18,8 +18,8 @@ import os
 import re
 import unittest
 
-from perflab import contracts, executor, hostlock, render
-from perflab.nightlycontracts import DAILY_SCHEMA, three_significant
+from perflab import contracts, executor, host_lock, render
+from perflab.nightly_contracts import DAILY_SCHEMA, three_significant
 from perflab.values import ContractError, canonical_digest, sha256_bytes
 from tests.support import GitHubOpener, ROOT, TempDir, read
 
@@ -683,7 +683,7 @@ class CompleteNight(Night):
         self.golden("complete", doc, digest)
         # The host's facts are asked about builds_root and the executor's machine lock.
         self.assertEqual(self.host.asked, ["free_bytes " + self.builds,
-                                           "lock_held " + hostlock.default_path(),
+                                           "lock_held " + host_lock.default_path(),
                                            "failed_units"])
 
     def test_a_measured_candidate_other_than_the_shipped_af_says_so(self):

@@ -95,7 +95,7 @@ FIXTURE_CONTRACTS = {
     'check-receipt@2': {'check_receipt': CHECK_RECEIPT_CURRENT,
                         'versions': ('0.14.0-rc.1', '0.14.0-rc.2', '0.14.0-rc.3',
                                      '0.14.0-rc.4', '0.14.0-rc.5', '0.14.0-rc.6',
-                                     '0.14.0-rc.7'), 'pins': None},
+                                     '0.14.0-rc.7', '0.15.1-rc.1', '0.15.1-rc.2'), 'pins': None},
     'check-receipt@1': {
         'check_receipt': 'af/TaskCheckReceipt@1',
         'versions': ('0.13.0',),

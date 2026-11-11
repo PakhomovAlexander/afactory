@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use review_runner_claude::models::{Catalog, Kind};
+use af_runner::models::{Catalog, Kind};
 
 use super::{Effect, Pane, Row, SPINNER};
 use crate::providers::models::{self as catalogs, CatalogOutcome, ProviderCatalog};

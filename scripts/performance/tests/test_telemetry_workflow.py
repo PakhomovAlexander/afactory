@@ -11,7 +11,7 @@ import subprocess
 import sys
 import unittest
 
-from perflab import gitrefs, telemetryexec, telemetrylab
+from perflab import git_refs, telemetry_exec, telemetry_lab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests import test_workflow as text
@@ -108,7 +108,7 @@ class Workflow(unittest.TestCase):
         self.assertLess(build.index("ci-credentials --git-dir .git --environment"),
                         build.index("cargo build"))
         self.assertIn('telemetry-contained-build', build, "use the shared verified build boundary")
-        helper = read(os.path.join(ROOT, "scripts/performance/perflab/telemetrybuild.py")).decode()
+        helper = read(os.path.join(ROOT, "scripts/performance/perflab/telemetry_build.py")).decode()
         self.assertIn("builds.BuildImage", helper)
         self.assertIn("builds.ContainerToolchain", helper)
         self.assertIn('(source, "/src", False)', helper)
@@ -197,7 +197,7 @@ class Workflow(unittest.TestCase):
 
 
 def commit_lab(repo, message, extra=None):
-    files = {telemetrylab.REGISTRY_PATH: read(os.path.join(ROOT, telemetrylab.REGISTRY_PATH))}
+    files = {telemetry_lab.REGISTRY_PATH: read(os.path.join(ROOT, telemetry_lab.REGISTRY_PATH))}
     files.update(extra or {})
     return repo.commit(message, files)
 
@@ -210,50 +210,50 @@ class Events(TempDir):
         self.old = commit_lab(self.repo, "v1.0.0")
         self.repo.tag("v1.0.0", self.old)
         self.tip = self.repo.commit("work", {"src": b"y\n"})
-        self.git = gitrefs.Git(self.repo.path)
+        self.git = git_refs.Git(self.repo.path)
 
     def test_a_pull_request_is_measured_against_its_base_with_its_base_as_control(self):
         event = {"pull_request": {"head": {"ref": "feature"}, "base": {"sha": self.old}}}
-        doc = telemetrylab.schedule(self.git, "pull_request", event, {}, self.tip)
+        doc = telemetry_lab.schedule(self.git, "pull_request", event, {}, self.tip)
         self.assertEqual((doc["state"], doc["profile"], doc["control_sha"], doc["baseline_sha"],
                           doc["candidate_sha"]), ("planned", "pr", self.old, self.old, self.tip))
         outputs = dict(line.split("=", 1) for line in
-                       telemetrylab.schedule_outputs(doc).splitlines())
+                       telemetry_lab.schedule_outputs(doc).splitlines())
         self.assertEqual(outputs["retention_days"], "14")
         self.assertEqual(json.loads(outputs["args"]), [])
 
     def test_a_gate_branch_or_a_control_before_the_laboratory_measures_nothing(self):
         gate = {"pull_request": {"head": {"ref": "af-gate/task/head"}, "base": {"sha": self.old}}}
-        self.assertEqual(telemetrylab.schedule(self.git, "pull_request", gate, {},
+        self.assertEqual(telemetry_lab.schedule(self.git, "pull_request", gate, {},
                                                self.tip)["state"], "unavailable")
         early = {"pull_request": {"head": {"ref": "x"}, "base": {"sha": self.first}}}
-        doc = telemetrylab.schedule(self.git, "pull_request", early, {}, self.tip)
+        doc = telemetry_lab.schedule(self.git, "pull_request", early, {}, self.tip)
         self.assertEqual(doc["state"], "unavailable")
         self.assertIn("predates", doc["reason"])
-        self.assertEqual(telemetrylab.schedule_outputs(doc), "planned=false\n")
+        self.assertEqual(telemetry_lab.schedule_outputs(doc), "planned=false\n")
 
     def test_the_nightly_and_a_release_measure_against_the_previous_stable_release(self):
-        doc = telemetrylab.schedule(self.git, "schedule", {}, {}, self.tip)
+        doc = telemetry_lab.schedule(self.git, "schedule", {}, {}, self.tip)
         self.assertEqual((doc["profile"], doc["baseline_sha"], doc["candidate_sha"]),
                          ("nightly", self.old, self.tip))
         new = commit_lab(self.repo, "v1.1.0", {"src": b"z\n"})
         self.repo.tag("v1.1.0", new)
-        doc = telemetrylab.schedule(self.git, "release", {"release": {"tag_name": "v1.1.0"}}, {},
+        doc = telemetry_lab.schedule(self.git, "release", {"release": {"tag_name": "v1.1.0"}}, {},
                                     new)
         self.assertEqual((doc["profile"], doc["control_sha"], doc["baseline_sha"],
                           doc["candidate_sha"]), ("release", new, self.old, new))
         with self.assertRaises(ContractError):
-            telemetrylab.schedule(self.git, "release", {"release": {"tag_name": "v1.1.0"}}, {},
+            telemetry_lab.schedule(self.git, "release", {"release": {"tag_name": "v1.1.0"}}, {},
                                   self.tip)
 
     def test_a_dispatch_names_full_revisions_and_bounded_overrides_only(self):
         inputs = {"base": self.old, "head": self.tip, "profile": "manual",
                   "experiments": "overhead read_latency", "rounds": "3", "pairs": "5"}
-        doc = telemetrylab.schedule(self.git, "workflow_dispatch", {}, inputs, self.tip)
+        doc = telemetry_lab.schedule(self.git, "workflow_dispatch", {}, inputs, self.tip)
         self.assertEqual((doc["control_sha"], doc["experiments"], doc["rounds"], doc["pairs"]),
                          (self.old, ["overhead", "read_latency"], 3, 5))
         outputs = dict(line.split("=", 1) for line in
-                       telemetrylab.schedule_outputs(doc).splitlines())
+                       telemetry_lab.schedule_outputs(doc).splitlines())
         self.assertEqual(json.loads(outputs["args"]), ["--experiment", "overhead",
                                                        "--experiment", "read_latency",
                                                        "--rounds", "3", "--pairs", "5"])
@@ -262,10 +262,10 @@ class Events(TempDir):
                     {"rounds": "$(id)"}):
             with self.subTest(bad=bad):
                 with self.assertRaises(ContractError):
-                    telemetrylab.schedule(self.git, "workflow_dispatch", {},
+                    telemetry_lab.schedule(self.git, "workflow_dispatch", {},
                                           dict(inputs, **bad), self.tip)
         with self.assertRaises(ContractError):
-            telemetrylab.schedule(self.git, "push", {}, {}, self.tip)
+            telemetry_lab.schedule(self.git, "push", {}, {}, self.tip)
 
 
 class AttemptBinding(TempDir):
@@ -322,8 +322,8 @@ class Admission(TempDir):
                                                "outcome": "missing_result"}))
         self.assertIn("not uploaded", summary)
         failing = fx.StandIn(self.binaries, {("overhead", "candidate"): lambda execution:
-                                             telemetryexec.Outcome(1, b"", 0, b"", 0, 10)})
-        telemetrylab.run(fx.settings(self, failing, "partial", experiments=["overhead"]))
+                                             telemetry_exec.Outcome(1, b"", 0, b"", 0, 10)})
+        telemetry_lab.run(fx.settings(self, failing, "partial", experiments=["overhead"]))
         code, outputs, summary = self.admit(self.path("partial"))
         self.assertEqual((code, outputs), (0, {"admitted": "true", "outcome": "admitted"}))
         self.assertIn("partial", summary)
@@ -335,8 +335,8 @@ class Admission(TempDir):
 
         def leaky(execution):
             data = json.dumps(fx.overhead_doc(20261021, 2)).encode()
-            return telemetryexec.Outcome(0, data, len(data), b"token " + token, 40, 10)
-        telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries, {
+            return telemetry_exec.Outcome(0, data, len(data), b"token " + token, 40, 10)
+        telemetry_lab.run(fx.settings(self, fx.StandIn(self.binaries, {
             ("overhead", "baseline", 20261021): leaky}), "leaky", experiments=["overhead"]))
         code, outputs, summary = self.admit(self.path("leaky"))
         self.assertEqual((code, outputs), (4, {"admitted": "false",

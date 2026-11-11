@@ -7,7 +7,7 @@ import subprocess
 import sys
 import unittest
 
-from perflab import compare
+from perflab import evaluate_results
 from perflab.values import document_bytes
 from tests import compare_fixtures
 from tests.support import CLI, TempDir, read
@@ -47,7 +47,7 @@ class CommittedComparisons(TempDir):
                 run = os.path.join(self.generated, entry["name"], "run")
                 expected = read(os.path.join(compare_fixtures.TARGET, entry["name"],
                                              "verdict.json"))
-                self.assertEqual(document_bytes(compare.compare(run)), expected)
+                self.assertEqual(document_bytes(evaluate_results.compare(run)), expected)
                 result = subprocess.run([sys.executable, "-I", CLI, "compare", "--run", run],
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 self.assertEqual(result.returncode, entry["exit_code"])

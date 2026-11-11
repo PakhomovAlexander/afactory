@@ -27,7 +27,7 @@ def read(path):
 
 
 class GitHubOpener:
-    """An opener for the nightly scripts' GitHub reader (scripts/nightly/nightlygithub.py):
+    """An opener for the nightly scripts' GitHub reader (scripts/nightly/nightly_github.py):
     `answer(path, headers)` gives (status, body) or raises, as api.github.com would; every
     request's URL and timeout are recorded, and a body is read only as far as the reader
     asks."""

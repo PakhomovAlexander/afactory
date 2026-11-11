@@ -87,7 +87,7 @@ the shard completed 76 of 76 records, but all 28 samples of
 failed, so nothing was measured: it exited 1". The setup's last check found no
 `$XDG_STATE_HOME/af/stores.toml`: `af task list --state` only reads its Store and records
 nothing, while every command that resolves a `--state` Store through
-`task_execution::state_path` records it (ADR-0144). The setup now registers each copy through
+`task_commands::state_path` records it (ADR-0144). The setup now registers each copy through
 the side's own `af task gc --older-than 36500 --keep 1000 --state DIR` preview, which records
 the Store and writes nothing else; `storage_budget::a_task_gc_preview_registers_its_state_store_and_a_listing_does_not`
 holds that rule. The empty instance's 24 measured samples passed, 8.8 to 29.5 ms.

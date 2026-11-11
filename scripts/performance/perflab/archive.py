@@ -17,7 +17,7 @@ never replaces an existing name, so an interrupted command leaves only staging, 
 command clears, and no entry ever names an object that was not durably written first. Readers
 refuse a gap, an unknown version or field, or a name out of sequence, so the index fails closed.
 
-A run is admitted only whole: `compare.evaluate` rehashes its run bundle and every shard bundle
+A run is admitted only whole: `evaluate_results.evaluate` rehashes its run bundle and every shard bundle
 present, a partial or tampered bundle refuses the import, and each member is rehashed again while
 it is copied into its object; an existing object of the same name is rehashed before it is
 trusted, so a collision or a corrupted object refuses. Importing the same run again is
@@ -43,7 +43,7 @@ import shutil
 import stat
 import time
 
-from . import admission, bundle, compare, contracts, limits, report
+from . import admission, bundle, evaluate_results, contracts, limits, report
 from .values import ContractError, require, sha256_bytes
 
 ARCHIVE_FILE = "archive.json"
@@ -394,13 +394,13 @@ class Archive(object):
 
         add(run_dir, "", evaluation.hashes, evaluation.verdict["inputs"]["run_bundle"])
         for evidence in evaluation.evidence:
-            root = os.path.join(run_dir, compare.SHARD_DIR, str(evidence.index))
+            root = os.path.join(run_dir, evaluate_results.SHARD_DIR, str(evidence.index))
             if evidence.hashes is None:
                 require(not os.path.lexists(root), "shard %d's bundle is partial, tampered or "
                         "of another run, so nothing was archived: %s" % (evidence.index,
                                                                          reasons))
                 continue
-            add(root, "%s/%d/" % (compare.SHARD_DIR, evidence.index), evidence.hashes,
+            add(root, "%s/%d/" % (evaluate_results.SHARD_DIR, evidence.index), evidence.hashes,
                 evidence.bundle)
         generated = [(VERDICT_PATH, contracts.write_bytes(evaluation.verdict, "verdict")),
                      (SUMMARY_PATH, contracts.write_bytes(report.build(evaluation, []),
@@ -423,7 +423,7 @@ class Archive(object):
         started = int(self.wall() * 1000)
         source = source or {"kind": "local"}
         try:
-            evaluation = compare.evaluate(run_dir)
+            evaluation = evaluate_results.evaluate(run_dir)
             members = self._members(run_dir, evaluation, views)
         except (ContractError, OSError) as error:
             detail = "the run was not admitted: %s" % error

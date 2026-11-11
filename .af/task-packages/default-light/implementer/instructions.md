@@ -105,7 +105,7 @@ Review findings are not sent back to you, and a deliverable you leave out is a f
 The host runs other Tasks' gates beside yours, often at a load average above 50 on 14 cores. A
 slow build or test is not a finding. A timing assertion that fails alone may be a flake: the
 heavy tests (`task_heavy::*`, `task_starters::heavy_*`, `task_repair::interrupted_fix_*`,
-`campaign_loop::trusted_reuse_*`, `tui::the_user_scope_*`, review-source-git `capture::*`, the
+`campaign_loop::trusted_reuse_*`, `tui::the_user_scope_*`, af-source-git `capture::*`, the
 performance-lab Python suites) can fail under load and pass on the same tree. Rerun such a test
 once, alone. Load explains a failure; it does not prove your change innocent: if the failed
 assertion is on a path you changed, read it and compare the base before you call it a flake, and

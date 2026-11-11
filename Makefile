@@ -37,7 +37,7 @@ fmt:
 # The calibration builds of the probe and of `af` are built and executed too (ADR-0182).
 lint:
 	$(CI_STEP) --stage lint lint cargo clippy --all-targets --locked -- -D warnings
-	$(CI_STEP) --stage lint lint-diagnostic-features cargo clippy --locked -p review-pipeline -p af --example perf-probe --bin af --features review-pipeline/perf-trace,review-pipeline/perf-control,review-pipeline/perf-calibration,af/perf-trace,af/perf-control,af/perf-calibration -- -D warnings
+	$(CI_STEP) --stage lint lint-diagnostic-features cargo clippy --locked -p af-runtime -p af --example perf-probe --bin af --features af-runtime/perf-trace,af-runtime/perf-control,af-runtime/perf-calibration,af/perf-trace,af/perf-control,af/perf-calibration -- -D warnings
 
 test-build:
 	$(CI_STEP) --stage build test-build cargo test --locked --no-run
@@ -77,9 +77,9 @@ stress-proof:
 # Live containment and the v3 Gate route. The test-classes executor invokes this target when
 # e2e is selected, including the local fast gate and `make check`; a missing daemon fails.
 review-kernel-container-probes:
-	cargo test --locked -p review-sandbox --test container_probes -- --ignored
-	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
-	cargo test --locked -p review-pipeline --test it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
+	cargo test --locked -p af-sandbox --test container_probes -- --ignored
+	cargo test --locked -p af-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
+	cargo test --locked -p af-runtime --test it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
 
 # Telemetry's overhead gate (design §12, docs/telemetry.md "Performance"): `off` against `spans`
 # on the three pinned bench fixtures with a release build, 20 randomized pairs each; the script
@@ -93,11 +93,14 @@ telemetry-gate:
 	python3 scripts/telemetry-overhead.py --af target/release/af \
 		--report target/telemetry-gate/overhead.json
 
+# Always check explicit telemetry release contracts and lab schema ownership, in every profile.
 # Exercise release selection and tag races against disposable local Git remotes, check that
 # CHANGELOG.md's [Unreleased] holds only its pointer and every changelog.d/ note only bullets,
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
+	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
+	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
 	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check
@@ -124,6 +127,7 @@ preflight-check:
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+	$(CI_STEP) --stage preflight workspace-fixtures python3 scripts/test-workspace-fixtures.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
 
@@ -141,6 +145,7 @@ scenario-python-tests: test
 .PHONY: perf-python-tests
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
+	$(CI_STEP) --stage tests workspace-fixture-benchmark python3 scripts/test-workspace-fixture-benchmark.py
 
 # Shared selective entry points. Full `check` above is what main validation, unbound releases
 # and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and
@@ -154,14 +159,14 @@ base-check: release-check
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
 
-# Run before a PR changing scripts/performance/, crates/review-pipeline/examples/perf-probe/,
-# crates/review-pipeline/build.rs, the experiment runtime, or kernel receipts (ADR-0252).
+# Run before a PR changing scripts/performance/, crates/af-runtime/examples/perf-probe/,
+# crates/af-runtime/build.rs, the experiment runtime, or kernel receipts (ADR-0252).
 perf-kernel-measure:
 	$(CI_STEP) --stage tests perf-kernel-measure cargo nextest run --workspace --locked --profile ci --run-ignored only -E 'test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)'
 
 perf-feature-tests:
-	$(CI_STEP) --stage tests test-perf-trace cargo test --locked -p review-core --features perf-trace,perf-calibration --lib perf_
-	$(CI_STEP) --stage tests test-perf-calibration cargo test --locked -p review-pipeline --features perf-calibration --test perf_probe calibration_build
+	$(CI_STEP) --stage tests test-perf-trace cargo test --locked -p af-contracts --features perf-trace,perf-calibration --lib perf_
+	$(CI_STEP) --stage tests test-perf-calibration cargo test --locked -p af-runtime --features perf-calibration --test perf_probe calibration_build
 
 
 test-plan:

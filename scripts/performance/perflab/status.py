@@ -7,14 +7,14 @@ protection also needs owner review of workflow changes (docs/performance-ci.md).
 import os
 from urllib.parse import quote
 
-from . import contracts, render, report, tomlfile
+from . import contracts, render, report, toml_file
 from .values import ContractError, require, sha256_bytes
 
 
 def enforcement(root):
     path = os.path.join(root, "fixtures/performance/enforcement.toml")
     with open(path, "rb") as stream:
-        data = tomlfile.loads(stream.read(tomlfile.MAX_TOML_BYTES + 1), path)
+        data = toml_file.loads(stream.read(toml_file.MAX_TOML_BYTES + 1), path)
     contracts.validate_enforcement(data)
     return data["mode"]
 

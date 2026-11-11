@@ -1,0 +1,31 @@
+[package]
+name = "af-scenario"
+description = "Durable Scenario orchestration and Ant admission"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+af-contracts = { path = "../af-contracts" }
+af-store = { path = "../af-store" }
+af-process = { path = "../af-process" }
+af-sandbox = { path = "../af-sandbox" }
+fs2 = "0.4.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rustix = { version = "1.1.4", features = ["fs"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.11.0"
+tempfile = "3.27.0"
+toml = "1.1.6"
+minisign-verify = "0.3.0"
+nix = { version = "0.31.3", default-features = false, features = ["fs", "user"] }
+
+[dev-dependencies]
+jsonschema = { version = "0.58.4", default-features = false }
+minisign = "0.10.0"
+
+[lints]
+workspace = true

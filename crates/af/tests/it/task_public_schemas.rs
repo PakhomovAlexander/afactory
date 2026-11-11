@@ -2,16 +2,16 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use review_core::task::delivery::{
+use af_contracts::task::delivery::{
     TASK_DELIVERY_RECORD_V1, TaskDeliveryRecordV1, TaskDeliveryStatusV1,
 };
-use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
-use review_graph::task::CompiledTask;
+use af_contracts::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
+use af_graph::task::CompiledTask;
 use serde_json::{Value, json};
 
-#[path = "../../../review-pipeline/tests/it/support/captured_review_continuation.rs"]
+#[path = "../../../af-runtime/tests/it/support/captured_review_continuation.rs"]
 mod captured_continuation;
-#[path = "../../../review-pipeline/tests/it/support/captured_review.rs"]
+#[path = "../../../af-runtime/tests/it/support/captured_review.rs"]
 mod captured_fixture;
 #[path = "task_public_schemas/continuation.rs"]
 mod continuation;
@@ -68,20 +68,20 @@ fn catalog(path: &Path) -> Value {
 }
 
 fn append_delivery(
-    cas: &review_store::Cas,
-    store: &mut review_store::EventStore,
-    lease: &review_store::store::task::TaskLease,
+    cas: &af_store::Cas,
+    store: &mut af_store::EventStore,
+    lease: &af_store::store::task::TaskLease,
     template: &TaskDeliveryRecordV1,
     receipt: &Value,
-) -> Result<(), review_store::StoreError> {
+) -> Result<(), af_store::StoreError> {
     let mut record = template.clone();
     record.receipt_id = cas.put_json(receipt).unwrap();
     record.target_id = cas.put_json(&receipt["target"]).unwrap();
     let id = cas
         .put_artifact(
             TASK_DELIVERY_RECORD_V1,
-            review_core::Producer::KernelOperation {
-                run_id: review_store::store::task::task_run_id(&record.task_id).unwrap(),
+            af_contracts::Producer::KernelOperation {
+                run_id: af_store::store::task::task_run_id(&record.task_id).unwrap(),
                 node_id: None,
                 operation_id: "local-delivery@1".into(),
             },
@@ -508,8 +508,8 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
 
     // Pending delivery is also public inspection output. Use the actual preparation receipt
     // retained by this same CLI delivery, rather than inventing a second copy of its shape.
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store
         .task_projection(&cas, "pagination-cli")
         .unwrap()
@@ -583,8 +583,8 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         assert!(!inspection_schema.is_valid(&view), "{case}");
         let isolated = directory.path().join(format!("delivery-{index}"));
         task_cli::copy_tree(&before_delivery, &isolated);
-        let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
-        let mut store = review_store::EventStore::open(isolated.join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open_existing(isolated.join("cas")).unwrap();
+        let mut store = af_store::EventStore::open(isolated.join("events.sqlite")).unwrap();
         let lease = store
             .take_task_lease(&cas, "pagination-cli", "schema-test", 15000)
             .unwrap();
@@ -614,8 +614,8 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     // preparation or receipt without it.
     let isolated = directory.path().join("delivery-missing-result");
     task_cli::copy_tree(&before_delivery, &isolated);
-    let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
-    let mut store = review_store::EventStore::open(isolated.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(isolated.join("cas")).unwrap();
+    let mut store = af_store::EventStore::open(isolated.join("events.sqlite")).unwrap();
     let lease = store
         .take_task_lease(&cas, "pagination-cli", "schema-test", 15000)
         .unwrap();

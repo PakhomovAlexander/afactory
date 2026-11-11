@@ -16,7 +16,7 @@ calibrated_groups = ["hosted_x86"]
 [admission]
 kind = "equivalent_adapter"
 equivalence_group = "native_probe_public_api_v1"
-adapter_files = ["crates/review-pipeline/examples/perf-probe/cases.rs", "crates/review-pipeline/examples/perf-probe/control.rs"]
+adapter_files = ["crates/af-runtime/examples/perf-probe/cases.rs", "crates/af-runtime/examples/perf-probe/control.rs"]
 calibrated_activation_path = "fixtures/performance/activations/synthetic.toml"
 calibrated_activation_sha256 = "sha256:f197379bdeb8668dc069bd2b03a0819a244f7d8bf18080525695ccfef76532d7"
 rationale = "Same workload, timing, oracle and policy through a renamed API."

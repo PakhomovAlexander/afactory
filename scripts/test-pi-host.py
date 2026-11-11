@@ -15,7 +15,7 @@ import sys
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
-HOST = ROOT / 'crates/review-runner-pi/src/host.mjs'
+HOST = ROOT / 'crates/af-runner-pi/src/host.mjs'
 SDK_PACKAGE = Path('node_modules/@earendil-works/pi-coding-agent/dist/index.js')
 
 # -I does not itself disable bytecode writes by importlib. Load the helper without creating

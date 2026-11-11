@@ -98,7 +98,7 @@ pub(crate) fn hub_repo_at(root: &Path, name: &str) -> PathBuf {
 pub(crate) fn hub_with_tasks(root: &Path) -> (PathBuf, PathBuf) {
     let repo = hub_repo(root);
     let xdg = root.join("state");
-    let state = crate::task_execution::default_task_state(&xdg, &repo).unwrap();
+    let state = crate::task_commands::default_task_state(&xdg, &repo).unwrap();
     record_task(root, &repo, &state, "pagination-cli");
     let implementer = repo.join(".af/task-packages/fixture/implementer");
     let worker = "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'schema':'af.worker-reply/1',\
@@ -107,7 +107,7 @@ pub(crate) fn hub_with_tasks(root: &Path) -> (PathBuf, PathBuf) {
     let catalog = repo.join(".af/task-catalog.toml");
     let text = std::fs::read_to_string(&catalog).unwrap();
     let mut value: toml::Value = toml::from_str(&text).unwrap();
-    let digest = review_config::lock::package_digest("fixture/implementer", &implementer);
+    let digest = af_pipeline_config::lock::package_digest("fixture/implementer", &implementer);
     value["packages"]["fixture/implementer"]["digest"] = toml::Value::String(digest.unwrap());
     std::fs::write(&catalog, toml::to_string(&value).unwrap()).unwrap();
     git(&repo, &["add", "-A"]);
@@ -136,7 +136,7 @@ pub(crate) fn record_task(root: &Path, repo: &Path, state: &Path, task_id: &str)
         config::STATE_HOME_FOR_TESTS.with(|pinned| *pinned.borrow_mut() = home);
     };
     pin(Some(root.join("state")));
-    let ran = crate::task_execution::run_silently(&file, repo, state);
+    let ran = crate::task_commands::run_silently(&file, repo, state);
     pin(None);
     ran.unwrap();
 }
@@ -397,7 +397,7 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
     let task = panes::pipelines::preview_task("fixture/implementation", "implement", 3);
     std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
     let again =
-        crate::task_execution::plan_tree_preview_at(&file, &root.join("hub"), "HEAD").unwrap();
+        crate::task_commands::plan_tree_preview_at(&file, &root.join("hub"), "HEAD").unwrap();
     let shown_text = shown.join("\n");
     assert_eq!(stable_lines(&shown_text), stable_lines(&again.text));
     // The frame paints those rows beside the bar, clipped to the main pane.
@@ -466,9 +466,9 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
     git(&hub, &["commit", "-qm", "moved"]);
     let preview_file = root.join("preview.json");
     let at_first =
-        crate::task_execution::plan_tree_preview_at(&preview_file, &hub, first.trim()).unwrap();
+        crate::task_commands::plan_tree_preview_at(&preview_file, &hub, first.trim()).unwrap();
     assert_eq!(stable_lines(&at_first.text), stable_lines(&again.text));
-    let at_head = crate::task_execution::plan_tree_preview_at(&preview_file, &hub, "HEAD");
+    let at_head = crate::task_commands::plan_tree_preview_at(&preview_file, &hub, "HEAD");
     assert_ne!(
         at_head.map(|preview| stable_lines(&preview.text)),
         Ok(stable_lines(&again.text)),
@@ -777,7 +777,7 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     let status = status_line(&mut app);
     assert!(status.ends_with("Enter artifact  p pipeline  y yank id  R re-read  Tab bar"));
     // Enter on a HISTORY row shows its artifact; `q` and `Esc` come back to that row.
-    let shown = crate::task_execution::inspection_document(&state, "pagination-cli", false);
+    let shown = crate::task_commands::inspection_document(&state, "pagination-cli", false);
     let shown = shown.unwrap().unwrap();
     let plan_id = shown["plan_id"].as_str().unwrap().to_owned();
     press(&mut app, &mut host, b"/plan_admitted\r");
@@ -962,7 +962,7 @@ fn the_help_banner_draws_the_pink_worker_with_its_eyes() {
 fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     let (_temp, root) = temp_root();
     let repo = hub_repo(&root);
-    let state = crate::task_execution::default_task_state(&root.join("state"), &repo).unwrap();
+    let state = crate::task_commands::default_task_state(&root.join("state"), &repo).unwrap();
     std::fs::create_dir_all(state.join("cas/objects")).unwrap();
     std::fs::write(
         state.join("events.sqlite"),
@@ -1092,7 +1092,7 @@ fn an_opened_task_follows_its_store_into_a_group(
         ],
     );
     let other_state =
-        crate::task_execution::default_task_state(&root.join("state"), &other).unwrap();
+        crate::task_commands::default_task_state(&root.join("state"), &other).unwrap();
     copy_store(state, &other_state);
     host.events.clear();
     press(app, host, b"R");
@@ -1254,7 +1254,7 @@ fn the_user_scope_reads_a_symlinked_task_state_directory() {
     let (_temp, root) = temp_root();
     let (_repo, state) = hub_with_tasks(&root);
     let xdg = root.join("xdg-state");
-    let local = crate::task_execution::local_task_states(&xdg);
+    let local = crate::task_commands::local_task_states(&xdg);
     std::fs::create_dir_all(&local).unwrap();
     std::os::unix::fs::symlink(&state, local.join("0123456789abcdef")).unwrap();
     std::os::unix::fs::symlink(root.join("gone"), local.join("fedcba9876543210")).unwrap();
@@ -1281,7 +1281,7 @@ fn a_history_artifact_the_store_cannot_give_back_refuses_the_store() {
         .position(|row| row.starts_with("HISTORY"))
         .unwrap();
     // The artifact of the first HISTORY row is removed before Enter opens it.
-    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+    let show = crate::task_commands::inspection_document(&state, "pagination-cli", false)
         .unwrap()
         .unwrap();
     let first =
@@ -1319,10 +1319,10 @@ fn a_history_artifact_the_store_cannot_give_back_refuses_the_store() {
 /// STATE as derived straight from each Task's show document: the Attempts whose plan bound the
 /// node's slot to `worker` at `digest`, the digest the committed catalog pins.
 fn derived_state(state: &Path, task_ids: &[&str], worker: &str, digest: &str) -> Vec<String> {
-    let artifact = |id: &str| crate::task_execution::recorded_artifact(state, id).unwrap();
+    let artifact = |id: &str| crate::task_commands::recorded_artifact(state, id).unwrap();
     let (mut open, mut ok, mut failed, mut released, mut tokens) = (0, 0, 0, 0, 0_u128);
     for task_id in task_ids {
-        let show = crate::task_execution::inspection_document(state, task_id, false);
+        let show = crate::task_commands::inspection_document(state, task_id, false);
         let show = show.unwrap().unwrap();
         let records: Vec<&serde_json::Value> = show["execution_records"]
             .as_array()
@@ -1740,7 +1740,7 @@ fn a_hand_off_releases_first_reenters_after_and_reads_the_panes_again() {
     };
     assert!(!recorded(&app));
     // The child records a Task and edits the opened pipeline.
-    let state = crate::task_execution::default_task_state(&root.join("state"), &repo).unwrap();
+    let state = crate::task_commands::default_task_state(&root.join("state"), &repo).unwrap();
     let (at, hub) = (root.clone(), repo.clone());
     host.child = Some(Box::new(move || {
         record_task(&at, &hub, &state, "pagination-cli");
@@ -2284,7 +2284,7 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
     let mut app = app_at(&root, repo);
     let mut host = Recorder::default();
     let plan = |task_id: &str| {
-        let shown = crate::task_execution::inspection_document(&state, task_id, false);
+        let shown = crate::task_commands::inspection_document(&state, task_id, false);
         shown.unwrap().unwrap()["plan_id"]
             .as_str()
             .unwrap()
@@ -2801,7 +2801,7 @@ fn a_new_campaign_appears_while_the_pane_idles() {
 fn foreign_campaign(dir: &Path, release: Option<&str>, label: &str) {
     std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
     let path = dir.join("events.sqlite");
-    drop(review_store::EventStore::open(&path).unwrap());
+    drop(af_store::EventStore::open(&path).unwrap());
     let run_id = crate::campaign_run_id(label);
     // The event's id is the one the Store derives, so replay reaches its type and payload.
     let event_id = {
@@ -2810,7 +2810,7 @@ fn foreign_campaign(dir: &Path, release: Option<&str>, label: &str) {
         sha2::Digest::update(&mut hasher, run_id.as_bytes());
         sha2::Digest::update(&mut hasher, b"\0");
         sha2::Digest::update(&mut hasher, b"0");
-        review_core::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
+        af_contracts::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
     };
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("DELETE FROM store_writers;").unwrap();
@@ -3077,7 +3077,7 @@ fn a_history_refusal_with_no_read_in_flight_falls_back_to_the_folder_at_once() {
         .iter()
         .position(|row| row.starts_with("HISTORY"))
         .unwrap();
-    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+    let show = crate::task_commands::inspection_document(&state, "pagination-cli", false)
         .unwrap()
         .unwrap();
     let first =
@@ -3123,7 +3123,7 @@ fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
         .iter()
         .position(|row| row.starts_with("HISTORY"))
         .unwrap();
-    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+    let show = crate::task_commands::inspection_document(&state, "pagination-cli", false)
         .unwrap()
         .unwrap();
     let first =

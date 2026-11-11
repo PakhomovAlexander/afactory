@@ -5,19 +5,19 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use review_core::reviewer_result::CHANGE_WIDE_SENTINEL;
-use review_core::task::handoff::{
+use af_contracts::reviewer_result::CHANGE_WIDE_SENTINEL;
+use af_contracts::task::handoff::{
     self, CoverageV1, FindingPromptV1, PromptSource, VerifiedBy, VerifiedFixV1,
 };
-use review_core::{EventType, RunEvent, RunNodeOutcomeV2, RunReportPayloadV6};
-use review_store::{Cas, Ledger, ResolvedSubjectScope, Status};
+use af_contracts::{EventType, RunEvent, RunNodeOutcomeV2, RunReportPayloadV6};
+use af_store::{Cas, Ledger, ResolvedSubjectScope, Status};
 
 /// One finding of `af/review-report@5`: the Ledger's view, its agent prompt, and its verified
 /// fix, null unless a verification record proves it.
 #[derive(serde::Serialize)]
 pub(crate) struct ReportFindingView {
     #[serde(flatten)]
-    pub(crate) finding: review_store::Finding,
+    pub(crate) finding: af_store::Finding,
     pub(crate) agent_prompt: FindingPromptV1,
     pub(crate) verified_fix: Option<VerifiedFixV1>,
 }
@@ -53,7 +53,7 @@ impl Rounds {
             if event.event_type != EventType::RoundStartedV1 {
                 continue;
             }
-            let started: review_core::RoundStartedPayloadV1 =
+            let started: af_contracts::RoundStartedPayloadV1 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
             rounds.by_event.insert(
                 event.event_id.clone(),
@@ -70,7 +70,7 @@ impl Rounds {
             // findings fall back to the active head, and a run on it reports no coverage.
             if let std::collections::hash_map::Entry::Vacant(entry) =
                 rounds.subjects.entry(started.subject_id.clone())
-                && let Ok(resolved) = review_store::resolve_subject_scope(cas, &started.subject_id)
+                && let Ok(resolved) = af_store::resolve_subject_scope(cas, &started.subject_id)
             {
                 entry.insert(resolved);
             }
@@ -99,11 +99,7 @@ fn place(file: &str) -> Option<&str> {
 
 /// The fix of a finding a verification record proves: its fixed Resolution names a positive
 /// `FixVerification@1` for the same finding, on a Subject whose head Snapshot is readable.
-fn verified_fix(
-    cas: &Cas,
-    ledger: &Ledger,
-    finding: &review_store::Finding,
-) -> Option<VerifiedFixV1> {
+fn verified_fix(cas: &Cas, ledger: &Ledger, finding: &af_store::Finding) -> Option<VerifiedFixV1> {
     if finding.status != Status::Fixed {
         return None;
     }
@@ -115,7 +111,7 @@ fn verified_fix(
         return None;
     }
     let subject =
-        review_store::resolve_subject_scope(cas, &verification.verification.subject_id).ok()?;
+        af_store::resolve_subject_scope(cas, &verification.verification.subject_id).ok()?;
     let fix = VerifiedFixV1 {
         finding_id: finding.key.clone(),
         record_id: verification.artifact_id.clone(),
@@ -132,9 +128,9 @@ fn reviewer_nodes(cas: &Cas, events: &[RunEvent]) -> Result<Vec<String>, String>
     else {
         return Ok(Vec::new());
     };
-    let opened: review_core::CampaignOpenedPayloadV1 =
+    let opened: af_contracts::CampaignOpenedPayloadV1 =
         serde_json::from_value(opened.payload.clone()).map_err(|e| e.to_string())?;
-    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+    let manifest: af_contracts::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(&opened.campaign_manifest_id)
             .map_err(|e| format!("the Campaign's pinned manifest is unreadable: {e}"))?,
     )
@@ -142,7 +138,7 @@ fn reviewer_nodes(cas: &Cas, events: &[RunEvent]) -> Result<Vec<String>, String>
     let bytes = cas
         .get(&manifest.pipeline.artifact_id)
         .map_err(|e| format!("the Campaign's pinned pipeline is unreadable: {e}"))?;
-    let definition = review_config::Definition::from_toml(
+    let definition = af_pipeline_config::Definition::from_toml(
         std::str::from_utf8(&bytes).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("the Campaign's pinned pipeline is invalid: {e}"))?;
@@ -152,7 +148,8 @@ fn reviewer_nodes(cas: &Cas, events: &[RunEvent]) -> Result<Vec<String>, String>
         .filter(|node| {
             matches!(
                 node.kind,
-                review_config::NodeKindSpec::Reviewer | review_config::NodeKindSpec::Scatter
+                af_pipeline_config::NodeKindSpec::Reviewer
+                    | af_pipeline_config::NodeKindSpec::Scatter
             )
         })
         .map(|node| node.id.clone())
@@ -180,7 +177,7 @@ pub(crate) fn read(
     cas: &Cas,
     events: &[RunEvent],
     ledger: &Ledger,
-    findings: Vec<review_store::Finding>,
+    findings: Vec<af_store::Finding>,
 ) -> Result<(Vec<ReportFindingView>, Option<ReportCoverageView>), String> {
     let rounds = Rounds::read(cas, events)?;
     let active = ledger.active_head_snapshot_id();

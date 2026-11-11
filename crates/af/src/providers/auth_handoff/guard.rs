@@ -231,7 +231,7 @@ fn retain_inherited_lock(inherited: &File, path: &Path) -> Result<(), ()> {
 
 struct NativeChild {
     child: Child,
-    watch: review_process::ExitWatch,
+    watch: af_process::ExitWatch,
     exit: Option<ExitStatus>,
 }
 
@@ -263,11 +263,11 @@ fn relay(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let Ok(child) = review_process::spawn(command) else {
+    let Ok(child) = af_process::spawn(command) else {
         return Ok(PROVIDER_CLI_MISSING);
     };
     let mut native = NativeChild {
-        watch: review_process::ExitWatch::new(child.id()),
+        watch: af_process::ExitWatch::new(child.id()),
         child,
         exit: None,
     };
@@ -304,9 +304,8 @@ fn relay(
         let output_eof = receive(&mut output, &mut to_parent, &mut output_total, MAX_OUTPUT)?;
         flush(parent_output, &mut to_parent)?;
         if native.exit.is_none() {
-            native.exit =
-                review_process::try_reap_killing_group(&mut native.child, &mut native.watch)
-                    .map_err(|_| ())?;
+            native.exit = af_process::try_reap_killing_group(&mut native.child, &mut native.watch)
+                .map_err(|_| ())?;
         }
         if let Some(status) = native.exit
             && output_eof

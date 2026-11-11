@@ -17,7 +17,7 @@ sys.dont_write_bytecode = True
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts/performance"))
 
-from perflab import contracts, executor, hostlock, jsonsubset, researchevidence, scenarioadapter, scenariosource  # noqa: E402
+from perflab import contracts, executor, host_lock, json_subset, research_evidence, scenario_adapter, scenario_source  # noqa: E402
 from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes  # noqa: E402
 from tests.test_executor import ExecutorFixture, PRODUCER, receipt  # noqa: E402
 
@@ -38,7 +38,7 @@ class SourceCapture(unittest.TestCase):
         self.path = self.home.name
         self.binary = pathlib.Path(self.path) / "af"
         self.request = dict(baseline_snapshot_id=None, candidate_snapshot_id=HEAD)
-        scenariosource.save_request(os.path.join(self.path, "source-request.json"), self.request)
+        scenario_source.save_request(os.path.join(self.path, "source-request.json"), self.request)
         self.config = dict(af=str(self.binary), task_repo=self.path, task_state=self.path)
 
     def program(self, body):
@@ -47,7 +47,7 @@ class SourceCapture(unittest.TestCase):
         self.config["af_digest"] = sha256_bytes(self.binary.read_bytes())
 
     def capture(self):
-        return scenariosource.capture(self.config, self.path, canonical_digest(self.request))
+        return scenario_source.capture(self.config, self.path, canonical_digest(self.request))
 
     def matching_receipt(self):
         receipt = dict(schema="af/scenario-experiment-source@1",
@@ -66,7 +66,7 @@ class SourceCapture(unittest.TestCase):
             if "$ref" in node:
                 self.assertEqual(node["$ref"], "urn:af:schema:scenario:5#/$defs/digest")
                 node["$ref"] = "#/$defs/digest"
-        return jsonsubset.Schema(schema, "scenario-experiment-source-v1.json").validate(receipt)
+        return json_subset.Schema(schema, "scenario-experiment-source-v1.json").validate(receipt)
 
     def test_success_without_descendants_accepts_matching_receipt(self):
         receipt = self.matching_receipt()
@@ -91,25 +91,25 @@ print(json.dumps(%r))
         try:
             with self.assertRaisesRegex(ContractError, "process group remains") as caught:
                 self.capture()
-            self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+            self.assertNotIsInstance(caught.exception, scenario_source.CleanCaptureRefusal)
         finally:
             if os.path.exists(group_file):
                 os.killpg(int(pathlib.Path(group_file).read_text()), signal.SIGKILL)
 
     def test_reaped_refusal_without_capture_is_clean(self):
         self.program("import sys; sys.exit(1)")
-        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+        with self.assertRaises(scenario_source.CleanCaptureRefusal):
             self.capture()
 
     def test_preflight_refusal_is_clean_only_without_existing_capture(self):
         self.program("raise AssertionError('must not execute')")
         self.config["af_digest"] = D
-        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+        with self.assertRaises(scenario_source.CleanCaptureRefusal):
             self.capture()
         os.mkdir(os.path.join(self.path, "source"))
         with self.assertRaises(ContractError) as caught:
             self.capture()
-        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        self.assertNotIsInstance(caught.exception, scenario_source.CleanCaptureRefusal)
 
     def test_setup_failure_is_clean_only_without_capture(self):
         self.program("raise AssertionError('must not execute')")
@@ -121,16 +121,16 @@ print(json.dumps(%r))
                     source = os.path.join(self.path, "source")
                     if existing:
                         os.mkdir(source)
-                    original = getattr(scenariosource.tempfile, resource)
+                    original = getattr(scenario_source.tempfile, resource)
                     calls = iter(failures)
                     def setup(*args, **kwargs):
                         failure = next(calls, None)
                         if failure is not None:
                             raise failure
                         return original(*args, **kwargs)
-                    with mock.patch.object(scenariosource.tempfile, resource, side_effect=setup), \
-                            mock.patch.object(scenariosource.subprocess, "Popen") as launch:
-                        with self.assertRaises(OSError if existing else scenariosource.CleanCaptureRefusal):
+                    with mock.patch.object(scenario_source.tempfile, resource, side_effect=setup), \
+                            mock.patch.object(scenario_source.subprocess, "Popen") as launch:
+                        with self.assertRaises(OSError if existing else scenario_source.CleanCaptureRefusal):
                             self.capture()
                         launch.assert_not_called()
                     if existing:
@@ -147,12 +147,12 @@ print(json.dumps(%r))
         self.program("raise AssertionError('must not execute')")
         self.binary.write_text("#!/nonexistent-af-test-interpreter\n")
         self.config["af_digest"] = sha256_bytes(self.binary.read_bytes())
-        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+        with self.assertRaises(scenario_source.CleanCaptureRefusal):
             self.capture()
 
     def test_interrupted_launch_is_not_clean(self):
         self.program("raise AssertionError('must not execute')")
-        with mock.patch.object(scenariosource.subprocess, "Popen", side_effect=KeyboardInterrupt):
+        with mock.patch.object(scenario_source.subprocess, "Popen", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.capture()
 
@@ -161,7 +161,7 @@ print(json.dumps(%r))
         for failure in (InterruptedError(), InterruptedError(errno.EINTR, "interrupted exec wait"),
                         OSError(errno.EIO, "unknown launch outcome"), OSError("unknown launch outcome")):
             with self.subTest(failure=repr(failure)), \
-                    mock.patch.object(scenariosource.subprocess, "Popen", side_effect=failure):
+                    mock.patch.object(scenario_source.subprocess, "Popen", side_effect=failure):
                 with self.assertRaises(OSError) as caught:
                     self.capture()
                 self.assertIs(caught.exception, failure)
@@ -170,14 +170,14 @@ print(json.dumps(%r))
         self.program("raise AssertionError('must not execute')")
         self.binary.write_text("invalid executable\n")
         self.config["af_digest"] = sha256_bytes(self.binary.read_bytes())
-        with self.assertRaises(scenariosource.CleanCaptureRefusal):
+        with self.assertRaises(scenario_source.CleanCaptureRefusal):
             self.capture()
 
     def test_prelaunch_cleanup_failure_is_not_clean(self):
         self.program("raise AssertionError('must not execute')")
-        with mock.patch.object(scenariosource.tempfile.TemporaryDirectory, "__exit__",
+        with mock.patch.object(scenario_source.tempfile.TemporaryDirectory, "__exit__",
                                side_effect=OSError("cleanup unconfirmed")), \
-                mock.patch.object(scenariosource.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
+                mock.patch.object(scenario_source.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
             with self.assertRaisesRegex(OSError, "cleanup unconfirmed"):
                 self.capture()
 
@@ -185,9 +185,9 @@ print(json.dumps(%r))
         self.program("import os, signal; os.kill(os.getpid(), signal.SIGTERM)")
         with self.assertRaises(ContractError) as caught:
             self.capture()
-        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        self.assertNotIsInstance(caught.exception, scenario_source.CleanCaptureRefusal)
         self.program("import sys; sys.exit(1)")
-        with mock.patch.object(scenariosource.os, "killpg", side_effect=PermissionError("probe refused")):
+        with mock.patch.object(scenario_source.os, "killpg", side_effect=PermissionError("probe refused")):
             with self.assertRaises(PermissionError):
                 self.capture()
 
@@ -195,22 +195,22 @@ print(json.dumps(%r))
         self.program("import os, sys; os.mkdir(sys.argv[sys.argv.index('--into')+1]); sys.exit(1)")
         with self.assertRaises(ContractError) as caught:
             self.capture()
-        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        self.assertNotIsInstance(caught.exception, scenario_source.CleanCaptureRefusal)
 
     def test_timeout_is_not_clean(self):
         self.program("import time; time.sleep(30)")
-        with mock.patch.object(scenariosource, "CAPTURE_SECONDS", 0.05):
+        with mock.patch.object(scenario_source, "CAPTURE_SECONDS", 0.05):
             with self.assertRaises(ContractError) as caught:
                 self.capture()
-        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        self.assertNotIsInstance(caught.exception, scenario_source.CleanCaptureRefusal)
 
     def test_surviving_process_group_is_not_clean(self):
         self.program("import sys; sys.exit(1)")
         # A successful signal probe means a descendant remains even after its leader exits.
-        with mock.patch.object(scenariosource.os, "killpg", return_value=None):
+        with mock.patch.object(scenario_source.os, "killpg", return_value=None):
             with self.assertRaises(ContractError) as caught:
                 self.capture()
-        self.assertNotIsInstance(caught.exception, scenariosource.CleanCaptureRefusal)
+        self.assertNotIsInstance(caught.exception, scenario_source.CleanCaptureRefusal)
 
 
 class SourceCaptureFence(ExecutorFixture):
@@ -227,21 +227,21 @@ class SourceCaptureFence(ExecutorFixture):
     def handoff(self):
         try:
             return self.source.capture(), None, False
-        except scenariosource.CleanCaptureRefusal as error:
+        except scenario_source.CleanCaptureRefusal as error:
             return None, str(error), False
 
     def assert_clean_refusal_and_later_work(self, journal, inode):
         result, refusal = journal.exclusive("source capture", self.handoff)
         self.assertIsNone(result)
         self.assertIsNotNone(refusal)
-        lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+        lock = os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)
         self.assertFalse(os.path.lexists(lock + ".fence"))
         self.assertEqual(journal.exclusive("unrelated work", lambda: (True, None, False)), (True, None))
         self.assertEqual(os.stat(lock).st_ino, inode)
 
     def lock_inode(self):
-        with hostlock.MachineLock(self.locks):
-            return os.stat(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)).st_ino
+        with host_lock.MachineLock(self.locks):
+            return os.stat(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)).st_ino
 
     def test_nonexecutable_pinned_file_settles_fence_and_allows_unrelated_work(self):
         self.source.program("raise AssertionError('must not execute')")
@@ -254,18 +254,18 @@ class SourceCaptureFence(ExecutorFixture):
         self.source.program("raise AssertionError('must not execute')")
         inode = self.lock_inode()
         with executor.Journal(self.c) as journal:
-            with mock.patch.object(scenariosource.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
+            with mock.patch.object(scenario_source.tempfile, "TemporaryFile", side_effect=OSError("setup refused")):
                 self.assert_clean_refusal_and_later_work(journal, inode)
 
     def assert_uncertain_launch_retains_fence(self, failure):
         self.source.program("raise AssertionError('must not execute')")
         inode = self.lock_inode()
         with executor.Journal(self.c) as journal:
-            with mock.patch.object(scenariosource.subprocess, "Popen", side_effect=failure):
+            with mock.patch.object(scenario_source.subprocess, "Popen", side_effect=failure):
                 with self.assertRaises(type(failure)) as caught:
                     journal.exclusive("source capture", self.handoff)
                 self.assertIs(caught.exception, failure)
-            lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+            lock = os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)
             self.assertTrue(os.path.isdir(lock + ".fence"))
             with self.assertRaises(ContractError):
                 journal.exclusive("unrelated work", lambda: (True, None, False))
@@ -287,7 +287,7 @@ class SourceCaptureFence(ExecutorFixture):
             with executor.Journal(self.c) as journal:
                 with self.assertRaisesRegex(ContractError, "process group remains"):
                     journal.exclusive("source capture", self.handoff)
-                lock = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+                lock = os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)
                 self.assertTrue(os.path.isdir(lock + ".fence"))
                 with self.assertRaises(ContractError):
                     journal.exclusive("unrelated work", lambda: (True, None, False))
@@ -305,8 +305,8 @@ class ScenarioLab(ExecutorFixture):
         self.evidence = os.path.join(self.c["root"], "scenario-evidence")
         os.mkdir(self.spool, 0o700)
         os.mkdir(self.evidence, 0o700)
-        index = researchevidence.rebuild([])
-        index_path = researchevidence.retain(self.evidence, index, "evidence-index")
+        index = research_evidence.rebuild([])
+        index_path = research_evidence.retain(self.evidence, index, "evidence-index")
         self.config = dict(schema="af.perf-scenario-adapter/1", root=self.spool,
             executor=self.path("executor.toml"), af=self.path("af"), af_digest=D,
             task_repo=self.repo.path, task_state=self.path("task-state"),
@@ -320,7 +320,7 @@ class ScenarioLab(ExecutorFixture):
         lock_patch = mock.patch.object(executor.Journal, "lock_directory", self.locks)
         lock_patch.start()
         self.addCleanup(lock_patch.stop)
-        self.adapter = scenarioadapter.Adapter(self.config)
+        self.adapter = scenario_adapter.Adapter(self.config)
         self.experiment = dict(schema="af.perf-scenario-experiment/1", work="core",
             configuration_digest=canonical_digest(self.c), producer_digest=PRODUCER)
         self.request = dict(schema="af/scenario-adapter-request@4", method="execute", intent_id=D,
@@ -375,7 +375,7 @@ class ScenarioLab(ExecutorFixture):
         poison = installed / "poison.py"
         poison.write_text("raise RuntimeError('BYTECODE-MUST-NOT-RUN')")
         cached = importlib.util.cache_from_source(str(installed / "perflab/values.py"))
-        pathlib.Path(cached).parent.mkdir(exist_ok=True)
+        pathlib.Path(cached).parent.mkdir(parents=True, exist_ok=True)
         py_compile.compile(str(poison), cfile=cached,
             invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
         for directory, _, files in os.walk(installed / "perflab"):
@@ -407,7 +407,7 @@ class ScenarioLab(ExecutorFixture):
 
     def test_duplicate_and_lost_submission_responses_reconcile_exactly_one_original_after_restart(self):
         self.adapter.request(self.request)  # response lost after durable publication
-        restarted = scenarioadapter.Adapter(self.config)
+        restarted = scenario_adapter.Adapter(self.config)
         reconciled = dict(self.request, method="reconcile")
         self.assertEqual(restarted.request(reconciled)["outcome"], "done")
         self.assertEqual(restarted.request(self.request)["outcome"], "done")
@@ -450,21 +450,21 @@ class ScenarioLab(ExecutorFixture):
         intent = self.submit_intent()
         with executor.Journal(self.c) as journal:
             ident = journal.names()[0]
-            with hostlock.MachineLock(self.locks):
+            with host_lock.MachineLock(self.locks):
                 self.assertEqual(journal.cycle(lock_directory=self.locks), "busy")
             self.assertEqual(journal.state(ident)["state"], "queued")
-            with hostlock.MachineLock(self.locks) as held:
+            with host_lock.MachineLock(self.locks) as held:
                 held.guard()
-            fence = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")
-            inode = os.stat(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)).st_ino
-            with self.assertRaises(hostlock.Refused):
+            fence = os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")
+            inode = os.stat(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)).st_ino
+            with self.assertRaises(host_lock.Refused):
                 journal.cycle(lock_directory=self.locks)
             self.assertTrue(os.path.isdir(fence))
             journal.transition(journal.request(ident), "claimed")
             journal.recover()
             self.assertEqual(journal.state(ident)["state"], "uncertain")
             self.assertEqual(journal.cycle(lock_directory=self.locks), "idle")
-            self.assertEqual(os.stat(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)).st_ino, inode)
+            self.assertEqual(os.stat(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME)).st_ino, inode)
         self.assertEqual(self.adapter.observe(intent)[0], "pending")
 
     def test_definitive_producer_refusal_creates_no_native_original(self):
@@ -492,12 +492,12 @@ class ScenarioLab(ExecutorFixture):
     def test_source_capture_uses_native_exclusion_and_keeps_its_fence_on_uncertainty(self):
         self.adapter.request(self.request)
         def uncertain(*args):
-            with self.assertRaises(hostlock.Refused) as caught:
-                hostlock.MachineLock(self.locks)
+            with self.assertRaises(host_lock.Refused) as caught:
+                host_lock.MachineLock(self.locks)
             self.assertEqual(caught.exception.reason, "concurrent_shard")
             raise ContractError("native capture uncertain")
         self.assertEqual(self.adapter.submit_pending(capture=uncertain), "uncertain")
-        self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        self.assertTrue(os.path.isdir(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
         with executor.Journal(self.c) as journal:
             self.assertEqual(journal.names(), [])
 
@@ -511,7 +511,7 @@ class ScenarioLab(ExecutorFixture):
         self.native_capture_program("import sys; sys.exit(1)")
         self.adapter.request(self.request)
         self.assertEqual(self.adapter.submit_pending(), "refused")
-        self.assertFalse(os.path.lexists(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        self.assertFalse(os.path.lexists(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
         other = dict(self.request, intent_id=HEAD)
         self.assertEqual(self.adapter.request(other)["outcome"], "done")
         self.assertEqual(self.adapter.submit_pending(capture=self.capture), "submitted")
@@ -521,20 +521,20 @@ class ScenarioLab(ExecutorFixture):
         self.native_capture_program("import os, sys; os.mkdir(sys.argv[sys.argv.index('--into')+1]); sys.exit(1)")
         self.adapter.request(self.request)
         self.assertEqual(self.adapter.submit_pending(), "uncertain")
-        self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
-        with self.assertRaises(hostlock.Refused):
-            hostlock.MachineLock(self.locks)
+        self.assertTrue(os.path.isdir(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
+        with self.assertRaises(host_lock.Refused):
+            host_lock.MachineLock(self.locks)
 
     def test_native_capture_timeout_keeps_fence_even_after_leader_reaped(self):
         self.native_capture_program("import time; time.sleep(30)")
         self.adapter.request(self.request)
-        with mock.patch.object(scenariosource, "CAPTURE_SECONDS", 0.05):
+        with mock.patch.object(scenario_source, "CAPTURE_SECONDS", 0.05):
             self.assertEqual(self.adapter.submit_pending(), "uncertain")
-        self.assertTrue(os.path.isdir(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        self.assertTrue(os.path.isdir(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
 
     def research_wait(self, records):
-        index = researchevidence.rebuild(records)
-        self.config["evidence_index"] = researchevidence.retain(self.evidence, index, "evidence-index")
+        index = research_evidence.rebuild(records)
+        self.config["evidence_index"] = research_evidence.retain(self.evidence, index, "evidence-index")
         self.config["evidence_index_digest"] = canonical_digest(index)
         return self.adapter.request(dict(self.request, method="observe", operation="observe",
             inputs=dict(subject=datum(canonical_digest(index)), revision=datum(D),
@@ -552,7 +552,7 @@ class ScenarioLab(ExecutorFixture):
             native = journal.request(contracts.read_json(executor.read(os.path.join(
                 self.adapter.path(intent["intent_id"]), "receipt.json")), "scenario-receipt")["request_id"])
             path, _ = self.complete_core(journal, native, [])
-            records = researchevidence.native(journal, [native["request_id"]])
+            records = research_evidence.native(journal, [native["request_id"]])
         self.assertEqual(records[0]["provenance"], "verified_native")
         self.assertEqual(self.research_wait(records)["outcome"], "done")
         with open(os.path.join(path, "run/shards/0/samples.jsonl"), "ab") as stream:
@@ -564,7 +564,7 @@ class ScenarioLab(ExecutorFixture):
     def test_research_wait_rederives_native_original_and_refuses_changed_facts(self):
         intent = self.submit_intent()
         with executor.Journal(self.c) as journal:
-            records = researchevidence.native(journal, journal.names())
+            records = research_evidence.native(journal, journal.names())
         response = self.research_wait(records)
         self.assertEqual(response["outcome"], "done")
         for field, value in (("summary", "invented"), ("outcome", "positive"),
@@ -578,7 +578,7 @@ class ScenarioLab(ExecutorFixture):
             journal.cycle(execute=lambda *args: receipt(), lock_directory=self.locks)
         fabricated = dict(records[0], provenance="verified_native")
         self.assertNotEqual(self.research_wait([fabricated])["outcome"], "done")
-        self.assertFalse(os.path.lexists(os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+        self.assertFalse(os.path.lexists(os.path.join(self.locks, host_lock.MACHINE_LOCK_NAME + ".fence")))
         self.assertEqual(self.adapter.held(intent["intent_id"]), intent)
 
     def test_fake_verified_matched_negative_report_completes_and_is_not_reverified_on_restart(self):
@@ -598,7 +598,7 @@ class ScenarioLab(ExecutorFixture):
         completion = contracts.read_json(evidence.encode(), "scenario-completion")
         self.assertEqual(completion["verdict"]["aggregate"]["result"], "fail")
         self.assertEqual(completion["candidate_snapshot_id"], HEAD)
-        restarted = scenarioadapter.Adapter(self.config)
+        restarted = scenario_adapter.Adapter(self.config)
         restarted.verify_pending(verifier=lambda *args, **kwargs: self.fail("old certificate reverified"))
         self.assertEqual(restarted.observe(intent), (outcome, evidence))
 
@@ -635,7 +635,7 @@ class ScenarioLab(ExecutorFixture):
             return journal.request(ident), journal.state(ident), dict(measurement_status="fail")
         self.adapter.verify_pending(verifier=verified)
         self.assertEqual(self.adapter.observe(first)[0], "failed")
-        restarted = scenarioadapter.Adapter(self.config)
+        restarted = scenario_adapter.Adapter(self.config)
         restarted.verify_pending(verifier=verified)
         self.assertEqual(restarted.observe(first)[0], "failed")
         self.assertEqual(restarted.observe(second)[0], "done")
@@ -671,7 +671,7 @@ class ScenarioLab(ExecutorFixture):
         outcome, detail = self.adapter.observe(first)
         self.assertEqual(outcome, "failed")
         self.assertIn("exceeds bounded Scenario evidence", detail)
-        restarted = scenarioadapter.Adapter(self.config)
+        restarted = scenario_adapter.Adapter(self.config)
         restarted.verify_pending(verifier=verified)
         self.assertEqual(restarted.observe(restarted.held(BASE))[0], "done")
         self.assertEqual(len(set(calls)), 2)
@@ -725,10 +725,10 @@ class Evidence(unittest.TestCase):
                 stream.truncate(256 * 1024 * 1024 + 1)
             binary.chmod(0o500)
             selection = dict(task_id="prior", artifact_id=D, observed_unix_ms=30, compatibility=D)
-            with mock.patch.object(researchevidence, "sha256_bytes") as digest, \
-                    mock.patch.object(researchevidence.subprocess, "run") as run:
+            with mock.patch.object(research_evidence, "sha256_bytes") as digest, \
+                    mock.patch.object(research_evidence.subprocess, "run") as run:
                 with self.assertRaisesRegex(ContractError, "executor receipt exceeds byte bound"):
-                    researchevidence.resolve(dict(af=str(binary), af_digest=D), selection)
+                    research_evidence.resolve(dict(af=str(binary), af_digest=D), selection)
                 digest.assert_not_called()
                 run.assert_not_called()
 
@@ -741,14 +741,14 @@ class Evidence(unittest.TestCase):
     def test_rebuild_and_bounded_packets_retain_negative_adopted_stale_and_incompatible_evidence(self):
         records = [self.artifact(1), self.artifact(2, outcome="adopted", compatibility=BASE),
                    self.artifact(3, outcome="inconclusive"), self.artifact(100)]
-        index = researchevidence.rebuild(records)
-        self.assertEqual(index, researchevidence.rebuild(list(reversed(records))))
-        packet = researchevidence.packet(index, 3, 10, D, 8, max_items=3, max_bytes=4096)
+        index = research_evidence.rebuild(records)
+        self.assertEqual(index, research_evidence.rebuild(list(reversed(records))))
+        packet = research_evidence.packet(index, 3, 10, D, 8, max_items=3, max_bytes=4096)
         self.assertEqual([r["artifact"]["outcome"] for r in packet["items"]], ["inconclusive", "adopted", "negative"])
         self.assertFalse(packet["items"][1]["compatible"])
         self.assertFalse(packet["items"][2]["fresh"])
         self.assertEqual(packet["omissions"], [dict(reason="future", count=1)])
-        bounded = researchevidence.packet(index, 100, 100, D, 1, max_items=1, max_bytes=1024)
+        bounded = research_evidence.packet(index, 100, 100, D, 1, max_items=1, max_bytes=1024)
         self.assertLessEqual(len(document_bytes(bounded)), 1024)
         self.assertTrue(bounded["omissions"])
 
@@ -765,25 +765,25 @@ class Evidence(unittest.TestCase):
             dict(id="bugs-1", by="bugs", title="Avoid repeated decoding", body="Cache the parsed manifest per exact digest.", fix="Reuse decoded manifest."),
             dict(id="correctness-1", by="correctness", title="Keep fence on interrupted capture", body="Interrupted capture must preserve the common lock fence.", fix="Retain uncertainty.")])
         selection, source = self.selected(doc)
-        records = researchevidence.captured([selection], {}, resolver=lambda *args: source)
-        index = researchevidence.rebuild(records)
-        packet = researchevidence.packet(index, 30, 30, D, 20, max_items=2, max_bytes=4096)
+        records = research_evidence.captured([selection], {}, resolver=lambda *args: source)
+        index = research_evidence.rebuild(records)
+        packet = research_evidence.packet(index, 30, 30, D, 20, max_items=2, max_bytes=4096)
         encoded = document_bytes(packet)
         self.assertIn(b"Cache the parsed manifest", encoded)
         self.assertIn(b"preserve the common lock fence", encoded)
         for item in packet["items"]:
             self.assertEqual(item["artifact"]["native_receipt"]["artifact_id"], D)
             self.assertEqual(item["artifact"]["source_digest"], source["artifact"]["content_id"])
-        bounded = researchevidence.packet(index, 30, 30, D, 20, max_items=1, max_bytes=1024)
+        bounded = research_evidence.packet(index, 30, 30, D, 20, max_items=1, max_bytes=1024)
         self.assertLessEqual(len(document_bytes(bounded)), 1024)
         self.assertLessEqual(len(bounded["items"]), 1)
         self.assertEqual(len(bounded["items"]) + sum(v["count"] for v in bounded["omissions"]), 2)
         with self.assertRaisesRegex(ContractError, "conflicting"):
-            researchevidence.rebuild(records + [dict(records[0], outcome="positive")])
+            research_evidence.rebuild(records + [dict(records[0], outcome="positive")])
         changed = copy.deepcopy(source)
         changed["artifact"]["artifact_id"] = HEAD
         with self.assertRaisesRegex(ContractError, "receipt changed"):
-            researchevidence.captured([selection], {}, resolver=lambda *a: changed)
+            research_evidence.captured([selection], {}, resolver=lambda *a: changed)
 
     def test_hashed_fabricated_findings_and_adoption_files_are_never_authoritative_sources(self):
         import tempfile
@@ -793,7 +793,7 @@ class Evidence(unittest.TestCase):
                 data = document_bytes(dict(schema=schema, findings=[], causal_claim=False))
                 path.write_bytes(data)
                 with self.assertRaisesRegex(ContractError, "Task and artifact IDs"):
-                    researchevidence.captured([[str(path), sha256_bytes(data), 1, D]], {})
+                    research_evidence.captured([[str(path), sha256_bytes(data), 1, D]], {})
 
     def test_history_capture_keeps_telemetry_kind_and_span_maxima_distinct_from_total_time(self):
         doc = dict(schema="af.optimization-history/1", cutoff_unix_ms=20, receipts=[],
@@ -801,8 +801,8 @@ class Evidence(unittest.TestCase):
                 dict(kind="active", status="exact", start_unix_ms="2", end_unix_ms="9"),
                 dict(kind="tool", status="unknown")])])
         selection, source = self.selected(doc)
-        records = researchevidence.captured([selection], {}, resolver=lambda *a: source)
-        packet = researchevidence.packet(researchevidence.rebuild(records), 30, 30, D, 20)
+        records = research_evidence.captured([selection], {}, resolver=lambda *a: source)
+        packet = research_evidence.packet(research_evidence.rebuild(records), 30, 30, D, 20)
         artifact = packet["items"][0]["artifact"]
         self.assertEqual(artifact["kind"], "telemetry")
         self.assertEqual(artifact["observed_unix_ms"], 20)
@@ -811,16 +811,16 @@ class Evidence(unittest.TestCase):
         self.assertNotIn("active=12", artifact["summary"])
 
     def test_prior_evidence_shapes_fail_closed_without_compatibility_reader(self):
-        index = researchevidence.rebuild([self.artifact(1)])
-        packet = researchevidence.packet(index, 10, 10, D, 1, max_bytes=4096)
+        index = research_evidence.rebuild([self.artifact(1)])
+        packet = research_evidence.packet(index, 10, 10, D, 1, max_bytes=4096)
         for kind, doc in (("evidence-index", index), ("evidence-packet", packet)):
             previous = dict(doc, schema=doc["schema"].replace("/2", "/1"))
             with self.assertRaises(ContractError):
                 contracts.read_json(document_bytes(previous), kind)
 
     def test_packet_reader_refuses_false_freshness_compatibility_duplicates_cutoff_and_missing_native_receipts(self):
-        index = researchevidence.rebuild([self.artifact(1)])
-        packet = researchevidence.packet(index, 10, 10, D, 1, max_bytes=4096)
+        index = research_evidence.rebuild([self.artifact(1)])
+        packet = research_evidence.packet(index, 10, 10, D, 1, max_bytes=4096)
         for field in ("fresh", "compatible"):
             changed = copy.deepcopy(packet)
             changed["items"][0][field] = not changed["items"][0][field]

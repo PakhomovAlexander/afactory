@@ -7,16 +7,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
-use review_pipeline::telemetry::StoreMirror;
-use review_store::store::observer::{Commit, CommitObserver, WallCommit};
-use review_store::{Cas, EventStore};
-use review_telemetry::ledger::Ledger;
-use review_telemetry::level::Level;
-use review_telemetry::record::SealExit;
-use review_telemetry::segment::writer::{Writer, WriterOptions};
-use review_telemetry::subscriber::{TelemetrySubscriber, Typed};
-use review_telemetry::view::{self, Resolved};
+use af_contracts::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
+use af_runtime::telemetry::StoreMirror;
+use af_store::store::observer::{Commit, CommitObserver, WallCommit};
+use af_store::{Cas, EventStore};
+use af_telemetry::ledger::Ledger;
+use af_telemetry::level::Level;
+use af_telemetry::record::SealExit;
+use af_telemetry::segment::writer::{Writer, WriterOptions};
+use af_telemetry::subscriber::{TelemetrySubscriber, Typed};
+use af_telemetry::view::{self, Resolved};
 use serde_json::Value;
 
 #[path = "telemetry_ledger/campaign_fixture.rs"]
@@ -49,10 +49,10 @@ impl Recording {
         ordinal: u64,
     ) -> Self {
         let level = options.level;
-        options.redactor = review_telemetry::redact::Redactor::new();
+        options.redactor = af_telemetry::redact::Redactor::new();
         let writer = Writer::new(options).unwrap();
         let dispatch = tracing::Dispatch::new(TelemetrySubscriber::new(writer.clone()));
-        let store_id = review_telemetry::trace::store_id(store).unwrap();
+        let store_id = af_telemetry::trace::store_id(store).unwrap();
         // A Task's log is a Task run; a Campaign's log is a review run.
         let kind = if run_id.starts_with("task:") {
             "task"
@@ -127,7 +127,7 @@ pub fn read_ledger(root: &Path, run_id: &str) -> Ledger {
     else {
         panic!("run {run_id} is not recorded in {}", root.display());
     };
-    review_telemetry::ledger::ledger(
+    af_telemetry::ledger::ledger(
         &index,
         root,
         read,
@@ -355,7 +355,7 @@ fn telemetry_findings_from_summaries_only() {
 #[test]
 fn telemetry_mirror_skips_rolled_back_transactions() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut fixture = recording
@@ -365,8 +365,8 @@ fn telemetry_mirror_skips_rolled_back_transactions() {
     };
     let before = logs(&fixture.store);
     recording.within(|| {
-        let captured = review_store::NewEvent::new(
-            review_core::EventType::SourceCapturedV1,
+        let captured = af_store::NewEvent::new(
+            af_contracts::EventType::SourceCapturedV1,
             serde_json::json!({}),
         );
         fixture
@@ -380,8 +380,8 @@ fn telemetry_mirror_skips_rolled_back_transactions() {
                 &fixture.cas,
                 &[
                     captured,
-                    review_store::NewEvent::new(
-                        review_core::EventType::GenerationAdvancedV1,
+                    af_store::NewEvent::new(
+                        af_contracts::EventType::GenerationAdvancedV1,
                         serde_json::json!({ "round": 9 }),
                     ),
                 ],
@@ -432,7 +432,7 @@ impl CommitObserver for CorruptBeforeMirror {
 #[test]
 fn telemetry_mirror_corrupt_usage_artifact_marks_coverage_incomplete() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let observer = Arc::new(CorruptBeforeMirror {
         mirror: recording.mirror(),
@@ -517,7 +517,7 @@ fn telemetry_mirror_corrupt_usage_artifact_marks_coverage_incomplete() {
 /// the observation is valid.
 fn corrupt_beside_a_valid_observation(corrupt: usize) {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let observer = Arc::new(CorruptBeforeMirror {
         mirror: recording.mirror(),
@@ -701,7 +701,7 @@ fn accounting_scenario(
     check_each_step: bool,
 ) -> (Ledger, TaskFixture, tempfile::TempDir) {
     let (temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, level, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut f = recording
@@ -838,7 +838,7 @@ fn telemetry_aggregates_identical_across_levels() {
 #[test]
 fn telemetry_usage_series_separate() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut f = recording
@@ -883,7 +883,7 @@ fn telemetry_usage_series_separate() {
 #[test]
 fn telemetry_wall_order_is_per_execution() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let store_path = store_dir.path().to_path_buf();
     let predecessor = Recording::start(&root, Level::Spans, &store_path, &run_id, 1);
     let mirror = predecessor.mirror();
@@ -942,7 +942,7 @@ fn telemetry_wall_order_is_per_execution() {
 #[test]
 fn telemetry_usage_exact_above_u64() {
     let (_temp, root, store_dir) = directories();
-    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let run_id = af_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
     let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
     let mirror = recording.mirror();
     let mut f = recording
@@ -1012,7 +1012,7 @@ fn golden(name: &str, actual: &str) {
 /// the machine's, so its id, the run's trace and the telemetry directory read as placeholders.
 #[test]
 fn telemetry_ledger_matches_its_golden() {
-    use review_telemetry::record::Attrs;
+    use af_telemetry::record::Attrs;
     use std::sync::atomic::{AtomicU64, Ordering};
     let (_temp, root, store_dir) = directories();
     let clock = Arc::new(AtomicU64::new(1_700_000_200_000 * 1_000_000));
@@ -1026,7 +1026,7 @@ fn telemetry_ledger_matches_its_golden() {
         u128::from(clock.fetch_add(1_000_000, Ordering::SeqCst))
     }));
     let recording = Recording::with_options(options, store_dir.path(), campaign::RUN, 1);
-    let store_id = review_telemetry::trace::store_id(store_dir.path()).unwrap();
+    let store_id = af_telemetry::trace::store_id(store_dir.path()).unwrap();
     let cas = Cas::open(store_dir.path().join("cas")).unwrap();
     let mut store = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
     store.observe_commits(recording.mirror());
@@ -1050,7 +1050,7 @@ fn telemetry_ledger_matches_its_golden() {
         campaign::resolve(&mut store, &cas, &round, &queue, "wontfix");
         // Two Attempts' accounting as the mirror records it: the charge series and, beside
         // it, one sidecar write.
-        let span = review_telemetry::subscriber::current_recorded()
+        let span = af_telemetry::subscriber::current_recorded()
             .unwrap()
             .span_id;
         let state = |attempt: &str, sequence: i64, source: &'static str, charge: &str| {
@@ -1103,7 +1103,7 @@ fn telemetry_ledger_matches_its_golden() {
     });
     drop(store);
     recording.finish();
-    let trace_id = review_telemetry::trace::trace_id(&store_id, campaign::RUN);
+    let trace_id = af_telemetry::trace::trace_id(&store_id, campaign::RUN);
     let normalize = |text: String| {
         text.replace(&root.display().to_string(), "<root>")
             .replace(&store_id, "<store>")
@@ -1221,8 +1221,8 @@ struct Late {
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-impl review_store::store::observer::CommitObserver for Late {
-    fn committed(&self, commit: &review_store::store::observer::Commit<'_>) {
+impl af_store::store::observer::CommitObserver for Late {
+    fn committed(&self, commit: &af_store::store::observer::Commit<'_>) {
         let _ = self.committed.send(());
         let _ = self.release.lock().unwrap().recv();
         self.mirror.committed(commit);
@@ -1265,7 +1265,7 @@ fn telemetry_ledger_orders_reordered_post_commit_callbacks() {
         .iter()
         .find(|event| {
             event.correlation_id.as_deref() == Some(retry.as_str())
-                && event.event_type == review_core::EventType::FindingResolvedV1
+                && event.event_type == af_contracts::EventType::FindingResolvedV1
         })
         .unwrap()
         .sequence;
@@ -1392,7 +1392,7 @@ fn telemetry_finding_carries_the_bound_model() {
     let mut store = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
     store.observe_commits(recording.mirror());
     // The kernel's binding of the model-backed reviewer, as the Task runtime records it.
-    review_pipeline::telemetry::record_binding("cross", None, "claude-opus-5-5");
+    af_runtime::telemetry::record_binding("cross", None, "claude-opus-5-5");
     recording.within(|| {
         let round = campaign::opened_round(&mut store, &cas);
         let bound = campaign::stage(
@@ -1486,7 +1486,7 @@ fn slow_accounting_setup_renews_without_extending_the_lease_policy() {
     assert_eq!(recovered.unknown_usage, None);
     assert_eq!(
         recovered.abandoned,
-        Some(review_store::store::task::execution::TaskAbandonCause::WriterLost)
+        Some(af_store::store::task::execution::TaskAbandonCause::WriterLost)
     );
     assert_eq!(execution.budget.committed_tokens(), 7);
     assert_eq!(execution.budget.reserved_tokens(), 0);

@@ -1,9 +1,9 @@
 //! Kill the installed CLI between durable dispatch and output, then recover with the real lease.
 use super::*;
-use review_core::task::execution::TaskAttemptResultV1;
-use review_core::task::{TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1, TaskResultV1};
-use review_graph::task::{CompiledOperator, CompiledTask};
-use review_store::store::task::TaskProjection;
+use af_contracts::task::execution::TaskAttemptResultV1;
+use af_contracts::task::{TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1, TaskResultV1};
+use af_graph::task::{CompiledOperator, CompiledTask};
+use af_store::store::task::TaskProjection;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -122,7 +122,7 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
             && let Some(plan_id) = &task.plan_id
         {
             let cas = Cas::open_existing(state.join("cas")).unwrap();
-            let plan: review_core::task::plan::ExecutionPlanV3 =
+            let plan: af_contracts::task::plan::ExecutionPlanV3 =
                 serde_json::from_value(cas.get_artifact(plan_id).unwrap().payload).unwrap();
             let graph: CompiledTask =
                 serde_json::from_value(cas.get_artifact(&plan.compiled_graph_id).unwrap().payload)
@@ -186,7 +186,7 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
     assert_eq!(original_execution.budget.begun_attempts(), 2);
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let task_run = review_store::store::task::task_run_id(&original.task_id).unwrap();
+    let task_run = af_store::store::task::task_run_id(&original.task_id).unwrap();
     let before_task = store.replay(&task_run).unwrap();
     let before_review = store.replay("campaign-timing").unwrap();
     assert!(!before_review.iter().any(|e| e.event_type.is_run_report()));
@@ -257,7 +257,7 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
         old.unknown_usage,
         reported
             .is_none()
-            .then_some(review_core::task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
+            .then_some(af_contracts::task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
     );
     let Some(TaskAttemptResultV1::Abandoned { diagnostic_id }) = &old.result else {
         panic!("missing common disappearance recovery: {:?}", old.result)
@@ -301,9 +301,9 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
     assert_eq!(result.acceptance, TaskAcceptanceV1::Satisfied);
     let review = store.replay("campaign-timing").unwrap();
     for kind in [
-        review_core::EventType::RoundStartedV1,
-        review_core::EventType::SourceCapturedV1,
-        review_core::EventType::CheckCompletedV1,
+        af_contracts::EventType::RoundStartedV1,
+        af_contracts::EventType::SourceCapturedV1,
+        af_contracts::EventType::CheckCompletedV1,
     ] {
         assert_eq!(
             review.iter().filter(|e| e.event_type == kind).count(),
@@ -322,10 +322,10 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
         .filter(|e| e.event_type.is_run_report())
         .collect();
     assert_eq!(reports.len(), 1);
-    let report: review_core::RunReportPayloadV6 =
+    let report: af_contracts::RunReportPayloadV6 =
         serde_json::from_value(reports[0].payload.clone()).unwrap();
     report.validate().unwrap();
-    assert_eq!(report.verdict, review_core::RunVerdictV3::Pass {});
+    assert_eq!(report.verdict, af_contracts::RunVerdictV3::Pass {});
     assert_eq!(
         report.spent_tokens.get(),
         execution.budget.committed_tokens()

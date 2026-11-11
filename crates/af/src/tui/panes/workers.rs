@@ -23,14 +23,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use review_runner_claude::models as rules;
+use af_runner::models as rules;
 use serde_json::Value as Json;
 use toml::Value;
 
 use super::pipelines::{CATALOG, blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
 use super::{Effect, Pane, Row};
-use crate::task_execution;
+use crate::task_commands;
 use crate::tui::keymap::Key;
 use crate::tui::paint::{Paint, Span, Tone};
 use crate::tui::scope::Scope;
@@ -552,10 +552,10 @@ pub(crate) fn tally(
 
 /// A recorded plan's bindings, and its compiled graph through the plan's `compiled_graph_id`.
 fn plan_of(dir: &Path, plan: &str) -> Result<Json, String> {
-    let plan = task_execution::recorded_artifact(dir, plan)?;
+    let plan = task_commands::recorded_artifact(dir, plan)?;
     let graph = tasks::text(&plan["payload"]["compiled_graph_id"])?;
-    let graph = &task_execution::recorded_artifact(dir, graph)?["payload"];
-    let package = &mut |id: &str| task_execution::recorded_artifact(dir, id);
+    let graph = &task_commands::recorded_artifact(dir, graph)?["payload"];
+    let package = &mut |id: &str| task_commands::recorded_artifact(dir, id);
     let bindings = pinned_bindings(&plan["payload"]["bindings"], package)?;
     Ok(recorded_plan(graph, &bindings))
 }
@@ -565,10 +565,10 @@ fn task_tally(
     task_id: &str,
     cache: &mut Cache,
 ) -> Result<BTreeMap<Worker, Tally>, String> {
-    let document = task_execution::inspection_document(dir, task_id, true)?
+    let document = task_commands::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("not in {}", dir.display()))?;
     let invoked = &mut |id: &str| tasks::node_of(dir, id, cache);
-    let package = &mut |id: &str| task_execution::recorded_artifact(dir, id);
+    let package = &mut |id: &str| task_commands::recorded_artifact(dir, id);
     tally(&document, invoked, &mut |plan| plan_of(dir, plan), package)
 }
 
@@ -584,7 +584,7 @@ fn read_store(target: &Target) -> Store {
     let dir = &target.dir;
     let listed = match tasks::not_a_store(dir) {
         Some(refusal) => Err(refusal),
-        None => task_execution::list_common(dir),
+        None => task_commands::list_common(dir),
     };
     let tallies = listed.and_then(|entries| {
         let mut cache = Cache::default();
@@ -1101,7 +1101,8 @@ fn runner_rows(
     let mut judged = provider.and_then(rules::Kind::parse);
     if entry.kind == Kind::Reviewer
         && let Ok(manifest) = toml::from_str(&entry.declaration)
-        && let Ok(settings) = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
+        && let Ok(settings) =
+            af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest)
     {
         judged = rules::Kind::parse(&settings.backend.to_string());
         (model, effort) = (settings.model, settings.effort);

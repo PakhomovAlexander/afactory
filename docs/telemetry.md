@@ -115,7 +115,7 @@ nothing.
 `af.process` — carries `process.pid`, `process.command` (the program, never its arguments),
 `process.exit_code` or `process.signal`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`,
 and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
-(`review-process`, which links no telemetry) carries them through every result it returns, a
+(`af-process`, which links no telemetry) carries them through every result it returns, a
 timed-out, killed or cancelled process included; the crates that receive the result record the
 span. A process span ends after its caller judged the capture: an Attempt, check, gate call or
 container command whose output went past the capture cap ends it with `error.type = "failed"`
@@ -125,9 +125,9 @@ per-child `wait4(2)` (`nix` 0.31 and `rustix` expose none), so the figures come 
 `getrusage(RUSAGE_CHILDREN)`: the change of the process's children totals across a reap is the
 reaped child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports
 it) only when no other child of the process is reaped between the two readings. So every child
-reap of the workspace's non-test code goes through `review-process`'s one reap lock: the
+reap of the workspace's non-test code goes through `af-process`'s one reap lock: the
 supervisor's own reaps, and every other — a login adapter's, the TUI's hand-off, `$EDITOR`,
-`gh`, `git` and `tar` — through `review_process::reap`, whose `wait`, `try_wait`,
+`gh`, `git` and `tar` — through `af_process::reap`, whose `wait`, `try_wait`,
 `wait_with_output`, `output`, `status` and non-blocking `wait_pid` do what the standard
 library's do under that lock, polling a non-blocking reap so the lock is never held while a
 child runs. A source test fails on a direct `wait`, `try_wait`, `wait_with_output`, `output()`,
@@ -664,7 +664,7 @@ Stores share without `--store`, or a refused `[telemetry]` key.
 ## Harness streams
 
 At `spans` and above every Claude and Codex Attempt's streams are tapped as they arrive. The
-supervisor (`review-process`, which links no telemetry) still drains each pipe into the complete
+supervisor (`af-process`, which links no telemetry) still drains each pipe into the complete
 stream the adapter reads; for every chunk it reads it also makes one **non-blocking offer** of
 `(process, stream, byte offset, bytes, arrival)` to a queue of at most `observer_queue_bytes`.
 The offer takes no lock: the room is reserved by one atomic operation, the chunk goes through a
@@ -1194,8 +1194,9 @@ committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
 `FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
 artifact type renamed and each re-pinned with the digest the contract declares, which the
 measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
-that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6 and rc.7), and a release
-no contract names is refused, never measured under the committed contract. The contract is
+that write the committed `@2` (af 0.14.0-rc.1, rc.2, rc.3, rc.4, rc.5, rc.6, rc.7,
+0.15.1-rc.1 and 0.15.1-rc.2), and a release no contract names is refused, never measured under
+the committed contract. The contract is
 selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
 refused when the version selects another. It is benchmark fixture
 production, never a reader of state an earlier release wrote.
@@ -1215,13 +1216,13 @@ constructs `TaskCheckReceiptV2` in `CodeDomain::check`, publishes it with
 
 | Source path | Git blob ID in RC4 and RC5 | Git blob ID in RC6 |
 | --- | --- | --- |
-| [`crates/review-core/src/task/verification.rs`](../crates/review-core/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
+| [`crates/review-core/src/task/verification.rs`](../crates/af-contracts/src/task/verification.rs) | `50daec10bf9e7de86e4f89eabe7487b046a627a9` | `50daec10bf9e7de86e4f89eabe7487b046a627a9` |
 | [`schemas/task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json) | `49e71c04c24222cc9855135785d540644a73b7dc` | `49e71c04c24222cc9855135785d540644a73b7dc` |
-| [`crates/review-pipeline/src/task/code.rs`](../crates/review-pipeline/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` | `15cbd9d55bedd0dbc993bf55dce16ea44deb9924` |
-| [`crates/af/src/task_execution/catalog.rs`](../crates/af/src/task_execution/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
-| [`crates/review-config/src/task/catalog.rs`](../crates/review-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` | `8a047a34fc3f880a982ae4fd541ac9ed11b48c15` |
-| [`crates/review-config/src/lock.rs`](../crates/review-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
-| [`crates/review-store/src/canonical.rs`](../crates/review-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
+| [`crates/review-pipeline/src/task/code.rs`](../crates/af-runtime/src/task/code.rs) | `0f17ec7f48a8c9db18e411d832873e0ff4028e74` | `15cbd9d55bedd0dbc993bf55dce16ea44deb9924` |
+| [`crates/af/src/task_commands/catalog.rs`](../crates/af/src/task_commands/catalog.rs) | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` | `3ad8adfd403efbb71b3d9a6322710101f5d5b46d` |
+| [`crates/review-config/src/task/catalog.rs`](../crates/af-pipeline-config/src/task/catalog.rs) | `4cf79d36a0e1e1c9d70644265d7bb1add543e67d` | `8a047a34fc3f880a982ae4fd541ac9ed11b48c15` |
+| [`crates/review-config/src/lock.rs`](../crates/af-pipeline-config/src/lock.rs) | `1bde3c8fcdda73dbc4f453c078398380abef8797` | `1bde3c8fcdda73dbc4f453c078398380abef8797` |
+| [`crates/review-store/src/canonical.rs`](../crates/af-store/src/canonical.rs) | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` | `ae99b844bad79b1b0e6a023d15d28e4acb485ff1` |
 
 All four catalogs under `fixtures/telemetry-bench/<fixture>/repo/.af/task-catalog.toml` are
 also byte-identical in RC4, RC5 and RC6:
@@ -1248,15 +1249,68 @@ serialization retain the blob IDs above. The entire `fixtures/telemetry-bench` t
 byte-identical to RC6, including all four catalogs and their package manifests and schemas.
 Thus RC7 explicitly selects the same receipt contract and committed package pins.
 
+**0.15.1-rc.1 source evidence.** This workspace names `0.15.1-rc.1` in `Cargo.toml`.
+`crates/af-contracts/src/task/verification.rs` still declares `TASK_CHECK_RECEIPT_V2` and
+`TaskCheckReceiptV2`; `CodeDomain::check` in `crates/af-runtime/src/task/code.rs` still publishes
+that receipt, validated by `schemas/task-check-receipt-v2.json`. The committed bench packages
+still declare `af/TaskCheckReceipt@2`. The regression below validates every catalog's digest
+against actual package bytes (and the Store fixture's Pipeline pin), then exercises contract
+production without overlays and compares every copied file byte for byte. This establishes the
+explicit current-version declaration; it does not admit an unnamed future release.
+
+**0.15.1-rc.2 prerequisite evidence.** This declaration prepares RC2; the workspace remains
+`0.15.1-rc.1` until `make release` bumps it. The current source still defines
+`TASK_CHECK_RECEIPT_V2 = "af/TaskCheckReceipt@2"` and `TaskCheckReceiptV2` in
+[`verification.rs`](../crates/af-contracts/src/task/verification.rs). `CodeDomain::check` in
+[`code.rs`](../crates/af-runtime/src/task/code.rs) constructs `TaskCheckReceiptV2` and passes
+`TASK_CHECK_RECEIPT_V2` to `cas.put_artifact`; the receipt schema remains
+[`task-check-receipt-v2.json`](../schemas/task-check-receipt-v2.json). These unchanged files have
+the following SHA-256 hashes, checkable with `shasum -a 256 PATH` from the repository root:
+
+| Source path | SHA-256 |
+| --- | --- |
+| `crates/af-contracts/src/task/verification.rs` | `c3991963dd5237a77105242373790de3d01334c017e6fbddedfa8358f6e6964b` |
+| `crates/af-runtime/src/task/code.rs` | `0bbfe6fc4d64154bb0bd2d0d7f9b1dbc7bcea7737149020f44b2b933272f4e30` |
+| `schemas/task-check-receipt-v2.json` | `e46f654d9f565dec6da315eb116ae950b3b0542c14169080b94935f2397e90c5` |
+
+Every package name, version, path and digest is preserved in the four committed catalogs below.
+Paths are relative to `fixtures/telemetry-bench/`; the Store fixture instead retains its
+`review` Pipeline pin `sha256:b041b990ea43e5c8225f55b6554ec10f9a3e6f612b8364575749798d8c148396`
+in `af.lock`.
+
+| Fixture pin file | SHA-256 |
+| --- | --- |
+| `telemetry-bench-concurrent/repo/.af/task-catalog.toml` | `67ec93e2a56e0bdbaceb04984e9070506ed61b93c169930d429bf7c70a3a59f5` |
+| `telemetry-bench-dense/repo/.af/task-catalog.toml` | `37b9f18953b2642eb45339438714ef49f803f07cc31b0d48ae25da15c95f8406` |
+| `telemetry-bench-invocation-four/repo/.af/task-catalog.toml` | `a3fac15c013c6776c1540f3277c2747995dd273bc73711a6d8ccd99b074ab932` |
+| `telemetry-bench-invocation-one/repo/.af/task-catalog.toml` | `2107bcbae0fb2d52564ac7d96ccf0b0aed512dc9aca15a7d1738b98481334dbe` |
+| `telemetry-bench-store/repo/.af/af.lock` | `f79c69a9837591c89fb2142155f4827e821933cbc1de7c621a07168b247414d3` |
+
+`test_rc2_retains_the_expected_committed_catalog_and_store_pipeline_pins` fixes these pin-file
+hashes in regression coverage. The selection regression
+`test_rc4_through_rc7_and_0_15_1_rc1_rc2_select_the_existing_receipt_2_contract` checks that
+RC2 selects exactly `check-receipt@2`, with `af/TaskCheckReceipt@2`, no overlay pins, and refusal
+of a requested `check-receipt@1`. The all-fixture regression below also validates the real package
+and Pipeline bytes against their pins and byte-compares every produced fixture for RC2.
+`test_a_release_no_contract_names_is_refused_never_given_the_current_contract` still refuses
+unnamed versions, including `0.15.1-rc.3`, `0.15.1-rc.20`, `0.15.1`, and
+`0.15.1-rc.2+unknown`, with or without an explicit current-contract request. This is one exact
+release declaration, not a version range or a new receipt shape.
+
 This supports using `check-receipt@2` with `pins = None`: keep the committed package pins,
 perform no receipt-type renaming, and still require each measured binary's `af catalog digest`
 to match each committed pin. The Store fixture has no Task catalog. The focused regression
-`test_rc4_through_rc7_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
-fixture for all four versions and checks that every copied file stays byte-identical. This evidence
+`test_rc4_through_rc7_and_0_15_1_rc1_rc2_keep_all_committed_fixtures_without_contract_specific_pins` exercises every
+fixture for all six versions and checks that every copied file stays byte-identical. This evidence
 admits only the named releases; RC8, stable 0.14.0, nightly and unknown build-metadata
 version strings remain unnamed.
 `test_workspace_release_has_an_explicit_valid_telemetry_contract` reads the workspace version
-and requires an explicit current contract, so a version bump must declare its workload before shipping.
+and requires an explicit current contract. The cheap `scripts/release-contract.py` preflight
+checks the same version selection and lab schema ownership in always-run `release-check` and
+`base-check`, including fast and `no-perf` PRs. Release preparation invokes it after the bump,
+before committing or publishing the PR. A version bump must declare its workload before shipping.
+The contained smoke's missing or invalid run-artifact diagnostic includes captured stderr, so a
+setup/contract refusal cannot be masked by a file-not-found exception.
 
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
 writes the `af/telemetry-overhead@2` document

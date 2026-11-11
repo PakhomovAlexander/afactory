@@ -4,21 +4,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
-use review_core::task::execution::*;
-use review_core::task::pipeline::*;
-use review_core::task::plan::*;
-use review_core::task::usage::{
+use af_contracts::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
+use af_contracts::task::execution::*;
+use af_contracts::task::pipeline::*;
+use af_contracts::task::plan::*;
+use af_contracts::task::usage::{
     TASK_TOKEN_USAGE_V3, TASK_USAGE_OBSERVATION_V1, TaskTokenUsageV3, TaskUsageObservationV1,
 };
-use review_core::task::{self, ArtifactInputV1, EXECUTION_PLAN_V4, TaskResultV1, TaskRevisionV1};
-use review_graph::task::{
+use af_contracts::task::{self, ArtifactInputV1, EXECUTION_PLAN_V4, TaskResultV1, TaskRevisionV1};
+use af_graph::task::{
     CompileContext, CompiledOperator, OperatorAttemptCost, OperatorSignature, ReviewOperation,
     compile_task,
 };
-use review_store::store::task::execution::PreparedTaskAttempt;
-use review_store::store::task::{DeveloperGrant, TaskAuthority, TaskLease, task_run_id};
-use review_store::{Cas, EventStore, TaskAttemptWall};
+use af_store::store::task::execution::PreparedTaskAttempt;
+use af_store::store::task::{DeveloperGrant, TaskAuthority, TaskLease, task_run_id};
+use af_store::{Cas, EventStore, TaskAttemptWall};
 use serde_json::json;
 
 /// Each Attempt's charge and unknown-usage cause, by Attempt id.
@@ -67,7 +67,7 @@ impl TaskAuthority for Authority {
         _: &TaskRevisionV1,
         _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
-        _: &review_store::store::task::execution::ReservedTaskAttempt,
+        _: &af_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Ok(())
@@ -79,7 +79,7 @@ impl TaskAuthority for Authority {
         _: &ExecutionPlanV3,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        _definition: &af_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -91,7 +91,7 @@ impl TaskAuthority for Authority {
 pub fn put(cas: &Cas, kind: &str, value: impl serde::Serialize) -> String {
     cas.put_artifact(
         kind,
-        review_core::Producer::KernelOperation {
+        af_contracts::Producer::KernelOperation {
             run_id: "accounting-fixture".into(),
             node_id: None,
             operation_id: "capture".into(),
@@ -105,7 +105,7 @@ pub fn put(cas: &Cas, kind: &str, value: impl serde::Serialize) -> String {
 }
 
 fn source_input(cas: &Cas) -> (String, String) {
-    use review_core::task::source::*;
+    use af_contracts::task::source::*;
     let issue = IssueInputV1 {
         schema: "af.issue-input/1".into(),
         id: "42".into(),
@@ -139,7 +139,7 @@ fn source_input(cas: &Cas) -> (String, String) {
         raw_source_id: raw,
         fields,
     };
-    let producer = review_core::Producer::KernelOperation {
+    let producer = af_contracts::Producer::KernelOperation {
         run_id: "accounting-fixture".into(),
         node_id: None,
         operation_id: "source".into(),
@@ -173,7 +173,7 @@ fn source_input(cas: &Cas) -> (String, String) {
 
 /// The Campaign Round the Task's review nodes are bound to.
 fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
-    let tree = review_source_git::Manifest::default();
+    let tree = af_source_git::Manifest::default();
     let tree_id = cas.put_json(&serde_json::to_value(&tree).unwrap()).unwrap();
     let head = cas.put_json(&json!({
         "repository_id":"fixture/accounting", "vcs":"git", "capture":{"kind":"committed", "tree_id":"fixture"},
@@ -187,20 +187,20 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
     let demand_genesis = cas
         .put_json(&json!({"kind":"demand-set-genesis@1", "authority_snapshot_id":head}))
         .unwrap();
-    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(json!({
+    let manifest: af_contracts::CampaignManifestV1 = serde_json::from_value(json!({
         "authority_snapshot_id":head, "subject_kind":"whole-tree",
         "pipeline":{"path":"pipeline.toml", "artifact_id":pipeline}, "reviewer_lock":{"path":"af.lock", "artifact_id":lock},
         "reviewers":[], "execution_policy_ids":[], "project_policy_ids":[],
         "convergence":{"clean_rounds":1, "max_rounds":2, "gate":"major"}, "reviewer_timeout_seconds":60,
         "check_timeout_seconds":3600, "git_timeout_seconds":300,
-        "finding_identity_policy":review_core::CANONICAL_FINDING_IDENTITY_POLICY,
+        "finding_identity_policy":af_contracts::CANONICAL_FINDING_IDENTITY_POLICY,
         "finding_genesis_id":finding_genesis, "demand_genesis_id":demand_genesis,
     })).unwrap();
     let manifest_id = cas
         .put_json(&serde_json::to_value(manifest).unwrap())
         .unwrap();
     let subject_id = cas
-        .put_json(&serde_json::to_value(review_core::SubjectV1::whole_tree(&head)).unwrap())
+        .put_json(&serde_json::to_value(af_contracts::SubjectV1::whole_tree(&head)).unwrap())
         .unwrap();
     let prior = cas
         .put_json(&json!({"subject_id":subject_id, "round":1, "prior_findings":[]}))
@@ -210,8 +210,8 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         .append(
             &run,
             cas,
-            review_store::NewEvent::new(
-                review_core::EventType::CampaignOpenedV1,
+            af_store::NewEvent::new(
+                af_contracts::EventType::CampaignOpenedV1,
                 json!({"campaign_manifest_id":manifest_id, "authority_snapshot_id":head}),
             )
             .referencing(vec![manifest_id.clone(), head.clone()]),
@@ -221,8 +221,8 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         .append(
             &run,
             cas,
-            review_store::NewEvent::new(
-                review_core::EventType::RoundStartedV1,
+            af_store::NewEvent::new(
+                af_contracts::EventType::RoundStartedV1,
                 json!({"round":1, "epoch":1, "campaign_manifest_id":manifest_id,
                     "subject_id":subject_id, "prior_finding_set_id":prior,
                     "prior_demand_set_id":demand_genesis}),
@@ -249,7 +249,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
     let wrapper = cas
         .put_artifact(
             CAMPAIGN_REVIEW_ROUND_V1,
-            review_core::Producer::KernelOperation {
+            af_contracts::Producer::KernelOperation {
                 run_id: "accounting-fixture".into(),
                 node_id: None,
                 operation_id: "capture".into(),
@@ -310,7 +310,7 @@ impl TaskFixture {
             ArtifactInputV1 {
                 artifact_ids: vec![round],
                 artifact_type: CAMPAIGN_REVIEW_ROUND_V1.into(),
-                cardinality: review_core::PortCardinality::One,
+                cardinality: af_contracts::PortCardinality::One,
                 snapshot_id: Some(head),
             },
         );
@@ -352,7 +352,7 @@ impl TaskFixture {
             &cas,
             "af/TaskPackage@1",
             json!({"schema":"af.task-package/1","name":"builtin/document","version":"1.0.0",
-                   "digest":review_config::lock::package_digest_from_files(&files),
+                   "digest":af_pipeline_config::lock::package_digest_from_files(&files),
                    "files":files}),
         );
         let mut output = pipeline.contract.outputs["document"].clone();
@@ -571,7 +571,7 @@ impl TaskFixture {
         self.cas
             .put_artifact(
                 TASK_USAGE_OBSERVATION_V1,
-                review_core::Producer::Attempt {
+                af_contracts::Producer::Attempt {
                     run_id: self.run_id.clone(),
                     node_id: format!("root.nodes.{node}"),
                     attempt_id: attempt.into(),

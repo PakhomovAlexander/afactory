@@ -4,7 +4,7 @@
 success and `./program wrong` for exit 1.
 
 The native package example lives in
-[`task_review_execute_checks.rs`](../../crates/review-pipeline/tests/it/task_review_execute_checks.rs).
+[`task_review_execute_checks.rs`](../../crates/af-runtime/tests/it/task_review_execute_checks.rs).
 It captures ordinary reviewer, evaluator and pipeline packages with their typed contracts and
 schemas, a required reviewer policy, and a local gate. Executable cases create native `implement`
 Tasks with both requirements verification and reviewed-implementation acceptance. A child Review
@@ -19,7 +19,7 @@ through `CodeTaskDomain`, including direct challenges after successful admission
 Run:
 
 ```sh
-cargo test --locked -p review-pipeline --test it executable_review_evidence
+cargo test --locked -p af-runtime --test it executable_review_evidence
 ```
 
 Cases include successful execution, actual installed-program failure, unavailable testing, stale

@@ -1,6 +1,6 @@
 //! Common CLI factory currentness: account changes inside one process never rebind a Task.
 use super::*;
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 use serde_json::Value;
 
 fn account_fixture(directory: &Path, change_during_identity: bool) -> (PathBuf, PathBuf, String) {
@@ -113,7 +113,7 @@ fn review_account_change_after_admission_refuses_private_context_and_keeps_admis
         .filter(|(_, node)| {
             matches!(
                 node.operator,
-                review_graph::task::CompiledOperator::ProviderAdmission { .. }
+                af_graph::task::CompiledOperator::ProviderAdmission { .. }
             )
         })
         .collect();
@@ -226,7 +226,7 @@ fn review_disable_after_admission_refuses_captured_private_send_before_account_p
         .unwrap();
     let mut refused = 0;
     for attempt in execution.attempt_accounting() {
-        if let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+        if let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
             diagnostic_id,
             ..
         }) = &attempt.result
@@ -267,14 +267,14 @@ args=[{value="--model"},{value="o3"},{value="--effort"},{value="high"}]
 "#,
         )
         .unwrap();
-        let registry = review_config::lock::Registry::new(repo.join(".af/workers"));
-        let mut lock = review_config::lock::Lockfile::from_toml(
+        let registry = af_pipeline_config::lock::Registry::new(repo.join(".af/workers"));
+        let mut lock = af_pipeline_config::lock::Lockfile::from_toml(
             &std::fs::read_to_string(repo.join(".af/af.lock")).unwrap(),
         )
         .unwrap();
         lock.workers.insert(
             "tester".into(),
-            review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
+            af_pipeline_config::lock::Lockfile::pin("tester", &registry).unwrap(),
         );
         std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
         std::fs::write(home.join(".config/af/providers.toml"),toml::to_string(&serde_json::json!({"version":4,"providers":[{"id":"test-pi","kind":"pi","backend":"openai-codex","auth_dir":auth,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();

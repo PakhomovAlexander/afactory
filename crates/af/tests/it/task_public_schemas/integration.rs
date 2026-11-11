@@ -1,8 +1,8 @@
 //! Fresh CLI reads of an executed Integration phase followed by a complete derived-head Review.
 use super::*;
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 
-#[path = "../../../../review-pipeline/tests/it/support/captured_review_integration.rs"]
+#[path = "../../../../af-runtime/tests/it/support/captured_review_integration.rs"]
 mod captured_integration;
 
 #[test]
@@ -15,7 +15,7 @@ fn integration_inspection_preserves_phase_and_handoff_wire_without_mutating_hist
     std::fs::remove_file(state.join("calls")).unwrap();
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let task_run = review_store::store::task::task_run_id("integration-review").unwrap();
+    let task_run = af_store::store::task::task_run_id("integration-review").unwrap();
     let before_task = store.replay(&task_run).unwrap();
     let before_review = store.replay("review").unwrap();
     let shown = json_output(

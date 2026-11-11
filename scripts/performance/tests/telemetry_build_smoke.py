@@ -29,7 +29,7 @@ CLI = ROOT / "scripts/performance/cli.py"
 # is installed; the production admission and imports execute in their original order.
 CHILD_CLI = (runpy.run_path(str(CLI), run_name="af_telemetry_build_smoke_cli")
              if __name__ == "__main__" and sys.argv[1:2] == ["--fixture-child"] else None)
-from perflab import admission, budget, builds, hostlock, hostprep, telemetrybuild, tomlfile  # noqa: E402
+from perflab import admission, budget, builds, host_lock, host_prep, telemetry_build, toml_file  # noqa: E402
 from perflab.values import ContractError  # noqa: E402
 
 IMAGE = ("ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:"
@@ -62,11 +62,11 @@ def fixture_child(receipt, argv):
     # Observe the normal guard; do not replace acquisition, borrow a descriptor, change
     # the common path, or catch the build's rejection. runpy executes the actual CLI.
     cli = CHILD_CLI or runpy.run_path(str(CLI), run_name="af_telemetry_build_smoke_cli")
-    original = hostlock.MachineLock.guard
+    original = host_lock.MachineLock.guard
     def guard(lease):
         original(lease)
         record_guard(lease, receipt)
-    hostlock.MachineLock.guard = guard
+    host_lock.MachineLock.guard = guard
     raise SystemExit(cli["main"](argv))
 
 
@@ -76,10 +76,10 @@ def maintain_fixture(receipt, fenced, cleanup, directory=None):
     `directory` is only the unit-test seam, like MachineLock's. The live smoke always
     opens the system path without creating it, and honors its installed inode anchor.
     """
-    path = (os.path.join(directory, hostlock.MACHINE_LOCK_NAME) if directory is not None
-            else hostlock.default_path())
-    hostlock._check_directory(os.path.dirname(path), directory is None)
-    anchor = hostlock.read_anchor() if directory is None else None
+    path = (os.path.join(directory, host_lock.MACHINE_LOCK_NAME) if directory is not None
+            else host_lock.default_path())
+    host_lock._check_directory(os.path.dirname(path), directory is None)
+    anchor = host_lock.read_anchor() if directory is None else None
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     fence_fd = None
     try:
@@ -173,7 +173,7 @@ def fixture(root, script):
         'println!("{} {}", b.format(7), env!("FIXTURE_COMMIT")); }\n')
     # A real registry dependency: --locked fetch must populate an initially empty home,
     # then the exact production --offline compilation must use it successfully.
-    lock = tomlfile.loads((ROOT / "Cargo.lock").read_bytes(), "trusted lock")
+    lock = toml_file.loads((ROOT / "Cargo.lock").read_bytes(), "trusted lock")
     dep = next(item for item in lock["package"] if item["name"] == "itoa")
     (source / "Cargo.toml").write_text('[package]\nname="af"\nversion="0.0.0"\nedition="2024"\n'
         '[dependencies]\nitoa="=' + dep["version"] + '"\n')
@@ -216,7 +216,7 @@ class BuildFixture:
 def scratch(root, action, cli=True):
     image, mount = root / "scratch.img", root / "scratch"
     fixture = BuildFixture(root)
-    hostprep.prepare(str(image), str(mount), SMALL_BYTES)
+    host_prep.prepare(str(image), str(mount), SMALL_BYTES)
     image_before, mount_before = os.lstat(image), os.lstat(mount)
     def cleanup():
         if cli:
@@ -230,7 +230,7 @@ def scratch(root, action, cli=True):
         live = subprocess.check_output(["docker", "ps", "--all", "--quiet", "--filter",
             "name=^/af-telemetry-build-"], env=builds.docker_client_environment(), timeout=10)
         assert not live.strip(), "container cleanup uncertain; bounded scratch retained: " + str(mount)
-        problems = hostprep.cleanup(str(image), str(mount))
+        problems = host_prep.cleanup(str(image), str(mount))
         assert not problems, problems
         assert not os.path.ismount(mount) and not os.path.lexists(mount)
         assert not os.path.lexists(image), "owned scratch cleanup incomplete"
@@ -243,7 +243,7 @@ def scratch(root, action, cli=True):
             receipt = json.load(stream)
         maintain_fixture(receipt, fixture.child.returncode != 0, cleanup)
     else:
-        with hostlock.MachineLock():
+        with host_lock.MachineLock():
             cleanup()
 
 
@@ -357,10 +357,10 @@ def main():
                 for label, command in (
                     ("binary-link", 'ln -s "$SENTINEL" /state/target/release/af'),
                     ("ancestor-link", 'rmdir /state/target/release; ln -s "$SENTINEL" /state/target/release'),
-                    ("oversized", 'truncate -s ' + str(telemetrybuild.BINARY_BYTES + 1) + ' /state/target/release/af'),
+                    ("oversized", 'truncate -s ' + str(telemetry_build.BINARY_BYTES + 1) + ' /state/target/release/af'),
                     ("fifo", 'mkfifo /state/target/release/af')):
                     state.mkdir()
-                    for entry in telemetrybuild.STATE_NAMES: (state / entry).mkdir()
+                    for entry in telemetry_build.STATE_NAMES: (state / entry).mkdir()
                     (state / "target/release").mkdir()
                     name = "af-build-output-" + label + "-" + str(os.getpid())
                     argv = image.command(name, ["/bin/sh", "-c", command], "/", {"SENTINEL": str(sentinel),
@@ -373,7 +373,7 @@ def main():
                     output = root / ("admit-" + label)
                     output.mkdir()
                     try:
-                        telemetrybuild.admit_binary(str(state), str(output),
+                        telemetry_build.admit_binary(str(state), str(output),
                             budget.Budget(time.monotonic() + 10, time.monotonic, 0))
                     except (ContractError, OSError):
                         pass

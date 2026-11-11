@@ -19,7 +19,7 @@ import sys
 import time
 from unittest import mock
 
-from perflab import builds, budget, capability, contracts, hostlock, hostprep, telemetryexec, telemetrylab
+from perflab import builds, budget, capability, contracts, host_lock, host_prep, telemetry_exec, telemetry_lab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests import test_workflow as workflow
@@ -56,8 +56,8 @@ class WorkflowCleanup(ContainedBase):
 
         # Model the Linux runner just as we model its mount commands; the real
         # host platform refusal is covered separately by HostedScratch.
-        real_host = hostprep.Host(run=run, statvfs=self.host.statvfs, system="linux")
-        self.patch = mock.patch.object(hostprep, "Host", return_value=real_host)
+        real_host = host_prep.Host(run=run, statvfs=self.host.statvfs, system="linux")
+        self.patch = mock.patch.object(host_prep, "Host", return_value=real_host)
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.steps = workflow.steps(workflow.jobs(read(os.path.join(
@@ -112,7 +112,7 @@ class WorkflowCleanup(ContainedBase):
         self.assertIn(self.mount, evidence)
 
     def owner(self):
-        return hostprep.TelemetryOwner(self.owner_path, self.mount)
+        return host_prep.TelemetryOwner(self.owner_path, self.mount)
 
     def run_execution(self, owner, command=(sys.executable, "-I", "-c", "pass"), label="x"):
         self.executor.owner = owner
@@ -147,7 +147,7 @@ class WorkflowCleanup(ContainedBase):
         # A signal/error can arrive after the daemon accepted Popen. Pending evidence
         # is durable before that call; no result exists on this path.
         with self.owner() as owner:
-            with mock.patch.object(telemetryexec.subprocess, "Popen", side_effect=exception):
+            with mock.patch.object(telemetry_exec.subprocess, "Popen", side_effect=exception):
                 if isinstance(exception, OSError):
                     self.assertEqual(self.run_execution(owner).cleanup, "uncertain")
                 else:
@@ -217,7 +217,7 @@ class WorkflowCleanup(ContainedBase):
         copied = self.path("copied-owner")
         shutil.copytree(self.owner_path, copied)
         with self.assertRaisesRegex(ContractError, "foreign scratch"):
-            with hostprep.TelemetryOwner(copied, self.mount):
+            with host_prep.TelemetryOwner(copied, self.mount):
                 pass
         self.assertEqual(self.host.argv[-1][-2:], ["0700", self.mount])
 
@@ -243,7 +243,7 @@ class WorkflowCleanup(ContainedBase):
             binary.with_name("af.build.json").write_bytes(contracts.write_bytes(record, "telemetry-build"))
         args = cli.parser().parse_args(self.argv("telemetry-run") + ["--experiment", "overhead",
             "--rounds", "1", "--pairs", "1", "--scale", "smoke", "--corpus-runs", "10"])
-        original = telemetrylab.run
+        original = telemetry_lab.run
         lock_directory = getattr(self, "machine_lock_directory", self.path("machine-lock"))
         os.makedirs(lock_directory, exist_ok=True)
 
@@ -256,7 +256,7 @@ class WorkflowCleanup(ContainedBase):
                 configure(settings)
             return original(settings)
 
-        with mock.patch.object(telemetrylab, "run", run), \
+        with mock.patch.object(telemetry_lab, "run", run), \
                 contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), write_through=True)), \
                 contextlib.redirect_stderr(io.StringIO()):
             return args.handler(args)
@@ -266,11 +266,11 @@ class WorkflowCleanup(ContainedBase):
         # and Contained.launch. Only the host/runtime are stand-ins.
         os.rmdir(self.run_dir)
         os.rmdir(self.executor.directory)
-        with mock.patch.object(telemetryexec.subprocess, "Popen", side_effect=KeyboardInterrupt()):
+        with mock.patch.object(telemetry_exec.subprocess, "Popen", side_effect=KeyboardInterrupt()):
             with self.assertRaises(KeyboardInterrupt):
                 self.measure()
         self.assertTrue(os.path.isdir(self.executor.directory))
-        self.assertFalse(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).exists())
+        self.assertFalse(Path(self.tmp, "telemetry-result", telemetry_lab.RESULT_JSON).exists())
         self.retained()
         self.assertNotEqual(self.invoke("telemetry-run"), 0)
         self.assertIn("unsettled launch", self.stderr.getvalue())
@@ -331,7 +331,7 @@ class WorkflowCleanup(ContainedBase):
                 # prior scenario's durable global fence just to run the next boundary.
                 self.machine_lock_directory = self.path("machine-lock-" + boundary)
                 failure = {"probe": OSError("partially mutating probe"),
-                           "image_hook": telemetrylab.Unavailable("refused", "opaque image hook"),
+                           "image_hook": telemetry_lab.Unavailable("refused", "opaque image hook"),
                            "host_hook": KeyboardInterrupt("preparation interrupted"),
                            "executor": RuntimeError("opaque executor preparation")}[boundary]
                 def mutate(*args, **kwargs):
@@ -345,7 +345,7 @@ class WorkflowCleanup(ContainedBase):
                         mock.patch.object(capability, "docker_info", return_value={
                             "unavailable": None, "identity": "linux fixture cgroup2"}), \
                         mock.patch.object(capability, "scratch_capability", mutate), \
-                        (mock.patch.object(telemetrylab, "_executor", mutate)
+                        (mock.patch.object(telemetry_lab, "_executor", mutate)
                          if boundary == "executor" else contextlib.nullcontext()):
                     if isinstance(failure, (KeyboardInterrupt, RuntimeError)):
                         with self.assertRaises(type(failure)):
@@ -361,8 +361,8 @@ class WorkflowCleanup(ContainedBase):
                 self.assertEqual(self.executor.names, 0)
                 self.assertEqual(Path(self.mount, "preparation-data").read_bytes(),
                                  b"possibly still owned")
-                with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment fence"):
-                    hostlock.MachineLock(self.machine_lock_directory)
+                with self.assertRaisesRegex(host_lock.Refused, "unfinished experiment fence"):
+                    host_lock.MachineLock(self.machine_lock_directory)
                 # Test-owned recovery, never product compensation. The machine fence stays.
                 with self.owner() as owner:
                     owner.doc["filesystem_pending"] = False
@@ -373,7 +373,7 @@ class WorkflowCleanup(ContainedBase):
         # fixture machines; no automatic or test recovery removes an uncertain machine fence.
         self.machine_lock_directory = self.path("machine-lock-settlement-" + boundary)
         offset = [0.0]
-        actual_sync = telemetrylab._sync
+        actual_sync = telemetry_lab._sync
         calls, settlements, failures = [], [], []
         def sync(allowance, step, function, *args, **kwargs):
             if step != "settling unused telemetry work":
@@ -389,7 +389,7 @@ class WorkflowCleanup(ContainedBase):
             finally:
                 # Include deadline refusal and interrupted/failed settlement returns.
                 settlements.append(time.monotonic() - start)
-        actual_write = hostprep.TelemetryOwner._write
+        actual_write = host_prep.TelemetryOwner._write
         def write(owner):
             if not owner.doc["filesystem_pending"]:
                 calls.append(time.monotonic())
@@ -408,8 +408,8 @@ class WorkflowCleanup(ContainedBase):
             settings.clock = lambda: time.monotonic() + offset[0]
         start = time.monotonic()
         with mock.patch.object(builds, "_run", inspect_image), \
-                mock.patch.object(telemetrylab, "_sync", sync), \
-                mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+                mock.patch.object(telemetry_lab, "_sync", sync), \
+                mock.patch.object(host_prep.TelemetryOwner, "_write", write):
             self.assertEqual(self.measure(configure), cli.EXIT_UNAVAILABLE)
         total_elapsed = time.monotonic() - start
         self.assertEqual(len(settlements), 1, "unused-work settlement boundary was not reached once")
@@ -443,7 +443,7 @@ class WorkflowCleanup(ContainedBase):
                 # machine fence, and no test recovery removes it.
                 self.machine_lock_directory = self.path("machine-lock-settlement-sync-" + boundary)
                 settling, replaced, failed = [False], [], []
-                actual_sync, actual_replace, actual_fsync = telemetrylab._sync, os.replace, os.fsync
+                actual_sync, actual_replace, actual_fsync = telemetry_lab._sync, os.replace, os.fsync
                 def sync(allowance, step, function, *args, **kwargs):
                     settling[0] = step == "settling unused telemetry work"
                     try:
@@ -461,7 +461,7 @@ class WorkflowCleanup(ContainedBase):
                         raise OSError(errno.EIO, "injected %s failure" % boundary)
                     return actual_fsync(fd)
                 with mock.patch.object(builds, "_run", self.image_inspection(False)), \
-                        mock.patch.object(telemetrylab, "_sync", sync), \
+                        mock.patch.object(telemetry_lab, "_sync", sync), \
                         mock.patch.object(os, "replace", replace), \
                         mock.patch.object(os, "fsync", fsync):
                     self.assertEqual(self.measure(self.real_preparation), cli.EXIT_UNAVAILABLE)
@@ -500,7 +500,7 @@ class WorkflowCleanup(ContainedBase):
         # Fixture binaries deliberately provide no measurement protocol. Their lifecycle
         # still settles; failed/admitted measurements are never cleanup authority.
         self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
-        self.assertTrue(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).exists())
+        self.assertTrue(Path(self.tmp, "telemetry-result", telemetry_lab.RESULT_JSON).exists())
         with self.owner() as owner:
             self.assertEqual(owner.doc["phase"], "stopped")
             self.assertEqual(owner.doc["launches"], 4)
@@ -511,7 +511,7 @@ class WorkflowCleanup(ContainedBase):
         os.rmdir(self.executor.directory)
         Path(self.docker_dir, "keep").touch()
         self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
-        result = json.loads(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).read_bytes())
+        result = json.loads(Path(self.tmp, "telemetry-result", telemetry_lab.RESULT_JSON).read_bytes())
         self.assertEqual(result["execution"]["cleanup"], "uncertain")
         self.assertEqual(result["execution"]["retained"], self.executor.directory)
         self.assertEqual(len([call for call in self.calls() if call[0] == "run"]), 1)
@@ -521,12 +521,12 @@ class WorkflowCleanup(ContainedBase):
     def test_workflow_cli_publication_exception_after_stopping_is_safe_to_clean(self):
         os.rmdir(self.run_dir)
         os.rmdir(self.executor.directory)
-        with mock.patch.object(telemetrylab, "write_bundle", side_effect=KeyboardInterrupt()):
+        with mock.patch.object(telemetry_lab, "write_bundle", side_effect=KeyboardInterrupt()):
             with self.assertRaises(KeyboardInterrupt):
                 self.measure()
         with self.owner() as owner:
             self.assertEqual(owner.doc["phase"], "stopped")
-        self.assertFalse(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).exists())
+        self.assertFalse(Path(self.tmp, "telemetry-result", telemetry_lab.RESULT_JSON).exists())
         self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
 
     def test_actual_untraversable_execution_invalidates_stopped_owner_and_workflow_cleanup(self):
@@ -544,7 +544,7 @@ class WorkflowCleanup(ContainedBase):
         try:
             with mock.patch.object(self.executor, "run", run):
                 self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
-            result = json.loads(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).read_bytes())
+            result = json.loads(Path(self.tmp, "telemetry-result", telemetry_lab.RESULT_JSON).read_bytes())
             self.assertEqual(result["execution"]["cleanup"], "uncertain")
             self.assertNotEqual(result["status"], "complete")
             self.assertEqual(len(hostile), 1)
@@ -567,7 +567,7 @@ class WorkflowCleanup(ContainedBase):
             if path == self.executor.directory:
                 raise PermissionError("injected work-root deletion failure")
             return original(path, *args, **kwargs)
-        with mock.patch.object(telemetrylab.shutil, "rmtree", remove):
+        with mock.patch.object(telemetry_lab.shutil, "rmtree", remove):
             self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
         with self.owner() as owner:
             self.assertEqual(owner.doc["phase"], "uncertain")
@@ -636,9 +636,9 @@ class WorkflowCleanup(ContainedBase):
                             mock.patch.object(owner, "_write", write_owner), \
                             mock.patch.object(os, "fsync", sync), \
                             mock.patch.object(os, "replace", replace), \
-                            mock.patch.object(telemetrylab.shutil, "rmtree",
+                            mock.patch.object(telemetry_lab.shutil, "rmtree",
                                 side_effect=lambda *a, **k: stall()) if boundary == "delete" else contextlib.nullcontext():
-                        self.assertFalse(telemetrylab._remove_owned(self.run_dir,
+                        self.assertFalse(telemetry_lab._remove_owned(self.run_dir,
                             type("Settings", (), {"scratch_owner": owner})(), self.executor,
                             state, budget.Budget(start + .08, time.monotonic, 0),
                             self.executor.directory))
@@ -684,7 +684,7 @@ class WorkflowCleanup(ContainedBase):
             start = time.monotonic()
             with mock.patch.object(owner, "_write", write), \
                     mock.patch.object(os, "fsync", fsync):
-                self.assertFalse(telemetrylab._remove_owned(self.executor.directory,
+                self.assertFalse(telemetry_lab._remove_owned(self.executor.directory,
                     type("Settings", (), {"scratch_owner": owner})(), self.executor, state,
                     budget.Budget(start + 1, time.monotonic, 0), self.executor.directory))
             self.assertEqual(len(failed), 1, "the injected sync failure was not reached")
@@ -704,11 +704,11 @@ class WorkflowCleanup(ContainedBase):
     def test_exception_after_container_removal_preserves_work_and_original_failure(self):
         os.rmdir(self.run_dir)
         os.rmdir(self.executor.directory)
-        original = hostprep.TelemetryOwner.finish
+        original = host_prep.TelemetryOwner.finish
         def stopped(owner, *args):
             original(owner, *args)
             raise RuntimeError("after confirmed container removal")
-        with mock.patch.object(hostprep.TelemetryOwner, "finish", stopped):
+        with mock.patch.object(host_prep.TelemetryOwner, "finish", stopped):
             with self.assertRaisesRegex(RuntimeError, "after confirmed container removal"):
                 self.measure()
         with self.owner() as owner:
@@ -723,12 +723,12 @@ class WorkflowCleanup(ContainedBase):
     def test_failed_fence_before_setup_never_starts_candidate_work(self):
         os.rmdir(self.run_dir)
         os.rmdir(self.executor.directory)
-        original = hostprep.TelemetryOwner._write
+        original = host_prep.TelemetryOwner._write
         def write(owner):
             if owner.doc["filesystem_pending"]:
                 raise OSError("initial fence publication failed")
             return original(owner)
-        with mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+        with mock.patch.object(host_prep.TelemetryOwner, "_write", write):
             self.assertNotEqual(self.measure(), 0)
         self.assertEqual(self.executor.names, 0)
         self.assertFalse(Path(self.executor.directory).exists())
@@ -738,7 +738,7 @@ class WorkflowCleanup(ContainedBase):
         os.rmdir(self.run_dir)
         os.rmdir(self.executor.directory)
         offset = [0.0]
-        actual_sync, actual_write = telemetrylab._sync, hostprep.TelemetryOwner._write
+        actual_sync, actual_write = telemetry_lab._sync, host_prep.TelemetryOwner._write
         writes, interruptions, boundaries = [], [], []
         selected = []
         enforcement, active = [], []
@@ -788,8 +788,8 @@ class WorkflowCleanup(ContainedBase):
             return actual_write(owner)
 
         start = time.monotonic()
-        with mock.patch.object(telemetrylab, "_sync", sync), \
-                mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+        with mock.patch.object(telemetry_lab, "_sync", sync), \
+                mock.patch.object(host_prep.TelemetryOwner, "_write", write):
             self.assertEqual(self.measure(lambda settings: setattr(settings, "clock",
                 lambda: time.monotonic() + offset[0])), cli.EXIT_UNAVAILABLE)
         elapsed = time.monotonic() - start
@@ -874,8 +874,8 @@ class WorkflowCleanup(ContainedBase):
             state = {"problems": []}
             with mock.patch.object(owner, "work_cleaned", cleaned), \
                     mock.patch.object(allowance, "enforce", preparation), \
-                    mock.patch.object(telemetrylab.shutil, "rmtree", remove):
-                self.assertFalse(telemetrylab._remove_owned(self.executor.directory,
+                    mock.patch.object(telemetry_lab.shutil, "rmtree", remove):
+                self.assertFalse(telemetry_lab._remove_owned(self.executor.directory,
                     type("Settings", (), {"scratch_owner": owner})(), self.executor,
                     state, allowance, self.executor.directory))
             elapsed = time.monotonic() - start
@@ -906,13 +906,13 @@ class WorkflowCleanup(ContainedBase):
 
     @contextlib.contextmanager
     def bypass_cleanup_enforcement(self):
-        original = telemetrylab._sync
+        original = telemetry_lab._sync
         def bypass(allowance, step, function, *args, **kwargs):
             if step == "removing telemetry scratch":
                 # Mutation control: remove only production's enforcement context.
                 return function(*args, **kwargs)
             return original(allowance, step, function, *args, **kwargs)
-        with mock.patch.object(telemetrylab, "_sync", bypass):
+        with mock.patch.object(telemetry_lab, "_sync", bypass):
             yield
 
     def test_owner_fence_fixture_refuses_bypassed_production_enforcement(self):

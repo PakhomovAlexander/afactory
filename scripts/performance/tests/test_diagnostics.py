@@ -7,7 +7,7 @@ budgets, the acknowledged region bracket (a slow setup never reaches a capture),
 tool runs, malformed output, SVG sanitization, trace nesting and overhead, and the honest
 unavailable states. Every execution goes through a stand-in of the authority supervisor here;
 the real supervisor's bounds over diagnostic tools are exercised by
-`crates/review-process/tests/diagnostic_tools.rs`.
+`crates/af-process/tests/diagnostic_tools.rs`.
 """
 import struct
 import html
@@ -24,9 +24,9 @@ import unittest
 from unittest import mock
 from fractions import Fraction
 
-from perflab import (clicases, contracts, counters, diagcontracts, diagnostics, flamegraph,
-                     gitrefs, oracle, perfcapture, phasetrace, planning, runner, stats, supervise,
-                     svgsafe, toolrun)
+from perflab import (cli_cases, contracts, counters, diag_contracts, diagnostics, flame_graph,
+                     git_refs, oracle, perf_capture, phase_trace, planning, runner, stats, supervise,
+                     svg_safe, tool_run)
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
 from tests import build_fixtures
@@ -42,7 +42,7 @@ RAW = "cas_raw_get_small__package_small_envelope"
 def supervisor(directory):
     """The stand-in supervisor in its own directory, with a short cancellation reserve."""
     os.makedirs(directory, exist_ok=True)
-    return toolrun.Supervisor(fake_supervisor(os.path.join(directory, "perf-supervisor")),
+    return tool_run.Supervisor(fake_supervisor(os.path.join(directory, "perf-supervisor")),
                               cancel_margin=0, grace_ms=100)
 
 
@@ -66,7 +66,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(registry["capture"]["frequency_hz"], 997)
         self.assertEqual(registry["capture"]["duration_seconds"], 10)
         self.assertEqual(registry["capture"]["event"], "task-clock:u")
-        recipe = diagcontracts.diagnostic_recipe(loaded.doc, registry, "linux_gnu_cpu_profile")
+        recipe = diag_contracts.diagnostic_recipe(loaded.doc, registry, "linux_gnu_cpu_profile")
         base = loaded.doc["recipes"]["linux_gnu_native_release"]
         for key in ("os", "target", "toolchain", "builder", "linker", "profile"):
             self.assertEqual(recipe[key], base[key])
@@ -77,12 +77,12 @@ class Registry(unittest.TestCase):
             "-Cdebuginfo=line-tables-only"])
         self.assertEqual(base["rustflags"], [])
         # Derivation must not mutate the base's list, including on a second planning pass.
-        self.assertEqual(diagcontracts.diagnostic_recipe(
+        self.assertEqual(diag_contracts.diagnostic_recipe(
             loaded.doc, registry, "linux_gnu_cpu_profile"), recipe)
         for recipe_id in registry["recipes"]:
             if recipe_id in ("linux_gnu_cpu_profile", "linux_musl_cpu_profile"):
                 continue
-            other = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
+            other = diag_contracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
             self.assertEqual(other["rustflags"], loaded.doc["recipes"][
                 registry["recipes"][recipe_id]["base_recipe"]]["rustflags"])
         # The verdict recipe itself is untouched: uninstrumented, no symbols, no frame pointers.
@@ -103,7 +103,7 @@ class Registry(unittest.TestCase):
         for recipe_id, features in (("linux_musl_cpu_profile", ["perf-control"]),
                                     ("linux_musl_trace", ["perf-trace"])):
             with self.subTest(recipe=recipe_id):
-                recipe = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
+                recipe = diag_contracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
                 for key in ("os", "target", "toolchain", "builder", "cargo_zigbuild", "zig",
                             "linker", "profile"):
                     self.assertEqual(recipe[key], base[key])
@@ -447,7 +447,7 @@ class Sanitizer(unittest.TestCase):
                b'main</text></g></svg></svg>\n')
 
     def test_inferno_output_keeps_its_drawing_and_loses_its_script_and_handlers(self):
-        result = svgsafe.sanitize(self.INFERNO)
+        result = svg_safe.sanitize(self.INFERNO)
         text = result.data.decode("utf-8")
         for kept in ('<rect x="0.0000%" y="37" width="100.0000%" height="15" '
                      'fill="rgb(227,0,7)" fg:x="0" fg:w="9"/>', "<title>main (9 samples, 100%)",
@@ -459,9 +459,9 @@ class Sanitizer(unittest.TestCase):
         self.assertEqual(result.removed_elements, 1)
         # onload, and the xlink namespace no kept attribute uses.
         self.assertEqual(result.removed_attributes, 2)
-        self.assertEqual(svgsafe.sanitize(self.INFERNO).data, result.data, "deterministic")
+        self.assertEqual(svg_safe.sanitize(self.INFERNO).data, result.data, "deterministic")
         # The sanitized document is itself sanitized to the same bytes.
-        self.assertEqual(svgsafe.sanitize(result.data).data, result.data)
+        self.assertEqual(svg_safe.sanitize(result.data).data, result.data)
 
     def wrap(self, body, head=b""):
         return (head + b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' + body
@@ -488,11 +488,11 @@ class Sanitizer(unittest.TestCase):
         }
         for body, needle in cases.items():
             with self.subTest(body=body):
-                text = svgsafe.sanitize(self.wrap(body)).data.decode("utf-8")
+                text = svg_safe.sanitize(self.wrap(body)).data.decode("utf-8")
                 self.assertNotIn(needle, text)
                 self.assertTrue(text.startswith('<svg xmlns="http://www.w3.org/2000/svg"'))
         # Escaped text stays text: re-escaped, never markup.
-        text = svgsafe.sanitize(self.wrap(b'<text x="1">&lt;b&gt;</text>')).data.decode()
+        text = svg_safe.sanitize(self.wrap(b'<text x="1">&lt;b&gt;</text>')).data.decode()
         self.assertIn("<text x=\"1\">&lt;b&gt;</text>", text)
 
     def test_namespaces_and_css_are_held_to_the_safe_subset_not_a_url_blocklist(self):
@@ -517,22 +517,22 @@ class Sanitizer(unittest.TestCase):
         }
         for body, needle in removed.items():
             with self.subTest(body=body):
-                text = svgsafe.sanitize(self.wrap(body)).data.decode("utf-8")
+                text = svg_safe.sanitize(self.wrap(body)).data.decode("utf-8")
                 self.assertNotIn(needle, text)
                 self.assertNotIn("xhtml", text)
                 self.assertNotIn("xlink", text)
                 self.assertTrue(text.startswith('<svg xmlns="http://www.w3.org/2000/svg"'))
         # A prefixed SVG element that is drawn is kept, written in the default namespace.
-        text = svgsafe.sanitize(self.wrap(b'<s:rect xmlns:s="http://www.w3.org/2000/svg" '
+        text = svg_safe.sanitize(self.wrap(b'<s:rect xmlns:s="http://www.w3.org/2000/svg" '
                                           b'x="1"/>')).data.decode()
         self.assertIn('<rect x="1"/>', text)
-        self.assertTrue(svgsafe.safe_css("text { font-family:monospace; font-size:12px }\n"
+        self.assertTrue(svg_safe.safe_css("text { font-family:monospace; font-size:12px }\n"
                                          "#frames > *:hover { stroke:black; stroke-width:0.5; "
                                          "cursor:pointer; }\n#subtitle { text-anchor:middle; "
                                          "font-color:rgb(160,160,160); }\n"
                                          'text { font-family:"Verdana" }'))
         # The prefixed SVG root and inferno's own namespace under another prefix both resolve.
-        text = svgsafe.sanitize(
+        text = svg_safe.sanitize(
             b'<s:svg xmlns:s="http://www.w3.org/2000/svg" xmlns:i="http://github.com/jonhoo/'
             b'inferno"><s:rect x="1" i:w="3"/></s:svg>').data.decode()
         self.assertIn('xmlns:fg="http://github.com/jonhoo/inferno"', text)
@@ -558,10 +558,10 @@ class Sanitizer(unittest.TestCase):
         for data, needle in refused.items():
             with self.subTest(data=data[:60]):
                 with self.assertRaises(ContractError) as caught:
-                    svgsafe.sanitize(data)
+                    svg_safe.sanitize(data)
                 self.assertIn(needle, str(caught.exception))
         with self.assertRaises(ContractError):
-            svgsafe.sanitize(self.wrap(b"<g>" * 300 + b"</g>" * 300))
+            svg_safe.sanitize(self.wrap(b"<g>" * 300 + b"</g>" * 300))
 
 
 class PerfText(unittest.TestCase):
@@ -574,22 +574,22 @@ class PerfText(unittest.TestCase):
               "\t    55aa00000040 main (/w/perf-probe)\n\n")
 
     def test_samples_frames_and_unknown_frames_come_from_the_script_itself(self):
-        parsed = perfcapture.parse_script(self.SCRIPT)
+        parsed = perf_capture.parse_script(self.SCRIPT)
         self.assertEqual((parsed.samples, parsed.frames, parsed.unknown), (2, 5, 2))
         self.assertEqual(parsed.events, {"task-clock:u"})
-        perfcapture.check_event(parsed, "task-clock:u")
-        with self.assertRaises(perfcapture.CaptureError) as caught:
-            perfcapture.check_event(parsed, "cycles:u")
+        perf_capture.check_event(parsed, "task-clock:u")
+        with self.assertRaises(perf_capture.CaptureError) as caught:
+            perf_capture.check_event(parsed, "cycles:u")
         self.assertEqual(caught.exception.reason, "event_substituted")
         self.assertEqual(parsed.ratio(), Fraction(2, 5))
-        with self.assertRaises(perfcapture.CaptureError) as caught:
-            perfcapture.parse_script("\tdangling frame without a sample\n")
+        with self.assertRaises(perf_capture.CaptureError) as caught:
+            perf_capture.parse_script("\tdangling frame without a sample\n")
         self.assertEqual(caught.exception.reason, "malformed_script")
-        with self.assertRaises(perfcapture.CaptureError):
-            perfcapture.parse_script("perf 1/1 1.0: x:\n\tnot-an-address frame\n")
+        with self.assertRaises(perf_capture.CaptureError):
+            perf_capture.parse_script("perf 1/1 1.0: x:\n\tnot-an-address frame\n")
 
     def losses(self, data):
-        return perfcapture.decode_losses(lambda offset, count: data[offset:offset + count],
+        return perf_capture.decode_losses(lambda offset, count: data[offset:offset + count],
                                          len(data))
 
     def test_loss_records_are_decoded_from_their_payloads_and_never_summed(self):
@@ -605,7 +605,7 @@ class PerfText(unittest.TestCase):
         self.assertEqual((self.losses(many)["lost_event_records"],
                           self.losses(many)["lost_events"]), (2, 11))
         none = self.losses(perf_data([(9, b"\0" * 16)]))
-        self.assertEqual([none[key] for key in perfcapture.LOSS_KEYS], [0, 0, 0, 0])
+        self.assertEqual([none[key] for key in perf_capture.LOSS_KEYS], [0, 0, 0, 0])
         # Anything undecodable is unknown, never a zero.
         unfinished = bytearray(perf_data([(2, struct.pack("<QQ", 7, 777))]))
         unfinished[48:56] = bytes(8)
@@ -618,24 +618,24 @@ class PerfText(unittest.TestCase):
             with self.subTest(needle=needle):
                 found = self.losses(bad)
                 self.assertEqual(found["state"], "unknown")
-                self.assertEqual([found[key] for key in perfcapture.LOSS_KEYS], [None] * 4)
+                self.assertEqual([found[key] for key in perf_capture.LOSS_KEYS], [None] * 4)
                 self.assertIn(needle, found["detail"])
         malformed = bytearray(perf_data([(9, b"\0" * 8)]))
         malformed[104 + 6:104 + 8] = struct.pack("<H", 4)
         self.assertIn("does not fit", self.losses(bytes(malformed))["detail"])
 
     def test_build_ids_and_elf_notes_are_parsed_or_refused(self):
-        self.assertEqual(perfcapture.parse_build_ids(
+        self.assertEqual(perf_capture.parse_build_ids(
             "0123456789abcdef0123456789abcdef01234567 /w/perf-probe\n"),
             [("0123456789abcdef0123456789abcdef01234567", "/w/perf-probe")])
         # perf 6.1 pads a DSO without a build ID with blanks, as a real capture listed it.
-        self.assertEqual(perfcapture.parse_build_ids(
+        self.assertEqual(perf_capture.parse_build_ids(
             "                                         /run/host/perf-probe\n"),
             [(None, "/run/host/perf-probe")])
-        with self.assertRaises(perfcapture.CaptureError):
-            perfcapture.parse_build_ids("notabuildid-line\n")
-        self.assertIsNone(perfcapture.elf_build_id(b"#!/bin/sh\n"))
-        self.assertIsNone(perfcapture.elf_build_id(b"\x7fELF" + b"\x00" * 10))
+        with self.assertRaises(perf_capture.CaptureError):
+            perf_capture.parse_build_ids("notabuildid-line\n")
+        self.assertIsNone(perf_capture.elf_build_id(b"#!/bin/sh\n"))
+        self.assertIsNone(perf_capture.elf_build_id(b"\x7fELF" + b"\x00" * 10))
 
 
 class Acknowledgements(unittest.TestCase):
@@ -647,7 +647,7 @@ class Acknowledgements(unittest.TestCase):
             if close:
                 os.close(write)
                 write = None
-            return perfcapture.read_ack(read, time.monotonic() + timeout)
+            return perf_capture.read_ack(read, time.monotonic() + timeout)
         finally:
             os.close(read)
             if write is not None:
@@ -660,11 +660,11 @@ class Acknowledgements(unittest.TestCase):
                                                                    "control_protocol"),
                              (b"", "control_closed")):
             with self.subTest(data=data):
-                with self.assertRaises(perfcapture.CaptureError) as caught:
+                with self.assertRaises(perf_capture.CaptureError) as caught:
                     self.ack(data, close=True)
                 self.assertEqual(caught.exception.reason, reason)
         started = time.monotonic()
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             self.ack(b"", timeout=0.2)
         self.assertEqual(caught.exception.reason, "control_timeout")
         self.assertLess(time.monotonic() - started, 2)
@@ -675,19 +675,19 @@ class BoundedTools(TempDir):
         boss = supervisor(self.path("supervisor"))
         env = {"PATH": "/usr/bin:/bin"}
         started = time.monotonic()
-        slow = toolrun.run(boss, ["/bin/sh", "-c", "sleep 30"], env, 0.3, 64, cwd=self.tmp)
+        slow = tool_run.run(boss, ["/bin/sh", "-c", "sleep 30"], env, 0.3, 64, cwd=self.tmp)
         self.assertTrue(slow.timed_out)
         self.assertLess(time.monotonic() - started, 10)
         self.assertIn("killed", slow.failure())
-        loud = toolrun.run(boss, ["/bin/sh", "-c", "yes | head -c 5000"], env, 10, 64,
+        loud = tool_run.run(boss, ["/bin/sh", "-c", "yes | head -c 5000"], env, 10, 64,
                            cwd=self.tmp)
         self.assertEqual((len(loud.stdout), loud.stdout_bytes), (64, 5000))
         self.assertFalse(loud.ok)
         self.assertIn("over its 64-byte output cap", loud.failure())
-        missing = toolrun.run(boss, [self.path("absent")], {}, 5, 64, cwd=self.tmp)
+        missing = tool_run.run(boss, [self.path("absent")], {}, 5, 64, cwd=self.tmp)
         self.assertIn("cannot run", missing.failure())
         # No time beyond the supervisor's reserve: nothing launches, and it is no success.
-        past = toolrun.run(boss, [sys.executable, "-I", "-c", "pass"], {}, 5, 64, cwd=self.tmp,
+        past = tool_run.run(boss, [sys.executable, "-I", "-c", "pass"], {}, 5, 64, cwd=self.tmp,
                            deadline=time.monotonic() + 0.5)
         self.assertFalse(past.ok)
         self.assertTrue(past.late)
@@ -697,7 +697,7 @@ class BoundedTools(TempDir):
         # deadline while the tool runs and exits 0.
         offset = [0.0]
         clock = lambda: time.monotonic() + offset[0]  # noqa: E731
-        running = toolrun.start(boss, ["/bin/sh", "-c", "sleep 1"], env, 5, 64, cwd=self.tmp,
+        running = tool_run.start(boss, ["/bin/sh", "-c", "sleep 1"], env, 5, 64, cwd=self.tmp,
                                 deadline=clock() + 30, clock=clock)
         time.sleep(0.3)
         offset[0] = 100.0
@@ -706,21 +706,21 @@ class BoundedTools(TempDir):
         self.assertTrue(late.late)
         self.assertIn("after the diagnostic deadline", late.failure())
         # Output beyond a stream cap goes to a new file the tool writes within its room.
-        written = toolrun.run(boss, ["/bin/sh", "-c", "yes | head -c 5000"], env, 10, 64,
+        written = tool_run.run(boss, ["/bin/sh", "-c", "yes | head -c 5000"], env, 10, 64,
                               cwd=self.tmp, stdout_path=self.path("out"), file_bytes=6000)
         self.assertTrue(written.ok, written.failure())
         self.assertEqual(os.path.getsize(self.path("out")), 5000)
-        again = toolrun.run(boss, [sys.executable, "-I", "-c", "pass"], env, 10, 64, cwd=self.tmp,
+        again = tool_run.run(boss, [sys.executable, "-I", "-c", "pass"], env, 10, 64, cwd=self.tmp,
                             stdout_path=self.path("out"))
         self.assertIn("already exists", again.failure())
-        bounded = toolrun.run(boss, ["/bin/sh", "-c", "yes | head -c 50000"], env, 10, 64,
+        bounded = tool_run.run(boss, ["/bin/sh", "-c", "yes | head -c 50000"], env, 10, 64,
                               cwd=self.tmp, stdout_path=self.path("big"), file_bytes=4096)
         self.assertFalse(bounded.ok, "the tool could not outgrow its byte room")
         self.assertLessEqual(os.path.getsize(self.path("big")), 4096)
 
     def test_a_running_tool_is_cancelled_through_its_supervisor(self):
         boss = supervisor(self.path("supervisor"))
-        running = toolrun.start(boss, ["/bin/sh", "-c", "sleep 30"], {"PATH": "/usr/bin:/bin"},
+        running = tool_run.start(boss, ["/bin/sh", "-c", "sleep 30"], {"PATH": "/usr/bin:/bin"},
                                 60, 64, cwd=self.tmp)
         time.sleep(0.5)
         self.assertFalse(running.done())
@@ -732,12 +732,12 @@ class BoundedTools(TempDir):
         self.assertIn("cancelled", result.failure())
 
     def test_inferno_output_that_is_not_collapsed_stacks_is_refused(self):
-        self.assertEqual(flamegraph.check_folded(b"main;work 3\nmain 1\n"), 4)
-        self.assertEqual(flamegraph.check_folded(b"main;work 3 5\n", differential=True), 5)
+        self.assertEqual(flame_graph.check_folded(b"main;work 3\nmain 1\n"), 4)
+        self.assertEqual(flame_graph.check_folded(b"main;work 3 5\n", differential=True), 5)
         for bad in (b"main;work three\n", b" 3\n", b"\xff 1\n"):
-            with self.assertRaises(flamegraph.RenderError):
-                flamegraph.check_folded(bad)
-        merged = flamegraph.merge_folded([b"b 1\na 2\n", b"a 3\n"])
+            with self.assertRaises(flame_graph.RenderError):
+                flame_graph.check_folded(bad)
+        merged = flame_graph.merge_folded([b"b 1\na 2\n", b"a 3\n"])
         self.assertEqual(merged, b"a 5\nb 1\n")
 
 
@@ -760,8 +760,8 @@ class Flamegraphs(TempDir):
         profile.execution = {"mode": diagnostics.TRUSTED_LOCAL}
         profile.retained = []
         renderer = diagnostics.Renderer(profile, dict(
-            (name, os.path.join(tools, name.replace("_", "-"))) for name in flamegraph.TOOLS))
-        renders = flamegraph.render_case(renderer, "flamegraphs/case", "case",
+            (name, os.path.join(tools, name.replace("_", "-"))) for name in flame_graph.TOOLS))
+        renders = flame_graph.render_case(renderer, "flamegraphs/case", "case",
                                          {"baseline": "in/baseline", "candidate": "in/candidate"})
         os.rename(self.path("run", "flamegraphs", "case"), self.path("out"))
         self.assertEqual([item["kind"] for item in renders],
@@ -806,19 +806,19 @@ class RealToolFixture(TempDir):
                 header = text.splitlines()[0]
                 self.assertRegex(header, r"^stack-fixture +[0-9]+/[0-9]+ +[0-9]+\.[0-9]{6}: "
                                  r"task-clock:u: $")
-                parsed = perfcapture.parse_script(text)
+                parsed = perf_capture.parse_script(text)
                 # The two chosen records: the side's own work, then shared_work; each six
                 # frames, one of them the libc frame perf could not resolve.
                 self.assertEqual((parsed.samples, parsed.frames, parsed.unknown), (2, 12, 2))
                 self.assertEqual(parsed.events, {"task-clock:u"})
-                perfcapture.check_event(parsed, "task-clock:u")
+                perf_capture.check_event(parsed, "task-clock:u")
                 self.assertEqual(parsed.ratio(), Fraction(1, 6))
                 self.assertLessEqual(parsed.ratio(), threshold,
                                      "frame pointers unwound it: no DWARF alternative is due")
                 self.assertIn(chosen, text)
                 self.assertEqual(text.count("[unknown] (/usr/lib/aarch64-linux-gnu/libc.so.6)"),
                                  2)
-                listed = perfcapture.parse_build_ids(read(os.path.join(
+                listed = perf_capture.parse_build_ids(read(os.path.join(
                     REAL_TOOL, "%s.buildid-list.txt" % side)).decode("utf-8"))
                 self.assertEqual(listed, [
                     ("611870d34ca7b0f7f70efb81ab546d1b3826218d", "[vdso]"),
@@ -839,7 +839,7 @@ class RealToolFixture(TempDir):
         profile.execution = {"mode": diagnostics.TRUSTED_LOCAL}
         profile.retained = []
         folded = {}
-        for side in diagcontracts.SIDES:
+        for side in diag_contracts.SIDES:
             with open(self.path("run", "in", side + ".script"), "w") as stream:
                 stream.write(self.script(side))
             folded[side] = "in/%s.folded" % side
@@ -852,8 +852,8 @@ class RealToolFixture(TempDir):
                          "%s;old_work;leaf_work 1\n%s;shared_work;leaf_work 1\n" % (libc, libc))
         os.makedirs(self.path("run", "flamegraphs", "case"))
         renderer = diagnostics.Renderer(profile, dict(
-            (name, os.path.join(tools, name.replace("_", "-"))) for name in flamegraph.TOOLS))
-        renders = flamegraph.render_case(renderer, "flamegraphs/case", "case", folded)
+            (name, os.path.join(tools, name.replace("_", "-"))) for name in flame_graph.TOOLS))
+        renders = flame_graph.render_case(renderer, "flamegraphs/case", "case", folded)
         self.assertEqual([item["kind"] for item in renders],
                          ["baseline", "candidate", "difference_forward", "difference_reverse"])
         forward = read(self.path("run", "flamegraphs", "case",
@@ -879,12 +879,12 @@ class Traces(unittest.TestCase):
                           (4, None, "task_projection", 2, 50, 60),
                           (2, 1, "cas_get", 1, 100, 400),
                           (3, 1, "canonicalize", 1, 300, 1200)])
-        placed = phasetrace.tracks(doc)
+        placed = phase_trace.tracks(doc)
         self.assertEqual(placed[1], ("nested", 0))
         self.assertEqual(placed[2], ("nested", 1))
         self.assertEqual(placed[3], ("async", None))
         self.assertEqual(placed[4], ("nested", 0))
-        exported = json.loads(phasetrace.perfetto(doc, "case baseline").decode("utf-8"))
+        exported = json.loads(phase_trace.perfetto(doc, "case baseline").decode("utf-8"))
         events = exported["traceEvents"]
         complete = [event for event in events if event["ph"] == "X"]
         self.assertEqual(sorted(event["args"]["id"] for event in complete), [1, 2, 4])
@@ -899,22 +899,22 @@ class Traces(unittest.TestCase):
                           (2, 1, "canonicalize", 1, 100, 300),
                           (3, 2, "canonicalize", 1, 150, 250),
                           (4, 1, "canonicalize", 1, 600, 700)])
-        rows = dict((row["phase"], row) for row in phasetrace.phase_summary(doc))
+        rows = dict((row["phase"], row) for row in phase_trace.phase_summary(doc))
         self.assertEqual(rows["canonicalize"]["covered_ns"], 300, "200 + 100, the nested 100 "
                          "inside the first counted once")
         self.assertEqual(rows["canonicalize"]["spans"], 3)
         self.assertEqual(rows["cas_get_artifact"]["covered_ns"], 1000)
-        self.assertEqual(phasetrace.union_ns([(0, 10), (5, 20), (30, 31)]), 21)
-        svg = phasetrace.timeline_svg(doc).text
+        self.assertEqual(phase_trace.union_ns([(0, 10), (5, 20), (30, 31)]), 21)
+        svg = phase_trace.timeline_svg(doc).text
         self.assertTrue(svg.startswith("<svg") and "cas_get_artifact #1" in svg)
 
     def test_overhead_is_the_exact_median_of_paired_relative_overheads(self):
-        self.assertEqual(diagcontracts.trace_overhead(["10", "20", "10"], ["10.1", "20.2", "11"]),
+        self.assertEqual(diag_contracts.trace_overhead(["10", "20", "10"], ["10.1", "20.2", "11"]),
                          Fraction(1, 100))
-        self.assertEqual(diagcontracts.trace_overhead(["10", "10"], ["10.2", "10.6"]),
+        self.assertEqual(diag_contracts.trace_overhead(["10", "10"], ["10.2", "10.6"]),
                          Fraction(4, 100))
         with self.assertRaises(ContractError):
-            diagcontracts.trace_overhead(["0"], ["1"])
+            diag_contracts.trace_overhead(["0"], ["1"])
 
 
 class Region(TempDir):
@@ -934,13 +934,13 @@ class Region(TempDir):
         with open(self.path("request.json"), "wb") as stream:
             stream.write(json.dumps(request).encode("utf-8"))
         os.mkdir(self.path("fifo"))
-        control = perfcapture.PerfControl(self.path("fifo"))
+        control = perf_capture.PerfControl(self.path("fifo"))
         data = self.path("capture.data")
-        argv = perfcapture.record_argv(perf, "task-clock:u", 997, "frame_pointer", data,
+        argv = perf_capture.record_argv(perf, "task-clock:u", 997, "frame_pointer", data,
                                        control, [probe])
         messages = []
         try:
-            run = perfcapture.bracketed_run(
+            run = perf_capture.bracketed_run(
                 supervisor(self.path("supervisor")), argv, {"PATH": "/usr/bin:/bin"}, self.tmp,
                 self.path("request.json"), self.path("fifo"),
                 lambda deadline: control.send(b"enable\n", deadline),
@@ -1049,7 +1049,7 @@ class Region(TempDir):
         self.assertEqual(len(control.acknowledgements), 2 * len(run.regions))
 
     def test_a_probe_that_repeats_in_its_warm_process_is_refused(self):
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             self.capture({"setup_seconds": 0, "region_seconds": 0.02, "stay_warm": True},
                          capture_seconds=0.5, on_next=self.reset_work)
         self.assertEqual(caught.exception.reason, "probe_exited")
@@ -1058,14 +1058,14 @@ class Region(TempDir):
     def test_a_stale_scratch_is_refused_by_the_probe_and_not_presented_as_a_capture(self):
         # A driver that answers `again` without replacing the state: the second repetition
         # finds the first one's file and the capture ends, never recorded as fresh.
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             self.capture({"setup_seconds": 0, "region_seconds": 0.02}, capture_seconds=0.5,
                          on_next=lambda run: True)
         self.assertEqual(caught.exception.reason, "probe_exited")
         self.assertIn("stale scratch", caught.exception.detail)
 
     def test_a_probe_that_fails_before_its_region_has_its_message_judged(self):
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             self.capture({"setup_seconds": 0, "fail_before_region": True})
         self.assertEqual(caught.exception.reason, "probe_failed")
         self.assertIn("without reaching its region", caught.exception.detail)
@@ -1080,7 +1080,7 @@ class Region(TempDir):
         self.assertGreater(region.ended - region.enabled, 0.6)
 
     def test_an_early_exit_or_a_silent_profiler_ends_the_capture_with_its_reason(self):
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             self.capture({"setup_seconds": 0.1, "exit_before_region": True})
         self.assertEqual(caught.exception.reason, "probe_exited")
         shutil.rmtree(self.path("probe"))
@@ -1088,7 +1088,7 @@ class Region(TempDir):
         shutil.rmtree(self.path("work"))
         shutil.rmtree(self.path("fifo"))
         os.remove(self.path("request.json"))
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             self.capture({"setup_seconds": 0}, {"never_ack": True})
         self.assertEqual(caught.exception.reason, "control_timeout")
 
@@ -1098,14 +1098,14 @@ class Capability(TempDir):
         boss = supervisor(self.path("supervisor"))
         perf = fakes.perf(self.path("perf"))
         os.mkdir(self.path("work"))
-        available, reason, detail, version = perfcapture.probe_capability(
+        available, reason, detail, version = perf_capture.probe_capability(
             boss, perf, "task-clock:u", 997, self.path("work"), {"PATH": "/usr/bin:/bin"}, 20)
         self.assertTrue(available, detail)
         self.assertEqual(version, "perf version 6.1.fake")
         self.assertIn("samples decoded under acknowledged control", detail)
         silent = fakes.perf(self.path("silent"), no_samples=True)
         os.mkdir(self.path("work2"))
-        available, reason, detail, _ = perfcapture.probe_capability(
+        available, reason, detail, _ = perf_capture.probe_capability(
             boss, silent, "cycles:u", 997, self.path("work2"), {"PATH": "/usr/bin:/bin"}, 20)
         self.assertFalse(available)
         self.assertEqual(reason, "event_unsupported")
@@ -1114,12 +1114,12 @@ class Capability(TempDir):
         # the configured image did) is refused, never relabelled.
         substituting = fakes.perf(self.path("substituting"), recorded_event="cpu-clock:uH")
         os.mkdir(self.path("work4"))
-        available, reason, detail, _ = perfcapture.probe_capability(
+        available, reason, detail, _ = perf_capture.probe_capability(
             boss, substituting, "cycles:u", 997, self.path("work4"), {"PATH": "/usr/bin:/bin"}, 20)
         self.assertEqual((available, reason), (False, "event_substituted"))
         self.assertIn("cpu-clock:uH instead of the declared cycles:u", detail)
         os.mkdir(self.path("work3"))
-        available, reason, _, _ = perfcapture.probe_capability(
+        available, reason, _, _ = perf_capture.probe_capability(
             boss, self.path("absent-perf"), "task-clock:u", 997, self.path("work3"), {}, 5)
         self.assertEqual((available, reason), (False, "perf_unavailable"))
 
@@ -1217,7 +1217,7 @@ class ChildRunBase(TempDir):
         text = read(REGISTRY)
         self.repo, self.root = lab_repo(self.path("repo"))
         self.root = self.repo.commit("diagnostics", {diagnostics.REGISTRY_PATH: text})
-        self.git = gitrefs.Git(self.repo.path)
+        self.git = git_refs.Git(self.repo.path)
         self.parent = planning.plan(self.git, planning.Request(
             trigger="manual", tier="quick", scope="partial_scope", base=self.root,
             head=self.root, run_id="parent_run", seed=5, trusted_host_build=True,
@@ -1232,8 +1232,8 @@ class ChildRunBase(TempDir):
         request = planning.Request(scope="diagnostic", parent_plan=self.parent, cases=cases,
                                    run_id=run_id, diagnostic_duration_ms=duration_ms)
         return planning._diagnostic(self.git, request, recipe=(
-            recipe, diagcontracts.diagnostic_recipe(self.suite.doc, self.registry, recipe),
-            diagcontracts.frozen_identity(self.registry, recipe)))
+            recipe, diag_contracts.diagnostic_recipe(self.suite.doc, self.registry, recipe),
+            diag_contracts.frozen_identity(self.registry, recipe)))
 
     def profile(self, recipe, cases, tools, probe_config, parent_probes=None, duration_ms=300,
                 registry=None, af_config=None, parent_af_config=None, contained=None,
@@ -1257,7 +1257,7 @@ class ChildRunBase(TempDir):
         budget = diagnostics.Budget(registry["limits"], output)
         selection, chosen = diagnostics.select(self.parent, explicit=cases)
         probe = fakes.probe(self.path("probe-bin"), self.golden, **probe_config)
-        probes = dict((side, (probe, sha256_bytes(read(probe)))) for side in diagcontracts.SIDES)
+        probes = dict((side, (probe, sha256_bytes(read(probe)))) for side in diag_contracts.SIDES)
         if distinct_candidate:
             candidate = fakes.probe(self.path("candidate-probe"), self.golden, **probe_config)
             with open(candidate, "ab") as stream:
@@ -1277,7 +1277,7 @@ class ChildRunBase(TempDir):
             # request, every writable bind in the run's own directory of the scratch root.
             work = os.path.join(contained["scratch_root"], "diagnostic")
             os.mkdir(work, 0o700)
-            boss = toolrun.Contained(boss.path, contained["docker"], "sha256:" + "0" * 64,
+            boss = tool_run.Contained(boss.path, contained["docker"], "sha256:" + "0" * 64,
                                      plan["profile"]["environment"], contained["scratch_root"],
                                      os.getuid(), os.getgid(), [0, 1], "child_run",
                                      grace_ms=100)
@@ -1292,18 +1292,18 @@ class ChildRunBase(TempDir):
             binary = fakes.af(self.path("af-bin"), real_home=os.environ.get("HOME"),
                               **af_config)
             afs = dict((side, (binary, sha256_bytes(read(binary))))
-                       for side in diagcontracts.SIDES)
-            cli_doc = clicases.load(os.path.join(ROOT, clicases.CLI_PATH))
-            versions = dict((side, cli_version) for side in diagcontracts.SIDES)
+                       for side in diag_contracts.SIDES)
+            cli_doc = cli_cases.load(os.path.join(ROOT, cli_cases.CLI_PATH))
+            versions = dict((side, cli_version) for side in diag_contracts.SIDES)
             cli = diagnostics.CliAuthority(
                 cli_doc, os.path.join(ROOT, "fixtures/performance/cli"), versions,
-                dict((side, clicases.choose_adapter(cli_doc, versions[side]))
-                     for side in diagcontracts.SIDES))
+                dict((side, cli_cases.choose_adapter(cli_doc, versions[side]))
+                     for side in diag_contracts.SIDES))
         if parent_af_config is not None:
             binary = fakes.af(self.path("parent-af-bin"), real_home=os.environ.get("HOME"),
                               **parent_af_config)
             parent_afs = dict((side, (binary, sha256_bytes(read(binary))))
-                              for side in diagcontracts.SIDES)
+                              for side in diag_contracts.SIDES)
         profile = diagnostics.Profile(
             output, self.parent, plan, registry, sha256_bytes(read(REGISTRY)), recipe,
             selection, chosen, self.suite.doc, self.golden, probes, parent_probes or {}, found,
@@ -1405,7 +1405,7 @@ class ChildRun(ChildRunBase):
         data = [argv[argv.index("-i") + 1] for argv in scripts]
         self.assertEqual(len(set(data)), len(data))
         for argv, path in zip(scripts, data):
-            self.assertEqual(argv, perfcapture.script_argv(perf, path)[1:])
+            self.assertEqual(argv, perf_capture.script_argv(perf, path)[1:])
             self.assertEqual(argv[argv.index("-F") + 1], "comm,pid,tid,time,event,ip,sym,dso")
             self.assertEqual(os.path.basename(path), "capture.data")
             self.assertTrue(os.path.isfile(path), "the raw recording is kept")
@@ -1537,7 +1537,7 @@ class ChildRun(ChildRunBase):
                             "start_ns": 20, "end_ns": 900}]}
         plain = fakes.probe(self.path("plain"), self.golden, wall_ms={"plain": "10"})
         parent_probes = dict((side, (plain, sha256_bytes(read(plain))))
-                             for side in diagcontracts.SIDES)
+                             for side in diag_contracts.SIDES)
         registry = json.loads(json.dumps(self.registry))
         registry["trace"]["overhead_pairs"] = 12
         doc, output = self.profile("linux_gnu_trace", [SMALL], {},
@@ -1681,12 +1681,12 @@ class CliCases(ChildRunBase):
         # and stderr together are its sample's log, as in core (`runner`), never that log's
         # stdout share plus another tool's 64-KiB stderr allowance.
         requests = []
-        real = toolrun.Running
+        real = tool_run.Running
 
         def running(supervisor, argv, doc, *rest, **kwargs):
             requests.append((argv, doc))
             return real(supervisor, argv, doc, *rest, **kwargs)
-        with mock.patch.object(toolrun, "Running", running):
+        with mock.patch.object(tool_run, "Running", running):
             doc, _ = self.profile("linux_gnu_trace", [DISCOVERY], {}, {},
                                   registry=self.registry_with(overhead_pairs=12), af_config={},
                                   parent_af_config={})
@@ -1697,21 +1697,21 @@ class CliCases(ChildRunBase):
         self.assertGreaterEqual(len(cli), 24)
         for request in cli:
             self.assertEqual((request["stdout_cap_bytes"], request["log_cap_bytes"]),
-                             (clicases.stdout_bytes(log), log))
+                             (cli_cases.stdout_bytes(log), log))
             self.assertEqual((request["stdout_cap_bytes"], request["log_cap_bytes"]),
                              (245760, 262144))
         others = [doc for argv, doc in requests if argv[-1:] != ["--version"]]
         for request in others:
             self.assertEqual(request["log_cap_bytes"] - request["stdout_cap_bytes"],
-                             toolrun.STDERR_CAP_BYTES)
+                             tool_run.STDERR_CAP_BYTES)
         # The same caps through the supervisor: 0.14.0-rc.1's 234,442-byte report is retained
         # whole; output past the stdout cap fails the run, never passed as whole.
-        supervisor = toolrun.Supervisor(fake_supervisor(self.path("cap-supervisor")))
+        supervisor = tool_run.Supervisor(fake_supervisor(self.path("cap-supervisor")))
         for size, whole in ((234442, True), (245760, True), (245761, False)):
             with self.subTest(size=size):
-                result = toolrun.run(supervisor, ["/bin/sh", "-c", 'head -c "$0" /dev/zero',
+                result = tool_run.run(supervisor, ["/bin/sh", "-c", 'head -c "$0" /dev/zero',
                                                   str(size)], {"PATH": "/usr/bin:/bin"}, 30,
-                                     clicases.stdout_bytes(log), cwd=self.tmp, log_cap=log)
+                                     cli_cases.stdout_bytes(log), cwd=self.tmp, log_cap=log)
                 self.assertEqual(result.stdout_bytes, size)
                 if whole:
                     self.assertTrue(result.ok, result.failure())
@@ -1723,9 +1723,9 @@ class CliCases(ChildRunBase):
         # A total that leaves stderr no room, or exceeds the 1-MiB hard cap, is refused.
         for output, total in ((log, log), (245760, 2 * 1024 * 1024)):
             with self.assertRaises(ContractError):
-                toolrun.request(supervisor, ["/bin/true"], {}, 1, output, log_cap=total)
-        default = toolrun.request(supervisor, ["/bin/true"], {}, 1, 4096)
-        self.assertEqual(default["log_cap_bytes"], 4096 + toolrun.STDERR_CAP_BYTES)
+                tool_run.request(supervisor, ["/bin/true"], {}, 1, output, log_cap=total)
+        default = tool_run.request(supervisor, ["/bin/true"], {}, 1, 4096)
+        self.assertEqual(default["log_cap_bytes"], 4096 + tool_run.STDERR_CAP_BYTES)
 
     def test_a_cli_command_that_fails_its_oracle_is_an_omission_never_a_trace(self):
         doc, _ = self.profile("linux_gnu_trace", [DISCOVERY], {}, {}, af_config={
@@ -1825,14 +1825,14 @@ class TraceRoom(ChildRunBase):
     def over_room(self, af_config):
         """A profile of DISCOVERY whose AF exports an 8,192-byte trace into 2,048 bytes of room,
         and every supervised Result of it, kept for what its supervisor said."""
-        actual, results = toolrun.run, []
+        actual, results = tool_run.run, []
 
         def recording(*args, **kwargs):
             result = actual(*args, **kwargs)
             results.append(result)
             return result
 
-        with mock.patch.object(diagnostics.toolrun, "run", recording):
+        with mock.patch.object(diagnostics.tool_run, "run", recording):
             doc, output = self.profile("linux_gnu_trace", [DISCOVERY], {}, {},
                                        registry=self.registry_room(),
                                        af_config=dict(af_config, trace_bytes=8192),
@@ -1885,7 +1885,7 @@ class TraceRoom(ChildRunBase):
         # The control: the watch first looks only after the writer exited, so the same 8,192
         # bytes reach the completed path, neither cancelled nor exceeded, and give the same
         # reason and account as the live cancellation.
-        with mock.patch.object(toolrun, "WATCH_SECONDS", 120):
+        with mock.patch.object(tool_run, "WATCH_SECONDS", 120):
             doc, output, results = self.over_room({})
         [completed] = results
         self.assertIsNone(completed.exceeded)
@@ -1896,14 +1896,14 @@ class TraceRoom(ChildRunBase):
     def test_a_cli_failure_within_the_room_is_still_cli_failed(self):
         # A supervision failure whose trace fits the room keeps its own reason: only bytes over
         # the room become trace_over_cap.
-        actual = toolrun.run
+        actual = tool_run.run
 
         def timed_out(*args, **kwargs):
             result = actual(*args, **kwargs)
             result.timed_out = True
             return result
 
-        with mock.patch.object(diagnostics.toolrun, "run", timed_out):
+        with mock.patch.object(diagnostics.tool_run, "run", timed_out):
             doc, output = self.profile("linux_gnu_trace", [DISCOVERY], {}, {},
                                        registry=self.registry_room(), af_config={},
                                        prior_bytes=self.PRIOR)
@@ -1998,8 +1998,8 @@ class UncertainCleanup(ChildRunBase):
                             self.assertTrue(any(item["reason"] == "cleanup_uncertain"
                                                 for item in doc["omissions"]))
                         self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
-                        with self.assertRaises(perfcapture.CaptureError): profile.collect("unsafe")
-                        with self.assertRaises(perfcapture.CaptureError):
+                        with self.assertRaises(perf_capture.CaptureError): profile.collect("unsafe")
+                        with self.assertRaises(perf_capture.CaptureError):
                             profile.tool_run([sys.executable, "-I", "-c", "pass"], 1, 1, self.tmp)
                         if mode == "linux_container": self.assertTrue(state["removals"])
                         for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
@@ -2105,7 +2105,7 @@ class UncertainCleanup(ChildRunBase):
                             root = self.path("scratch-fs")
                             os.mkdir(root, 0o700)
                             place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
-                        actual = toolrun.run
+                        actual = tool_run.run
                         actual_run = diagnostics.Profile.run
                         launched, unsafe, removals = [], [], []
                         real_remove = diagnostics.admission.remove_tree
@@ -2135,7 +2135,7 @@ class UncertainCleanup(ChildRunBase):
                                     raise failure("after possible tool launch")
                                 result.uncertain = True
                             return result
-                        with mock.patch.object(toolrun, "run", tool), \
+                        with mock.patch.object(tool_run, "run", tool), \
                                 mock.patch.object(diagnostics.Profile, "run", run_profile), \
                                 mock.patch.object(diagnostics.admission, "remove_tree", remove):
                             doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
@@ -2164,9 +2164,9 @@ class UncertainCleanup(ChildRunBase):
                         self.assertEqual(doc["execution"]["retained_scratch"], 1)
                         self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")),
                                          "uncertain staging cannot become an admitted bundle")
-                        with self.assertRaises(perfcapture.CaptureError):
+                        with self.assertRaises(perf_capture.CaptureError):
                             profile.tool_run([sys.executable, "-I", "-c", "pass"], 1, 1, self.tmp)
-                        with self.assertRaises(perfcapture.CaptureError):
+                        with self.assertRaises(perf_capture.CaptureError):
                             profile.collect("unsafe")
                         # Only test-owned recovery after all product retention assertions.
                         for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
@@ -2179,7 +2179,7 @@ class UncertainCleanup(ChildRunBase):
         namespace = profile.namespace()
         with open(os.path.join(namespace.path, "live-data"), "w") as stream:
             stream.write("still written by a live process")
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             profile.release(namespace, uncertain=True)
         self.assertEqual(caught.exception.reason, "cleanup_uncertain")
         self.assertIn(namespace.path, caught.exception.detail)
@@ -2187,7 +2187,7 @@ class UncertainCleanup(ChildRunBase):
         self.assertEqual(read(os.path.join(namespace.path, "live-data")),
                          b"still written by a live process")
         # Nothing more of the run is launched or given a namespace.
-        with self.assertRaises(perfcapture.CaptureError) as caught:
+        with self.assertRaises(perf_capture.CaptureError) as caught:
             profile.namespace()
         self.assertEqual(caught.exception.reason, "cleanup_uncertain")
         self.assertIn("kept for recovery", caught.exception.detail)
@@ -2208,7 +2208,7 @@ class UncertainCleanup(ChildRunBase):
         # The supervisor's reply leaves the probe's end unconfirmed after it wrote below its
         # namespace: the trace is an omission for that reason, the namespace and its data are
         # kept, the other side never launches, and the run's work is not removed.
-        actual = toolrun.run
+        actual = tool_run.run
         launched = []
 
         def unconfirmed(*args, **kwargs):
@@ -2219,7 +2219,7 @@ class UncertainCleanup(ChildRunBase):
             result.uncertain = True
             return result
 
-        with mock.patch.object(diagnostics.toolrun, "run", unconfirmed):
+        with mock.patch.object(diagnostics.tool_run, "run", unconfirmed):
             doc, output = self.profile("linux_gnu_trace", [SMALL], {},
                                        {"trace": ChildRun.TRACE}, work_removed=False)
         baseline, candidate = doc["traces"]
@@ -2245,7 +2245,7 @@ class BrowserDiagnostic(ChildRunBase):
         """A diagnostic of the browser case whose driver execution the supervisor reports as
         `termination` with `held` on stderr, in place of running it; every other execution runs
         for real. (profiles document, the one driver's cwd)."""
-        actual = toolrun.run
+        actual = tool_run.run
         launched = []
 
         def ended(boss, argv, *args, **kwargs):
@@ -2257,11 +2257,11 @@ class BrowserDiagnostic(ChildRunBase):
             reply = {"termination": termination, "timing": {"child_wall_ns": 5000000},
                      "stdout": {"retained": 0, "total": 0, "truncated": 0},
                      "stdout_pattern_counts": {}, "stdout_json": None}
-            return toolrun.Result(argv, stderr=held, stderr_bytes=len(held), elapsed_ms=5,
+            return tool_run.Result(argv, stderr=held, stderr_bytes=len(held), elapsed_ms=5,
                                   supervised=supervise.Supervised(reply, b"", held, 5000000,
                                                                   None), **fields)
 
-        with mock.patch.object(diagnostics.toolrun, "run", ended):
+        with mock.patch.object(diagnostics.tool_run, "run", ended):
             # The browser case is a command of the 0.13 adapter.
             doc, _ = self.profile("linux_gnu_trace", [TUI_EMPTY], {}, {}, af_config={},
                                   work_removed=False, cli_version="0.13.0-rc.1")
@@ -2275,8 +2275,8 @@ class BrowserDiagnostic(ChildRunBase):
         # is not removed.
         held = b"tui-open: cleanup unconfirmed: held\n"
         doc, kept = self.driver_ended(
-            {"kind": "exited", "code": clicases.DRIVER_UNCONFIRMED_EXIT, "signal": None,
-             "detail": ""}, held, code=clicases.DRIVER_UNCONFIRMED_EXIT)
+            {"kind": "exited", "code": cli_cases.DRIVER_UNCONFIRMED_EXIT, "signal": None,
+             "detail": ""}, held, code=cli_cases.DRIVER_UNCONFIRMED_EXIT)
         baseline, candidate = doc["traces"]
         self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
         self.assertIn("could not confirm that the browser's session ended: tui-open: cleanup "
@@ -2314,8 +2314,8 @@ class BrowserDiagnostic(ChildRunBase):
         # rather than the execution failed and its namespace removed.
         held = b"tui-open: cleanup unconfirmed: held\n"
         doc, kept = self.driver_ended(
-            {"kind": "exited", "code": clicases.DRIVER_UNCONFIRMED_EXIT, "signal": None,
-             "detail": ""}, held, code=clicases.DRIVER_UNCONFIRMED_EXIT,
+            {"kind": "exited", "code": cli_cases.DRIVER_UNCONFIRMED_EXIT, "signal": None,
+             "detail": ""}, held, code=cli_cases.DRIVER_UNCONFIRMED_EXIT,
             lifecycle="1 descendant outlived the child; it was killed")
         baseline, candidate = doc["traces"]
         self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
@@ -2422,7 +2422,7 @@ class Command(TempDir):
     def test_profile_without_a_build_records_every_capture_unavailable_and_exits_4(self):
         repo, root = lab_repo(self.path("repo"))
         root = repo.commit("diagnostics", {diagnostics.REGISTRY_PATH: read(REGISTRY)})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         parent = planning.plan(git, planning.Request(
             trigger="manual", tier="quick", scope="partial_scope", base=root, head=root,
             run_id="parent_run", seed=5, trusted_host_build=True,
@@ -2472,7 +2472,7 @@ class Command(TempDir):
     def parent(self):
         repo, root = lab_repo(self.path("repo"))
         root = repo.commit("diagnostics", {diagnostics.REGISTRY_PATH: read(REGISTRY)})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         parent = planning.plan(git, planning.Request(
             trigger="manual", tier="quick", scope="partial_scope", base=root, head=root,
             run_id="parent_run", seed=5, trusted_host_build=True,
@@ -2488,8 +2488,8 @@ class Command(TempDir):
             recipe="linux_gnu_cpu_profile", output=self.path("child"),
             host_os="linux", mode="trusted_local", lock_directory=self.path("lock"))
         def build(plan, deadline):
-            with self.assertRaises(diagnostics.hostlock.Refused) as busy:
-                diagnostics.hostlock.MachineLock(self.path("lock"))
+            with self.assertRaises(diagnostics.host_lock.Refused) as busy:
+                diagnostics.host_lock.MachineLock(self.path("lock"))
             self.assertEqual(busy.exception.reason, "concurrent_shard")
             image = "sha256:" + "a" * 64
             docker = build_fixtures.fake_docker(self.path("docker"), {image: (image, [])},
@@ -2508,8 +2508,8 @@ class Command(TempDir):
         self.assertIn(b"af-perf-probe-", read(self.path("child", "cleanup-uncertain.txt")))
         # No diagnostic scratch existed; the owned build alone retains exclusion.
         self.assertFalse(os.path.exists(self.path("child", diagnostics.WORK_DIR)))
-        with self.assertRaisesRegex(diagnostics.hostlock.Refused, "unfinished experiment"):
-            diagnostics.hostlock.MachineLock(self.path("lock"))
+        with self.assertRaisesRegex(diagnostics.host_lock.Refused, "unfinished experiment"):
+            diagnostics.host_lock.MachineLock(self.path("lock"))
 
     def test_confirmed_clean_build_failure_remains_a_reportable_omission(self):
         git = self.parent()
@@ -2525,7 +2525,7 @@ class Command(TempDir):
         doc = contracts.read_file(path, "profiles")
         self.assertEqual(doc["execution"]["retained_scratch"], 0)
         self.assertIn("toolchain_mismatch", [o["reason"] for o in doc["omissions"]])
-        with diagnostics.hostlock.MachineLock(self.path("lock")):
+        with diagnostics.host_lock.MachineLock(self.path("lock")):
             pass
 
     def test_explicit_zero_negative_and_over_limit_bounds_are_refused_before_anything(self):
@@ -2608,7 +2608,7 @@ class Command(TempDir):
     def test_a_child_run_waits_for_no_one_it_refuses_while_another_holds_the_machine(self):
         git = self.parent()
         os.mkdir(self.path("lock"), 0o755)
-        held = diagnostics.hostlock.MachineLock(self.path("lock"))
+        held = diagnostics.host_lock.MachineLock(self.path("lock"))
         try:
             options = diagnostics.Options(
                 plan=self.path("parent.json"), cases=[SMALL], recipe="linux_gnu_cpu_profile",
@@ -2624,7 +2624,7 @@ class Command(TempDir):
     def test_an_automatic_selection_with_nothing_regressed_diagnoses_nothing(self):
         repo, root = lab_repo(self.path("repo"))
         root = repo.commit("diagnostics", {diagnostics.REGISTRY_PATH: read(REGISTRY)})
-        git = gitrefs.Git(repo.path)
+        git = git_refs.Git(repo.path)
         parent = planning.plan(git, planning.Request(
             trigger="manual", tier="quick", scope="partial_scope", base=root, head=root,
             run_id="parent_run", seed=5, trusted_host_build=True,
@@ -2649,7 +2649,7 @@ class PerfCache(ChildRunBase):
         tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
             self.path("inferno")))
         name = "whole_argv" if whole else "record_argv"
-        actual = getattr(perfcapture, name)
+        actual = getattr(perf_capture, name)
         def argv(*args, **kwargs):
             values = actual(*args, **kwargs)
             return [value for value in values if value != "--no-buildid-cache"]
@@ -2658,10 +2658,10 @@ class PerfCache(ChildRunBase):
         def release(profile, *args, **kwargs):
             try:
                 return original_release(profile, *args, **kwargs)
-            except perfcapture.CaptureError as error:
+            except perf_capture.CaptureError as error:
                 self.cleanup_details.append(error.detail)
                 raise
-        with mock.patch.object(perfcapture, name, argv if legacy else actual), \
+        with mock.patch.object(perf_capture, name, argv if legacy else actual), \
                 mock.patch.object(diagnostics.Profile, "release", release):
             doc, output = self.profile("linux_gnu_cpu_profile",
                 [DISCOVERY] if whole else [SMALL], tools, {},
@@ -2720,7 +2720,7 @@ class PerfCache(ChildRunBase):
         os.mkdir(self.path("work"))
         home = self.path("home")
         os.mkdir(home)
-        result = perfcapture.probe_capability(boss, perf, "task-clock:u", 997,
+        result = perf_capture.probe_capability(boss, perf, "task-clock:u", 997,
             self.path("work"), {"PATH": "/usr/bin:/bin", "HOME": home}, 20)
         self.assertTrue(result[0], result)
         self.assertFalse(os.path.exists(os.path.join(home, ".debug")))
@@ -2730,5 +2730,5 @@ class PerfCache(ChildRunBase):
         # Its proof decodes as an accepted capture does: function-level, the same fields.
         script = json.loads(read(self.path("perf", "script-argv.jsonl")))
         data = script[script.index("-i") + 1]
-        self.assertEqual(script, perfcapture.script_argv(perf, data)[1:])
+        self.assertEqual(script, perf_capture.script_argv(perf, data)[1:])
         self.assertIn("--no-inline", script)

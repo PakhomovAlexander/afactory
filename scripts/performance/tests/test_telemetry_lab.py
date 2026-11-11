@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 import shutil
 
-from perflab import contracts, telemetryexec, telemetrylab, tomlfile
+from perflab import contracts, telemetry_exec, telemetry_lab, toml_file
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests.support import ROOT, TempDir, read
@@ -29,7 +29,7 @@ class Runs(TempDir):
         self.binaries = fx.binaries(self)
 
     def run_lab(self, executor=None, output="result", **values):
-        return telemetrylab.run(fx.settings(self, executor or fx.StandIn(self.binaries),
+        return telemetry_lab.run(fx.settings(self, executor or fx.StandIn(self.binaries),
                                             output, **values))
 
     def test_rounds_alternate_sides_share_seeds_and_compare_each_level_apart(self):
@@ -62,7 +62,7 @@ class Runs(TempDir):
         # environment, and a read only on its own copy of the corpus.
         for execution in executor.calls:
             self.assertEqual(sorted(execution.env), sorted(
-                telemetrylab.private_environment("x")))
+                telemetry_lab.private_environment("x")))
             self.assertTrue(execution.env["HOME"].startswith(self.path("result.work")))
             if "generate" in execution.argv:
                 # The generator writes the master corpus, watched with its own directory.
@@ -79,25 +79,25 @@ class Runs(TempDir):
                       if path not in execution.argv]
             self.assertFalse(set(others) & set(execution.readable), "another side's binary")
         self.assertFalse(os.path.exists(self.path("result.work")), "the work is removed")
-        verified, _, _ = telemetrylab.verify(self.path("result"))
+        verified, _, _ = telemetry_lab.verify(self.path("result"))
         self.assertEqual(verified, result)
-        page = read(self.path("result", telemetrylab.REPORT_HTML)).decode()
+        page = read(self.path("result", telemetry_lab.REPORT_HTML)).decode()
         self.assertIn("never contribute a verdict sample", page)
         self.assertIn("trusted local mode", page)
 
     def test_failures_timeouts_and_refused_documents_are_recorded_never_dropped(self):
         def failed(execution):
-            return telemetryexec.Outcome(1, b"", 0, b"telemetry-overhead: exit 4\n", 28, 5000)
+            return telemetry_exec.Outcome(1, b"", 0, b"telemetry-overhead: exit 4\n", 28, 5000)
 
         def timed_out(execution):
-            return telemetryexec.Outcome(None, b"{", 1, b"", 0, 9000, timed_out=True)
+            return telemetry_exec.Outcome(None, b"{", 1, b"", 0, 9000, timed_out=True)
 
         def unknown_field(execution):
             argv = execution.argv
             doc = fx.overhead_doc(int(argv[argv.index("--seed") + 1]), 2)
             doc["note"] = "<b>x</b>"
             data = json.dumps(doc).encode()
-            return telemetryexec.Outcome(0, data, len(data), b"", 0, 10)
+            return telemetry_exec.Outcome(0, data, len(data), b"", 0, 10)
         executor = fx.StandIn(self.binaries, {
             ("overhead", "candidate", 20261021): failed,
             ("invocation_cost", "baseline", 20261022): timed_out,
@@ -115,7 +115,7 @@ class Runs(TempDir):
             self.assertEqual(item["state"], "missing")
             self.assertEqual(item["rounds"], [])
             self.assertIsNone(item["median_change"])
-        telemetrylab.verify(self.path("result"))
+        telemetry_lab.verify(self.path("result"))
 
     def test_documents_of_another_protocol_or_host_are_never_compared(self):
         def other(doc):
@@ -159,10 +159,10 @@ class Runs(TempDir):
             argv = execution.argv
             corpus = argv[argv.index("--dir") + 1]
             doc = fx.latency_doc(10, 1000, int(argv[argv.index("--repeat") + 1]),
-                                 telemetrylab.corpus_facts(corpus))
+                                 telemetry_lab.corpus_facts(corpus))
             data = json.dumps(doc).encode()
             # The script exits 3 whenever its reads are over their bounds, at any scale.
-            return telemetryexec.Outcome(3, data, len(data), b"", 0, 10)
+            return telemetry_exec.Outcome(3, data, len(data), b"", 0, 10)
         executor = fx.StandIn(self.binaries, {("read_latency", "candidate"): slow})
         result = self.run_lab(executor, experiments=["read_latency"])
         for run in result["runs"]:
@@ -173,7 +173,7 @@ class Runs(TempDir):
 
     def test_a_side_whose_version_query_failed_is_never_measured(self):
         def broken(execution):
-            return telemetryexec.Outcome(1, b"", 0, b"no", 2, 10)
+            return telemetry_exec.Outcome(1, b"", 0, b"no", 2, 10)
         executor = fx.StandIn(self.binaries, {("version", "candidate"): broken})
         result = self.run_lab(executor, experiments=["overhead"])
         self.assertIsNone(result["binaries"]["candidate"]["version"])
@@ -194,14 +194,14 @@ class Runs(TempDir):
         self.assertIn("only in linux_container mode", str(caught.exception))
         self.assertFalse(os.path.exists(self.path("result")))
         with self.assertRaises(ContractError):
-            telemetrylab.run(fx.settings(self, None, mode=None))
+            telemetry_lab.run(fx.settings(self, None, mode=None))
 
     def test_an_uncertain_cleanup_stops_the_run_and_keeps_its_work(self):
         seen = []
 
         def uncertain(execution):
             seen.append(execution.cwd)
-            return telemetryexec.Outcome(None, b"", 0, b"", 0, 10, cleanup="uncertain",
+            return telemetry_exec.Outcome(None, b"", 0, b"", 0, 10, cleanup="uncertain",
                                          cleanup_detail="container x removal unconfirmed")
         executor = fx.StandIn(self.binaries, {("overhead", "baseline", 20261021): uncertain})
         result = self.run_lab(executor, experiments=["overhead"])
@@ -214,7 +214,7 @@ class Runs(TempDir):
         self.assertTrue(all(status == "not_run" for _, _, status in states[1:]))
         self.assertIn("cleanup was not confirmed", result["runs"][1]["detail"])
         self.assertEqual(result["status"], "failed")
-        telemetrylab.verify(self.path("result"))
+        telemetry_lab.verify(self.path("result"))
         forged = copy.deepcopy(result)
         forged["execution"].update(cleanup="confirmed", retained=None)
         with self.assertRaises(ContractError):
@@ -250,18 +250,18 @@ class Runs(TempDir):
         doc["fixtures"][0]["pairs"][0]["spans"]["wall_ms"] = 1.0
         with open(path, "w") as stream:
             stream.write(json.dumps(doc))
-        result = json.loads(read(os.path.join(output, telemetrylab.RESULT_JSON)).decode())
+        result = json.loads(read(os.path.join(output, telemetry_lab.RESULT_JSON)).decode())
         for run in result["runs"]:
             if run["document"] and run["document"]["path"].endswith("round-0-candidate.json"):
                 fx.rehash(run, read(path))
         fx.rewrite(output, result)
         with self.assertRaises(ContractError) as caught:
-            telemetrylab.verify(output)
+            telemetry_lab.verify(output)
         self.assertIn("is not what its script's rule gives its pairs", str(caught.exception))
 
     def test_a_result_that_claims_complete_with_a_failed_run_is_refused(self):
         executor = fx.StandIn(self.binaries, {("overhead", "candidate"): lambda execution:
-                                              telemetryexec.Outcome(1, b"", 0, b"", 0, 10)})
+                                              telemetry_exec.Outcome(1, b"", 0, b"", 0, 10)})
         result = self.run_lab(executor, experiments=["overhead"])
         forged = copy.deepcopy(result)
         forged["status"] = "complete"
@@ -283,11 +283,11 @@ class Authority(TempDir):
     def setUp(self):
         TempDir.setUp(self)
         self.binaries = fx.binaries(self)
-        telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries), "result",
+        telemetry_lab.run(fx.settings(self, fx.StandIn(self.binaries), "result",
                                      experiments=["read_latency"]))
         self.output = self.path("result")
         self.result = json.loads(read(os.path.join(self.output,
-                                                   telemetrylab.RESULT_JSON)).decode())
+                                                   telemetry_lab.RESULT_JSON)).decode())
 
     def forge_passes(self, result):
         # The synthetic 10-run corpus is never judged; a forger changes both judgments to
@@ -300,7 +300,7 @@ class Authority(TempDir):
     def test_forged_passes_are_refused_under_the_right_authority(self):
         self.forge_passes(copy.deepcopy(self.result))
         with self.assertRaises(ContractError) as caught:
-            telemetrylab.verify(self.output)
+            telemetry_lab.verify(self.output)
         self.assertIn("its judgment is not what its script's rule gives it",
                       str(caught.exception))
 
@@ -309,27 +309,27 @@ class Authority(TempDir):
         forged["authority"]["digest"] = "sha256:" + "f" * 64
         self.forge_passes(forged)
         with self.assertRaises(ContractError) as caught:
-            telemetrylab.verify(self.output)
+            telemetry_lab.verify(self.output)
         self.assertIn("can only be verified with a checkout of exactly that authority",
                       str(caught.exception))
-        doc = telemetrylab.history(self.path("history"), [self.output])
+        doc = telemetry_lab.history(self.path("history"), [self.output])
         self.assertEqual(doc["results"], [])
         self.assertIn("exactly that authority", doc["refused"][0]["reason"])
-        self.assertEqual(telemetrylab.admit_for_upload(self.output)[0], "refused")
+        self.assertEqual(telemetry_lab.admit_for_upload(self.output)[0], "refused")
 
     def test_a_checkout_of_the_named_authority_verifies_it(self):
-        registry, _ = telemetrylab.load_registry()
+        registry, _ = telemetry_lab.load_registry()
         root = self.path("authority")
-        for relative in telemetrylab.authority_files(registry):
+        for relative in telemetry_lab.authority_files(registry):
             target = os.path.join(root, relative)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copyfile(os.path.join(ROOT, relative), target)
-        result, _, _ = telemetrylab.verify(self.output, root)
+        result, _, _ = telemetry_lab.verify(self.output, root)
         self.assertEqual(result, self.result)
         with open(os.path.join(root, "scripts", "telemetry-corpus.py"), "ab") as stream:
             stream.write(b"\n# another authority\n")
         with self.assertRaises(ContractError):
-            telemetrylab.verify(self.output, root)
+            telemetry_lab.verify(self.output, root)
 
 
 class Admission(TempDir):
@@ -342,8 +342,8 @@ class Admission(TempDir):
         return doc, expectation
 
     def admit(self, experiment, doc, expectation):
-        registry, _ = telemetrylab.load_registry()
-        return telemetrylab.admit(experiment, doc, expectation, registry)
+        registry, _ = telemetry_lab.load_registry()
+        return telemetry_lab.admit(experiment, doc, expectation, registry)
 
     def test_read_latency_booleans_are_recomputed_never_trusted(self):
         doc, expectation = self.latency(slow=1000)
@@ -439,7 +439,7 @@ class History(TempDir):
         self.binaries = fx.binaries(self)
 
     def run_lab(self, output, **values):
-        return telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries), output,
+        return telemetry_lab.run(fx.settings(self, fx.StandIn(self.binaries), output,
                                             experiments=["overhead"], **values))
 
     def test_history_groups_only_one_configuration_authority_mode_and_host(self):
@@ -447,50 +447,50 @@ class History(TempDir):
         self.run_lab("two")
         self.run_lab("three", pairs=3)
         root = self.path("history")
-        doc = telemetrylab.history(root, [self.path("one"), self.path("two"),
+        doc = telemetry_lab.history(root, [self.path("one"), self.path("two"),
                                           self.path("three")])
         self.assertEqual(len(doc["results"]), 3)
         self.assertEqual(sorted(len(group["results"]) for group in doc["groups"]), [1, 2])
         self.assertEqual(set(group["mode"] for group in doc["groups"]), {"trusted_local"})
         self.assertEqual(doc["refused"], [])
-        again = telemetrylab.history(root, [self.path("one")])
+        again = telemetry_lab.history(root, [self.path("one")])
         self.assertEqual(again, doc)
         # Another bundle under a kept result's ID is refused, never replaces it.
         self.run_lab("impostor", result_id="tl_test_one", pairs=4)
-        refused = telemetrylab.history(root, [self.path("impostor")])
+        refused = telemetry_lab.history(root, [self.path("impostor")])
         self.assertEqual(len(refused["refused"]), 1)
         self.assertIn("another bundle", refused["refused"][0]["reason"])
         self.assertEqual(len(refused["results"]), 3)
-        html = read(os.path.join(root, telemetrylab.HISTORY_HTML)).decode()
+        html = read(os.path.join(root, telemetry_lab.HISTORY_HTML)).decode()
         self.assertIn("never a trend", html)
 
     def test_the_root_is_locked_bounded_and_pruned(self):
         for name in ("one", "two", "three"):
             self.run_lab(name)
         root = self.path("history")
-        with telemetrylab.HistoryRoot(root):
+        with telemetry_lab.HistoryRoot(root):
             with self.assertRaises(ContractError) as caught:
-                telemetrylab.history(root, [self.path("one")])
+                telemetry_lab.history(root, [self.path("one")])
             self.assertIn("another telemetry history command holds", str(caught.exception))
-        doc = telemetrylab.history(root, [self.path("one"), self.path("two")], results_max=1)
+        doc = telemetry_lab.history(root, [self.path("one"), self.path("two")], results_max=1)
         self.assertEqual([item["result_id"] for item in doc["results"]], ["tl_test_one"])
         self.assertIn("already keeps its 1 results", doc["refused"][0]["reason"])
-        doc = telemetrylab.history(root, [self.path("two")])
+        doc = telemetry_lab.history(root, [self.path("two")])
         used = doc["used_bytes"]
         # The byte bound is checked before anything of an import is written.
-        with telemetrylab.HistoryRoot(root, bytes_max=used + 1) as kept:
+        with telemetry_lab.HistoryRoot(root, bytes_max=used + 1) as kept:
             with self.assertRaises(ContractError) as caught:
                 kept.import_result(self.path("three"))
             self.assertIn("past its %d-byte bound" % (used + 1), str(caught.exception))
             self.assertEqual(kept.names(), ["tl_test_one", "tl_test_two"])
             self.assertEqual(kept.used_bytes(), used)
         # Retention prunes whole results, recorded in the write that removed them.
-        doc = telemetrylab.history(root, retention_days=1,
+        doc = telemetry_lab.history(root, retention_days=1,
                                    wall=lambda: 4102444800.0)
         self.assertEqual(doc["results"], [])
         self.assertEqual(sorted(item["result_id"] for item in doc["pruned"]),
                          ["tl_test_one", "tl_test_two"])
-        self.assertEqual(os.listdir(os.path.join(root, telemetrylab.RESULTS)), [])
+        self.assertEqual(os.listdir(os.path.join(root, telemetry_lab.RESULTS)), [])
 
 
 class Upload(TempDir):
@@ -501,40 +501,40 @@ class Upload(TempDir):
         self.binaries = fx.binaries(self)
 
     def test_only_a_verified_credential_free_result_is_admitted(self):
-        self.assertEqual(telemetrylab.admit_for_upload(self.path("absent"))[0],
+        self.assertEqual(telemetry_lab.admit_for_upload(self.path("absent"))[0],
                          "missing_result")
         # A partial result is a valid result: it is uploaded and says it is partial.
         executor = fx.StandIn(self.binaries, {("overhead", "candidate"): lambda execution:
-                                              telemetryexec.Outcome(1, b"", 0, b"", 0, 10)})
-        telemetrylab.run(fx.settings(self, executor, "partial", experiments=["overhead"]))
-        outcome, detail, result = telemetrylab.admit_for_upload(self.path("partial"))
+                                              telemetry_exec.Outcome(1, b"", 0, b"", 0, 10)})
+        telemetry_lab.run(fx.settings(self, executor, "partial", experiments=["overhead"]))
+        outcome, detail, result = telemetry_lab.admit_for_upload(self.path("partial"))
         self.assertEqual((outcome, result["status"]), ("admitted", "partial"))
         # A log that captured a token is never uploaded.
         token = b"ghp_" + b"A" * 36
 
         def leaky(execution):
             data = json.dumps(fx.overhead_doc(20261021, 2)).encode()
-            return telemetryexec.Outcome(0, data, len(data), b"token " + token, 40, 10)
+            return telemetry_exec.Outcome(0, data, len(data), b"token " + token, 40, 10)
         executor = fx.StandIn(self.binaries, {("overhead", "baseline", 20261021): leaky})
-        telemetrylab.run(fx.settings(self, executor, "leaky", experiments=["overhead"]))
-        self.assertEqual(telemetrylab.admit_for_upload(self.path("leaky"))[0],
+        telemetry_lab.run(fx.settings(self, executor, "leaky", experiments=["overhead"]))
+        self.assertEqual(telemetry_lab.admit_for_upload(self.path("leaky"))[0],
                          "credential_found")
         # A result that does not verify is never uploaded.
-        telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries), "broken",
+        telemetry_lab.run(fx.settings(self, fx.StandIn(self.binaries), "broken",
                                      experiments=["overhead"]))
-        with open(self.path("broken", telemetrylab.SUMMARY_MD), "a") as stream:
+        with open(self.path("broken", telemetry_lab.SUMMARY_MD), "a") as stream:
             stream.write("forged\n")
-        self.assertEqual(telemetrylab.admit_for_upload(self.path("broken"))[0], "refused")
+        self.assertEqual(telemetry_lab.admit_for_upload(self.path("broken"))[0], "refused")
 
 
 class Registry(TempDir):
     def test_the_registry_names_exactly_the_bench_scripts_and_their_levels(self):
-        doc, _ = telemetrylab.load_registry()
+        doc, _ = telemetry_lab.load_registry()
         self.assertEqual(doc["experiments"]["overhead"]["levels"], ["off", "spans"])
         self.assertEqual(doc["experiments"]["read_latency"]["levels"], ["content"])
         for profile in contracts.TELEMETRY_PROFILES:
             self.assertLessEqual(doc["profiles"][profile]["timeout_minutes"], 355)
-        raw = tomlfile.loads(read(os.path.join(ROOT, telemetrylab.REGISTRY_PATH)), "t")
+        raw = toml_file.loads(read(os.path.join(ROOT, telemetry_lab.REGISTRY_PATH)), "t")
         for mutate in (lambda d: d["experiments"]["overhead"].update(
                            script="scripts/other.py"),
                        lambda d: d["experiments"]["overhead"].update(levels=["spans"]),
@@ -548,33 +548,33 @@ class Registry(TempDir):
                 contracts.validate_telemetry_lab(broken)
 
     def test_the_authority_digest_follows_every_file_it_reads_and_refuses_links(self):
-        registry, _ = telemetrylab.load_registry()
+        registry, _ = telemetry_lab.load_registry()
         root = self.path("root")
-        for relative in telemetrylab.authority_files(registry):
+        for relative in telemetry_lab.authority_files(registry):
             target = os.path.join(root, relative)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copyfile(os.path.join(ROOT, relative), target)
-        digest, files = telemetrylab.authority_digest(registry, root)
-        self.assertEqual((digest, files), telemetrylab.authority_digest(registry))
-        self.assertIn("scripts/performance/perflab/telemetryexec.py",
-                      telemetrylab.authority_files(registry))
+        digest, files = telemetry_lab.authority_digest(registry, root)
+        self.assertEqual((digest, files), telemetry_lab.authority_digest(registry))
+        self.assertIn("scripts/performance/perflab/telemetry_exec.py",
+                      telemetry_lab.authority_files(registry))
         with open(os.path.join(root, "fixtures/telemetry-bench/README.md"), "ab") as stream:
             stream.write(b"\n")
-        self.assertNotEqual(telemetrylab.authority_digest(registry, root)[0], digest)
+        self.assertNotEqual(telemetry_lab.authority_digest(registry, root)[0], digest)
         os.symlink("/etc/passwd", os.path.join(root, "fixtures/telemetry-bench/extra"))
         with self.assertRaises(ContractError):
-            telemetrylab.authority_digest(registry, root)
+            telemetry_lab.authority_digest(registry, root)
 
     def test_overrides_stay_within_the_caps(self):
-        registry, _ = telemetrylab.load_registry()
+        registry, _ = telemetry_lab.load_registry()
         for values in ({"rounds": 0}, {"rounds": 9}, {"pairs": 41}, {"pairs": 0},
                        {"experiments": ["made_up"]}, {"scale": "huge"}):
             with self.assertRaises(ContractError):
-                telemetrylab.configuration(registry, "manual", **values)
-        first = telemetrylab.configuration(registry, "pr")
-        self.assertEqual(first, telemetrylab.configuration(registry, "pr"))
+                telemetry_lab.configuration(registry, "manual", **values)
+        first = telemetry_lab.configuration(registry, "pr")
+        self.assertEqual(first, telemetry_lab.configuration(registry, "pr"))
         self.assertNotEqual(first["digest"],
-                            telemetrylab.configuration(registry, "pr", pairs=4)["digest"])
+                            telemetry_lab.configuration(registry, "pr", pairs=4)["digest"])
 
 
 class BootstrapEquivalence(unittest.TestCase):
@@ -588,7 +588,7 @@ class BootstrapEquivalence(unittest.TestCase):
         return [round(medians[250], 3), round(medians[9749], 3)]
 
     def test_uniform_and_general_inputs_equal_the_literal_10000_resamples(self):
-        module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+        module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
         self.assertEqual(module.RESAMPLES, 10000)
         inputs = ([0.0], [-0.0], [0.0] * 20, [-0.0] * 20,
                   [-1.23456] * 3, [2.34567] * 20, [7] * 4,
@@ -603,7 +603,7 @@ class BootstrapEquivalence(unittest.TestCase):
                                      json.dumps(self.literal(values, seed, label)))
 
     def test_uniform_shortcut_avoids_resampling_but_general_input_keeps_the_protocol(self):
-        module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+        module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
         original = module.random.Random
         with mock.patch.object(module.random, "Random", wraps=original) as seeded:
             self.assertEqual(module.bootstrap_interval([1.25] * 20, 123, "same"), [1.25, 1.25])

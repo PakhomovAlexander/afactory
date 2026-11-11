@@ -13,9 +13,9 @@ fn ordinary_accepted_candidate_export_preserves_bytes_and_refuses_forged_provena
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     let task_id = outcome["task_id"].as_str().unwrap();
     let cas = Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let task = store.task_projection(&cas, task_id).unwrap().unwrap();
-    let review_core::task::TaskPhaseV1::Finished { result_id } = &task.phase else {
+    let af_contracts::task::TaskPhaseV1::Finished { result_id } = &task.phase else {
         panic!()
     };
     let source_commit = Command::new("git")
@@ -134,17 +134,17 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let outcome: Value = serde_json::from_str(&stdout).unwrap();
     let cas = Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let task = store
         .task_projection(&cas, outcome["task_id"].as_str().unwrap())
         .unwrap()
         .unwrap();
-    let review_core::task::TaskPhaseV1::Finished { result_id } = &task.phase else {
+    let af_contracts::task::TaskPhaseV1::Finished { result_id } = &task.phase else {
         panic!()
     };
     let source = task.revision.inputs["source"].snapshot_id.as_ref().unwrap();
-    let (source, _) = review_source_git::task::read_snapshot(&cas, source).unwrap();
-    let origin = review_source_git::task::read_origin(&cas, &source.origin_id).unwrap();
+    let (source, _) = af_source_git::task::read_snapshot(&cas, source).unwrap();
+    let origin = af_source_git::task::read_origin(&cas, &source.origin_id).unwrap();
     let machine = root.join("machine");
     std::fs::create_dir(&machine).unwrap();
     std::fs::set_permissions(&machine, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -159,7 +159,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     let hash = |path: &Path| {
         format!(
             "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(std::fs::read(path).unwrap()))
+            af_contracts::hex::encode(&Sha256::digest(std::fs::read(path).unwrap()))
         )
     };
     let ssh = machine.join("ssh-config");

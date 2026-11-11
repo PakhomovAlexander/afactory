@@ -69,7 +69,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "review-process"
+name = "af-process"
 version = "0.0.0"
 dependencies = [
  "nix",

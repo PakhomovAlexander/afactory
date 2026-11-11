@@ -21,7 +21,7 @@ import time
 from fractions import Fraction
 from unittest import mock
 
-from perflab import calibration, compare, contracts, planning, schedule, synthetic, transport
+from perflab import calibration, evaluate_results, contracts, planning, schedule, synthetic, transport
 from perflab.values import canonical_digest, format_decimal
 
 from tests import support
@@ -44,7 +44,7 @@ HOSTED_LABEL = "ubuntu-latest"
 # hold the same bundles many times: each distinct directory is evaluated once per process. The
 # directory is still assembled from the evidence by `calibration.collect` every time.
 _EVALUATIONS = {}
-_EVALUATE = compare.evaluate
+_EVALUATE = evaluate_results.evaluate
 
 
 def _tree_digest(root):
@@ -371,7 +371,7 @@ class Lab(object):
         self.write_listing()
         scratch = os.path.join(self.root, "scratch-%d" % time.monotonic_ns())
         os.makedirs(scratch)
-        with mock.patch.object(compare, "evaluate", evaluate_once):
+        with mock.patch.object(evaluate_results, "evaluate", evaluate_once):
             return calibration.collect(self.cohort, self.evidence, scratch, self.replan,
                                        self.producer)
 

@@ -19,6 +19,117 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.1-rc.2] - 2026-11-10
+
+### Authority compatibility
+
+Committed .af/ authority and runtime state remain compatible with 0.15.1-rc.1. After publication, review and merge the pin PR to refresh .af/af.lock to the signed 0.15.1-rc.2 digests. Existing machine-local Provider registry v4 bindings remain valid.
+
+### Changes
+
+- Refactor AF naming and module boundaries (#759)
+- Guard release contracts and review post-release pins (#769)
+- Prepare rc.2 telemetry contract and repair cold-home gate test (#775)
+- feat: visualize per-crate additions and deletions in PR reports (#770)
+- Optimize macOS workspace fixture Python while preserving Linux behavior (#772)
+- Fix macOS release performance deadline failures (#781)
+
+- Name the shared libraries for their AF responsibilities, including `af-contracts`, `af-runtime`,
+  `af-pipeline-config` and `af-source-issue`; update source, build, test and performance references
+  and document all adapters, including Pi. Runtime behavior, CLI commands and persisted contracts
+  remain unchanged
+  ([decision](../docs/adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md)).
+
+- Clarify internal Rust module names for Project policy, Task commands and delivery, Review
+  accounting, run reports, execution summaries, Report Task domains, Warm Workspaces and
+  self-management. CLI commands, persisted contracts and runtime behavior are unchanged.
+
+- Clarify shared AF crate boundaries and internal naming. Performance tooling now separates
+  offline result evaluation from durable release comparisons and uses snake_case Python modules.
+  Public script paths, CLI commands and persisted contracts are unchanged. See the
+  [library naming decision](../docs/adr/2026-11-06-name-shared-libraries-for-af-responsibilities.md).
+- Integrate current-main GPT-6.1 catalogs, owner-default Workers, onboarding guidance, model
+  provenance and Scenario performance coverage with the renamed libraries and Host boundaries.
+  Refresh the default implementer instruction pins without changing their upstream authority.
+
+- Extract Project identity, Stores, Workspace management, Survey and Brief services into the
+  internal `af-project` library with explicit application dependencies. CLI output, stored records
+  and authority remain unchanged. See the
+  [boundary decision](../docs/adr/2026-11-06-separate-project-services-from-cli.md).
+
+- Separate Scenario contracts, durable coordination and Ant scheduling into `af-scenario`, with
+  explicit native Task and machine Store adapters in the CLI. Commands, wire contracts and
+  publication authority remain unchanged. See the
+  [decision](../docs/adr/2026-11-06-separate-scenario-domain-from-cli.md).
+
+- Move shared model/effort validation and binding diagnostics into `af-runner`, removing
+  Codex's dependency on the Claude adapter while preserving validation and diagnostic wording.
+  Claude's native refusal and model-switch diagnostics stay in its adapter
+  ([decision](../docs/adr/2026-11-06-share-model-validation-outside-provider-adapters.md)).
+
+- Restore the historical triage captures so their recorded issue-body and owner-comment hashes
+  identify the original text, and check both hashes and the truncated comment prefix in fixture tests.
+
+- Fix the performance Scenario launcher's test cache setup under a cold private HOME on macOS
+  Python 3.9 by creating missing cache parents; retain source, shadow-module and bytecode checks.
+
+- Release preparation and every CI profile now check explicit telemetry version contracts and
+  exact performance lab schema ownership before merge. Declare `0.15.1-rc.1` against its unchanged
+  receipt and fixture contracts; preserve Rust publication schemas and show captured stderr when
+  the contained telemetry smoke lacks its run artifact.
+  Release contract tests keep mutable fixture copies writable when the AF local gate seals
+  source files read-only, while preserving the source seal and all drift assertions.
+- Published releases now open one pin-only PR for CI and a second human merge, using
+  `scripts/pin-release.sh VERSION --pr` and the scoped `RELEASE_PIN_TOKEN` secret. The old
+  `--push` flag is refused. Direct pin pushes to main and the deploy-key bypass are retired;
+  reruns reuse the PR and moving-main/credential refusals remain bounded and explicit. See the
+  [release decision](../docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+
+- Release pin PRs now require a matching credential-free GitHub HTTPS origin and use the scoped
+  PAT for Git operations. SSH origins, embedded credentials, URL rewrites and scoped credential
+  overrides fail before publication, enforcing the
+  [release decision](../docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+- Retain the current focused performance contract test results and the supplied Linux contained
+  telemetry smoke evidence, bound to the repair-1 Snapshot and binary. The 4 GiB failure and
+  successful current-capacity paths are smoke evidence; hosted rollout remains unproven.
+
+- Release pin PR publication disables Git tag following, so `push.followTags=true` cannot
+  publish an annotated tag alongside the pin branch.
+
+- Declare `0.15.1-rc.2` explicitly under the telemetry `check-receipt@2` fixture contract,
+  retaining the committed package and Pipeline pins and refusing unnamed versions. Record source
+  and fixture evidence in `docs/telemetry.md`; leave the workspace at `0.15.1-rc.1` until release.
+
+- Show PR additions and deletions in one readable Area/Changes/+/−/Share of additions table, with
+  bold parents, NBSP-indented crate/main/tests/other children and compact +N/−N counts.
+  Deletion-only rows remain visible; shares use parent additions and show — for zero denominators.
+  CI repairs the whole report from exact commits; PR-body parsing and help match the new shape.
+  File/directory name collisions label only the file `(file)`, `(file2)`, etc., skipping
+  literal sibling names while preserving exact counts and JSON identities.
+  JSON emits only `af/PrLines@4` with exact added/deleted totals and nested counts. See the
+  [crate-report decision](../docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+- Compare addition and deletion bars on one common scale per sibling group; each column uses
+  up to twelve cells with eighth blocks, positive slivers and blank zeros, including bold rows.
+  Reject empty or overlapping bold wrappers in zero bar cells so CI repairs them to blanks.
+- Scope workspace test launchers' selected canonical Python to macOS. Linux and other supported
+  non-Darwin platforms retain explicit `/usr/bin/python3 -IS`, independent of the suite runner's
+  interpreter path. Both policies preserve isolated, no-site execution; production adapters and
+  complete-suite benchmark evidence contracts are unchanged. Paired hosted benchmark evidence for
+  the release repair is recorded in PR #781.
+- Workspace test launchers use the selected Python's canonical path on macOS and explicit
+  `/usr/bin/python3` elsewhere, with isolated, no-site execution. A read-only macOS/Linux PR
+  benchmark compares three alternating pairs of complete lifecycle suites at exact base/head commits,
+  retaining counts, logs and timing evidence without
+  enforcing a performance threshold. Production adapter installation and release gates are unchanged.
+- Keep performance collection accounting incomplete when an authority Git subprocess reaches the
+  cycle deadline before the cycle alarm; retain the refusal and terminate the stalled process.
+- Reduce macOS performance Scenario publication test overhead by executing ordinary Git reads
+  directly, preserving the publication deadline and lost commit, push and PR response recovery checks.
+- Verify the performance Git fixture launcher against the canonical platform interpreter policy,
+  isolated execution, and remote route refusal while retaining direct execution of ordinary Git reads.
+- Keep launcher policy checks in the separate fixture policy suite, preserving the paired workspace
+  benchmark's 87-test count and the existing performance publication recovery integration.
+
 ## [0.15.1-rc.1] - 2026-11-07
 
 ### Authority compatibility

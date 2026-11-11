@@ -148,14 +148,15 @@ fn assert_configuration(reviewer: &str, worker: &str, binding: &str, pair: &Pair
         .map(|arg| arg["value"].as_str().unwrap())
         .collect();
     assert_eq!(args, pair.args, "{reviewer}");
-    let runner: review_config::CommandSpec = parsed["runner"].clone().try_into().unwrap();
-    let manifest = review_config::lock::PackageManifest {
+    let runner: af_pipeline_config::CommandSpec = parsed["runner"].clone().try_into().unwrap();
+    let manifest = af_pipeline_config::lock::PackageManifest {
         name: "x".into(),
         version: "1.0.0".into(),
         subjects: Vec::new(),
         runner,
     };
-    let settings = review_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
+    let settings =
+        af_pipeline_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
     assert_eq!(
         (settings.model.as_str(), settings.effort.as_str()),
         (pair.model, pair.effort)
@@ -169,8 +170,9 @@ fn assert_configuration(reviewer: &str, worker: &str, binding: &str, pair: &Pair
     assert_eq!(table["provider_kind"].as_str(), Some(pair.kind));
     assert_eq!(table["model"].as_str(), Some(pair.model));
     assert_eq!(table["effort"].as_str(), Some(pair.effort));
-    let runner: review_config::task::catalog::TaskWorkerRunner = table.clone().try_into().unwrap();
-    let review_config::task::catalog::TaskWorkerRunner::Model {
+    let runner: af_pipeline_config::task::catalog::TaskWorkerRunner =
+        table.clone().try_into().unwrap();
+    let af_pipeline_config::task::catalog::TaskWorkerRunner::Model {
         provider_kind,
         model,
         effort,
@@ -179,10 +181,10 @@ fn assert_configuration(reviewer: &str, worker: &str, binding: &str, pair: &Pair
         panic!("not a Model runner: {worker}");
     };
     // The worker.toml parser's own check, then the one validation authority's static rules.
-    assert!(review_core::task::is_name(&provider_kind) && review_core::task::is_name(&effort));
+    assert!(af_contracts::task::is_name(&provider_kind) && af_contracts::task::is_name(&effort));
     assert!(!model.trim().is_empty());
-    let kind = review_runner_claude::models::Kind::parse(&provider_kind).unwrap();
-    assert!(review_runner_claude::models::check_static(kind, &model, Some(&effort)).is_ok());
+    let kind = af_runner::models::Kind::parse(&provider_kind).unwrap();
+    assert!(af_runner::models::check_static(kind, &model, Some(&effort)).is_ok());
     assert_eq!((model.as_str(), effort.as_str()), (pair.model, pair.effort));
 
     let parsed: toml::Value = toml::from_str(binding)

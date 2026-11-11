@@ -24,7 +24,7 @@ prerequisite that no record discharges.
 """
 import os
 
-from . import compare, contracts, runner, stats, transport
+from . import evaluate_results, contracts, runner, stats, transport
 from .values import ContractError, require, sha256_bytes
 
 ROLES = ("golden", "post_merge_aa")
@@ -187,7 +187,7 @@ def compute(ctx, runs):
     checks = {}
     for role in ROLES:
         run_dir, actions_run_id = runs[role]
-        evaluation = compare.evaluate(run_dir)
+        evaluation = evaluate_results.evaluate(run_dir)
         require(evaluation.plan["run_id"].startswith("gh%d_a" % actions_run_id),
                 "%s: run %s was not planned by Actions run %d"
                 % (role, evaluation.plan["run_id"], actions_run_id))

@@ -31,7 +31,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use review_store::Cas;
+use af_store::Cas;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
@@ -224,7 +224,7 @@ struct ProviderSpec {
     id: String,
     kind: ProviderKind,
     auth_dir: Option<PathBuf>,
-    pi: Option<review_runner_pi::PiConfig>,
+    pi: Option<af_runner_pi::PiConfig>,
     explicit_selector: bool,
     registry_declared: bool,
     source: String,
@@ -2044,7 +2044,7 @@ fn auth_lock_root() -> Result<PathBuf, String> {
 fn auth_context_lock_name(kind: ProviderKind, canonical_auth_dir: &Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     let digest = Sha256::digest(canonical_auth_dir.as_os_str().as_bytes());
-    format!("{}-{}", kind.name(), review_core::hex::encode(&digest))
+    format!("{}-{}", kind.name(), af_contracts::hex::encode(&digest))
 }
 
 /// The path of `auth_dir`'s lock below the lock root this process uses.
@@ -2355,7 +2355,7 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
             command.env("CODEX_HOME", auth_dir);
         }
     }
-    let status = review_process::reap::status(&mut command)
+    let status = af_process::reap::status(&mut command)
         .map_err(|error| format!("cannot start {} login: {error}", spec.kind.name()))?;
     if !status.success() {
         return Err(format!(
@@ -2431,7 +2431,7 @@ fn add_to_registry_with_pi(
     kind: ProviderKind,
     auth_dir: &Path,
     exact_is_success: bool,
-    pi_config: Option<&review_runner_pi::PiConfig>,
+    pi_config: Option<&af_runner_pi::PiConfig>,
 ) -> Result<RegistryAdd, String> {
     // A prior first-file publication may have crashed after creating its marker but before the
     // registry appeared. Never treat that recovery state as an empty registry.
@@ -3382,7 +3382,7 @@ fn registry_digest_from_file(file: &File, display: &Path, label: &str) -> Result
             display.display()
         )
     })?;
-    Ok(review_core::hex::encode(&Sha256::digest(bytes)))
+    Ok(af_contracts::hex::encode(&Sha256::digest(bytes)))
 }
 
 fn same_file_at(directory: &File, name: &std::ffi::OsStr, expected: &File) -> bool {
@@ -3706,8 +3706,8 @@ fn write_registry_transaction(
         displaced_copy,
         exchange_stage,
         archived_marker,
-        review_core::hex::encode(&Sha256::digest(expected.as_bytes())),
-        review_core::hex::encode(&Sha256::digest(&candidate_bytes))
+        af_contracts::hex::encode(&Sha256::digest(expected.as_bytes())),
+        af_contracts::hex::encode(&Sha256::digest(&candidate_bytes))
     );
     let transaction = registry_transaction_path(path);
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
@@ -4707,7 +4707,7 @@ fn probe_claude_weekly_limits(
     // observed without reaping and the group is ended first (ADR-0026). Where the platform
     // cannot observe an exit without reaping, nothing is polled: PTY closure or the deadline
     // reaches the cleanup below, which still kills the group while the leader is ours to signal.
-    let mut exit_watch = process_group.map(review_process::ExitWatch::new);
+    let mut exit_watch = process_group.map(af_process::ExitWatch::new);
     drop(pair.slave);
 
     // Backpressure bounds unread PTY data even if the renderer outpaces the inventory worker.
@@ -4790,11 +4790,11 @@ fn probe_claude_weekly_limits(
         terminate_probe_group(process_group);
     }
     let _ = child.kill();
-    // Reaped by polling under the workspace's reap lock (`review_process::reap`), never by a
+    // Reaped by polling under the workspace's reap lock (`af_process::reap`), never by a
     // blocking wait of its own.
     let mut attempt = 0;
-    while let Ok(None) = review_process::reap::locked(|| child.try_wait()) {
-        std::thread::sleep(review_process::reap::poll_delay(attempt));
+    while let Ok(None) = af_process::reap::locked(|| child.try_wait()) {
+        std::thread::sleep(af_process::reap::poll_delay(attempt));
         attempt = attempt.saturating_add(1);
     }
     drop(pair.master);
@@ -4962,10 +4962,10 @@ impl ProbeDirectory {
         // A probe is work like any Attempt: below the machine's free-disk floor it does not
         // start (ADR-0144). Without an installed storage host (`af provider status` outside a
         // run) there is no floor to hold, as for every other command that is not a run.
-        review_pipeline::storage::ensure_free_disk()?;
+        af_runtime::storage::ensure_free_disk()?;
         let unusable =
             |error: std::io::Error| format!("cannot create the probe's working directory: {error}");
-        let directory = review_sandbox::attempt_directory().map_err(unusable)?;
+        let directory = af_sandbox::attempt_directory().map_err(unusable)?;
         // Private and searchable whatever the umask: the CLI must be able to start in it.
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
             .map_err(unusable)?;
@@ -5003,11 +5003,11 @@ impl Drop for ProbeDirectory {
             return;
         }
         // The harness keys history by the process's working directory: both spellings count.
-        let mut slugs = vec![review_runner_claude::ClaudeSessionStore::project_slug(
+        let mut slugs = vec![af_runner_claude::ClaudeSessionStore::project_slug(
             self.path(),
         )];
         if let Ok(resolved) = self.path().canonicalize() {
-            slugs.push(review_runner_claude::ClaudeSessionStore::project_slug(
+            slugs.push(af_runner_claude::ClaudeSessionStore::project_slug(
                 &resolved,
             ));
         }
@@ -5018,7 +5018,7 @@ impl Drop for ProbeDirectory {
         let mut failures = Vec::new();
         let mut projects = Vec::new();
         for slug in slugs {
-            match review_sandbox::Identity::of(&config.join("projects").join(&slug)) {
+            match af_sandbox::Identity::of(&config.join("projects").join(&slug)) {
                 Ok(identity) => projects.push((slug, Some(identity))),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
@@ -5175,7 +5175,7 @@ fn awaited_response(captured: &[u8], id: u64, sent: usize) -> Option<Awaited<'_>
 
 /// A Provider-written stdout line as a report may quote it: bounded and filtered.
 fn observed_line(line: &[u8]) -> String {
-    review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line))
+    af_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line))
 }
 
 /// The answer to af's `initialize` (id 1), read under [`awaited_response`]. af writes
@@ -5255,9 +5255,9 @@ fn probe_codex_request_observed(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = review_process::spawn(&mut command)
+    let mut child = af_process::spawn(&mut command)
         .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
-    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut watch = af_process::ExitWatch::new(child.id());
     let mut reaped = false;
     let mut stdin = child.stdin.take().expect("provider stdin was piped");
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
@@ -5359,13 +5359,13 @@ fn probe_codex_request_observed(
                 }
             }
         }
-        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+        match af_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => {
                 reaped = true;
                 // Whatever it wrote before exiting is still in the pipes.
                 while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
                 drain_stderr(&mut stderr, &mut said);
-                let exit = review_runner::cli::exit_description(&status);
+                let exit = af_runner::cli::exit_description(&status);
                 if let Some(sent) = request_sent
                     && let Some(answer) = awaited_response(&captured, 2, sent)
                 {
@@ -5399,14 +5399,14 @@ fn probe_codex_request_observed(
                     None => {}
                 }
                 if observed.answered {
-                    let (line, _) = review_runner::cli::error_and_fix(&said, b"");
+                    let (line, _) = af_runner::cli::error_and_fix(&said, b"");
                     let line = line.map(|line| format!(": {line}")).unwrap_or_default();
                     break Err(format!(
                         "codex app-server {exit} after initialize without answering `{method}`{line}"
                     ));
                 }
                 // Its own error line, else what it printed on stdout, is what it said.
-                let (line, _) = review_runner::cli::error_and_fix(&said, &captured);
+                let (line, _) = af_runner::cli::error_and_fix(&said, &captured);
                 let line = line.map(|line| format!(": {line}")).unwrap_or_default();
                 observed.lacks_protocol = true;
                 break Err(format!(
@@ -5448,16 +5448,16 @@ fn probe_codex_request_observed(
 /// is only for the report, and `deadline` still bounds it.
 fn outcome_after_refusal(
     child: &mut std::process::Child,
-    watch: &mut review_process::ExitWatch,
+    watch: &mut af_process::ExitWatch,
     reaped: &mut bool,
     grace: Instant,
     deadline: Instant,
 ) -> String {
     loop {
-        match review_process::try_reap_killing_group(child, watch) {
+        match af_process::try_reap_killing_group(child, watch) {
             Ok(Some(status)) => {
                 *reaped = true;
-                break review_runner::cli::exit_description(&status);
+                break af_runner::cli::exit_description(&status);
             }
             Ok(None) if Instant::now() < grace.min(deadline) => {
                 thread::sleep(Duration::from_millis(10));
@@ -5738,13 +5738,13 @@ fn unmarked_status(spec: &ProviderSpec, setup_id: &str, reason: &str) -> Provide
     }
 }
 
-/// A Provider-authored label made safe to show: [`review_runner::cli::bounded_cli_line`], the one
+/// A Provider-authored label made safe to show: [`af_runner::cli::bounded_cli_line`], the one
 /// credential filter, judges it whole, so a label that looks like credential material is the fixed
-/// [`review_runner::cli::WITHHELD_LINE`]; any other is cut at 48 characters, and an empty one is
+/// [`af_runner::cli::WITHHELD_LINE`]; any other is cut at 48 characters, and an empty one is
 /// `fallback`.
 fn safe_display(value: &str, fallback: &str) -> String {
-    let value = review_runner::cli::bounded_cli_line(value);
-    if value == review_runner::cli::WITHHELD_LINE {
+    let value = af_runner::cli::bounded_cli_line(value);
+    if value == af_runner::cli::WITHHELD_LINE {
         return value;
     }
     let value: String = value.chars().take(48).collect();
@@ -5818,9 +5818,9 @@ fn run_probe_capped(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = review_process::spawn(&mut command)
+    let mut child = af_process::spawn(&mut command)
         .map_err(|error| format!("cannot start provider status probe: {error}"))?;
-    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut watch = af_process::ExitWatch::new(child.id());
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
     let mut stderr = child.stderr.take().expect("provider stderr was piped");
     if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
@@ -5856,7 +5856,7 @@ fn run_probe_capped(
                 "provider status output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
-        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+        match af_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
@@ -5972,7 +5972,7 @@ fn drain_probe_streams(
 fn stop_probe(child: &mut Child) {
     terminate_probe_group(child.id());
     let _ = child.kill();
-    let _ = review_process::reap::wait(child);
+    let _ = af_process::reap::wait(child);
 }
 
 fn terminate_probe_group(process_group: u32) {
@@ -7309,7 +7309,7 @@ auth_dir = "{}"
     /// never reaches a limit name or the subscription; the window figures stay.
     #[test]
     fn credential_looking_codex_labels_are_withheld_and_their_windows_kept() {
-        use review_runner::cli::WITHHELD_LINE;
+        use af_runner::cli::WITHHELD_LINE;
         for label in ["OPENAI_API_KEY=sk-proj-FIXTURE", "API_KEY=abcd"] {
             let response = serde_json::json!({"id":2,"result":{"rateLimitsByLimitId":{
                 "named":{"limitId":"named","limitName":label,"planType":label,

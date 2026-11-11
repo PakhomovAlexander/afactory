@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::ArgValueCompleter;
 
-use crate::selfmgmt::{complete_campaign, complete_version};
+use crate::self_management::{complete_campaign, complete_version};
 
 pub(crate) const REVIEW_PIPELINE: &str = ".af/pipelines/review.toml";
 
@@ -2558,9 +2558,17 @@ scripts/pr-lines.py prints when it has one (counted from --base REF, origin/main
 without a template, the two blocks under their headings. scripts/check-pr-report.py accepts it. \
 When the checkout has scripts/pr-lines.py and it cannot print its block, nothing is printed and \
 the command exits 1; so does a block scripts/check-pr-report.py would refuse, naming what is \
-missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the \
-header `| Directory | Added | Share |`, its separator and at least one directory row, each \
-directory once, or `**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
+missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the header `| \
+Area | Changes | + | − | Share of additions |`, its separator and at least one row, each area once \
+per parent. Roots and parents are bold; children use four `&nbsp;` entities per depth. \
+Changes use +N/−N. Separate + and − bars share the largest sibling addition or deletion \
+count as their scale, up to twelve cells with half-up eighths and a minimum positive sliver; \
+zero bars are blank, including bold parents. Children use their own sibling scale. \
+Shares use parent additions (0% for a zero child, — for a zero parent). \
+The crates row contains crate children and their main, tests, other leaves in the same \
+table; direct files stay plain children. Colliding file names use (file), (file2), etc., \
+skipping literal sibling names; directories keep their names. Deletion-only changes retain the table with title \
+`**Lines added: 0**`; an empty diff uses `**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \
@@ -2600,7 +2608,7 @@ fn survey_section_arg() -> clap::Arg {
         .long("section")
         .value_name("NAME")
         .help("Only these sections of the text summary, by name; repeat or separate with commas")
-        .value_parser(crate::projects::survey::SECTION_NAMES)
+        .value_parser(crate::project::survey::SECTION_NAMES)
         .value_delimiter(',')
         .action(clap::ArgAction::Append)
         .conflicts_with("json")
@@ -2861,7 +2869,7 @@ af project workspace remove spike --delete-worktree   # needs: Workspace spike"
 
 /// A Workspace label: the safe-name rule of Task IDs, refused as a usage error.
 fn workspace_label(value: &str) -> Result<String, String> {
-    if review_core::project::is_workspace_label(value) {
+    if af_contracts::project::is_workspace_label(value) {
         Ok(value.to_string())
     } else {
         Err("a label is 1 to 128 ASCII letters, digits, `-` or `_`, starting with a letter or digit".into())

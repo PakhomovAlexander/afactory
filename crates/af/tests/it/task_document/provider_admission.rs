@@ -1,7 +1,7 @@
 //! Real CLI/Store lifecycle with a local deterministic Codex protocol substitute. No credentials,
 //! network or model inference are used. Synthetic usage reproduces the admission sizing boundary.
 use super::*;
-use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 
@@ -100,14 +100,14 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
         )
         .unwrap();
         catalog["packages"]["builtin/document-author"]["digest"] = json!(
-            review_config::lock::package_digest("builtin/document-author", &package).unwrap()
+            af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap()
         );
         let package = repo.join(
             catalog["packages"]["builtin/release-notes"]["path"]
                 .as_str()
                 .unwrap(),
         );
-        let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
             toml::from_str(&std::fs::read_to_string(package.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;
@@ -116,8 +116,9 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
             toml::to_string(&pipeline).unwrap(),
         )
         .unwrap();
-        catalog["packages"]["builtin/release-notes"]["digest"] =
-            json!(review_config::lock::package_digest("builtin/release-notes", &package).unwrap());
+        catalog["packages"]["builtin/release-notes"]["digest"] = json!(
+            af_pipeline_config::lock::package_digest("builtin/release-notes", &package).unwrap()
+        );
         std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
         let task_path = repo.join("document.json");
         let mut task: Value = serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
@@ -175,7 +176,7 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
             planned["graph"]["allowances"]["root.providers.admit0"],
             json!({"tokens_per_attempt":allowance,"wall_ms_per_attempt":45000,"max_attempts":1,"verification_attempts":0})
         );
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let authority = cas
             .get_json(planned["plan"]["authority"]["policy_id"].as_str().unwrap())
             .unwrap();
@@ -240,8 +241,7 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
                 "admission\n"
             }
         );
-        let store =
-            review_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
         let projection = store
             .task_projection(&cas, "release-notes")
             .unwrap()
@@ -463,9 +463,8 @@ fn a_provider_cli_that_cannot_start_is_refused_at_admission_before_any_attempt()
         }
         assert!(!stderr.contains("identity"), "{stderr}");
         assert!(!f.home.join("calls").exists(), "a Provider protocol ran");
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
-        let store =
-            review_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
         let projection = store
             .task_projection(&cas, "release-notes")
             .unwrap()
@@ -511,8 +510,8 @@ fn a_cli_that_stops_starting_mid_task_fails_its_attempt_as_an_environment_failur
         "admission\n",
         "the author Worker reached a CLI that cannot start"
     );
-    let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
     let projection = store
         .task_projection(&cas, "release-notes")
         .unwrap()
@@ -526,7 +525,7 @@ fn a_cli_that_stops_starting_mid_task_fails_its_attempt_as_an_environment_failur
     assert!(!authors.is_empty(), "{stdout}\n{stderr}");
     for attempt in authors {
         assert_eq!(attempt.charged_tokens, 0);
-        let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+        let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
             diagnostic_id, ..
         }) = attempt.result
         else {
@@ -690,7 +689,7 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         )
         .unwrap();
         f.catalog["packages"]["builtin/document-author"]["digest"] = json!(
-            review_config::lock::package_digest("builtin/document-author", &package).unwrap()
+            af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap()
         );
         std::fs::write(
             f.repo.join(".af/task-catalog.toml"),
@@ -702,7 +701,7 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         let binding = &planned["plan"]["bindings"]["root.slots.author"];
         // The exact execution identity is captured even when this plan renderer changes its
         // slot labels; inspect the canonical plan rather than manufacturing a Pi authority.
-        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
         let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
         let text = envelope.to_string();
         assert!(text.contains(backend), "{binding}\n{text}");

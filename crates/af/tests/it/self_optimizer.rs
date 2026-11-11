@@ -54,7 +54,7 @@ fn install_optimizer_catalog(repo: &Path) {
         catalog["packages"][name] = json!({
             "version":"1.0.0",
             "path":format!(".af/optimization/{directory}"),
-            "digest":review_config::lock::package_digest(name,&destination.join(directory)).unwrap()
+            "digest":af_pipeline_config::lock::package_digest(name,&destination.join(directory)).unwrap()
         });
     }
     if !catalog["kinds"].is_object() {
@@ -109,7 +109,7 @@ fn install_candidate_optimizer_catalog(repo: &Path) -> minisign::KeyPair {
         catalog["packages"][name] = json!({
             "version":"1.0.0",
             "path":format!(".af/optimization/{directory}"),
-            "digest":review_config::lock::package_digest(name,&destination.join(directory)).unwrap()
+            "digest":af_pipeline_config::lock::package_digest(name,&destination.join(directory)).unwrap()
         });
     }
     catalog["kinds"]["optimize"] = json!("builtin/optimization-candidate-kind");
@@ -267,7 +267,7 @@ fn repin(repo: &Path, packages: &[(&str, &Path)]) {
         .unwrap();
     for (name, root) in packages {
         catalog["packages"][*name]["digest"] =
-            toml::Value::String(review_config::lock::package_digest(name, root).unwrap());
+            toml::Value::String(af_pipeline_config::lock::package_digest(name, root).unwrap());
     }
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
 }
@@ -349,10 +349,10 @@ fn approved_light_task(fixture: &LightFixture) -> (String, Value) {
 /// The configuration the light Task's `prepare` node produced.
 fn prepared_configuration(
     fixture: &LightFixture,
-    cas: &review_store::Cas,
+    cas: &af_store::Cas,
     task: &str,
-) -> review_core::ArtifactEnvelope {
-    let projection = review_store::EventStore::open_read_only(fixture.state.join("events.sqlite"))
+) -> af_contracts::ArtifactEnvelope {
+    let projection = af_store::EventStore::open_read_only(fixture.state.join("events.sqlite"))
         .unwrap()
         .task_projection(cas, task)
         .unwrap()
@@ -600,8 +600,8 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         "diagnose and propose run exactly once"
     );
     let task = waiting["task_id"].as_str().unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store.task_projection(&cas, task).unwrap().unwrap();
     let execution = projection.execution.as_ref().unwrap();
     for node in ["root.nodes.diagnose", "root.nodes.propose"] {
@@ -628,12 +628,11 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         completed["attempts"], 5,
         "two author, two arm, one evaluator Attempts"
     );
-    let completed_projection =
-        review_store::EventStore::open_read_only(state.join("events.sqlite"))
-            .unwrap()
-            .task_projection(&cas, task)
-            .unwrap()
-            .unwrap();
+    let completed_projection = af_store::EventStore::open_read_only(state.join("events.sqlite"))
+        .unwrap()
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap();
     let first_configuration = prepared_configuration(&fixture, &cas, task);
     assert_eq!(
         first_configuration.payload["light_recipe_id"],
@@ -692,7 +691,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
             .unwrap(),
         "delivered configuration must equal the exact measured candidate bytes"
     );
-    let projection = review_store::EventStore::open_read_only(state.join("events.sqlite"))
+    let projection = af_store::EventStore::open_read_only(state.join("events.sqlite"))
         .unwrap()
         .task_projection(&cas, task)
         .unwrap()
@@ -811,12 +810,11 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     let invalidated = af(repo, state, &["--strategy", "light", "--execute"]);
     assert_eq!(invalidated["phase"]["reason"], "needs_plan_review");
     let invalidated_task = invalidated["task_id"].as_str().unwrap();
-    let invalidated_projection =
-        review_store::EventStore::open_read_only(state.join("events.sqlite"))
-            .unwrap()
-            .task_projection(&cas, invalidated_task)
-            .unwrap()
-            .unwrap();
+    let invalidated_projection = af_store::EventStore::open_read_only(state.join("events.sqlite"))
+        .unwrap()
+        .task_projection(&cas, invalidated_task)
+        .unwrap()
+        .unwrap();
     let invalidated_configuration_id = &invalidated_projection.execution.as_ref().unwrap().outputs
         ["root.nodes.prepare"]
         .1
@@ -928,7 +926,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
     assert_ne!(experiment.diagnose_source, experiment.cache_diagnose);
     let cache_policy = &experiment.cache_policy;
     let (repo, state) = (&fixture.repo, &fixture.state);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
 
     let cache_waiting = command_json(
         repo,
@@ -990,7 +988,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         8,
         "repeated cold control and prepared-cache candidate remain in the comparison"
     );
-    let cache_projection = review_store::EventStore::open_read_only(state.join("events.sqlite"))
+    let cache_projection = af_store::EventStore::open_read_only(state.join("events.sqlite"))
         .unwrap()
         .task_projection(&cas, cache_task)
         .unwrap()
@@ -1019,14 +1017,14 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         })
         .unwrap_or_else(|| {
             let diagnostic = match candidate_accounting.result.as_ref().unwrap() {
-                review_core::task::execution::TaskAttemptResultV1::Failed {
+                af_contracts::task::execution::TaskAttemptResultV1::Failed {
                     diagnostic_id,
                     ..
                 }
-                | review_core::task::execution::TaskAttemptResultV1::Abandoned {
+                | af_contracts::task::execution::TaskAttemptResultV1::Abandoned {
                     diagnostic_id,
                 } => cas.get_json(diagnostic_id).unwrap(),
-                review_core::task::execution::TaskAttemptResultV1::Succeeded { .. } => {
+                af_contracts::task::execution::TaskAttemptResultV1::Succeeded { .. } => {
                     json!(null)
                 }
             };
@@ -1117,11 +1115,12 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         .as_str()
         .unwrap();
     let (_, ordinary_manifest) =
-        review_source_git::task::read_snapshot(&cas, ordinary_snapshot_id).unwrap();
+        af_source_git::task::read_snapshot(&cas, ordinary_snapshot_id).unwrap();
     assert!(
-        ordinary_manifest.entries.iter().all(|entry| {
-            !review_source_git::decode_path(&entry.path).starts_with(b".af-cache/")
-        })
+        ordinary_manifest
+            .entries
+            .iter()
+            .all(|entry| { !af_source_git::decode_path(&entry.path).starts_with(b".af-cache/") })
     );
     assert!(!cache_delivery.join(".af-cache").exists());
 
@@ -1475,7 +1474,7 @@ fn controlled_candidate_with_inputs(
         return;
     }
     if result["result"]["acceptance"] != "satisfied" {
-        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         for output in result["result"]["outputs"]
             .as_object()
             .into_iter()
@@ -1557,7 +1556,7 @@ fn controlled_candidate_with_inputs(
     }
     let analysis = af(&repo, &state, &["--execute"]);
     assert_eq!(analysis["result"]["acceptance"], "satisfied");
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let economics_id = analysis["result"]["outputs"]["economics"]["artifact_ids"][0]
         .as_str()
         .unwrap();
@@ -1697,13 +1696,13 @@ fn approved_experiment_that_exceeds_parent_resources_becomes_explicit_non_succes
         .output()
         .unwrap();
     assert!(!refused.status.success());
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store.task_projection(&cas, task).unwrap().unwrap();
     assert_eq!(
         projection.phase,
-        review_core::task::TaskPhaseV1::Waiting {
-            reason: review_core::task::TaskWaitingReasonV1::NeedsHuman
+        af_contracts::task::TaskPhaseV1::Waiting {
+            reason: af_contracts::task::TaskWaitingReasonV1::NeedsHuman
         }
     );
     let execution = projection.execution.unwrap();
@@ -1789,7 +1788,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
             _ => unreachable!(),
         }
         let mut message = b"af/experiment-plan-authorization/1\n".to_vec();
-        message.extend(review_store::canonicalize(&request).unwrap());
+        message.extend(af_store::canonicalize(&request).unwrap());
         let case_payload = temp.path().join(format!("{case}.payload"));
         let case_signature = temp.path().join(format!("{case}.minisig"));
         std::fs::write(&case_payload, &message).unwrap();
@@ -1831,9 +1830,9 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
             .output()
             .unwrap();
         assert!(!refused.status.success(), "{case}");
-        let check_cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        let check_cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let check_store =
-            review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+            af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         let untouched = check_store
             .task_projection(&check_cas, task_id)
             .unwrap()
@@ -1863,9 +1862,8 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
         .output()
         .unwrap();
     assert!(!refused.status.success());
-    let check_cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let check_store =
-        review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let check_cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let check_store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let after_forgery = check_store
         .task_projection(&check_cas, task_id)
         .unwrap()
@@ -2047,7 +2045,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
     let analysis = af(&repo, &state, &["--execute"]);
     assert_eq!(analysis["result"]["acceptance"], "satisfied");
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let economics_id = analysis["result"]["outputs"]["economics"]["artifact_ids"][0]
         .as_str()
         .unwrap();
@@ -2105,7 +2103,7 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     let report_id = executed["result"]["outputs"]["report"]["artifact_ids"][0]
         .as_str()
         .unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     assert_eq!(report["type"], "af/OptimizationReport@1");
     let revision = cas
@@ -2238,7 +2236,7 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
     let report_id = optimized["result"]["outputs"]["report"]["artifact_ids"][0]
         .as_str()
         .unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     let economics_id = report["payload"]["economics_id"].as_str().unwrap();
     let economics = cas.get_json(economics_id).unwrap();

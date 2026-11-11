@@ -13,8 +13,8 @@ import os
 import shutil
 from unittest import mock
 
-from perflab import (budget as deadlines, bundle, contracts, diagcontracts, diagnostics, jsonsubset, oracle,
-                     phasetrace, planning, report, supervise, telemetrydiag)
+from perflab import (budget as deadlines, bundle, contracts, diag_contracts, diagnostics, json_subset, oracle,
+                     phase_trace, planning, report, supervise, telemetry_diag)
 from perflab.values import ContractError
 from tests import diagnostic_fixtures as fakes
 from tests.support import ROOT, SUITE, TempDir, fake_supervisor, read, writable_copy
@@ -27,7 +27,7 @@ TASK = "perf-check-true"
 
 def documents():
     return dict((kind, read(os.path.join(DOCUMENTS, kind + ".json")))
-                for kind in telemetrydiag.DOCUMENT_KINDS)
+                for kind in telemetry_diag.DOCUMENT_KINDS)
 
 
 def loaded():
@@ -117,20 +117,20 @@ class Documents(TempDir):
     def test_reverse_execution_identity_refuses_reassignment_and_duplicate_spans(self):
         for name, valid, invalid in identity_cases():
             with self.subTest(mutation=name):
-                derived = telemetrydiag.capture(dumped(valid), TASK)
+                derived = telemetry_diag.capture(dumped(valid), TASK)
                 self.assertEqual(derived["evidence"]["state"], "partial")
                 self.assertIn("history_partial", derived["evidence"]["reasons"])
                 with self.assertRaisesRegex(ContractError, "span identity"):
-                    telemetrydiag.capture(dumped(invalid), TASK)
+                    telemetry_diag.capture(dumped(invalid), TASK)
 
     def test_execution_summaries_and_both_reader_inventories_are_reconciled(self):
         for name, docs, refused in inventory_cases():
             with self.subTest(mutation=name):
                 if refused:
                     with self.assertRaises(ContractError):
-                        telemetrydiag.capture(dumped(docs), TASK)
+                        telemetry_diag.capture(dumped(docs), TASK)
                 else:
-                    derived = telemetrydiag.capture(dumped(docs), TASK)
+                    derived = telemetry_diag.capture(dumped(docs), TASK)
                     self.assertEqual(derived["evidence"]["state"], "partial")
                     self.assertIn("history_partial", derived["evidence"]["reasons"])
 
@@ -155,12 +155,12 @@ class Documents(TempDir):
                 docs["status"]["segments"].update(sealed=0, live=0, unsealed=0)
                 docs["status"]["segments"][segment] = 1
                 docs["status"]["bytes"]["entries"][0]["state"] = segment
-                derived = telemetrydiag.capture(dumped(docs), TASK)
+                derived = telemetry_diag.capture(dumped(docs), TASK)
                 self.assertEqual(derived["evidence"]["state"], "complete" if
                                  segment == "sealed" and not opened and ordinal == 1 else "partial")
 
     def test_the_recorded_documents_give_a_complete_capture_of_their_one_run(self):
-        derived = telemetrydiag.capture(documents(), TASK)
+        derived = telemetry_diag.capture(documents(), TASK)
         self.assertEqual(derived["evidence"]["state"], "complete")
         self.assertEqual(derived["evidence"]["reasons"], [])
         self.assertEqual((derived["run"]["kind"], derived["run"]["task_id"]), ("task", TASK))
@@ -204,15 +204,15 @@ class Documents(TempDir):
                         dict(docs["show"]["run"]["executions"]["list"][0]))
                 if mutation in ("duplicate", "mismatched_state", "sealed_count", "duplicate_execution"):
                     with self.assertRaises(ContractError):
-                        telemetrydiag.capture(dumped(docs), TASK)
+                        telemetry_diag.capture(dumped(docs), TASK)
                 else:
-                    evidence = telemetrydiag.capture(dumped(docs), TASK)["evidence"]
+                    evidence = telemetry_diag.capture(dumped(docs), TASK)["evidence"]
                     self.assertEqual(evidence["state"], "partial")
                     self.assertTrue(evidence["reasons"])
                     self.assertEqual(len(evidence["segment_captures"]), 1)
 
     def test_the_perfetto_export_nests_valid_tracks_and_copies_no_attribute(self):
-        data = telemetrydiag.perfetto(documents()["show"], "case side")
+        data = telemetry_diag.perfetto(documents()["show"], "case side")
         doc = json.loads(data.decode("utf-8"))
         events = doc["traceEvents"]
         complete = [event for event in events if event["ph"] == "X"]
@@ -228,7 +228,7 @@ class Documents(TempDir):
                 self.assertLessEqual(event["ts"] + event["dur"], stack[-1][1])
             stack.append((event["ts"], event["ts"] + event["dur"]))
         self.assertNotIn(b"af.policy_rev", data)
-        self.assertEqual(data, telemetrydiag.perfetto(documents()["show"], "case side"))
+        self.assertEqual(data, telemetry_diag.perfetto(documents()["show"], "case side"))
 
     def test_open_unsealed_dropped_recovered_and_incomplete_evidence_is_partial(self):
         cases = []
@@ -285,7 +285,7 @@ class Documents(TempDir):
             with self.subTest(reason=reason):
                 docs = loaded()
                 mutate(docs)
-                derived = telemetrydiag.capture(dumped(docs), TASK)
+                derived = telemetry_diag.capture(dumped(docs), TASK)
                 self.assertEqual(derived["evidence"]["state"], "partial")
                 self.assertIn(reason, derived["evidence"]["reasons"])
 
@@ -325,18 +325,18 @@ class Documents(TempDir):
                 docs = loaded()
                 mutate(docs)
                 with self.assertRaises(ContractError):
-                    telemetrydiag.capture(dumped(docs), TASK)
+                    telemetry_diag.capture(dumped(docs), TASK)
         for data in (b'{"schema": "af/telemetry-runs@1", "schema": "x"}', b"\xff\xfe",
-                     b'{"a": NaN}', b"x" * (telemetrydiag.DOCUMENT_BYTES_MAX + 1)):
+                     b'{"a": NaN}', b"x" * (telemetry_diag.DOCUMENT_BYTES_MAX + 1)):
             with self.subTest(data=data[:16]):
                 with self.assertRaises(ContractError):
-                    telemetrydiag.read("runs", data, "runs.json")
+                    telemetry_diag.read("runs", data, "runs.json")
 
     def test_the_schema_evaluator_refuses_keywords_it_does_not_implement(self):
         with self.assertRaises(ContractError) as caught:
-            jsonsubset.Schema({"type": "object", "if": {}}, "made-up.json")
+            json_subset.Schema({"type": "object", "if": {}}, "made-up.json")
         self.assertIn("does not implement: if", str(caught.exception))
-        schema = jsonsubset.Schema({"type": "object", "additionalProperties": False,
+        schema = json_subset.Schema({"type": "object", "additionalProperties": False,
                                     "properties": {"n": {"type": ["integer", "null"],
                                                          "exclusiveMinimum": 0}}}, "s")
         self.assertIsNone(schema.errors({"n": 1}))
@@ -348,24 +348,24 @@ class Documents(TempDir):
     def test_untrusted_names_are_escaped_on_the_page(self):
         docs = loaded()
         docs["show"]["spans"][5]["name"] = '<script>alert("x")</script>'
-        derived = telemetrydiag.capture(dumped(docs), TASK)
+        derived = telemetry_diag.capture(dumped(docs), TASK)
         entry = dict(derived, instance_id=TASK_RUN, side="baseline", subject="cli_process",
                      level="spans", source_sha="a" * 40, binary_sha256="sha256:" + "b" * 64,
                      command_wall_ms="12.5", artifacts=[], omission=None)
-        html = telemetrydiag.section({"level": "spans", "perturbing": False,
+        html = telemetry_diag.section({"level": "spans", "perturbing": False,
                                       "verdict_effect": "none", "captures": [entry]})
         self.assertNotIn("<script>", html)
         self.assertIn("&lt;script&gt;", html)
 
     def test_the_supported_matrix_names_every_case_that_records_no_telemetry(self):
-        self.assertEqual(telemetrydiag.eligibility({"kind": "library", "case_id": "cas",
+        self.assertEqual(telemetry_diag.eligibility({"kind": "library", "case_id": "cas",
                                                     "instance_id": SMALL})[0],
                          "no_telemetry_subscriber")
         for case_id in ("cli_discovery", "cli_task_start", "cli_state_read"):
-            self.assertEqual(telemetrydiag.eligibility({"kind": "process", "case_id": case_id,
+            self.assertEqual(telemetry_diag.eligibility({"kind": "process", "case_id": case_id,
                                                         "instance_id": case_id})[0],
                              "records_no_telemetry")
-        self.assertIsNone(telemetrydiag.eligibility({"kind": "process",
+        self.assertIsNone(telemetry_diag.eligibility({"kind": "process",
                                                      "case_id": "cli_task_run_check",
                                                      "instance_id": TASK_RUN}))
 
@@ -409,7 +409,7 @@ class TelemetryChildRuns(ChildRunBase):
             self.assertEqual(item["evidence"]["state"], "complete")
             self.assertEqual(item["source_sha"], self.parent["resolved"][item["side"] + "_sha"])
             self.assertEqual(sorted(a["path"].rsplit("/", 1)[1] for a in item["artifacts"]),
-                             sorted(diagcontracts.TELEMETRY_DOCUMENTS))
+                             sorted(diag_contracts.TELEMETRY_DOCUMENTS))
             for artifact in item["artifacts"]:
                 self.assertTrue(artifact["path"].startswith("telemetry/%s/%s/"
                                                             % (TASK_RUN, item["side"])))
@@ -492,8 +492,8 @@ class TelemetryChildRuns(ChildRunBase):
             self.assertIn("show.json", names)
 
     def test_every_reader_retains_uncertainty_and_post_launch_exceptions_through_profile(self):
-        actual = diagnostics.toolrun.run
-        for kind in telemetrydiag.DOCUMENT_KINDS:
+        actual = diagnostics.tool_run.run
+        for kind in telemetry_diag.DOCUMENT_KINDS:
             for failure in (None, OSError, RuntimeError, KeyboardInterrupt, deadlines.Interrupted):
                 with self.subTest(kind=kind, failure=failure):
                     launched, retained = [], []
@@ -514,7 +514,7 @@ class TelemetryChildRuns(ChildRunBase):
 
                     # Profile.run -> telemetry_case -> cli_run -> telemetry_documents ->
                     # release, over the real supervisor adapter and stand-in container.
-                    with mock.patch.object(diagnostics.toolrun, "run", reader):
+                    with mock.patch.object(diagnostics.tool_run, "run", reader):
                         doc, output = self.profile(
                             "linux_gnu_trace", [TASK_RUN, SMALL], {}, {},
                             af_config={"telemetry_docs": self.docs}, contained=self.place(),
@@ -528,8 +528,8 @@ class TelemetryChildRuns(ChildRunBase):
                                      b"still reachable by the reader")
                     readers = [argv[argv.index("telemetry") + 1] for argv in launched
                                if "telemetry" in argv]
-                    self.assertEqual(readers, list(telemetrydiag.DOCUMENT_KINDS[:
-                        telemetrydiag.DOCUMENT_KINDS.index(kind) + 1]))
+                    self.assertEqual(readers, list(telemetry_diag.DOCUMENT_KINDS[:
+                        telemetry_diag.DOCUMENT_KINDS.index(kind) + 1]))
                     self.assertEqual(launched[-1][1:3], ["telemetry", kind],
                                      "no later reader, side or case may launch")
                     baseline, candidate = doc["telemetry"]["captures"]
@@ -549,9 +549,9 @@ class TelemetryChildRuns(ChildRunBase):
 
     def test_each_reader_loses_pipe_evidence_below_running_and_retains_its_namespace(self):
         from tests.supervision_faults import fault
-        from perflab import toolrun
+        from perflab import tool_run
         for mode in ("trusted_local", "linux_container"):
-            for kind in telemetrydiag.DOCUMENT_KINDS:
+            for kind in telemetry_diag.DOCUMENT_KINDS:
                 with self.subTest(mode=mode, kind=kind):
                     def match(request):
                         argv = request["argv"]
@@ -567,7 +567,7 @@ class TelemetryChildRuns(ChildRunBase):
                         # Task recording still requires containment. Exercise the local
                         # reader adapter only with these trusted fixture executables.
                         if mode == "trusted_local":
-                            profile.supervisor = toolrun.Supervisor(profile.supervisor.path,
+                            profile.supervisor = tool_run.Supervisor(profile.supervisor.path,
                                 cancel_margin=0, grace_ms=100)
                         return actual_readers(profile, *args)
                     def remove(path, *args, **kwargs):
@@ -607,22 +607,22 @@ class TelemetryChildRuns(ChildRunBase):
     def test_successful_readers_share_the_recording_until_one_final_release(self):
         release = diagnostics.Profile.release
         readers = []
-        actual = diagnostics.toolrun.run
+        actual = diagnostics.tool_run.run
 
         def reading(*args, **kwargs):
             if "telemetry" in args[1]:
                 readers.append(kwargs["cwd"])
             return actual(*args, **kwargs)
 
-        with mock.patch.object(diagnostics.toolrun, "run", reading), \
+        with mock.patch.object(diagnostics.tool_run, "run", reading), \
                 mock.patch.object(diagnostics.Profile, "release", autospec=True,
                                   side_effect=release) as released:
             doc, _ = self.run_child()
-        self.assertEqual(len(readers), 2 * len(telemetrydiag.DOCUMENT_KINDS))
-        for start in (0, len(telemetrydiag.DOCUMENT_KINDS)):
+        self.assertEqual(len(readers), 2 * len(telemetry_diag.DOCUMENT_KINDS))
+        for start in (0, len(telemetry_diag.DOCUMENT_KINDS)):
             namespace = readers[start]
-            self.assertEqual(readers[start:start + len(telemetrydiag.DOCUMENT_KINDS)],
-                             [namespace] * len(telemetrydiag.DOCUMENT_KINDS))
+            self.assertEqual(readers[start:start + len(telemetry_diag.DOCUMENT_KINDS)],
+                             [namespace] * len(telemetry_diag.DOCUMENT_KINDS))
             self.assertEqual(sum(call.args[1].path == namespace for call in released.call_args_list), 1)
             self.assertFalse(os.path.lexists(namespace))
         self.assertEqual(doc["execution"]["retained_scratch"], 0)
@@ -709,7 +709,7 @@ class TelemetryChildRuns(ChildRunBase):
             paths = [artifact["path"] for artifact in entry["artifacts"]
                      if artifact["path"].endswith("/trace.json")]
             traces.append(None if entry["omission"] is not None else
-                          phasetrace.load(read(os.path.join(output, paths[0]))))
+                          phase_trace.load(read(os.path.join(output, paths[0]))))
         for name, docs, _ in inventory_cases():
             with self.subTest(mutation=name):
                 profiles = json.loads(json.dumps(original_profiles))
@@ -784,7 +784,7 @@ class TelemetryChildRuns(ChildRunBase):
                         paths = [a["path"] for a in entry["artifacts"]
                                  if a["path"].endswith("/trace.json")]
                         traces.append(None if entry["omission"] is not None else
-                                      phasetrace.load(read(os.path.join(output, paths[0]))))
+                                      phase_trace.load(read(os.path.join(output, paths[0]))))
                     with open(os.path.join(output, "diagnostic.html"), "wb") as stream:
                         stream.write(diagnostics.page(profiles, traces))
                     os.unlink(os.path.join(output, bundle.MANIFEST))
@@ -798,19 +798,19 @@ class TelemetryChildRuns(ChildRunBase):
         broken["telemetry"]["level"] = None
         broken["telemetry"]["perturbing"] = False
         with self.assertRaises(ContractError):
-            diagcontracts.validate_profiles(broken)
+            diag_contracts.validate_profiles(broken)
         broken = json.loads(json.dumps(doc))
         broken["recipe"]["kind"] = "counters"
         with self.assertRaises(ContractError):
-            diagcontracts.validate_profiles(broken)
+            diag_contracts.validate_profiles(broken)
         broken = json.loads(json.dumps(doc))
         broken["telemetry"]["captures"][0]["evidence"]["reasons"] = ["open_spans"]
         with self.assertRaises(ContractError):
-            diagcontracts.validate_profiles(broken)
+            diag_contracts.validate_profiles(broken)
         broken = json.loads(json.dumps(doc))
         broken["telemetry"]["captures"][0]["evidence"]["open_spans"] = 2
         with self.assertRaises(ContractError):
-            diagcontracts.validate_profiles(broken)
+            diag_contracts.validate_profiles(broken)
 
 
 class ProbeTrace(TempDir):
@@ -847,7 +847,7 @@ class ProbeTrace(TempDir):
         result = self.sample(traces, trace=self.TRACE)
         self.assertEqual(result["status"], "passed", result)
         self.assertEqual(json.loads(traces[0].decode()), self.TRACE)
-        lines = phasetrace.region_breakdown(phasetrace.load(traces[0]))
+        lines = phase_trace.region_breakdown(phase_trace.load(traces[0]))
         self.assertEqual(lines[0], "region probe_region #1: 1.000 ms")
         self.assertIn("task_runtime_new", lines[1])
         self.assertEqual(len([line for line in lines if "task_projection" in line]), 2)

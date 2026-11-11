@@ -15,8 +15,8 @@ import os
 import subprocess
 import sys
 
-from perflab import contracts, tomlfile
-from perflab.nightlycontracts import DEADLINE_MINUTES_MAX
+from perflab import contracts, toml_file
+from perflab.nightly_contracts import DEADLINE_MINUTES_MAX
 from tests.support import ROOT, TempDir, read
 
 MEASURE = os.path.join(ROOT, "scripts", "nightly", "measure.py")
@@ -282,7 +282,7 @@ class NightOfTheBuildUnit(Night):
                 (b"@1793311501\n", 0, "../etc/passwd", "is not a service unit name")):
             show, asked = self.show(answer, code)
             with self.assertRaises(measure.Refused) as caught:
-                measure.nightlychain.unit_night(unit, show, measure.Refused)
+                measure.nightly_chain.unit_night(unit, show, measure.Refused)
             self.assertIn(error, str(caught.exception))
         self.assertEqual(asked, [])
 
@@ -290,7 +290,7 @@ class NightOfTheBuildUnit(Night):
         # systemd's unix timestamps carry the microseconds of the start.
         self.clock.now = 1793318400000 + 30 * 60 * 1000
         show, _ = self.show(b"@1793311501.659757\n")
-        self.assertEqual(measure.nightlychain.unit_night("af-nightly-build.service", show,
+        self.assertEqual(measure.nightly_chain.unit_night("af-nightly-build.service", show,
                                                          measure.Refused, self.clock),
                          "2026-10-29")
 
@@ -298,12 +298,12 @@ class NightOfTheBuildUnit(Night):
         base = 1793311501000
         show, _ = self.show(b"@1793311501.659757\n")
         self.clock.now = base + 23 * 3600 * 1000 + 500
-        self.assertEqual(measure.nightlychain.unit_night("af-nightly-build.service", show,
+        self.assertEqual(measure.nightly_chain.unit_night("af-nightly-build.service", show,
                                                          measure.Refused, self.clock),
                          "2026-10-29")
         self.clock.now += 1000
         with self.assertRaises(measure.Refused) as caught:
-            measure.nightlychain.unit_night("af-nightly-build.service", show, measure.Refused,
+            measure.nightly_chain.unit_night("af-nightly-build.service", show, measure.Refused,
                                             self.clock)
         self.assertIn("more than 23 hours ago", str(caught.exception))
 
@@ -326,7 +326,7 @@ class NightOfTheBuildUnit(Night):
                          (["af-nightly-build.service"], [], ""))
         # A second earlier it is the build's night still.
         self.clock.now -= 2000
-        self.assertEqual(measure.nightlychain.unit_night("af-nightly-build.service", show,
+        self.assertEqual(measure.nightly_chain.unit_night("af-nightly-build.service", show,
                                                          measure.Refused, self.clock),
                          "2026-10-29")
 
@@ -515,7 +515,7 @@ class Units(TempDir):
         # cycle that may start before it, which the example executor bounds by run_seconds.
         timeout = unit("af-nightly-measure.service")["Service"]["TimeoutStartSec"]
         self.assertEqual(timeout, ["18h30min"])
-        example = tomlfile.loads(read(os.path.join(SERVICE, "executor.example.toml")),
+        example = toml_file.loads(read(os.path.join(SERVICE, "executor.example.toml")),
                                  "executor.example.toml")
         self.assertGreater(18 * 3600 + 30 * 60,
                            DEADLINE_MINUTES_MAX * 60 + example["run_seconds"])

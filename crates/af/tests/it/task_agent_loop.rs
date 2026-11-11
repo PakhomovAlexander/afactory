@@ -7,7 +7,7 @@
 //! task cancel` stops, after which a foreground run resumes it and prints its progress lines and
 //! last line.
 
-use review_store::{Cas, EventStore};
+use af_store::{Cas, EventStore};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -92,7 +92,7 @@ fn pin_and_commit(repo: &Path, message: &str) {
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         let package = repo.join(pin["path"].as_str().unwrap());
         pin["digest"] =
-            toml::Value::String(review_config::lock::package_digest(name, &package).unwrap());
+            toml::Value::String(af_pipeline_config::lock::package_digest(name, &package).unwrap());
     }
     std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
     git(repo, &["add", "-A"]);
@@ -484,7 +484,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     // Item 4: nothing is verified fixed without a verification record.
     assert_eq!(round["verified_fixed"], serde_json::json!([]));
     assert_eq!(value["evaluation"]["outcome"], "passed");
-    let typed: review_core::task::agent_loop::TaskFindingsV2 =
+    let typed: af_contracts::task::agent_loop::TaskFindingsV2 =
         serde_json::from_value(value.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(
@@ -833,10 +833,10 @@ fn a_candidate_is_materialized_diffed_and_delivered_through_its_verification() {
     let (record_id, record) = task.deliveries.last().unwrap();
     assert_eq!(
         record.status,
-        review_core::task::delivery::TaskDeliveryStatusV1::Delivered
+        af_contracts::task::delivery::TaskDeliveryStatusV1::Delivered
     );
     let envelope = cas.get_artifact(record_id).unwrap();
-    let proofs: Vec<review_core::task::delivery::TaskDeliveryProofV1> = envelope
+    let proofs: Vec<af_contracts::task::delivery::TaskDeliveryProofV1> = envelope
         .input_artifacts
         .iter()
         .filter_map(|id| cas.get_optional_artifact(id).ok().flatten())
@@ -1837,7 +1837,7 @@ fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
             "task_id": task,
             "run": 1,
             "pid": run.id(),
-            "host": review_process::host::host_name().unwrap_or_else(|| "unknown".into()),
+            "host": af_process::host::host_name().unwrap_or_else(|| "unknown".into()),
             "writer": "cli-starting",
             "started_unix_ms": u64::try_from(started_unix_ms).unwrap(),
             "detached": false,
@@ -1949,7 +1949,7 @@ fn an_unchanged_wait_rechecks_artifact_bytes_before_its_next_observation() {
     // No event, lease or metadata timestamp signals the change.
     assert_eq!(
         store
-            .len(&review_store::store::task::task_run_id(task).unwrap())
+            .len(&af_store::store::task::task_run_id(task).unwrap())
             .unwrap(),
         sequence
     );

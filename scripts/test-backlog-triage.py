@@ -1204,8 +1204,8 @@ class StateAndAdmission(Fixture):
         self.assertEqual(self.tasks.calls, 4)
 
     def test_busy_or_uncertain_shared_lease_defers_before_any_work(self):
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]), \
-                mock.patch.object(R.hostlock, 'MachineLock', side_effect=R.hostlock.Refused('concurrent_shard', 'busy')), \
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]), \
+                mock.patch.object(R.host_lock, 'MachineLock', side_effect=R.host_lock.Refused('concurrent_shard', 'busy')), \
                 mock.patch.object(R, 'Journal') as journal, mock.patch.object(R, 'GitHub') as api:
             code = R.main(['--repo', str(self.repo), '--state-root', str(self.root), '--principal', 'runner',
                            '--github-token-file', str(self.root / 'absent-token')])
@@ -2066,8 +2066,8 @@ class FinalGuards(Fixture):
 
     def test_anchor_disappearance_between_required_read_and_acquisition_defers(self):
         lease = mock.Mock(expected_identity=None, uncertain=False)
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]), \
-                mock.patch.object(R.hostlock, 'MachineLock', return_value=lease):
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]), \
+                mock.patch.object(R.host_lock, 'MachineLock', return_value=lease):
             with self.assertRaisesRegex(R.Refused, 'anchor changed'):
                 R.anchored_lease()
         lease.release.assert_called_once()
@@ -3420,8 +3420,8 @@ class NightlyLease(Fixture):
         builder = mock.Mock()
         builder.main.return_value = 3
         lease = mock.Mock(uncertain=False, expected_identity=[1, 2])
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]) as anchor, \
-                mock.patch.object(R.hostlock, 'MachineLock', return_value=lease) as lock, \
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]) as anchor, \
+                mock.patch.object(R.host_lock, 'MachineLock', return_value=lease) as lock, \
                 mock.patch.object(R, 'NightlyHost') as host:
             result = R.nightly_build_main(['--config', '/operator/nightly.toml'], builder=builder)
         self.assertEqual(result, 3)
@@ -3438,8 +3438,8 @@ class NightlyLease(Fixture):
         builder = mock.Mock()
         builder.main.return_value = 0
         lease = Lease()
-        with mock.patch.object(R.hostlock, 'read_anchor', return_value=[1, 2]), \
-                mock.patch.object(R.hostlock, 'MachineLock', return_value=lease), \
+        with mock.patch.object(R.host_lock, 'read_anchor', return_value=[1, 2]), \
+                mock.patch.object(R.host_lock, 'MachineLock', return_value=lease), \
                 mock.patch.object(R, 'NightlyHost') as host:
             host.return_value.clean.side_effect = R.Refused('unconfirmed container cleanup')
             with self.assertRaises(R.Refused):

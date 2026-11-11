@@ -50,7 +50,7 @@ any af command ([design](design/tui.md)).
 
 | Document | Read it when you want to know |
 |---|---|
-| [`architecture.md`](architecture.md) | How the kernel is built: crates, contracts, the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline definitions, routing, and Attempt budgets. Each section names the test that pins it. |
+| [`architecture.md`](architecture.md) | How AF is built: crate dependencies, shared contracts, Task execution, Review, Scenario/Project Host boundaries, storage, source capture, checks, Workers, sandboxes, configuration and graph planning. Includes internal naming and protected external names. |
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
 | [`providers.md`](providers.md) | How a machine gets model access: finding and registering its logins with `af provider detect`, registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, follow and inspect a run, read its one state and next command (`af help task-states`), resume an interrupted run, retry a failed gate, continue a reviewed Task (`af help task-file`), warm checks, and deliver to a new local worktree. |

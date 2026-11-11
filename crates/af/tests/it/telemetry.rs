@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use review_telemetry::blob::Media;
-use review_telemetry::layout::Layout;
-use review_telemetry::level::Level;
-use review_telemetry::record::{Attrs, ProblemWhat, SealExit, SpanKind, SpanStatus};
-use review_telemetry::segment::writer::{Writer, WriterOptions};
+use af_telemetry::blob::Media;
+use af_telemetry::layout::Layout;
+use af_telemetry::level::Level;
+use af_telemetry::record::{Attrs, ProblemWhat, SealExit, SpanKind, SpanStatus};
+use af_telemetry::segment::writer::{Writer, WriterOptions};
 use serde_json::Value;
 
 use crate::schemas;
@@ -87,7 +87,7 @@ fn writer(root: &Path, level: Level) -> Writer {
 /// One sealed run with a blob and a problem, as the crate's own writer leaves it.
 fn sealed_run(root: &Path, run_id: &str) {
     let writer = writer(root, Level::Content);
-    let execution = review_telemetry::trace::Execution {
+    let execution = af_telemetry::trace::Execution {
         store_id: "c".repeat(64),
         run_id: run_id.into(),
         execution_id: "exec".into(),
@@ -171,7 +171,7 @@ fn telemetry_status_validates_on_every_directory_shape() {
     let second = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
     bytes[second] = b'#';
     std::fs::write(&broken_path, bytes).unwrap();
-    review_telemetry::segment::reader::recover(&layout, &broken_id).unwrap();
+    af_telemetry::segment::reader::recover(&layout, &broken_id).unwrap();
     let live = writer(&machine.telemetry(), Level::Spans);
     live.span_start(None, None, "af.command", SpanKind::Internal, Attrs::new());
     live.flush();
@@ -239,7 +239,7 @@ fn telemetry_reindex_answers_identically() {
     assert_eq!(before["segments"]["unsealed"], 1);
     let layout = Layout::new(machine.telemetry());
     let dump = |layout: &Layout| {
-        let mut index = review_telemetry::index::Index::open(layout).unwrap();
+        let mut index = af_telemetry::index::Index::open(layout).unwrap();
         index.ingest().unwrap();
         index.dump().unwrap()
     };
@@ -339,11 +339,7 @@ fn telemetry_reindex_defers_blob_verification_without_the_lock() {
     // A blob file whose content no longer matches its digest: only a verification that opens
     // it can tell.
     let digest = std::fs::read_to_string(
-        layout.refs(
-            &review_telemetry::segment::reader::list(&layout)
-                .unwrap()
-                .sealed[0],
-        ),
+        layout.refs(&af_telemetry::segment::reader::list(&layout).unwrap().sealed[0]),
     )
     .unwrap()
     .lines()
@@ -352,20 +348,18 @@ fn telemetry_reindex_defers_blob_verification_without_the_lock() {
     .to_string();
     std::fs::write(
         layout.blob(&digest),
-        review_telemetry::blob::compress(b"other bytes\n"),
+        af_telemetry::blob::compress(b"other bytes\n"),
     )
     .unwrap();
 
     // A sweep holds gc.lock exclusively for longer than LOCK_WAIT, through the whole command.
-    let held = review_telemetry::layout::exclusive_within(
-        &layout.gc_lock(),
-        review_telemetry::layout::LOCK_WAIT,
-    )
-    .unwrap()
-    .unwrap();
+    let held =
+        af_telemetry::layout::exclusive_within(&layout.gc_lock(), af_telemetry::layout::LOCK_WAIT)
+            .unwrap()
+            .unwrap();
     let started = std::time::Instant::now();
     let deferred = json(&machine.af(&[], &["telemetry", "reindex", "--json"]));
-    assert!(started.elapsed() >= review_telemetry::layout::LOCK_WAIT);
+    assert!(started.elapsed() >= af_telemetry::layout::LOCK_WAIT);
     schemas::valid(&schemas::validator("telemetry-reindex-v1.json"), &deferred);
     assert_eq!(deferred["blob_verification"], "deferred");
     assert_eq!(deferred["corrupt_blobs"], serde_json::json!([]));
@@ -398,7 +392,7 @@ fn telemetry_status_refuses_a_foreign_index_schema() {
     let layout = Layout::new(machine.telemetry());
     json(&machine.af(&[], &["telemetry", "status", "--json"]));
     {
-        let index = review_telemetry::index::Index::open(&layout).unwrap();
+        let index = af_telemetry::index::Index::open(&layout).unwrap();
         index
             .connection()
             .execute(
@@ -446,10 +440,10 @@ fn telemetry_status_refuses_a_foreign_index_schema() {
 fn telemetry_status_reports_unknown_overlap_when_the_registry_is_unreadable() {
     let machine = Machine::new();
     let schema = schemas::validator("telemetry-status-v1.json");
-    let registry = review_telemetry::dirs::location(&machine.root.join("state"));
+    let registry = af_telemetry::dirs::location(&machine.root.join("state"));
     let inside_store = machine.root.join("stores/task-a/telemetry");
     for directory in [machine.telemetry(), inside_store.clone()] {
-        review_telemetry::dirs::register(&registry, &directory, &[]).unwrap();
+        af_telemetry::dirs::register(&registry, &directory, &[]).unwrap();
     }
     let stores = machine.root.join("state/af/stores.toml");
     let store = format!(

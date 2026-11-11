@@ -10,7 +10,7 @@ import gzip
 import json
 import os
 
-from perflab import contracts, telemetryexec, telemetrylab
+from perflab import contracts, telemetry_exec, telemetry_lab
 
 FIXTURES = ("telemetry-bench-concurrent", "telemetry-bench-dense", "telemetry-bench-store")
 CASES = ("telemetry-bench-invocation-one 64 KiB", "telemetry-bench-invocation-four 64 KiB")
@@ -21,7 +21,7 @@ VERSION = "af 0.14.0-rc.3"
 
 def _contract(version):
     """The fixture contract the bench script records for `version` (`af X`)."""
-    module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+    module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
     release = module.release_version(version)
     name = module.select_contract(release)
     return {"name": name, "release": release,
@@ -33,7 +33,7 @@ def _run(wall, rss=1000, segments=0):
 
 
 def overhead_doc(seed, pairs, slow=1.0, scale="smoke", extra=None, version=VERSION):
-    module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+    module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
     doc = {"schema": "af/telemetry-overhead@2", "af": {"path": "/x/af", "version": version},
            "fixture_contract": _contract(version),
            "machine": {"os": "linux", "arch": "x86_64", "cpus": 4, "load1": 0.5},
@@ -54,7 +54,7 @@ def overhead_doc(seed, pairs, slow=1.0, scale="smoke", extra=None, version=VERSI
 
 
 def invocation_doc(seed, pairs, slow=1.0, version=VERSION):
-    module = telemetrylab.script_module("scripts/telemetry-invocation-cost.py")
+    module = telemetry_lab.script_module("scripts/telemetry-invocation-cost.py")
 
     def run(wall):
         return dict(_run(wall), drain_ms=None, stdout_bytes=65536)
@@ -86,7 +86,7 @@ def write_corpus(out, runs):
     for index in range(runs * 2):
         with open(os.path.join(segments, "seg-%05d.jsonl.gz" % index), "wb") as stream:
             stream.write(gzip.compress(b'{"segment": %d}\n' % index, mtime=0))
-    module = telemetrylab.script_module("scripts/telemetry-corpus.py")
+    module = telemetry_lab.script_module("scripts/telemetry-corpus.py")
     for index in range(module.Layout(20261021, runs).blobs):
         with open(os.path.join(blobs, "%06d.gz" % index), "wb") as stream:
             stream.write(gzip.compress(b"blob", mtime=0))
@@ -104,15 +104,15 @@ def latency_doc(runs, slow=1.0, repeat=3, facts=None, name=None, version=VERSION
         measurements.append({"name": item, "command": "af telemetry %s" % item,
                              "bound_ms": bound, "warm": warm, "cold": None,
                              "within_bound": warm["latency_ms"] <= bound})
-    module = telemetrylab.script_module("scripts/telemetry-corpus.py")
+    module = telemetry_lab.script_module("scripts/telemetry-corpus.py")
     expected = module.expected_counts(20261021, runs)
     facts = facts if facts is not None else dict(
-        (key, expected.get(key, 1)) for key in telemetrylab.CORPUS_FACTS)
+        (key, expected.get(key, 1)) for key in telemetry_lab.CORPUS_FACTS)
     corpus = {"dir": "/work/corpus",
               "name": name or ("telemetry-corpus-10k" if runs == 10000
                                else "telemetry-corpus-%d" % runs),
               "seed": 20261021, "runs": runs}
-    module = telemetrylab.script_module("scripts/telemetry-corpus.py")
+    module = telemetry_lab.script_module("scripts/telemetry-corpus.py")
     corpus.update(module.expected_counts(corpus["seed"], runs))
     corpus.update(facts)
     return {"schema": "af/telemetry-read-latency@2",
@@ -126,28 +126,28 @@ def latency_doc(runs, slow=1.0, repeat=3, facts=None, name=None, version=VERSION
 
 def expect(experiment, seed=20261021, pairs=2, scale="smoke", repeat=3, runs=10,
            version=VERSION, facts=None):
-    """An expectation as `telemetrylab.expectation` would give it."""
+    """An expectation as `telemetry_lab.expectation` would give it."""
     if experiment == "read_latency":
         corpus = dict(facts if facts is not None else dict(
-            (key, telemetrylab.script_module("scripts/telemetry-corpus.py").expected_counts(
-                20261021, runs).get(key, 1)) for key in telemetrylab.CORPUS_FACTS),
+            (key, telemetry_lab.script_module("scripts/telemetry-corpus.py").expected_counts(
+                20261021, runs).get(key, 1)) for key in telemetry_lab.CORPUS_FACTS),
                       runs=runs, seed=20261021)
         return {"runs": runs, "repeat": repeat, "seed": seed, "version": version,
                 "corpus": corpus}
     return {"pairs": pairs, "scale": scale, "seed": seed, "version": version, "corpus": None}
 
 
-class StandIn(telemetryexec.Executor):
+class StandIn(telemetry_exec.Executor):
     """Answers each execution as its script would; `behave` maps (experiment, side, seed) or
     (experiment, side) to a dict of document options or a callable(execution) -> Outcome."""
 
     mode = "trusted_local"
     containment = "process_group"
     python = "python3"
-    limitations = telemetryexec.TRUSTED_LOCAL_LIMITATIONS
+    limitations = telemetry_exec.TRUSTED_LOCAL_LIMITATIONS
 
     def __init__(self, binaries, behave=None, version=VERSION):
-        telemetryexec.Executor.__init__(self)
+        telemetry_exec.Executor.__init__(self)
         self.binaries = binaries
         self.behave = behave or {}
         self.version = version
@@ -160,12 +160,12 @@ class StandIn(telemetryexec.Executor):
             behave = self.behave.get(("version", self.side(argv)))
             if behave is not None:
                 return behave(execution)
-            return telemetryexec.Outcome(0, (self.version + "\n").encode(), len(self.version) + 1,
+            return telemetry_exec.Outcome(0, (self.version + "\n").encode(), len(self.version) + 1,
                                          b"", 0, 1000)
         if "generate" in argv:
             out = argv[argv.index("--out") + 1]
             write_corpus(out, int(argv[argv.index("--runs") + 1]))
-            return telemetryexec.Outcome(0, b"{}\n", 3, b"generated\n", 10, 1000000)
+            return telemetry_exec.Outcome(0, b"{}\n", 3, b"generated\n", 10, 1000000)
         side = self.side(argv)
         experiment = {"telemetry-overhead.py": "overhead",
                       "telemetry-invocation-cost.py": "invocation_cost",
@@ -184,11 +184,11 @@ class StandIn(telemetryexec.Executor):
         else:
             corpus = argv[argv.index("--dir") + 1]
             repeat = int(argv[argv.index("--repeat") + 1])
-            facts = telemetrylab.corpus_facts(corpus)
+            facts = telemetry_lab.corpus_facts(corpus)
             doc = latency_doc(10, slow, repeat, facts, **options)
         data = (json.dumps(doc, indent=2) + "\n").encode("utf-8")
         code = 3 if doc.get("gate", {}).get("verdict") == "fail" else 0
-        return telemetryexec.Outcome(code, data, len(data), b"log line\n", 9, 2000000)
+        return telemetry_exec.Outcome(code, data, len(data), b"log line\n", 9, 2000000)
 
     def side(self, argv):
         return [name for name, path in self.binaries.items() if path in argv][0]
@@ -218,17 +218,17 @@ def settings(test, executor, output="result", hosts=None, **values):
                    executor=executor, host_identity=lambda: hosts.pop(0),
                    free_bytes=lambda path: 1 << 40, lock_directory=test.path("lock"))
     options.update(values)
-    return telemetrylab.Settings(**options)
+    return telemetry_lab.Settings(**options)
 
 
 def rewrite(output, result):
     """Write `result` and its page, summary and manifest again, consistently: a forger's
     bundle, whose every hash agrees."""
     from perflab import bundle
-    for name in (telemetrylab.RESULT_JSON, telemetrylab.REPORT_HTML, telemetrylab.SUMMARY_MD,
+    for name in (telemetry_lab.RESULT_JSON, telemetry_lab.REPORT_HTML, telemetry_lab.SUMMARY_MD,
                  bundle.MANIFEST):
         os.unlink(os.path.join(output, name))
-    telemetrylab.write_bundle(output, result)
+    telemetry_lab.write_bundle(output, result)
 
 
 def rehash(run, data):

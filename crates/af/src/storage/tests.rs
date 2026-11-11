@@ -21,7 +21,7 @@ fn layout() -> Layout {
         local_reviews: base.join("state/af/review/local"),
         tasks: base.join("state/af/task/local"),
         registry: base.join("state/af/stores.toml"),
-        installs: crate::selfmgmt::Paths {
+        installs: crate::self_management::Paths {
             versions: base.join("data/af/versions"),
             bin: base.join("bin/af"),
             state_file: base.join("state/af/self.toml"),
@@ -104,16 +104,16 @@ fn warm_key(
     let key = project.join(hex(toolchain));
     private_dir(&key.join("cargo_target"));
     std::fs::write(key.join("cargo_target/blob"), vec![1_u8; bytes]).unwrap();
-    std::fs::write(key.join(review_sandbox::KEY_LOCK), b"").unwrap();
+    std::fs::write(key.join(af_sandbox::KEY_LOCK), b"").unwrap();
     age(&key, old);
     key
 }
 
 fn workspace(layout: &Layout, id: char, old: Duration) -> PathBuf {
-    let path = layout
-        .roots
-        .workspaces
-        .join(id.to_string().repeat(review_core::WORKSPACE_ID_HEX_LEN));
+    let path = layout.roots.workspaces.join(
+        id.to_string()
+            .repeat(af_contracts::WARM_WORKSPACE_ID_HEX_LEN),
+    );
     std::fs::create_dir_all(path.join("tree")).unwrap();
     std::fs::write(path.join("tree/file"), vec![2_u8; CHUNK]).unwrap();
     age(&path, old);
@@ -139,7 +139,7 @@ fn version(layout: &Layout, version: &str, old: Duration) -> PathBuf {
         format!(
             "version = \"{version}\"\ntarget = \"{}\"\nsource = \"test\"\nasset = \"a\"\n\
              sha256 = \"0\"\nverified_by = \"sha256sums\"\ninstalled_at = \"2026-10-01T00:00:00Z\"\n",
-            crate::selfmgmt::TARGET
+            crate::self_management::TARGET
         ),
     )
     .unwrap();
@@ -192,7 +192,7 @@ fn the_budget_evicts_caches_before_records_least_recently_used_first_and_stops_w
     std::os::unix::fs::symlink(default.join("af"), &layout.roots.installs.bin).unwrap();
     // A check holds this key's lock, from another open file description.
     let held = nix::fcntl::Flock::lock(
-        std::fs::File::open(locked.join(review_sandbox::KEY_LOCK)).unwrap(),
+        std::fs::File::open(locked.join(af_sandbox::KEY_LOCK)).unwrap(),
         nix::fcntl::FlockArg::LockExclusive,
     )
     .unwrap();
@@ -316,7 +316,7 @@ fn a_store_this_release_cannot_read_is_removed_when_idle_and_kept_when_recent_or
         unreadable
             .iter()
             .all(|entry| entry.reason.as_deref().is_some_and(|reason| reason
-                .contains(review_core::event::ANOTHER_RELEASE)
+                .contains(af_contracts::event::ANOTHER_RELEASE)
                 && reason.contains("TaskFromTheFuture@9")))
     );
 
@@ -717,9 +717,9 @@ fn claude_project_directories_are_removed_through_their_anchor_and_links_are_lef
     std::os::unix::fs::symlink(&elsewhere, projects.join(linked)).unwrap();
     let unmeasured = "-private-tmp-af-sandbox-4-ghi";
     std::fs::create_dir_all(projects.join(unmeasured)).unwrap();
-    let identity = review_sandbox::Identity::of(&projects.join(ours)).ok();
+    let identity = af_sandbox::Identity::of(&projects.join(ours)).ok();
     // The link is measured as what its name holds, the link itself, and is still never followed.
-    let link_identity = review_sandbox::Identity::of(&projects.join(linked)).ok();
+    let link_identity = af_sandbox::Identity::of(&projects.join(linked)).ok();
     let (removed, failures) = remove_claude_projects(
         &config,
         &[
@@ -904,12 +904,10 @@ fn telemetry_segment(root: &Path, old: Duration) -> String {
 
 /// [`telemetry_segment`] with the segment id `id` when given.
 fn telemetry_segment_as(root: &Path, old: Duration, id: Option<&str>) -> String {
-    use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
-    let mut options = review_telemetry::segment::writer::WriterOptions::new(
-        root,
-        review_telemetry::level::Level::Spans,
-    );
-    options.redactor = review_telemetry::redact::Redactor::new();
+    use af_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+    let mut options =
+        af_telemetry::segment::writer::WriterOptions::new(root, af_telemetry::level::Level::Spans);
+    options.redactor = af_telemetry::redact::Redactor::new();
     options.segment_id = id.map(str::to_string);
     // Sealed `old` ago on the writer's clock: a sealed segment's last use is its seal time.
     let when = SystemTime::now() - old;
@@ -918,7 +916,7 @@ fn telemetry_segment_as(root: &Path, old: Duration, id: Option<&str>) -> String 
         .unwrap()
         .as_nanos();
     options.clock = Some(std::sync::Arc::new(move || at));
-    let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
+    let writer = af_telemetry::segment::writer::Writer::new(options).unwrap();
     let span = writer
         .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
         .unwrap();
@@ -940,7 +938,7 @@ fn telemetry_segment_as(root: &Path, old: Duration, id: Option<&str>) -> String 
 
 /// A corrupt segment in `root`, last modified `old` ago; its path.
 fn corrupt_segment(root: &Path, id: &str, bytes: usize, old: Duration) -> PathBuf {
-    let layout = review_telemetry::layout::Layout::new(root);
+    let layout = af_telemetry::layout::Layout::new(root);
     std::fs::create_dir_all(layout.segments()).unwrap();
     let path = layout.corrupt_segment(id);
     std::fs::write(&path, vec![b'#'; bytes]).unwrap();
@@ -972,19 +970,16 @@ fn telemetry_eviction_follows_storage_rules() {
     let corrupt = corrupt_segment(&root, "1700000000000-9-0a1b2c3d", 4096, 30 * DAY);
     let recent = telemetry_segment(&root, Duration::from_secs(30 * 60));
     // A live writer holds its segment's lock.
-    let live = review_telemetry::segment::writer::Writer::new(
-        review_telemetry::segment::writer::WriterOptions::new(
-            &root,
-            review_telemetry::level::Level::Spans,
-        ),
+    let live = af_telemetry::segment::writer::Writer::new(
+        af_telemetry::segment::writer::WriterOptions::new(&root, af_telemetry::level::Level::Spans),
     )
     .unwrap();
     live.span_start(
         None,
         None,
         "af.command",
-        review_telemetry::record::SpanKind::Internal,
-        review_telemetry::record::Attrs::new(),
+        af_telemetry::record::SpanKind::Internal,
+        af_telemetry::record::Attrs::new(),
     );
     live.flush();
     let live_id = live.segment_id().unwrap();
@@ -1016,7 +1011,7 @@ fn telemetry_eviction_follows_storage_rules() {
     let kept = sweep(&layout.roots, &room, false, true);
     assert!(telemetry_removals(&kept).is_empty(), "{kept:?}");
     assert!(
-        review_telemetry::layout::Layout::new(&root)
+        af_telemetry::layout::Layout::new(&root)
             .sealed_segment(&old)
             .exists()
     );
@@ -1027,7 +1022,7 @@ fn telemetry_eviction_follows_storage_rules() {
     std::fs::File::open(&corrupt)
         .unwrap()
         .set_modified(
-            std::fs::metadata(review_telemetry::layout::Layout::new(&root).sealed_segment(&old))
+            std::fs::metadata(af_telemetry::layout::Layout::new(&root).sealed_segment(&old))
                 .unwrap()
                 .modified()
                 .unwrap(),
@@ -1045,7 +1040,7 @@ fn telemetry_eviction_follows_storage_rules() {
     assert_eq!(preview.stop, Stop::NothingEvictable);
     let applied = sweep(&layout.roots, &policy(1), false, true);
     assert_eq!(telemetry_removals(&applied), telemetry_removals(&preview));
-    let layout_t = review_telemetry::layout::Layout::new(&root);
+    let layout_t = af_telemetry::layout::Layout::new(&root);
     assert!(!layout_t.sealed_segment(&oldest).exists() && !corrupt.exists());
     assert!(
         layout_t.sealed_segment(&recent).exists(),
@@ -1063,7 +1058,7 @@ fn telemetry_eviction_follows_storage_rules() {
         [(aged.clone(), Rule::Collection)]
     );
     assert!(layout_t.sealed_segment(&recent).exists());
-    live.finish(review_telemetry::record::SealExit::Ok).unwrap();
+    live.finish(af_telemetry::record::SealExit::Ok).unwrap();
 }
 
 /// Two registered telemetry directories hold a segment of the same id: the copy in the
@@ -1081,8 +1076,8 @@ fn telemetry_prune_preview_removes_a_segment_from_one_directory_only() {
     let id = "1700000000000-4242-0a1b2c3d";
     telemetry_segment_as(&first, 30 * DAY, Some(id));
     telemetry_segment_as(&second, 2 * DAY, Some(id));
-    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &first, &[]).unwrap();
-    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &second, &[]).unwrap();
+    af_telemetry::dirs::register(&layout.roots.telemetry.registry, &first, &[]).unwrap();
+    af_telemetry::dirs::register(&layout.roots.telemetry.registry, &second, &[]).unwrap();
     let canonical = |path: &Path| path.canonicalize().unwrap();
     let (first, second) = (canonical(&first), canonical(&second));
     let workspace = workspace(&layout, 'a', 10 * DAY);
@@ -1157,7 +1152,7 @@ fn telemetry_prune_preview_removes_a_segment_from_one_directory_only() {
     assert_eq!(preview.telemetry.stop, Stop::Fits);
     for root in [&first, &second] {
         assert!(
-            review_telemetry::layout::Layout::new(root)
+            af_telemetry::layout::Layout::new(root)
                 .sealed_segment(id)
                 .exists(),
             "a preview removes nothing"
@@ -1175,9 +1170,9 @@ fn telemetry_prune_preview_removes_a_segment_from_one_directory_only() {
 fn telemetry_sweep_reclaims_every_class() {
     let mut layout = layout();
     let root = layout.roots.telemetry.current.clone().unwrap();
-    let telemetry = review_telemetry::layout::Layout::new(&root);
+    let telemetry = af_telemetry::layout::Layout::new(&root);
     {
-        let mut index = review_telemetry::index::Index::open(&telemetry).unwrap();
+        let mut index = af_telemetry::index::Index::open(&telemetry).unwrap();
         index.ingest().unwrap();
         let connection = index.connection();
         connection
@@ -1212,7 +1207,7 @@ fn telemetry_sweep_reclaims_every_class() {
     age(&root, 2 * DAY);
     let cap = 2 * 1024 * 1024;
     layout.roots.telemetry.max_bytes = Some(cap);
-    let before = review_sandbox::storage::allocated_bytes(&root).unwrap();
+    let before = af_sandbox::storage::allocated_bytes(&root).unwrap();
     let mut room = policy(u64::MAX);
     room.auto_gc = false;
     let report = sweep(&layout.roots, &room, false, true);
@@ -1230,7 +1225,7 @@ fn telemetry_sweep_reclaims_every_class() {
     };
     assert!(reclaimed.temporary_bytes > 0 && reclaimed.blob_bytes > 0);
     assert_eq!(reclaimed.index, "vacuumed");
-    let after = review_sandbox::storage::allocated_bytes(&root).unwrap();
+    let after = af_sandbox::storage::allocated_bytes(&root).unwrap();
     assert_eq!(
         before - after,
         evicted + reclaimed.temporary_bytes + reclaimed.blob_bytes + reclaimed.index_bytes,
@@ -1249,7 +1244,7 @@ fn telemetry_dirs_overlap_reported_at_inventory() {
     let layout = layout();
     let outer = layout.root.join("elsewhere/telemetry");
     let old = telemetry_segment(&outer, 30 * DAY);
-    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &outer, &[]).unwrap();
+    af_telemetry::dirs::register(&layout.roots.telemetry.registry, &outer, &[]).unwrap();
     let inner = outer.join("nested");
     telemetry_segment(&inner, 30 * DAY);
     // Written into the registry by hand, as an edit would: registration itself refuses it.
@@ -1304,17 +1299,17 @@ fn telemetry_dirs_overlap_reported_at_inventory() {
         .find(|entry| entry.path == canonical(&inner))
         .unwrap();
     assert_eq!(inner_entry.bytes, 0, "the outer directory counts it");
-    let store_bytes = review_sandbox::storage::allocated_bytes(&store).unwrap();
+    let store_bytes = af_sandbox::storage::allocated_bytes(&store).unwrap();
     assert_eq!(
         outer_entry.bytes,
-        review_sandbox::storage::allocated_bytes(&outer).unwrap() - store_bytes,
+        af_sandbox::storage::allocated_bytes(&outer).unwrap() - store_bytes,
         "counted once: the Store by its own entry"
     );
     // Never evicted as telemetry, however far over the budget.
     let report = sweep(&layout.roots, &policy(1), true, true);
     assert!(telemetry_removals(&report).is_empty(), "{report:?}");
     assert!(
-        review_telemetry::layout::Layout::new(&outer)
+        af_telemetry::layout::Layout::new(&outer)
             .sealed_segment(&old)
             .exists()
     );
@@ -1324,8 +1319,8 @@ fn telemetry_dirs_overlap_reported_at_inventory() {
 /// it: renamed to the claim name that binds its device and inode.
 fn dead_claim(directory: &Path) -> PathBuf {
     std::fs::create_dir_all(directory.join("cas")).unwrap();
-    let identity = review_sandbox::Identity::of(directory).unwrap();
-    let claim = directory.with_file_name(review_sandbox::claim_name(999_999_999, identity));
+    let identity = af_sandbox::Identity::of(directory).unwrap();
+    let claim = directory.with_file_name(af_sandbox::claim_name(999_999_999, identity));
     std::fs::rename(directory, &claim).unwrap();
     claim
 }
@@ -1787,12 +1782,12 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
         *hook.borrow_mut() = Some(Box::new(move |_: &plan::Planned| {
             std::fs::write(at.join("grown"), vec![8_u8; 4 * CHUNK]).unwrap();
             let mut level = grows.clone();
-            for n in 0..=review_sandbox::REMOVAL_MAX_DEPTH + 1 {
+            for n in 0..=af_sandbox::REMOVAL_MAX_DEPTH + 1 {
                 level = level.join("d");
                 std::fs::create_dir(&level).unwrap();
                 std::fs::write(level.join(format!("f{n}")), b"").unwrap();
             }
-            seen.set(review_sandbox::storage::allocated_bytes(&at).unwrap());
+            seen.set(af_sandbox::storage::allocated_bytes(&at).unwrap());
         }));
     });
     let applied = sweep(&layout.roots, &keep_none, true, true);
@@ -1813,7 +1808,7 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
         "the walk could not reach all of it"
     );
     // The files the claim still holds: the chain's own are empty, so none of their bytes.
-    let remaining = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    let remaining = af_sandbox::storage::allocated_bytes(&claim).unwrap();
     assert!(started >= remaining, "{started} {remaining}");
     assert_eq!(
         failed.bytes,
@@ -1868,15 +1863,15 @@ fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
     let at = target.clone();
     BEFORE_EXECUTE.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move |_: &plan::Planned| {
-            seen.set(review_sandbox::storage::allocated_bytes(&at).unwrap());
+            seen.set(af_sandbox::storage::allocated_bytes(&at).unwrap());
         }));
     });
     let parent = layout.roots.campaigns.clone();
-    review_sandbox::removal::set_before_final_unlink(Some(Box::new(move |claim: &str| {
+    af_sandbox::removal::set_before_final_unlink(Some(Box::new(move |claim: &str| {
         std::fs::write(parent.join(claim).join("late"), b"").unwrap();
     })));
     let applied = sweep(&layout.roots, &keep_none, true, true);
-    review_sandbox::removal::set_before_final_unlink(None);
+    af_sandbox::removal::set_before_final_unlink(None);
     BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
 
     let [failed] = applied.removals.as_slice() else {
@@ -1886,7 +1881,7 @@ fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
     assert!(outcome.contains("removing its claim"), "{outcome}");
     let claim = only_claim(&layout.roots.campaigns);
     assert!(claim.join("late").is_file());
-    let remaining = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    let remaining = af_sandbox::storage::allocated_bytes(&claim).unwrap();
     assert_eq!(failed.bytes, started.get() - remaining);
     assert!(
         failed.bytes >= CHUNK as u64,
@@ -1946,8 +1941,8 @@ fn dead_claim_holding(layout: &Layout, free: u64, kept: u64) -> PathBuf {
             .unwrap();
         }
     }
-    let identity = review_sandbox::Identity::of(&made).unwrap();
-    let claim = made.with_file_name(review_sandbox::claim_name(999_999_999, identity));
+    let identity = af_sandbox::Identity::of(&made).unwrap();
+    let claim = made.with_file_name(af_sandbox::claim_name(999_999_999, identity));
     std::fs::rename(&made, &claim).unwrap();
     claim
 }
@@ -1962,7 +1957,7 @@ fn dead_claim_holding(layout: &Layout, free: u64, kept: u64) -> PathBuf {
 fn a_grown_claims_partial_deletion_reports_the_bytes_it_retains() {
     let layout = layout();
     let claim = dead_claim_holding(&layout, 8, 2);
-    let inventoried = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    let inventoried = af_sandbox::storage::allocated_bytes(&claim).unwrap();
     assert_eq!(inventoried, 10 * MIB);
     let previewed = sweep(&layout.roots, &policy(20 << 30), false, false);
     let [planned] = previewed.removals.as_slice() else {
@@ -1978,7 +1973,7 @@ fn a_grown_claims_partial_deletion_reports_the_bytes_it_retains() {
         }));
     });
     let parent = layout.roots.campaigns.clone();
-    review_sandbox::removal::set_before_final_unlink(Some(Box::new(move |claim: &str| {
+    af_sandbox::removal::set_before_final_unlink(Some(Box::new(move |claim: &str| {
         let late = parent.join(claim).join("late");
         std::fs::create_dir(&late).unwrap();
         for n in 0..12 {
@@ -1986,7 +1981,7 @@ fn a_grown_claims_partial_deletion_reports_the_bytes_it_retains() {
         }
     })));
     let applied = sweep(&layout.roots, &policy(20 << 30), false, true);
-    review_sandbox::removal::set_before_final_unlink(None);
+    af_sandbox::removal::set_before_final_unlink(None);
     BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
 
     let [failed] = applied.removals.as_slice() else {
@@ -1995,7 +1990,7 @@ fn a_grown_claims_partial_deletion_reports_the_bytes_it_retains() {
     let outcome = failed.outcome.as_deref().unwrap();
     assert!(outcome.contains("removing its claim"), "{outcome}");
     let claim = only_claim(&layout.roots.campaigns);
-    let retained = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    let retained = af_sandbox::storage::allocated_bytes(&claim).unwrap();
     assert_eq!(retained, 12 * MIB);
     assert_eq!(
         failed.bytes,
@@ -2060,7 +2055,7 @@ fn a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown
     assert_eq!(recorded.total_after, None, "no record claims a number");
     assert_eq!(
         recorded.stop,
-        review_core::task::storage_sweep::StorageSweepStopV2::Unknown
+        af_contracts::task::storage_sweep::StorageSweepStopV2::Unknown
     );
     assert_eq!(recorded.failures.len(), 1);
     assert!(outcome.ends_with(recorded.failures[0].as_str()));
@@ -2138,7 +2133,7 @@ fn a_planned_container_gone_since_the_inventory_is_a_failed_entry() {
 fn recorded_warm_key(layout: &Layout, project: char, toolchain: char, bytes: u64, old: Duration) {
     use std::os::unix::fs::MetadataExt;
     let key = warm_key(layout, project, toolchain, 16, old);
-    let lock = std::fs::metadata(key.join(review_sandbox::KEY_LOCK)).unwrap();
+    let lock = std::fs::metadata(key.join(af_sandbox::KEY_LOCK)).unwrap();
     std::fs::write(
         key.with_file_name(format!("{}.size", hex(toolchain))),
         format!("{bytes} {} {}\n", lock.mtime(), lock.mtime_nsec()),
@@ -2220,7 +2215,7 @@ fn layout_with_idle_held_key() -> (Layout, PathBuf, nix::fcntl::Flock<std::fs::F
     let layout = layout();
     let key = warm_key(&layout, 'c', '5', CHUNK, 30 * DAY);
     let held = nix::fcntl::Flock::lock(
-        std::fs::File::open(key.join(review_sandbox::KEY_LOCK)).unwrap(),
+        std::fs::File::open(key.join(af_sandbox::KEY_LOCK)).unwrap(),
         nix::fcntl::FlockArg::LockExclusive,
     )
     .unwrap();
@@ -2377,7 +2372,7 @@ fn every_project_store_counts_for_delivered_protection_whatever_the_discovery_ce
     let state = layout.roots.registry.parent().unwrap().to_path_buf();
     let readable = state.join("project").join("a".repeat(64));
     std::fs::create_dir_all(&readable).unwrap();
-    review_store::EventStore::open(readable.join("events.sqlite")).unwrap();
+    af_store::EventStore::open(readable.join("events.sqlite")).unwrap();
     let broken = state.join("project").join("b".repeat(64));
     std::fs::create_dir_all(&broken).unwrap();
     std::fs::write(broken.join("events.sqlite"), b"not a database").unwrap();
@@ -2497,7 +2492,7 @@ fn a_held_warm_key_is_refused_at_eviction_and_an_evicted_one_leaves_its_cause() 
         .unwrap();
     assert_eq!(entry.in_use, None, "idle when the inventory measured it");
     let held = nix::fcntl::Flock::lock(
-        std::fs::File::open(key.join(review_sandbox::KEY_LOCK)).unwrap(),
+        std::fs::File::open(key.join(af_sandbox::KEY_LOCK)).unwrap(),
         nix::fcntl::FlockArg::LockExclusive,
     )
     .unwrap();
@@ -2511,19 +2506,19 @@ fn a_held_warm_key_is_refused_at_eviction_and_an_evicted_one_leaves_its_cause() 
         key.join("cargo_target/blob").exists(),
         "a held key keeps every byte"
     );
-    assert!(review_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).is_none());
+    assert!(af_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).is_none());
     drop(held);
 
     let (bytes, _, _) = evict(&layout.roots, &policy(1024), &stock, entry).unwrap();
     assert!(!key.exists());
-    let record: review_core::task::check_layer::WarmEvictionV1 = serde_json::from_slice(
-        &review_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).unwrap(),
+    let record: af_contracts::task::check_layer::WarmEvictionV1 = serde_json::from_slice(
+        &af_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).unwrap(),
     )
     .unwrap();
     record.validate().unwrap();
     assert_eq!(
         record.by,
-        review_core::task::check_layer::WarmEvictorV1::StorageSweep
+        af_contracts::task::check_layer::WarmEvictorV1::StorageSweep
     );
     assert_eq!(record.bytes, bytes);
     // The record sits beside the key, never below a key, so the next inventory lists no key

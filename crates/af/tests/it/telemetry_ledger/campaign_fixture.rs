@@ -2,12 +2,12 @@
 //! results the Store's canonical reduction admits: Findings, a Demand, its Evidence and its
 //! satisfaction, and Finding dispositions. Adapted from the Store's own integration fixtures.
 
-use review_core::{
+use af_contracts::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, EventType, Producer, ReviewerStageOutput, RoundStartedPayloadV1,
     SubjectKind, SubjectV1,
 };
-use review_store::{CanonicalStage, Cas, EventStore, Ingest, NewEvent};
+use af_store::{CanonicalStage, Cas, EventStore, Ingest, NewEvent};
 
 pub const RUN: &str = "campaign-telemetry";
 
@@ -139,7 +139,7 @@ pub fn admit(
         .iter()
         .map(|(source, attempt_id, output)| {
             cas.put_artifact(
-                review_core::contract::REVIEWER_RESULT_V2,
+                af_contracts::contract::REVIEWER_RESULT_V2,
                 Producer::Attempt {
                     run_id: RUN.into(),
                     node_id: (*source).into(),
@@ -158,7 +158,7 @@ pub fn admit(
         .zip(&result_ids)
         .map(|((source, attempt_id, output), result_id)| CanonicalStage {
             source,
-            demand_requirement: review_core::DemandRequirement::Required,
+            demand_requirement: af_contracts::DemandRequirement::Required,
             stage: output,
             attempt_id,
             result_artifact_id: result_id,
@@ -176,7 +176,7 @@ pub fn admit(
 /// A bare-status `FindingResolved@1` under the active Round, as the reducer writes a contested
 /// claim and the Store's fixtures stage other dispositions.
 pub fn resolve(store: &mut EventStore, cas: &Cas, round: &Round, key: &str, status: &str) {
-    let ledger_round = review_store::LedgerProjection::rebuild(store, cas, RUN)
+    let ledger_round = af_store::LedgerProjection::rebuild(store, cas, RUN)
         .unwrap()
         .ledger()
         .round;
@@ -200,8 +200,8 @@ pub fn resolve(store: &mut EventStore, cas: &Cas, round: &Round, key: &str, stat
 }
 
 /// The Campaign's Findings by title and its Demands, as the Ledger holds them now.
-pub fn ledger(store: &EventStore, cas: &Cas) -> review_store::Ledger {
-    review_store::LedgerProjection::rebuild(store, cas, RUN)
+pub fn ledger(store: &EventStore, cas: &Cas) -> af_store::Ledger {
+    af_store::LedgerProjection::rebuild(store, cas, RUN)
         .unwrap()
         .into_ledger()
 }

@@ -221,8 +221,8 @@ struct Recording {
     reached: std::sync::Arc<AtomicBool>,
 }
 impl WorkerModelAdapter for Recording {
-    fn credential_mode(&self) -> review_core::CredentialModeV1 {
-        review_core::CredentialModeV1::TrustedUnsafe
+    fn credential_mode(&self) -> af_contracts::CredentialModeV1 {
+        af_contracts::CredentialModeV1::TrustedUnsafe
     }
     fn provider_kind(&self) -> &'static str {
         "claude"
@@ -236,7 +236,7 @@ impl WorkerModelAdapter for Recording {
         _workdir: &Path,
         _input: Vec<u8>,
         _timeout: Duration,
-        _access: review_runner::task::WorkerAccess,
+        _access: af_runner::task::WorkerAccess,
         _cancellation: Option<&AtomicBool>,
         _environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -303,7 +303,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         directory.path(),
         b"{}".to_vec(),
         LOAD_SAFE_WALL,
-        review_runner::task::WorkerAccess::ReadOnly,
+        af_runner::task::WorkerAccess::ReadOnly,
         None,
         &environment,
     );
@@ -332,7 +332,7 @@ fn a_removed_executable_with_no_installed_client_refuses_by_name_before_any_prob
         directory.path(),
         b"{}".to_vec(),
         Duration::from_secs(5),
-        review_runner::task::WorkerAccess::ReadOnly,
+        af_runner::task::WorkerAccess::ReadOnly,
         None,
         &[],
     );
