@@ -224,7 +224,10 @@ Committed .af authority needs manual updates to the current native Task contract
 - Regenerate guarded performance fixture pins for the integrated native Task Review contracts
   and 0.15.1-rc.2 release, preserving current release fixture admission and paired sample counts.
 
-## [0.15.1-rc.2] - 2026-11-10
+## [0.15.1-rc.2] - 2026-11-10 [YANKED]
+
+Tagged but never published: the release workflow failed its macOS performance check before
+publication. No GitHub release or signed assets were published; 0.15.1-rc.3 supersedes it.
 
 ### Authority compatibility
 
