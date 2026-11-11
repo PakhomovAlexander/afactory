@@ -123,6 +123,11 @@ pub(super) fn last(cas: &Cas, store: &EventStore, task: &TaskProjection) -> Opti
                         continue;
                     }
                 };
+                #[cfg(debug_assertions)]
+                if runs::observation_barrier("gate-history").is_err() {
+                    history_intact = false;
+                    return;
+                }
                 if raw.artifact_type != TASK_RUNTIME_EVIDENCE_V1 {
                     continue;
                 }
@@ -468,6 +473,45 @@ mod tests {
             assert_eq!(result.missing_obligations.len(), task.acceptance.len());
             Ok(())
         }
+    }
+
+    #[test]
+    fn display_operations_retain_the_oldest_stream_prefix_until_reconstruction() {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let path = root.path().join("events.sqlite");
+        let mut writer = EventStore::open(&path).unwrap();
+        let task = task_with_identity(&cas, &mut writer, "observed", "repo", "policy").0;
+        let append = |writer: &mut EventStore| {
+            let count = writer.len("display-source").unwrap();
+            writer
+                .append(
+                    "display-source",
+                    &cas,
+                    af_store::NewEvent::new(
+                        af_contracts::EventType::SourceCapturedV1,
+                        json!({"display": count}),
+                    ),
+                )
+                .unwrap();
+        };
+        append(&mut writer);
+        let mut opened = OpenedTask {
+            state: root.path().to_owned(),
+            store: EventStore::open_read_only(&path).unwrap(),
+            task,
+            cas: Cas::open_existing(root.path().join("cas")).unwrap(),
+            view_artifacts: Default::default(),
+            view_runs: Default::default(),
+        };
+        opened.track_display(|| opened.store.replay("display-source").unwrap());
+        assert!(!opened.refresh_if_changed().unwrap());
+        append(&mut writer);
+        opened.track_display(|| opened.store.replay("display-source").unwrap());
+        assert_eq!(opened.view_runs.borrow()["display-source"], 1);
+        assert!(opened.refresh_if_changed().unwrap());
+        assert!(opened.view_runs.borrow().is_empty());
+        assert!(!opened.refresh_if_changed().unwrap());
     }
 
     #[test]

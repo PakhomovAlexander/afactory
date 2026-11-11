@@ -3906,15 +3906,29 @@ impl OpenedTask {
             _ => None,
         };
         let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
-        let ((view, runs), reads) = self.cas.track_reads(|| {
-            self.store.track_replays(|| {
-                selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)
-            })
-        });
-        let view = view?;
-        self.view_artifacts.borrow_mut().extend(reads);
-        self.view_runs.borrow_mut().extend(runs);
+        let view = self.track_display(|| {
+            let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled);
+            #[cfg(debug_assertions)]
+            runs::observation_barrier("view")?;
+            view
+        })?;
         Ok((result, view))
+    }
+
+    /// Retain the complete display read closure until the projection changes. If a stream
+    /// advances between display operations, keep its oldest prefix so validation forces a
+    /// reconstruction rather than combining two different observations.
+    fn track_display<T>(&self, read: impl FnOnce() -> T) -> T {
+        let ((value, runs), reads) = self.cas.track_reads(|| self.store.track_replays(read));
+        self.view_artifacts.borrow_mut().extend(reads);
+        let mut observed = self.view_runs.borrow_mut();
+        for (run, count) in runs {
+            observed
+                .entry(run)
+                .and_modify(|old| *old = (*old).min(count))
+                .or_insert(count);
+        }
+        value
     }
 
     /// Reuse this projection only after exact byte checks of its full read closure. The

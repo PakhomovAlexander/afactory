@@ -185,6 +185,41 @@ fn test_duration(name: &str) -> Option<Duration> {
     None
 }
 
+/// A debug CLI fixture can stop a particular dependent read until its independent writer
+/// commits. Numbered barriers make initial and refreshed views deterministic without sleeps
+/// deciding which side of an observation a commit lands on. Release builds have no hook.
+#[cfg(debug_assertions)]
+pub(super) fn observation_barrier(point: &str) -> Result<(), String> {
+    let Some(root) = std::env::var_os("AF_TEST_WAIT_OBSERVATION_BARRIER") else {
+        return Ok(());
+    };
+    thread_local! {
+        static READS: std::cell::RefCell<BTreeMap<String, u64>> = Default::default();
+    }
+    let number = READS.with(|reads| {
+        let mut reads = reads.borrow_mut();
+        let number = reads.entry(point.to_owned()).or_default();
+        *number += 1;
+        *number
+    });
+    let barrier = PathBuf::from(root).join(format!("{point}-{number}"));
+    if !barrier.is_dir() {
+        return Ok(());
+    }
+    std::fs::write(barrier.join("ready"), []).map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    while !barrier.join("proceed").exists() {
+        if started.elapsed() > Duration::from_secs(60) {
+            return Err(format!(
+                "observation fixture barrier timed out: {}",
+                barrier.display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
 /// The window `af task run --detach` gives its run to be admitted: two minutes, or what a debug
 /// build's fixture sets.
 fn detach_admission() -> Duration {
@@ -527,6 +562,26 @@ pub(crate) fn wait(
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let mut opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
+    let (code, document) = wait_status(&mut opened, timeout)?;
+    print_status(&document, inspect.json)?;
+    if code != 124 {
+        if bell && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            eprint!("\x07");
+        }
+        if notify {
+            notify_completion(id, code);
+        }
+    }
+    Ok(code)
+}
+
+/// Both timeout and settled exits use the same checked, complete status observation. No
+/// dependent Store/CAS reads may follow its final watermark check before the exit decision.
+pub(super) fn wait_status(
+    opened: &mut OpenedTask,
+    timeout: Option<u64>,
+) -> Result<(i32, TaskStatusV2), String> {
+    let id = opened.task.task_id.clone();
     let started = std::time::Instant::now();
     let limit = timeout.map(Duration::from_secs);
     let mut said = false;
@@ -534,7 +589,32 @@ pub(crate) fn wait(
     loop {
         let running = view.state.phase == TaskStatePhaseV1::Running;
         let starting = !running && starting_run(&opened.state, &opened.task).is_some();
-        if !running && !starting {
+        let settled = !running && !starting;
+        let expired = limit.is_some_and(|limit| started.elapsed() >= limit);
+        if !settled && !said {
+            eprintln!("af task wait: Task {id} is {}; waiting", view.state.label());
+            said = true;
+        }
+        if settled || expired {
+            let document = opened.track_display(|| status_document(opened, view.state.clone()));
+            // This includes newly built views and the final Gate-history reads, not just
+            // artifacts retained by an earlier polling iteration. Retry only on changed data.
+            if opened.refresh_if_changed()?
+                || (running && opened.task.lease_until_unix_ms() <= now_ms())
+            {
+                view = opened.view()?.1;
+                continue;
+            }
+            if !settled {
+                eprintln!(
+                    "af task wait: Task {id} still runs after {}; wait again with `af task wait \
+                     {id}`, or see where it is with `af task status {id}`",
+                    state::duration_words(
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(0)
+                    )
+                );
+                return Ok((124, document));
+            }
             if view.state.phase == TaskStatePhaseV1::Planned && !said {
                 let next = view
                     .state
@@ -549,27 +629,7 @@ pub(crate) fn wait(
                 ));
             }
             let code = settled_code(&view.state);
-            print_status(&status_document(&opened, view.state), inspect.json)?;
-            if bell && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-                eprint!("\x07");
-            }
-            if notify {
-                notify_completion(id, code);
-            }
-            return Ok(code);
-        }
-        if !said {
-            eprintln!("af task wait: Task {id} is {}; waiting", view.state.label());
-            said = true;
-        }
-        if limit.is_some_and(|limit| started.elapsed() >= limit) {
-            print_status(&status_document(&opened, view.state), inspect.json)?;
-            eprintln!(
-                "af task wait: Task {id} still runs after {}; wait again with `af task wait \
-                 {id}`, or see where it is with `af task status {id}`",
-                state::duration_words(u64::try_from(started.elapsed().as_millis()).unwrap_or(0))
-            );
-            return Ok(124);
+            return Ok((code, document));
         }
         std::thread::sleep(Duration::from_millis(250));
         let changed = opened.refresh_if_changed()?;

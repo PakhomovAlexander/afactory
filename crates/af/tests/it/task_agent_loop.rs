@@ -1968,6 +1968,137 @@ fn an_unchanged_wait_rechecks_artifact_bytes_before_its_next_observation() {
     store.release_task_lease(&cas, &lease).unwrap();
 }
 
+/// Stop the source-built waiter inside a real dependent read, finish its Task through the
+/// ordinary CLI on another connection, then let the expired wait make its return decision.
+/// The numbered view barriers also force a reconstruction before completing the refreshed view.
+fn completion_inside_wait_observation(point: &str, refreshed: bool, initially_running: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    task_gc::start(&repo, &state, "gc-older.json");
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-newer.json"]),
+        0,
+    );
+    let task = "gc-newer";
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let plan_id = store
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap()
+        .plan_id
+        .unwrap();
+    let mut lease = initially_running.then(|| {
+        store
+            .take_task_lease(&cas, task, "observation-fixture", 60_000)
+            .unwrap()
+    });
+    let barriers = root.path().join("observation-barriers");
+    let final_barrier = barriers.join(point);
+    std::fs::create_dir_all(&final_barrier).unwrap();
+    if refreshed {
+        std::fs::create_dir_all(barriers.join("view-1")).unwrap();
+    }
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--timeout", "1", "--json", "--state"])
+        .arg(&state)
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    let mut await_read = |barrier: &Path| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !barrier.join("ready").exists() {
+            if waiter.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+                panic!(
+                    "waiter exited before {}: {}\n{}",
+                    barrier.display(),
+                    out(&output),
+                    err(&output)
+                );
+            }
+            assert!(Instant::now() < until, "no read at {}", barrier.display());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    if refreshed {
+        let first = barriers.join("view-1");
+        await_read(&first);
+        store
+            .release_task_lease(&cas, lease.as_ref().unwrap())
+            .unwrap();
+        lease = Some(
+            store
+                .take_task_lease(&cas, task, "refreshed-fixture", 60_000)
+                .unwrap(),
+        );
+        std::fs::write(first.join("proceed"), []).unwrap();
+    }
+    await_read(&final_barrier);
+    if point.starts_with("view-") {
+        // The CLI's minimum timeout is one second. The waiter started its timer before
+        // announcing this read; keep it inside construction until that timeout has expired.
+        // The barrier, rather than this elapsed-time wait, places completion inside the read.
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    if let Some(lease) = &lease {
+        store.release_task_lease(&cas, lease).unwrap();
+    }
+    // No synthetic result or authority stub: the normal fixture Workers, check and acceptance
+    // finish while the waiter is still inside view construction or the indexed history read.
+    expect(
+        &af(
+            &repo,
+            &state,
+            &["task", "run", task, "--confirm-plan", &plan_id],
+        ),
+        0,
+    );
+    std::fs::write(final_barrier.join("proceed"), []).unwrap();
+    let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+    let waited = document(&output, 0, Some("task-status-v2.json"));
+    assert_eq!(waited["state"]["phase"], "finished", "{waited}");
+    assert!(
+        !err(&output).contains("still runs after"),
+        "{}",
+        err(&output)
+    );
+    let current = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        Some("task-status-v2.json"),
+    );
+    assert_eq!(
+        waited, current,
+        "the exit and complete document must share one observation"
+    );
+    assert!(waited["last_gate"].as_str().is_some(), "{waited}");
+}
+
+#[test]
+fn an_expired_wait_observes_completion_during_its_initial_view() {
+    completion_inside_wait_observation("view-1", false, true);
+}
+
+#[test]
+fn an_expired_wait_observes_completion_during_its_refreshed_view() {
+    completion_inside_wait_observation("view-2", true, true);
+}
+
+#[test]
+fn an_expired_wait_observes_completion_during_final_gate_history_read() {
+    completion_inside_wait_observation("gate-history-1", false, true);
+}
+
+#[test]
+fn a_settled_wait_rechecks_completion_during_final_gate_history_read() {
+    completion_inside_wait_observation("gate-history-1", false, false);
+}
+
 /// A detached run that is neither holding the Task nor admitted when the window passes is not
 /// claimed to run: `--detach` exits 4 with `admitted: false` and `af task status ID` next, and
 /// the run, held back here as a loaded machine can, still starts and finishes afterwards.
