@@ -37,8 +37,8 @@ guardrails; the Scenario owns the later native performance comparison, independe
 verification and reporting. A verification Task is read-only and judges the exact native report
 in `scenario_evidence` against `scenario_goal`, preserving regressions and inconclusive results
 and refusing changed source, producer or configuration identities. The native pipeline and
-publication acceptance enforce the complete selected bugs, correctness and evaluator team and
-its results, with no advisory/default-light substitution. Judge only your declared delivered
+publication acceptance enforce the complete selected Pipeline roles (bugs, correctness and evaluator) and
+their results, with no advisory/default-light substitution. Judge only your declared delivered
 inputs and the exact native check receipts. Do not require your own future result or sibling
 judge results; those are not inputs to this Worker. Judge independently from the source,
 recorded base when available, requirements and check receipts. The implementer's summary is not

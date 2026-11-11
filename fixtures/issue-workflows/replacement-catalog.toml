@@ -68,12 +68,12 @@
 
 ["packages"."issue-internal/bugs"]
 "version" = "1.0.0"
-"digest" = "sha256:ecf80b0383322cdc07d16f8e85390681f8726342ad57dc5c8d3aa8e8d874945f"
+"digest" = "sha256:7ad61a75398e5e4614273838458217565373c16e4cdc3030410d81b12cc63d58"
 "path" = ".af/task-packages/issue-internal/bugs"
 
 ["packages"."issue-internal/correctness"]
 "version" = "1.0.0"
-"digest" = "sha256:9fd6d80e47509f4b368889d2cba3f2f6d586ddffe4a0a9b4a7b2b4f3c0ffce23"
+"digest" = "sha256:2e102125fc787ea73e81f30cee5c695c075a77b5385a5f63408be34715b351db"
 "path" = ".af/task-packages/issue-internal/correctness"
 
 ["packages"."issue-internal/design"]
@@ -88,7 +88,7 @@
 
 ["packages"."issue-internal/evaluator"]
 "version" = "1.0.0"
-"digest" = "sha256:cc54f7713c4fe09e42319cbca653fbf3abd88656a4e65bea0164000ab5f1d9a3"
+"digest" = "sha256:90e9165efc6601a89e2fae9038a1d4b51b8c14b60fe5b08f546e77e28f924cda"
 "path" = ".af/task-packages/issue-internal/evaluator"
 
 ["packages"."issue-internal/experiment-evaluator"]
@@ -118,7 +118,7 @@
 
 ["packages"."issue-internal/light-evaluator"]
 "version" = "1.0.0"
-"digest" = "sha256:97401c852b73e1429e972a5da6e17422f39e942a6240a6ad18c6921bedb013aa"
+"digest" = "sha256:ace7c00f22c4ae078ee7cd6528f6650522b2a1d970e5d8b68b66daa3c09ef787"
 "path" = ".af/task-packages/issue-internal/light-evaluator"
 
 ["packages"."issue-internal/light-review"]

@@ -69,10 +69,9 @@ fn private_catalog_copy_is_writable_and_preserves_read_only_source() {
 
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("replacement-catalog.toml");
-    let source_bytes = std::fs::read(
-        workspace().join("fixtures/issue-workflows/replacement-catalog.toml"),
-    )
-    .unwrap();
+    let source_bytes =
+        std::fs::read(workspace().join("fixtures/issue-workflows/replacement-catalog.toml"))
+            .unwrap();
     std::fs::write(&source, &source_bytes).unwrap();
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
     let source_mode = std::fs::metadata(&source).unwrap().permissions().mode();
