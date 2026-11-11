@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/af-contracts", "crates/af-parallel", "crates/af-process", "crates/af-store", "crates/af-source-git", "crates/af-source-issue", "crates/af-check", "crates/af-runner", "crates/af-sandbox", "crates/af-graph", "crates/af-runtime", "crates/af-pipeline-config", "crates/af-attempt", "crates/af-runner-pi", "crates/af-runner-codex", "crates/af-runner-claude", "crates/af-telemetry", "crates/af-scenario", "crates/af-project", "crates/af"]
 
 [workspace.package]
-version = "0.15.1-rc.2"
+version = "0.15.1-rc.3"
 edition = "2024"
 rust-version = "1.88"
 publish = false
