@@ -1142,7 +1142,10 @@ fn probe_all(
     };
     // A private empty directory stands in when no candidate of a kind is probed, so the
     // capability check never runs a CLI against a directory of the operator's.
-    let scratch = tempfile::tempdir().ok();
+    let scratch = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .ok();
     thread::scope(|scope| {
         let handles: Vec<_> = binaries
             .iter_mut()
@@ -2611,7 +2614,7 @@ mod tests {
     use super::*;
 
     fn private(dir: &Path) {
-        fs::create_dir_all(dir).unwrap();
+        crate::providers::fixture_fs::create_dir_all(dir).unwrap();
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
@@ -2640,11 +2643,11 @@ mod tests {
     /// still there for one that is not; a present entry is `already_registered`.
     #[test]
     fn apply_checks_a_registered_row_again_under_the_registry_lock() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let home = fs::canonicalize(root.path()).unwrap();
         let dir = home.join("claude-work");
         private(&dir);
-        fs::write(dir.join(".claude.json"), "{}").unwrap();
+        crate::providers::fixture_fs::write(dir.join(".claude.json"), "{}").unwrap();
         let config = home.join("config");
         private(&config);
         let registry = config.join("providers.toml");
@@ -2674,7 +2677,7 @@ mod tests {
             Applied::AlreadyRegistered
         );
         // Removed again: a logged-out row is no longer called registered.
-        fs::write(&registry, "version = 4\n").unwrap();
+        crate::providers::fixture_fs::write(&registry, "version = 4\n").unwrap();
         let mut rows = vec![row(scanned(), Auth::NotAuthenticated)];
         apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
         assert!(rows[0].applied.is_none());
@@ -2699,10 +2702,10 @@ mod tests {
     /// C3 item 8: a directory that cannot be listed has its markers checked by name, and says so.
     #[test]
     fn an_unlistable_directory_has_its_markers_checked_by_name() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let dir = root.path().join("claude-work");
         private(&dir);
-        fs::write(dir.join(".claude.json"), "{}").unwrap();
+        crate::providers::fixture_fs::write(dir.join(".claude.json"), "{}").unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o100)).unwrap();
         let (markers, listing) = markers_found(&dir, CLAUDE_MARKERS);
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -2714,13 +2717,13 @@ mod tests {
 
     #[test]
     fn markers_are_read_by_name_without_opening_a_file_below_the_directory() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let dir = root.path().join("claude-work");
         private(&dir);
         assert!(markers_in(&dir, CLAUDE_MARKERS).unwrap().is_empty());
-        fs::write(dir.join("settings.json"), "{}").unwrap();
+        crate::providers::fixture_fs::write(dir.join("settings.json"), "{}").unwrap();
         // A marker af may not read is still a marker: only its name is examined.
-        fs::write(dir.join(".credentials.json"), "").unwrap();
+        crate::providers::fixture_fs::write(dir.join(".credentials.json"), "").unwrap();
         fs::set_permissions(
             dir.join(".credentials.json"),
             fs::Permissions::from_mode(0o000),
@@ -2743,7 +2746,7 @@ mod tests {
 
     #[test]
     fn ids_follow_the_source_and_the_directory_name() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let home = fs::canonicalize(root.path()).unwrap();
         for dir in [
             ".claude",
@@ -2815,7 +2818,7 @@ mod tests {
 
     #[test]
     fn the_scan_lists_literal_sibling_names_one_level_deep() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let home = fs::canonicalize(root.path()).unwrap();
         for dir in [
             ".claude",
@@ -2830,8 +2833,8 @@ mod tests {
         ] {
             private(&home.join(dir));
         }
-        fs::write(home.join(".claude.json"), "{}").unwrap();
-        fs::write(home.join(".claude-file"), "").unwrap();
+        crate::providers::fixture_fs::write(home.join(".claude.json"), "{}").unwrap();
+        crate::providers::fixture_fs::write(home.join(".claude-file"), "").unwrap();
         let listed = |kind| -> Vec<(String, Source)> {
             home_dirs(kind, &home)
                 .into_iter()
@@ -2863,7 +2866,7 @@ mod tests {
 
     #[test]
     fn a_directory_found_twice_keeps_its_most_specific_source() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let dir = fs::canonicalize(root.path()).unwrap().join("claude-work");
         private(&dir);
         let kept = deduplicate(vec![
@@ -2879,7 +2882,7 @@ mod tests {
 
     #[test]
     fn unsafe_and_absent_candidates_say_why() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let base = fs::canonicalize(root.path()).unwrap();
         let shared = base.join("shared");
         private(&shared);
@@ -2944,9 +2947,9 @@ mod tests {
     /// as it does below a canonical HOME; one outside HOME is printed whole.
     #[test]
     fn a_directory_below_a_linked_home_reads_as_below_home() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let real = fs::canonicalize(root.path()).unwrap().join("real-home");
-        fs::create_dir_all(real.join(".claude")).unwrap();
+        crate::providers::fixture_fs::create_dir_all(real.join(".claude")).unwrap();
         let linked = root.path().join("linked-home");
         std::os::unix::fs::symlink(&real, &linked).unwrap();
         let found = real.join(".claude");
@@ -2989,7 +2992,7 @@ mod tests {
 
     #[test]
     fn the_status_marker_gate_names_what_is_missing() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let dir = fs::canonicalize(root.path()).unwrap().join("codex-new");
         let spec = probe_spec(ProviderKind::Codex, &dir);
         assert_eq!(
@@ -3001,7 +3004,7 @@ mod tests {
             unmarked_context(&spec).unwrap(),
             format!("{} holds no auth.json or config.toml", dir.display())
         );
-        fs::write(dir.join("config.toml"), "").unwrap();
+        crate::providers::fixture_fs::write(dir.join("config.toml"), "").unwrap();
         assert_eq!(unmarked_context(&spec), None);
     }
 
@@ -3009,7 +3012,7 @@ mod tests {
     /// regular `~/.claude.json` sits beside it, for both kinds of probe, and only then.
     #[test]
     fn the_default_claude_context_is_one_predicate() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let home = fs::canonicalize(root.path()).unwrap();
         let default = home.join(".claude");
         private(&default);
@@ -3020,13 +3023,13 @@ mod tests {
             &default,
             Some(&home)
         ));
-        fs::create_dir(home.join(".claude.json")).unwrap();
+        crate::providers::fixture_fs::create_dir(home.join(".claude.json")).unwrap();
         assert!(
             !default_claude_context(ProviderKind::Claude, &default, Some(&home)),
             "a directory named .claude.json is no marker"
         );
         fs::remove_dir(home.join(".claude.json")).unwrap();
-        fs::write(home.join(".claude.json"), "{}").unwrap();
+        crate::providers::fixture_fs::write(home.join(".claude.json"), "{}").unwrap();
         assert!(default_claude_context(
             ProviderKind::Claude,
             &default,

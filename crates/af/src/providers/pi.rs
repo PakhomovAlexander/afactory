@@ -377,13 +377,13 @@ mod tests {
 
     #[test]
     fn managed_sdk_discovery_rejects_every_malformed_version_without_executing_launcher() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let agent = root.join("agent");
         let launcher = agent.join("bin/pi");
-        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        crate::providers::fixture_fs::create_dir_all(launcher.parent().unwrap()).unwrap();
         let marker = root.join("launcher-executed");
-        fs::write(
+        crate::providers::fixture_fs::write(
             &launcher,
             format!("#!/bin/sh\n: > '{}'\nexit 99\n", marker.display()),
         )
@@ -391,8 +391,8 @@ mod tests {
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
         let release = agent.join("install/releases/1.4.0");
         let sdk = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
-        fs::create_dir_all(sdk.parent().unwrap()).unwrap();
-        fs::write(&sdk, "must not execute SDK during discovery").unwrap();
+        crate::providers::fixture_fs::create_dir_all(sdk.parent().unwrap()).unwrap();
+        crate::providers::fixture_fs::write(&sdk, "must not execute SDK during discovery").unwrap();
         let current = agent.join("install/current-version");
         for bad in [
             "",
@@ -406,7 +406,7 @@ mod tests {
             "1.4.0\0",
             &"x".repeat(4096),
         ] {
-            fs::write(&current, bad).unwrap();
+            crate::providers::fixture_fs::write(&current, bad).unwrap();
             assert!(
                 discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err(),
                 "accepted {bad:?}"

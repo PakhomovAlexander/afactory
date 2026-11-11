@@ -392,7 +392,7 @@ mod tests {
 
     fn program(directory: &Path, body: &str) -> PathBuf {
         let program = directory.join("codex");
-        std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+        crate::providers::fixture_fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         program
     }
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn a_cli_that_exits_on_its_version_check_reports_its_own_error_and_fix() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = program(
             directory.path(),
             &format!("printf '%s\\n' 'file:///codex.js:1' '' '{NPM_ERROR}' >&2\nexit 1"),
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_working_cli_and_a_slow_or_cancelled_check_are_not_installation_failures() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let working = program(directory.path(), "echo 'codex-cli 0.149.0'\nexit 0");
         assert!(diagnose(directory.path(), &working).is_none());
 
@@ -478,9 +478,9 @@ mod tests {
 
     #[test]
     fn a_cli_the_operating_system_cannot_start_is_an_installation_failure() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let program = directory.path().join("codex");
-        std::fs::write(&program, "#!/nonexistent/node\n").unwrap();
+        crate::providers::fixture_fs::write(&program, "#!/nonexistent/node\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let message = diagnose(directory.path(), &program)
             .expect("installation failure")

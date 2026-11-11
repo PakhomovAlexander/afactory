@@ -7,6 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "../../../src/providers/fixture_fs.rs"]
+pub mod provider_fixture_fs;
+
 #[path = "../../../../af-process/tests/support/executables.rs"]
 mod executables;
 

@@ -19,7 +19,7 @@ const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
 
 fn fixture(kind: ProviderKind, directory: &Path, body: &str) -> (PathBuf, ProviderSpec) {
     let program = directory.join("native-fixture");
-    std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+    crate::providers::fixture_fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let spec = ProviderSpec {
         pi: None,
@@ -48,7 +48,7 @@ fn unspawned(directory: &Path) -> bool {
 #[test]
 fn identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation() {
     for kind in [ProviderKind::Claude, ProviderKind::Codex] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let (program, spec) = fixture(
             kind,
             directory.path(),
@@ -93,7 +93,7 @@ fn identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation() 
 #[test]
 fn identity_rechecks_cancel_an_inflight_status_process() {
     for kind in [ProviderKind::Claude, ProviderKind::Codex] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let (program, spec) = fixture(
             kind,
             directory.path(),
@@ -144,14 +144,15 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
 #[test]
 fn interrupted_fixture_publishes_a_complete_pid_marker_or_none() {
     use std::os::unix::process::CommandExt;
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let ready = directory.path().join("ready");
     let temporary = directory.path().join("ready.tmp");
     // Deterministic: a `mv` that never returns holds the fixture after its write and before
     // publication, the window a redirection straight onto `ready` left empty.
-    let stubs = tempfile::tempdir().unwrap();
+    let stubs = crate::providers::fixture_fs::tempdir().unwrap();
     let stub = stubs.path().join("mv");
-    std::fs::write(&stub, "#!/bin/sh\n: >\"$auth/held\"\nexec sleep 30\n").unwrap();
+    crate::providers::fixture_fs::write(&stub, "#!/bin/sh\n: >\"$auth/held\"\nexec sleep 30\n")
+        .unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut child = std::process::Command::new("/bin/sh")
         .arg("-c")
@@ -191,7 +192,10 @@ fn interrupted_fixture_publishes_a_complete_pid_marker_or_none() {
     for step in 0..64u64 {
         // A directory per kill point: a rename already inside the kernel when SIGKILL lands can
         // only finish in its own run's directory, never publish into a later run's.
-        let run = tempfile::tempdir_in(directory.path()).unwrap();
+        let run = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(directory.path())
+            .unwrap();
         let ready = run.path().join("ready");
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-c")
@@ -288,7 +292,7 @@ fn wrapper(
 
 #[test]
 fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_native_client() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let reached = std::sync::Arc::new(AtomicBool::new(false));
@@ -320,7 +324,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
 
 #[test]
 fn a_removed_executable_with_no_installed_client_refuses_by_name_before_any_probe() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let reached = std::sync::Arc::new(AtomicBool::new(false));
@@ -346,7 +350,7 @@ fn a_removed_executable_with_no_installed_client_refuses_by_name_before_any_prob
 
 #[test]
 fn a_removed_pi_node_refuses_without_resolving_or_running_another_client() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(ProviderKind::Pi, directory.path(), "exit 0");
     let reached = Arc::new(AtomicBool::new(false));
     let wrapper = wrapper(spec, program.clone(), &reached, |_| {
@@ -361,7 +365,7 @@ fn a_removed_pi_node_refuses_without_resolving_or_running_another_client() {
 #[test]
 fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept() {
     static INSTALLED: OnceLock<PathBuf> = OnceLock::new();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
     let installed = directory.path().join("installed");
     std::fs::copy(&program, &installed).unwrap();
@@ -406,7 +410,7 @@ fn identity(spec: ProviderSpec, program: PathBuf) -> TaskProviderIdentity {
 #[test]
 fn a_recheck_whose_cli_cannot_start_is_an_environment_failure_not_an_identity_one() {
     for kind in [ProviderKind::Claude, ProviderKind::Codex] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let (program, spec) = fixture(kind, directory.path(), BROKEN_INSTALL);
         let checked = identity(spec, program.clone()).recheck_identity(
             Instant::now() + Duration::from_secs(30),
@@ -465,7 +469,7 @@ exit 64"#;
         (ProviderKind::Codex, codex_other_account),
         (ProviderKind::Claude, claude_logged_out),
     ] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::providers::fixture_fs::tempdir().unwrap();
         let (program, spec) = fixture(kind, directory.path(), body);
         let checked = identity(spec, program).recheck_identity(
             Instant::now() + Duration::from_secs(30),
@@ -504,7 +508,7 @@ exit 64"#;
 
 #[test]
 fn the_identity_probe_starts_the_bare_app_server_a_cli_without_stdio_flag_serves() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(
         ProviderKind::Codex,
         directory.path(),
@@ -530,7 +534,7 @@ fn the_identity_probe_starts_the_bare_app_server_a_cli_without_stdio_flag_serves
 /// starts, the refusal names the missing protocol capability, and it is never a login problem.
 #[test]
 fn an_app_server_that_exits_before_initialize_is_reported_with_its_exit_and_line() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(
         ProviderKind::Codex,
         directory.path(),
@@ -570,7 +574,7 @@ exit 64"#,
 /// answer or a login problem.
 #[test]
 fn an_app_server_answering_initialize_without_a_result_lacks_the_protocol() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(
         ProviderKind::Codex,
         directory.path(),
@@ -637,7 +641,7 @@ fn status_answer(email: &str, method: &str) -> String {
 /// failure — never as an account change.
 #[test]
 fn an_identity_probe_that_times_out_is_sent_again_and_then_fails_as_the_environment() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(
         ProviderKind::Claude,
         directory.path(),
@@ -683,7 +687,7 @@ fn an_identity_probe_that_times_out_is_sent_again_and_then_fails_as_the_environm
 /// environment's failure.
 #[test]
 fn an_identity_probe_that_answers_malformed_is_sent_again_and_then_fails_as_the_environment() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let (program, spec) = fixture(
         ProviderKind::Claude,
         directory.path(),
@@ -714,7 +718,7 @@ fn an_identity_probe_that_answers_malformed_is_sent_again_and_then_fails_as_the_
 /// A real account change still fails the recheck, named as one, with the command that re-plans.
 #[test]
 fn another_account_still_fails_the_recheck_as_an_account_change() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let body = format!(
         "{}\nexit 64",
         status_answer("other@example.test", "claude.ai")
@@ -738,7 +742,7 @@ fn another_account_still_fails_the_recheck_as_an_account_change() {
 /// update is one Provider event, and the capture follows the new version, so it is recorded once.
 #[test]
 fn a_cli_update_with_the_same_account_passes_and_the_capture_follows_it() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::providers::fixture_fs::tempdir().unwrap();
     let body = format!(
         "[ \"$1\" = --version ] && {{ echo '2.1.300 (Claude Code)'; exit 0; }}\n{}\nexit 64",
         status_answer("developer@example.test", "oauth")

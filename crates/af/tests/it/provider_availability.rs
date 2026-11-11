@@ -32,11 +32,11 @@ fn fixture(home: &Path) -> PathBuf {
 fn fixture_with_id(home: &Path, id: &str) -> PathBuf {
     let bin = home.join("bin");
     let auth = home.join("auth");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&auth).unwrap();
     // A login's own file: af never asks a CLI about an empty auth directory, which the CLI would
     // fill (ADR-0206), so a registered context without one is never probed.
-    std::fs::write(auth.join(".claude.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::write(auth.join(".claude.json"), "{}").unwrap();
     let marker = home.join("spawned");
     // Mark *all* invocations, including help/version/account/model probes.
     let script = format!(
@@ -49,7 +49,7 @@ fn fixture_with_id(home: &Path, id: &str) -> PathBuf {
         &format!("\nprintf called >> '{}'\n", marker.display()),
         1,
     );
-    std::fs::write(bin.join("claude"), script).unwrap();
+    crate::common::provider_fixture_fs::write(bin.join("claude"), script).unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o700)).unwrap();
     success(run(
         home,
@@ -73,7 +73,7 @@ fn state(home: &Path) -> PathBuf {
 
 #[test]
 fn disable_status_catalog_setup_and_enable_are_token_free_and_survive_processes() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let marker = fixture(home);
     let registry = std::fs::read(home.join("config/af/providers.toml")).unwrap();
@@ -150,7 +150,7 @@ fn disable_status_catalog_setup_and_enable_are_token_free_and_survive_processes(
 
 #[test]
 fn long_registered_id_can_be_disabled_reported_and_enabled_across_processes() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let id = "provider".repeat(128);
     let marker = fixture_with_id(home, &id);
@@ -184,11 +184,11 @@ fn long_registered_id_can_be_disabled_reported_and_enabled_across_processes() {
 
 #[test]
 fn enable_cleans_removed_ids_and_recovers_full_capacity_without_probes() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let marker = fixture(home);
     let credential = home.join("auth/untouched");
-    std::fs::write(&credential, "credential fixture").unwrap();
+    crate::common::provider_fixture_fs::write(&credential, "credential fixture").unwrap();
     success(run(
         home,
         &["provider", "disable", "fixture", "--for", "2d"],
@@ -202,7 +202,8 @@ fn enable_cleans_removed_ids_and_recovers_full_capacity_without_probes() {
             "id": format!("orphan-{i}"), "expires_at": expiry
         }));
     }
-    std::fs::write(state(home), serde_json::to_vec(&stored).unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(state(home), serde_json::to_vec(&stored).unwrap())
+        .unwrap();
     success(run(
         home,
         &[
@@ -252,7 +253,8 @@ fn enable_cleans_removed_ids_and_recovers_full_capacity_without_probes() {
         serde_json::from_slice(&std::fs::read(state(home)).unwrap()).unwrap();
     assert_eq!(recovered["providers"].as_array().unwrap().len(), 32);
     recovered["providers"][0]["expires_at"] = json!({"unix_seconds": 1, "nanoseconds": 0});
-    std::fs::write(state(home), serde_json::to_vec(&recovered).unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(state(home), serde_json::to_vec(&recovered).unwrap())
+        .unwrap();
     // An expired orphan is still an explicit cleanup target.
     success(run(home, &["provider", "enable", "orphan-1"]));
     assert!(!marker.exists(), "orphan cleanup spawned a harness");
@@ -268,7 +270,7 @@ fn enable_cleans_removed_ids_and_recovers_full_capacity_without_probes() {
 
 #[test]
 fn invalid_duration_and_provider_do_not_publish_or_spawn_and_expired_state_is_inert() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let marker = fixture(home);
     for args in [
@@ -294,7 +296,8 @@ fn invalid_duration_and_provider_do_not_publish_or_spawn_and_expired_state_is_in
     ));
     let mut stored: Value = serde_json::from_slice(&std::fs::read(state(home)).unwrap()).unwrap();
     stored["providers"][0]["expires_at"] = json!({"unix_seconds": 1, "nanoseconds": 0});
-    std::fs::write(state(home), serde_json::to_vec(&stored).unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(state(home), serde_json::to_vec(&stored).unwrap())
+        .unwrap();
     let output = success(run(home, &["provider", "status", "--json"]));
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["providers"][0]["disabled_until"], Value::Null);
@@ -306,10 +309,10 @@ fn invalid_duration_and_provider_do_not_publish_or_spawn_and_expired_state_is_in
 
 #[test]
 fn malformed_state_refuses_catalog_and_never_calls_harness() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let marker = fixture(home);
-    std::fs::write(state(home), "{}").unwrap();
+    crate::common::provider_fixture_fs::write(state(home), "{}").unwrap();
     std::fs::set_permissions(state(home), std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(
         !run(home, &["provider", "enable", "fixture"])
