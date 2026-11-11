@@ -115,8 +115,8 @@ fn errors_unknown_and_partial_usage_retain_the_observed_floor() {
 }
 #[test]
 fn terminal_sdk_error_keeps_complete_native_charge_and_classifies_without_admitting_a_reply() {
-    use review_core::task::state::TaskCauseV1;
-    use review_runner::native_failure::NativeFailureKind;
+    use af_contracts::task::state::TaskCauseV1;
+    use af_runner::native_failure::NativeFailureKind;
     for (diagnostic, kind, cause) in [
         (
             "Kimi terminal 764: tool-call continuation rejected",
@@ -193,7 +193,7 @@ fn terminal_sdk_error_keeps_complete_native_charge_and_classifies_without_admitt
 
 #[test]
 fn withheld_terminal_diagnostics_preserve_validated_failure_categories_and_complete_charge() {
-    use review_runner::native_failure::NativeFailureKind;
+    use af_runner::native_failure::NativeFailureKind;
     for kind in [
         NativeFailureKind::Quota,
         NativeFailureKind::AuthMissing,
@@ -471,8 +471,8 @@ mod process {
 
     #[test]
     fn real_host_structured_terminal_errors_surface_safe_diagnostics_and_retain_complete_charge() {
-        use review_core::task::state::TaskCauseV1;
-        use review_runner::native_failure::NativeFailureKind;
+        use af_contracts::task::state::TaskCauseV1;
+        use af_runner::native_failure::NativeFailureKind;
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path().canonicalize().unwrap();
         let config = installed_fixture(&root);
@@ -670,7 +670,7 @@ mod process {
                 assert_eq!(TaskCauseV1::of_diagnostic(&error), Some(cause));
             }
             assert_eq!(
-                review_runner::native_failure::NativeFailureEvidenceV1::new(kind).task_cause(),
+                af_runner::native_failure::NativeFailureEvidenceV1::new(kind).task_cause(),
                 Some(cause)
             );
             assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 477);

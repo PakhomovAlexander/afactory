@@ -555,7 +555,7 @@ fn a_second_refusal_fails_the_admission_and_starts_no_worker() {
 /// business failures, even when the diagnostic contains another category's name.
 #[test]
 fn complete_quota_failures_keep_context_bound_native_evidence_despite_conflicting_diagnostics() {
-    use review_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
+    use af_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
     for admission_fails in [false, true] {
         let model = Scripted::new(
             if admission_fails {
@@ -600,7 +600,7 @@ fn complete_quota_failures_keep_context_bound_native_evidence_despite_conflictin
             let evidence = NativeFailureEvidenceV1::decode(evidence.payload).unwrap();
             assert_eq!(
                 evidence.task_cause(),
-                Some(review_core::task::state::TaskCauseV1::ProviderCapacity)
+                Some(af_contracts::task::state::TaskCauseV1::ProviderCapacity)
             );
             let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = row.result else {
                 unreachable!()

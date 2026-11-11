@@ -60,9 +60,9 @@ impl NativeFailureEvidenceV1 {
     }
 
     /// Structured native evidence takes precedence over untrusted diagnostic words.
-    pub fn task_cause(&self) -> Option<review_core::task::state::TaskCauseV1> {
+    pub fn task_cause(&self) -> Option<af_contracts::task::state::TaskCauseV1> {
         use NativeFailureKind::*;
-        use review_core::task::state::TaskCauseV1 as Cause;
+        use af_contracts::task::state::TaskCauseV1 as Cause;
         match self.kind {
             AuthMissing | AuthRevoked | AuthExpired | AuthRefreshContended | AuthRefreshFailed
             | AuthRejected => Some(Cause::IdentityUnverified),

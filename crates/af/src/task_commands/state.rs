@@ -691,7 +691,7 @@ fn diagnostic_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String
 /// Settlement appends the final adapter class as an Attempt-produced artifact. Bare native
 /// output cannot supply it, and an earlier call's evidence cannot replace the last call's.
 fn native_failure_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<TaskCauseV1> {
-    use review_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
+    use af_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
     let envelope = cas.get_artifact(attempt.raw_artifact_ids.last()?).ok()?;
     if envelope.artifact_type != NATIVE_FAILURE_EVIDENCE_V1
         || !matches!(&envelope.producer, Producer::Attempt { node_id, attempt_id, .. }
@@ -2076,7 +2076,7 @@ mod tests {
         assert_eq!(cause(&changed), TaskCauseV1::IdentityChanged);
         // Fully accounted native failures use their final structured class even if
         // the safe provider diagnostic contains the name of a conflicting cause.
-        use review_runner::native_failure::{
+        use af_runner::native_failure::{
             NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1, NativeFailureKind,
         };
         let payload =

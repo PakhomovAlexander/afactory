@@ -391,8 +391,8 @@ enum InferenceFailureKind {
     Environment,
 }
 impl InferenceFailure {
-    fn kind(&self) -> review_runner::native_failure::NativeFailureKind {
-        use review_runner::native_failure::NativeFailureKind;
+    fn kind(&self) -> af_runner::native_failure::NativeFailureKind {
+        use af_runner::native_failure::NativeFailureKind;
         match self.failure_kind {
             InferenceFailureKind::AuthMissing => NativeFailureKind::AuthMissing,
             InferenceFailureKind::AuthRevoked => NativeFailureKind::AuthRevoked,
@@ -664,7 +664,7 @@ impl State {
                     // Defense in depth: only the host knows literal credential values,
                     // and Rust additionally applies the common native-output redactor.
                     failure.diagnostic =
-                        review_runner::cli::stderr_excerpt(failure.diagnostic.as_bytes())
+                        af_runner::cli::stderr_excerpt(failure.diagnostic.as_bytes())
                             .unwrap_or_else(|| "Pi SDK supplied no terminal diagnostic".into());
                     let kind = failure.kind();
                     let context = if kind.is_auth() {
