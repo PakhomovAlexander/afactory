@@ -22,6 +22,12 @@ fn git(repo: &Path, args: &[&str]) {
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
+fn copy_private_catalog(source: &Path, destination: &Path) {
+    // Copy bytes rather than modes: sealed source fixtures are read-only, but this private
+    // catalog is deliberately mutated by the missing-comparison negative test below.
+    std::fs::write(destination, std::fs::read(source).unwrap()).unwrap();
+}
+
 fn install(repo: &Path) {
     let root = workspace();
     let staged = root.join("fixtures/issue-workflows");
@@ -33,11 +39,10 @@ fn install(repo: &Path) {
     for policy in ["code-policy.toml", "report-policy.toml"] {
         std::fs::copy(root.join(".af").join(policy), repo.join(".af").join(policy)).unwrap();
     }
-    std::fs::copy(
-        staged.join("replacement-catalog.toml"),
-        repo.join(".af/task-catalog.toml"),
-    )
-    .unwrap();
+    copy_private_catalog(
+        &staged.join("replacement-catalog.toml"),
+        &repo.join(".af/task-catalog.toml"),
+    );
     std::fs::write(
         repo.join(".af/af.toml"),
         "version = 2\n[project]\nname = \"fixture\"\n",
@@ -56,6 +61,42 @@ fn text(o: &std::process::Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
+}
+
+#[test]
+fn private_catalog_copy_is_writable_and_preserves_read_only_source() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("replacement-catalog.toml");
+    let source_bytes = std::fs::read(
+        workspace().join("fixtures/issue-workflows/replacement-catalog.toml"),
+    )
+    .unwrap();
+    std::fs::write(&source, &source_bytes).unwrap();
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let source_mode = std::fs::metadata(&source).unwrap().permissions().mode();
+    assert_eq!(source_mode & 0o222, 0, "source must start read-only");
+
+    let private = temp.path().join("task-catalog.toml");
+    copy_private_catalog(&source, &private);
+
+    assert_eq!(std::fs::read(&private).unwrap(), source_bytes);
+    assert_ne!(
+        std::fs::metadata(&private).unwrap().permissions().mode() & 0o200,
+        0,
+        "the private catalog must have its owner-write bit"
+    );
+    let mut mutated = source_bytes.clone();
+    mutated.extend_from_slice(b"\n# private missing-comparison mutation\n");
+    std::fs::write(&private, mutated).unwrap();
+
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(
+        std::fs::metadata(&source).unwrap().permissions().mode(),
+        source_mode,
+        "copying and mutating the private catalog must not change the source mode"
+    );
 }
 
 #[test]
