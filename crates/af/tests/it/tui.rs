@@ -1709,12 +1709,14 @@ fn the_tasks_pane_shows_the_native_review_af_review_run_recorded() {
         text.contains("major") && text.contains("Missing behavior"),
         "{text}"
     );
-    browser.keys(b"\t/HISTORY\r");
+    // The inspector opens on Overview with its navigation focused on the left.
+    // Select History there instead of searching the Overview's clipped viewport.
+    browser.keys(b"jjjjjjjjj");
     browser.wait_for("the Review history", |s| {
         s.text().contains("HISTORY  (af task show)")
     });
     assert!(!text.contains("CAMPAIGN"), "{text}");
-    browser.keys(b"q");
+    browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
 
