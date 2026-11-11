@@ -11,7 +11,7 @@ the CLI already prints, and every mutation goes through the same path the CLI us
 or `$EDITOR` on a declared file). The TUI never turns working-tree bytes into execution
 authority; that invariant is kept from the removed review TUI.
 
-Non-goals for the first cut: in-TUI editing of TOML, live transcripts, a pipeline DAG editor,
+Non-goals for the first cut: in-TUI editing of TOML, a pipeline DAG editor,
 mouse support.
 
 ## 2. Entry and scope
@@ -86,9 +86,10 @@ input. A scope error (`--repo` outside a repository) leaves the terminal before 
 +--------------------------+-----------------------------------------------------------+
 ```
 
-Three regions, fixed for the whole session:
+The browser has three regions. An opened Task uses the inspector layout in §5.5 instead:
 
-- **Left bar** (29 columns, `nvim-tree` style; hidden below 90 columns with `<C-b>` to toggle).
+- **Left bar** (29 columns, `nvim-tree` style; visible and focused from startup at every
+  supported size, including 80x24 and 100x30; `<C-b>` explicitly hides it).
   A folding tree whose depth-1 folders are the five fixed tabs: `providers/`, `workers/`,
   `pipelines/`, `tasks/`, `campaigns/`. Selecting the root row opens the settings pane for the
   scope.
@@ -115,6 +116,10 @@ and red, and `NO_COLOR` attributes only. This keeps the existing
 `terminal_data_is_printable_ascii` test meaningful and matches the CLI's own tree output.
 
 Minimum size 80x24; below it the screen shows one line naming the minimum.
+Resizing, including temporarily below the minimum, preserves the focus and the explicit bar
+visibility choice. Scrolling help and closing it returns to the region that had focus before
+help. Background refresh keeps the cursor on its selected entry; regrouping an opened Task's
+Store follows that Task's new bar identity only if the cursor was on that Task.
 
 ## 4. Key model
 
@@ -125,7 +130,7 @@ few pane-local verbs, listed in its section and in the status line.
 
 | key | effect |
 |---|---|
-| `j` `k` | row down / up |
+| `j` `k`, down / up arrows | row down / up |
 | `h` `l` | in the bar: collapse / expand the folder (or move to parent / first child); in the main pane: scroll horizontally where a table overflows |
 | `gg` `G` | first / last row |
 | `<C-d>` `<C-u>` | half page |
@@ -413,10 +418,9 @@ so the folder fills while the rest are still read and no read of a Store ever ho
 or the splash (opening one Task still inspects that Task on the key loop, as before). Nothing
 interrupts the read, since it holds no key; `q` quits without waiting for it. The opened Task's
 detail arrives with its own Store, so its bar row and its pane never disagree; a Task whose
-Store refuses when opened, or whose HISTORY artifact cannot be given back, falls back to its
-folder on that key and restarts a read in flight, so nothing read before the refusal lists it
-again: the status line carries the HISTORY refusal's cause, and for the opening the message of
-an entry found gone, its cause on the Store's row in the folder. An opened Task or Worker that a read no
+Store refuses when opened falls back to its folder on that key and restarts a read in flight, so
+nothing read before the refusal lists it again: the status line carries the opening message, and
+the Store's row in the folder carries its cause. An opened Task or Worker that a read no
 longer lists falls back to its folder with the same message as when opening finds it gone;
 never one whose Store is merely unread: a target list that changed within the scope (a Store
 registered meanwhile, `:state DIR`) keeps every Store listed until the read answers for it, and
@@ -428,43 +432,53 @@ opened while an explicit read is in flight has its detail read again when its St
 since a read started before carries none for it, or one from an earlier opening of the same
 Task. Another scope lists nothing of the old.
 
-Main pane for one Task, top to bottom:
+Opening a Task replaces the global bar with Task navigation beside its detail. The left side
+lists Overview, Steps, each node, Artifacts and History. It initially selects a running node,
+otherwise Overview. `j`/`k` select a row; `l` or Enter expands a node and selects its latest Attempt.
+Left-arrow returns focus left, returns to an Attempt's node or collapses it. Tab and BackTab switch
+focus. `h` and Escape have the same back behavior: they close an artifact overlay first, then return
+from detail or activity to left navigation, then return to the Task list with the global sidebar
+focused and the same Task selected. From left navigation, including Overview, either key returns
+directly to the Task list. Opening a Task with `Enter` or `l` immediately focuses its left navigation.
+The inspector stays two-pane at 80x24. `j`/`k` and down/up arrows move through that navigation; `Enter`/`l`
+expands a step to its latest Attempt, then opens that Attempt's activity. `j`/`k` and page keys
+scroll the detail when it has focus, and `G` goes to its end.
 
-```
-TASK   task-01J9K…  implement: "add --json to af task list"
-PLAN   plan-7f3a…   configured           STATE running   started 12:04:31   elapsed 6m 12s
-SNAP   snap-9c1…    authority HEAD@f3db3da
+The inspector projects the current plan's execution records. Each reservation names its exact
+Attempt, so retries and parallel Attempts remain separate as polling updates their states. The
+Overview retains the Task's progress, accounting and history; Steps lists the plan's nodes,
+Artifacts lists execution record IDs, and History lists recorded transitions. Enter on a
+HISTORY row in Overview or History and an artifact row in Artifacts opens its artifact; `h`/Escape
+return to the row. The inspector shows metadata-only live activity for ordinary Codex model
+Workers. Enter on an Attempt follows its activity at the bottom; scrolling pauses and shows the
+number of new notifications, and `G` resumes following. Selection and paused scroll survive Store
+polling and retries. The viewport clamps to its height, and the activity header keeps Worker
+identity, latest observed operation and activity age visible at 100x30 and 80x24. An age of at least
+15 seconds is marked stale; silence never implies a stalled Worker.
 
-PROGRESS   4 / 7 stages
-  [ok]  capture            0.4s
-  [ok]  correctness        2m 03s   12 480 tok
-  [ok]  bugs               1m 41s    9 912 tok
-  [..]  implement          2m 30s   running, attempt 2/3
-  [  ]  verify
-  [  ]  gates
-  [  ]  publish
+Codex command, file-change and MCP notifications become closed operation and phase enums before
+admission. No native argument, output, prompt, path, tool name or private reasoning is displayed.
+Other runners, admission probes and Campaign reviewers have no metadata channel and explicitly
+say unavailable. Completed raw output retains its existing credential admission; this inspector
+shows metadata and recorded artifact IDs, not a raw Provider transcript. A missing or unreadable
+sidecar and invalid or concurrently changing data show an explicit error. Observer overflow,
+oversized/incomplete frames and overwritten history are explicit. The channel is disposable,
+never execution or accounting authority.
 
-TOKENS   chargeable 22 392   input 18 001   output 3 140   cache read 1 251   reasoning 0
-TIME     wall 6m 12s   checks 0.9s   dependency prep 3.1s   verification -
+Each Codex Attempt's private sidecar is a fixed 129 KiB ring under its Task Store, retaining at
+most 128 records. Sidecars count as af-owned Store bytes and go with a collected Task. The 256 KiB
+observer queue and 64 KiB frame limit bound its incremental parser.
+The inspector reads only new slots on an independent background reader about four times a second,
+with one bounded snapshot in flight. The existing Store reader still polls about once a second.
+Switching Task or Attempt drops the old reader without waiting for IO; no activity read occurs
+on a key.
+See the [activity decision](../adr/2026-11-10-publish-safe-task-activity.md) for attribution,
+credential screening and storage bounds.
 
-HISTORY  (af task show)
-   1 TaskCaptured@1          art-…
-   2 TaskPlanCompiled@1      art-…
-   …
-```
-
-Sources: the event list from `TaskStore::events`, `TaskCompleted@1` totals for tokens
-(`TaskTokenUsageV3` fields), `TaskExecutionRecord` `Reserved`/`Started`/`Settled` for per-stage
-state, attempt counts and charged tokens, `TaskRuntimeSpanV1` for the TIME row. A running Task
-re-reads the Store every second while it is selected; nothing is polled otherwise.
-
-Pane-local verbs: `f` toggles the running filter above; `Enter` on a HISTORY row opens that
-artifact as pretty JSON; `p` jumps to the Task's pipeline in the Pipelines pane. `r` on a Task, on the bar or in its opened pane, fills the
-`:` line with `task run ID --confirm-plan PLAN`, where PLAN is the Task's current recorded plan.
-`D` on a verified Task fills it with `task deliver ID --branch af/ID --worktree ../ID --confirm`
-and a space, and leaves the Task ID for the user to type, which keeps delivery's explicit confirmation. `D` on
-a Task that is not verified says why on the status line. Neither verb submits the line. Enter
-runs it, handing the terminal over as described in §4.
+On the Task list `f` toggles the running filter. On an opened Task `p` opens its pipeline, `r`
+prefills `task run ID --confirm-plan PLAN`, and `D` prefills the delivery command for a verified
+Task. Neither command is submitted until Enter. `R` refreshes the Store, `y` copies the Task ID,
+and `:` opens the command line.
 
 ### 5.6 Campaigns
 

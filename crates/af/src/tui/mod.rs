@@ -36,8 +36,6 @@ use tree::{NodeKind, Tab, Tree};
 
 /// Columns the bar takes, its `|` separator included.
 const BAR_WIDTH: usize = 29;
-/// Below this width the bar starts hidden; `<C-b>` still shows it.
-const BAR_MIN_WIDTH: usize = 90;
 const MIN_WIDTH: usize = 80;
 const MIN_HEIGHT: usize = 24;
 const BAR_LEGEND: &str = "j/k move  Enter open  zo/zc fold  / search  :cmd  q quit";
@@ -104,8 +102,12 @@ workers: Enter on a listed Worker opens it; gf opens the prompt (or the
 pipelines: Enter on a listed Pipeline opens it
 tasks: f lists the running Tasks only, latest first, in the bar and the
        folder; f again lists every Task. Enter on a Task row of the
-       folder opens it; Enter on a HISTORY row shows its artifact (q or
-       Esc returns), p opens the Task's pipeline, y copies the Task id,
+       folder opens it; the inspector navigates steps and Attempts, and
+       Enter on an Attempt follows bounded Codex activity metadata; scrolling
+       pauses with a new-notification count, G resumes, h/Esc returns left.
+       Other runners say unavailable. Enter on an Overview or History row,
+       or an Artifacts row, shows its artifact. p opens the
+       Task's pipeline, y copies the Task id,
        r fills the : line with `task run ID --confirm-plan PLAN`,
        D on a verified Task with `task deliver ID ... --confirm `
        (type the Task id to confirm); Enter on the line runs it
@@ -360,10 +362,9 @@ enum Mode {
     Search,
 }
 
-/// Whether the bar shows: by the terminal's width until `<C-b>` decides.
+/// Whether the bar shows: visible at every supported size until `<C-b>` hides it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Bar {
-    Auto,
     Shown,
     Hidden,
 }
@@ -452,7 +453,7 @@ impl App {
             tree,
             opened: Opened::Root,
             focus: Focus::Bar,
-            bar: Bar::Auto,
+            bar: Bar::Shown,
             mode: Mode::Normal,
             keymap: KeyMap::default(),
             prompt: Prompt::default(),
@@ -462,7 +463,7 @@ impl App {
             help: None,
             main: View::default(),
             bar_top: 0,
-            size: (BAR_MIN_WIDTH, MIN_HEIGHT),
+            size: (MIN_WIDTH, MIN_HEIGHT),
             quit: false,
             editor: std::env::var("EDITOR").ok(),
             fatal: None,
@@ -524,9 +525,27 @@ impl App {
     }
 
     fn sync(&mut self) {
+        // Follow a renamed opened entry only when the cursor was on that entry. A Store
+        // regrouping must not pull a cursor browsing another folder back to the opened Task.
+        let selected = self.tree.selected();
+        let renamed = match &self.opened {
+            Opened::Item(tab, id)
+                if selected.kind == NodeKind::Item(*tab) && selected.id == *id =>
+            {
+                self.panes
+                    .get(Some(*tab))
+                    .opened_id()
+                    .filter(|now| now != id)
+                    .map(|now| (*tab, now))
+            }
+            _ => None,
+        };
         for tab in Tab::ALL {
             let items = self.panes.get(Some(tab)).items();
             self.tree.set_items(tab, items);
+        }
+        if let Some((tab, id)) = renamed {
+            self.tree.select(NodeKind::Item(tab), &id);
         }
     }
 
@@ -656,13 +675,12 @@ impl App {
         };
         let (tab, mut id) = (*tab, id.clone());
         // A read may have renamed the opened entry (a Task whose Store took a group when
-        // another checkout appeared): the pane says what it is called now, and the bar and
-        // the breadcrumb follow it instead of losing it.
+        // another checkout appeared): the opened view follows its new identity instead of
+        // losing it. `sync` follows the bar cursor only when it was on this entry.
         if let Some(now) = self.panes.get(Some(tab)).opened_id()
             && now != id
             && listed(&self.panes.get(Some(tab)).items(), &now)
         {
-            self.tree.select(NodeKind::Item(tab), &now);
             self.opened = Opened::Item(tab, now.clone());
             id = now;
         }
@@ -819,6 +837,44 @@ impl App {
             }
             Mode::Normal => {}
         }
+        if self.help.is_none()
+            && self.opened_tab() == Some(Tab::Tasks)
+            && self.panes.tasks.inspecting()
+        {
+            if key == Key::Enter
+                && let Some(row) = self.panes.tasks.inspector_artifact_row()
+            {
+                self.main.cursor = row;
+                let effect = self.pane_key(key);
+                self.panes.tasks.inspector_artifact_opened();
+                return effect;
+            }
+            match key {
+                Key::Ctrl('c') => return self.action(Action::Cancel),
+                Key::Char('r' | 'D' | 'p') => return self.pane_key(key),
+                Key::Char('R') => return Some(Effect::Refresh),
+                Key::Char(':') => {
+                    self.begin(Mode::Command);
+                    return None;
+                }
+                Key::Char('?') => {
+                    self.help = Some(overlay_rows());
+                    self.main = View::default();
+                    return None;
+                }
+                Key::Char('y') => return self.yank(),
+                _ => {}
+            }
+            if self
+                .panes
+                .tasks
+                .inspector_key(key, self.size.1.saturating_sub(1))
+            {
+                self.show(Opened::Folder(Tab::Tasks));
+                self.focus = Focus::Bar;
+            }
+            return None;
+        }
         let action = self.keymap.feed(key)?;
         self.message = None;
         self.message_path = None;
@@ -827,8 +883,11 @@ impl App {
                 Action::Quit | Action::Cancel | Action::Help => self.help = None,
                 Action::Pane(_) => {}
                 _ => {
+                    let focus = self.focus;
                     self.focus = Focus::Main;
-                    return self.action(action);
+                    let effect = self.action(action);
+                    self.focus = focus;
+                    return effect;
                 }
             }
             return None;
@@ -955,7 +1014,6 @@ impl App {
 
     fn bar_visible(&self) -> bool {
         match self.bar {
-            Bar::Auto => self.size.0 >= BAR_MIN_WIDTH,
             Bar::Shown => true,
             Bar::Hidden => false,
         }
@@ -1724,6 +1782,28 @@ impl App {
             return frame;
         }
         let body = height - 1;
+        if self.help.is_none()
+            && self.opened_tab() == Some(Tab::Tasks)
+            && self.panes.tasks.inspecting()
+        {
+            self.panes.tasks.inspector_resize(body);
+            let right_focus = paint_inspector(&self.panes.tasks, &mut frame, width, body);
+            let legend = if right_focus {
+                "INSPECT activity  j/k scroll  G follow/end  Tab focus  h/Esc back"
+            } else {
+                "INSPECT navigation  j/k move  l/Enter open  Left parent  Tab focus  h/Esc back"
+            };
+            let status = if self.mode == Mode::Normal && self.message.is_none() {
+                vec![Span::new(
+                    format!("{}{legend}", self.panes.tasks.inspector_status()),
+                    Paint::Plain,
+                )]
+            } else {
+                self.status_spans(width)
+            };
+            frame.paint_spans(body, 0, width, &status, self.status_paint());
+            return frame;
+        }
         let left = if self.bar_visible() {
             self.paint_bar(&mut frame, body);
             BAR_WIDTH
@@ -2130,6 +2210,72 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     encoded
+}
+
+fn paint_inspector(
+    pane: &panes::tasks::TasksPane,
+    frame: &mut Frame,
+    width: usize,
+    body: usize,
+) -> bool {
+    let (left_rows, right_rows, right_focus, scroll) = pane.inspector_rows();
+    let left_width = (width / 3).min(BAR_WIDTH);
+    let selected = left_rows
+        .iter()
+        .position(|(_, selected)| *selected)
+        .unwrap_or(0);
+    let top = selected.saturating_sub(body.saturating_sub(1));
+    for (line, (text, selected)) in left_rows.iter().skip(top).take(body).enumerate() {
+        let paint = if *selected {
+            if right_focus {
+                Paint::Marked
+            } else {
+                Paint::Cursor
+            }
+        } else {
+            Paint::Plain
+        };
+        frame.paint_spans(line, 0, left_width - 1, &[Span::new(text, paint)], paint);
+    }
+    for line in 0..body {
+        frame.paint_spans(
+            line,
+            left_width - 1,
+            1,
+            &[Span::new("|", Paint::Muted)],
+            Paint::Muted,
+        );
+    }
+    let sticky = pane.inspector_sticky();
+    let top = scroll.min(right_rows.len().saturating_sub(body));
+    let visible = right_rows.iter().enumerate().take(sticky).chain(
+        right_rows
+            .iter()
+            .enumerate()
+            .skip(sticky + top)
+            .take(body.saturating_sub(sticky)),
+    );
+    for (line, (index, row)) in visible.enumerate() {
+        let selected = right_focus && index == pane.inspector_cursor();
+        let mut spans = row.spans.clone();
+        if selected {
+            for span in &mut spans {
+                span.paint = span.paint.under_cursor();
+            }
+        }
+        frame.paint_spans(
+            line,
+            left_width,
+            width - left_width,
+            &spans,
+            if selected {
+                Paint::Cursor
+            } else {
+                Paint::Plain
+            },
+        );
+    }
+    right_focus
 }
 
 #[cfg(test)]

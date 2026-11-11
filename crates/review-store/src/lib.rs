@@ -12,6 +12,7 @@
 //! log cannot rebuild. `LedgerProjection::rebuild` is the only constructor for that reason: there is no
 //! path by which hand-edited state can enter.
 
+pub mod activity;
 pub mod canonical;
 pub mod cas;
 pub mod ingest;

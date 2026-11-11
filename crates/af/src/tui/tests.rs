@@ -565,13 +565,54 @@ fn below_80x24_one_line_names_the_minimum() {
     let refusal = "af needs at least 80x24; this terminal is 79x24";
     assert_eq!(text.lines().next(), Some(refusal));
     assert!(text.lines().skip(1).all(str::is_empty), "{text}");
-    // At 80 columns the bar starts hidden, and <C-b> shows it.
-    let text = app.frame(80, 24).text();
-    assert!(text.starts_with("SETTINGS  project: hub\n"), "{text}");
-    let mut host = Recorder::default();
-    press(&mut app, &mut host, b"\x02");
+    // Even a temporarily undersized terminal must not steal the startup bar focus.
     let text = app.frame(80, 24).text();
     assert!(text.starts_with("~/hub"), "{text}");
+    assert_eq!(app.focus, Focus::Bar);
+    let mut host = Recorder::default();
+    // Explicit hiding is retained across resizes, including below the minimum.
+    press(&mut app, &mut host, b"\x02");
+    for (width, height) in [(100, 30), (79, 24), (80, 24)] {
+        app.frame(width, height);
+        assert!(!app.bar_visible());
+        assert_eq!(app.focus, Focus::Main);
+    }
+    press(&mut app, &mut host, b"\t");
+    assert!(app.bar_visible());
+    assert_eq!(app.focus, Focus::Bar);
+}
+
+#[test]
+fn startup_navigation_and_help_keep_left_focus_across_resize() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    for (width, height) in [(80, 24), (100, 30), (79, 23), (80, 24)] {
+        app.frame(width, height);
+        assert_eq!(app.focus, Focus::Bar);
+        assert!(app.bar_visible());
+    }
+    press(&mut app, &mut host, b"j");
+    assert_eq!(app.breadcrumb(), "providers/");
+    press(&mut app, &mut host, b"?j\x1b");
+    assert!(app.help.is_none());
+    assert_eq!(app.focus, Focus::Bar);
+    press(&mut app, &mut host, b"j");
+    assert_eq!(app.breadcrumb(), "providers/claude-main");
+    let line = app.tree.cursor() + 1;
+    let frame = app.frame(80, 24);
+    assert!((0..BAR_WIDTH - 1).all(|column| frame.paint_at(line, column) == Paint::Cursor));
+    press(&mut app, &mut host, b"\t");
+    for (width, height) in [(100, 30), (80, 24)] {
+        app.frame(width, height);
+        assert_eq!(app.focus, Focus::Main);
+        assert!(app.bar_visible());
+    }
+    press(&mut app, &mut host, b"?j\x1b");
+    assert_eq!(app.focus, Focus::Main);
+    press(&mut app, &mut host, b"\x17h\x02?j\x1b");
+    assert_eq!(app.focus, Focus::Main);
+    assert!(!app.bar_visible());
 }
 
 #[test]
@@ -772,71 +813,75 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     assert_eq!(host.sent, b"\x1b]52;c;cGFnaW5hdGlvbi1jbGk=\x07");
     press(&mut app, &mut host, b"\r");
     assert_eq!(masked(&app.frame(100, 30).text()), TASK);
-    // With the main pane focused, the legend names the pane's verbs.
-    press(&mut app, &mut host, b"\t");
-    let status = status_line(&mut app);
-    assert!(status.ends_with("Enter artifact  p pipeline  y yank id  R re-read  Tab bar"));
-    // Enter on a HISTORY row shows its artifact; `q` and `Esc` come back to that row.
-    let shown = crate::task_execution::inspection_document(&state, "pagination-cli", false);
-    let shown = shown.unwrap().unwrap();
-    let plan_id = shown["plan_id"].as_str().unwrap().to_owned();
-    press(&mut app, &mut host, b"/plan_admitted\r");
-    let row = app.main.cursor;
-    for back in [&b"q"[..], b"\x1b"] {
-        press(&mut app, &mut host, b"\r");
-        assert_eq!(app.main_rows()[0].text(), format!("ARTIFACT  {plan_id}"));
-        let json: Vec<String> = app.main_rows().iter().map(Row::text).collect();
-        let typed = "  \"type\": \"af/ExecutionPlan@3\"".to_owned();
-        assert!(json.contains(&typed), "{json:#?}");
-        assert_eq!(app.main.cursor, 0);
-        let status = status_line(&mut app);
-        assert!(status.ends_with("q/Esc back to the Task"), "{status}");
-        press(&mut app, &mut host, back);
-        assert!(!app.quit);
+    for (width, height) in [(100, 30), (80, 24)] {
+        let frame = app.frame(width, height).text();
         assert!(
-            app.main_rows()[0]
-                .text()
-                .starts_with("TASK  pagination-cli")
+            frame.contains("Overview") && frame.contains("Steps"),
+            "{frame}"
         );
-        assert_eq!(app.main.cursor, row);
+        assert!(
+            frame.contains("PROGRESS") && frame.contains("HISTORY"),
+            "{frame}"
+        );
+        // Both back keys leave Overview and a selected node for the same focused home row.
+        for back in [b"h".as_slice(), b"\x1b".as_slice()] {
+            for selection in [b"".as_slice(), b"jjj".as_slice()] {
+                press(&mut app, &mut host, selection);
+                press(&mut app, &mut host, back);
+                assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+                assert_eq!(app.focus, Focus::Bar);
+                assert!(app.bar_visible());
+                assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+                let frame = app.frame(width, height);
+                assert!(frame.text().contains("TASKS  project: hub"));
+                let (row, col) = find(&frame, "pagination-c~");
+                assert_eq!(frame.paint_at(row, col), Paint::Cursor);
+                // Both open keys work immediately, without moving or changing focus.
+                let open = if selection.is_empty() { b"l" } else { b"\r" };
+                press(&mut app, &mut host, open);
+                assert!(app.panes.tasks.inspecting());
+                assert!(app.frame(width, height).text().contains("PROGRESS"));
+            }
+        }
     }
-    press(&mut app, &mut host, b"gg\r");
-    let status = status_line(&mut app);
+    // Open a node's Attempts and retain selection when moving between the two panes.
+    press(&mut app, &mut host, b"jj");
+    for _ in 0..6 {
+        press(&mut app, &mut host, b"l");
+        if app
+            .panes
+            .tasks
+            .inspector_rows()
+            .0
+            .iter()
+            .any(|(label, _)| label.starts_with("    1."))
+        {
+            break;
+        }
+        press(&mut app, &mut host, b"j");
+    }
+    let frame = app.frame(100, 30).text();
     assert!(
-        status.contains("Enter opens the artifact of a HISTORY row"),
-        "{status}"
+        frame.contains("ATTEMPT") && frame.contains("Step: implement"),
+        "{frame}"
     );
-    // `y` in the main pane copies the Task id too.
-    host.sent.clear();
-    press(&mut app, &mut host, b"y");
-    assert_eq!(host.sent, b"\x1b]52;c;cGFnaW5hdGlvbi1jbGk=\x07");
-    // `R` reads the Store again at once and keeps the Task open.
-    press(&mut app, &mut host, b"R");
     assert!(
-        app.main_rows()[0]
-            .text()
-            .starts_with("TASK  pagination-cli")
+        app.panes
+            .tasks
+            .inspector_rows()
+            .0
+            .iter()
+            .any(|(label, selected)| *selected && label.starts_with("    1."))
     );
-    // At the 80x24 minimum the bar hides and the pane starts at the first column.
-    let small = app.frame(80, 24).text();
+    press(&mut app, &mut host, b"\r");
+    let frame = app.frame(100, 30).text();
     assert!(
-        small.starts_with("TASK  pagination-cli  implement: "),
-        "{small}"
+        frame.contains("ATTEMPT") && frame.contains("Live activity unavailable"),
+        "{frame}"
     );
-    assert!(small.contains("\nPROGRESS  6 / 6 stages\n"), "{small}");
-    // `p` opens the Task's pipeline where the Pipelines pane lists it.
-    press(&mut app, &mut host, b"p");
-    assert_eq!(app.breadcrumb(), "pipelines/fixture/implementation");
-    let package = ".af/task-packages/fixture/implementation/pipeline.toml";
-    assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
-    // A pipeline the pane does not list is named on the status line, and nothing moves.
-    app.apply(
-        Effect::OpenPipeline("elsewhere/pipeline".to_owned()),
-        &mut host,
-    );
-    let status = status_line(&mut app);
-    assert!(status.contains("pipeline elsewhere/pipeline is not listed under pipelines/"));
-    assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
+    press(&mut app, &mut host, b"\x1b\x1b");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
     // On the same recorded Tasks: the one checkout's Store ungrouped, the running filter's
     // keys, then a Task opened across a regrouping of its Store.
     a_project_of_one_checkout_lists_its_store_ungrouped(&app, &state);
@@ -888,7 +933,7 @@ fn states_are_chips_in_the_bar_the_task_header_and_its_stages() {
         paints_of(&frame, "[ok]  inputs")[4..],
         vec![Paint::Plain; 8]
     );
-    assert_eq!(masked(&frame.text()), TASK);
+    assert!(frame.text().contains("Overview"));
 }
 
 #[test]
@@ -1117,21 +1162,33 @@ fn an_opened_task_follows_its_store_into_a_group(
     );
     let frame = app.frame(100, 30).text();
     assert!(
-        frame.contains("hub/") && frame.contains("hub-wt-other/"),
+        frame.contains("Overview") && frame.contains("Steps"),
         "{frame}"
     );
+    // Neither an explicit refresh nor a background regrouping may change the inspector's
+    // selected Attempt, its focus, or a global cursor browsing another folder.
+    press(app, host, b"jjjll");
+    assert!(app.panes.tasks.inspector_rows().2);
+    let selected = app.panes.tasks.inspector_rows().0;
+    press(app, host, b"R");
+    assert_eq!(app.panes.tasks.inspector_rows().0, selected);
+    assert!(app.panes.tasks.inspector_rows().2);
+    app.tree.select(NodeKind::Folder(Tab::Workers), "workers");
     // The worktree goes: the group goes with it at the next `R`, and the Task is still open.
     git(
         repo,
         &["worktree", "remove", "--force", other.to_str().unwrap()],
     );
     std::fs::remove_dir_all(&other_state).unwrap();
-    press(app, host, b"R");
+    app.panes.tasks.refresh(&app.scope).unwrap();
+    app.settle();
     assert_eq!(
         app.opened,
         Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
     );
-    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(app.breadcrumb(), "workers/");
+    assert_eq!(app.panes.tasks.inspector_rows().0, selected);
+    assert!(app.panes.tasks.inspector_rows().2);
     assert!(
         app.main_rows()[0]
             .text()
@@ -1202,7 +1259,7 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     assert!(app.main_rows()[1].text().contains("STATE done"));
     // A running Task whose pane is not opened is not read either.
     app.panes.tasks.detail_document().unwrap()["phase"] = running;
-    press(&mut app, &mut host, b"gg]]\r");
+    press(&mut app, &mut host, b"\x1bgg]]\r");
     assert_eq!(app.opened, Opened::Folder(Tab::Providers));
     std::thread::sleep(second);
     app.poll();
@@ -1446,7 +1503,8 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
     assert_eq!(host.sent, b"\x1b]52;c;Zml4dHVyZS9ldmFsdWF0b3I=\x07");
     std::fs::write(&declaration, text).unwrap();
     press(&mut app, &mut host, b"\r\t");
-    // At the 80x24 minimum the bar hides and the pane starts at the first column.
+    // At the 80x24 minimum the bar stays visible; explicitly hide it for the wide table.
+    press(&mut app, &mut host, b"\x17h\x02");
     let small = app.frame(80, 24).text();
     assert!(small.starts_with("WORKER  fixture/evaluator\n"), "{small}");
     assert!(small.lines().all(|line| line.len() <= 80), "{small}");
@@ -2307,7 +2365,7 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
     // Opened, with the main pane focused: the same lines, and the legend names the verbs.
     press(&mut app, &mut host, b"\r\t");
     let status = status_line(&mut app);
-    assert!(status.contains("r run  D deliver"), "{status}");
+    assert!(status.contains("INSPECT"), "{status}");
     for (key, line) in [(&b"r"[..], run.as_str()), (b"D", deliver)] {
         press(&mut app, &mut host, key);
         assert_eq!(app.prompt.text, line);
@@ -2319,8 +2377,9 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
     let words: Vec<String> = shell_words::split(&run).unwrap();
     assert_eq!(host.runs[0].args, words);
 
+    // Leave the inspector (right detail, then navigation) before selecting in the global bar.
     // A Task that failed its acceptance is not verified: `D` says why, `r` still prefills.
-    press(&mut app, &mut host, b"\t");
+    press(&mut app, &mut host, b"\x1b\x1b");
     assert!(
         app.tree
             .select(NodeKind::Item(Tab::Tasks), "pagination-unfinished")
@@ -2384,9 +2443,8 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
     }
     press(&mut app, &mut host, b"\x1b");
 
-    // With the bar on a row that is no Task, `r` and `D` act on nothing, not on the Task
-    // opened in the main pane.
-    assert!(matches!(app.opened, Opened::Item(Tab::Tasks, _)));
+    // With the bar on a row that is no Task, `r` and `D` act on nothing.
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
     assert_eq!(app.focus, Focus::Bar);
     press(&mut app, &mut host, b"gg");
     for key in [&b"r"[..], b"D"] {

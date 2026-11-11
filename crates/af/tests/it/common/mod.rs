@@ -169,14 +169,11 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or(0);
-        let home = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join("af-test-homes")
-            .join(format!("{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&home).unwrap();
-        // Resolved, as af resolves the paths it reports: a target directory reached through a
-        // symlink (macOS's `/var` and `/tmp`, a warm layer's clone in a check's runtime
-        // directory) would otherwise make every path assertion compare two spellings.
-        std::fs::canonicalize(&home).unwrap()
+        create_test_home(
+            Path::new(env!("CARGO_TARGET_TMPDIR")),
+            &format!("{}-{nanos}", std::process::id()),
+        )
+        .unwrap()
     });
     vec![
         ("HOME", home.clone()),
@@ -186,6 +183,62 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
         ("XDG_DATA_HOME", home.join(".local/share")),
         ("XDG_BIN_HOME", home.join(".local/bin")),
     ]
+}
+
+fn create_test_home(target_tmp: &Path, leaf: &str) -> std::io::Result<PathBuf> {
+    use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
+    use std::fs::File;
+    use std::io::{Error, ErrorKind};
+    use std::os::unix::fs::MetadataExt;
+
+    // Cargo's build directory already exists, but tmp/ may first be created by a Scenario
+    // child with umask 000. Recursive create_dir_all would then leave shared ancestors 0777,
+    // poisoning every later Provider ancestry check. Create each descendant as 0700 instead.
+    // Resolve only the existing build root (macOS /var aliases and warm target links are valid).
+    // Below it, bind directories without following links, and never chmod an existing path.
+    let mut home = target_tmp
+        .parent()
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "Cargo test temp has no build parent",
+            )
+        })?
+        .canonicalize()?;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut directory = File::from(open(&home, flags, Mode::empty())?);
+    let effective_uid = nix::unistd::geteuid().as_raw();
+    let validate = |directory: &File, path: &Path| -> std::io::Result<()> {
+        let metadata = directory.metadata()?;
+        if metadata.uid() != effective_uid || metadata.mode() & 0o022 != 0 {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "test-home directory {} must be owned by the current user and not writable by others",
+                    path.display()
+                ),
+            ));
+        }
+        Ok(())
+    };
+    validate(&directory, &home)?;
+    let temp_name = target_tmp.file_name().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "Cargo test temp has no directory name",
+        )
+    })?;
+    for name in [temp_name, "af-test-homes".as_ref(), leaf.as_ref()] {
+        match mkdirat(&directory, name, Mode::RWXU) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(error.into()),
+        }
+        directory = File::from(openat(&directory, name, flags, Mode::empty())?);
+        home.push(name);
+        validate(&directory, &home)?;
+    }
+    Ok(home)
 }
 
 /// This test process's own `TMPDIR`, for a child a helper spawns after `env_clear()`: without
@@ -729,6 +782,137 @@ pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_test_home_creation_is_private_under_a_permissive_umask() {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+        const CHILD: &str = "AF_TEST_HOME_CREATION_CHILD";
+        const TEST: &str =
+            "common::tests::first_test_home_creation_is_private_under_a_permissive_umask";
+        if let Some(build) = std::env::var_os(CHILD) {
+            let build = PathBuf::from(build);
+            let target_tmp = build.join("tmp");
+            assert!(
+                !target_tmp.exists(),
+                "exercise the first creation, not reuse"
+            );
+            let probe = build.join("umask-probe");
+            std::fs::DirBuilder::new()
+                .mode(0o777)
+                .create(&probe)
+                .unwrap();
+            assert_eq!(
+                probe.metadata().unwrap().permissions().mode() & 0o777,
+                0o777
+            );
+
+            let home = create_test_home(&target_tmp, "first").unwrap();
+            assert_eq!(home, home.canonicalize().unwrap());
+            for path in [&target_tmp, &target_tmp.join("af-test-homes"), &home] {
+                assert_eq!(
+                    path.metadata().unwrap().uid(),
+                    nix::unistd::geteuid().as_raw()
+                );
+                assert_eq!(
+                    path.metadata().unwrap().permissions().mode() & 0o777,
+                    0o700,
+                    "{} must be private even when this child creates it first",
+                    path.display()
+                );
+            }
+            assert_eq!(create_test_home(&target_tmp, "first").unwrap(), home);
+            create_test_home(&target_tmp, "second").unwrap();
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let build = root.path().join("cargo-target");
+        std::fs::create_dir(&build).unwrap();
+        let alias = root.path().join("target-alias");
+        std::os::unix::fs::symlink(&build, &alias).unwrap();
+        // The umask belongs only to this child, never the concurrent test runner.
+        let output = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "umask 000; exec \"$1\" --exact \"$2\" --nocapture --test-threads=1",
+                "test-home-regression",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .arg(TEST)
+            .env_clear()
+            .env(CHILD, &alias)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            out(&output),
+            err(&output)
+        );
+        assert!(out(&output).contains("1 passed; 0 failed"));
+    }
+
+    #[test]
+    fn test_home_setup_refuses_public_directories_without_changing_their_modes() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+        for unsafe_depth in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let build = root.path().join("cargo-target");
+            let target_tmp = build.join("tmp");
+            let homes = target_tmp.join("af-test-homes");
+            let home = homes.join("first");
+            let directories = [&build, &target_tmp, &homes, &home];
+            for directory in directories {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(directory)
+                    .unwrap();
+            }
+            std::fs::set_permissions(
+                directories[unsafe_depth],
+                std::fs::Permissions::from_mode(0o777),
+            )
+            .unwrap();
+            let error = create_test_home(&target_tmp, "first").unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            for (depth, directory) in directories.into_iter().enumerate() {
+                assert_eq!(
+                    directory.metadata().unwrap().permissions().mode() & 0o777,
+                    if depth == unsafe_depth { 0o777 } else { 0o700 },
+                    "{} was not chmodded by setup",
+                    directory.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_home_setup_refuses_symlinked_temp_homes_and_process_directories() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        for linked_depth in 0..3 {
+            let root = tempfile::tempdir().unwrap();
+            let build = root.path().join("cargo-target");
+            let target_tmp = build.join("tmp");
+            let homes = target_tmp.join("af-test-homes");
+            let home = homes.join("first");
+            let linked = [&target_tmp, &homes, &home][linked_depth];
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(linked.parent().unwrap())
+                .unwrap();
+            let outside = root.path().join("outside");
+            std::fs::create_dir(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, linked).unwrap();
+
+            assert!(create_test_home(&target_tmp, "first").is_err());
+            assert!(linked.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+        }
+    }
 
     /// Issue #121: under `cargo test` every test of this binary is a thread of one process, and
     /// a script one thread wrote and started at once failed with `Text file busy` whenever

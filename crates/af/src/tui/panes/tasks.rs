@@ -20,6 +20,7 @@
 //! named by its Workspace label or directory, discovered by the read as the user scope's
 //! repositories are.
 
+mod activity;
 mod project;
 
 use std::collections::BTreeMap;
@@ -195,7 +196,7 @@ struct Track {
     /// The last event sequence that recorded one of this node's records.
     last_sequence: u64,
     attempts: u64,
-    open: bool,
+    open: u64,
     ok: bool,
     failed: bool,
     settled: u64,
@@ -270,11 +271,11 @@ pub(crate) fn stages(
                     attempts.insert(attempt.to_owned(), node);
                 }
                 track.attempts += 1;
-                track.open = true;
+                track.open = track.open.saturating_add(1);
             }
             // A reservation released before dispatch consumed no Attempt.
             Some("released") => {
-                track.open = false;
+                track.open = track.open.saturating_sub(1);
                 track.attempts = track.attempts.saturating_sub(1);
             }
             Some("usage_observed") => {
@@ -286,7 +287,7 @@ pub(crate) fn stages(
                 }
             }
             Some("settled") => {
-                track.open = false;
+                track.open = track.open.saturating_sub(1);
                 track.settled += 1;
                 let charged = text(&record["charged_tokens"])?;
                 let charged: u128 = charged.parse().map_err(|_| "a charge is not decimal")?;
@@ -363,7 +364,7 @@ pub(crate) fn stages(
         let track = tracks.get(node).unwrap_or(&empty);
         let outcome = outcomes.get(node).copied();
         // A report not superseded by newer records decides the stage over older records.
-        let mark = if !finished && track.open {
+        let mark = if !finished && track.open > 0 {
             Mark::Running
         } else if outcome == Some("failed") {
             Mark::Failed
@@ -875,6 +876,110 @@ struct Detail {
     kind: String,
     goal: String,
     stages: Vec<Stage>,
+    attempts: Vec<InspectorAttempt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InspectorAttempt {
+    id: String,
+    node: String,
+    state: String,
+    started_ms: Option<u64>,
+    ended_ms: Option<u64>,
+    observed_ms: Option<u64>,
+    records: Vec<(String, String)>,
+}
+
+// Only execution-record metadata is used here. Provider streams have not passed the
+// credential admission gate while an Attempt is running.
+fn inspector_attempts(
+    document: &Value,
+    node_of: &mut dyn FnMut(&str) -> Result<Invoked, String>,
+) -> Result<Vec<InspectorAttempt>, String> {
+    let mut attempts: Vec<InspectorAttempt> = Vec::new();
+    let mut by_id: BTreeMap<String, usize> = BTreeMap::new();
+    let times: BTreeMap<&str, u64> = array(&document["history"])
+        .iter()
+        .filter_map(|event| {
+            Some((
+                event["transition"]["change"]["record_id"].as_str()?,
+                event["transition"]["now_unix_ms"].as_u64()?,
+            ))
+        })
+        .collect();
+    for entry in array(&document["execution_records"]) {
+        let record = &entry["record"];
+        let Some(id) = record["attempt_id"].as_str() else {
+            continue;
+        };
+        let at = entry["artifact_id"]
+            .as_str()
+            .and_then(|id| times.get(id))
+            .copied();
+        match record["kind"].as_str() {
+            Some("reserved") => {
+                let invoked = node_of(text(&record["invocation_id"])?)?;
+                if invoked
+                    .plan_id
+                    .as_deref()
+                    .is_some_and(|plan| Some(plan) != document["plan_id"].as_str())
+                {
+                    continue;
+                }
+                by_id.insert(id.to_owned(), attempts.len());
+                attempts.push(InspectorAttempt {
+                    id: id.to_owned(),
+                    node: invoked.node,
+                    state: "reserved".to_owned(),
+                    started_ms: None,
+                    ended_ms: None,
+                    observed_ms: at,
+                    records: Vec::new(),
+                });
+            }
+            Some(kind @ ("started" | "released" | "settled")) => {
+                if let Some(attempt) = by_id.get(id).and_then(|index| attempts.get_mut(*index)) {
+                    attempt.observed_ms = at.or(attempt.observed_ms);
+                    if kind == "started" {
+                        attempt.started_ms = at;
+                    } else {
+                        attempt.ended_ms = at;
+                    }
+                    attempt.state = if kind == "settled" {
+                        record["result"]["kind"]
+                            .as_str()
+                            .unwrap_or("settled")
+                            .to_owned()
+                    } else {
+                        kind.to_owned()
+                    };
+                }
+            }
+            _ => {}
+        }
+        if let Some(attempt) = by_id.get(id).and_then(|index| attempts.get_mut(*index)) {
+            attempt.observed_ms = at.or(attempt.observed_ms);
+            if let (Some(kind), Some(source)) =
+                (record["kind"].as_str(), entry["artifact_id"].as_str())
+            {
+                if attempt.records.len() == 128 {
+                    attempt.records.remove(0);
+                }
+                attempt.records.push((kind.to_owned(), source.to_owned()));
+            }
+        }
+    }
+    Ok(attempts)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InspectorSelection {
+    Overview,
+    Steps,
+    Node(String),
+    Attempt(String),
+    Artifacts,
+    History,
 }
 
 impl Detail {
@@ -884,6 +989,7 @@ impl Detail {
         let revision = text(&document["revision_id"])?;
         let revision = task_execution::recorded_artifact(dir, revision)?;
         let stages = stages(&document, &mut |id| node_of(dir, id, cache))?;
+        let attempts = inspector_attempts(&document, &mut |id| node_of(dir, id, cache))?;
         Ok(Detail {
             dir: dir.to_path_buf(),
             task_id: task_id.to_owned(),
@@ -891,7 +997,20 @@ impl Detail {
             goal: text(&revision["payload"]["goal"])?.to_owned(),
             document,
             stages,
+            attempts,
         })
+    }
+
+    fn runner<'a>(&'a self, attempt: &InspectorAttempt) -> (Option<&'a str>, Option<&'a str>) {
+        let slot =
+            self.document["graph"]["nodes"][&attempt.node]["operator"]["operator"]["slot"].as_str();
+        let Some(slot) = slot else {
+            return (None, None);
+        };
+        (
+            self.document["graph"]["slots"][slot]["worker"].as_str(),
+            self.document["plan"]["bindings"][slot]["execution"]["provider_kind"].as_str(),
+        )
     }
 
     fn state(&self) -> State {
@@ -1594,6 +1713,18 @@ pub(crate) struct TasksPane {
     /// The bar id of the opened Task.
     selected: Option<String>,
     detail: Option<Result<Detail, String>>,
+    inspector: Option<InspectorSelection>,
+    expanded: Option<String>,
+    inspector_log: bool,
+    inspector_focus_right: bool,
+    inspector_scroll: usize,
+    inspector_saved_scroll: usize,
+    inspector_saved_cursor: usize,
+    inspector_cursor: usize,
+    inspector_body: usize,
+    inspector_follow: bool,
+    inspector_seen: u64,
+    activity: Option<activity::Job>,
     artifact: Option<Opened>,
     /// The main pane shows this pane.
     opened: bool,
@@ -1985,6 +2116,550 @@ impl TasksPane {
         let unfinished = matches!(&self.detail,
             Some(Ok(detail)) if matches!(detail.state(), State::Running | State::Awaiting));
         self.opened && unfinished
+    }
+
+    pub(crate) fn inspecting(&self) -> bool {
+        self.inspector.is_some() && matches!(self.detail, Some(Ok(_)))
+    }
+
+    fn inspector_entries(&self) -> Vec<(InspectorSelection, String)> {
+        let Some(Ok(detail)) = &self.detail else {
+            return Vec::new();
+        };
+        let mut rows = vec![
+            (InspectorSelection::Overview, "Overview".to_owned()),
+            (InspectorSelection::Steps, "Steps".to_owned()),
+        ];
+        for stage in &detail.stages {
+            let expanded = self.expanded.as_deref() == Some(&stage.node);
+            rows.push((
+                InspectorSelection::Node(stage.node.clone()),
+                format!(
+                    "  {} {} {}",
+                    if expanded { "v" } else { ">" },
+                    stage.mark.text(),
+                    stage_name(&stage.node)
+                ),
+            ));
+            if expanded {
+                for (index, attempt) in detail
+                    .attempts
+                    .iter()
+                    .filter(|a| a.node == stage.node)
+                    .enumerate()
+                {
+                    rows.push((
+                        InspectorSelection::Attempt(attempt.id.clone()),
+                        format!("    {}. {}", index + 1, attempt.state),
+                    ));
+                }
+            }
+        }
+        rows.push((InspectorSelection::Artifacts, "Artifacts".to_owned()));
+        rows.push((InspectorSelection::History, "History".to_owned()));
+        rows
+    }
+
+    fn selected_activity(&self) -> Option<review_store::activity::Binding> {
+        let Some(Ok(detail)) = &self.detail else {
+            return None;
+        };
+        let Some(InspectorSelection::Attempt(id)) = &self.inspector else {
+            return None;
+        };
+        let attempt = detail.attempts.iter().find(|a| &a.id == id)?;
+        (detail.runner(attempt).1 == Some("codex"))
+            .then(|| review_store::activity::Binding::new(&detail.dir, &detail.task_id, id).ok())
+            .flatten()
+    }
+
+    fn poll_activity(&mut self) -> bool {
+        let binding = self.opened.then(|| self.selected_activity()).flatten();
+        if self.activity.as_ref().map(|job| &job.binding) != binding.as_ref() {
+            self.inspector_seen = 0;
+            self.activity = binding.and_then(activity::Job::start);
+        }
+        let old_first = self
+            .activity
+            .as_ref()
+            .and_then(|job| job.snapshot.records.first())
+            .map(|r| r.sequence);
+        let changed = self.activity.as_mut().is_some_and(activity::Job::poll);
+        if changed && self.inspector_log {
+            let new_first = self
+                .activity
+                .as_ref()
+                .and_then(|job| job.snapshot.records.first())
+                .map(|r| r.sequence);
+            if self.inspector_follow {
+                self.inspector_bottom();
+            } else if let (Some(old), Some(new)) = (old_first, new_first) {
+                let removed = usize::try_from(new.saturating_sub(old)).unwrap_or(usize::MAX);
+                // Keep the same visible operation while the bounded ring rolls underneath it.
+                self.inspector_scroll = self.inspector_scroll.saturating_sub(removed);
+                self.inspector_cursor = self.inspector_cursor.saturating_sub(removed);
+            }
+        }
+        changed
+    }
+
+    fn activity_header_len(&self) -> usize {
+        let rows = self.inspector_rows().1;
+        rows.iter()
+            .position(|row| row.text() == "ACTIVITY (metadata only)")
+            .map_or(rows.len(), |n| n + 1)
+    }
+
+    pub(crate) fn inspector_sticky(&self) -> usize {
+        if self.inspector_log && self.artifact.is_none() {
+            self.activity_header_len()
+                .min(self.inspector_body.saturating_sub(1))
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn inspector_resize(&mut self, body: usize) {
+        self.inspector_body = body.max(1);
+        if self.inspector_log && self.inspector_follow && self.artifact.is_none() {
+            self.inspector_bottom();
+        } else {
+            let max = self.inspector_rows().1.len().saturating_sub(body.max(1));
+            self.inspector_scroll = self.inspector_scroll.min(max);
+        }
+    }
+
+    fn inspector_bottom(&mut self) {
+        let len = self.inspector_rows().1.len();
+        self.inspector_cursor = len.saturating_sub(1);
+        self.inspector_scroll = len.saturating_sub(self.inspector_body.max(1));
+    }
+
+    pub(crate) fn inspector_cursor(&self) -> usize {
+        self.inspector_cursor
+    }
+
+    pub(crate) fn inspector_status(&self) -> String {
+        if !self.inspector_log {
+            return String::new();
+        }
+        if self.inspector_follow {
+            "following  ".into()
+        } else {
+            let new = self.activity.as_ref().map_or(0, |a| {
+                a.snapshot.sequence.saturating_sub(self.inspector_seen)
+            });
+            format!("paused ({new} new)  ")
+        }
+    }
+
+    /// Returns true when h/Escape (or q) leaves the inspector for the Task list.
+    pub(crate) fn inspector_key(&mut self, key: Key, body: usize) -> bool {
+        if matches!(key, Key::Esc | Key::Char('h' | 'q')) {
+            if self.artifact.take().is_some() {
+                self.inspector_cursor = self.inspector_saved_cursor;
+                self.inspector_scroll = self.inspector_saved_scroll;
+                return false;
+            }
+            if self.inspector_focus_right || self.inspector_log {
+                self.inspector_log = false;
+                self.inspector_focus_right = false;
+            } else {
+                self.inspector_log = false;
+                self.inspector = None;
+                return true;
+            }
+            return false;
+        }
+        self.inspector_body = body.max(1);
+        let len = self.inspector_rows().1.len();
+        let last_scroll = len.saturating_sub(1);
+        self.inspector_cursor = self.inspector_cursor.min(last_scroll);
+        self.inspector_scroll = self.inspector_scroll.min(len.saturating_sub(body.max(1)));
+        if self.inspector_log
+            && self.inspector_focus_right
+            && matches!(
+                key,
+                Key::Char('j' | 'k')
+                    | Key::Up
+                    | Key::Down
+                    | Key::PageDown
+                    | Key::PageUp
+                    | Key::Ctrl('f' | 'd' | 'b' | 'u')
+            )
+        {
+            if self.inspector_follow {
+                self.inspector_seen = self.activity.as_ref().map_or(0, |a| a.snapshot.sequence);
+            }
+            self.inspector_follow = false;
+        }
+        // Activity uses a viewport, not a selectable artifact row. Each scroll key moves
+        // the visible window immediately and leaves its position fixed while paused.
+        if self.inspector_log && self.inspector_focus_right {
+            let page = body.saturating_sub(self.inspector_sticky()).max(1);
+            let step = match key {
+                Key::Char('j' | 'k') | Key::Up | Key::Down => Some(1),
+                Key::PageDown | Key::PageUp | Key::Ctrl('f' | 'b') => Some(page),
+                Key::Ctrl('d' | 'u') => Some((page / 2).max(1)),
+                _ => None,
+            };
+            if let Some(step) = step {
+                self.inspector_scroll = if matches!(
+                    key,
+                    Key::Char('k') | Key::Up | Key::PageUp | Key::Ctrl('b' | 'u')
+                ) {
+                    self.inspector_scroll.saturating_sub(step)
+                } else {
+                    self.inspector_scroll
+                        .saturating_add(step)
+                        .min(len.saturating_sub(body.max(1)))
+                };
+                self.inspector_cursor = self.inspector_sticky() + self.inspector_scroll;
+                return false;
+            }
+        }
+        let previous = self.inspector.clone();
+        match key {
+            Key::Tab | Key::BackTab => self.inspector_focus_right = !self.inspector_focus_right,
+            Key::Left if self.inspector_focus_right => {
+                self.inspector_focus_right = false;
+            }
+            Key::PageDown | Key::Ctrl('f') | Key::Ctrl('d') if self.inspector_focus_right => {
+                let step = if key == Key::Ctrl('d') {
+                    body / 2
+                } else {
+                    body
+                };
+                self.inspector_cursor = self
+                    .inspector_cursor
+                    .saturating_add(step.max(1))
+                    .min(last_scroll);
+                self.inspector_scroll = self
+                    .inspector_scroll
+                    .saturating_add(step.max(1))
+                    .min(len.saturating_sub(body.max(1)));
+            }
+            Key::PageUp | Key::Ctrl('b') | Key::Ctrl('u') if self.inspector_focus_right => {
+                let step = if key == Key::Ctrl('u') {
+                    body / 2
+                } else {
+                    body
+                };
+                self.inspector_cursor = self.inspector_cursor.saturating_sub(step.max(1));
+                self.inspector_scroll = self.inspector_scroll.saturating_sub(step.max(1));
+            }
+            Key::Char('j') | Key::Down if self.inspector_focus_right => {
+                self.inspector_cursor = self.inspector_cursor.saturating_add(1).min(last_scroll)
+            }
+            Key::Char('k') | Key::Up if self.inspector_focus_right => {
+                self.inspector_cursor = self.inspector_cursor.saturating_sub(1)
+            }
+            Key::Char('G') if self.inspector_focus_right => {
+                self.inspector_follow = self.inspector_log;
+                self.inspector_bottom();
+            }
+            Key::Char('j') | Key::Down | Key::Char('k') | Key::Up => {
+                let entries = self.inspector_entries();
+                let index = entries
+                    .iter()
+                    .position(|(id, _)| Some(id) == self.inspector.as_ref())
+                    .unwrap_or(0);
+                let next = if matches!(key, Key::Char('j') | Key::Down) {
+                    (index + 1).min(entries.len().saturating_sub(1))
+                } else {
+                    index.saturating_sub(1)
+                };
+                self.inspector = entries.get(next).map(|(id, _)| id.clone());
+                self.inspector_log = false;
+                self.inspector_cursor = 0;
+                self.inspector_scroll = 0;
+            }
+            Key::Enter | Key::Char('l') | Key::Right if !self.inspector_focus_right => {
+                match self.inspector.clone() {
+                    Some(InspectorSelection::Node(node)) => {
+                        self.expanded = Some(node.clone());
+                        if let Some(Ok(detail)) = &self.detail
+                            && let Some(attempt) =
+                                detail.attempts.iter().rev().find(|a| a.node == node)
+                        {
+                            self.inspector = Some(InspectorSelection::Attempt(attempt.id.clone()));
+                        }
+                    }
+                    Some(InspectorSelection::Attempt(_)) => {
+                        self.inspector_log = true;
+                        self.inspector_focus_right = true;
+                        self.inspector_follow = true;
+                        self.inspector_cursor = 0;
+                        self.inspector_scroll = 0;
+                        self.inspector_bottom();
+                    }
+                    _ => {}
+                }
+            }
+            Key::Left if !self.inspector_focus_right => {
+                self.inspector_log = false;
+                self.inspector_cursor = 0;
+                self.inspector_scroll = 0;
+                match self.inspector.clone() {
+                    Some(InspectorSelection::Attempt(id)) => {
+                        if let Some(Ok(detail)) = &self.detail
+                            && let Some(attempt) = detail.attempts.iter().find(|a| a.id == id)
+                        {
+                            self.inspector = Some(InspectorSelection::Node(attempt.node.clone()));
+                        }
+                    }
+                    Some(InspectorSelection::Node(node)) => {
+                        if self.expanded.as_deref() == Some(&node) {
+                            self.expanded = None;
+                        } else {
+                            self.inspector = Some(InspectorSelection::Steps);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        if self.inspector != previous {
+            // Selection changes cancel the old channel immediately, even when several keys
+            // arrive before the next poll. A paused count cannot borrow another Attempt's head.
+            self.activity = None;
+            self.inspector_seen = 0;
+        }
+        let len = self.inspector_rows().1.len();
+        if !self.inspector_log && self.inspector_cursor < self.inspector_scroll {
+            self.inspector_scroll = self.inspector_cursor;
+        }
+        if !self.inspector_log
+            && self.inspector_cursor >= self.inspector_scroll + self.inspector_body
+        {
+            self.inspector_scroll = self.inspector_cursor + 1 - self.inspector_body;
+        }
+        self.inspector_scroll = self
+            .inspector_scroll
+            .min(len.saturating_sub(self.inspector_body));
+        false
+    }
+
+    pub(crate) fn inspector_artifact_row(&mut self) -> Option<usize> {
+        if !self.inspector_focus_right || self.artifact.is_some() {
+            return None;
+        }
+        let Some(Ok(detail)) = &self.detail else {
+            return None;
+        };
+        match self.inspector {
+            Some(InspectorSelection::Overview) => Some(self.inspector_cursor),
+            Some(InspectorSelection::History) => {
+                let (rows, _) = detail.rows(0);
+                let start = rows.iter().position(|r| r.text().starts_with("HISTORY"))?;
+                Some(start + self.inspector_cursor.checked_sub(1)?)
+            }
+            Some(InspectorSelection::Artifacts) => {
+                let id = array(&detail.document["execution_records"])
+                    .iter()
+                    .filter_map(|entry| entry["artifact_id"].as_str())
+                    .nth(self.inspector_cursor.checked_sub(2)?)?
+                    .to_owned();
+                let row = self.rows.len();
+                self.history.insert(row, id);
+                Some(row)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn inspector_artifact_opened(&mut self) {
+        if self.artifact.is_some() {
+            self.inspector_saved_cursor = self.inspector_cursor;
+            self.inspector_saved_scroll = self.inspector_scroll;
+            self.inspector_scroll = 0;
+            self.inspector_cursor = 0;
+        }
+    }
+
+    pub(crate) fn inspector_rows(&self) -> (Vec<(String, bool)>, Vec<Row>, bool, usize) {
+        let Some(Ok(detail)) = &self.detail else {
+            return (Vec::new(), Vec::new(), false, 0);
+        };
+        let left = self
+            .inspector_entries()
+            .into_iter()
+            .map(|(id, label)| {
+                let selected = Some(&id) == self.inspector.as_ref();
+                (label, selected)
+            })
+            .collect();
+        if let Some(artifact) = &self.artifact {
+            return (left, artifact.rows.clone(), true, self.inspector_scroll);
+        }
+        let mut right = Vec::new();
+        match &self.inspector {
+            Some(InspectorSelection::Node(node)) => {
+                right.push(Row::painted(
+                    format!("STEP  {}", stage_name(node)),
+                    Paint::Title,
+                ));
+                if let Some(stage) = detail.stages.iter().find(|s| &s.node == node) {
+                    right.push(stage_row(stage));
+                }
+                right.push(Row::plain("Enter selects latest Attempt"));
+            }
+            Some(InspectorSelection::Attempt(id)) => {
+                right.push(Row::painted(format!("ATTEMPT  {id}"), Paint::Title));
+                if let Some(attempt) = detail.attempts.iter().find(|a| &a.id == id) {
+                    right.push(Row::plain(format!(
+                        "Step: {}  State: {}",
+                        stage_name(&attempt.node),
+                        attempt.state
+                    )));
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
+                    if let Some(started) = attempt.started_ms {
+                        let end = if attempt.state == "started" {
+                            now
+                        } else {
+                            attempt.ended_ms.unwrap_or(started)
+                        };
+                        right.push(Row::plain(format!(
+                            "Elapsed: {}",
+                            duration(end.saturating_sub(started))
+                        )));
+                    }
+                    if let Some(observed) = attempt.observed_ms {
+                        right.push(Row::plain(format!(
+                            "Last execution record: {} ({} ago)",
+                            clock(observed),
+                            duration(now.saturating_sub(observed))
+                        )));
+                    }
+                }
+                if let Some(attempt) = detail.attempts.iter().find(|a| &a.id == id) {
+                    let (worker, provider) = detail.runner(attempt);
+                    right.insert(
+                        1,
+                        Row::plain(format!(
+                            "Worker: {} ({})",
+                            worker.unwrap_or("unknown"),
+                            provider.unwrap_or("command/unknown")
+                        )),
+                    );
+                    if provider != Some("codex") {
+                        right.push(Row::plain(
+                            "Live activity unavailable: runner has no metadata channel.",
+                        ));
+                    } else if let Some(job) = self
+                        .activity
+                        .as_ref()
+                        .filter(|job| Some(&job.binding) == self.selected_activity().as_ref())
+                    {
+                        let snapshot = &job.snapshot;
+                        if let Some(latest) =
+                            snapshot.records.iter().rev().find(|r| {
+                                r.operation != review_store::activity::Operation::Observation
+                            })
+                        {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map_or(0, |d| d.as_millis() as u64);
+                            let age = now.saturating_sub(latest.unix_ms);
+                            right.push(Row::plain(format!(
+                                "Latest: {} / {}",
+                                latest.operation.label(),
+                                latest.phase.label()
+                            )));
+                            right.push(Row::plain(format!(
+                                "Activity age: {}{}",
+                                duration(age),
+                                if age >= 15_000 {
+                                    " (stale; silence does not imply a stall)"
+                                } else {
+                                    ""
+                                }
+                            )));
+                        }
+                        if let Some(error) = snapshot.error {
+                            right.push(Row::painted(error.to_string(), Paint::Error));
+                        }
+                        if snapshot.lost > 0 {
+                            right.push(Row::plain(format!(
+                                "Activity truncated: {} older notifications overwritten",
+                                snapshot.lost
+                            )));
+                        }
+                        if self.inspector_log {
+                            right.push(Row::plain("ACTIVITY (metadata only)"));
+                            right.extend(snapshot.records.iter().map(|r| {
+                                Row::plain(format!(
+                                    "{} #{} {} / {}",
+                                    clock(r.unix_ms),
+                                    r.sequence,
+                                    r.operation.label(),
+                                    r.phase.label()
+                                ))
+                            }));
+                        }
+                    } else {
+                        right.push(Row::plain("Activity waiting for background reader"));
+                    }
+                    if self.inspector_log {
+                        right.push(Row::blank());
+                        right.push(Row::painted(
+                            "EXECUTION RECORDS (source artifact IDs)",
+                            Paint::Title,
+                        ));
+                        for (kind, source) in &attempt.records {
+                            right.push(Row::plain(format!("{kind}  {source}")));
+                        }
+                    }
+                }
+                right.push(Row::plain(
+                    "Raw provider output requires completed credential admission.",
+                ));
+            }
+            Some(InspectorSelection::Steps) => {
+                right.push(Row::painted("STEPS", Paint::Title));
+                right.extend(detail.stages.iter().map(stage_row));
+            }
+            Some(InspectorSelection::Artifacts) => {
+                right.push(Row::painted("ARTIFACTS  (execution records)", Paint::Title));
+                for entry in array(&detail.document["execution_records"]) {
+                    if let Some(id) = entry["artifact_id"].as_str() {
+                        right.push(Row::plain(id));
+                    }
+                }
+            }
+            Some(InspectorSelection::History) => {
+                let (rows, _) = detail.rows(0);
+                let start = rows
+                    .iter()
+                    .position(|r| r.text().starts_with("HISTORY"))
+                    .unwrap_or(0);
+                right.extend(rows.into_iter().skip(start));
+            }
+            _ => {
+                right = detail
+                    .rows(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map_or(0, |t| u64::try_from(t.as_millis()).unwrap_or(u64::MAX)),
+                    )
+                    .0;
+            }
+        }
+        if !matches!(self.inspector, Some(InspectorSelection::Overview)) {
+            right.insert(
+                0,
+                Row::painted(format!("TASK  {}", detail.task_id), Paint::Title),
+            );
+        }
+        (
+            left,
+            right,
+            self.inspector_focus_right,
+            self.inspector_scroll,
+        )
     }
 
     fn rebuild(&mut self) {
@@ -2522,6 +3197,8 @@ impl Pane for TasksPane {
     }
 
     fn open(&mut self, item: Option<&str>) {
+        let keep_inspector =
+            item.is_some() && item == self.selected.as_deref() && self.inspector.is_some();
         if item != self.selected.as_deref() && !self.explicit_read() {
             // A slow live read of the previously opened Task must not delay the new one's; a
             // load's read lists every Store and goes on.
@@ -2542,6 +3219,27 @@ impl Pane for TasksPane {
                 }
                 Err(error) => self.refuse_opened(&dir, &task_id, &error),
             }
+        }
+        if !keep_inspector {
+            self.inspector = match &self.detail {
+                Some(Ok(detail)) => Some(
+                    detail
+                        .stages
+                        .iter()
+                        .find(|stage| stage.mark == Mark::Running)
+                        .map_or(InspectorSelection::Overview, |stage| {
+                            InspectorSelection::Node(stage.node.clone())
+                        }),
+                ),
+                _ => None,
+            };
+            self.expanded = None;
+            self.inspector_log = false;
+            self.inspector_focus_right = false;
+            self.inspector_scroll = 0;
+            self.inspector_cursor = 0;
+            self.activity = None;
+            self.inspector_seen = 0;
         }
         self.next = Some(Instant::now() + LIVE);
         self.rebuild();
@@ -2590,7 +3288,7 @@ impl Pane for TasksPane {
         match key {
             Key::Enter => {
                 let Some(id) = self.history.get(&row) else {
-                    return Err("Enter opens the artifact of a HISTORY row".to_owned());
+                    return Err("Enter opens the artifact of a History or Artifacts row".to_owned());
                 };
                 let value = match task_execution::recorded_artifact(&detail.dir, id) {
                     Ok(value) => value,
@@ -2664,12 +3362,13 @@ impl Pane for TasksPane {
     }
 
     fn poll(&mut self) -> bool {
+        let activity_changed = self.poll_activity();
         // The read a load or `R` recorded starts here, after the frame painted last.
         if self.pending {
             self.start(true);
         }
         // Every Store the read in flight has delivered, then the end of the read.
-        let mut changed = false;
+        let mut changed = activity_changed;
         while let Some(job) = &self.job {
             match job.receiver.try_recv() {
                 Ok(read) => {
@@ -2686,12 +3385,12 @@ impl Pane for TasksPane {
                 }
             }
         }
-        if changed || !self.live() {
+        if !self.live() {
             return changed;
         }
         let now = Instant::now();
         if self.next.is_some_and(|next| now < next) {
-            return false;
+            return changed;
         }
         self.next = Some(now + LIVE);
         #[cfg(test)]
@@ -2699,7 +3398,7 @@ impl Pane for TasksPane {
             self.reads += 1;
         }
         self.start(false);
-        false
+        changed
     }
 
     fn busy(&self) -> Option<char> {

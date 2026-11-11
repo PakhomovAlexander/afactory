@@ -636,9 +636,16 @@ pub struct CapturedTaskHost<'a> {
     resolved_contexts: std::sync::Mutex<BTreeMap<String, String>>,
     environment: &'a dyn TaskEnvironment,
     domain: &'a dyn TaskDomain,
+    activity: Option<(std::path::PathBuf, String)>,
 }
 
 impl<'a> CapturedTaskHost<'a> {
+    /// Optional, disposable metadata under the Task Store, bound only by the installed host.
+    pub fn with_activity(mut self, store: &std::path::Path, task_id: &str) -> Self {
+        self.activity = Some((store.into(), task_id.into()));
+        self
+    }
+
     fn resolved_worker(
         &self,
         cas: &Cas,
@@ -919,6 +926,7 @@ impl<'a> CapturedTaskHost<'a> {
             slot_workers,
             derived_workers: std::sync::Mutex::new(BTreeMap::new()),
             resolved_contexts: std::sync::Mutex::new(BTreeMap::new()),
+            activity: None,
             environment,
             domain,
         })
@@ -1122,7 +1130,7 @@ impl<'a> CapturedTaskHost<'a> {
                         } else {
                             vec![]
                         };
-                        review_runner::task::invoke_model_with_policy(
+                        review_runner::task::invoke_model_with_activity(
                             cas,
                             sandbox.root(),
                             *adapter,
@@ -1135,6 +1143,21 @@ impl<'a> CapturedTaskHost<'a> {
                             attempt.reservation().tokens,
                             &environment,
                             policy,
+                            self.activity.as_ref().and_then(|(root, task_id)| {
+                                // Other native runners explicitly remain unavailable; no sidecar
+                                // is created for an adapter without a metadata projection.
+                                (adapter.provider_kind() == "codex")
+                                    .then(|| {
+                                        review_store::activity::Binding::new(
+                                            root,
+                                            task_id,
+                                            attempt.id(),
+                                        )
+                                        .ok()
+                                        .and_then(review_runner::activity::Sink::create)
+                                    })
+                                    .flatten()
+                            }),
                         )
                     }
                 };

@@ -2582,7 +2582,8 @@ fn start_captured(
         environment.as_ref(),
         &domain,
         &models,
-    )?;
+    )?
+    .with_activity(&state, &revision.task_id);
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     let writer = match &replace {
@@ -3387,7 +3388,8 @@ pub(super) fn run(
         environment.as_ref(),
         &domain,
         &models,
-    )?;
+    )?
+    .with_activity(&state, id);
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     // The process that takes the lease, recorded before it does, so `af task cancel` finds it
