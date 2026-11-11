@@ -56,6 +56,12 @@ impl Machine {
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
             .env_remove("AF_PROVIDERS_FILE")
+            // Agent markers describe the fixture, not the harness running this test.
+            .env_remove("CODEX_THREAD_ID")
+            .env_remove("CODEX_SANDBOX")
+            .env_remove("CODEX_SANDBOX_NETWORK_DISABLED")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_SANDBOXED")
             // Plenty of free disk, whatever the machine running the test has.
             .env("AF_TEST_FREE_BYTES", (1_u64 << 40).to_string());
         if let Some(path) = path {
@@ -145,6 +151,12 @@ fn clean_host(codex_available: bool) {
     let bin = machine.path("tools-path");
     std::fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
+    for tool in ["curl", "minisign"] {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let kind = if codex_available {
         use std::os::unix::fs::PermissionsExt as _;
         let codex = bin.join("codex");
@@ -1057,7 +1069,7 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     };
 
     // The project: each `.af/` file `af onboard` reads, broken in turn.
-    for file in [".af/af.toml", ".af/af.lock", ".af/pipelines/review.toml"] {
+    for file in [".af/af.toml", ".af/af.lock", ".af/task-catalog.toml"] {
         let path = repo.join(file);
         let kept = std::fs::read(&path).unwrap();
         std::fs::write(&path, [kept.as_slice(), b"\nbroken = [\n"].concat()).unwrap();
@@ -1084,7 +1096,7 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
         );
         // The command the check used to offer stops on that very error.
         let said = run(&["onboard", "--repo", &canonical(&repo)]);
-        assert!(said.contains("TOML parse error"), "{file}: {said}");
+        assert!(said.contains("unclosed array"), "{file}: {said}");
         run_fixes(&machine, &document, &repo, &bin, &envs, &[path.clone()]);
         std::fs::write(&path, kept).unwrap();
     }
@@ -1356,7 +1368,7 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
         err(&output)
     };
     let lock = repo.join(".af/af.lock");
-    let pipeline = repo.join(".af/pipelines/review.toml");
+    let pipeline = repo.join(".af/task-catalog.toml");
     let (kept_lock, kept_pipeline) = (
         std::fs::read(&lock).unwrap(),
         std::fs::read(&pipeline).unwrap(),
@@ -1367,11 +1379,11 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
         [kept_pipeline.as_slice(), b"\nbroken = [\n"].concat(),
     )
     .unwrap();
-    let line = String::from_utf8_lossy(&kept_pipeline).lines().count() + 2;
+    let line = String::from_utf8_lossy(&kept_lock).lines().count() + 2;
     let hint = project_hint();
     assert!(
         hint.starts_with(&format!(
-            "correct {}/.af/pipelines/review.toml line {line} by hand (",
+            "correct {}/.af/af.lock line {line} by hand (",
             canonical(&repo)
         )),
         "{hint}"
@@ -1383,7 +1395,7 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
     // Onboarding itself stops at that pipeline, never at the lock.
     let said = onboard_says();
     assert!(said.contains(&format!("line {line}")), "{said}");
-    assert!(!said.contains("af.lock"), "{said}");
+    assert!(said.contains(".af/af.lock"), "{said}");
     std::fs::write(&lock, &kept_lock).unwrap();
     std::fs::write(&pipeline, &kept_pipeline).unwrap();
 
@@ -1397,7 +1409,7 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
         + 1;
     std::fs::write(
         &project,
-        kept.replacen("version = 1", "version = \"one\"", 1),
+        kept.replacen("version = 2", "version = \"one\"", 1),
     )
     .unwrap();
     let hint = project_hint();
@@ -1419,186 +1431,58 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
 /// the pipeline, never a file outside `.af/`.
 #[test]
 fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
+    use std::io::Write;
     let machine = Machine::new();
     let repo = onboarded(&machine);
     let home = machine.path("home");
-    let af = repo.join(".af");
-    let root = canonical(&repo);
-    let quoted = shell_words::quote(&root).into_owned();
-    let project_hint = || {
-        let document = document(&machine.doctor_at(&home, &repo, &["--json"], None, &[]));
-        let project = check(&document, "project").clone();
-        assert_eq!(project["status"], "fail", "{document}");
-        assert_eq!(project["fix"], serde_json::Value::Null, "{document}");
+    let manifest = repo.join(".af/task-packages/onboard/correctness/worker.toml");
+    let kept = std::fs::read_to_string(&manifest).unwrap();
+    let hint = || {
+        let value = document(&machine.doctor_at(&home, &repo, &["--json"], None, &[]));
+        let project = check(&value, "project");
+        assert_eq!(project["status"], "fail");
+        assert!(project["fix"].is_null());
         project["hint"].as_str().unwrap().to_owned()
     };
-    let onboard_says = || {
-        let output = crate::common::af()
-            .args(["onboard", "--repo", &root])
-            .env("HOME", &home)
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        err(&output)
-    };
-    let manifest = af.join("workers/correctness/reviewer.toml");
-    let pipeline = af.join("pipelines/review.toml");
-    let lock = af.join("af.lock");
-    let kept = |path: &Path| std::fs::read_to_string(path).unwrap();
-    let (kept_manifest, kept_pipeline, kept_lock, kept_project) = (
-        kept(&manifest),
-        kept(&pipeline),
-        kept(&lock),
-        kept(&af.join("af.toml")),
-    );
-    // A later route whose pipeline is malformed: the reader reaches it only when every file of
-    // the selected pipeline reads, so no hint below may name it.
-    std::fs::write(
-        af.join("af.toml"),
-        format!(
-            "{kept_project}\n[[routes]]\nname = \"docs\"\npaths = [\"docs/**\"]\npipeline = \"docs\"\n"
-        ),
-    )
-    .unwrap();
-    std::fs::write(af.join("pipelines/docs.toml"), "version = \"one\"\n").unwrap();
-    let restore = || {
-        std::fs::write(&manifest, &kept_manifest).unwrap();
-        std::fs::write(&pipeline, &kept_pipeline).unwrap();
-        std::fs::write(&lock, &kept_lock).unwrap();
-    };
-    // Re-pins one Worker package, or the selected pipeline, as `--refresh-lock` would.
-    let repin = |section: &str, digest: String| {
-        let text = kept(&lock);
-        let at = text.find(&format!("[{section}]")).unwrap();
-        let start = at + text[at..].find("digest = \"").unwrap() + "digest = \"".len();
-        let end = start + text[start..].find('"').unwrap();
-        std::fs::write(&lock, format!("{}{digest}{}", &text[..start], &text[end..])).unwrap();
-    };
-    let package_digest = || {
-        af_pipeline_config::lock::package_digest("correctness", &af.join("workers/correctness"))
-            .unwrap()
-    };
-
-    // Changed and malformed, the lock untouched: onboarding stops at the package's pin, and
-    // the hint names its manifest's line and the re-pin, never the route.
-    std::fs::write(&manifest, format!("{kept_manifest}\nbroken = [\n")).unwrap();
-    let line = kept_manifest.lines().count() + 2;
-    let hint = project_hint();
+    std::fs::write(&manifest, format!("{kept}\nbroken = [\n")).unwrap();
+    let said = hint();
     assert!(
-        hint.starts_with(&format!(
-            "correct {root}/.af/workers/correctness/reviewer.toml line {line} by hand ("
-        )),
-        "{hint}"
-    );
-    assert!(
-        hint.contains(&format!(
-            "then re-pin it, as its package changed since .af/af.lock pinned it: af onboard \
-             --repo {quoted} --refresh-lock; then recheck: af doctor --repo {quoted}"
-        )),
-        "{hint}"
-    );
-    assert!(!hint.contains("docs.toml"), "{hint}");
-    let said = onboard_says();
-    assert!(
-        said.contains("reviewer `correctness`") && said.contains("does not match its pin"),
+        said.contains("task-packages/onboard/correctness/worker.toml"),
         "{said}"
     );
-
-    // Its pin matching, a manifest of the wrong shape (`subjects` a number) is refused by the
-    // typed reader and located; a malformed file beside it is no manifest and never named.
-    std::fs::write(
-        &manifest,
-        kept_manifest.replacen("subjects = [\"diff\"]", "subjects = 1", 1),
-    )
-    .unwrap();
-    std::fs::write(af.join("workers/correctness/a-notes.toml"), "broken = [\n").unwrap();
-    repin("workers.correctness", package_digest());
-    let at = kept_manifest
-        .lines()
-        .position(|line| line.starts_with("subjects = "))
-        .unwrap()
-        + 1;
-    let hint = project_hint();
     assert!(
-        hint.starts_with(&format!(
-            "correct {root}/.af/workers/correctness/reviewer.toml line {at} by hand (invalid type"
-        )),
-        "{hint}"
+        said.contains(&format!("line {}", kept.lines().count() + 2)),
+        "{said}"
     );
+    std::fs::write(&manifest, kept.replace("model = ", "unknown_model = ")).unwrap();
+    let said = hint();
     assert!(
-        hint.ends_with(&format!("then recheck: af doctor --repo {quoted}")),
-        "{hint}"
+        said.contains("worker.toml") && said.contains("unknown field"),
+        "{said}"
     );
-    let said = onboard_says();
-    assert!(said.contains("reviewer.toml for `correctness`"), "{said}");
-    std::fs::remove_file(af.join("workers/correctness/a-notes.toml")).unwrap();
-    restore();
-
-    // A symlinked manifest stops the package reader, before the route is read.
-    let outside = machine.path("outside.toml");
-    std::fs::write(&outside, &kept_manifest).unwrap();
+    std::fs::write(&manifest, &kept).unwrap();
+    let outside = machine.path("outside-secret");
+    std::fs::write(&outside, "secret = [\n").unwrap();
     std::fs::remove_file(&manifest).unwrap();
     std::os::unix::fs::symlink(&outside, &manifest).unwrap();
-    let hint = project_hint();
-    assert!(
-        hint.starts_with(&format!(
-            "correct {root}/.af/workers/correctness/reviewer.toml by hand (reviewer \
-             `correctness` contains a symlink"
-        )),
-        "{hint}"
-    );
-    assert!(onboard_says().contains("contains a symlink"));
+    let said = hint();
+    assert!(said.contains("worker.toml"), "{said}");
+    assert!(!said.contains("secret ="), "{said}");
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "secret = [\n");
     std::fs::remove_file(&manifest).unwrap();
-    restore();
-
-    // A package named by a path outside `.af/workers`, its pipeline re-pinned: the reader
-    // refuses the name, and the hint names the pipeline, never the directory's malformed file.
-    let elsewhere = machine.path("elsewhere");
-    std::fs::create_dir_all(&elsewhere).unwrap();
-    std::fs::write(elsewhere.join("bad.toml"), "broken = [\n").unwrap();
-    std::fs::write(elsewhere.join("reviewer.toml"), "broken = [\n").unwrap();
-    for package in [
-        elsewhere.to_str().unwrap().to_owned(),
-        "../../../elsewhere".to_owned(),
-    ] {
-        let changed = kept_pipeline.replacen(
-            "package = \"correctness\"",
-            &format!("package = \"{package}\""),
-            1,
-        );
-        std::fs::write(&pipeline, &changed).unwrap();
-        repin(
-            "pipelines.review",
-            af_store::canonical::blob_content_id(changed.as_bytes()),
-        );
-        let hint = project_hint();
-        assert!(
-            hint.starts_with(&format!(
-                "correct {root}/.af/pipelines/review.toml by hand ("
-            )),
-            "{package}: {hint}"
-        );
-        assert!(
-            !hint.contains("bad.toml") && !hint.contains("line "),
-            "{hint}"
-        );
-        assert!(
-            onboard_says().contains("is not in the lockfile"),
-            "{package}"
-        );
-        restore();
-    }
-
-    // With every selected file whole, the reader goes on to the route, and so does the hint.
-    let hint = project_hint();
-    assert!(
-        hint.starts_with(&format!("{root}/.af/pipelines/docs.toml no longer matches")),
-        "{hint}"
-    );
+    std::fs::write(&manifest, &kept).unwrap();
+    let prompt = repo.join(".af/task-packages/onboard/correctness/instructions.md");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(prompt)
+        .unwrap()
+        .write_all(b"\nChanged rubric\n")
+        .unwrap();
+    let said = hint();
+    assert!(said.contains("task-packages/onboard/correctness"), "{said}");
+    assert!(said.contains("--refresh-lock"), "{said}");
 }
 
-/// `program doctor` on a terminal `columns` wide, from `dir`, in `machine`'s private home with
-/// `path` as PATH and `envs` on top: what the terminal shows.
 fn doctor_in_terminal(
     machine: &Machine,
     program: &Path,

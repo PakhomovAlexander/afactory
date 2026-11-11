@@ -1,7 +1,7 @@
 //! `af task run ID --retry-gate`: reopen a finished Task whose last round ended at a failed
 //! gate, so its check node runs again, in a new check Attempt of the same round, on the same
 //! sealed candidate (`TaskGateRetried@1`, its own event of the Task's log beside
-//! `TaskTransition@5`).
+//! `TaskTransition@6`).
 //!
 //! The retry grants nothing a plan did not. It needs the Task's current lease, the plan's
 //! current approval and deadline, and a budget that still holds a new Attempt of the check
@@ -141,18 +141,12 @@ impl TaskProjection {
                 execution.graph.owned_children.contains_key(node)
                     || execution.graph.experimental_slots.contains_key(node)
                     || execution.owned.contains_key(node)
-            }) || execution.active_review_integration().is_some()
-            {
+            }) {
                 return refused(
                     "its gate is followed by owned children, an experiment or an Integration, \
                      which --retry-gate does not reopen",
                 );
             }
-        }
-        if review_round::ReviewRoundFence::capture(cas, &self.revision)?.is_some() {
-            return refused(
-                "it runs a captured Campaign Review Round, which --retry-gate does not reopen",
-            );
         }
         if let Some(why) = self.retry_admission(cas, execution, &gates, now_unix_ms)? {
             return Ok(GateRetry::Refused(why));
@@ -380,11 +374,10 @@ impl EventStore {
             payloads: vec![value],
             event_type: EventType::TaskGateRetriedV1,
             valid_until: Some(valid_until),
-            review_round: None,
             review_prefix: None,
             bound_tasks: Vec::new(),
         };
-        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), None, Some(&state))?;
+        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), Some(&state))?;
         Ok(gates)
     }
 }

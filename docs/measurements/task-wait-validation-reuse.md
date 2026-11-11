@@ -13,8 +13,9 @@ artifact closure; this is neither metadata-only integrity nor a zero-I/O wait.
 
 The `cli_task_wait` case launches the real CLI, with its real startup, polling, final status and
 exit. Its independent oracle requires exit 124 and `af/task-status@2` with a running Task. The
-two-second timeout starts after `open_task`, and final status and Gate history run after the timeout
-test. Whole-process wall time therefore includes work outside that timeout clock and can exceed
+two-second timeout starts after `open_task`; display construction and observation run under that
+clock, and final status serialization follows the timeout test. Whole-process wall time includes
+work outside that timeout clock and can exceed
 two seconds. It is not a latency assertion that the whole CLI exits in two seconds.
 
 The registry preserves `cli_state_10000` and adds these controlled fixtures:
@@ -29,8 +30,9 @@ The registry preserves `cli_state_10000` and adds these controlled fixtures:
 
 The heavy author package is the existing 5,605,230-byte typed-envelope workload. Historical Tasks
 share the Store and source identity, have released leases and no execution records. The current
-plan declares a check, so its final status reaches history discovery. This measures the effect of
-unrelated historical Tasks without inventing historical check measurements. Separate history tests
+plan declares a check. This measures startup and observation with unrelated historical Tasks
+without inventing historical check measurements; the optional Gate hint belongs to plan preview,
+and is not part of `task wait --json`. Separate history tests
 cover measured check ordering, identity, cache annotations and corrupt evidence.
 
 All state-log fixtures use public pause/resume transitions before proposing their large authority,

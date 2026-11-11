@@ -163,7 +163,7 @@ cannot be silently omitted or downgraded when a run fails.
 | State library | Cold application projection and prewarmed projection of exactly 10,000 valid relevant events | Quick, nightly |
 | Authority library | Current-plan check and first `TaskRuntime::new`; two-node graphs at both large package sizes, fresh valid leases | Quick, nightly |
 | CLI Task | Start without execution; separately run RootInputs plus check(`true`), with the check proved executed | Quick, nightly, release |
-| CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event Task/Campaign fixtures | Quick, nightly, release |
+| CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event native Task fixtures | Quick, nightly, release |
 | CLI wait | Real two-second timeout over small and artifact-heavy Tasks, 100/10,000 events and zero/100 historical Tasks; total CPU, wall and RSS | Nightly |
 | Persistence diagnostic | Real filesystem CAS write/read and state append/read, with declared flush semantics and logical bytes | Advisory nightly/manual |
 
@@ -856,9 +856,10 @@ from other hosts and recomputes the verdict. It also adds the CLI adapters and o
 `fixtures/performance/cli.toml` with side-written fixtures, host identity, and evidence
 `af.perf-sample/2` and `af.perf-shard/2`. Its completion (ADR-0169) takes one machine
 coordination lock before any shared resource is touched. Each side writes its large Task and
-Campaign state once per shard as an immutable seed that every sample copies privately. That
-brings `review ledger` and `review report` over a 10,000-event Campaign written by each side's
-own `af review run` and Findings Ledger writer. Linux recipes build in a pinned build image
+Review state once per shard as an immutable seed that every sample copies privately. The
+current native fixture invokes `af review run --file` and extends common Task records to exactly
+10,000 events; `review ledger` and `review report` inspect that Task's canonical Findings and
+accounting. The original Campaign representation is retired; no fixture reader restores it. Linux recipes build in a pinned build image
 without network (`af.perf-builds/4`, `af.perf-shard/3`, `af.perf-cli/2`). Every recipe,
 environment and case is executable where its host provides it, and a host that cannot refuses
 at run time with its reason. The p2/p3 closeout (ADR-0170) seeds the native source capture and

@@ -71,25 +71,7 @@ fn provider_doctor_shows_only_its_own_flags() {
         .collect();
     assert_eq!(
         flags,
-        [
-            "repo",
-            "pipeline",
-            "state",
-            "campaign",
-            "policy-rev",
-            "base",
-            "candidate",
-            "uncommitted",
-            "focus",
-            "heavy",
-            "restart-round",
-            "provider",
-            "provider-admission-tokens",
-            "provider-admission-wall-ms",
-            "timeout-secs",
-            "git-timeout-secs",
-            "json",
-        ],
+        ["confirm-plan", "repo", "state", "workspace", "json"],
         "{help}"
     );
 }
@@ -126,48 +108,32 @@ fn self_help_leads_with_status_and_update() {
 }
 
 #[test]
-fn review_help_groups_its_commands_by_lifecycle() {
+fn review_help_describes_the_one_native_task_lifecycle() {
     let help = out(&af(&["review", "--help"]));
+    let commands: Vec<_> = between(&help, "Commands:", "")
+        .into_iter()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
     assert_eq!(
-        between(
-            &help,
-            "Plan, token-free and without Campaign state:",
-            "  gc                    Reclaim Campaign state: list what would go; remove it only with --apply"
-        ),
+        commands,
         [
-            "Plan, token-free and without Campaign state:",
-            "  plan                  Show what a review would run, token-free, without Campaign state",
-            "  render                Compose one Worker's exact input, token-free, without Campaign state",
-            "",
-            "Run:",
-            "  run                   Execute the pipeline and fold results into the ledger",
-            "",
-            "Inspect a Campaign:",
-            "  ledger                List the ledger: findings, dispositions, and open demands",
-            "  show                  Show one ledger entry by key",
-            "  report                Render the Campaign report",
-            "  export                Export a verified patch proposal, by id or by the finding it fixes",
-            "",
-            "Work its findings and demands:",
-            "  resolve               Resolve a finding without a fix: rejected, or tracked as wontfix",
-            "  attest-change         Attest that a region changed in response to a finding",
-            "  verify-fix            Record a verification of an attested fix",
-            "  challenge-resolution  Challenge a non-fixed resolution",
-            "  group                 Group one finding under another",
-            "  ungroup               Undo a grouping",
-            "  evidence              Attach or apply evidence to a demand",
-            "  demand                Waive a demand",
-            "  policy-time           Advance the Campaign's policy clock",
-            "",
-            "Campaigns and maintenance:",
-            "  campaigns             List Campaigns under the state root",
-            "  gc                    Reclaim Campaign state: list what would go; remove it only with --apply",
+            "run",
+            "plan",
+            "inspect",
+            "show",
+            "ledger",
+            "report",
+            "resume",
+            "continue",
+            "export",
+            "decision-context",
+            "decide"
         ]
     );
-    assert!(
-        help.contains("Run options (`af review [OPTIONS]` is `af review run [OPTIONS]`): see `af review run --help`."),
-        "{help}"
-    );
+    assert!(help.contains("Campaign selectors and Review Pipeline configuration are retired"));
+    assert!(help.contains("common native Task lifecycle"));
+    assert!(help.contains("sealed proposed repair independently"));
 }
 
 #[test]
@@ -183,7 +149,7 @@ fn onboard_help_is_written_for_a_person_with_agent_notes_last() {
             "  1. af onboard          preview what would be written; token-free, writes nothing",
             "  2. af onboard --apply  write `.af/`, only where none exists; it never overwrites one",
             "  3. git add .af && git commit -m \"af review policy\"",
-            "  4. af review plan --policy-rev HEAD --base HEAD --uncommitted   see what a review would run",
+            "  4. af review plan --file ../review.json --base HEAD --uncommitted   see what a review would run",
             "",
         ]
     );
@@ -197,8 +163,13 @@ fn onboard_help_is_written_for_a_person_with_agent_notes_last() {
         );
     }
     assert!(
-        help.trim_end()
-            .ends_with("explicitly requests convergence review, and repeat that explicit mode when resuming it."),
+        help.contains("the retired --heavy Campaign flag is refused."),
+        "{help}"
+    );
+    assert!(
+        help.trim_end().ends_with(
+            "the recorded Task with its exact plan ID; its limits and accounting remain captured."
+        ),
         "{help}"
     );
 }
@@ -286,52 +257,49 @@ fn human_text_prints_figures_in_units_and_json_keeps_them_raw() {
     assert!(kind["newest_use_unix_ms"].as_u64().unwrap() > 0, "{kind}");
     assert!(kind["bytes"].as_u64().unwrap() > 0, "{kind}");
 
-    // The plan's admission wall in seconds, its inputs in units; the document keeps both raw.
-    let plan = out(&in_repo(&[
-        "review",
-        "plan",
-        "--policy-rev",
-        "HEAD",
-        "--base",
-        "HEAD~1",
-        "--candidate",
-        "HEAD",
-        "--provider",
-        "architecture=codex-main",
-        "--provider",
-        "correctness=codex-main",
-    ]));
-    assert!(
-        plan.contains("provider admission  32768 tokens, 45.0 s per capability"),
-        "{plan}"
-    );
-    assert!(
-        plan.lines()
-            .filter(|line| line.starts_with("input    "))
-            .all(|line| line.contains(" KiB (about ") && !line.contains(" bytes")),
-        "{plan}"
-    );
-    let document: serde_json::Value = serde_json::from_slice(
-        &in_repo(&[
+    // Native Review uses the same figure rendering as Task planning, with raw exact limits
+    // in JSON. This fixture runs no Provider and creates no Attempt while planning.
+    let native = root.path().join("native");
+    let (repository, state) = crate::task_cli::fixture_named(&native, "review");
+    let mut command = crate::common::af();
+    let planned = command
+        .current_dir(&repository)
+        .args([
             "review",
             "plan",
-            "--policy-rev",
-            "HEAD",
-            "--base",
-            "HEAD~1",
-            "--candidate",
-            "HEAD",
-            "--provider",
-            "architecture=codex-main",
-            "--provider",
-            "correctness=codex-main",
+            "--file",
+            "review.json",
             "--json",
+            "--state",
         ])
-        .stdout,
-    )
-    .unwrap();
-    assert_eq!(document["provider_admission"]["wall_ms"], 45000);
-    assert!(document["subject"]["patch_bytes"].as_u64().unwrap() > 0);
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(planned.status.success(), "{planned:?}");
+    let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let deadline = document["plan"]["limits"]["deadline_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let opened = document["history"][0]["transition"]["now_unix_ms"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        document["clock"]["wall_ms"].as_u64().unwrap(),
+        deadline - opened
+    );
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(
+        document["graph"]["allowances"]["root.nodes.check"]["wall_ms_per_attempt"],
+        5_000
+    );
+    let inspected = crate::common::af()
+        .current_dir(&repository)
+        .args(["review", "inspect", "review-cli", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let text = out(&inspected);
+    assert!(text.contains("Attempt wall 5 s"), "{text}");
 }
 
 /// Every help page — `af <path> --help` for every command and `af help <topic>` for every

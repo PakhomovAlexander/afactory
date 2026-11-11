@@ -74,6 +74,15 @@ failure/cancellation when observed. Capacity exhaustion fails closed. File-only 
 the actual output schemas and an array-envelope example; typed admission remains authoritative.
 See the [allowance decision](adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
 
+Pi terminal SDK errors, including assistant errors after a completed tool call, retain a bounded,
+sanitized diagnostic for the operator and raw CAS evidence. Complete native usage keeps its exact
+AF charge without an incomplete-billing refusal; the Worker reply still fails. Bounded structured
+error `type` and `code` fields contribute to classification, so `rate_limit_error` or
+`model_not_found` keeps its category even when the message is neutral or withheld for privacy.
+Only the filtered message becomes diagnostic text; provider codes and other payload fields stay
+private. Successful replies still require successful settlement. See the
+[Pi host design](design/pi-provider.md) for the protocol and diagnostic bounds.
+
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
 executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must
@@ -98,7 +107,7 @@ backend IDs appear as null, never as an invented supported identity or a raw inv
 Failures repeat the AF-authored detail/outcome on stderr even with `--json`; early refusals
 exit 3 and registry conflicts exit 5. CLI parser errors remain usage errors before Pi setup.
 Pi setup JSON is `af/pi-provider-setup@4`; the shared status and catalog
-versions are `af/provider-status@6` and `af/provider-models@3`.
+versions are `af/provider-status@6` and `af/provider-models@4`.
 
 ## In a first run
 
@@ -434,7 +443,7 @@ version it replaced is preserved; the command prints where
 entry goes with it.
 
 The command is all or nothing. An ID that is not registered refuses it with exit 1 and removes
-nothing. `af` does not check whether a pipeline, Campaign or Task still binds a removed ID.
+nothing. `af` does not check whether a Task Pipeline still binds a removed ID.
 
 Two cases come up often:
 
@@ -461,7 +470,7 @@ Enter runs it.
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
 af provider status --json          # the same, as af/provider-status@6
 af provider status --usage         # additionally probe subscription and quota windows
-af provider doctor --campaign NAME --provider correctness=codex-main
+af provider doctor TASK_ID --confirm-plan PLAN_ID
 ```
 
 `status` is deliberately cheap and says only what it checked. A context that does not exist or
@@ -473,7 +482,7 @@ only when a row is authenticated. It reports four independent axes:
 
 | Axis | Values | Means |
 |---|---|---|
-| `registered` | true / false | in the registry, so selectable by `--provider NODE=ID`; false is an ambient discovery label |
+| `registered` | true / false | in the registry, so selectable by a machine-local Task `--bindings FILE` mapping; false is an ambient discovery label |
 | `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about; `not_probed` means the directory is absent or holds no login marker, so the CLI was not asked |
 | `usability` | `usable_or_untested`, `unusable`, `unknown` | status never claims `usable`: only `af provider doctor` dispatches and can prove it |
 | `usage.state` | `not_requested`, `not_applicable`, `unsupported`, `available`, `unavailable` | the optional plan and quota axis |
@@ -500,7 +509,7 @@ refusal that happens anyway is still `model_refused`
 
 ```sh
 af provider models                                        # every registered Provider's catalog
-af provider models claude-work --json                     # the same, as af/provider-models@3
+af provider models claude-work --json                     # the same, as af/provider-models@4
 af provider models claude-work --resolve 'Fable 5.1/xhigh'
 af provider models codex-main --resolve 'GPT-6.1 Sol/ultra'
 af provider models pi-personal --page 1 --json
@@ -514,7 +523,7 @@ tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
-| `pi` | AF host `af.pi-host/5` identity/catalog, using installed SDK 1.4.0 effective chat models from the SDK and explicit profile | Pinned SDK plus configured/cached catalogs; no network refresh |
+| `pi` | AF host `af.pi-host/7` identity/catalog, using installed SDK 1.4.0 effective chat models from the SDK and explicit profile | Pinned SDK plus configured/cached catalogs; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
 
 Pi lists zero-based pages with `--page N`, retaining the 64-row page bound. JSON `catalog_page`
@@ -540,18 +549,13 @@ display name or family form of an exact ID, a misspelling with the nearest catal
 same family or at most two edits away), or an exact ID the catalog does not list, which passes
 or fails af's spelling rule and whose usability only `af provider doctor` proves. Pi requires
 an exact catalog ID; unlisted IDs are refused. It then checks
-the effort level against that model's levels and, for a listed pair only, prints the three
-configurations to copy. Each is printed under its label, one table header or key per line, and
-is a TOML document that parses on its own and pastes unchanged into the file it is named for:
-the review package's `[runner]` table for `reviewer.toml`, the Task package's `[runner]` table
-for `worker.toml`, and the `[providers]` table of the Task catalog or a `--bindings` file, with
-the review-time equivalent as a comment line. `af provider models claude-work --resolve
-'Fable 5.1/xhigh'` prints:
+the effort level against that model's levels and, for a listed pair only, prints the two
+configurations to copy. Each is a TOML document that parses on its own: the Task package's
+`[runner]` table for `worker.toml`, and the `[providers]` table of the Task catalog or a
+`--bindings` file. Native Review uses the same Worker and binding authority. For example,
+`af provider models claude-work --resolve 'Fable 5.1/xhigh'` prints:
 
 ```text
-    reviewer.toml  [runner]
-                   program = "claude"
-                   args = [{ value = "--model" }, { value = "claude-fable-5-1" }, { value = "--effort" }, { value = "xhigh" }]
     worker.toml    [runner]
                    kind = "model"
                    provider_kind = "claude"
@@ -559,14 +563,12 @@ the review-time equivalent as a comment line. `af provider models claude-work --
                    effort = "xhigh"
     bindings       [providers]
                    "PACKAGE" = "claude-work"
-                   # af review run … --provider NODE=claude-work
 ```
 
-A Codex reviewer names `program = "codex"` and passes the effort level as `{ value = "-c" },
-{ value = "model_reasoning_effort=\"ultra\"" }` in place of the last two args. With `--json`,
-`configuration.reviewer_runner`, `configuration.worker_runner` and `configuration.binding` each
-carry the text of one block, its lines joined by newlines. af never substitutes a model or an
-effort level, so an alias or an effort level the model does not list prints no configuration.
+With `--json`, `af/provider-models@4` carries these texts in `configuration.worker_runner`
+and `configuration.binding`. There is no Reviewer manifest or `reviewer_runner` template.
+An alias or an effort level the model does not list prints no configuration. Provider capability
+and recorded-evidence checks apply equally to implementation and Review Workers.
 
 In `af tui`, the Providers pane shows under each Provider a `models` section with that
 Provider's own catalog. A Worker declaration names only a Provider kind, never the Provider that
@@ -657,7 +659,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
 
 | What | Value |
 |---|---|
-| af invokes | `claude -p --output-format json [--model M --effort E] --safe-mode --restricted --permission-mode dontAsk --strict-mcp-config --tools … --allowedTools … [--json-schema …]`, prompt on stdin; `--json-schema` carries a typed reply's schema ([ADR-0103](adr/0103-constrain-native-claude-task-replies.md)) or a review-Campaign reviewer's Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
+| af invokes | `claude -p --output-format json [--model M --effort E] --safe-mode --restricted --permission-mode dontAsk --strict-mcp-config --tools … --allowedTools … [--json-schema …]`, prompt on stdin; `--json-schema` carries a typed reply's schema ([ADR-0103](adr/0103-constrain-native-claude-task-replies.md)) or a native Review Worker's Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
 | Attempt environment | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` and `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, for every access mode, beside the auth grants. The third stops Claude Code's automatic model fallback: when the bound model's safety classifier flags a request, the client would otherwise re-run it on another model (Opus 5 or Opus 4.8 for Claude Fable 5.1) and keep the session there; with it a flagged request ends as a refusal on the bound model. `CLAUDE_CODE_NO_MODEL_FALLBACK` is not set, because it also disables the model substitution compaction may need. These are a bounded client mitigation: af still refuses any reply whose usage names a model the Worker did not bind ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)) |
 | Required options (`claude --help`) | `-p`/`--print`, `--output-format`, `--model`, `--effort`, `--safe-mode`, `--restricted`, `--permission-mode`, `--strict-mcp-config`, `--tools`, `--allowedTools`, `--json-schema` |
 | Required protocol | `claude auth status --json` answers the identity probe |
@@ -671,7 +673,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
 
 | What | Value |
 |---|---|
-| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--output-schema <file>] [--model M -c model_reasoning_effort=…] -`, prompt on stdin; `--output-schema` names the typed reply's strict schema ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) or a review-Campaign reviewer's strict Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
+| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--output-schema <file>] [--model M -c model_reasoning_effort=…] -`, prompt on stdin; `--output-schema` names the typed reply's strict schema ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) or a native Review Worker's strict Reviewer Result schema ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)) |
 | Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--output-schema`, `--model`, `-c`/`--config` |
 | Required protocol | `codex app-server`, started bare, answers JSON-RPC `initialize` (id 1) over its default stdio transport, then `account/read` or `account/rateLimits/read` (id 2); `codex login status` answers the status probe |
 | Checked | the options and the `initialize` answer by `af provider status` (with or without `--usage`), `af provider setup` and Task Provider admission; the whole protocol again by the identity probe before every private Worker send, and by `status --usage` |
@@ -762,7 +764,7 @@ harness, sandbox and network context without treating markers as proof of CLI co
 The versioned documents are [`provider-detect-v4.json`](../schemas/provider-detect-v4.json),
 [`provider-status-v6.json`](../schemas/provider-status-v6.json),
 [`provider-setup-v2.json`](../schemas/provider-setup-v2.json) and
-[`provider-models-v3.json`](../schemas/provider-models-v3.json). They are closed vocabularies; the
+[`provider-models-v4.json`](../schemas/provider-models-v4.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
 can represent an account email, an organization or account identity, a credential, OAuth material,
 or raw Provider output — quota windows carry only the numbers `af` derived itself, and the human
@@ -782,7 +784,7 @@ table keeps the Provider's own window labels.
 | `model_refused` on the stderr of `af task run` or `af review run`, or in an Attempt diagnostic: `the safety classifier of MODEL (effort E) flagged the request and MODEL refused it` | The bound model's safety classifier flagged the Worker's input and Claude Code, with its automatic fallback turned off, ended the turn with a refusal (`safety_stops` above zero, `stop_reason` `refusal`, or `…'s safeguards flagged this message` in the result of an error result, whatever its `errors` holds). It is not a credential or spelling problem. af charged what the result reported and did not retry, because the same input is flagged again. Change the input or bind another model, then rerun ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | `Claude Code switched models, a safety-classifier fallback (model_refused)` or `an unexplained switch (model_switched)` | Claude Code answered with a model the Worker did not bind; the line names the bound model, each model that answered with its output tokens (a model ID outside the printable grammar reads `[not printable]` with its byte length), and `safety_stops` and `num_turns`. The diagnostic in `af task show` starts with it even when the usage was also malformed or listed more than 32 models, and gives those accounting reasons after it; an entry for another model that reports no activity, or only malformed counters, is not a switch. af refused the reply, because it never runs or accepts an unrequested model, and charged what the result reported. af already sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so a client that still switches ignores it: upgrade it with `npm install -g @anthropic-ai/claude-code@latest` and rerun. If the classifier flags the input again, change it or bind another model. |
 | `model_unavailable` after `Claude Code rejected the model`, quoting the model ID | Claude Code answered "There's an issue with the selected model (…). It may not exist or you may not have access to it.": it does not know that model ID or the account cannot use it. The line names the Provider, the nearest exact IDs af knows and `af provider models <id>`. Correct the binding's model ID (Claude IDs use hyphens, such as `claude-fable-5-1`), then check the Provider with `af provider status` (token-free) and `af provider doctor` (charged). |
-| `af refused the binding of model … (model_not_accepted)` from `af task plan`, `af review plan`, `af review render` or a run | A rule refused the binding before any process started: an alias (with the exact ID it resolves to), a misspelling of a known exact ID (with the nearest IDs), an unversioned model, an effort level the Provider kind does not accept or the model does not list (with the levels it lists). Bind the exact ID and an effort level `af provider models <id>` lists; `--resolve` prints the configuration to copy ([ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)). |
+| `af refused the binding of model … (model_not_accepted)` from `af task plan`, `af review plan` or a run | A rule refused the binding before any process started: an alias (with the exact ID it resolves to), a misspelling of a known exact ID (with the nearest IDs), an unversioned model, an effort level the Provider kind does not accept or the model does not list (with the levels it lists). Bind the exact ID and an effort level `af provider models <id>` lists; `--resolve` prints the configuration to copy ([ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)). |
 | `its --model value (N bytes) is not a model spelling af accepts` | The binding's model (or `--effort`) is outside the one grammar af prints: an ASCII letter or digit, then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`, with no `/`, `@` or whitespace. For Claude/Codex, `af task plan`, `af review run` and their adapters refuse it before any process starts and never print the value, prefixed with the Worker or node and its Provider label; every Worker's binding is checked before the first Provider is probed, and this rule before every other. Put the model ID itself in the binding, such as `claude-fable-5-1` or `us.anthropic.claude-opus-5-5-v1:0` ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | exit 7 from `status --usage` | Optional usage probing did not answer. Authentication is unaffected; drop `--usage` if you only needed that. |
 | `auth directory … is writable by another user` | Tighten ownership and permissions on the directory (and its rename-controlling parents) before registering it. |

@@ -248,11 +248,11 @@ fn private_entry(
         return Err(Miss::OverBound);
     }
     let (renames, diff_policy_version, rename_detection_truncated) =
-        crate::warm::head_to_head(cas, &previous, manifest).map_err(|_| Miss::Corrupt)?;
+        crate::head_delta::head_to_head(cas, &previous, manifest).map_err(|_| Miss::Corrupt)?;
     let (changed_paths, marks) =
         af_contracts::compute_head_delta_marks(af_contracts::HeadDeltaInputs {
-            from: &crate::warm::tree_view(&previous),
-            to: &crate::warm::tree_view(manifest),
+            from: &crate::head_delta::tree_view(&previous),
+            to: &crate::head_delta::tree_view(manifest),
             base: None,
             renames: &renames,
             extra_paths: &paths,

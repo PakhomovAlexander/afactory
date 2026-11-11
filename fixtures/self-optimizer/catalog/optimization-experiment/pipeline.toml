@@ -1,6 +1,6 @@
-schema = "af.pipeline/1"
+schema = "af.pipeline/6"
 name = "builtin/optimization-experiment"
-version = "1.0.0"
+version = "1.0.1"
 max_attempts = 2
 max_parallel = 1
 

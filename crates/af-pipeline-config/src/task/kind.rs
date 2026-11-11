@@ -31,12 +31,7 @@ pub struct TaskKindManifest {
 
 impl TaskKindManifest {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema
-            != if self.profile == TaskKindProfile::Structured {
-                "af.task-kind/2"
-            } else {
-                "af.task-kind/1"
-            }
+        if self.schema != "af.task-kind/3"
             || (self.profile == TaskKindProfile::Structured
                 && matches!(
                     self.kind.as_str(),
@@ -49,5 +44,84 @@ impl TaskKindManifest {
             return Err("Task-kind package needs an exact identity and installed profile".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_current_kind_format_preserves_every_installed_profile_and_refuses_retired_labels() {
+        let common: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../schemas/task-contracts-v4.json"))
+                .unwrap();
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../schemas/task-kind-v3.json")).unwrap();
+        let registry = jsonschema::Registry::new()
+            .add(
+                "urn:af:schema:task-contracts:4",
+                jsonschema::Resource::from_contents(common),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap();
+        let validator = jsonschema::options()
+            .with_registry(&registry)
+            .build(&schema)
+            .unwrap();
+        for profile in [
+            TaskKindProfile::Implementation,
+            TaskKindProfile::ReviewedImplementation,
+            TaskKindProfile::RepairAllowedImplementation,
+            TaskKindProfile::Review,
+            TaskKindProfile::Document,
+            TaskKindProfile::Report,
+            TaskKindProfile::OptimizationAnalysis,
+            TaskKindProfile::OptimizationCandidate,
+            TaskKindProfile::Structured,
+        ] {
+            let manifest = TaskKindManifest {
+                schema: "af.task-kind/3".into(),
+                name: "fixture/business-kind".into(),
+                version: "1.0.0".into(),
+                kind: "business".into(),
+                profile,
+            };
+            manifest.validate().unwrap();
+            assert!(validator.is_valid(&serde_json::to_value(&manifest).unwrap()));
+            let replay: TaskKindManifest =
+                toml::from_str(&toml::to_string(&manifest).unwrap()).unwrap();
+            assert_eq!(manifest, replay);
+            for schema in ["af.task-kind/1", "af.task-kind/2", "af.task-kind/99"] {
+                let mut retired = manifest.clone();
+                retired.schema = schema.into();
+                assert!(retired.validate().is_err());
+                assert!(!validator.is_valid(&serde_json::to_value(&retired).unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn structured_kinds_cannot_claim_a_builtin_business_kind() {
+        for kind in [
+            "implement",
+            "review",
+            "document",
+            "report",
+            "optimize",
+            "verification",
+        ] {
+            let mut manifest = TaskKindManifest {
+                schema: "af.task-kind/3".into(),
+                name: "fixture/business-kind".into(),
+                version: "1.0.0".into(),
+                kind: kind.into(),
+                profile: TaskKindProfile::Structured,
+            };
+            assert!(manifest.validate().is_err());
+            manifest.profile = TaskKindProfile::Implementation;
+            manifest.validate().unwrap();
+        }
     }
 }

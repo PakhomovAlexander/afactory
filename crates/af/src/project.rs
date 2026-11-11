@@ -190,17 +190,12 @@ pub(crate) fn lazy_target(command: &crate::cli::Command) -> Option<Lazy> {
             first: true,
         }),
         C::Review(namespace) => match &namespace.command {
-            None => Some(Lazy {
-                repo: namespace.run.repo.clone(),
-                state: None,
-                first: false,
-            }),
-            Some(R::Run(args)) => Some(Lazy {
+            R::Run(args) | R::Plan(args) => Some(Lazy {
                 repo: args.repo.clone(),
-                state: None,
-                first: false,
+                state: args.state.clone(),
+                first: true,
             }),
-            Some(_) => None,
+            _ => None,
         },
         _ => None,
     }
@@ -219,4 +214,15 @@ pub(crate) fn delivered_target(command: &crate::cli::Command) -> Option<(PathBuf
             .map(|worktree| (worktree, task_id.clone())),
         _ => None,
     }
+}
+
+/// Resolve the same Workspace selector used by native Task inspection.
+pub(crate) fn resolve_inspect(
+    inspect: &crate::cli::TaskInspectArgs,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let state = match &inspect.workspace {
+        Some(label) => Some(select(&inspect.repo, label)?.state),
+        None => inspect.state.clone(),
+    };
+    Ok((inspect.repo.clone(), state))
 }

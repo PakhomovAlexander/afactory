@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::{is_name, require, safe_number};
 use crate::is_digest;
 
-pub const TASK_RUN_REPORT_V2: &str = "af/TaskRunReport@2";
+pub const TASK_RUN_REPORT_V3: &str = "af/TaskRunReport@3";
 pub const TASK_DIAGNOSTIC_V1: &str = "af/TaskDiagnostic@1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,14 +80,6 @@ pub struct TaskRunReportV1 {
     pub plan_id: String,
     /// Next Task event sequence observed before publishing this report.
     pub through_sequence: u64,
-    /// Present only on a report for one activated post-Round Integration phase node. An
-    /// ordinary Round report has no phase and carries the whole original Round graph.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "super::present_option"
-    )]
-    pub phase_id: Option<String>,
     /// Every compiled node in plan order, including nodes that never received an Attempt.
     pub nodes: Vec<TaskNodeReportV1>,
 }
@@ -95,7 +87,6 @@ pub struct TaskRunReportV1 {
 impl TaskRunReportV1 {
     pub fn references(&self) -> Vec<&str> {
         let mut refs = vec![self.task_revision_id.as_str(), self.plan_id.as_str()];
-        refs.extend(self.phase_id.as_deref());
         for entry in &self.nodes {
             match &entry.outcome {
                 TaskNodeOutcomeV1::Completed { output_id } => refs.push(output_id),
@@ -126,13 +117,6 @@ impl TaskRunReportV1 {
                     && entry.node.split('.').all(is_name)
                     && names.insert(&entry.node),
                 "Invalid or duplicate Task report node",
-            )?;
-        }
-        if self.phase_id.is_some() {
-            require(
-                self.nodes.len() == 1
-                    && !matches!(self.nodes[0].outcome, TaskNodeOutcomeV1::Suppressed { .. }),
-                "Integration report requires its exact phase and one executed or failed node",
             )?;
         }
         Ok(())

@@ -31,8 +31,7 @@ pub fn task_tools(access: WorkerAccess) -> &'static str {
 }
 
 /// The whole command one Task Attempt runs: [`claude_command`] with the access's tool grant in
-/// place of the read-only one, then `--json-schema` when the Worker declares a structured reply
-/// or is a review-Campaign reviewer (ADR-0103, ADR-0246).
+/// place of the read-only one, then `--json-schema` for the captured typed reply (ADR-0103).
 /// The same restricted root and customization isolation as review; only the tool list widens,
 /// and only as far as the kernel-derived access.
 fn task_command(
@@ -514,6 +513,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,
             notes: af_runner::task::CallNotes {
+                native_failure,
                 transient,
                 events: Vec::new(),
                 refusal_category,

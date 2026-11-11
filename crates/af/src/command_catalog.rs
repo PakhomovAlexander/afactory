@@ -103,10 +103,6 @@ const fn writes(writes: &'static [(State, When)]) -> Effects {
 /// A pipeline whose check node lists `remote_checks` pushes its gate branches (ADR-0140).
 const REMOTE_CHECKS: When = Some("a pipeline with remote checks");
 
-/// `af review run --file` (and bare `af review --file`) executes a Review Task, whose pipeline's
-/// remote checks push gate branches and a draft gate pull request like `af task run`'s.
-const REVIEW_TASK_REMOTE_CHECKS: When = Some("--file, a pipeline with remote checks");
-
 /// `codex app-server` answers `model/list` against the Provider's `CODEX_HOME` and caches the
 /// catalog in `$CODEX_HOME/models_cache.json` (ADR-0146).
 const CODEX_MODELS: When = Some("a Codex Provider");
@@ -162,37 +158,38 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
         ]),
     ),
     (
-        "af review",
-        Effects {
-            tokens: Tokens::Charges(None),
-            ..writes(&[(Store, None), (Remote, REVIEW_TASK_REMOTE_CHECKS)])
-        },
-    ),
-    (
         "af review run",
         Effects {
             tokens: Tokens::Charges(None),
-            ..writes(&[(Store, None), (Remote, REVIEW_TASK_REMOTE_CHECKS)])
+            ..writes(&[(Store, None), (Remote, REMOTE_CHECKS)])
         },
     ),
-    ("af review plan", writes(&[(Store, Some("--file"))])),
-    ("af review render", READS),
-    ("af review ledger", READS),
+    ("af review plan", writes(&[(Store, None)])),
+    ("af review decide", writes(&[(Store, None)])),
+    ("af review decision-context", READS),
+    ("af review inspect", READS),
     ("af review show", READS),
-    ("af review export", READS),
+    ("af review ledger", READS),
     ("af review report", READS),
-    ("af review campaigns", READS),
-    ("af review gc", writes(&[(Store, Some("--apply"))])),
-    ("af review resolve", writes(&[(Store, None)])),
-    ("af review attest-change", writes(&[(Store, None)])),
-    ("af review verify-fix", writes(&[(Store, None)])),
-    ("af review challenge-resolution", writes(&[(Store, None)])),
-    ("af review policy-time advance", writes(&[(Store, None)])),
-    ("af review group", writes(&[(Store, None)])),
-    ("af review ungroup", writes(&[(Store, None)])),
-    ("af review evidence add", writes(&[(Store, None)])),
-    ("af review evidence satisfy", writes(&[(Store, None)])),
-    ("af review demand waive", writes(&[(Store, None)])),
+    ("af review export", READS),
+    (
+        "af review resume",
+        Effects {
+            tokens: Tokens::Charges(None),
+            human: &[(Approval, Some("without --execute"))],
+            ..writes(&[(Store, None), (Remote, REMOTE_CHECKS)])
+        },
+    ),
+    (
+        "af review continue",
+        Effects {
+            tokens: Tokens::Charges(Some("--execute")),
+            ..writes(&[
+                (Store, None),
+                (Remote, Some("--execute, a pipeline with remote checks")),
+            ])
+        },
+    ),
     (
         "af task start",
         Effects {
@@ -782,29 +779,25 @@ mod tests {
         );
     }
 
-    /// `af review plan --file` opens a Task and records its proposed plan; without `--file` the
-    /// plan is token-free and stateless.
+    /// `af review plan --file` opens a Task and records its proposed plan without an Attempt.
     #[test]
-    fn review_plan_writes_the_store_only_with_file() {
+    fn review_plan_always_records_its_native_task_plan() {
         assert_eq!(
             printed_writes("af review plan"),
-            [("store".to_owned(), json!("--file"))]
+            [("store".to_owned(), Value::Null)]
         );
     }
 
-    /// `af review run --file`, and bare `af review --file`, executes a Review Task whose pipeline's
+    /// `af review run --file` executes a Review Task whose pipeline's
     /// remote checks may push gate branches and a draft gate pull request (ADR-0140).
     #[test]
     fn review_run_with_file_and_remote_checks_writes_remote_state() {
-        for command in ["af review run", "af review"] {
+        for command in ["af review run", "af review resume"] {
             assert_eq!(
                 printed_writes(command),
                 [
                     ("store".to_owned(), Value::Null),
-                    (
-                        "remote".to_owned(),
-                        json!("--file, a pipeline with remote checks")
-                    ),
+                    ("remote".to_owned(), json!("a pipeline with remote checks")),
                 ],
                 "{command}"
             );

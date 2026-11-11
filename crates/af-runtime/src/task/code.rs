@@ -7,6 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use af_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
 use af_contracts::PortCardinality;
+use af_contracts::task::check_containment::{
+    ContainedCheckV1, ContainerExecutionV1, TASK_CHECK_CONTAINMENT_V1, TaskCheckContainmentV1,
+};
 use af_contracts::task::check_report::{
     CHECK_REPORT_ENV, CheckReportStateV1, MAX_CHECK_REPORT_BYTES, TASK_CHECK_REPORT_V1,
     TaskCheckHostV1, TaskCheckReportV1, TaskCheckRunV1, parse_check_report, render_load,
@@ -17,7 +20,7 @@ use af_contracts::task::measurement::{
     MeasureObjectiveV1, MeasurementV1, compare_measurements,
 };
 use af_contracts::task::pipeline::*;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::remote_check::{
     PUBLISH_GATE_EFFECT, REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1, RemoteCheckReasonV1,
     github_of_destination,
@@ -34,7 +37,7 @@ use af_graph::task::{
 };
 use af_graph::{NodeOutcome, RunReport};
 use af_sandbox::toolchain::{ToolchainLimits, snapshot_toolchain};
-use af_sandbox::{Mode, Policy, Sandbox};
+use af_sandbox::{ContainerProvider, Mode, Policy, Sandbox, SandboxTemplate};
 use af_source_git::task::{CANDIDATE_TREE_V1, SOURCE_TREE_V1, source_tree};
 use af_store::Cas;
 use af_store::store::task::TaskProjection;
@@ -1142,7 +1145,7 @@ impl CodeTaskDomain {
         plan_id: &str,
         snapshot: &af_source_git::task::TaskSnapshot,
     ) -> Result<GithubPrTarget, String> {
-        let plan: ExecutionPlanV3 =
+        let plan: ExecutionPlan =
             serde_json::from_value(envelope(cas, plan_id)?.payload).map_err(|e| e.to_string())?;
         let recorded: Vec<&str> = plan
             .authority
@@ -1317,7 +1320,7 @@ impl CodeTaskDomain {
                     // The plan recorded where its remote checks publish, and its developer
                     // confirmed that destination: evidence gathered at any other repository
                     // is not this plan's, whatever it says about the Snapshot.
-                    let plan: ExecutionPlanV3 =
+                    let plan: ExecutionPlan =
                         serde_json::from_value(envelope(cas, &receipt.plan_id)?.payload)
                             .map_err(|e| e.to_string())?;
                     let destinations: Vec<&str> = plan
@@ -1411,6 +1414,7 @@ impl CodeTaskDomain {
         let rustup = session.as_ref().map(|_| RustupHome::of_kernel());
         let mut checks = BTreeMap::new();
         let mut spans = Vec::new();
+        let mut unstarted_local = 0;
         // Under [warm] every check, started or not, has one group naming it, holding its span
         // and its cache observations, so a reader never has to guess which check an
         // observation belongs to.
@@ -1418,6 +1422,7 @@ impl CodeTaskDomain {
         // What each local check that started was observed doing: the host's load around it and
         // its own account through `$AF_CHECK_REPORT` (`af/TaskCheckReport@1`).
         let mut check_runs = BTreeMap::new();
+        let mut contained_checks = BTreeMap::new();
         // Under [warm], what each started check found of its layer (`af/TaskCheckLayer@1`).
         let mut layer_runs = BTreeMap::new();
         // Each local check the kernel stopped at its wall (ADR-0255).
@@ -1443,6 +1448,7 @@ impl CodeTaskDomain {
             // prepared for it either: no sandbox, no runtime. It reports `insufficient_disk` as
             // its result, and every declared warm kind keeps its one observation (ADR-0144).
             if let Some(refusal) = crate::storage::ensure_free_disk().err() {
+                unstarted_local += 1;
                 let observations = match session.as_mut() {
                     Some(session) => session.skipped(cas, crate::storage::INSUFFICIENT_DISK)?,
                     None => Vec::new(),
@@ -1483,8 +1489,29 @@ impl CodeTaskDomain {
                 checks.insert(name.clone(), id);
                 continue;
             }
-            let sandbox =
-                Sandbox::materialize(&manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
+            // Probe only contained checks, inside the existing Attempt deadline. The provider
+            // alone may attach Container isolation; an absent runtime still fails admission.
+            let container = self.policy.require_container.then(|| {
+                let remaining = attempt
+                    .reservation()
+                    .deadline_unix_ms
+                    .saturating_sub(super::warm_check::unix_ms());
+                ContainerProvider::detect_before(
+                    std::time::Instant::now() + Duration::from_millis(remaining),
+                )
+                .with_check_runtime()
+            });
+            let sandbox = match &container {
+                Some(provider) => {
+                    let template =
+                        SandboxTemplate::materialize(&manifest, cas).map_err(|e| e.to_string())?;
+                    provider
+                        .sandbox_from_template(&template, Mode::ReadOnly)
+                        .map_err(|e| e.to_string())?
+                }
+                None => Sandbox::materialize(&manifest, cas, Mode::ReadOnly)
+                    .map_err(|e| e.to_string())?,
+            };
             af_sandbox::admit(self.policy.isolation(), &sandbox).map_err(|e| e.to_string())?;
             // HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME live in this af-owned directory,
             // created empty here and removed with it when the check ends.
@@ -1505,11 +1532,16 @@ impl CodeTaskDomain {
             let remaining = per_check.map_or(remaining, |limit| limit.min(remaining));
             // The check may account for itself here: the steps it ran, its tests, its flakes.
             let report_path = runtime.path().join("check-report.jsonl");
-            let runner = runtime.environment().into_iter().fold(
+            let environment = if container.is_some() {
+                af_sandbox::CheckRuntime::container_environment()
+            } else {
+                runtime.environment()
+            };
+            let runner = environment.into_iter().fold(
                 CheckRunner::new(cas, sandbox.root())
                     .with_cancellation(cancellation)
                     .with_timeout(Duration::from_millis(remaining))
-                    .with_env(CHECK_REPORT_ENV, report_path.display().to_string()),
+                    .with_local_env(CHECK_REPORT_ENV, report_path.display().to_string()),
                 |runner, (key, value)| runner.with_env(key, value),
             );
             let mut runner = rustup
@@ -1673,9 +1705,10 @@ impl CodeTaskDomain {
             let runner = runner.with_timeout(Duration::from_millis(remaining));
             let exhausted_preparing = prepared.is_some() && !exhausted_before && remaining == 0;
             let runner = match &prepared {
-                None => runner.with_env(
+                None => runner.with_split_env(
                     "CARGO_TARGET_DIR",
                     runtime.path().join("target").display().to_string(),
+                    "/af-check/scratch/target",
                 ),
                 Some(prepared) => prepared
                     .environment
@@ -1729,6 +1762,8 @@ impl CodeTaskDomain {
                     af_process::host::available_cpus(),
                 )
             });
+            let mut cleanup_confirmed = true;
+            let mut container_execution = ContainerExecutionV1::NotStarted;
             let (mut result, timing, ending) = if started {
                 let execution = match (session.as_ref(), deadlines) {
                     // Every warm check runs monitored: its phases against their deadlines, and,
@@ -1753,7 +1788,31 @@ impl CodeTaskDomain {
                         phases = Some(record);
                         execution
                     }
-                    _ => runner.run_observed(definition),
+                    _ => match &container {
+                        Some(provider) => {
+                            runner.run_with_observed(definition, |program, args, env, timeout| {
+                                container_execution = ContainerExecutionV1::Refused;
+                                provider
+                                    .exec_evidenced_controlled(
+                                        sandbox.root(),
+                                        program,
+                                        args,
+                                        env,
+                                        timeout,
+                                        cancellation,
+                                    )
+                                    .map(|execution| {
+                                        container_execution = ContainerExecutionV1::Completed;
+                                        (execution.output, execution.stderr_held)
+                                    })
+                                    .map_err(|error| {
+                                        cleanup_confirmed = error.cleanup_confirmed();
+                                        error.to_string()
+                                    })
+                            })
+                        }
+                        None => runner.run_observed(definition),
+                    },
                 };
                 check_runs.insert(
                     name.clone(),
@@ -1790,6 +1849,24 @@ impl CodeTaskDomain {
                     None,
                 )
             };
+            if !cleanup_confirmed {
+                sandbox.preserve();
+                runtime.preserve();
+                return Err(
+                    "Contained check cleanup was not confirmed; private roots preserved".into(),
+                );
+            }
+            if container.is_some() {
+                contained_checks.insert(
+                    name.clone(),
+                    ContainedCheckV1 {
+                        isolation: "container".into(),
+                        image: af_sandbox::container::DEFAULT_IMAGE.into(),
+                        admitted: true,
+                        execution: container_execution,
+                    },
+                );
+            }
             if let (Some(record), Some(deadlines)) = (&phases, deadlines)
                 && let Some(reason) = record.deadline_reason(deadlines)
             {
@@ -1904,6 +1981,9 @@ impl CodeTaskDomain {
                     Some(then) => format!("{sentence}; then: {then}"),
                     None => sentence,
                 });
+            }
+            if !started {
+                unstarted_local += 1;
             }
             if started
                 && let (Some(record), Some(deadlines), Some((facts, warm_start))) =
@@ -2247,6 +2327,24 @@ AF_TOOLCHAIN_SNAPSHOT ",
             .map_err(|e| e.to_string())?
             .0;
         let mut evidence_ids = Vec::new();
+        if !contained_checks.is_empty() {
+            let evidence = TaskCheckContainmentV1 {
+                receipt_id: id.clone(),
+                checks: contained_checks,
+            };
+            evidence.validate()?;
+            evidence_ids.push(
+                cas.put_artifact(
+                    TASK_CHECK_CONTAINMENT_V1,
+                    invocation_producer(cas, input, Some(attempt))?,
+                    vec![id.clone(), self.policy_id.clone()],
+                    Some(snapshot_id.clone()),
+                    serde_json::to_value(evidence).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0,
+            );
+        }
         if !check_runs.is_empty() {
             let report = TaskCheckReportV1 {
                 receipt_id: id.clone(),
@@ -2292,6 +2390,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
             spans,
             caches,
         };
+        let no_local_work = !local.is_empty() && unstarted_local == local.len();
         let groups = if session.is_some() {
             warm_evidence
                 .into_iter()
@@ -2299,14 +2398,15 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     evidence(Some(check), span.into_iter().collect(), caches)
                 })
                 .collect::<Vec<_>>()
-        } else if local.is_empty() && !remote_names.is_empty() {
-            // A node whose checks all ran remotely ran nothing on this machine: there is no
-            // span to group, and its remote evidence is already in the receipt (ADR-0140).
+        } else if no_local_work || (local.is_empty() && !remote_names.is_empty()) {
+            // No local command started: its exact NotRun result (including disk/deadline
+            // refusal) is already in the receipt, as is any remote evidence. Do not fabricate
+            // a runtime span or replace that diagnostic with an invalid empty evidence group.
             Vec::new()
         } else {
             vec![evidence(None, spans, vec![])]
         };
-        if groups.is_empty() && remote_names.is_empty() {
+        if groups.is_empty() && remote_names.is_empty() && !no_local_work {
             evidence(None, vec![], vec![]).validate()?;
         }
         for evidence in groups {
@@ -2630,7 +2730,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
         if plan_envelope.artifact_type != EXECUTION_PLAN_V4 {
             return Err("Verification result has no exact ExecutionPlan".into());
         }
-        let plan: ExecutionPlanV3 =
+        let plan: ExecutionPlan =
             serde_json::from_value(plan_envelope.payload).map_err(|e| e.to_string())?;
         if plan.task_revision_id != result.task_revision_id
             || plan.authority != task.authority
@@ -3090,7 +3190,7 @@ impl TaskDomain for CodeTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -3236,7 +3336,7 @@ mod tests {
         let policy_id = cas
             .put_json(&serde_json::to_value(policy).unwrap())
             .unwrap();
-        let graph: CompiledTask = serde_json::from_value(json!({"schema":"af.compiled-task/1",
+        let graph: CompiledTask = serde_json::from_value(json!({"schema":"af.compiled-task/6",
             "nodes":{"judge":{"operator":{"kind":"primitive","operator":{"op":"verify","slot":"judge"},"signature":"worker/judge"},
                 "contract":{"inputs":{"testing":{"artifact_type":IMPLEMENTATION_TEST_EVIDENCE_V1,"cardinality":"one","optional":false,"affinity":{"kind":"same_as","input":"source"},"covers":[]}},"outputs":{}},
                 "inputs":{},"conditions":[]}},

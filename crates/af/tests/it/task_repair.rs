@@ -251,7 +251,7 @@ fn repair_cannot_claim_full_review_omit_verifiers_or_bypass_reserved_budget() {
             }
             "omitted_verifier" | "repair_bound" => {
                 let path = repo.join(".af/task-packages/fixture/repair/pipeline.toml");
-                let mut value: af_contracts::task::pipeline::PipelineDefinitionV1 =
+                let mut value: af_contracts::task::pipeline::PipelineDefinition =
                     af_pipeline_config::task::parse_task_pipeline(
                         &std::fs::read_to_string(&path).unwrap(),
                     )
@@ -326,7 +326,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     std::fs::write(&worker, format!("import time\ntime.sleep(2)\n{source}")).unwrap();
     for name in ["implementation", "repair"] {
         let path = package.join(name).join("pipeline.toml");
-        let mut value: af_contracts::task::pipeline::PipelineDefinitionV1 =
+        let mut value: af_contracts::task::pipeline::PipelineDefinition =
             af_pipeline_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
                 .unwrap();
         value.max_attempts += 1;

@@ -1,276 +1,176 @@
 use super::{assert_invalid, assert_valid};
-use af_contracts::task::event::{TaskChangeV1, TaskTransitionV1};
-use af_contracts::task::review_handoff::*;
-use af_contracts::task::review_integration::*;
-use af_contracts::task::run_report::*;
 use serde_json::json;
-fn id(c: char) -> String {
-    format!("sha256:{}", c.to_string().repeat(64))
-}
-fn phase() -> TaskReviewIntegrationPhaseV1 {
-    TaskReviewIntegrationPhaseV1 {
-        task_id: "review".into(),
+
+#[test]
+fn native_review_conclusion_has_exact_wide_cumulative_charge_and_a_task_prefix() {
+    use af_contracts::task::review::*;
+    let receipt = TaskReviewConclusionV1 {
         task_revision_id: id('1'),
         plan_id: id('2'),
-        round_id: id('3'),
-        closing_report_event_id: "a".repeat(26),
-        selection: TaskReviewIntegrationSelectionV1::Prepared {
-            integration_plan_id: id('4'),
-            derived_snapshot_id: id('5'),
-        },
-    }
-}
-#[test]
-fn integration_sequence_pins_existing_gate_policy_and_complete_order() {
-    let policy = TaskReviewCheckSequencePolicyV1 {
-        authority_policy_id: id('1'),
-        pipeline_policy_id: id('2'),
-        gate_execution_policy_id: id('2'),
-        ordered_check_names: vec!["format".into(), "test".into()],
-        check_timeout_ms: 1000,
-    };
-    policy.validate().unwrap();
-    let value = serde_json::to_value(&policy).unwrap();
-    assert_valid("task-review-check-sequence-policy-v1.json", &value);
-    assert_eq!(policy.artifact_refs(), [id('1'), id('2')]);
-    for (field, bad_value) in [
-        ("ordered_check_names", json!([])),
-        ("ordered_check_names", json!(["test", "test"])),
-        ("ordered_check_names", json!(["   "])),
-        ("check_timeout_ms", json!(0)),
-        ("gate_execution_policy_id", json!("missing")),
-    ] {
-        let mut bad = value.clone();
-        bad[field] = bad_value;
-        assert_invalid("task-review-check-sequence-policy-v1.json", &bad, field);
-        assert!(
-            serde_json::from_value::<TaskReviewCheckSequencePolicyV1>(bad)
-                .unwrap()
-                .validate()
-                .is_err()
-        );
-    }
-    let mut boundary = policy.clone();
-    boundary.ordered_check_names = (0..63).map(|n| format!("check{n}")).collect();
-    boundary.validate().unwrap();
-    assert_valid(
-        "task-review-check-sequence-policy-v1.json",
-        &serde_json::to_value(&boundary).unwrap(),
-    );
-    boundary.ordered_check_names.push("check63".into());
-    assert!(
-        boundary.validate().is_err(),
-        "summary needs the final existing settlement artifact slot"
-    );
-    assert_invalid(
-        "task-review-check-sequence-policy-v1.json",
-        &serde_json::to_value(boundary).unwrap(),
-        "64 checks overflow the fixed common settlement envelope",
-    );
-    let mut foreign = policy;
-    foreign.gate_execution_policy_id = id('3');
-    assert!(
-        foreign.validate().is_err(),
-        "a receipt cannot invent a distinct Gate policy"
-    );
-}
-#[test]
-fn integration_selection_has_no_embedded_allowance_or_admission() {
-    for selection in [
-        TaskReviewIntegrationSelectionV1::Empty {},
-        TaskReviewIntegrationSelectionV1::Conflict {
-            conflict: af_contracts::IntegrationConflictPayloadV1 {
-                base_snapshot_id: id('3'),
-                proposal_ids: vec![id('4')],
-                paths: vec!["src/lib.rs".into()],
-                reason: "protected path".into(),
-            },
-        },
-        phase().selection,
-    ] {
-        let value = TaskReviewIntegrationPhaseV1 {
-            selection,
-            ..phase()
-        };
-        value.validate().unwrap();
-        let json = serde_json::to_value(value).unwrap();
-        assert_valid("task-review-integration-phase-v1.json", &json);
-        for field in ["allowance", "approved", "writer"] {
-            let mut bad = json.clone();
-            bad[field] = json!(true);
-            assert_invalid("task-review-integration-phase-v1.json", &bad, field);
-            assert!(serde_json::from_value::<TaskReviewIntegrationPhaseV1>(bad).is_err());
-        }
-        let mut bad = json;
-        bad["closing_report_event_id"] = json!(id('a'));
-        assert_invalid(
-            "task-review-integration-phase-v1.json",
-            &bad,
-            "requires event identity",
-        );
-        assert!(
-            serde_json::from_value::<TaskReviewIntegrationPhaseV1>(bad)
-                .unwrap()
-                .validate()
-                .is_err()
-        );
-    }
-}
-#[test]
-fn integration_transitions_are_ordinary_exact_transition_changes() {
-    for change in [
-        TaskChangeV1::ReviewIntegrationSelected { phase_id: id('a') },
-        TaskChangeV1::ReviewIntegrationFinished {
-            phase_id: id('a'),
-            report_id: id('b'),
-            integration_committed_event_id: None,
-        },
-        TaskChangeV1::ReviewIntegrationFinished {
-            phase_id: id('a'),
-            report_id: id('b'),
-            integration_committed_event_id: Some("c".repeat(26)),
-        },
-    ] {
-        let transition = TaskTransitionV1 {
-            writer: "writer".into(),
-            epoch: 1,
-            now_unix_ms: 123,
-            change,
-        };
-        transition.validate().unwrap();
-        let value = serde_json::to_value(&transition).unwrap();
-        assert_valid("task-transition-v5.json", &value);
-        assert_eq!(
-            serde_json::from_value::<TaskTransitionV1>(value.clone()).unwrap(),
-            transition
-        );
-        af_contracts::event::validate_event_payload(
-            af_contracts::EventType::TaskTransitionV5,
-            &value,
-        )
-        .unwrap();
-        let mut bad = value.clone();
-        bad["change"]["phase_id"] = json!("foreign");
-        assert_invalid("task-transition-v5.json", &bad, "invalid identity");
-        assert!(
-            af_contracts::event::validate_event_payload(
-                af_contracts::EventType::TaskTransitionV5,
-                &bad
-            )
-            .is_err()
-        );
-        if value["change"]["kind"] == "review_integration_finished" {
-            let mut bad = value.clone();
-            bad["change"]["integration_committed_event_id"] = json!(null);
-            assert_invalid("task-transition-v5.json", &bad, "omitted is not null");
-            assert!(serde_json::from_value::<TaskTransitionV1>(bad).is_err());
-            // The commit proof is an exact event identity, not a content digest.
-            let mut bad = value;
-            bad["change"]["integration_committed_event_id"] = json!(id('c'));
-            assert_invalid("task-transition-v5.json", &bad, "commit is an exact event");
-            assert!(
-                af_contracts::event::validate_event_payload(
-                    af_contracts::EventType::TaskTransitionV5,
-                    &bad
-                )
-                .is_err()
-            );
-        }
-    }
-}
-#[test]
-fn integration_report_is_exactly_one_executed_or_failed_phase_node() {
-    let report = TaskRunReportV1 {
-        task_revision_id: id('1'),
-        plan_id: id('2'),
-        through_sequence: 4,
-        phase_id: Some(id('3')),
-        nodes: vec![TaskNodeReportV1 {
-            node: "root.integration_checks".into(),
-            outcome: TaskNodeOutcomeV1::Failed {
-                diagnostic_id: id('4'),
-                class: TaskFailureClassV1::Resources,
-            },
-        }],
-    };
-    report.validate().unwrap();
-    let value = serde_json::to_value(&report).unwrap();
-    assert_valid("task-run-report-v2.json", &value);
-    assert_eq!(
-        serde_json::from_value::<TaskRunReportV1>(value.clone()).unwrap(),
-        report
-    );
-    let mut two = report.clone();
-    two.nodes.push(TaskNodeReportV1 {
-        node: "root.other".into(),
-        outcome: two.nodes[0].outcome.clone(),
-    });
-    assert!(two.validate().is_err());
-    assert_invalid(
-        "task-run-report-v2.json",
-        &serde_json::to_value(two).unwrap(),
-        "no second operation",
-    );
-    let mut suppressed = report.clone();
-    suppressed.nodes[0].outcome = TaskNodeOutcomeV1::Suppressed {
-        reason: TaskSuppressionV1::BranchNotSelected,
-    };
-    assert!(suppressed.validate().is_err());
-    assert_invalid(
-        "task-run-report-v2.json",
-        &serde_json::to_value(suppressed).unwrap(),
-        "activated sequence is factual",
-    );
-    // Without a phase the same shape is an ordinary Round report again.
-    let mut round = report;
-    round.phase_id = None;
-    round.nodes.push(TaskNodeReportV1 {
-        node: "root.other".into(),
-        outcome: TaskNodeOutcomeV1::Suppressed {
-            reason: TaskSuppressionV1::BranchNotSelected,
-        },
-    });
-    round.validate().unwrap();
-    assert_valid(
-        "task-run-report-v2.json",
-        &serde_json::to_value(round).unwrap(),
-    );
-}
-#[test]
-fn integrated_handoff_carries_its_exact_phase_and_commit() {
-    let receipt = TaskReviewHandoffV1 {
-        task_id: "review".into(),
-        predecessor_revision_id: id('1'),
-        predecessor_plan_id: id('2'),
-        successor_revision_id: id('3'),
-        successor_plan_id: id('4'),
-        predecessor_round_id: id('5'),
-        successor_round_id: id('6'),
-        evidence: TaskReviewHandoffEvidenceV1::IntegratedRound {
-            report_event_id: "a".repeat(26),
-            phase_id: id('7'),
-            integration_committed_event_id: "b".repeat(26),
-        },
+        task_report_id: id('3'),
+        through_sequence: 42,
+        cumulative_chargeable_tokens: u128::MAX.into(),
+        begun_attempts: 4,
+        round_ids: std::collections::BTreeSet::from([id('4')]),
+        conclusion: ReviewConclusionV1::Pass,
     };
     receipt.validate().unwrap();
     let value = serde_json::to_value(&receipt).unwrap();
-    assert_valid("task-review-handoff-v2.json", &value);
+    assert_valid("task-review-conclusion-v1.json", &value);
     assert_eq!(
-        serde_json::from_value::<TaskReviewHandoffV1>(value.clone()).unwrap(),
+        serde_json::from_value::<TaskReviewConclusionV1>(value.clone()).unwrap(),
         receipt
     );
-    assert_eq!(receipt.artifact_refs().last(), Some(&id('7').as_str()));
-    let mut bad = value;
-    bad["evidence"]["integration_committed_event_id"] = json!(id('b'));
+    for (field, bad) in [
+        ("cumulative_chargeable_tokens", json!(42)),
+        ("cumulative_chargeable_tokens", json!("01")),
+        (
+            "cumulative_chargeable_tokens",
+            json!("340282366920938463463374607431768211456"),
+        ),
+        ("through_sequence", json!(0)),
+        ("round_ids", json!([])),
+        ("round_ids", json!([id('4'), id('4')])),
+    ] {
+        let mut changed = value.clone();
+        changed[field] = bad;
+        assert_invalid("task-review-conclusion-v1.json", &changed, field);
+        assert!(
+            serde_json::from_value::<TaskReviewConclusionV1>(changed)
+                .map_or(true, |v| v.validate().is_err())
+        );
+    }
+}
+
+#[test]
+fn native_proposals_integrations_and_commits_have_closed_task_only_shapes() {
+    use af_contracts::task::execution::TaskInvocationV1;
+    use af_contracts::task::native_review::*;
+    use af_contracts::task::pipeline::ReceiptOutcomeV1;
+    use std::collections::BTreeMap;
+    let invocation = TaskInvocationV1 {
+        plan_id: id('1'),
+        node: "root.nodes.integrate".into(),
+        inputs: BTreeMap::new(),
+    };
+    let declaration = TaskReviewProposalV1 {
+        result_id: id('1'),
+        paths: vec!["lib.rs".into()],
+        report_indices: vec![0],
+        evidence_ids: vec![id('2')],
+        auto_apply_nominated: true,
+    };
+    declaration.validate().unwrap();
+    let value = serde_json::to_value(&declaration).unwrap();
+    assert_valid("task-review-proposal-v1.json", &value);
+    for (field, bad) in [
+        ("paths", json!([])),
+        ("paths", json!(["lib.rs", "lib.rs"])),
+        ("report_indices", json!([])),
+        ("report_indices", json!([0, 0])),
+        ("evidence_ids", json!(["unknown"])),
+    ] {
+        let mut changed = value.clone();
+        changed[field] = bad;
+        assert_invalid("task-review-proposal-v1.json", &changed, field);
+        assert!(
+            serde_json::from_value::<TaskReviewProposalV1>(changed)
+                .map_or(true, |v| v.validate().is_err())
+        );
+    }
+    let selected = TaskReviewSelectedProposalV1 {
+        result_id: id('2'),
+        declaration_id: id('3'),
+        candidate_id: id('4'),
+        claims: BTreeMap::from([(id('5'), id('6'))]),
+    };
+    for (outcome, selection) in [
+        (
+            ReceiptOutcomeV1::Inconclusive,
+            TaskReviewIntegrationSelection::Empty {},
+        ),
+        (
+            ReceiptOutcomeV1::Failed,
+            TaskReviewIntegrationSelection::Conflict {
+                paths: vec!["lib.rs".into()],
+                reason: "overlapping sealed proposals".into(),
+            },
+        ),
+        (
+            ReceiptOutcomeV1::Passed,
+            TaskReviewIntegrationSelection::Prepared {
+                snapshot_id: id('7'),
+                manifest_id: id('8'),
+                proposals: BTreeMap::from([("correctness".into(), selected)]),
+            },
+        ),
+    ] {
+        let receipt = TaskReviewIntegrationV1 {
+            invocation: invocation.clone(),
+            policy_id: id('9'),
+            review_id: id('a'),
+            base_snapshot_id: id('b'),
+            outcome,
+            selection,
+        };
+        receipt.validate().unwrap();
+        let value = serde_json::to_value(&receipt).unwrap();
+        assert_valid("task-review-integration-v1.json", &value);
+        assert_eq!(
+            serde_json::from_value::<TaskReviewIntegrationV1>(value.clone()).unwrap(),
+            receipt
+        );
+        let mut changed = value.clone();
+        changed["campaign_id"] = json!("ambient-history");
+        assert_invalid(
+            "task-review-integration-v1.json",
+            &changed,
+            "no Campaign authority",
+        );
+        assert!(serde_json::from_value::<TaskReviewIntegrationV1>(changed).is_err());
+        let mut changed = value;
+        changed["outcome"] = json!(if outcome == ReceiptOutcomeV1::Passed {
+            "failed"
+        } else {
+            "passed"
+        });
+        assert_invalid(
+            "task-review-integration-v1.json",
+            &changed,
+            "selection/outcome mismatch",
+        );
+        assert!(
+            serde_json::from_value::<TaskReviewIntegrationV1>(changed)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let commit = TaskReviewCommitV1 {
+        invocation,
+        integration_id: id('a'),
+        snapshot_id: id('b'),
+        prior_history_id: id('c'),
+        pending_claims: BTreeMap::from([(id('5'), id('6'))]),
+        outcome: ReceiptOutcomeV1::Passed,
+    };
+    commit.validate().unwrap();
+    let value = serde_json::to_value(&commit).unwrap();
+    assert_valid("task-review-commit-v1.json", &value);
+    let mut changed = value;
+    changed["pending_claims"] = json!({});
     assert_invalid(
-        "task-review-handoff-v2.json",
-        &bad,
-        "commit is an exact event",
+        "task-review-commit-v1.json",
+        &changed,
+        "promotion retains original claims pending verification",
     );
     assert!(
-        serde_json::from_value::<TaskReviewHandoffV1>(bad)
+        serde_json::from_value::<TaskReviewCommitV1>(changed)
             .unwrap()
             .validate()
             .is_err()
     );
+}
+fn id(c: char) -> String {
+    format!("sha256:{}", c.to_string().repeat(64))
 }

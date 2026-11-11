@@ -22,7 +22,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
     let mut f = Fixture::new(false).with_execution_graph();
     let mut next_plan = f.plan.clone();
     let mut bootstrap: CompiledTask =
-        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     bootstrap.coverage.clear();
     bootstrap.outputs = BTreeMap::from([(
         "proposal".into(),
@@ -51,7 +51,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
         .verification_attempts = 0;
     f.plan.preparation = Some(PlanPreparationV1::Planning {});
     f.plan.acceptance.clear();
-    f.plan.compiled_graph_id = artifact(&f.cas, "af/CompiledTask@1", &bootstrap);
+    f.plan.compiled_graph_id = artifact(&f.cas, "af/CompiledTask@4", &bootstrap);
     f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V4, &f.plan);
     let bootstrap_id = f.plan_id.clone();
     let lease = f.open();

@@ -284,7 +284,7 @@ fn waiter_fixture_uses_public_writes_exact_event_history_counts_and_a_fresh_norm
                 .task_observation_unchanged(&fixture.cas, &state)
                 .unwrap()
         );
-        let plan: af_contracts::task::plan::ExecutionPlanV3 = serde_json::from_value(
+        let plan: af_contracts::task::plan::ExecutionPlan = serde_json::from_value(
             fixture
                 .cas
                 .get_artifact(state.plan_id.as_deref().unwrap())
@@ -503,9 +503,9 @@ fn the_declared_contracts_are_the_registry_cases() {
             fixtures::CLI_STATE_EVENTS,
         ),
         (
-            "campaign_state",
-            "cli_campaign_fixture",
-            fixtures::CLI_CAMPAIGN_EVENTS,
+            "native_review_state",
+            "cli_native_review_fixture",
+            fixtures::CLI_NATIVE_REVIEW_EVENTS,
         ),
     ] {
         let writer = protocol::contract(case_id).unwrap();
@@ -526,12 +526,6 @@ fn the_declared_contracts_are_the_registry_cases() {
         );
         assert!(suite["cases"].get(writer.case_id).is_none());
     }
-    // The fixture Campaign's reviewer reports one Finding per line of its fixture file.
-    let findings = std::fs::read_to_string(
-        root().join("fixtures/performance/cli/campaign-roots/repo/src/fixture.txt"),
-    )
-    .unwrap();
-    assert_eq!(findings.lines().count(), fixtures::CLI_CAMPAIGN_FINDINGS);
     let sentinel = protocol::contract("sentinel_canonical").unwrap();
     assert_eq!(
         suite["probe"]["sentinel_contract"].as_str(),
@@ -593,6 +587,10 @@ fn requests_outside_the_declared_contracts_are_refused() {
     };
     refused(
         &with("case_id", json!("cli_discovery")),
+        "is not declared by this probe",
+    );
+    refused(
+        &with("case_id", json!("cli_campaign_fixture")),
         "is not declared by this probe",
     );
     refused(
@@ -1194,7 +1192,7 @@ fn seeded_authority_keeps_the_original_task_and_takes_its_lease_after_capture() 
             .replay(&run)
             .unwrap()
             .into_iter()
-            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV5))
+            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV6))
             .collect();
         assert_eq!(events.len(), 7, "the reader only takes its own lease");
         assert_eq!(
@@ -1313,40 +1311,6 @@ fn an_event_fixture_must_be_exact_and_its_damage_is_reported() {
     assert!(
         outcome.region_nanos.is_some(),
         "the projection itself refused"
-    );
-}
-
-#[test]
-fn the_campaign_writer_refuses_without_the_side_s_reviewed_campaign() {
-    // The writer only tops up a Campaign the side's own `af review run` wrote beside its
-    // scratch; it never creates one by itself.
-    let (_owner, parent) = empty_scratch();
-    let scratch = parent.join("campaign-probe");
-    std::fs::create_dir(&scratch).unwrap();
-    let entry = json!({"case_id": "cli_campaign_fixture",
-                       "instance_id": "cli_campaign_fixture__state_cli_state_10000",
-                       "contract_id": "cli_campaign_fixture_v1",
-                       "parameters": {"state": "cli_state_10000"}});
-    let request =
-        protocol::admit(&serde_json::to_vec(&request(&entry, &scratch)).unwrap()).unwrap();
-    let outcome = cases::execute(&request, &scratch.join(protocol::WORK_DIR));
-    let failure = outcome.result.unwrap_err();
-    assert_eq!(failure.kind, protocol::FailureKind::FixtureFailed);
-    assert!(
-        failure.detail.contains("the Campaign state"),
-        "{}",
-        failure.detail
-    );
-    assert!(outcome.region_nanos.is_none(), "nothing was measured");
-    // A Campaign state directory that is not a directory is refused the same way.
-    std::fs::write(parent.join(fixtures::CLI_CAMPAIGN_STATE), b"not a Campaign").unwrap();
-    let failure = cases::execute(&request, &scratch.join(protocol::WORK_DIR))
-        .result
-        .unwrap_err();
-    assert!(
-        failure.detail.contains("is not a directory"),
-        "{}",
-        failure.detail
     );
 }
 
@@ -1693,7 +1657,7 @@ fn a_production_lease_lapsing_at_the_state_persistence_boundary_fails_without_re
     assert_eq!(verdict["failure"]["kind"], "lease_expired", "{verdict}");
 }
 
-/// The `TaskTransition@5` payload of one recorded event, with its observation time.
+/// The `TaskTransition@6` payload of one recorded event, with its observation time.
 fn transition(event: &af_contracts::RunEvent) -> (u64, &Value) {
     let payload = &event.payload;
     (payload["now_unix_ms"].as_u64().unwrap(), &payload["change"])
@@ -1704,7 +1668,7 @@ fn transition(event: &af_contracts::RunEvent) -> (u64, &Value) {
 fn kinds(events: &[af_contracts::RunEvent]) -> Vec<String> {
     events
         .iter()
-        .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV5))
+        .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV6))
         .map(|event| transition(event).1["kind"].as_str().unwrap().to_string())
         .collect()
 }
@@ -1762,7 +1726,7 @@ fn each_authority_setup_write_owns_a_whole_lease_and_the_region_captures_outside
             .replay(&run)
             .unwrap()
             .into_iter()
-            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV5))
+            .filter(|event| matches!(event.event_type, af_contracts::EventType::TaskTransitionV6))
             .collect();
         assert_eq!(
             &kinds(&events)[..7],
@@ -2065,7 +2029,7 @@ fn a_lease_state_the_store_cannot_read_is_never_classified_as_expiry() {
     assert_eq!(failure.kind, protocol::FailureKind::OperationFailed);
     assert_eq!(failure.detail, original);
     // A malformed transition at the stream tail: the Store cannot decode the lease state.
-    append_raw(&scratch, "TaskTransition@5", r#"{"malformed":true}"#);
+    append_raw(&scratch, "TaskTransition@6", r#"{"malformed":true}"#);
     let state = cases::lease_state(&fixture.store, &fixture.lease);
     assert!(
         matches!(state, cases::LeaseState::Unreadable(_)),
@@ -2121,7 +2085,7 @@ fn a_lease_fenced_by_another_writer_is_classified_as_expiry() {
     foreign["writer"] = json!("another-writer");
     append_raw(
         &scratch,
-        "TaskTransition@5",
+        "TaskTransition@6",
         &serde_json::to_string(&foreign).unwrap(),
     );
     let state = cases::lease_state(&fixture.store, &fixture.lease);
@@ -2157,11 +2121,12 @@ from perflab import suite as suite_module
 supervisor, af, scratch = sys.argv[2:5]
 root = os.path.join(sys.argv[1], "..", "..")
 doc = cli_cases.load(os.path.join(root, "fixtures/performance/cli.toml"))
-entry = [command for command in doc["adapters"]["af_cli_v1"]["commands"]
+entry = [command for command in doc["adapters"]["af_cli_v4"]["commands"]
          if command["parameters"].get("command") == "task_show"][0]
 case = suite_module.load(os.path.join(root, "fixtures/performance/suite.toml")).doc["cases"][
     entry["case_id"]]
-values = {"af": af, "probe": "", "scratch": scratch, "package_version": ""}
+values = {"af": af, "probe": "", "scratch": scratch, "package_version": "",
+          "fixtures": os.path.join(root, "fixtures/performance/cli")}
 environment = dict(runner.CLI_ENVIRONMENT)
 environment.update(supervise.scratch_environment(scratch))
 environment.update(case.get("af_environment", {}))

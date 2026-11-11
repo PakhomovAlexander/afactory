@@ -165,10 +165,10 @@ header values stay private. The adapter policy binds the embedded host and versi
 accounting conventions. Rust compares this authority before sending a private prompt.
 
 Current contracts are Provider registry **4**, `af/pi-provider-setup@4`,
-`af/provider-status@6`, `af/provider-models@3`, `af/provider-doctor@5`,
+`af/provider-status@6`, `af/provider-models@4`, `af/provider-doctor@5`,
 `af/ExecutionPlan@4`, `af/TaskProviderAdmission@4`, `af/TaskProviderContext@3`,
 `af/LegacyReviewTaskPolicy@7`, `af/LegacyReviewInvocationPolicy@4`,
-`af/task-plan-inspection@3`, `af/task-inspection@17`, `af.pi-host/5`,
+`af/task-plan-inspection@6`, `af/task-inspection@20`, `af.pi-host/7`,
 `af/pi-inference-evidence@2` and `af.pi-context/1`. Writers, readers, closed schemas and parity
 fixtures change together; incompatible earlier versions fail closed without migration.
 
@@ -193,6 +193,58 @@ echoed in accepted before usage or results can be admitted. Session success requ
 `agent_settled`, successful final assistant text and return of `session.prompt`; `agent_end`,
 EOF and exit zero are insufficient. Common `af-process` supervision owns cancellation,
 the original Attempt wall, pipes and owned process group cleanup. Partial charges survive failure.
+
+A terminal assistant `error` or `aborted` message, including one emitted after a completed
+`toolUse` inference, records its `errorMessage` before closing the run. A rejected `session.prompt`
+records its exception message when no earlier non-empty terminal diagnostic exists. Neither a later
+final reply nor `agent_settled` can erase that failure. The `af.pi-host/7` inference-failure record carries
+a safe diagnostic, a closed `failure_kind` category and an explicit accounting-completeness claim.
+Rust validates the category and checks the claim against every inference's finalized native
+observations and required counters. A resolved or rejected prompt with non-aborted settlement and
+no usage, identity or lifecycle refusal can make that claim. Absent settlement, aborted runs and
+unsafe accounting retain incomplete observed floors.
+
+Complete native accounting survives a terminal SDK failure independently of Worker success.
+The failed Attempt retains the exact native counters and aggregate AF charge, plus a separate
+sanitized terminal protocol record in raw CAS evidence. The existing inference-evidence shape
+stays unchanged: its `settled` flag still means successful host protocol settlement, and
+`successful` stays false on failure. A complete failure is reported with its native diagnostic,
+without an incomplete-billing refusal. The host classifies the first 4,096 characters of the original
+terminal error before withholding or truncating its diagnostic, so URLs or credential material
+cannot erase a quota, authentication or network classification. For a bounded JSON error, top-level
+and nested `error` fields named `type` or `code` also contribute to classification when they are
+scalar identifiers of at most 128 ASCII letters, digits or underscores, starting with a letter.
+Recognized codes such as `rate_limit_error` and `model_not_found` classify even a neutral or absent
+message. These fields never become diagnostic text. Rust uses the validated category,
+independently of the filtered text. Failed Task Attempts retain the adapter's final category in an
+Attempt-produced [`af/NativeFailureEvidence@1`](../../schemas/native-failure-v1.json) artifact,
+bound to that Attempt's context. Task state and failure reports read this structured evidence
+before diagnostic text, including when accounting is complete: a `rate_limit_error` whose safe
+message is `model_unavailable` remains `provider_capacity`. Recognized native errors use AF's
+existing classifications;
+an unclassified SDK session or invocation failure is a Provider environment failure. Authentication
+errors explicitly name authentication, so they cannot fall through to malformed Worker output.
+Success still requires the same final assistant text and successful settlement.
+
+Diagnostics are judged whole before truncation: non-string/empty errors get a fixed explanation;
+inputs above 4,096 characters are withheld. The host remembers bounded initial/refreshed credential
+values and selected private auth/environment/header values (including properties named `type`).
+For `Authorization` and `Proxy-Authorization` headers (case-insensitive), it also remembers the
+Bearer token or the Basic encoded credentials, decoded credentials, username and password, so a
+credential echoed without its scheme is still withheld. Unsupported schemes, compound values or
+unrepresentable Basic credentials cause all diagnostic text to be withheld.
+It also remembers credential-file contents, JSON string values, INI values and opaque token lines
+from the complete captured file-reference closure. For credential-source URLs it also remembers
+every decoded query value whose key contains `token`, `key`, `secret`, `signature`, `password` or
+`auth`, including repeated parameters. Unrepresentable query values fail closed like other
+unrepresentable secrets. Oversized credential values/files, non-UTF-8
+files or an exhausted secret-memory bound cause all diagnostic text to be withheld. It withholds
+diagnostics containing private values, credential-like text or URLs. For a bounded JSON error it
+selects only a string `error.message`, `message` or `error` and filters that diagnostic; other
+structured payloads are withheld. It strips
+terminal escapes and controls, collapses whitespace and emits at most 240 printable ASCII characters.
+Rust applies the common native-output redactor again before retaining or displaying the diagnostic. Raw SDK error objects and stacks
+never enter CAS evidence or operator output. Version 6 and earlier records fail closed without a fallback.
 
 Native accounting is selected by **transport**, not backend. The pinned SDK's complete chat
 transport catalog is covered:
@@ -229,7 +281,7 @@ Every subsequent inference requires safe complete accounting for the preceding o
 is capped by trusted remaining allowance and the native output limit. One inference may overshoot
 because prompt usage arrives afterward; its whole observed charge remains. Worker input cannot
 increase the allowance. Existing bounds remain 256 inferences, 128 observations per inference,
-4,096 tool executions, and the existing protocol/output/file/deadline limits. Safe raw CAS evidence
+4,096 tool executions, and the existing protocol/output/file/deadline limits. The inference-evidence record
 retains counters, lifecycle, nonce and tool-name counts separately from aggregate charge, without
 prompts, answers, tool arguments/results, credential values or account IDs.
 
@@ -251,6 +303,23 @@ These synthetic tests establish no paid/live provider success. Official-SDK cove
 reported as not run when unavailable; `AF_PI_TEST_HERMETIC=1` selects the hermetic path.
 Historical measurement claims remain in [the validation record](pi-provider-validation.md);
 this change adds no reconstructed workflow receipts.
+The terminal-error regression drives `toolUse message_end` with complete usage, a late assistant
+`error` carrying a distinctive diagnostic, and non-aborted `agent_settled`. Host and adapter tests
+check retained diagnostics, complete charge, refused later replies and the successful final-stop
+control, alongside invalid-usage and model-identity refusals. They make no live Provider calls.
+The real-host adapter regression checks structured rate-limit and unavailable-model errors with
+neutral messages, including the distinctive safe diagnostic in operator output and retained CAS
+evidence. Both real-host paths also supply selected OAuth access and refresh values, profile
+headers, AWS credential-file values, ADC private-key material and linked subject-token values as
+terminal diagnostics, alongside a short secret echoed alone from a credential-source URL query.
+They also echo a short configured Bearer token without its scheme. In-process callback tests cover
+Basic credential components and fail-closed handling of unsupported authorization schemes.
+The adapter checks that they stay out of operator errors and every retained
+CAS artifact, and that withheld quota, authentication and network errors keep their categories
+and complete charge. A common Task CLI regression proves that a completely accounted rate-limit
+failure whose safe diagnostic says `model_unavailable` reports `provider_capacity`, retains the
+safe diagnostic and charges the exact native usage after Store replay. Other category mappings
+and diagnostic forms also run in process.
 
 ## Optional pi-light trial family
 

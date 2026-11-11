@@ -196,7 +196,7 @@ const OUTPUT_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"re
 
 const INSTRUCTIONS: &str = "Performance fixture Worker. It is never executed.\n";
 
-const PIPELINE: &str = r#"schema = "af.pipeline/1"
+const PIPELINE: &str = r#"schema = "af.pipeline/6"
 name = "perf/two-node"
 version = "1.0.0"
 max_attempts = 3
@@ -386,18 +386,6 @@ pub fn wait_state(id: &str) -> Option<(u64, bool, usize)> {
     })
 }
 
-/// Exactly this many valid relevant events in the CLI Campaign fixture's Campaign log
-/// (`fixtures/performance/cli.toml`, seed `campaign_state`).
-pub const CLI_CAMPAIGN_EVENTS: u64 = 10_000;
-
-/// The CLI Campaign fixture's label: the side's own `af review run --campaign` wrote it, and
-/// its log is the Campaign run `campaign-<label>` beside the review's own Task log.
-pub const CLI_CAMPAIGN: &str = "perf-campaign";
-
-/// The Findings the fixture's reviewer reports in its one Round, one per line of
-/// `src/fixture.txt` in `fixtures/performance/cli/campaign-roots/repo`.
-pub const CLI_CAMPAIGN_FINDINGS: usize = 100;
-
-/// The Campaign state directory the side's `af review run` wrote, relative to the parent of the
-/// writer's scratch: the setup creates the scratch beside it.
-pub const CLI_CAMPAIGN_STATE: &str = "campaign";
+/// Exactly this many current Task events in the native Review seed
+/// (`fixtures/performance/cli.toml`, seed `native_review_state`).
+pub const CLI_NATIVE_REVIEW_EVENTS: u64 = 10_000;

@@ -2,7 +2,7 @@ use super::{assert_invalid, assert_valid, workspace_root};
 use af_contracts::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1,
     plan::{
-        EffectiveWorkerBindingV3, ExecutionPlanV3, IndependencePolicyV1, PlanDecisionV1,
+        EffectiveWorkerBindingV3, ExecutionPlan, IndependencePolicyV1, PlanDecisionV1,
         WorkerExecutionV3, validate_independent_bindings,
     },
     review::{RepairAssessmentV1, ReviewConclusionV1, ReviewHistoryV1, VerificationContinuationV1},
@@ -255,24 +255,24 @@ fn task_input_bindings_record_provenance_and_close_every_form() {
 /// depends on this crate, so the closure is checked here against the wire shape and there
 /// against the reader.
 #[test]
-fn task_source_origin_generation_two_never_claims_a_committed_revision() {
+fn current_task_source_origin_preserves_captured_and_bound_provenance() {
     let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-    let bound = json!({"schema":"af.task-source-origin/2","repository_id":"example/hub",
+    let bound = json!({"schema":"af.task-source-origin/3","kind":"bound","repository_id":"example/hub",
         "content_digest":id('a'),
         "bound_from":{"artifact_id":id('b'),"snapshot_id":id('c'),
             "task":{"task_id":"layout-l3b","task_revision_id":id('1'),"result_id":id('2'),
                 "port":"snapshot","acceptance":"unsatisfied",
                 "domain_conclusion":"changes_requested"}}});
-    assert_valid("task-source-origin-v2.json", &bound);
+    assert_valid("task-source-origin-v3.json", &bound);
 
     let mut exact = bound.clone();
     exact["bound_from"].as_object_mut().unwrap().remove("task");
-    assert_valid("task-source-origin-v2.json", &exact);
+    assert_valid("task-source-origin-v3.json", &exact);
 
     let mut committed = bound.clone();
     committed["source_revision"] = json!("bba24cb");
     assert_invalid(
-        "task-source-origin-v2.json",
+        "task-source-origin-v3.json",
         &committed,
         "a re-rooted tree has no commit and must not claim one",
     );
@@ -280,9 +280,9 @@ fn task_source_origin_generation_two_never_claims_a_committed_revision() {
     let mut unbound = bound;
     unbound.as_object_mut().unwrap().remove("bound_from");
     assert_invalid(
-        "task-source-origin-v2.json",
+        "task-source-origin-v3.json",
         &unbound,
-        "generation two exists to say where the tree came from",
+        "a bound source retains where its tree came from",
     );
 }
 
@@ -302,7 +302,7 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
     // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
-        json!({"schema":"af/task-inspection@17","task_id":"chain-history","revision_id":id('1'),
+        json!({"schema":"af/task-inspection@20","task_id":"chain-history","revision_id":id('1'),
             "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
             "history":[],"run_reports":[],
             "execution_records":[{"artifact_id":id('3'),
@@ -310,17 +310,17 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
             "input_bindings":bindings})
     };
     assert_valid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a')}}})),
     );
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
         "a binding record with no bindings",
     );
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
         "an unknown binding field",
@@ -336,15 +336,15 @@ fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
         .unwrap()
         .validate()
         .unwrap();
-    let draft = json!({"schema":"af.document-draft/1","title":"Release notes","sections":[{"heading":"Summary","body":"Adds offset pagination."}],"citations":["ticket"]});
-    assert_valid("document-draft-v1.json", &draft);
-    serde_json::from_value::<DocumentDraftV1>(draft.clone())
+    let draft = json!({"schema":"af.document-draft/3","title":"Release notes","sections":[{"heading":"Summary","body":"Adds offset pagination."}],"citations":[{"kind":"source","name":"ticket"}]});
+    assert_valid("document-draft-v3.json", &draft);
+    serde_json::from_value::<DocumentDraft>(draft.clone())
         .unwrap()
         .validate()
         .unwrap();
     for (schema, value) in [
         ("document-sources-v1.json", sources),
-        ("document-draft-v1.json", draft.clone()),
+        ("document-draft-v3.json", draft.clone()),
     ] {
         let mut invalid = value;
         invalid["allowed_effects"] = json!(["write-source"]);
@@ -358,7 +358,7 @@ fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
     let section = duplicate["sections"][0].clone();
     duplicate["sections"].as_array_mut().unwrap().push(section);
     assert!(
-        serde_json::from_value::<DocumentDraftV1>(duplicate)
+        serde_json::from_value::<DocumentDraft>(duplicate)
             .unwrap()
             .validate()
             .is_err()
@@ -449,18 +449,17 @@ fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
     );
     assert!(serde_json::from_value::<ReportSourcesV1>(granted).is_err());
 
-    let draft = json!({"schema":"af.document-draft/2","title":"Where the time goes",
-        "sections":[{"heading":"Findings","body":"Tests dominate."}],"citations":["r1"],
-        "repository_citations":[{"path":"README.md"},{"path":"src/lib.rs","line":3}]});
-    assert_valid("document-draft-v2.json", &draft);
-    let typed: DocumentDraftV2 = serde_json::from_value(draft.clone()).unwrap();
+    let draft = json!({"schema":"af.document-draft/3","title":"Where the time goes",
+        "sections":[{"heading":"Findings","body":"Tests dominate."}],"citations":[{"kind":"source","name":"r1"},{"kind":"repository","location":{"path":"README.md"}},{"kind":"repository","location":{"path":"src/lib.rs","line":3}}]});
+    assert_valid("document-draft-v3.json", &draft);
+    let typed: DocumentDraft = serde_json::from_value(draft.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(serde_json::to_value(&typed).unwrap(), draft);
-    // Without citations the field is omitted, not an empty list, and both spellings read.
+    // The same format represents a draft without repository citations.
     let mut bare = draft.clone();
-    bare.as_object_mut().unwrap().remove("repository_citations");
-    assert_valid("document-draft-v2.json", &bare);
-    let typed: DocumentDraftV2 = serde_json::from_value(bare.clone()).unwrap();
+    bare["citations"] = json!([{"kind":"source","name":"r1"}]);
+    assert_valid("document-draft-v3.json", &bare);
+    let typed: DocumentDraft = serde_json::from_value(bare.clone()).unwrap();
     assert_eq!(serde_json::to_value(&typed).unwrap(), bare);
     for (bad, why) in [
         (json!({"path":"README.md","line":0}), "a line is 1-based"),
@@ -473,24 +472,91 @@ fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
         ),
     ] {
         let mut invalid = draft.clone();
-        invalid["repository_citations"] = json!([bad]);
-        assert_invalid("document-draft-v2.json", &invalid, why);
+        invalid["citations"] = json!([{"kind":"repository","location":bad}]);
+        assert_invalid("document-draft-v3.json", &invalid, why);
         assert!(
-            serde_json::from_value::<DocumentDraftV2>(invalid)
+            serde_json::from_value::<DocumentDraft>(invalid)
                 .map_err(|e| e.to_string())
                 .and_then(|draft| draft.validate())
                 .is_err(),
             "{why}"
         );
     }
-    let mut first = draft.clone();
-    first["schema"] = json!("af.document-draft/1");
-    assert_invalid("document-draft-v2.json", &first, "the version is its own");
-    assert_invalid(
-        "document-draft-v1.json",
-        &draft,
-        "the first version never carries repository citations",
+    for old in ["af.document-draft/1", "af.document-draft/2"] {
+        let mut retired = draft.clone();
+        retired["schema"] = json!(old);
+        assert_invalid(
+            "document-draft-v3.json",
+            &retired,
+            "retired draft formats fail closed",
+        );
+        assert!(
+            serde_json::from_value::<DocumentDraft>(retired)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    assert!(typed.validate_document().is_ok());
+    let repository_draft: DocumentDraft = serde_json::from_value(draft.clone()).unwrap();
+    assert!(
+        repository_draft.validate_document().is_err(),
+        "a Document has no repository Snapshot"
     );
+    let mut untagged = draft.clone();
+    untagged["citations"] = json!(["r1"]);
+    assert_invalid(
+        "document-draft-v3.json",
+        &untagged,
+        "citations require explicit kinds",
+    );
+    assert!(serde_json::from_value::<DocumentDraft>(untagged).is_err());
+    let named: Vec<_> = (0..32)
+        .map(|n| json!({"kind":"source","name":format!("source{n:02}")}))
+        .collect();
+    let repository: Vec<_> = (0..64)
+        .map(|n| json!({"kind":"repository","location":{"path":format!("file{n:02}.rs")}}))
+        .collect();
+    let mut bounded = draft.clone();
+    bounded["citations"] = json!(named.iter().chain(repository.iter()).collect::<Vec<_>>());
+    assert_valid("document-draft-v3.json", &bounded);
+    serde_json::from_value::<DocumentDraft>(bounded.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut too_many_sources = named;
+    too_many_sources.push(json!({"kind":"source","name":"source99"}));
+    let mut too_many_repository = repository;
+    too_many_repository.push(json!({"kind":"repository","location":{"path":"overflow.rs"}}));
+    for citations in [too_many_sources, too_many_repository] {
+        let mut over = bounded.clone();
+        over["citations"] = json!(citations);
+        assert_invalid(
+            "document-draft-v3.json",
+            &over,
+            "each citation kind retains its own bound independently",
+        );
+        assert!(
+            serde_json::from_value::<DocumentDraft>(over)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    for malformed in [
+        json!({"kind":"source","name":"r1","location":{"path":"README.md"}}),
+        json!({"kind":"repository","name":"r1","location":{"path":"README.md"}}),
+        json!({"kind":"unknown","name":"r1"}),
+    ] {
+        let mut invalid = draft.clone();
+        invalid["citations"] = json!([malformed]);
+        assert_invalid(
+            "document-draft-v3.json",
+            &invalid,
+            "citation variants are closed",
+        );
+        assert!(serde_json::from_value::<DocumentDraft>(invalid).is_err());
+    }
 
     let receipt = json!({"plan_id":id,"document_id":id,"sources_id":id,"policy_id":id,
         "source_snapshot_id":snapshot,"manifest_id":id,
@@ -559,7 +625,7 @@ fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
         (json!({"op": "report_check", "checks": ["size"]}), false),
     ] {
         let definition = json!({
-            "schema": "af.pipeline/1", "name": "fixture/report", "version": "1.0.0",
+            "schema": "af.pipeline/6", "name": "fixture/report", "version": "1.0.0",
             "contract": {"inputs": {}, "outputs": {"out": {"artifact_type": "af/Document@1",
                 "cardinality": "one", "optional": false, "affinity": {"kind": "unbound"}, "covers": []}}},
             "accepts": {"kinds": ["report"], "required_facts": {}},
@@ -569,18 +635,17 @@ fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
             "coverage": {}, "max_attempts": 1, "max_parallel": 1
         });
         if valid {
-            assert_valid("pipeline-definition-v1.json", &definition);
+            assert_valid("pipeline-definition-v6.json", &definition);
         } else {
             assert_invalid(
-                "pipeline-definition-v1.json",
+                "pipeline-definition-v6.json",
                 &definition,
                 "closed operator",
             );
         }
-        let rust = serde_json::from_value::<af_contracts::task::pipeline::PipelineDefinitionV1>(
-            definition,
-        )
-        .is_ok_and(|p| p.validate().is_ok());
+        let rust =
+            serde_json::from_value::<af_contracts::task::pipeline::PipelineDefinition>(definition)
+                .is_ok_and(|p| p.validate().is_ok());
         assert_eq!(rust, valid, "{operator}");
     }
 }
@@ -618,14 +683,14 @@ fn check_nodes_choose_remote_checks_and_plans_record_their_github_destination() 
         let mut definition = fixture("pipeline-definition");
         definition["nodes"][0]["operator"] = operator.clone();
         if valid {
-            assert_valid("pipeline-definition-v1.json", &definition);
+            assert_valid("pipeline-definition-v6.json", &definition);
             assert_eq!(
                 typed_value("pipeline-definition", definition.clone()).as_ref(),
                 Ok(&definition),
                 "{operator} round-trips byte for byte"
             );
         } else {
-            assert_invalid("pipeline-definition-v1.json", &definition, "check node");
+            assert_invalid("pipeline-definition-v6.json", &definition, "check node");
             assert!(
                 typed("pipeline-definition", definition).is_err(),
                 "{operator}"
@@ -637,7 +702,7 @@ fn check_nodes_choose_remote_checks_and_plans_record_their_github_destination() 
     let mut both = fixture("pipeline-definition");
     both["nodes"][0]["operator"] =
         json!({"op": "check", "checks": ["kernel"], "remote_checks": ["kernel"]});
-    assert_valid("pipeline-definition-v1.json", &both);
+    assert_valid("pipeline-definition-v6.json", &both);
     let error = typed("pipeline-definition", both).unwrap_err();
     assert!(
         error.contains("node write lists check kernel in both"),
@@ -720,7 +785,11 @@ fn task_contract_positive_and_negative_fixtures() {
     let schema = |contract: &str| {
         format!(
             "{contract}-v{}.json",
-            if contract == "execution-plan" { 4 } else { 1 }
+            match contract {
+                "execution-plan" => 4,
+                "pipeline-definition" => 6,
+                _ => 1,
+            }
         )
     };
     let manifest = fixture("content-ids");
@@ -742,6 +811,46 @@ fn task_contract_positive_and_negative_fixtures() {
         assert!(
             typed(contract, value.clone()).is_err(),
             "Rust admitted {contract}: {why}"
+        );
+    }
+    // The format discriminator is a string, never serde's alternate map spelling of a
+    // unit enum variant. Captured JSON and the published schema have the same authority.
+    for discriminator in [json!(null), json!(5), json!({"af.pipeline/6":null})] {
+        let mut invalid = fixture("pipeline-definition");
+        invalid["schema"] = discriminator;
+        assert_invalid(
+            "pipeline-definition-v6.json",
+            &invalid,
+            "the discriminator is a string",
+        );
+        assert!(typed("pipeline-definition", invalid).is_err());
+    }
+    // Structural acceptance is a capability of the same format, with its original
+    // data-only operator boundary even when a slot also declares recovery.
+    let mut structured = fixture("pipeline-definition");
+    structured["slots"]["author"]["recovery_attempts"] = json!(2);
+    structured["nodes"].as_array_mut().unwrap().push(json!({
+        "id":"accept", "operator":{"op":"structured_accept"}, "inputs":{}
+    }));
+    assert_valid("pipeline-definition-v6.json", &structured);
+    typed("pipeline-definition", structured.clone()).unwrap();
+    for forbidden in [
+        json!({"op":"seal"}),
+        json!({"op":"check","checks":["kernel"]}),
+    ] {
+        let mut mixed = structured.clone();
+        mixed["nodes"].as_array_mut().unwrap().push(json!({
+            "id":"forbidden", "operator":forbidden, "inputs":{}
+        }));
+        assert_invalid(
+            "pipeline-definition-v6.json",
+            &mixed,
+            "structured acceptance stays data-only",
+        );
+        assert!(
+            typed("pipeline-definition", mixed)
+                .unwrap_err()
+                .contains("Structured acceptance permits only")
         );
     }
 }
@@ -767,7 +876,13 @@ fn empty_tagged_variants_reject_hidden_fields() {
             serde_json::from_value::<TaskPhaseV1>(json!({"kind":kind,"plan":"hidden"})).is_err()
         );
     }
-    for op in ["seal", "review_bind", "attest_fixes", "select"] {
+    for op in [
+        "seal",
+        "review_bind",
+        "attest_fixes",
+        "select",
+        "structured_accept",
+    ] {
         assert!(
             serde_json::from_value::<TaskOperatorV1>(json!({"op":op,"script":"hidden"})).is_err()
         );
@@ -806,11 +921,28 @@ fn optional_properties_accept_omission_but_reject_explicit_null() {
             .as_object_mut()
             .unwrap()
             .remove(field);
-        assert_valid(&format!("{contract}-v1.json"), &value);
+        assert_valid(
+            &format!(
+                "{contract}-v{}.json",
+                if contract == "pipeline-definition" {
+                    6
+                } else {
+                    1
+                }
+            ),
+            &value,
+        );
         typed(contract, value.clone()).unwrap();
         value.pointer_mut(parent).unwrap()[field] = Value::Null;
         assert_invalid(
-            &format!("{contract}-v1.json"),
+            &format!(
+                "{contract}-v{}.json",
+                if contract == "pipeline-definition" {
+                    6
+                } else {
+                    1
+                }
+            ),
             &value,
             "optional means absent or a typed value",
         );
@@ -832,7 +964,7 @@ fn output_affinity_can_reference_an_input_with_the_same_name() {
 
 #[test]
 fn approval_matches_only_exact_revision_plan_and_policy_and_never_dispatches() {
-    let mut plan: ExecutionPlanV3 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let mut plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
     let approval: PlanDecisionV1 = serde_json::from_value(fixture("plan-decision")).unwrap();
     assert!(plan.requires_developer_approval());
     assert!(approval.approves(&approval.plan_id, &plan));
@@ -846,7 +978,7 @@ fn approval_matches_only_exact_revision_plan_and_policy_and_never_dispatches() {
 
 #[test]
 fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
-    let plan: ExecutionPlanV3 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
     let mut a: EffectiveWorkerBindingV3 = plan.bindings["author"].clone();
     a.execution = WorkerExecutionV3::Model {
         provider: "personal".into(),
@@ -1241,7 +1373,7 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
 fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_authority() {
     use af_contracts::task::plan::PlanPreparationV1;
     let original = fixture("execution-plan");
-    let mut plan: ExecutionPlanV3 = serde_json::from_value(original.clone()).unwrap();
+    let mut plan: ExecutionPlan = serde_json::from_value(original.clone()).unwrap();
     assert!(plan.preparation.is_none());
     assert_eq!(
         serde_json::to_value(&plan).unwrap(),
@@ -1263,7 +1395,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
         &invalid,
         "Present preparation cannot be null",
     );
-    assert!(serde_json::from_value::<ExecutionPlanV3>(invalid).is_err());
+    assert!(serde_json::from_value::<ExecutionPlan>(invalid).is_err());
     let mut invalid = valid;
     invalid["preparation"]["auto_approved"] = json!(true);
     assert_invalid(
@@ -1271,7 +1403,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
         &invalid,
         "Preparation cannot smuggle approval",
     );
-    assert!(serde_json::from_value::<ExecutionPlanV3>(invalid).is_err());
+    assert!(serde_json::from_value::<ExecutionPlan>(invalid).is_err());
     plan.acceptance = original_coverage;
     assert!(plan.validate().is_err());
     assert_invalid(
@@ -1298,7 +1430,7 @@ fn proposals_are_bounded_pipeline_toml_and_never_worker_installation_or_approval
         root: "generated/implementation".into(),
         definitions: std::collections::BTreeMap::from([(
             "generated/implementation".into(),
-            "schema = \"af.pipeline/1\"\n".into(),
+            "schema = \"af.pipeline/6\"\n".into(),
         )]),
     };
     proposal.validate().unwrap();
@@ -1415,15 +1547,15 @@ fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
 
 #[test]
 fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
-    let ready = json!({"schema":"af.pi-host/5","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
+    let ready = json!({"schema":"af.pi-host/7","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
         "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","catalog_id":format!("sha256:{}","c".repeat(64)),"models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
-    assert_valid("pi-host-v5.json", &ready);
+    assert_valid("pi-host-v7.json", &ready);
     let mut kimi_ready = ready.clone();
     kimi_ready["backend"] = json!("kimi-coding");
     kimi_ready["principal"] = Value::Null;
     kimi_ready["models"][0]["id"] = json!("k3");
     kimi_ready["models"][0]["efforts"] = json!(["low", "high", "max"]);
-    assert_valid("pi-host-v5.json", &kimi_ready);
+    assert_valid("pi-host-v7.json", &kimi_ready);
     for (pointer, wrong) in [
         ("/principal", ready["principal"].clone()),
         ("/models/0/id", json!("../invalid")),
@@ -1431,20 +1563,20 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
     ] {
         let mut bad = kimi_ready.clone();
         *bad.pointer_mut(pointer).unwrap() = wrong;
-        assert_invalid("pi-host-v5.json", &bad, pointer);
+        assert_invalid("pi-host-v7.json", &bad, pointer);
     }
-    let init = json!({"schema":"af.pi-host/5","type":"init","backend":"kimi-coding",
+    let init = json!({"schema":"af.pi-host/7","type":"init","backend":"kimi-coding",
         "sdk":"/installed/sdk/dist/index.js","auth_dir":"/private/auth",
         "auth_context_id":format!("sha256:{}","c".repeat(64)),"principal":null,
         "cwd":"/sandbox","home":"/private/home","readable":["/sandbox"],"writable":[],"probe":false});
-    assert_valid("pi-host-v5.json", &init);
+    assert_valid("pi-host-v7.json", &init);
     let mut missing_context = init;
     missing_context
         .as_object_mut()
         .unwrap()
         .remove("auth_context_id");
     assert_invalid(
-        "pi-host-v5.json",
+        "pi-host-v7.json",
         &missing_context,
         "missing captured auth context",
     );
@@ -1453,19 +1585,71 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
         ("schema", json!("af.pi-host/2")),
         ("schema", json!("af.pi-host/3")),
         ("schema", json!("af.pi-host/4")),
+        ("schema", json!("af.pi-host/5")),
+        ("schema", json!("af.pi-host/6")),
         ("version", json!("1.5.0")),
         ("backend", json!("anthropic")),
         ("access", json!("secret")),
     ] {
         let mut bad = ready.clone();
         bad[field] = wrong;
-        assert_invalid("pi-host-v5.json", &bad, field);
+        assert_invalid("pi-host-v7.json", &bad, field);
     }
-    let usage = json!({"schema":"af.pi-host/5","type":"usage","observations":1,"inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
-    assert_valid("pi-host-v5.json", &usage);
+    let usage = json!({"schema":"af.pi-host/7","type":"usage","observations":1,"inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
+    assert_valid("pi-host-v7.json", &usage);
     let mut missing = usage;
     missing.as_object_mut().unwrap().remove("input");
-    assert_invalid("pi-host-v5.json", &missing, "missing counter");
+    assert_invalid("pi-host-v7.json", &missing, "missing counter");
+    let failure = json!({"schema":"af.pi-host/7","type":"error","code":"inference_failed",
+        "diagnostic":"Distinctive SDK terminal error","failure_kind":"environment","accounting_complete":true});
+    assert_valid("pi-host-v7.json", &failure);
+    for kind in [
+        "auth_missing",
+        "auth_revoked",
+        "auth_expired",
+        "auth_refresh_contended",
+        "auth_refresh_failed",
+        "auth_rejected",
+        "quota",
+        "capacity",
+        "model_unavailable",
+        "model_refused",
+        "network",
+        "environment",
+    ] {
+        let mut categorized = failure.clone();
+        categorized["failure_kind"] = json!(kind);
+        assert_valid("pi-host-v7.json", &categorized);
+    }
+    for (field, wrong) in [
+        ("schema", json!("af.pi-host/6")),
+        ("schema", json!("af.pi-host/5")),
+        ("failure_kind", json!("unknown")),
+        ("failure_kind", json!("https://private.invalid")),
+        ("failure_kind", Value::Null),
+        ("diagnostic", json!("")),
+        ("diagnostic", json!("x".repeat(241))),
+        ("diagnostic", json!("error\u{1b}[31m")),
+        ("diagnostic", json!("error\n")),
+        ("diagnostic", json!("error\u{202e}")),
+        ("diagnostic", Value::Null),
+        ("accounting_complete", json!("true")),
+        ("payload", json!({"raw":"provider body"})),
+    ] {
+        let mut bad = failure.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-host-v7.json", &bad, field);
+    }
+    for field in ["diagnostic", "failure_kind", "accounting_complete"] {
+        let mut bad = failure.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert_invalid("pi-host-v7.json", &bad, "missing terminal failure field");
+    }
+    let refusal = json!({"schema":"af.pi-host/7","type":"error","code":"host_refused"});
+    assert_valid("pi-host-v7.json", &refusal);
+    let mut bad = failure;
+    bad["code"] = json!("host_refused");
+    assert_invalid("pi-host-v7.json", &bad, "unexpected inference diagnostic");
     let setup = json!({"schema":"af/pi-provider-setup@4","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
     assert_valid("pi-provider-setup-v4.json", &setup);
     let mut kimi_setup = setup.clone();
@@ -1508,21 +1692,21 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
         assert_invalid("pi-provider-setup-v4.json", &bad, field);
     }
     for kind in ["prompt", "accepted"] {
-        let mut ack = json!({"schema":"af.pi-host/5","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
+        let mut ack = json!({"schema":"af.pi-host/7","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
         if kind == "prompt" {
             ack["text"] = json!("private");
         }
-        assert_valid("pi-host-v5.json", &ack);
+        assert_valid("pi-host-v7.json", &ack);
         for wrong in [Value::Null, json!(""), json!("sha256:wrong")] {
             let mut bad = ack.clone();
             bad["prompt_nonce"] = wrong;
-            assert_invalid("pi-host-v5.json", &bad, "invalid challenge");
+            assert_invalid("pi-host-v7.json", &bad, "invalid challenge");
         }
         let mut old = ack.clone();
         old["schema"] = json!("af.pi-host/1");
-        assert_invalid("pi-host-v5.json", &old, "old protocol");
+        assert_invalid("pi-host-v7.json", &old, "old protocol");
         ack.as_object_mut().unwrap().remove("prompt_nonce");
-        assert_invalid("pi-host-v5.json", &ack, "missing challenge");
+        assert_invalid("pi-host-v7.json", &ack, "missing challenge");
     }
     let registry = json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
     assert_valid("provider-registry-v4.json", &registry);
@@ -1581,7 +1765,7 @@ fn pi_validation_historical_claim_is_versioned_and_closed() {
 #[test]
 fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence() {
     use af_contracts::task::plan::{PiAuthorityV3, PiIdentityModeV1};
-    let plan: ExecutionPlanV3 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
     let mut kimi = plan.bindings["author"].clone();
     kimi.execution = WorkerExecutionV3::Model {
         provider: "kimi-one".into(),
@@ -1616,7 +1800,7 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
         *bad.pointer_mut(pointer).unwrap() = wrong;
         assert_invalid("task-provider-admission-v4.json", &bad, pointer);
         assert!(
-            serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmissionV3>(bad)
+            serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(bad)
                 .unwrap()
                 .validate()
                 .is_err()
@@ -1633,7 +1817,7 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
         "missing principal field",
     );
     assert!(
-        serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmissionV3>(missing)
+        serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(missing)
             .is_err()
     );
     let mut other = kimi.clone();
@@ -1680,7 +1864,7 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
 #[test]
 fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_independence() {
     use af_contracts::task::plan::{PiAuthorityV3, PiIdentityModeV1};
-    let plan: ExecutionPlanV3 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
     for (backend, method, model) in [
         ("anthropic", "api_key", "claude-haiku-4-5"),
         ("openai", "api_key", "gpt-4o-mini"),
@@ -1711,7 +1895,7 @@ fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_indepe
         let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
             "execution":binding.execution,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
         assert_valid("task-provider-admission-v4.json", &admission);
-        serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmissionV3>(
+        serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(
             admission.clone(),
         )
         .unwrap()
@@ -1735,12 +1919,10 @@ fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_indepe
             *bad.pointer_mut(pointer).unwrap() = wrong;
             assert_invalid("task-provider-admission-v4.json", &bad, pointer);
             assert!(
-                serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmissionV3>(
-                    bad
-                )
-                .unwrap()
-                .validate()
-                .is_err()
+                serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(bad)
+                    .unwrap()
+                    .validate()
+                    .is_err()
             );
         }
     }
@@ -1759,9 +1941,9 @@ fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_indepe
 
 #[test]
 fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
-    let prepare = json!({"schema":"af.pi-host/5","type":"prepare","model":"k3","effort":"high",
+    let prepare = json!({"schema":"af.pi-host/7","type":"prepare","model":"k3","effort":"high",
         "model_identity":format!("sha256:{}","a".repeat(64)),"remaining_tokens":37,"reply_schema":{"type":"object"}});
-    assert_valid("pi-host-v5.json", &prepare);
+    assert_valid("pi-host-v7.json", &prepare);
     for tokens in [
         Value::Null,
         json!(0),
@@ -1772,12 +1954,12 @@ fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
     ] {
         let mut bad = prepare.clone();
         bad["remaining_tokens"] = tokens;
-        assert_invalid("pi-host-v5.json", &bad, "invalid trusted allowance");
+        assert_invalid("pi-host-v7.json", &bad, "invalid trusted allowance");
     }
     for field in ["remaining_tokens", "reply_schema"] {
         let mut bad = prepare.clone();
         bad.as_object_mut().unwrap().remove(field);
-        assert_invalid("pi-host-v5.json", &bad, "missing authority or contract");
+        assert_invalid("pi-host-v7.json", &bad, "missing authority or contract");
     }
     let usage = json!({"inference":1,"complete":true,"observations":2,"input":439,"output":38,
         "cache_read":null,"cache_write":null,"reasoning":24});
@@ -1788,6 +1970,11 @@ fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
         "settled":false,"successful":false,"aggregate":{"charge_complete":false,"reported_usage":{
             "input_tokens":"439","output_tokens":"38","reasoning_tokens":"24","chargeable_tokens":"477"}}});
     assert_valid("pi-inference-evidence-v2.json", &evidence);
+    // Complete native accounting is independent of a successful Worker reply; the
+    // terminal diagnostic is a separate versioned host record, not a new evidence shape.
+    let mut accounted_failure = evidence.clone();
+    accounted_failure["aggregate"]["charge_complete"] = json!(true);
+    assert_valid("pi-inference-evidence-v2.json", &accounted_failure);
     for (pointer, value) in [
         ("/inferences/0/observations", json!(129)),
         ("/inferences/0/inference", json!(257)),
@@ -1823,11 +2010,11 @@ fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
             "sensitive inference field",
         );
     }
-    let count = json!({"schema":"af.pi-host/5","type":"tool_count","name":"read","count":2});
-    assert_valid("pi-host-v5.json", &count);
+    let count = json!({"schema":"af.pi-host/7","type":"tool_count","name":"read","count":2});
+    assert_valid("pi-host-v7.json", &count);
     let mut bad = count;
     bad["name"] = json!("shell");
-    assert_invalid("pi-host-v5.json", &bad, "undeclared tool");
+    assert_invalid("pi-host-v7.json", &bad, "undeclared tool");
 }
 
 #[test]

@@ -245,21 +245,67 @@ fn local_schema(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn run(case: &'static str) -> Outcome {
+    run_inner(case).expect("This case must produce a Review Round")
+}
+
+fn run_inner(case: &'static str) -> Option<Outcome> {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let contained = case.starts_with("contained");
+    let marker = directory.path().join("host-marker");
+    std::fs::write(&marker, "host-only").unwrap();
+    let command = if contained {
+        let ending = match case {
+            "contained_failed" => "exit 7",
+            "contained_mutated" => {
+                "if chmod u+w lib.rs; then printf 'changed' > lib.rs; printf mutation-performed; else printf source-write-refused; exit 9; fi"
+            }
+            _ => "printf 'contained-check-ran'",
+        };
+        af_contracts::Command::new(
+            "/bin/sh",
+            vec![
+                af_contracts::Arg::literal("-ec"),
+                af_contracts::Arg::literal(format!(
+                    r#"
+                test "$HOME" = /af-check/home
+                test "$TMPDIR" = /af-check/tmp
+                test "$AF_CHECK_SCRATCH" = /af-check/scratch
+                test "$XDG_CACHE_HOME" = /af-check/cache
+                test "$CARGO_TARGET_DIR" = /af-check/scratch/target
+                test ! -e '{}'
+                test "$(cat lib.rs)" = 'pub fn example() {{}}'
+                for root in "$HOME" "$TMPDIR" "$AF_CHECK_SCRATCH" "$XDG_CACHE_HOME"; do
+                    test -d "$root"
+                    printf private > "$root/control"
+                done
+                {ending}
+            "#,
+                    marker.display()
+                )),
+            ],
+        )
+    } else if case == "local_mutated" {
+        af_contracts::Command::new(
+            "/bin/sh",
+            vec![
+                af_contracts::Arg::literal("-ec"),
+                af_contracts::Arg::literal("chmod u+w lib.rs; printf changed > lib.rs"),
+            ],
+        )
+    } else {
+        af_contracts::Command::new("/usr/bin/true", vec![])
+    };
     let code = CodeTaskPolicy {
         check_process_wall_ms: None,
         schema: "af.code-task-policy/1".into(),
         checks: BTreeMap::from([(
             "syntax".into(),
-            af_check::CheckDefinition::new(
-                "syntax",
-                af_contracts::Command::new("/usr/bin/true", vec![]),
-            ),
+            af_check::CheckDefinition::new("syntax", command),
         )]),
-        check_wall_ms: 5000,
-        require_container: false,
+        check_wall_ms: if contained { 60_000 } else { 5000 },
+        require_container: contained,
         warm: None,
         measures: BTreeMap::new(),
         objectives: BTreeMap::new(),
@@ -295,7 +341,7 @@ fn run(case: &'static str) -> Outcome {
     })
     .collect();
     let manifest = Manifest::new(entries).unwrap();
-    let origin = cas.put(b"fixture origin").unwrap();
+    let origin = cas.put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()})).unwrap();
     let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
     let source = source_tree(&cas, producer(), &snapshot, vec![]).unwrap();
     let history_id = cas
@@ -323,7 +369,7 @@ fn run(case: &'static str) -> Outcome {
                     "source".into(),
                     port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
                 ),
-                ("subject".into(), port(TASK_REVIEW_SUBJECT_V2, same())),
+                ("subject".into(), port(TASK_REVIEW_SUBJECT_V3, same())),
                 ("assignment".into(), port(TASK_REVIEW_ASSIGNMENT_V1, same())),
                 (
                     "history".into(),
@@ -402,8 +448,8 @@ fn run(case: &'static str) -> Outcome {
         node: "check".into(),
         outcome: ReceiptOutcomeV1::Passed,
     });
-    let mut pipeline = PipelineDefinitionV1 {
-        schema: PipelineSchema::V1,
+    let mut pipeline = PipelineDefinition {
+        schema: PipelineSchema::V6,
         name: "fixture/review".into(),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {
@@ -818,13 +864,16 @@ fn run(case: &'static str) -> Outcome {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
-        + 60_000;
+        + if contained { 120_000 } else { 60_000 };
     let mut task:TaskRevisionV1=serde_json::from_value(json!({"task_id":format!("uix-{case}"),"revision":1,"kind":"review","goal":"Review the captured source by running it",
         "inputs":{"source":source,"history":history},"required_outputs":{"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}},
         "acceptance":{"reviewed":{"evidence_type":TASK_REVIEW_ROUND_V1,"verifier_policy":policy_id}},"provenance":{"adapter_id":origin,"input_artifact_ids":[]},
         "authority":{"policy_id":policy_id,"allowed_effects":["execute-checks","read-source"],"data_destinations":[]},
         "limits":{"tokens":200000,"max_attempts":3,"deadline_unix_ms":deadline,"verification":{"tokens":100000,"attempts":3,"wall_ms":15000}},
         "strategy":"light","pipeline":{"name":pipeline.name,"fallback":"refuse"},"facts":{}})).unwrap();
+    if contained {
+        task.limits.verification.wall_ms = 75_000;
+    }
     if executable {
         task.kind = "implement".into();
         task.goal = "Evaluate implementation against exact executable evidence".into();
@@ -964,8 +1013,10 @@ fn run(case: &'static str) -> Outcome {
     let domain = ReviewTaskDomain::captured(&cas, &policy_id, graph.clone())
         .unwrap()
         .with_review_task(!executable);
+    // Only the in-process fixture Worker uses a local sandbox. The independent native check
+    // domain reads its captured require_container policy and cannot use this environment.
     let environment = SnapshotTaskEnvironment {
-        policy: code.isolation(),
+        policy: af_sandbox::Policy::trusted_local(),
     };
     let model = Uix {
         case,
@@ -1024,6 +1075,132 @@ fn run(case: &'static str) -> Outcome {
             .retain(|id| cas.get_artifact(id).unwrap().artifact_type == VERIFICATION_RESULT_V1);
         terminal_evidence_regressions(&cas, &code_domain, &goal_task, &goal_result);
     }
+    if case == "local_mutated" {
+        let output = &state.execution.as_ref().unwrap().outputs["root.nodes.check"].1;
+        let receipt: TaskCheckReceiptV2 = serde_json::from_value(
+            cas.get_artifact(&output.outputs["result"].artifact_ids[0])
+                .unwrap()
+                .payload,
+        )
+        .unwrap();
+        let check: af_check::CheckResult =
+            serde_json::from_value(cas.get_json(&receipt.checks["syntax"]).unwrap()).unwrap();
+        assert_eq!(
+            check.exit_code,
+            Some(0),
+            "the source mutation really executed"
+        );
+        assert_eq!(
+            check.reason.as_deref(),
+            Some("Check mutated its input Snapshot")
+        );
+        assert_eq!(check.status, af_check::CheckStatus::Failed);
+        assert_eq!(receipt.outcome, ReceiptOutcomeV1::Failed);
+    }
+    if contained {
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "host-only");
+        if case == "contained_missing" {
+            assert_eq!(
+                result.acceptance,
+                TaskAcceptanceV1::Inconclusive,
+                "{result:?}"
+            );
+            assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+            assert!(report.outcomes.iter().any(|(_, outcome)| matches!(outcome,
+                af_graph::NodeOutcome::Failed { error, .. } if error.contains("requires Container isolation"))), "{report:?}");
+            assert!(
+                state
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .outputs
+                    .values()
+                    .all(|(_, out)| out
+                        .outputs
+                        .values()
+                        .all(|p| p.artifact_type != TASK_CHECK_RECEIPT_V2))
+            );
+            return None;
+        }
+        use af_contracts::task::check_containment::*;
+        let execution = state.execution.as_ref().unwrap();
+        let output = &execution.outputs["root.nodes.check"].1;
+        let receipt_id = &output.outputs["result"].artifact_ids[0];
+        let receipt: TaskCheckReceiptV2 =
+            serde_json::from_value(cas.get_artifact(receipt_id).unwrap().payload).unwrap();
+        assert_eq!(receipt.policy_id, code_id);
+        assert_eq!(receipt.snapshot_id, snapshot);
+        let result: af_check::CheckResult =
+            serde_json::from_value(cas.get_json(&receipt.checks["syntax"]).unwrap()).unwrap();
+        let raw: Vec<_> = execution
+            .settled_artifacts()
+            .into_values()
+            .filter(|(node, _)| node == "root.nodes.check")
+            .flat_map(|(_, raw)| raw)
+            .collect();
+        let evidence: Vec<_> = raw
+            .iter()
+            .filter_map(|id| {
+                let frame = cas.get_artifact(id).unwrap();
+                (frame.artifact_type == TASK_CHECK_CONTAINMENT_V1).then_some(frame)
+            })
+            .collect();
+        assert_eq!(evidence.len(), 1);
+        let evidence = &evidence[0];
+        assert!(evidence.input_artifacts.contains(receipt_id));
+        assert!(evidence.input_artifacts.contains(&code_id));
+        assert_eq!(
+            evidence.subject_snapshot_id.as_deref(),
+            Some(snapshot.as_str())
+        );
+        let proof: TaskCheckContainmentV1 =
+            serde_json::from_value(evidence.payload.clone()).unwrap();
+        proof.validate().unwrap();
+        assert_eq!(&proof.receipt_id, receipt_id);
+        let binding = &proof.checks["syntax"];
+        assert_eq!(binding.isolation, "container");
+        assert!(binding.admitted);
+        assert_eq!(binding.image, af_sandbox::container::DEFAULT_IMAGE);
+        assert_eq!(binding.execution, ContainerExecutionV1::Completed);
+        if case == "contained" {
+            assert_eq!(result.status, af_check::CheckStatus::Passed, "{result:?}");
+            assert_eq!(result.exit_code, Some(0));
+            assert_eq!(receipt.outcome, ReceiptOutcomeV1::Passed);
+            assert_eq!(
+                cas.get(result.stdout.as_ref().unwrap()).unwrap(),
+                b"contained-check-ran"
+            );
+        } else {
+            assert_eq!(result.status, af_check::CheckStatus::Failed, "{result:?}");
+            assert_eq!(receipt.outcome, ReceiptOutcomeV1::Failed);
+            if case == "contained_mutated" {
+                // Desktop runtimes may map a read-only host file to another guest owner.
+                // Either that real filesystem boundary refuses chmod, or sealing must catch
+                // the completed mutation. Both paths must fail the exact native check receipt.
+                let output = cas.get(result.stdout.as_ref().unwrap()).unwrap();
+                match output.as_slice() {
+                    b"mutation-performed" => {
+                        assert_eq!(result.exit_code, Some(0));
+                        assert_eq!(
+                            result.reason.as_deref(),
+                            Some("Check mutated its input Snapshot")
+                        );
+                    }
+                    b"source-write-refused" => {
+                        assert_eq!(result.exit_code, Some(9));
+                        assert!(result.reason.is_none(), "the seal must still be unchanged");
+                        let error = cas.get(result.stderr.as_ref().unwrap()).unwrap();
+                        assert!(String::from_utf8_lossy(&error).contains("chmod:"));
+                    }
+                    other => panic!(
+                        "neither source-integrity boundary was exercised: {other:?} {result:?}"
+                    ),
+                }
+            } else {
+                assert_eq!(result.exit_code, Some(7));
+            }
+        }
+    }
     let review: TaskReviewRoundV1 = serde_json::from_value(
         cas.get_json(&result.outputs["review"].artifact_ids[0])
             .unwrap()["payload"]
@@ -1061,13 +1238,13 @@ fn run(case: &'static str) -> Outcome {
         serde_json::from_value(cas.get_json(&port.artifact_ids[0]).unwrap()["payload"].clone())
             .unwrap()
     });
-    Outcome {
+    Some(Outcome {
         result,
         review,
         verification,
         diagnostics,
         calls: model.calls.load(Ordering::SeqCst),
-    }
+    })
 }
 
 /// Rebuild content-addressed descendants to challenge terminal validation itself, after a
@@ -1354,4 +1531,51 @@ fn executable_review_evidence_drives_implementation_acceptance_and_terminal_reva
             }
         }
     }
+}
+
+/// This is real native Task check/Review dispatch, not a provider listing or mock. Explicit
+/// invocation requires a usable daemon, and fails if the pinned image cannot execute checks.
+#[test]
+#[ignore = "needs a live container runtime; run via make review-kernel-container-probes"]
+fn a_container_check_executes_on_the_native_task_host() {
+    let provider = af_sandbox::ContainerProvider::detect();
+    assert!(
+        matches!(
+            provider.availability(),
+            af_sandbox::Availability::Usable { .. }
+        ),
+        "live native check proof requires a usable runtime: {}",
+        provider.availability().reason()
+    );
+    let passed = run("contained");
+    assert_eq!(passed.result.acceptance, TaskAcceptanceV1::Satisfied);
+    assert_eq!(passed.review.conclusion, ReviewConclusionV1::Pass);
+    for case in ["contained_failed", "contained_mutated"] {
+        let refused = run(case);
+        assert_ne!(refused.review.conclusion, ReviewConclusionV1::Pass);
+    }
+}
+
+#[test]
+fn a_required_container_check_refuses_a_missing_runtime_before_any_local_command() {
+    const CHILD: &str = "AF_NATIVE_CHECK_NO_RUNTIME_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        assert!(matches!(
+            af_sandbox::ContainerProvider::detect().availability(),
+            af_sandbox::Availability::Absent
+        ));
+        assert!(run_inner("contained_missing").is_none());
+        return;
+    }
+    let shims = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "task_review_execute_checks::a_required_container_check_refuses_a_missing_runtime_before_any_local_command", "--nocapture"])
+        .env(CHILD, "1").env("PATH", shims.path()).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn a_native_check_source_mutation_fails_sealing_on_the_real_check_path() {
+    let outcome = run("local_mutated");
+    assert_ne!(outcome.review.conclusion, ReviewConclusionV1::Pass);
 }

@@ -157,7 +157,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &done);
     done
 }
 
@@ -339,16 +339,26 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
     let draft = payload(
         &cas,
         document["payload"]["draft_id"].as_str().unwrap(),
-        "af/DocumentDraft@2",
+        "af/DocumentDraft@3",
     );
-    schemas::valid(&schemas::validator("document-draft-v2.json"), &draft);
+    schemas::valid(&schemas::validator("document-draft-v3.json"), &draft);
     let lines = std::fs::read_to_string(repo.join("README.md"))
         .unwrap()
         .lines()
         .count();
     assert_eq!(
-        draft["repository_citations"],
-        json!([{"path":"README.md"},{"path":"README.md","line":lines},{"path":"report.json"}])
+        draft["citations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "repository")
+            .map(|c| c["location"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"path":"README.md"}),
+            json!({"path":"README.md","line":lines}),
+            json!({"path":"report.json"})
+        ]
     );
     let report = document["payload"]["text"].as_str().unwrap();
     assert!(report.ends_with(&format!(
@@ -660,7 +670,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
     std::fs::write(worker_path, toml::to_string(&worker).unwrap()).unwrap();
     // The model verifier adds one Provider admission Attempt to the three-command starter.
     let pipeline_path = package(&repo, "builtin/report").join("pipeline.toml");
-    let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
     pipeline.max_attempts = 4;
     std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
@@ -691,7 +701,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let done = cli(&["task", "start", "--execute", "--file", "report.json"]);
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &done);
     assert_eq!(done["state"]["phase"], "finished", "{done}");
     assert_eq!(done["state"]["outcome"], "exhausted");
     assert_eq!(done["state"]["cause"], "budget");
@@ -1147,7 +1157,7 @@ fn a_task_kind_package_maps_another_business_kind_to_the_report_profile() {
     std::fs::create_dir_all(&kind).unwrap();
     std::fs::write(
         kind.join("kind.toml"),
-        "schema = \"af.task-kind/1\"\nname = \"fixture/research-kind\"\nversion = \"1.0.0\"\n\
+        "schema = \"af.task-kind/3\"\nname = \"fixture/research-kind\"\nversion = \"1.0.0\"\n\
          kind = \"research\"\nprofile = \"report\"\n",
     )
     .unwrap();

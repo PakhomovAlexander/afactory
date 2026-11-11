@@ -80,36 +80,55 @@ impl ChangeSetV1 {
     /// Validate the identity and path data needed to derive Report Scope without decoding the
     /// potentially large inline patch. Full artifact admission still uses [`Self::validate`].
     pub fn validate_scope_shape(&self) -> Result<(), String> {
-        if !crate::is_digest(&self.base_snapshot_id) || !crate::is_digest(&self.head_snapshot_id) {
-            return Err("ChangeSet@1 has an invalid Base or head Snapshot ID".into());
-        }
-        if self.git_version.trim().is_empty() || self.diff_policy_version.trim().is_empty() {
-            return Err("ChangeSet@1 requires Git build and diff-policy versions".into());
-        }
-        if self.changed_paths.windows(2).any(|pair| pair[0] >= pair[1])
-            || self.changed_paths.iter().any(|path| !valid_path(path))
+        validate_change_scope(
+            &self.base_snapshot_id,
+            &self.head_snapshot_id,
+            &self.changed_paths,
+            &self.renames,
+            &self.git_version,
+            &self.diff_policy_version,
+        )
+    }
+}
+
+/// Shared borrowed scope validation for inline Change Sets and readable Review Subjects.
+pub fn validate_change_scope(
+    base_snapshot_id: &str,
+    head_snapshot_id: &str,
+    changed_paths: &[String],
+    renames: &[PathRenameV1],
+    git_version: &str,
+    diff_policy_version: &str,
+) -> Result<(), String> {
+    if !crate::is_digest(base_snapshot_id) || !crate::is_digest(head_snapshot_id) {
+        return Err("ChangeSet@1 has an invalid Base or head Snapshot ID".into());
+    }
+    if git_version.trim().is_empty() || diff_policy_version.trim().is_empty() {
+        return Err("ChangeSet@1 requires Git build and diff-policy versions".into());
+    }
+    if changed_paths.windows(2).any(|pair| pair[0] >= pair[1])
+        || changed_paths.iter().any(|path| !valid_path(path))
+    {
+        return Err("ChangeSet@1 changed paths must be sorted, unique, and relative".into());
+    }
+    if renames.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("ChangeSet@1 renames must be sorted and unique".into());
+    }
+    for rename in renames {
+        if rename.similarity > 100
+            || rename.old_path == rename.new_path
+            || !valid_path(&rename.old_path)
+            || !valid_path(&rename.new_path)
+            || changed_paths.binary_search(&rename.old_path).is_err()
+            || changed_paths.binary_search(&rename.new_path).is_err()
         {
-            return Err("ChangeSet@1 changed paths must be sorted, unique, and relative".into());
-        }
-        if self.renames.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err("ChangeSet@1 renames must be sorted and unique".into());
-        }
-        for rename in &self.renames {
-            if rename.similarity > 100
-                || rename.old_path == rename.new_path
-                || !valid_path(&rename.old_path)
-                || !valid_path(&rename.new_path)
-                || self.changed_paths.binary_search(&rename.old_path).is_err()
-                || self.changed_paths.binary_search(&rename.new_path).is_err()
-            {
-                return Err(
+            return Err(
                     "ChangeSet@1 rename paths must be changed, distinct, relative, and at most 100% similar"
                         .into(),
                 );
-            }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 fn validate_canonical_base64(encoded: &str) -> Result<(), String> {

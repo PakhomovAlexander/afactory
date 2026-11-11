@@ -1199,7 +1199,7 @@ fn telemetry_detached_content_never_waits_for_the_consumer() {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    let payload = br#"{"schema":"af/TaskTransition@5","change":{"kind":"lease_renewed"}}"#;
+    let payload = br#"{"schema":"af/TaskTransition@6","change":{"kind":"lease_renewed"}}"#;
     let publish = |detached: bool| {
         let started = Instant::now();
         let media = Media::Kernel(Document::Record);
@@ -1276,7 +1276,7 @@ fn telemetry_republished_blob_outlives_a_sweep_while_its_reference_is_buffered()
     const HOUR: Duration = Duration::from_secs(3600);
     let temp = tempfile::tempdir().unwrap();
     let layout = Layout::new(temp.path());
-    let payload = br#"{"schema":"af/TaskTransition@5","change":{"kind":"lease_renewed"}}"#;
+    let payload = br#"{"schema":"af/TaskTransition@6","change":{"kind":"lease_renewed"}}"#;
     let spans = |writer: &Writer| {
         let command = writer
             .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())

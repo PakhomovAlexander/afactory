@@ -18,16 +18,16 @@ The review pipeline `af onboard` drafts when the machine has both a Claude and a
 ```text
                              +--> correctness  (Claude) --+
 your change --> your checks -+                            +--> verdict and findings
-                             +--> architecture (Codex)  --+
+                             +--> bugs         (Codex)  --+
 ```
 
 - **Read the plan before anything spends.** `af review plan` shows the checks, the reviewers,
-  the login each one runs under and the budgets, token-free and without a login.
+  the bindings and captured budgets without spending model tokens.
 - **Models review only what passes your checks.** The Gate, your project's own check command
   such as `make check`, runs before any reviewer; a check that could not run is not a pass.
 - **A budget on every Worker.** Each run of a Worker reserves its tokens before it starts, and
-  the tightest limit refuses by name; `af onboard` drafts 300,000 tokens per reviewer run and
-  1,000,000 per review. A limit stops new work, not a call already running, and the report shows
+  the tightest limit refuses by name; `af onboard` drafts 400,000 tokens per reviewer Attempt and
+  6,000,000 per Task. A limit stops new work, not a call already running, and the report shows
   what each run spent.
 - **The pipeline is shared like code.** af reads `.af/` only from a commit and pins every Worker
   and its own release by digest, so the whole team runs the same review and a change to it is a
@@ -89,22 +89,32 @@ are at any point, token-free.
    and writes nothing. Pass `--gate 'check=make check'` when the detected Gate is not the one
    you want.
 
-4. **Review a change.** Make one, plan its review, then run it with the `--provider` bindings
-   the onboard preview printed:
+4. **Review a change with a native Review Task.** Its file declares `kind: "review"` and a
+   native Review Pipeline pinned by `.af/task-catalog.toml`. Keep local Task files outside the
+   checkout; the token-free executable example is `fixtures/task-runtime/review`.
 
    ```sh
-   af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
-   af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
+   cp .af/task-packages/onboard/review-code/task.json ../review.json
+   af review plan --file ../review.json --base HEAD --uncommitted
+   af review resume review --confirm-plan PLAN_ID
+   af review ledger TASK_ID --json
+   af review report TASK_ID --json
    ```
 
-   PROVIDER is the ID of a Provider step 2 registered, such as `codex-main`: `af onboard` prints
-   the exact command, each reviewer bound to a Provider of the kind it runs, and `af help start`
-   prints it for the Providers registered on your machine.
+   `af review decision-context TASK --json` reads exact Finding and Demand identities.
+   `af review decide NEW --from TASK --file decisions.json` plans a zero-token human decision Task
+   for evidence, Demand dispositions, resolutions, challenges, policy time and grouping. Inspect and
+   approve its exact plan before execution;
+   [Review Tasks](docs/task-execution/review-task.md#human-review-decisions) describes its closed batch contract.
 
-   The plan is token-free and needs no login: it shows the Change Set, the route, the Gate and
-   the bindings the run needs. The run executes the Gate, then the reviewers, and prints the
-   verdict, the Findings and the tokens it spent. Name the review with `--campaign NAME` and
-   `af review report --campaign NAME` prints it again.
+   The plan records a common Task plan without beginning an Attempt. Run executes its declared
+   checks and Workers, then publishes native Review evidence and exact accounting. Inspect its
+   graph and history with `af review inspect TASK_ID`; resume it with the exact recorded plan
+   approval. Source/Base selection is independent of the trusted `--authority` commit.
+   The retired `--campaign`, `--policy-rev` and `.af/pipelines/review.toml` frontend does not run.
+   Default onboarding installs both standalone Review and implementation Task authority in the
+   common catalog. Give each new Task a fresh ID; the generated example uses `review`. See
+   [Review Tasks](docs/task-execution/review-task.md) for native light/heavy and continuation usage.
 
 Stuck at any step? One token-free command checks the machine and the repository and names the
 fix for whatever is missing:
@@ -115,19 +125,15 @@ af doctor
 
 ### What just happened
 
-`.af/` is the repository's review authority: the pipeline, the Worker packages (a prompt and a
-manifest each) and a lock that pins them and the af release that wrote them. af reads it only
-from a commit, so nothing you have not reviewed and committed ever governs a review; that is why
-`--policy-rev` names a revision. A review captures that revision and your change as immutable
-Snapshots, runs every Worker in a sandbox over them, and folds their typed results into a Ledger
-of Findings.
+`.af/task-catalog.toml` pins the Pipeline and Worker packages; `.af/code-policy.toml` declares
+required checks. Only reviewed committed authority governs a Task. Review captures its trusted
+`--authority` revision and selected source/Base as immutable Snapshots, runs Workers in private
+sandboxes, and atomically reduces complete results into canonical Finding Sets and history.
 
-A review is one Round by default. When it finds defects, fix them and run your Gate. That ends a
-light review: do not open another Campaign to check the fix. `--heavy`, for when a human asks
-for convergence review, lets the same Campaign review your fixes in further Rounds until the
-pipeline's convergence policy is met or its Round limit is reached
-([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). `af help concepts`
-explains Task, Worker, Attempt, Snapshot and the other words in two sentences each.
+Light Review defaults to one complete Round. Native heavy Review uses explicitly captured,
+bounded convergence policy; continuation and repair retain exact provenance and allowances.
+Missing reviewer results remain visible without becoming a partial authoritative Ledger.
+`af help concepts` explains the common Task, Worker, Attempt and Snapshot vocabulary.
 
 ### Updating and removing
 
@@ -138,8 +144,8 @@ af self uninstall        # --purge also removes config, state, Stores, completio
 ```
 
 `af storage` shows everything af keeps on this machine against its budget and
-`af storage prune --apply` reclaims it; `af review gc --older-than 14 --keep 5 --apply` removes
-old review Campaigns. More in [docs/self-management.md](docs/self-management.md).
+`af storage prune --apply` reclaims it; `af task gc --older-than 14 --keep 5 --apply` collects
+finished Task state. Generic registered Review Store accounting and retention remain supported. More in [docs/self-management.md](docs/self-management.md).
 
 ### A first Task
 
@@ -167,9 +173,9 @@ the guide.
 
 ## What it does
 
-- **Review Campaigns.** A Campaign owns one Ledger across its Rounds. A Finding keeps its
-  identity across reviewers and Rounds, and a Round closes only on a real verdict: a reviewer
-  that did not answer leaves it incomplete, never clean.
+- **Native Review Tasks.** `af review` uses common Task state and a canonical Ledger across
+  its Rounds. A Finding keeps its identity across reviewers and Rounds, and a Round closes
+  only on a real verdict: a reviewer that did not answer leaves it incomplete, never clean.
 - **Implementation Tasks.** `af task` runs a Task file through a Pipeline pinned in the
   committed Task catalog: an implementer edits a sandbox, read-only checks inspect the sealed
   result, an independent evaluator approves an exact Snapshot, and `af task deliver`, once you
@@ -179,9 +185,9 @@ the guide.
   Remote Check runs in your CI instead), and a Gate with no required checks does not pass.
   Every model Worker needs a named Provider from the machine-local registry, admitted by a
   short, charged preflight before anything is dispatched.
-- **Routing by changed paths.** `.af/af.toml` can send a docs-only change to a cheaper pipeline
-  and an oversized diff to one that splits it; the choice is token-free and pinned for the
-  Campaign's later Rounds.
+- **Explicit captured Review authority.** A Review Task selects a committed Pipeline package
+  from the common Task catalog. `--authority`, `--base` and `--candidate` select trusted
+  configuration and the reviewed trees independently; inspection shows the exact captured plan.
 - **Signed releases, pinned per project.** `.af/af.lock` pins the af release by archive digest,
   and inside the project `af` runs that release. One that is not installed yet is installed only
   when its archive matches both the lock and the release's signed `SHA256SUMS`, and only as
@@ -225,11 +231,11 @@ the guide.
 
 Rules for a coding agent, or a script, that drives af for someone:
 
-- **Plan first.** `af review plan …` and `af task plan --file …` are token-free. A review plan
-  needs no login; a Task plan with model Workers checks that their Providers are logged in.
+- **Plan first.** `af review plan …` and `af task plan --file …` are token-free. A native Review plan
+  uses the same Provider readiness and authority checks as every Task plan.
   Show the plan before anything spends.
 - **Read JSON, not prose.** Most commands take `--json` and print one document on stdout, with
-  progress on stderr; `af review report` and `af review campaigns` take `--format json`, and a
+  progress on stderr; Review inspection uses the same Task JSON documents, and a
   command's `--help` names its output flags. Branch on the document's `schema`: most refusals
   are `af/error@2`, while `af provider` commands and a refused Task plan print their own
   documents (`af help json`). `af telemetry tail --json` prints one object per line, and
@@ -251,8 +257,8 @@ Rules for a coding agent, or a script, that drives af for someone:
   exits 3 with the command for the human to run
   ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)).
 - **One review, then fix.** A review that finds defects exits non-zero by design: fix the
-  Findings, run the project's Gate, and stop. Do not start another Campaign to check your fix;
-  `--heavy` is for when a human asks for convergence review.
+  Findings, run the project's Gate, and stop. Continue the recorded Task for further work.
+  Human-requested convergence uses an explicitly bounded heavy native Pipeline, not `--heavy`.
 - **Ask the doctor.** `af doctor --json` prints one `af/doctor@3` document: every check with its
   status, a `fix` command where one command fixes it, and a `hint` otherwise.
 
@@ -285,20 +291,24 @@ tools a Gate calls, but not `gh` or its login for a Remote Check; it does not ru
 
 ```text
 .af/
-  README.md      the generated guide to reviewing a change in this repository
-  af.toml        project policy: minimum af release, default pipeline, routes
-  af.lock        the af release pin (an archive digest per target) and every Worker package digest
-  pipelines/     pipeline definitions; af onboard writes review.toml
-  workers/       Worker packages: <name>/reviewer.md (the prompt) and reviewer.toml (the manifest)
+  README.md         the generated native Review and Task guide
+  af.toml           project policy and bounded implementation Task defaults
+  af.lock           the af release pin, with archive digests per target
+  task-catalog.toml exact Pipeline and Worker package pins and Provider aliases
+  code-policy.toml  the project's acceptance checks
+  task-packages/    current pipeline.toml, worker.toml, schemas and instructions
 ```
 
-For model-driven implementation Tasks, `af onboard --tasks` previews a pinned Task
-catalog, code policy, Worker packages and `[task.defaults]` without spending tokens.
-Its Codex implementer uses GPT-6.1 Sol/high; independent judges use GPT-6.1 Terra/high.
-`af onboard --tasks --apply` creates review and Task authority together, or adds
-absent Task files to an existing review `.af/` and appends the defaults. It refuses an
-existing Task target or `[task]` table. Review and commit the resulting diff before
-`af task plan` can use it.
+Default onboarding installs standalone Review and implementation authority together. The
+Review example is `.af/task-packages/onboard/review-code/task.json`; copy it outside the
+checkout and give each new Task a fresh ID. Its required reviewers follow `--runner`.
+Implementation and evaluation use Codex with distinct declared models. `af onboard --tasks`
+retains the additive mode for an existing `.af/` without Task files or a `[task]` table; it
+refuses conflicting files and preserves unrelated authority bytes. After default onboarding,
+use plain `af onboard` to validate the existing catalog; `--tasks` refuses its existing `[task]`
+table even in preview mode. Review and commit the result before planning. `--refresh-lock` re-pins
+current local Task packages and preserves receipted release pin behavior; retired Campaign
+definitions are not read or migrated.
 
 Configuration merges, lowest to highest: built-in defaults, `/etc/af`, `~/.config/af`, every
 `.af/af.toml` above the repository, the repository's `.af/af.toml`, its gitignored
@@ -358,3 +368,7 @@ behind. See the [release decision](docs/adr/2026-11-09-review-release-contracts-
 
 Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md). Afactory is licensed under
 the Apache License, Version 2.0; see [`LICENSE`](LICENSE).
+
+Standalone native Review continuation uses `af review continue NEW_ID --from PRIOR_ID` to plan
+with the exact prior Review history and Base. Confirm and resume the new plan explicitly. It
+preserves original claims and both Tasks' accounting within the captured Review Round bound.

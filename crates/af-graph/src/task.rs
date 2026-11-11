@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use af_attempt::task_budget::{NodeAllowance, OwnedNodeAllowance, TaskBudget};
 use af_contracts::task::diff_subject::{DIFF_SUBJECT_PORT, DIFF_SUBJECT_V1};
 use af_contracts::task::pipeline::{
-    PipelineContractV1, PipelineDefinitionV1, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
+    PipelineContractV1, PipelineDefinition, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
     TaskOperatorV1, ValueRefV1, WorkerSlotV1,
 };
 use af_contracts::task::{ArtifactInputV1, TaskRevisionV1};
@@ -62,6 +62,49 @@ pub struct OperatorSignature {
         deserialize_with = "af_contracts::task::present_option"
     )]
     pub attempt: Option<OperatorAttemptCost>,
+}
+
+/// A native Integration selects exact named results of its closed Round, including shard
+/// results. Its candidates remain typed ports, never an opaque list or a rewritten DAG.
+pub fn review_integration_signature(
+    base: &OperatorSignature,
+    targets: &BTreeSet<String>,
+) -> Result<OperatorSignature, String> {
+    let candidate = base
+        .contract
+        .inputs
+        .values()
+        .find(|p| p.artifact_type == "af/CandidateTree@1")
+        .ok_or("Integration lacks its installed candidate contract")?
+        .clone();
+    let proposal = base
+        .contract
+        .inputs
+        .values()
+        .find(|p| p.artifact_type == af_contracts::task::native_review::TASK_REVIEW_PROPOSAL_V1)
+        .ok_or("Integration lacks its installed declaration contract")?
+        .clone();
+    let mut signature = base.clone();
+    signature
+        .contract
+        .inputs
+        .retain(|name, _| matches!(name.as_str(), "source" | "review"));
+    for target in targets {
+        signature
+            .contract
+            .inputs
+            .insert(format!("candidate_{target}"), candidate.clone());
+        signature
+            .contract
+            .inputs
+            .insert(format!("proposal_{target}"), proposal.clone());
+    }
+    signature.retains = BTreeMap::from([(
+        "result".into(),
+        signature.contract.inputs.keys().cloned().collect(),
+    )]);
+    signature.contract.validate()?;
+    Ok(signature)
 }
 
 /// Opt-in implementation evaluation retains one current executable-review receipt.
@@ -148,38 +191,16 @@ impl Address {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompiledOperator {
     RootInputs,
-    /// Installed captured post-Round operation; never constructible by a Pipeline.
-    ReviewIntegrationChecks {
-        sequence_policy_id: String,
-    },
     Select,
     /// Installed host bootstrap, never a Pipeline-supplied operation. All listed slots use
     /// the same captured Provider capability and share this admission Attempt.
     ProviderAdmission {
         bindings: BTreeSet<String>,
     },
-    /// Installed Campaign Review frontend only. A reusable Pipeline cannot invent canonical
-    /// Review operations or make these declarations through TaskOperatorV1.
-    ReviewDomain {
-        review_node: String,
-        operation: ReviewOperation,
-    },
     Primitive {
         operator: TaskOperatorV1,
         signature: String,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ReviewOperation {
-    Generation,
-    Gate,
-    Reviewer { slot: String },
-    Gather,
-    Ledger,
-    Slicer,
-    Scatter { slot: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,13 +266,13 @@ pub struct ExperimentPlannedChildV1 {
     pub allowance: NodeAllowance,
 }
 
-pub const EXPERIMENT_EXECUTION_PLAN_V1: &str = "af/ExperimentExecutionPlan@1";
+pub const EXPERIMENT_EXECUTION_PLAN_V3: &str = "af/ExperimentExecutionPlan@3";
 
 /// Runtime form of the complete child closure.  It is deliberately separate from CompiledTask:
 /// registering it never mutates the captured outer graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExperimentExecutionPlanV1 {
+pub struct ExperimentExecutionPlanV3 {
     pub schema: String,
     pub parent_node: String,
     pub children: BTreeMap<String, ExperimentPlannedChildV1>,
@@ -277,12 +298,6 @@ pub struct CompiledTask {
     pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub experimental_slots: BTreeMap<String, ExperimentalSlotTemplateV1>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "af_contracts::task::present_option"
-    )]
-    pub review_integration: Option<CompiledReviewIntegrationV1>,
     /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub token_scopes: BTreeMap<String, af_attempt::task_budget::TaskTokenScope>,
@@ -292,51 +307,204 @@ pub struct CompiledTask {
 /// need: the clock starts at admission, and the first reservation, which must still find the
 /// whole reserve ahead of it, comes a moment after.
 pub const FIT_WALL_START_MS: u64 = 5_000;
-/// The label of a non-structured graph whose slots declare no recovery allowance.
-pub const COMPILED_TASK_SCHEMA_V1: &str = "af.compiled-task/1";
-/// The label of a compiled graph with a slot that declares `recovery_attempts`, the shape an
-/// `af.pipeline/3` slot compiles to (ADR-0209).
-pub const COMPILED_TASK_SCHEMA_V2: &str = "af.compiled-task/2";
-/// The label of a graph containing installed structural acceptance.
-pub const COMPILED_TASK_SCHEMA_V3: &str = "af.compiled-task/3";
+/// The one current compiled graph format, independent of optional capabilities.
+pub const COMPILED_TASK_SCHEMA_V6: &str = "af.compiled-task/6";
 
 impl CompiledTask {
-    /// Structural acceptance takes version 3. Other graphs take version 2 when a slot
-    /// declares `recovery_attempts`, version 1 otherwise.
-    pub fn expected_schema(&self) -> &'static str {
-        if self.nodes.values().any(|n| {
-            matches!(
-                n.operator,
-                CompiledOperator::Primitive {
-                    operator: TaskOperatorV1::StructuredAccept {},
-                    ..
-                }
-            )
-        }) {
-            return COMPILED_TASK_SCHEMA_V3;
-        }
-        if self
-            .slots
-            .values()
-            .any(|slot| slot.recovery_attempts.is_some())
-        {
-            COMPILED_TASK_SCHEMA_V2
-        } else {
-            COMPILED_TASK_SCHEMA_V1
-        }
-    }
-
-    /// Refuse a graph labelled with another version than its shape has, so neither label is
-    /// read as the other (ADR-0145).
+    /// Refuse retired graph formats before replay or execution (ADR-0145).
     pub fn validate_schema(&self) -> Result<(), String> {
-        if self.schema != self.expected_schema() {
+        if self.schema != COMPILED_TASK_SCHEMA_V6 {
             return Err(format!(
                 "Compiled Task graph is labelled {:?} but its shape is {}",
-                self.schema,
-                self.expected_schema()
+                self.schema, COMPILED_TASK_SCHEMA_V6
             ));
         }
+        self.native_integration_successors()?;
         Ok(())
+    }
+
+    /// Every native promotion has an explicit full successor route into acceptance.
+    /// Actual publication is checked again against the admitted outputs at finish/replay.
+    pub fn native_integration_successors(
+        &self,
+    ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+        let is = |node: &CompiledNode, predicate: fn(&TaskOperatorV1) -> bool| matches!(&node.operator, CompiledOperator::Primitive { operator, .. } if predicate(operator));
+        let commits: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| is(n, |op| matches!(op, TaskOperatorV1::ReviewCommit {})))
+            .collect();
+        if commits.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        // Follow only verdict-bearing evidence and canonical Round history. A Select's
+        // condition, checks, source and unrelated dependencies grant no acceptance authority.
+        let mut reachable = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut pending: Vec<_> = self.coverage.values().cloned().collect();
+        // Verification may expose Review acceptance through its public Snapshot while goal
+        // evidence occupies coverage (the same composition used by runtime assessment).
+        if let Some(snapshot) = self.outputs.get("snapshot") {
+            pending.push(snapshot.clone());
+        }
+        while let Some(address) = pending.pop() {
+            if !seen.insert(address.clone()) {
+                continue;
+            }
+            for origin in self.evidence_origins(&address)? {
+                let node = &self.nodes[&origin.node];
+                if is(node, |op| matches!(op, TaskOperatorV1::ReviewAccept {})) {
+                    pending.extend(node.inputs.get("review").cloned());
+                } else if is(node, |op| {
+                    matches!(
+                        op,
+                        TaskOperatorV1::ReviewReduce {} | TaskOperatorV1::ReviewReduceShards { .. }
+                    )
+                }) && matches!(origin.port.as_str(), "result" | "history")
+                {
+                    reachable.insert(origin.node);
+                    pending.extend(node.inputs.get("history").cloned());
+                }
+            }
+        }
+        let mut routes = BTreeMap::new();
+        for (name, commit) in commits {
+            let mut successors = BTreeSet::new();
+            for (binder_name, binder) in &self.nodes {
+                if !is(binder, |op| {
+                    matches!(op, TaskOperatorV1::ReviewBindIntegrated {})
+                }) || binder.inputs.get("integration")
+                    != Some(&Address {
+                        node: name.clone(),
+                        port: "result".into(),
+                    })
+                    || binder.inputs.get("history")
+                        != Some(&Address {
+                            node: name.clone(),
+                            port: "history".into(),
+                        })
+                    || binder.inputs.get("source") != commit.inputs.get("source")
+                {
+                    continue;
+                }
+                for (reducer_name, reducer) in &self.nodes {
+                    if is(reducer, |op| {
+                        matches!(
+                            op,
+                            TaskOperatorV1::ReviewReduce {}
+                                | TaskOperatorV1::ReviewReduceShards { .. }
+                        )
+                    }) && reducer.inputs.get("subject")
+                        == Some(&Address {
+                            node: binder_name.clone(),
+                            port: "subject".into(),
+                        })
+                        && reducer.inputs.get("source") == binder.inputs.get("source")
+                        && reducer.inputs.get("history") == binder.inputs.get("history")
+                        && reachable.contains(reducer_name)
+                    {
+                        successors.insert(reducer_name.clone());
+                    }
+                }
+            }
+            if successors.is_empty() {
+                return Err(format!(
+                    "Native Integration {name} requires a full successor Round over its exact committed source and history in acceptance"
+                ));
+            }
+            // Canonical history alone cannot authorize going back to an earlier source.
+            // Refuse only routes whose ancestry is statically certain; Select alternatives
+            // and opaque external sources are checked against actual captured Snapshots later.
+            let mut ancestors = BTreeSet::new();
+            let mut source = commit.inputs.get("source").cloned();
+            let mut seen_sources = BTreeSet::new();
+            while let Some(address) = source {
+                if !seen_sources.insert(address.clone()) {
+                    break;
+                }
+                let node = self
+                    .nodes
+                    .get(&address.node)
+                    .ok_or("Unknown native Integration source producer")?;
+                source = if is(node, |op| {
+                    matches!(op, TaskOperatorV1::ReviewIntegrationSource {})
+                }) {
+                    node.inputs.get("source").cloned()
+                } else if is(node, |op| matches!(op, TaskOperatorV1::Seal {})) {
+                    node.inputs
+                        .get("candidate")
+                        .and_then(|candidate| self.nodes.get(&candidate.node))
+                        .and_then(|author| author.inputs.get("source"))
+                        .cloned()
+                } else {
+                    None
+                };
+                ancestors.extend(source.iter().cloned());
+            }
+            for reducer_name in &reachable {
+                if successors.contains(reducer_name) {
+                    continue;
+                }
+                let reducer = &self.nodes[reducer_name];
+                let Some(source) = reducer.inputs.get("source") else {
+                    continue;
+                };
+                if !self
+                    .evidence_origins(source)?
+                    .iter()
+                    .all(|a| ancestors.contains(a))
+                {
+                    continue;
+                }
+                let mut history = reducer
+                    .inputs
+                    .get("history")
+                    .cloned()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let mut seen_history = BTreeSet::new();
+                let mut certain = !history.is_empty();
+                while let Some(address) = history.pop() {
+                    if !seen_history.insert(address.clone()) {
+                        continue;
+                    }
+                    for origin in self.evidence_origins(&address)? {
+                        if successors.contains(&origin.node) && origin.port == "history" {
+                            continue;
+                        }
+                        let prior = &self.nodes[&origin.node];
+                        if origin.port != "history"
+                            || !is(prior, |op| {
+                                matches!(
+                                    op,
+                                    TaskOperatorV1::ReviewReduce {}
+                                        | TaskOperatorV1::ReviewReduceShards { .. }
+                                )
+                            })
+                        {
+                            certain = false;
+                            break;
+                        }
+                        if let Some(address) = prior.inputs.get("history") {
+                            history.push(address.clone());
+                        } else {
+                            certain = false;
+                            break;
+                        }
+                    }
+                    if !certain {
+                        break;
+                    }
+                }
+                if certain {
+                    return Err(format!(
+                        "Native Integration {name} has a later successor Round that returns to a pre-commit source"
+                    ));
+                }
+            }
+            routes.insert(name.clone(), successors);
+        }
+        Ok(routes)
     }
 
     /// The recovery allowance of every paid node whose slot declares one (ADR-0209); every
@@ -400,14 +568,6 @@ impl CompiledTask {
         found
     }
 
-    /// Review requires a complete predecessor barrier, including optional input producers.
-    /// Ordinary Task operators retain conditional/optional-input recovery semantics.
-    pub fn requires_successful_predecessors(&self, node: &str) -> bool {
-        self.nodes
-            .get(node)
-            .is_some_and(|node| matches!(node.operator, CompiledOperator::ReviewDomain { .. }))
-    }
-
     pub fn require_provider_admission(
         &mut self,
         bindings: &BTreeMap<String, af_contracts::task::plan::EffectiveWorkerBindingV3>,
@@ -459,12 +619,8 @@ impl CompiledTask {
                         operator:
                             TaskOperatorV1::Worker { slot }
                             | TaskOperatorV1::Verify { slot }
-                            | TaskOperatorV1::FixVerify { slot },
-                        ..
-                    }
-                    | CompiledOperator::ReviewDomain {
-                        operation:
-                            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
+                            | TaskOperatorV1::FixVerify { slot }
+                            | TaskOperatorV1::ReviewScatter { slot, .. },
                         ..
                     } => Some(slot),
                     _ => None,
@@ -907,12 +1063,23 @@ impl CompiledTask {
     ) -> Result<BTreeMap<String, OwnedNodeAllowance>, String> {
         self.owned_children.iter().map(|(owner, template)| {
             let parent = self.nodes.get(owner).ok_or("Owned template has no static owner")?;
+            let kernel_diff = template.contract.inputs.get(DIFF_SUBJECT_PORT);
+            if let Some(port) = kernel_diff {
+                if !matches!(template.operator, CompiledOperator::Primitive { operator: TaskOperatorV1::Verify { .. }, .. })
+                    || !matches!(parent.operator, CompiledOperator::Primitive { operator: TaskOperatorV1::ReviewScatter { .. }, .. })
+                    || port.artifact_type != DIFF_SUBJECT_V1 || !port.optional
+                    || port.cardinality != af_contracts::PortCardinality::One
+                    || port.affinity != (PortAffinityV1::SameAs { input: "source".into() })
+                    || template.inherited_inputs.contains_key(DIFF_SUBJECT_PORT)
+                    || parent.contract.inputs.contains_key(DIFF_SUBJECT_PORT)
+                { return Err("Owned Diff Subject must be a kernel-supplied child Verify input".into()); }
+            }
             if self.allowances.contains_key(owner) || template.max_children == 0
                 || template.allowance.verification_attempts != 0
                 || !parent.contract.inputs.contains_key(&template.source_input)
                 || !template.contract.inputs.contains_key(&template.item_input)
                 || template.inherited_inputs.contains_key(&template.item_input)
-                || template.contract.inputs.len() != template.inherited_inputs.len() + 1
+                || template.contract.inputs.len() != template.inherited_inputs.len() + 1 + usize::from(kernel_diff.is_some())
                 || template.inherited_inputs.iter().any(|(child, parent_port)| {
                     template.contract.inputs.get(child) != parent.contract.inputs.get(parent_port)
                         || !parent.contract.inputs.contains_key(parent_port)
@@ -1065,7 +1232,7 @@ impl CompiledTask {
 }
 
 pub struct CompileContext<'a> {
-    pub pipelines: &'a BTreeMap<String, PipelineDefinitionV1>,
+    pub pipelines: &'a BTreeMap<String, PipelineDefinition>,
     pub signatures: &'a BTreeMap<String, OperatorSignature>,
     /// Explicit captured local settings keyed by physical qualified slot, never model input.
     pub slot_workers: BTreeMap<String, String>,
@@ -1192,7 +1359,7 @@ fn compile_structure_mode(
         retained: BTreeMap::new(),
         resource_refusals: Vec::new(),
         graph: CompiledTask {
-            schema: "af.compiled-task/1".into(),
+            schema: "af.compiled-task/6".into(),
             nodes: BTreeMap::new(),
             order: Vec::new(),
             inputs: task.inputs.clone(),
@@ -1205,7 +1372,6 @@ fn compile_structure_mode(
             allowances: BTreeMap::new(),
             owned_children: BTreeMap::new(),
             experimental_slots: BTreeMap::new(),
-            review_integration: None,
             token_scopes: BTreeMap::new(),
         },
     };
@@ -1348,8 +1514,8 @@ fn compile_structure_mode(
     compiler.graph.outputs = outputs;
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
-    compiler.graph.schema = compiler.graph.expected_schema().into();
     require_acceptance_evaluator(&compiler.graph, root)?;
+    compiler.graph.native_integration_successors()?;
     Ok((compiler.graph, compiler.resource_refusals))
 }
 
@@ -2012,7 +2178,8 @@ impl Compiler<'_> {
                         let (signature_name, operator) = match operator {
                             TaskOperatorV1::Worker { slot }
                             | TaskOperatorV1::Verify { slot }
-                            | TaskOperatorV1::FixVerify { slot } => {
+                            | TaskOperatorV1::FixVerify { slot }
+                            | TaskOperatorV1::ReviewScatter { slot, .. } => {
                                 let effective = &slots[slot];
                                 let declaration = &self.graph.slots[effective];
                                 let key = format!("worker/{}", declaration.worker);
@@ -2039,6 +2206,12 @@ impl Compiler<'_> {
                                     TaskOperatorV1::Verify { .. } => TaskOperatorV1::Verify {
                                         slot: effective.clone(),
                                     },
+                                    TaskOperatorV1::ReviewScatter { max_fanout, .. } => {
+                                        TaskOperatorV1::ReviewScatter {
+                                            slot: effective.clone(),
+                                            max_fanout: *max_fanout,
+                                        }
+                                    }
                                     _ => TaskOperatorV1::FixVerify {
                                         slot: effective.clone(),
                                     },
@@ -2055,11 +2228,90 @@ impl Compiler<'_> {
                                     candidate_slot: slots[candidate_slot].clone(),
                                 },
                             ),
+                            TaskOperatorV1::ReviewReduce {}
+                                if bound.get("decisions").is_some_and(|address| self.port(address).is_ok_and(|port| port.artifact_type == af_contracts::task::review_decisions::REVIEW_DECISIONS_V1)) =>
+                            {
+                                ("operator/review-decisions".into(), operator.clone())
+                            }
                             other => (format!("operator/{}", operator_name(other)?), other.clone()),
                         };
                         let composed = match &operator {
+                            TaskOperatorV1::ReviewIntegrate { reviewers, .. } => {
+                                Some(review_integration_signature(
+                                    self.context
+                                        .signatures
+                                        .get(&signature_name)
+                                        .ok_or("No installed native Integration")?,
+                                    reviewers,
+                                )?)
+                            }
                             TaskOperatorV1::Measure { measures } => {
                                 Some(self.measure_signature(&qualified, measures)?)
+                            }
+                            TaskOperatorV1::ReviewScatter { .. } => {
+                                let child = self
+                                    .context
+                                    .signatures
+                                    .get(&signature_name)
+                                    .ok_or("Review Scatter has no captured Worker signature")?;
+                                diff_subject_port(
+                                    &qualified,
+                                    &TaskOperatorV1::Verify {
+                                        slot: String::new(),
+                                    },
+                                    child,
+                                    &bound,
+                                )?;
+                                let mut parent = child.clone();
+                                parent.contract.inputs.remove(DIFF_SUBJECT_PORT);
+                                let slice = parent.contract.inputs.remove("slice").ok_or(
+                                    "Review Scatter Worker requires an explicit typed slice input",
+                                )?;
+                                if slice.artifact_type != af_contracts::contract::REVIEW_SLICE_V1
+                                    || slice.optional
+                                    || slice.cardinality != af_contracts::PortCardinality::One
+                                    || child.contract.outputs.len() != 1
+                                    || child.contract.outputs.get("result").is_none_or(|p| {
+                                        p.artifact_type
+                                            != af_contracts::contract::REVIEWER_RESULT_V2
+                                            || p.optional
+                                    })
+                                    || !child.roles.contains("review")
+                                {
+                                    return Err("Review Scatter requires a Review Worker with one typed result and Slice".into());
+                                }
+                                let mut slices = slice;
+                                slices.artifact_type = af_contracts::contract::SLICE_SET_V1.into();
+                                parent.contract.inputs.insert("slices".into(), slices);
+                                let mut output = child.contract.outputs["result"].clone();
+                                output.artifact_type = af_contracts::contract::SHARD_SET_V1.into();
+                                parent.contract.outputs =
+                                    BTreeMap::from([("result".into(), output)]);
+                                parent.attempt = None;
+                                parent.outcome_port = None;
+                                parent.retains = BTreeMap::from([(
+                                    "result".into(),
+                                    parent.contract.inputs.keys().cloned().collect(),
+                                )]);
+                                Some(parent)
+                            }
+                            TaskOperatorV1::ReviewReduceShards { reviewers, .. } => {
+                                let mut signature = self
+                                    .context
+                                    .signatures
+                                    .get("operator/review-reduce")
+                                    .ok_or("Sharded Review has no installed reducer")?
+                                    .clone();
+                                for name in reviewers {
+                                    let port = signature
+                                        .contract
+                                        .inputs
+                                        .get_mut(name)
+                                        .ok_or("Sharded Review names an unknown reviewer")?;
+                                    port.artifact_type =
+                                        af_contracts::contract::SHARD_SET_V1.into();
+                                }
+                                Some(signature)
                             }
                             _ => None,
                         };
@@ -2083,7 +2335,7 @@ impl Compiler<'_> {
                         {
                             return Err(format!(
                                 "{signature_name} declares a Project Brief root default; only \
-                                 an af.pipeline/2 root port names one"
+                                 a Pipeline root port names one"
                             ));
                         }
                         if signature.retains.iter().any(|(output, inputs)| {
@@ -2211,12 +2463,13 @@ impl Compiler<'_> {
                                 "Repair acceptance must bind its reserved fix verifier".into()
                             );
                         }
-                        if matches!(operator, TaskOperatorV1::ReviewReduce {})
-                            && signature.contract.inputs.keys().any(|input| {
-                                !bound.contains_key(input)
-                                    && !signature.unbound_allowed.contains(input)
-                            })
-                        {
+                        if matches!(
+                            operator,
+                            TaskOperatorV1::ReviewReduce {}
+                                | TaskOperatorV1::ReviewReduceShards { .. }
+                        ) && signature.contract.inputs.keys().any(|input| {
+                            !bound.contains_key(input) && !signature.unbound_allowed.contains(input)
+                        }) {
                             return Err(format!(
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
                             ));
@@ -2313,6 +2566,46 @@ impl Compiler<'_> {
                                     } else {
                                         0
                                     },
+                                },
+                            );
+                        }
+                        if let TaskOperatorV1::ReviewScatter { slot, max_fanout } = &operator {
+                            let child = self
+                                .context
+                                .signatures
+                                .get(&signature_name)
+                                .ok_or("Missing Scatter Worker")?;
+                            let cost = child
+                                .attempt
+                                .as_ref()
+                                .ok_or("Review shard has no bounded Attempt allowance")?;
+                            let declaration = &self.graph.slots[slot];
+                            let mut inherited_inputs: BTreeMap<String, String> = child
+                                .contract
+                                .inputs
+                                .keys()
+                                .map(|n| (n.clone(), n.clone()))
+                                .collect();
+                            inherited_inputs.remove("slice");
+                            inherited_inputs.remove(DIFF_SUBJECT_PORT);
+                            self.graph.owned_children.insert(
+                                qualified.clone(),
+                                OwnedChildTemplateV1 {
+                                    operator: CompiledOperator::Primitive {
+                                        operator: TaskOperatorV1::Verify { slot: slot.clone() },
+                                        signature: signature_name.clone(),
+                                    },
+                                    contract: child.contract.clone(),
+                                    allowance: NodeAllowance {
+                                        tokens_per_attempt: cost.tokens,
+                                        wall_ms_per_attempt: cost.wall_ms,
+                                        max_attempts: declaration.max_attempts,
+                                        verification_attempts: 0,
+                                    },
+                                    max_children: *max_fanout,
+                                    source_input: "slices".into(),
+                                    item_input: "slice".into(),
+                                    inherited_inputs,
                                 },
                             );
                         }
@@ -2502,6 +2795,13 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),
         TaskOperatorV1::ReviewBind {} => Ok("review-bind"),
+        TaskOperatorV1::ReviewBindIntegrated {} => Ok("review-bind-integrated"),
+        TaskOperatorV1::ReviewIntegrate { .. } => Ok("review-integrate"),
+        TaskOperatorV1::ReviewCommit {} => Ok("review-commit"),
+        TaskOperatorV1::ReviewIntegrationSource {} => Ok("review-integration-source"),
+        TaskOperatorV1::ReviewSlice { .. } => Ok("review-slice"),
+        TaskOperatorV1::ReviewScatter { .. } => Ok("review-scatter"),
+        TaskOperatorV1::ReviewReduceShards { .. } => Ok("review-reduce-shards"),
         TaskOperatorV1::ReviewReduce {} => Ok("review-reduce"),
         TaskOperatorV1::ReviewAccept {} => Ok("review-accept"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
@@ -2590,81 +2890,9 @@ fn outcome_name(outcome: ReceiptOutcomeV1) -> &'static str {
     }
 }
 
-/// One immutable installed sequence outside the Round DAG. Its allowance exists before
-/// activation; a protected Store phase supplies the only admissible invocation input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CompiledReviewIntegrationV1 {
-    pub node: String,
-    pub sequence_policy_id: String,
-    pub allowance: NodeAllowance,
-}
-impl CompiledReviewIntegrationV1 {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.node.len() > 4096
-            || !self.node.split('.').all(af_contracts::task::is_name)
-            || !af_contracts::is_digest(&self.sequence_policy_id)
-            || self.allowance.tokens_per_attempt != 0
-            || self.allowance.max_attempts != 1
-            || self.allowance.verification_attempts != 0
-            || self.allowance.wall_ms_per_attempt == 0
-        {
-            return Err("Integration sequence requires an exact node, policy and one zero-token bounded Attempt".into());
-        }
-        Ok(())
-    }
-    pub fn definition(&self) -> CompiledNode {
-        let port = |kind: &str, affinity| PipelinePortV1 {
-            artifact_type: kind.into(),
-            cardinality: af_contracts::PortCardinality::One,
-            optional: false,
-            affinity,
-            root_default: None,
-            brief: None,
-            covers: BTreeSet::new(),
-        };
-        CompiledNode {
-            operator: CompiledOperator::ReviewIntegrationChecks {
-                sequence_policy_id: self.sequence_policy_id.clone(),
-            },
-            contract: PipelineContractV1 {
-                inputs: BTreeMap::from([(
-                    "phase".into(),
-                    port(
-                        af_contracts::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
-                        PortAffinityV1::Unbound {},
-                    ),
-                )]),
-                outputs: BTreeMap::from([(
-                    "checks".into(),
-                    port(
-                        af_contracts::contract::INTEGRATION_CHECKS_V1,
-                        PortAffinityV1::SameAs {
-                            input: "phase".into(),
-                        },
-                    ),
-                )]),
-            },
-            inputs: BTreeMap::new(),
-            conditions: Vec::new(),
-        }
-    }
-}
 impl CompiledTask {
     pub fn execution_allowances(&self) -> Result<BTreeMap<String, NodeAllowance>, String> {
-        let mut allowances = self.allowances.clone();
-        if let Some(phase) = &self.review_integration {
-            phase.validate()?;
-            if self.nodes.contains_key(&phase.node)
-                || self.owned_children.contains_key(&phase.node)
-                || allowances
-                    .insert(phase.node.clone(), phase.allowance.clone())
-                    .is_some()
-            {
-                return Err("Dormant Integration node collides with the Round graph".into());
-            }
-        }
-        Ok(allowances)
+        Ok(self.allowances.clone())
     }
 }
 
@@ -2707,7 +2935,7 @@ mod downstream_tests {
                 .collect(),
         };
         let graph = CompiledTask {
-            schema: "af.compiled-task/1".into(),
+            schema: "af.compiled-task/6".into(),
             nodes: BTreeMap::from([
                 ("root".into(), node(&[], &[])),
                 ("check".into(), node(&[("source", "root")], &[])),
@@ -2727,7 +2955,6 @@ mod downstream_tests {
             allowances: BTreeMap::new(),
             owned_children: BTreeMap::new(),
             experimental_slots: BTreeMap::new(),
-            review_integration: None,
             token_scopes: BTreeMap::new(),
         };
         assert_eq!(
@@ -2795,40 +3022,39 @@ mod recovery_tests {
             )]),
             owned_children: BTreeMap::new(),
             experimental_slots: BTreeMap::new(),
-            review_integration: None,
             token_scopes: BTreeMap::new(),
         };
-        graph.schema = graph.expected_schema().into();
+        graph.schema = COMPILED_TASK_SCHEMA_V6.into();
         graph
     }
 
-    /// Outside structured graphs, a slot recovery allowance takes `af.compiled-task/2`,
-    /// otherwise `af.compiled-task/1`; a graph labelled otherwise than its shape is refused
-    /// (ADR-0209).
     #[test]
-    fn a_slot_recovery_allowance_labels_the_graph_version_2_and_reaches_its_node() {
-        let plain = graph(None);
-        assert_eq!(plain.schema, COMPILED_TASK_SCHEMA_V1);
-        assert!(plain.recovery_allowances().is_empty());
-        plain.validate_schema().unwrap();
-        let declared = graph(Some(3));
-        assert_eq!(declared.schema, COMPILED_TASK_SCHEMA_V2);
-        assert_eq!(
-            declared.recovery_allowances(),
-            BTreeMap::from([("root.nodes.implement".into(), 3)])
-        );
-        declared.validate_schema().unwrap();
-        for (mut graph, label) in [
-            (plain, COMPILED_TASK_SCHEMA_V2),
-            (declared, COMPILED_TASK_SCHEMA_V1),
-        ] {
-            graph.schema = label.into();
-            assert!(
+    fn current_graph_preserves_recovery_defaults_and_refuses_all_retired_formats() {
+        for allowance in [None, Some(0), Some(3), Some(8)] {
+            let graph = graph(allowance);
+            assert_eq!(graph.schema, COMPILED_TASK_SCHEMA_V6);
+            graph.validate_schema().unwrap();
+            let replay: CompiledTask =
+                serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
+            assert_eq!(graph, replay);
+            assert_eq!(
                 graph
-                    .validate_schema()
-                    .unwrap_err()
-                    .contains("but its shape is")
+                    .recovery_allowances()
+                    .get("root.nodes.implement")
+                    .copied(),
+                allowance
             );
+            for retired in [
+                "af.compiled-task/1",
+                "af.compiled-task/2",
+                "af.compiled-task/3",
+                "af.compiled-task/4",
+                "af.compiled-task/5",
+            ] {
+                let mut old = graph.clone();
+                old.schema = retired.into();
+                assert!(old.validate_schema().is_err());
+            }
         }
     }
 }

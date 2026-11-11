@@ -31,7 +31,7 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
 fn valid_inspection(value: &Value) {
     static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
     schemas::valid(
-        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v17.json")),
+        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v20.json")),
         value,
     );
 }
@@ -51,10 +51,15 @@ fn install_optimizer_catalog(repo: &Path) {
         ("builtin/optimization-economics", "optimization"),
         ("builtin/optimization-analysis-kind", "optimization-kind"),
     ] {
+        let package = af_pipeline_config::task::catalog::TaskPlanCompiler::local_package(
+            &destination.join(directory),
+        )
+        .unwrap();
+        assert_eq!(package.name, name);
         catalog["packages"][name] = json!({
-            "version":"1.0.0",
+            "version":package.version,
             "path":format!(".af/optimization/{directory}"),
-            "digest":af_pipeline_config::lock::package_digest(name,&destination.join(directory)).unwrap()
+            "digest":package.digest
         });
     }
     if !catalog["kinds"].is_object() {
@@ -106,10 +111,15 @@ fn install_candidate_optimizer_catalog(repo: &Path) -> minisign::KeyPair {
         ("builtin/optimization-baseline", "optimization-baseline"),
         ("builtin/optimization-candidate", "optimization-candidate"),
     ] {
+        let package = af_pipeline_config::task::catalog::TaskPlanCompiler::local_package(
+            &destination.join(directory),
+        )
+        .unwrap();
+        assert_eq!(package.name, name);
         catalog["packages"][name] = json!({
-            "version":"1.0.0",
+            "version":package.version,
             "path":format!(".af/optimization/{directory}"),
-            "digest":af_pipeline_config::lock::package_digest(name,&destination.join(directory)).unwrap()
+            "digest":package.digest
         });
     }
     catalog["kinds"]["optimize"] = json!("builtin/optimization-candidate-kind");
@@ -1229,7 +1239,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         state,
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
-    assert_eq!(adoption_projection["schema"], "af/task-inspection@17");
+    assert_eq!(adoption_projection["schema"], "af/task-inspection@20");
     valid_inspection(&adoption_projection);
     let projected = adoption_projection["adoption_observations"]
         .as_array()
@@ -1742,7 +1752,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
 
     let waiting = af(&repo, &state, &["--experiment", "--execute"]);
-    assert_eq!(waiting["schema"], "af/task-inspection@17");
+    assert_eq!(waiting["schema"], "af/task-inspection@20");
     valid_inspection(&waiting);
     assert_eq!(waiting["attempts"], 0);
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
@@ -1917,6 +1927,32 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
         .iter()
         .find(|entry| entry["kind"] == "registered")
         .unwrap();
+    assert_eq!(registered["artifact_type"], "af/ExperimentExecutionPlan@3");
+    assert_eq!(
+        registered["record"]["schema"],
+        "af.experiment-execution-plan/3"
+    );
+    let plan_schema = schemas::validator("experiment-execution-plan-v3.json");
+    schemas::valid(&plan_schema, &registered["record"]);
+    let mut retired = registered["record"].clone();
+    retired["schema"] = json!("af.experiment-execution-plan/1");
+    assert!(!plan_schema.is_valid(&retired));
+    let mut old_inspection = completed.clone();
+    old_inspection["experiments"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["kind"] == "registered")
+        .unwrap()["artifact_type"] = json!("af/ExperimentExecutionPlan@1");
+    assert!(!schemas::validator("task-inspection-v20.json").is_valid(&old_inspection));
+    let mut open = registered["record"].clone();
+    open["children"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()["definition"]["operator"]["unadmitted_authority"] = json!(true);
+    assert!(!plan_schema.is_valid(&open));
     for child in registered["record"]["children"]
         .as_object()
         .unwrap()
@@ -2182,7 +2218,7 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
         String::from_utf8_lossy(&task.stderr)
     );
     let receipt: Value = serde_json::from_slice(&task.stdout).unwrap();
-    assert_eq!(receipt["schema"], "af/task-inspection@17");
+    assert_eq!(receipt["schema"], "af/task-inspection@20");
     valid_inspection(&receipt);
     let runtime = receipt["runtime_observations"].as_array().unwrap();
     assert!(runtime.iter().any(|entry| {

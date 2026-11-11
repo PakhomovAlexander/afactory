@@ -2,7 +2,7 @@
 //! subscriber the Task runtime's spans reach, and the segment's seal at the end.
 //!
 //! Only `af task run`, `af task start --execute`, `af review run`, `af provider doctor` and
-//! `af self optimize --execute` record; every other command opens no telemetry directory. At
+//! `af self optimize --execute`, native Review resume and executing continuation/decision Tasks record; every other command opens no telemetry directory. At
 //! `off` nothing is started. A telemetry-only failure is one line on stderr and the command's
 //! outcome is its own (ADR-0153 clause 7).
 

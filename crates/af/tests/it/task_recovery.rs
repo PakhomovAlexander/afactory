@@ -31,7 +31,7 @@ struct Fixture {
 /// until `resume` exists, and keeps its slot's single Attempt. A command Worker reserves no
 /// model tokens, so what an abandoned Attempt is charged against a nonzero reservation is
 /// proven by the Store's own tests (ADR-0209); here every reservation must still come back.
-/// `recovery` declares the slot's `recovery_attempts`, which makes the pipeline `af.pipeline/3`.
+/// `recovery` declares the slot's `recovery_attempts`, within the current `af.pipeline/6` format.
 fn fixture(recovery: Option<u32>) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
@@ -56,12 +56,7 @@ fn fixture(recovery: Option<u32>) -> Fixture {
         assert_eq!(text.matches(slot).count(), 1);
         std::fs::write(
             &pipeline,
-            text.replacen(
-                "schema = \"af.pipeline/1\"",
-                "schema = \"af.pipeline/3\"",
-                1,
-            )
-            .replacen(slot, &format!("{slot}recovery_attempts = {count}\n"), 1),
+            text.replacen(slot, &format!("{slot}recovery_attempts = {count}\n"), 1),
         )
         .unwrap();
     }
@@ -274,8 +269,8 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
 
     // Snapshot after the kill: abandoned by a lost writer, and what continues it.
     let shown = abandoned_inspection(&f);
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
-    assert_eq!(shown["schema"], "af/task-inspection@17");
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
+    assert_eq!(shown["schema"], "af/task-inspection@20");
     assert_eq!(
         shown["phase"]["kind"], "running",
         "the recorded phase stays"
@@ -493,7 +488,7 @@ fn a_node_past_its_recovery_allowance_cannot_continue_and_says_why_on_line_one()
             "af task: cannot continue Task {TASK}: node {NODE} lost its writer 1 time and was \
              interrupted 1 time (recovery allowance 1); fix: start it again with `{start}` (the \
              Task file it was started from), or allow more with `[slots.implementer] \
-             recovery_attempts` in its pipeline (af.pipeline/3)"
+             recovery_attempts` in its pipeline (af.pipeline/6)"
         )
     );
     // Under --json the same refusal is typed: its cause, node, count, allowance and the command.
@@ -526,8 +521,8 @@ fn a_node_past_its_recovery_allowance_cannot_continue_and_says_why_on_line_one()
     assert!(execution.pending_attempts().is_empty());
 }
 
-/// A slot that declares `recovery_attempts = 2` (`af.pipeline/3`) compiles to an
-/// `af.compiled-task/2` graph and recovers twice.
+/// A slot that declares `recovery_attempts = 2` (`af.pipeline/6`) compiles to an
+/// `af.compiled-task/6` graph and recovers twice.
 #[test]
 fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows() {
     let f = fixture(Some(2));
@@ -536,10 +531,10 @@ fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows
             .output()
             .unwrap(),
     );
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &planned);
-    assert_eq!(planned["graph"]["schema"], "af.compiled-task/2");
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &planned);
+    assert_eq!(planned["graph"]["schema"], "af.compiled-task/6");
     schemas::valid(
-        &schemas::validator("compiled-task-v2.json"),
+        &schemas::validator("compiled-task-v6.json"),
         &planned["graph"],
     );
     let slot = planned["graph"]["slots"]

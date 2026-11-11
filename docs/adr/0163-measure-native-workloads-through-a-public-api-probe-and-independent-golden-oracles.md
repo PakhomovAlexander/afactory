@@ -1,6 +1,6 @@
 # ADR-0163: Measure native workloads through a public-API probe and independent golden oracles
 
-**Status:** accepted (2026-10-19); decisions 1, 3 and 6 tightened by
+**Status:** accepted (2026-10-19); benchmark event mix partially superseded by [Task observation](2026-11-10-reuse-validated-artifacts-for-task-observation.md); decisions 1, 3 and 6 tightened by
 [ADR-0164](0164-judge-only-declared-probe-requests-against-a-reference-checked-golden.md);
 scratch cleanup in decisions 1 and 6 superseded by
 [ADR-0165](0165-own-probe-scratch-in-the-driver-and-take-lease-expiry-only-from-the-store.md);
@@ -11,9 +11,6 @@ Package p2 of the accepted
 contracts of [ADR-0162](0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md).
 Build and overlay orchestration (p3a), paired execution, CLI fixtures and health (p3b) are later
 packages and are not decided here.
-Benchmark event-mix requirements are superseded by the
-[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
-ordered-history and complete-output oracle requirements remain.
 
 ## Context
 

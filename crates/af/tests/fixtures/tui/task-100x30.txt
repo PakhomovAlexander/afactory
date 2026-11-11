@@ -14,7 +14,7 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
         pagination-c~  100% |TIME  wall  <t>  checks  <t>  dependency prep -
     v failed/ (1)           |
         pagination-u~  100% |HISTORY  (af task show)
-  v campaigns/              |     0  opened                              ########
+                            |     0  opened                              ########
                             |     1  plan_proposed                       ########
                             |     2  plan_admitted                       ########
                             |     4  execution_recorded invocation       ########

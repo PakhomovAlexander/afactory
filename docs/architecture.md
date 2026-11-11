@@ -86,6 +86,15 @@ The common `models::tests` and `models::diagnostic::tests` preserve validation a
 Claude's `hint::tests` and `task_model_fallback` tests preserve native outcome diagnostics and
 hint extraction. See the [ownership decision](adr/2026-11-06-share-model-validation-outside-provider-adapters.md).
 
+Onboarding emits current Task catalog packages, including a standalone native Review Task file.
+Onboarding validation and machine doctor share `task_commands::onboarding`: bounded no-follow
+package capture, digest checks and the actual Task authority compiler. They neither read retired
+Review Definitions nor dispatch Workers. Archived Proposal export replays current-format Task
+log prefixes; the current authoritative head follows validated durable Integration commit records.
+The Tasks pane and `af review ledger` select the complete canonical Finding Set, including
+unresolved earlier Findings. Ledger JSON additionally exposes the original Report envelopes;
+`af task findings` remains the separate current-Round report view.
+
 Within `af`, `project_policy` parses `.af/af.toml`; `af_project` owns Projects, their Stores,
 registered Workspaces, identity-bound creation/removal, Surveys and `af_project::brief`.
 The library's `Host` injects state roots, default Task Store paths, path resolution, machine Store
@@ -104,9 +113,12 @@ and effective-policy dependencies. See the
 
 `task_commands` captures authority and handles the Task CLI lifecycle; `task_delivery` inspects
 results and delivers verified candidates. The actual `TaskRuntime` remains in `af_runtime::task`.
-`review_accounting` joins Review evidence to Task accounting, and `self_management` handles the
-installed releases. Existing Project, Brief, Task delivery and accounting tests exercise these
-boundaries under their corresponding modules.
+`af_store::store::task::review_integration::native_review_conclusion` joins native Review evidence
+with the exact common Task log prefix and cumulative accounting; `af_runtime::task::review` assembles
+and validates the result. `self_management` handles installed releases. The native
+`task_review::native::native_conclusions_freeze_exact_wide_usage_and_late_usage_fences_the_old_result`
+regression proves the accounting join, including late usage and cold replay. Project, Brief and
+Task delivery tests exercise their corresponding boundaries.
 
 `af_scenario` owns Scenario/Ant contracts, pins, journal replay, scheduling, roadmap admission
 and execution orchestration. Its `Host` interface injects native Task validation, planning,
@@ -160,7 +172,7 @@ provenance and experiment isolation; the existing live container probes own cont
 | `finding-set-v1.json` | one Subject-bound canonical Finding view at a ledger barrier |
 | `source-snapshot-v1.json` | content identity, never a branch; committed, synthetic-worktree or derived |
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
-| `run-event-v1.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
+| `run-event-v3.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
 | `check-result-v1.json` | one execution of one check, per attempt — `not_run` is its own status; a remote result names its evidence instead of a command |
 | `remote-check-evidence-v1.json` | every remote fact one Remote Check's decision used: refused, published or observed (ADR-0140) |
 | `reviewer-result-v2.json` | what one reviewer attempt returned: reports, demands, and one disposition per assigned prior Finding |
@@ -173,9 +185,9 @@ Three things are deliberately unrepresentable rather than merely discouraged: a 
 status field, a best-effort copy is not a `Capture` variant, and a patch proposal cannot name
 zero claims.
 
-`RunEvent`'s type vocabulary is closed by design but is not enumerated yet. It gets fixed with
-the event store, when each event's payload is defined; enumerating it from prose now would make
-the schema claim a completeness it does not have.
+`RunEvent@3` enumerates the closed current type vocabulary. Native Review authority is admitted
+through checked Task publication; a generic Store append cannot manufacture a canonical Review
+Round. Domain Finding and Demand records retain their shared canonical identities.
 
 A `ReviewerResult@2` reviewer answers with flat `reports`; each one is converted to
 `FindingReport@1` on its own and must satisfy it before any ingest admits it. `fix` is required,
@@ -212,7 +224,7 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
 
-Every Campaign records the canonical identity policy, `report-derived@1`: a selected Report
+Native Review retains the canonical identity policy, `report-derived@1`: a selected Report
 artifact creates one path-independent Finding unless an explicit relation or exact trusted
 occurrence key attaches it. Each barrier publishes an immutable, Subject-bound `FindingSet@1`.
 The Ledger reads a Report only as an enveloped `FindingReport@1` whose locations are canonical
@@ -221,10 +233,15 @@ blocks convergence.
 
 ### Replay and convergence
 
-`crates/af-store/tests/it/crash_replay.rs` kills the process at each boundary of a canonical
-Round: the projection after reopening equals the projection before, a crash between publishing
-an artifact and appending its event leaves collectible garbage rather than a dangling reference,
-and a refused append does not consume a sequence.
+Current recovery belongs to `af-store/src/store/task/{journal,execution,lease}.rs` and the common
+Task runtime. `af-runtime::it task_runtime::publication::domain_publication_recovers_after_restart_without_another_paid_attempt`
+and `domain_invocation_publication_recovers_before_any_attempt_or_context` reopen the Store at
+native publication boundaries and prove recovery without another execution. The native
+`task_review::native::{native_integration_recovers_published_commit_without_repeating_proposals_or_checks,native_scatter_recovers_published_shards_without_another_child_attempt}`
+regressions retain Review-specific commit/shard recovery. Store
+`store::task::tests::wide_usage::settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery`
+preserves exact charge across recovery; lease and reservation tests fence stale writers and
+refuse invalid appends without consuming authority.
 
 `crates/af-store/tests/it/ledger_convergence.rs` pins how the Ledger fold moves one Finding: a
 fix that did not hold reopens, a higher-severity re-report escalates in place and is news, a
@@ -280,11 +297,13 @@ The same premise holds wherever af runs git against a checkout, not only in capt
 browser that bare `af` opens and the Task file advice run git through
 `af_source_git::git::isolated_command`, the cleared environment and full `-c` override set
 capture uses. The browser marks drift by comparing `ls-tree`/`cat-file` blobs with working-tree
-bytes itself, never through `git diff` or `git hash-object`. Review selector suggestions compare
-committed and worktree captures through that same isolated path; their default-branch metadata
-reads never inspect worktree bytes. `crates/af/tests/it/tui.rs` and
-`crates/af/tests/it/review_plan_refusals.rs` pin these paths with hostile filters and an
-fsmonitor configured in `.git/config`. A tree that names a path git itself refuses (`.git` in
+bytes itself, never through `git diff` or `git hash-object`. Native Review resolves `--authority`, Base and candidate independently in
+`af/src/task_commands.rs`, using the same isolated committed/worktree capture paths. The source
+adapter's `af-source-git::it hostile_git_config::{filtering_subcommands_are_refused_outright,tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration}`
+regressions prove the Git boundary. `af::it tui::the_browser_runs_nothing_a_hostile_git_config_names`
+covers browser reads with hostile filters and fsmonitor. Native selector safety is also exercised
+by `task_file::native_review_preflight_commands_inspect_real_task_documents_and_refuse_empty_diff`:
+planning and execution refuse an empty Diff before admitting a Task and name corrected selectors. A tree that names a path git itself refuses (`.git` in
 any ASCII case or NTFS/HFS+ spelling, a symlinked
 `.gitmodules`) is refused at capture, materialization and Task binding through one predicate,
 `git_refuses_path`. Otherwise its `.git/config` would configure every `git` run in the sandbox.
@@ -338,40 +357,33 @@ later ones become duplicates. Ingesting in completion order would therefore let 
 who owns a finding, and a replay would not reproduce the run it replays. So results are admitted
 in canonical order (by node ID), never in arrival order.
 
-The pipeline's gather node is that barrier. It runs only once every reviewer has finished, and
-`ReviewDomainState::run_gather` (`crates/af-runtime/src/review_domain.rs`) flushes the
-buffered reviewer events in node order; Ledger reduction then ingests the gathered results sorted
-by reviewer node ID. The Task-host domain suite
-(`crates/af-runtime/tests/it/task_campaign_review/host/domain.rs`) checks the outcome: a Finding
-that two reviewers report lists its sources in canonical order, not completion order.
+Native `ReviewReduce` is that barrier. It validates all configured reviewer inputs against
+one exact Subject, check set and prior history, then reduces them in canonical source order
+through the shared Ledger. Missing siblings can be shown as recorded results but publish no
+partial authoritative Ledger. `crates/af/tests/it/task_review.rs` exercises clean,
+changes-requested, missing and unavailable reviewer cases through the native runtime. Reader-backed
+native Review telemetry assertions live in that permitted CLI consumer; runtime tests link no
+telemetry reader. Human Review decisions are deterministic Tasks of this same reducer, with exact
+root inputs and no Workers, source changes or Integration. The decision signature replays the
+selected complete Round, applies canonical domain transitions and publishes checked history through
+the common Task lease. [Human Review decisions](task-execution/review-task.md#human-review-decisions)
+describes approval, evidence and policy bounds.
 
 ### Seeing exactly what a Worker receives
 
-`af review render --node NODE`, with the same selectors as `plan`, prints the exact bytes that
-Worker would receive on a first Attempt — the digest-pinned package instructions, the output
-contract, and the Diff Subject Change Set for a model Worker; the typed `ReviewerInputs` document
-for a command Worker — without creating Campaign state, calling a Provider, running a Gate, or
-spending a token. The Task host composes what it dispatches with the same functions, down to the
-focus heading, so the two cannot drift. Campaign-bound data is listed as omitted rather than
-invented: the Attempt authority section, prior Findings, and the Gate decision exist only inside a
-Campaign. A model Worker's header also prints the reply schema its dispatch passes beside the
-bytes: the Reviewer Result schema inline after `--json-schema` for Claude Code, its strict
-projection as the `--output-schema` file for Codex
-([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)); a
-command Worker has none. `--json` returns `af/review-render@2` (`schemas/review-render-v2.json`)
-with the bytes, the context manifest, that `reply_schema`, and the omissions; without it the
-header goes to stderr and the raw input to stdout, so `> prompt.md` is exact.
+`af review inspect TASK_ID --json` exposes the captured Task plan, exact invocation identities,
+context manifests and selected outputs. Worker context is bound to the reserved Attempt and its
+declared inputs; an inspection cannot manufacture Attempt authority. The old `review render`
+frontend is retired. Model and command Workers use common Task request/reply contracts and the
+same bounded runtime context admission.
 
 ### Command Workers
 
-A package whose runner is not `claude` or `codex` is a deterministic command Worker. It runs
-inside the materialized sandbox with that sandbox as its working directory, a cleared environment
-(`PATH`, `LC_ALL=C`, and `HOME`, the XDG directories and `TMPDIR` inside a temporary runtime
-directory of its own Attempt), the typed `ReviewerInputs` JSON on stdin, and its stdout parsed as a
-`ReviewerResult`. The sandbox is a fresh materialization of the Snapshot manifest and has no
-`.git`: nothing in it can read history, config, or hooks from the reviewed repository. Such a
-Worker needs no Provider binding and spends no tokens, which is what makes a small deterministic
-check the cheapest node in a pipeline.
+A command Worker runs in its materialized sandbox with the declared environment and a typed
+`af.worker-request/1` on stdin. Its `af.worker-reply/1` must satisfy every declared output port's
+schema and provenance rules. The common runtime seals the sandbox before admitting candidate
+outputs. Command Review Workers use the same canonical flat Reviewer Result as model Workers
+and need no model Provider; the native Review fixtures exercise this path without model tokens.
 
 ## Sandboxes, and what this provider is not
 
@@ -401,37 +413,40 @@ inherited environment, `--pids-limit 4096`, `--cap-drop=ALL`, `--security-opt=no
 and `--init`. `--env-file /dev/null` keeps the host's environment out; it does not clear the
 `ENV` the image itself declares, which is part of the pinned image. The image retains its own
 pinned `PATH`; only host-independent check variables (`LC_ALL=C`, `TZ=UTC`, and declared
-additions) are reintroduced. Memory and CPU have no ceiling unless the `[gate]` binding names
-one: `memory = "8g"` becomes `--memory 8g --memory-swap 8g` (no swap beyond it) and
-`cpus = "4"` becomes `--cpus 4`. Set both for an untrusted candidate, a little below what the
-host can spare, so a memory bomb or a busy loop ends inside the container rather than on the
-host. The workload runs as
-the caller's numeric UID:GID so writable-bind output remains usable and removable by the host.
-Each execution also has a unique runtime name: if the supervised client fails or times out,
-Afactory runs a bounded `rm -f` before sealing. An unconfirmed cleanup aborts the Gate and reports
-the preserved sandbox path rather than sealing or deleting the possibly live bind.
-`make review-kernel-container-probes` and its dedicated CI job carry the provider probes, live
-timeout/reap probe, ownership assertion, and a v3 container Gate on the Task host; they stay
-outside `make check` because a missing daemon must be a hard failure there, never a skip
-disguised as success.
+additions) are reintroduced. The shared provider retains explicit memory/CPU limits for callers
+that supply them and its process ceiling for every container check. Worker development retains
+its separately admitted memory, CPU, process and aggregate disk limits. Contained native checks
+use the pinned `DEFAULT_IMAGE`, private runtime tmpfs directories and the same process supervision
+and cleanup. Their wall is bounded by the existing check/Attempt deadline. The workload runs as
+the caller's numeric UID:GID. Each execution has a unique runtime name: if the supervised client
+fails or times out, bounded `rm -f` must confirm cleanup before sealing. Unconfirmed cleanup fails
+the Attempt and preserves its sandbox rather than sealing or deleting a possibly live bind.
 
-This repository's local Task gate selects functional, e2e and uix through
-`scripts/verify.sh --profile fast`, as every pull request does by default (ADR-0239); the full
-check remains in `make check`, main validation and unbound releases.
+`make review-kernel-container-probes` retains the sandbox escape and timeout/reap probes and runs
+`af-runtime::it task_review_execute_checks::a_container_check_executes_on_the_native_task_host`.
+The native selector uses nextest's `--no-tests fail`; a retired exact name cannot silently pass.
+These ignored live tests are explicitly executed when the e2e class is selected, including
+`scripts/verify.sh --profile fast` and `make check`. A missing daemon is a hard failure.
+The [containment record](security/containment-probes.md) distinguishes provider evidence from the
+native host execution that must actually run.
 
-The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
-Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can
-satisfy `required_isolation = "container"` only after a successful runtime probe;
-`trusted_local` can satisfy only an explicit `none`
-requirement. Gate checks then execute through that admitted provider in an independent
-`ephemeral-write` COW clone. Their writes are discarded and reviewer clones still start from the
-pristine template. Each resolution attempt is durable before its Gate receipt; same-Round retry
-uses the latest observation while the append-only log retains failed admissions. `RunReport@6`
-records that latest provider, pinned image when applicable, required and provided isolation,
-mode, and admission result for every Gate node. Format v2 keeps its captured local, read-only
-behavior. `GateDecision@1` also references a bounded mutation summary plus the
-CAS digest of the complete v3 Gate mutation set, so permitted disposable writes remain observable
-after the clone is discarded without becoming graph output.
+Current Task Pipeline `/6` checks route through `CodeTaskDomain::checks`, including checks that
+`ReviewTaskDomain` delegates to it. With `require_container = true`, the shared provider probes
+runtime availability inside the Attempt deadline, materializes the Snapshot with its actual
+isolation and passes ordinary `admit(Policy::safe(), ...)` before any check command. Unavailable
+containment fails closed; a local directory cannot assert Container isolation. `CheckRunner`
+still resolves typed arguments and the shared provider executes the resolved command. A contained
+check receives private container HOME, TMPDIR, scratch and cache paths, never host runtime paths.
+`[warm]` and native host-toolchain mappings remain incompatible with required containment.
+
+`af/TaskCheckReceipt@2` binds exact plan, Snapshot, captured policy and named check results.
+The additional `af/TaskCheckContainment@1` evidence, retained with the check Attempt, references
+that receipt and records admitted Container isolation, the pinned image and observed execution
+(`completed`, `refused` or `not_started`). Completion means captured process output, not a pass.
+Failed commands and source mutation remain failed checks; the source is sealed against its
+captured Manifest. Current check policy does not restore the retired Pipeline v2/v3 Gate binding
+or `RunReport` representation. Worker execution retains its own admitted environment policy;
+check containment never grants a Worker permission to run locally.
 
 ### Sealing
 
@@ -441,260 +456,55 @@ makes the auto-apply rule checkable at all: a proposal must equal the kernel-com
 unreverted debug probe fails it rather than riding along. Kind is part of that identity, so
 swapping a file for a symlink to the same bytes counts as a change.
 
-## The pipeline graph
+## The native Pipeline graph
 
-A pipeline is a DAG of nodes with **named typed ports**, not a list of stages. Everything that
-can be known before running is checked at planning time — a cycle, a dangling dependency, an edge
-to a port a node does not declare, or an input with nothing wired to it. The graph never starts
-half-valid.
+Every Pipeline is the closed `af.pipeline/6` definition, with typed public inputs/outputs,
+explicit node outputs, exact Worker bindings and captured policy. Compilation emits
+`af.compiled-task/6` in `af/CompiledTask@4`. Native Review operations are ordinary primitive
+operators; `review_domain`, `review_integration_checks` and the optional Campaign phase graph
+are refused. The captured engine is `af.task-engine/4`; inspection is
+`af/task-inspection@20`, recorded-plan inspection `af/task-plan-inspection@6`, and Experimental
+execution plans `af.experiment-execution-plan/3` in `af/ExperimentExecutionPlan@3`.
+These changed closed shapes have current writers, schemas and explicit retired-format refusal.
+Pipeline `/6`, TaskKind `/3` and unchanged referenced subshapes keep their existing identities.
 
-That last one is the interesting rejection. A reviewer declaring a `prior_findings` input and
-wired to nothing would run happily and review an empty input with full confidence. The shell
-harness had exactly this shape: prior claims reached a reviewer by being rendered into a prompt,
-so what it actually received existed only inside a subagent's context and could not be
-reconstructed from any artifact afterwards. Here an unwired input is a planning error. Every
-reviewer and Scatter also declares one typed `FindingSet@1` input wired from Generation's exact
-Finding Set: its `ReviewerResult@2` must disposition every prior Finding it was assigned, so a
-reviewer without that wiring is refused when the pipeline loads, not mid-Round after its Gate.
+`af review plan --file FILE` captures one Task and records its proposed plan without an Attempt.
+`af review run --file FILE` executes through the common scheduler. Its Authority Snapshot,
+source candidate and optional Base are selected independently; a Diff must be nonempty before
+checks, Provider admission or Workers. Continuation and repair use the same recorded native
+Task lifecycle and allowances. See [Review Tasks](task-execution/review-task.md) for exact ports
+and [the facade](task-execution/campaign-review.md) for commands and JSON contracts.
 
-**Gating is planned, then compiled.** A `gated_by` gate reaches through the graph: planning
-resolves every gate a node depends on, directly or through an ancestor, so a pipeline declares it
-once. The Review compiler turns each of those gates into a Task condition. A node behind a gate
-that did not pass is *suppressed* — as an unselected branch, or as missing its upstream when its
-predecessors were suppressed first — never dispatched, and never able to leave an artifact behind.
-Suppressed nodes stay in the report, because an absent node reads as "nothing to report", and
-`complete()` is false unless every node actually ran.
+## One Review, end to end
 
-A failed reviewer is a fact about the review, not a reason to lose the rest of it — its siblings
-still run — but nothing may consume an output that does not exist, so its dependents are
-suppressed. Plan order is a function of the pipeline alone (ties break by node ID), so two runs
-on two machines produce the same report, including which nodes were suppressed and why.
+A native Review binds its source/Base and prior history into an exact Subject and per-reviewer
+assignments, runs required checks and independent Workers, and atomically reduces complete
+results into canonical Finding and Demand Sets plus immutable history. Missing siblings yield
+Incomplete, never an authoritative partial Ledger. Typed native Scatter records every owned
+child and shard outcome and requires whole-Subject closeout and semantic closure.
 
-The scheduler owns *when* and *whether*; the caller owns *what*. That split is why these
-properties are proved with a recording stub — no models, no checks, no filesystem.
-
-## One review, end to end
-
-`af-runtime` executes the common Task lifecycle: admission, reservations, context binding,
-dispatch, recovery, output acceptance and accounting. It composes the lower libraries under
-captured authority and hosts Review with its canonical Findings and closure rules. Configuration
-loading stays in `af-pipeline-config`, while typed dependency planning stays in `af-graph`.
-
-```text
-  capture ── snapshot ──> gate (admitted, ephemeral-write clone) ──decision──┐
-                                                                              v
-              architecture ┐   performance ┐   (each in its own ephemeral-write sandbox, gated)
-                           └───────────────┴──> gather ──> ledger ──> convergence
-```
-
-The Task-host suites (`crates/af-runtime/tests/it/task_campaign_review/host/`) run it through the
-common Task runtime — real sandboxes, real check and reviewer processes. The only stub is the
-reviewers' *judgement*, which is a `command` runner emitting fixed findings: the one thing a test
-cannot supply honestly, and the one thing the kernel deliberately knows nothing about.
-
-Four properties, end to end:
-
-- **A full review lands in the ledger.** Two reviewers report the same occurrence at different
-  severities; the ledger holds one finding with both reports attached, at the higher severity,
-  sourced in canonical order.
-- **A failing gate means no reviewer ever runs.** Not "their output is discarded": the failed
-  `CheckCompleted@1` and the blocking Gate Decision are recorded once, no reviewer Attempt
-  begins, and the ledger is empty. A change that does not build produces no reviewer artifacts.
-- **A reopened host replays, it does not re-run.** A second host on the same Task selects the
-  same recorded outputs, and the Gate's execution binding and cache receipts stay recorded once.
-- **Two runs of the same review agree.** Two independent runs in separate stores publish the
-  same Finding Set rows, Finding identity included.
-
-## Defining a pipeline
-
-A review is described in a file rather than constructed in code —
-[`.af/pipelines/review.toml`](../.af/pipelines/review.toml) is this repository's own, and a test
-asserts it loads through its lock and Worker registry, because a checked-in example that does
-not parse reads as a working reference.
-
-Everything is validated before a node runs, and every failure is fatal: a pipeline that is 90%
-valid is not 90% of a review. Unknown fields are refused, so `gated_bye` is an error rather than
-a setting that silently does nothing. A reviewer node with no runner is refused — it would be a
-node that always reports nothing, which is indistinguishable from a reviewer that found nothing.
-The graph's own validation reaches through unchanged, so an edge to a nonexistent port or an
-input nothing feeds fails at load.
-
-Argument provenance defaults to `literal`, because a project writing its own check command is
-trusted; `untrusted` is the classification you have to type. The safe default is the one that
-cannot be reached by forgetting.
-
-New pipelines make Gate execution authority explicit:
-
-```toml
-version = 3
-
-[gate]
-provider = "trusted_local"       # use "container" for a safe pipeline
-required_isolation = "none"      # safe pipelines require "container"
-mode = "ephemeral-write"
-caches = ["cargo"]                # optional symbolic request; never a host path
-
-# A container binding instead uses:
-# provider = "container"
-# image = "registry.example/project-ci@sha256:<64 lowercase hex>"
-# required_isolation = "container"
-# memory = "8g"                  # optional: --memory and --memory-swap; no limit when absent
-# cpus = "4"                     # optional: --cpus; no limit when absent
-```
-
-The binding is part of the captured pipeline artifact, so a later Round cannot silently change
-its provider, image, or isolation policy. `af onboard` emits the explicit trusted-local form for
-its documented first-party workflow; upgrading that policy to safe containment is a reviewed
-edit with a project-toolchain image, never a generic moving tag.
-
-A cache request is resolved twice: project authority names only `cargo`, while machine-local
-operator policy selects the source and hard limits. The default policy path is
-`$XDG_CONFIG_HOME/af/caches.toml` (falling back to
-`$HOME/.config/af/caches.toml`); `AF_CACHE_POLICY_FILE` may select another absolute
-file. Its v1 shape is:
-
-```toml
-version = 1
-
-[cache.cargo]
-source = "/absolute/curated-cargo-cache"
-max_bytes = 4294967296
-max_files = 250000
-max_copy_bytes = 536870912
-```
-
-Pipeline format v4 also makes every reviewer credential boundary explicit. Formats v2 and v3 keep
-their captured behavior and cannot acquire this claim retroactively:
-
-```toml
-version = 4
-
-# The v3 [gate] binding remains required.
-
-[[nodes]]
-id = "correctness"
-kind = "reviewer"
-package = "correctness"
-# Typed `inputs` and `outputs` as for any reviewer; only the credential boundary is shown.
-execution = { credential_mode = "trusted_unsafe" }
-```
-
-`credential_free` binds a reviewer that needs no credential. `trusted_unsafe` is the explicit
-class for a runner that can read reusable credentials, and it cannot authorize `auto_apply`. The
-current Codex and Claude CLI adapters report `trusted_unsafe`. Before any reviewer dispatch, a
-reviewer whose captured credential mode differs from the one its adapter reports is refused. Any
-other `credential_mode`, or an `operations` list, fails at pipeline load.
-
-The initial source is deliberately narrower than a complete Cargo home: it may contain package
-archives under `registry/cache/` and sparse-index data under `registry/index/`. Unpacked
-`registry/src/`, Cargo Git dependency caches, configuration, credential-shaped paths, symlinks,
-special files, excess bytes or filesystem entries, and an over-limit cross-filesystem copy are
-refused before check dispatch. Afactory walks through no-follow directory descriptors, retains
-each admitted file descriptor across materialization, and bounds every read to its preflight size
-plus one change-detection byte. macOS reflinks use the retained descriptor directly; before Gate
-dispatch, Afactory removes source-controlled extended attributes, named forks, and ACLs from the
-materialized file and applies fixed safe modes. It snapshots the admitted bytes under
-`.af-cache/cargo`, sets `CARGO_HOME` plus `CARGO_NET_OFFLINE=true`, and removes the private cache
-tree before sealing.
-
-`RunReport@6` records either one machine-path-free success receipt or an explicit failure for
-every requested Gate/cache pair. Its receipt references a versioned `CacheManifest@1` containing
-the sorted percent-encoded paths, content digests, and exact file sizes. Report publication
-reverifies every referenced manifest and cross-checks it against the durable receipt, including
-for incomplete reports. Machine policy is resolved only for an unresolved Gate, so replay of a
-completed Gate does not depend on the original policy file or source still existing. A missing
-mapping is an error, never an implicit read of `~/.cargo`; `max_files` counts directories and
-files so directory-only trees are bounded. Durable cache failures are typed and path-free;
-machine-local operator detail is emitted only to stderr.
-
-**Format note.** Pipeline definitions are TOML. The reason is dependency risk: `serde_yaml` is
-archived and its forks are uneven, while `toml` is the ecosystem default for Rust tooling
-configuration. The loader is serde types, so another syntax
-would be a different `from_str`, not a different model. Recorded rather than quietly done.
-
-## Routing by changed paths
-
-One pipeline for every change makes a docs-only commit pay for the full review graph. `.af/af.toml`
-may declare routes, and the kernel selects the pipeline from the canonical changed paths — both
-sides of every rename included — before anything is pinned or dispatched:
-
-```toml
-[routing]
-unmatched = "default"   # or "refuse": no covering route is an error, never a silent fallback
-ambiguous = "refuse"    # or "first": several covering routes pick the first declared
-oversized = "scatter"   # the pipeline to select when a Worker's input alone exhausts its cap
-
-[[routes]]
-name = "docs"
-paths = ["docs/**", "**/*.md"]
-pipeline = "docs"
-```
-
-A route matches when every changed path matches one of its patterns. Patterns are anchored at
-the repository root and match by segment: `*` within one segment, `?` one character, `**` any
-number of segments; paths are matched in their canonical encoded form, so a non-UTF-8 byte is
-`%FF` on both sides. Selection is deterministic and token-free; `af review plan` prints it
-(`route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`, also `route` in
-`af/review-plan@1`), Campaign open prints the same line, and the Campaign Manifest pins the chosen
-pipeline, so later Rounds never re-route. An explicit `--pipeline` always wins and is reported as
-`explicit`; a whole-tree Subject has no changed paths and follows the `unmatched` policy. Every
-pipeline a route or the oversized policy names is authority: `af onboard --refresh-lock` pins them
-all and `af onboard` refuses a missing or unpinned target.
-
-The oversized policy is the bounded strategy for a Diff whose first-Attempt input exhausts a
-Worker's cap: instead of refusing, plan and open switch to the named pipeline — typically a
-Scatter pipeline whose shards each fit, with Complete coverage and a required closeout so no path
-is dropped — measure it the same way, and report the switch (`replaced`). If that pipeline does
-not fit either, the run still refuses before admission. Nothing is ever truncated.
+Sealed proposals name exact original Reviewer Results, Report indices and their whole candidate
+diff. Automatic Integration composes selected, disjoint candidates, refuses protected paths,
+runs checks on the derived head and publishes a native commit with claims still pending full
+successor review. Acceptance must actually select the exact committed head's complete successor
+Review and its verdict; an earlier passing Round or static graph reachability cannot substitute.
+Without a commit, ordinary admitted source transport retains its original provenance and does
+not accidentally become authoritative Review evidence.
 
 ## Attempts and budgets
 
-An attempt is one execution of one node, and the process behind it does not necessarily stop when
-the kernel stops waiting. A reviewer whose attempt was abandoned can still deliver a perfectly
-plausible finding, and nothing about that finding looks wrong.
+Common Task Attempts reserve tokens, Attempts and wall before dispatch. Failed, abandoned,
+fenced and late work retains its exact charge; an overrun closes later admission rather than
+forgetting spend. Retries use durable admitted feedback and retain their original bounds.
+No Review-specific allowance, scheduler or Campaign-to-Task host remains. Native Review
+conclusions bind exact cumulative accounting and a checked Task log prefix.
 
-So an abandoned attempt is **fenced**, and anything arriving under a revoked epoch is
-*quarantined*: recorded, charged, and unable to reach the FindingSet, convergence or the report.
-Recorded rather than discarded, because "a fenced attempt delivered late" is something an
-operator needs to see. Charged rather than forgiven, because a fenced attempt is not a free
-retry — a test shows a cap bounding a retry loop precisely because the wasted attempts count.
-
-Dispatching a retry fences its predecessor without an explicit timeout, so a superseded attempt
-cannot win by finishing first.
-
-Budgets **reserve before dispatch**, never account afterwards: a dispatch that cannot reserve does
-not happen, so a retry storm or a wide scatter cannot overrun a cap by the width of one attempt —
-and one attempt on a frontier model at maximum reasoning is not a rounding error. Scopes nest
-(named token scopes, such as one node's or one fan-out's cap, inside the run), the tightest one
-refuses, and the error names itself, because a cap that refuses anonymously is one nobody can raise
-correctly. A reservation is all-or-nothing across scopes; an overrun commits rather than being
-refused, since the work is already paid for, and then closes the gate on the next dispatch.
-
-A Worker node may declare its own Attempt cap — `budget = { attempt = 150000 }` on the
-`[[nodes]]` entry — and its dispatch then reserves that amount instead of `[budgets].attempt`,
-at its own node scope as well as the run's. A cheap deterministic or comment Worker stops paying
-for the deep correctness Worker's headroom. The cap refines `[budgets]` and requires it, cannot
-exceed the run cap, and on a Scatter is each shard's reservation. `af review plan` prints every
-static Worker's reservation and the largest amount they can hold at once (`reservations`,
-`max_simultaneous_reservation` in `af/review-plan@1`); admission refuses before any Gate or
-Worker when the run cap cannot admit that sum; `af review report` shows the cap that bounded
-each Attempt. Pipelines without node caps behave exactly as before.
-
-Before a Round admits any Provider, the kernel composes each model Worker's first-Attempt input
-with the same function `af review render` uses and measures it against that Worker's cap. An input
-that alone exhausts the cap — no room left for any output — is refused there, with nothing
-dispatched or charged, and the refusal names the bytes, the tokens, the cap, and the bounded
-alternatives: a narrower Base-to-candidate range, a larger `budget.attempt`, or a Scatter node so
-each shard fits. Nothing is ever truncated silently. `af review plan` reports the same numbers per
-Worker (`input_bytes`, `input_tokens`, `fits`, and `inputs_fit`) so the refusal is visible before a
-Campaign exists.
-
-How long an attempt took, and what its Provider reported per token kind, is recorded in a
-**sidecar** table beside the event stream (`attempt_wall` in the same `events.sqlite`). Nothing in
-identity, replay, the Ledger, or convergence reads it — the stream stays byte-for-byte
-deterministic — while `af review report`, `campaigns`, and `ledger` do: all three show the
-Campaign's wall-clock, and `af review report` also shows each Task Attempt's wall-clock and
-Provider usage. An absent row means not recorded, never zero.
+`TaskTransition@6` is the current closed transition family; `af/TaskRunReport@3` reports the
+whole graph and carries no Campaign phase selector. `af/task-event@2` streams those current
+records. Canonical Ledger, Report, Finding and `review.kernel/*` identities remain shared.
+Read `af review inspect ID` for per-Attempt details and `af review report ID` for exact native
+Task accounting. Generic storage registration, accounting, retention, leases and removal safety
+are preserved; directory/category names containing Campaign do not authorize an old executor.
 
 ## Telemetry
 
@@ -746,6 +556,18 @@ only), `process.exit_code`, `process.signal`, `af.rusage.user_ms`, `af.rusage.sy
 `af.rusage.max_rss_bytes`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`. A figure the
 platform did not deliver is absent, never zero.
 
+## Native Task Review capabilities
+
+Native Review uses `task/review.rs` over the common Task scheduler and Store. Its Integration and
+Scatter modules own typed domain operations, sharing canonical Ledger reduction and the existing
+owned-child registry and Attempt accounting. `TaskReviewIntegration@1` binds disjoint sealed
+candidates to their original canonical claims; ordinary Task checks precede `TaskReviewCommit@1`,
+whose claims await full discovery verification. `TaskReviewConclusion@1` binds final native Review
+to one complete Task log prefix and exact cumulative charge. Native conclusion validation in `review_integration.rs` reads no Campaign Store or Campaign
+prefix. The Campaign phase bridge, captured Review host and separate Campaign browser pane are
+removed. The [capability record](design/current-contracts-and-task-review.md) identifies native
+regressions, current Worker validation, completed consolidation and exact validation boundaries.
+
 ## Internal naming and protected external names
 
 Workspace library packages and directories use responsibility names in kebab-case (`af-runtime`,
@@ -761,3 +583,9 @@ and raw captured historical evidence retain the names of the code they describe.
 and navigation use current internal names. Worker instruction
 references are active code navigation: a change to their bytes requires the corresponding package
 version and native `af catalog digest` pin refresh, without changing Worker authority or budgets.
+
+Native Review's Store contains Task transitions and typed native Round outputs. The shared
+canonical Ledger is initialized from the Task Subject, with no Campaign manifest or bootstrap
+event. `review.kernel/RunEvent@3` refuses retired event identities. Standalone continuation
+validates each prior Round against its original captured plan and graph, then binds exact
+canonical history and Base into a new Task plan under the existing history and Round bounds.

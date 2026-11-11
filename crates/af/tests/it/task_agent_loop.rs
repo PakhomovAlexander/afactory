@@ -101,7 +101,7 @@ fn pin_and_commit(repo: &Path, message: &str) {
 
 /// A read-only verification Pipeline of kind `verification`: the gate and the evaluator over
 /// the bound source, whose Snapshot is the source itself.
-const VERIFY_PIPELINE: &str = r#"schema = "af.pipeline/1"
+const VERIFY_PIPELINE: &str = r#"schema = "af.pipeline/6"
 name = "fixture/verify"
 version = "1.0.0"
 max_attempts = 2
@@ -264,7 +264,7 @@ fn reviewed(root: &Path) -> (PathBuf, PathBuf) {
     std::fs::create_dir_all(&kind).unwrap();
     std::fs::write(
         kind.join("kind.toml"),
-        "schema = \"af.task-kind/1\"\nname = \"fixture/verification-kind\"\nversion = \
+        "schema = \"af.task-kind/3\"\nname = \"fixture/verification-kind\"\nversion = \
          \"1.0.0\"\nkind = \"verification\"\nprofile = \"implementation\"\n",
     )
     .unwrap();
@@ -1307,17 +1307,17 @@ fn bounded_follower(
     }
 }
 
-/// The lines of `af task events`, each one `af/task-event@1` document, its events numbered
+/// The lines of `af task events`, each one `af/task-event@2` document, its events numbered
 /// without a gap from `first` and at most one terminal record, the last line.
 fn event_lines(text: &str, first: u64) -> Vec<Value> {
-    let schema = schemas::validator("task-event-v1.json");
+    let schema = schemas::validator("task-event-v2.json");
     let lines: Vec<Value> = text
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not one line: {line}")))
         .collect();
     for (at, line) in lines.iter().enumerate() {
         schemas::valid(&schema, line);
-        assert_eq!(line["schema"], "af/task-event@1", "{line}");
+        assert_eq!(line["schema"], "af/task-event@2", "{line}");
         if line["record"] == "terminal" {
             assert_eq!(
                 at + 1,
@@ -1859,7 +1859,7 @@ fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
     std::io::BufRead::read_line(&mut stdout, &mut first).unwrap();
     let first: Value = serde_json::from_str(&first)
         .unwrap_or_else(|_| panic!("not one line at the first poll: {first:?}"));
-    assert_eq!(first["schema"], "af/task-event@1", "{first}");
+    assert_eq!(first["schema"], "af/task-event@2", "{first}");
     assert_eq!(first["record"], "event", "{first}");
     run.kill().unwrap();
     run.wait().unwrap();

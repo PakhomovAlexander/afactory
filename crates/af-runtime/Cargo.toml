@@ -41,8 +41,7 @@ perf-control = []
 perf-calibration = ["af-contracts/perf-calibration"]
 
 [dev-dependencies]
-# One test pins that `af review render`, which composes through the adapters, shows the
-# instructions the Task host dispatches.
+# Native Provider tests exercise the actual adapter context and sandbox boundaries.
 af-runner-claude = { path = "../af-runner-claude" }
 af-runner-codex = { path = "../af-runner-codex" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }

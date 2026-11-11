@@ -182,7 +182,7 @@ impl TaskProjection {
             ));
         }
         let graph: af_graph::task::CompiledTask =
-            payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
+            payload(cas, &plan.compiled_graph_id, "af/CompiledTask@4")?;
         if graph.inputs != next.inputs
             || graph.validate_schema().is_err()
             || graph.scheduler_plan().map_err(conflict)?.order != graph.order

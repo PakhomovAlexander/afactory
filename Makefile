@@ -26,6 +26,7 @@ BASE_EVIDENCE = $(if $(AF_GATE_NEXTEST_RUN),$(AF_GATE_NEXTEST_RUN)/base-evidence
 # Run unprivileged: preflight proves a chmod-sealed source rejects writes.
 # Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
 check: preflight-check fmt lint test scenario-python-tests perf-python-tests perf-feature-tests release-check
+	$(MAKE) review-kernel-container-probes
 
 fmt:
 	$(CI_STEP) --stage lint fmt cargo fmt --all -- --check
@@ -74,12 +75,15 @@ STRESS_SPAWN ?= 2
 stress-proof:
 	python3 -I scripts/stress-proof.py --runs $(STRESS_RUNS) --load-workers $(STRESS_LOAD) --spawn-workers $(STRESS_SPAWN) --test-threads $(TEST_THREADS)
 
-# Live containment and the v3 Gate route. The test-classes executor invokes this target when
-# e2e is selected, including the local fast gate and `make check`; a missing daemon fails.
+# Live containment and native Task check/Review dispatch. Full `check` invokes this target
+# after its prerequisites (including the Rust build/test); the selective executor invokes it
+# when e2e is selected, including the local fast gate. Standalone `test` stays Rust-only.
+# A missing daemon fails.
+# The existing --repeat 1 mode preserves the live proof's single run, without isolation reruns.
 review-kernel-container-probes:
 	cargo test --locked -p af-sandbox --test container_probes -- --ignored
 	cargo test --locked -p af-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
-	cargo test --locked -p af-runtime --test it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
+	python3 scripts/nextest-gate.py --repeat 1 --workspace --locked --profile ci --run-ignored only --no-tests fail -E 'binary_id(=af-runtime::it) & test(=task_review_execute_checks::a_container_check_executes_on_the_native_task_host)'
 
 # Telemetry's overhead gate (design §12, docs/telemetry.md "Performance"): `off` against `spans`
 # on the three pinned bench fixtures with a release build, 20 randomized pairs each; the script

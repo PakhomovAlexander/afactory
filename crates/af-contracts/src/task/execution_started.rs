@@ -1,6 +1,6 @@
 //! The marker `af/TaskExecutionStarted@1` (ADR-0153, design §5 "Retained history"): a lease
 //! began kernel execution of its Task. It is its own versioned event of the Task's log, the
-//! kind `TaskExecutionStarted@1` beside `TaskTransition@5`, whose shape it leaves unchanged
+//! kind `TaskExecutionStarted@1` beside `TaskTransition@6`, whose shape it leaves unchanged
 //! (ADR-0145). The Task runtime commits it once per lease, before it does anything else under
 //! that lease; it references no artifact, never changes the Task's result, and the Store
 //! refuses it on a finished Task. A lease that only planned (`af task start` without

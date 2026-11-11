@@ -7,6 +7,14 @@ use std::{
 };
 
 fn shell(root: &Path, script: &str) -> std::process::Output {
+    let shims = root.join("provider-shims");
+    for kind in ["claude", "codex"] {
+        crate::fake_models::install(kind, &shims, &root.join(format!("{kind}-auth")));
+    }
+    let path = std::env::join_paths(
+        std::iter::once(shims).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join("home with spaces")).unwrap();
     Command::new("sh")
         .arg("-eu")
@@ -14,6 +22,8 @@ fn shell(root: &Path, script: &str) -> std::process::Output {
         .arg(script)
         .current_dir(root)
         .env("AF_BIN", crate::common::af_binary())
+        .env("PATH", path)
+        .env("USER", "fixture")
         .env("AF_SELF_OFFLINE", "1")
         .env_remove("AF_VERSION")
         .env_remove("AF_RELEASE_KEY")
@@ -97,23 +107,18 @@ fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
         onboard.trim(),
         "af onboard && af onboard --apply && git add .af && git commit -m 'Configure Afactory review authority'"
     );
-    let (plan, run) = review.trim().split_once('\n').unwrap();
+    let commands: Vec<_> = review.trim().lines().collect();
     assert_eq!(
-        plan,
-        "af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER \
-         --provider architecture=PROVIDER"
+        commands,
+        [
+            "cp .af/task-packages/onboard/review-code/task.json ../review.json",
+            "af review plan --file ../review.json --base HEAD --uncommitted",
+            "af review resume review --confirm-plan PLAN_ID",
+            "af review ledger TASK_ID --json",
+            "af review report TASK_ID --json",
+        ]
     );
-    // No machine's Provider IDs: the placeholder, and where the exact command comes from.
-    assert_eq!(
-        run,
-        "af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER \
-         --provider architecture=PROVIDER"
-    );
-    let flat = readme().split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        flat.contains("PROVIDER is the ID of a Provider step 2 registered, such as `codex-main`: `af onboard` prints the exact command"),
-        "README says where the exact command comes from"
-    );
+    let plan = commands[1];
     assert_eq!(doctor.trim(), "af doctor");
     // Updating and removing manage this machine's installation; they are not run here.
     for line in updating.lines() {
@@ -139,14 +144,12 @@ fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
     assert!(readme.contains("AF_INSTALL_CHANNEL=rc"));
 
     let root = tempfile::tempdir().unwrap();
-    let executable_plan = plan
-        .replace("correctness=PROVIDER", "correctness=claude-main")
-        .replace("architecture=PROVIDER", "architecture=codex-main");
+    let executable_plan = plan;
     let script = format!(
         r#"
 af() {{
   case "$1 ${{2:-}}" in
-    "onboard "*|"review plan"|"doctor "*) "$AF_BIN" "$@" ;;
+    "onboard "*|"review plan"|"review inspect"|"doctor "*) "$AF_BIN" "$@" ;;
     *) echo "Unexpected command in token-free walkthrough: $*" >&2; exit 1 ;;
   esac
 }}
@@ -162,10 +165,11 @@ git commit -qm 'Initial source'
 printf '\nA candidate change.\n' >> README.md
 mkdir -p ../claude-auth ../codex-auth
 AF_AUTH_ROOT=$(cd .. && pwd)
+cp .af/task-packages/onboard/review-code/task.json ../review.json
 "$AF_BIN" provider add claude-main --kind claude --auth-dir "$AF_AUTH_ROOT/claude-auth" --unverified
 "$AF_BIN" provider add codex-main --kind codex --auth-dir "$AF_AUTH_ROOT/codex-auth" --unverified
-{executable_plan} > ../plan.txt
 {executable_plan} --json > ../plan.json
+af review inspect review > ../plan.txt
 {doctor} > ../doctor.txt
 test ! -e ../gate-ran
 test -z "$(git remote)"
@@ -180,31 +184,14 @@ test -z "$(git remote)"
     );
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.path().join("plan.json")).unwrap()).unwrap();
-    assert_eq!(plan["schema"], "af/review-plan@1");
-    assert_eq!(plan["token_free"], true);
-    // Planning and the doctor record nothing; `af onboard --apply` registers the Project and its
-    // checkout (ADR-0158), which is the only state the walkthrough leaves.
-    let kept: std::collections::BTreeSet<String> = std::fs::read_dir(root.path().join("state/af"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        kept.iter()
-            .all(|name| ["project", "stores.toml", "stores.lock"].contains(&name.as_str())),
-        "{kept:?}"
-    );
-    assert_eq!(plan["subject"]["empty"], false);
-    assert_eq!(plan["route"]["changed_paths"], 1);
-    assert!(
-        plan["external_effects"]
-            .as_object()
-            .unwrap()
-            .values()
-            .all(|value| value == false)
-    );
+    assert_eq!(plan["schema"], "af/task-inspection@20");
+    assert_eq!(plan["attempts"], 0);
+    assert!(plan["plan"].is_object());
+    assert!(plan["graph"].is_object());
+    assert_eq!(plan["task_id"], "review");
     let text = std::fs::read_to_string(root.path().join("plan.txt")).unwrap();
     assert!(text.contains("correctness"), "{text}");
-    assert!(text.contains("architecture"), "{text}");
+    assert!(text.contains("bugs"), "{text}");
     let doctor = std::fs::read_to_string(root.path().join("doctor.txt")).unwrap();
     // The rows wrap at 100 columns, where depends on the temporary path's length: read the
     // words, not the lines.
@@ -261,20 +248,25 @@ fn review_help_examples_name_policy_base_and_candidate() {
         let help = String::from_utf8_lossy(&output.stdout);
         let examples = help.rsplit("Examples").next().unwrap();
         let mut found = false;
-        for line in examples
-            .lines()
-            .filter(|line| line.trim_start().starts_with("af review"))
-        {
+        for line in examples.lines().filter(|line| {
+            line.trim_start().starts_with("af review plan ")
+                || line.trim_start().starts_with("af review run ")
+        }) {
             if line.contains(" ledger ") || line.contains(" report ") {
                 continue;
             }
             found = true;
-            assert!(line.contains("--policy-rev"), "{line}");
-            assert!(line.contains("--base"), "{line}");
+            assert!(line.contains("--file"), "{line}");
             assert!(
-                line.contains("--uncommitted") || line.contains("--candidate"),
+                !line.contains("--policy-rev") && !line.contains("--campaign"),
                 "{line}"
             );
+            if line.contains("--base") {
+                assert!(
+                    line.contains("--uncommitted") || line.contains("--candidate"),
+                    "{line}"
+                );
+            }
         }
         assert!(found, "{help}");
     }
@@ -381,4 +373,47 @@ fn generated_software_tutorial_keeps_task_requests_external() {
 #[test]
 fn generated_combined_tutorial_keeps_task_requests_external() {
     generated_tutorial_plans_with_requests_outside_the_checkout("all");
+}
+
+#[test]
+fn release_smoke_uses_the_native_selection_receipt_without_running_workers_or_checks() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("smoke");
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let output = Command::new("bash")
+        .arg(workspace.join("scripts/release-smoke.sh"))
+        .arg(crate::common::af_binary())
+        .arg(&scratch)
+        .current_dir(root.path())
+        .envs(crate::common::private_home_env())
+        .env("TMPDIR", root.path())
+        .env_remove("AF_VERSION")
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let selection: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(scratch.join("plan.json")).unwrap()).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("task-selection-v3.json"),
+        &selection,
+    );
+    assert_eq!(selection["schema"], "af/task-selection@3");
+    assert_eq!(selection["attempts"], 0);
+    assert_eq!(selection["chargeable_tokens"], 0);
+    assert_eq!(selection["selection"]["decision"]["kind"], "unavailable");
+    assert!(
+        scratch
+            .join("repo/.af/task-packages/onboard/review-code/task.json")
+            .is_file()
+    );
+    assert!(scratch.join("repo/change.txt").is_file());
+    assert!(!scratch.join("providers.toml").exists());
 }

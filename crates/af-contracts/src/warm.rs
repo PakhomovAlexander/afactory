@@ -176,41 +176,6 @@ pub enum WorkerNotesDropReasonV1 {
     OverBound,
 }
 
-/// Payload of `WorkerNotesRecorded@1`: what became of one Attempt's notes declaration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkerNotesRecordedPayloadV1 {
-    pub result_artifact_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notes_artifact_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dropped: Option<WorkerNotesDropReasonV1>,
-    /// Encoded payload size, so an over-bound drop records how far over it was.
-    pub bytes: u64,
-}
-
-impl WorkerNotesRecordedPayloadV1 {
-    pub fn validate(&self) -> Result<(), String> {
-        if !crate::is_digest(&self.result_artifact_id) {
-            return Err("WorkerNotesRecorded@1 has an invalid result artifact ID".into());
-        }
-        match (&self.notes_artifact_id, self.dropped) {
-            (Some(id), None) if crate::is_digest(id) => {}
-            (None, Some(_)) => {}
-            _ => {
-                return Err(
-                    "WorkerNotesRecorded@1 must name exactly one of a notes artifact or a drop reason"
-                        .into(),
-                );
-            }
-        }
-        if self.bytes > crate::json::SAFE_INTEGER_MAX as u64 {
-            return Err("WorkerNotesRecorded@1 bytes exceed the JSON safe-integer bound".into());
-        }
-        Ok(())
-    }
-}
-
 /// One mark per path over the union of Notes paths, both Subject views and the head-to-head
 /// path set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -553,36 +518,6 @@ impl WarmSetV3 {
     }
 }
 
-/// Payload of `WarmSetSelected@3`, appended before the node's first Attempt of the Round is
-/// reserved. It names a `WarmSet@3` artifact, and its layers never include `session`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WarmSetSelectedPayloadV3 {
-    pub warm_set_artifact_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_attempt_id: Option<String>,
-    pub layers: Vec<WarmLayerV3>,
-}
-
-impl WarmSetSelectedPayloadV3 {
-    pub fn validate(&self) -> Result<(), String> {
-        if !crate::is_digest(&self.warm_set_artifact_id) {
-            return Err("WarmSetSelected@3 has an invalid Warm Set artifact ID".into());
-        }
-        if !self
-            .source_attempt_id
-            .as_deref()
-            .is_none_or(is_monotonic_id)
-        {
-            return Err("WarmSetSelected@3 has an invalid source Attempt ID".into());
-        }
-        if self.layers.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err("WarmSetSelected@3 layers must be sorted and unique".into());
-        }
-        Ok(())
-    }
-}
-
 pub(crate) fn is_monotonic_id(value: &str) -> bool {
     value.len() == 26
         && value
@@ -858,28 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn notes_recorded_payload_names_exactly_one_disposition() {
-        let digest = format!("sha256:{}", "a".repeat(64));
-        let recorded = WorkerNotesRecordedPayloadV1 {
-            result_artifact_id: digest.clone(),
-            notes_artifact_id: Some(digest.clone()),
-            dropped: None,
-            bytes: 12,
-        };
-        recorded.validate().unwrap();
-        let both = WorkerNotesRecordedPayloadV1 {
-            dropped: Some(WorkerNotesDropReasonV1::OverBound),
-            ..recorded.clone()
-        };
-        assert!(both.validate().is_err());
-        let neither = WorkerNotesRecordedPayloadV1 {
-            notes_artifact_id: None,
-            ..recorded
-        };
-        assert!(neither.validate().is_err());
-    }
-
-    #[test]
     fn a_warm_set_with_notes_needs_its_source_attempt() {
         let digest = format!("sha256:{}", "a".repeat(64));
         let set = WarmSetV3 {
@@ -926,13 +839,5 @@ mod tests {
                 "`{field}` belongs to WarmSet@1, which is neither written nor read"
             );
         }
-        let selected = serde_json::json!({
-            "warm_set_artifact_id": format!("sha256:{}", "7".repeat(64)),
-            "layers": ["notes", "session"],
-        });
-        assert!(
-            serde_json::from_value::<WarmSetSelectedPayloadV3>(selected).is_err(),
-            "WarmSetSelected@3 has no session layer"
-        );
     }
 }

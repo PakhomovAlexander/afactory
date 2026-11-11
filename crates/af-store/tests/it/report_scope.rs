@@ -1,13 +1,13 @@
 use af_contracts::{
     ChangeSetV1, EventType, FindingGroupingAction, FindingGroupingEventPayloadV1,
-    FindingGroupingV1, FindingReport, Location, PathRenameV1, Producer, RoundStartedPayloadV1,
-    RunEvent, Severity, SubjectV1,
+    FindingGroupingV1, FindingReport, Location, PathRenameV1, Producer, RunEvent, Severity,
+    SubjectV1,
 };
 use af_store::ledger::TransitionKind;
 use af_store::{Cas, ConvergencePolicy, Ledger, ReportScope, ScopeAuthorityKind, Status, Verdict};
 
 fn digest(byte: char) -> String {
-    format!("sha256:{}", byte.to_string().repeat(64))
+    af_store::canonical::blob_content_id(byte.to_string().as_bytes())
 }
 
 fn event(
@@ -188,16 +188,8 @@ fn cached_scope_reverifies_its_change_set_on_the_next_round() {
         b"corrupt",
     )
     .unwrap();
-    apply_round(&mut ledger, &cas, 2, subject_id);
-    apply_report(&mut ledger, &cas, "claim", 2, Severity::Major, "src/in.rs");
-
-    assert_eq!(ledger.get("claim").unwrap().reports[0].scope, None);
-    assert!(
-        ledger
-            .scope_authority_failures()
-            .iter()
-            .any(|failure| failure.round == 2 && failure.authority == ScopeAuthorityKind::Subject)
-    );
+    assert!(ledger.bind_task_subject(&cas, &subject_id, 2).is_err());
+    assert_eq!(ledger.round, 1);
 }
 
 #[test]
@@ -570,7 +562,7 @@ fn an_old_authority_failure_ages_out_after_the_clean_window() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
-    apply_round(&mut ledger, &cas, 1, digest('9'));
+    apply_whole_tree_round(&mut ledger, &cas, 2);
     apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
     assert_eq!(ledger.get("claim").unwrap().convergence_scope, None);
     assert_eq!(ledger.scope_authority_failures().len(), 1);
@@ -649,26 +641,14 @@ fn apply_whole_tree_round(ledger: &mut Ledger, cas: &Cas, round: u32) {
 }
 
 fn apply_round(ledger: &mut Ledger, cas: &Cas, round: u32, subject_id: String) {
-    let payload = RoundStartedPayloadV1 {
-        round,
-        epoch: 1,
-        campaign_manifest_id: digest('d'),
-        subject_id,
-        prior_finding_set_id: digest('e'),
-        prior_demand_set_id: digest('f'),
-    };
-    ledger
-        .apply_event(
-            &event(
-                EventType::RoundStartedV1,
-                serde_json::to_value(payload).unwrap(),
-                Vec::new(),
-            ),
-            cas,
-        )
-        .unwrap();
-    // RoundStarted supplies Scope authority; GenerationAdvanced owns the Ledger counter.
-    ledger.round = round;
+    for byte in 'a'..='f' {
+        cas.put(byte.to_string().as_bytes()).unwrap();
+    }
+    if ledger.round == 0 {
+        *ledger = Ledger::for_task_subject(cas, &subject_id, round).unwrap();
+    } else {
+        ledger.bind_task_subject(cas, &subject_id, round).unwrap();
+    }
 }
 
 /// One Report of the claim `title = "claim"` at line 1 of `file`, or change-wide for an empty
@@ -900,30 +880,10 @@ fn whole_tree_and_change_wide_reports_are_in_scope() {
 }
 
 #[test]
-fn unavailable_subject_is_diagnostic_unknown_and_fails_closed() {
+fn unavailable_subject_is_refused_before_native_review() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
-    let mut ledger = Ledger::default();
-    apply_round(&mut ledger, &cas, 1, digest('9'));
-    apply_report(
-        &mut ledger,
-        &cas,
-        "unavailable",
-        1,
-        Severity::Major,
-        "src/main.rs",
-    );
-
-    let finding = ledger.get("unavailable").unwrap();
-    assert_eq!(finding.reports[0].scope, None);
-    assert_eq!(finding.convergence_scope_label(), "unknown");
-    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
-    assert_eq!(ledger.scope_authority_failures().len(), 1);
-    assert_eq!(ledger.scope_authority_failures()[0].round, 1);
-    assert_eq!(
-        convergence(&ledger, Severity::Major).authority_failures_recent,
-        1
-    );
+    assert!(Ledger::for_task_subject(&cas, &digest('9'), 1).is_err());
 }
 
 #[test]
@@ -972,22 +932,7 @@ fn repeated_round_subject_resolution_reverifies_artifact_authority() {
     let subject_id = cas
         .put_json(&serde_json::to_value(subject).unwrap())
         .unwrap();
-    let start = |round| {
-        event(
-            EventType::RoundStartedV1,
-            serde_json::to_value(RoundStartedPayloadV1 {
-                round,
-                epoch: 1,
-                campaign_manifest_id: digest('c'),
-                subject_id: subject_id.clone(),
-                prior_finding_set_id: digest('d'),
-                prior_demand_set_id: digest('e'),
-            })
-            .unwrap(),
-            vec![],
-        )
-    };
-    ledger.apply_event(&start(1), &cas).unwrap();
+    apply_round(&mut ledger, &cas, 1, subject_id.clone());
 
     let hex = subject_id.strip_prefix("sha256:").unwrap();
     std::fs::write(
@@ -995,15 +940,10 @@ fn repeated_round_subject_resolution_reverifies_artifact_authority() {
         b"corrupt after verified resolution",
     )
     .unwrap();
-    ledger.apply_event(&start(2), &cas).unwrap();
-    ledger.round = 2;
-    apply_report(&mut ledger, &cas, "cached", 2, Severity::Major, "src/in.rs");
-
-    assert_eq!(ledger.get("cached").unwrap().convergence_scope, None);
-    assert_eq!(ledger.scope_authority_failures().len(), 1);
+    assert!(ledger.bind_task_subject(&cas, &subject_id, 2).is_err());
     assert_eq!(
-        ledger.scope_authority_failures()[0].authority,
-        ScopeAuthorityKind::Subject
+        ledger.round, 1,
+        "a corrupt Subject never enters a successor Round"
     );
 }
 

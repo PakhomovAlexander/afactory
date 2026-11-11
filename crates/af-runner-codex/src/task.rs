@@ -149,9 +149,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 )));
             }
         };
-        // The reply contract — a typed request's own, or a Campaign reviewer's Reviewer Result —
-        // as the strict schema Codex enforces on the final message, written beside it in this
-        // Attempt's own staging directory (ADR-0208, ADR-0246).
+        // Project the typed request's captured output schema into Codex's strict schema,
+        // written beside the final message in this Attempt's own staging directory (ADR-0208).
         let schema = match contract.strict(&input) {
             Ok(schema) => schema,
             Err(error) => {

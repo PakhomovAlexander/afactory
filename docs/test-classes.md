@@ -32,7 +32,9 @@ component/unit binaries explicitly assign new internal modules to their default 
 name UIX, performance or lifecycle submodules. This is a documented component rule, not a duration
 heuristic. Whole workflow modules remain e2e even when they assert rendered output: for example,
 `project` creates and removes worktrees and `task_report_command` runs real Tasks. `render` verifies
-the Worker input contract. Neither is UIX merely because it invokes a CLI.
+the Worker input contract. Neither is UIX merely because it invokes a CLI. The unstarted-check disk-refusal regression in
+`telemetry_bench` is explicitly e2e: it verifies canonical runtime refusal, without measuring
+performance; the benchmark measurements remain perf.
 
 Every top-level Python test script is registered, with utility entrypoints separately enumerated.
 The performance laboratory's unittest discovery assigns its entire subordinate suite to perf;

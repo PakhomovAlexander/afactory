@@ -3,7 +3,8 @@
 
 /// What a native client reported. In particular, a contention report does not prove that
 /// another process is still alive, and an unknown failure never implies a login is needed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NativeFailureKind {
     AuthMissing,
     AuthRevoked,
@@ -28,6 +29,50 @@ pub enum NativeFailureKind {
     /// wall (ADR-0208).
     Environment,
     Unknown,
+}
+
+pub const NATIVE_FAILURE_EVIDENCE_V1: &str = "af/NativeFailureEvidence@1";
+
+/// The final adapter classification of a failed Attempt, retained separately from display
+/// text and usage. In particular, complete accounting does not erase a native failure class.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeFailureEvidenceV1 {
+    schema: String,
+    kind: NativeFailureKind,
+}
+
+impl NativeFailureEvidenceV1 {
+    pub fn new(kind: NativeFailureKind) -> Self {
+        Self {
+            schema: "af.native-failure/1".into(),
+            kind,
+        }
+    }
+
+    pub fn decode(value: serde_json::Value) -> Result<Self, String> {
+        let evidence: Self =
+            serde_json::from_value(value).map_err(|_| "Invalid native failure evidence")?;
+        if evidence.schema != "af.native-failure/1" {
+            return Err("Unsupported native failure evidence".into());
+        }
+        Ok(evidence)
+    }
+
+    /// Structured native evidence takes precedence over untrusted diagnostic words.
+    pub fn task_cause(&self) -> Option<af_contracts::task::state::TaskCauseV1> {
+        use NativeFailureKind::*;
+        use af_contracts::task::state::TaskCauseV1 as Cause;
+        match self.kind {
+            AuthMissing | AuthRevoked | AuthExpired | AuthRefreshContended | AuthRefreshFailed
+            | AuthRejected => Some(Cause::IdentityUnverified),
+            Quota | Capacity => Some(Cause::ProviderCapacity),
+            ModelUnavailable | ModelRefused => Some(Cause::ModelRefused),
+            Network => Some(Cause::ProviderNetwork),
+            UnsupportedInvocation | Environment => Some(Cause::ProviderEnvironment),
+            Unknown => None,
+        }
+    }
 }
 
 impl NativeFailureKind {
@@ -417,6 +462,45 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_failure_evidence_schema_and_reader_agree_and_old_versions_fail_closed() {
+        use serde_json::json;
+        let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let schema: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(workspace.join("schemas/native-failure-v1.json")).unwrap(),
+        )
+        .unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert_eq!(
+            schema["properties"]["kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            NativeFailureKind::ALL.len()
+        );
+        for kind in NativeFailureKind::ALL {
+            let value = serde_json::to_value(NativeFailureEvidenceV1::new(kind)).unwrap();
+            assert!(validator.is_valid(&value));
+            assert_eq!(value["kind"], kind.as_str());
+            let decoded = NativeFailureEvidenceV1::decode(value.clone()).unwrap();
+            assert_eq!(decoded.kind, kind);
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+        for value in [
+            json!({"schema":"af.native-failure/0","kind":"quota"}),
+            json!({"schema":"af.native-failure/2","kind":"quota"}),
+            json!({"schema":"af.native-failure/1","kind":"made_up"}),
+            json!({"schema":"af.native-failure/1","kind":"quota","message":"model_unavailable"}),
+            json!({"schema":"af.native-failure/1"}),
+            json!({"kind":"quota"}),
+        ] {
+            assert!(!validator.is_valid(&value));
+            assert!(NativeFailureEvidenceV1::decode(value).is_err());
+        }
+    }
 
     #[test]
     fn only_network_and_capacity_failures_are_transient_and_a_named_wait_is_read() {

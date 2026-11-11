@@ -4,8 +4,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use af_pipeline_config::lock::{Lockfile, Pin};
-
 fn repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
@@ -63,11 +61,9 @@ fn preview_detects_gate_and_writes_nothing() {
     assert_eq!(report["gates"][0]["program"], "make");
     assert_eq!(report["reviewers"].as_array().unwrap().len(), 2);
     assert!(
-        report["topology"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|line| line == "correctness.result -> gather.correctness")
+        report["topology"].as_array().unwrap().iter().any(
+            |line| line == "checks -> bugs, correctness -> reduce -> review, findings, history"
+        )
     );
     // A source build (this test binary) pins no af release, and the preview says so.
     let warnings = report["warnings"].as_array().unwrap();
@@ -371,69 +367,51 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     assert_eq!(report["status"], "created");
     assert!(repo.join(".af/README.md").is_file());
     let readme = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
-    assert!(
-        readme.find("## Quickstart for the owner").unwrap() < readme.find("## What runs").unwrap()
-    );
-    assert!(readme.contains("af review ledger --campaign pr-<number> --json"));
-    assert!(readme.contains("af review show --campaign pr-<number> FINDING_KEY --json"));
-    assert!(readme.contains("af review report --campaign pr-<number> --json"));
-    assert!(readme.contains("## Worker data authorization"));
-    assert!(readme.contains("should not ask for additional per-Worker"));
-    assert!(readme.contains("Plain `af review run` is light"));
-    assert!(readme.contains("Do not open a follow-up review Campaign"));
-    assert!(readme.contains("human-requested `--heavy`"));
-    // The guide names the whole `--refresh-lock` scope: route and oversized targets too, and
-    // the stale pins it drops.
-    let guide = readme.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        guide.contains(
-            "re-pins the selected pipeline, every pipeline a route or the oversized policy names, \
-             and the Worker packages they reference; it drops a pin whose"
-        ),
-        "{readme}"
-    );
-    assert!(
-        !guide.contains("recomputes only the selected pipeline"),
-        "{readme}"
-    );
-    assert!(repo.join(".af/pipelines/review.toml").is_file());
-    let pipeline = std::fs::read_to_string(repo.join(".af/pipelines/review.toml")).unwrap();
-    assert_eq!(pipeline.matches("demands = \"required\"").count(), 2);
-    let pipeline_value: toml::Value = toml::from_str(&pipeline).unwrap();
-    assert_eq!(pipeline_value["version"].as_integer(), Some(3));
+    assert!(readme.contains("## First Review"));
+    for command in [
+        "af review plan --file ../review.json",
+        "af review ledger review --json",
+        "af review report review --json",
+        "af review resume review --confirm-plan PLAN_ID",
+    ] {
+        assert!(readme.contains(command), "{command}: {readme}");
+    }
+    assert!(readme.contains("one complete Round"));
+    assert!(readme.contains("bounded successor Rounds"));
+    assert!(!repo.join(".af/pipelines").exists());
+    assert!(!repo.join(".af/workers").exists());
+    let package = repo.join(".af/task-packages/onboard/review-code");
+    let pipeline: af_contracts::task::pipeline::PipelineDefinition =
+        af_pipeline_config::task::parse_task_pipeline(
+            &std::fs::read_to_string(package.join("pipeline.toml")).unwrap(),
+        )
+        .unwrap();
+    assert!(pipeline.contract.inputs.contains_key("base"));
+    assert!(pipeline.contract.inputs.contains_key("continuation"));
+    assert!(package.join("task.json").is_file());
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
     assert_eq!(
-        pipeline_value["gate"]["provider"].as_str(),
-        Some("trusted_local")
+        catalog["review"]["reviewers"]["bugs"].as_str(),
+        Some("required")
     );
     assert_eq!(
-        pipeline_value["gate"]["required_isolation"].as_str(),
-        Some("none")
+        catalog["review"]["reviewers"]["correctness"].as_str(),
+        Some("required")
     );
-    assert_eq!(
-        pipeline_value["gate"]["mode"].as_str(),
-        Some("ephemeral-write")
-    );
-    assert!(repo.join(".af/workers/correctness/reviewer.md").is_file());
-    let architecture_manifest =
-        std::fs::read_to_string(repo.join(".af/workers/architecture/reviewer.toml")).unwrap();
-    assert!(architecture_manifest.contains("program = \"codex\""));
-    let architecture_manifest: toml::Value = toml::from_str(&architecture_manifest).unwrap();
-    let architecture_args = architecture_manifest["runner"]["args"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|arg| arg["value"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        architecture_args,
-        [
-            "--model",
-            "gpt-6.1-terra",
-            "-c",
-            "model_reasoning_effort=\"high\""
-        ],
-        "generated Codex authority must select an admissible model explicitly"
-    );
+    for name in ["bugs", "correctness"] {
+        let manifest: toml::Value = toml::from_str(
+            &std::fs::read_to_string(
+                repo.join(format!(".af/task-packages/onboard/{name}/worker.toml")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["runner"]["provider_kind"].as_str(), Some("codex"));
+        assert_eq!(manifest["runner"]["model"].as_str(), Some("gpt-6.1-terra"));
+        assert_eq!(manifest["runner"]["effort"].as_str(), Some("high"));
+    }
 
     let validate = af(&repo, &["--json"]);
     assert!(validate.status.success(), "{}", stderr(&validate));
@@ -446,47 +424,64 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
 }
 
 #[test]
-fn tampering_fails_closed_and_explicit_refresh_prunes_absent_pins() {
+fn tampering_fails_closed_and_explicit_refresh_repins_current_packages() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
-    let create = af(&repo, &["--gate", "check=make check", "--apply"]);
-    assert!(create.status.success(), "{}", stderr(&create));
-
+    assert!(
+        af(&repo, &["--gate", "check=make check", "--apply"])
+            .status
+            .success()
+    );
     let lock_path = repo.join(".af/af.lock");
-    let mut lock = Lockfile::from_toml(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
-    let unrelated = Pin {
-        version: "9.9.9".into(),
-        digest: format!("sha256:{}", "0".repeat(64)),
-    };
-    lock.workers.insert("unused".into(), unrelated.clone());
-    std::fs::write(&lock_path, lock.to_toml()).unwrap();
-    let pipeline_path = repo.join(".af/pipelines/review.toml");
-    let mut pipeline: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
-    pipeline.as_table_mut().unwrap().remove("budgets");
-    std::fs::write(&pipeline_path, toml::to_string_pretty(&pipeline).unwrap()).unwrap();
+    let lock = std::fs::read(&lock_path).unwrap();
+    let worker = repo.join(".af/task-packages/onboard/correctness/instructions.md");
     std::fs::OpenOptions::new()
         .append(true)
-        .open(repo.join(".af/workers/correctness/reviewer.md"))
+        .open(&worker)
         .unwrap()
-        .write_all(b"\nproject addition\n")
+        .write_all(b"\nProject rubric.\n")
         .unwrap();
-
     let validate = af(&repo, &[]);
     assert!(!validate.status.success());
-    assert!(stderr(&validate).contains("stale Worker pin `unused`"));
-
+    assert!(
+        stderr(&validate).contains("changed since it was locked"),
+        "{}",
+        stderr(&validate)
+    );
     let refresh = af(&repo, &["--refresh-lock", "--json"]);
     assert!(refresh.status.success(), "{}", stderr(&refresh));
-    let report: serde_json::Value = serde_json::from_slice(&refresh.stdout).unwrap();
-    assert_eq!(report["status"], "lock_refreshed");
-    assert!(report["attempt_tokens"].is_null());
-    assert!(report["run_tokens"].is_null());
-    let refreshed = Lockfile::from_toml(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
-    assert!(!refreshed.workers.contains_key("unused"));
-
-    let validate = af(&repo, &[]);
-    assert!(validate.status.success(), "{}", stderr(&validate));
+    assert_eq!(
+        std::fs::read(&lock_path).unwrap(),
+        lock,
+        "release pin is unchanged"
+    );
+    assert!(af(&repo, &[]).status.success());
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    for (name, pin) in catalog["packages"].as_table().unwrap() {
+        assert_eq!(
+            pin["digest"].as_str().unwrap(),
+            af_pipeline_config::lock::package_digest(
+                name,
+                &repo.join(pin["path"].as_str().unwrap())
+            )
+            .unwrap()
+        );
+    }
+    // A valid native catalog need not pin an installed af release. Package refresh preserves
+    // that absence instead of opportunistically adding a release pin or failing after re-pin.
+    std::fs::remove_file(&lock_path).unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&worker)
+        .unwrap()
+        .write_all(b"\nAnother project rubric.\n")
+        .unwrap();
+    let refreshed = af(&repo, &["--refresh-lock", "--json"]);
+    assert!(refreshed.status.success(), "{}", stderr(&refreshed));
+    assert!(!lock_path.exists());
+    assert!(af(&repo, &[]).status.success());
 }
 
 #[test]
@@ -505,33 +500,19 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
     assert!(help.status.success(), "{}", stderr(&help));
     assert!(stdout(&help).contains("never calls a model"));
     assert!(stdout(&help).contains("does not ask for per-call confirmation"));
-    assert!(stdout(&help).contains("Review Campaigns are light by default"));
-    assert!(stdout(&help).contains("Use `--heavy` only when a human"));
+    assert!(stdout(&help).contains("native Review Pipeline is light"));
+    assert!(stdout(&help).contains("retired --heavy Campaign flag is refused"));
     assert!(stdout(&help).contains("--refresh-lock"));
-    // `--refresh-lock` re-pins every configured pipeline, not only the selected one, and drops
-    // pins whose package or pipeline file is gone; the help says so.
     let text = stdout(&help)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    assert!(text.contains("--refresh-lock re-pins intentional current local package edits in .af/task-catalog.toml"), "{text}");
     assert!(
-        text.contains(
-            "--refresh-lock: explicitly re-pin the selected pipeline, every pipeline a route or \
-             the oversized policy names, and the Worker packages they reference; it drops a pin \
-             whose `.af/workers/NAME` package or `.af/pipelines/NAME.toml` file no longer exists."
-        ),
+        text.contains("Repin current local Task packages and the receipted af release"),
         "{text}"
     );
-    assert!(
-        text.contains(
-            "Repin the selected, routed and oversized pipelines and their Workers; drop stale pins"
-        ),
-        "{text}"
-    );
-    assert!(
-        !text.contains("recompute only the selected pipeline"),
-        "{text}"
-    );
+    assert!(!text.contains("re-pin the selected pipeline"), "{text}");
 }
 
 /// A Provider registry naming `providers` (ID, kind), each with an auth directory of its own,
@@ -590,7 +571,7 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output);
     assert!(
-        text.contains("profile     multi-review@1 · runner mixed (no Provider registered yet)"),
+        text.contains("profile     native-review@1 · runner mixed (no Provider registered yet)"),
         "{text}"
     );
     // The block stands between the reviewers and the gates.
@@ -608,10 +589,10 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert_eq!(
         block(&text, "providers"),
         [
+            "bugs needs a codex Provider: none registered",
+            "← af provider detect, or af provider setup codex-main --kind codex --login",
             "correctness needs a claude Provider: none registered",
             "← af provider detect, or af provider setup claude-main --kind claude --login",
-            "architecture needs a codex Provider: none registered",
-            "← af provider detect, or af provider setup codex-main --kind codex --login",
         ]
     );
     // The block names the fix in text; the document's next steps carry it for an agent.
@@ -640,13 +621,17 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert_eq!(
         block(&text, "providers"),
         [
+            "bugs needs a codex Provider: codex-main (--probe checks its login)",
+            "← bind onboard/bugs=codex-main in --bindings FILE",
             "correctness needs a codex Provider: codex-main (--probe checks its login)",
-            "← bind with --provider correctness=codex-main",
-            "architecture needs a codex Provider: codex-main (--probe checks its login)",
-            "← bind with --provider architecture=codex-main",
+            "← bind onboard/correctness=codex-main in --bindings FILE",
         ]
     );
-    assert!(text.contains(" --runner codex "), "{text}");
+    let command = step_command(&text, "af onboard ");
+    assert!(
+        command.windows(2).any(|pair| pair == ["--runner", "codex"]),
+        "{text}"
+    );
     assert!(!text.contains("Register a Provider"), "{text}");
     let report: serde_json::Value =
         serde_json::from_slice(&onboard_with(&repo, &codex, &["--json"]).stdout).unwrap();
@@ -668,10 +653,10 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert_eq!(
         block(&text, "providers"),
         [
+            "bugs needs a codex Provider: codex-main (--probe checks its login)",
+            "← bind onboard/bugs=codex-main in --bindings FILE",
             "correctness needs a claude Provider: claude-work (--probe checks its login)",
-            "← bind with --provider correctness=claude-work",
-            "architecture needs a codex Provider: codex-main (--probe checks its login)",
-            "← bind with --provider architecture=codex-main",
+            "← bind onboard/correctness=claude-work in --bindings FILE",
         ]
     );
 
@@ -680,7 +665,7 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert!(probed.status.success(), "{}", stderr(&probed));
     let lines = block(&stdout(&probed), "providers");
     assert!(
-        lines[0]
+        lines[2]
             .starts_with("correctness needs a claude Provider: claude-work (installation failed)"),
         "{lines:#?}"
     );
@@ -690,11 +675,73 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     let text = stdout(&output);
     assert!(text.contains("runner claude (--runner)"), "{text}");
     assert!(
-        block(&text, "providers")[0]
-            .starts_with("correctness needs a claude Provider: none registered"),
+        block(&text, "providers")[0].starts_with("bugs needs a claude Provider: none registered"),
         "{text}"
     );
     assert!(!repo.join(".af").exists());
+}
+
+#[test]
+fn long_repository_paths_preserve_the_copyable_command_and_registered_runner() {
+    let root = tempfile::tempdir().unwrap();
+    let parent = root
+        .path()
+        .join(format!("workspace with spaces {}", "x".repeat(95)))
+        .join(format!("nested {}", "y".repeat(83)));
+    std::fs::create_dir_all(&parent).unwrap();
+    let repo = repo(&parent).canonicalize().unwrap();
+    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
+    let providers = registry(&root.path().join("providers"), &[("codex-main", "codex")]);
+    let output = onboard_with(&repo, &providers, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("\\\n"),
+        "a long command must actually wrap: {text}"
+    );
+    let words = step_command(&text, "af onboard ");
+    assert_eq!(&words[..2], ["af", "onboard"]);
+    for expected in [
+        ["--runner", "codex"],
+        ["--repo", repo.to_str().unwrap()],
+        ["--gate", "check=make check"],
+    ] {
+        assert!(
+            words.windows(2).any(|pair| pair == expected),
+            "{words:?}\n{text}"
+        );
+    }
+    assert_eq!(words.last().map(String::as_str), Some("--apply"));
+    assert!(
+        text.contains("runner codex (the only Provider kind registered)"),
+        "{text}"
+    );
+    assert!(
+        !repo.join(".af").exists(),
+        "preview must write no project authority"
+    );
+}
+
+#[test]
+fn command_words_remove_shell_continuations_and_preserve_quoted_literal_content() {
+    let words = step_command(
+        "  af onboard --runner \\\n    codex --repo 'a path' --gate 'check=printf literal\\n' --apply",
+        "af onboard ",
+    );
+    assert_eq!(
+        words,
+        [
+            "af",
+            "onboard",
+            "--runner",
+            "codex",
+            "--repo",
+            "a path",
+            "--gate",
+            "check=printf literal\\n",
+            "--apply"
+        ]
+    );
 }
 
 #[test]
@@ -710,15 +757,9 @@ fn apply_and_validate_say_what_to_register_and_fill_the_plan_line() {
         "{text}"
     );
     let guide = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
-    let collapsed = guide.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        collapsed.contains("2. Run `af provider status`; if a Worker's kind has no Provider, `af provider detect` or `af provider setup <id> --kind <kind> --login` at your terminal."),
-        "{guide}"
-    );
-    // The private-host protocol is the closing note for agents, not step 2.
-    let (steps, note) = guide.split_once("## Agents without a terminal").unwrap();
-    assert!(!steps.contains("af provider auth"), "{guide}");
-    assert!(note.contains("af provider auth"), "{guide}");
+    assert!(guide.contains("`af provider detect`"));
+    assert!(guide.contains("login runs at the operator's terminal"));
+    assert!(guide.contains("--bindings FILE"));
 
     // Validation with both kinds registered fills the token-free plan line.
     let both = registry(
@@ -730,17 +771,21 @@ fn apply_and_validate_say_what_to_register_and_fill_the_plan_line() {
     let text = stdout(&validated);
     assert_eq!(
         step_command(&text, "af review plan "),
-        shell_words::split("af review plan --policy-rev HEAD --base HEAD --uncommitted --provider architecture=codex-main --provider correctness=claude-work").unwrap(),
+        shell_words::split(
+            "af review plan --file ../review.json --authority HEAD --base HEAD --uncommitted"
+        )
+        .unwrap(),
         "{text}"
     );
     assert!(!text.contains("Register a Provider"), "{text}");
     // Without them it keeps placeholders and says how to register.
     let text = stdout(&onboard_with(&repo, &none, &[]));
-    assert!(
-        step_command(&text, "af review plan ").ends_with(
-            &shell_words::split("--provider architecture=<codex-provider-id> --provider correctness=<claude-provider-id>").unwrap()
-        ),
-        "{text}"
+    assert_eq!(
+        step_command(&text, "af review plan "),
+        shell_words::split(
+            "af review plan --file ../review.json --authority HEAD --base HEAD --uncommitted"
+        )
+        .unwrap()
     );
     assert!(
         text.contains("Register a Provider if the providers block says none"),
@@ -864,64 +909,34 @@ fn help_start_with(root: &Path, providers: &Path) -> String {
 /// preview selects on this machine, and with none registered prints the PROVIDER placeholder
 /// and says why.
 #[test]
-fn help_start_binds_the_review_as_the_preview_does() {
+fn help_start_uses_declared_native_task_authority_without_campaign_binding_flags() {
     let root = tempfile::tempdir().unwrap();
-    let repo = repo(root.path());
-    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
-    for (name, providers, bound) in [
-        (
-            "codex",
-            &[("codex-main", "codex")][..],
-            "--provider correctness=codex-main --provider architecture=codex-main",
-        ),
-        (
-            "claude",
-            &[("claude-main", "claude")][..],
-            "--provider correctness=claude-main --provider architecture=claude-main",
-        ),
+    for (name, providers) in [
+        ("codex", &[("codex-main", "codex")][..]),
+        ("claude", &[("claude-main", "claude")][..]),
         (
             "both",
             &[("claude-work", "claude"), ("codex-main", "codex")][..],
-            "--provider correctness=claude-work --provider architecture=codex-main",
         ),
+        ("none", &[][..]),
     ] {
         let registry = registry(&root.path().join(name), providers);
         let text = help_start_with(root.path(), &registry);
         assert!(
-            text.contains(&format!(
-                "     af review --policy-rev HEAD --base HEAD --uncommitted \\\n       {bound}\n"
-            )),
-            "{name}:\n{text}"
+            text.contains("af review plan --file ../review.json"),
+            "{name}: {text}"
         );
         assert!(
-            text.contains("These are the Providers registered on this machine that `af onboard`"),
-            "{name}:\n{text}"
+            text.contains("--authority selects this trusted commit"),
+            "{name}: {text}"
         );
-        assert!(!text.contains("PROVIDER"), "{name}:\n{text}");
-        // The same bindings the preview prints, Worker by Worker.
-        let preview = stdout(&onboard_with(&repo, &registry, &[]));
-        for binding in bound
-            .split(" --provider ")
-            .map(|b| b.trim_start_matches("--provider "))
-        {
-            assert!(
-                preview.contains(&format!("← bind with --provider {binding}")),
-                "{name}: {binding}\n{preview}"
-            );
-        }
+        assert!(
+            text.contains("Task catalog pins the Pipeline and its Workers"),
+            "{name}: {text}"
+        );
+        assert!(!text.contains("--provider"), "{name}: {text}");
+        assert!(!text.contains("--campaign"), "{name}: {text}");
     }
-
-    let none = registry(&root.path().join("none"), &[]);
-    let text = help_start_with(root.path(), &none);
-    assert!(
-        text.contains(
-            "       --provider correctness=PROVIDER --provider architecture=PROVIDER\n   No \
-             Provider is registered on this machine yet, so PROVIDER stands for the ID step 1\n   \
-             registers; `af onboard` prints the exact command once one is.\n"
-        ),
-        "{text}"
-    );
-    assert!(!text.contains("claude-main --provider"), "{text}");
 }
 
 fn committed_repo(root: &Path) -> PathBuf {
@@ -1212,10 +1227,22 @@ fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
     let provider = registry(&root.path().join("provider"), &[("codex-main", "codex")]);
     let review = af(&repo, &["--apply"]);
     assert!(review.status.success(), "{}", stderr(&review));
-    let project = std::fs::read(repo.join(".af/af.toml")).unwrap();
+    let project_path = repo.join(".af/af.toml");
+    let project = std::fs::read_to_string(&project_path)
+        .unwrap()
+        .split("[task.defaults]")
+        .next()
+        .unwrap()
+        .trim_end()
+        .to_owned()
+        + "\n";
+    std::fs::write(&project_path, &project).unwrap();
+    let project = project.into_bytes();
     let lock = std::fs::read(repo.join(".af/af.lock")).unwrap();
-    let af_runtime = std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap();
-
+    std::fs::remove_file(repo.join(".af/task-catalog.toml")).unwrap();
+    std::fs::remove_file(repo.join(".af/code-policy.toml")).unwrap();
+    std::fs::remove_dir_all(repo.join(".af/task-packages")).unwrap();
+    let retained = std::fs::read(repo.join(".af/README.md")).unwrap();
     std::fs::write(repo.join(".af/code-policy.toml"), "occupied\n").unwrap();
     let refused = task_onboard(&repo, &provider, &["--apply"]);
     assert!(!refused.status.success());
@@ -1242,10 +1269,7 @@ fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
     let appended = std::fs::read(repo.join(".af/af.toml")).unwrap();
     assert!(appended.starts_with(&project));
     assert_eq!(std::fs::read(repo.join(".af/af.lock")).unwrap(), lock);
-    assert_eq!(
-        std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap(),
-        af_runtime
-    );
+    assert_eq!(std::fs::read(repo.join(".af/README.md")).unwrap(), retained);
     let refused = task_onboard(&repo, &provider, &["--apply"]);
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("[task]"));
@@ -1442,8 +1466,8 @@ fn task_onboarding_requires_codex_even_with_only_claude_registered() {
     let catalog = std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap();
     for (worker, model) in [
         ("implementer", "gpt-6.1-sol"),
-        ("bugs", "gpt-6.1-terra"),
-        ("correctness", "gpt-6.1-terra"),
+        ("bugs", "claude-opus-5-5"),
+        ("correctness", "claude-opus-5-5"),
         ("evaluator", "gpt-6.1-terra"),
     ] {
         let manifest: toml::Value = toml::from_str(
@@ -1453,10 +1477,22 @@ fn task_onboarding_requires_codex_even_with_only_claude_registered() {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(manifest["runner"]["provider_kind"].as_str(), Some("codex"));
+        assert_eq!(
+            manifest["runner"]["provider_kind"].as_str(),
+            Some(if matches!(worker, "bugs" | "correctness") {
+                "claude"
+            } else {
+                "codex"
+            })
+        );
         assert_eq!(manifest["runner"]["model"].as_str(), Some(model));
         assert_eq!(manifest["runner"]["effort"].as_str(), Some("high"));
-        assert!(catalog.contains(&format!("\"onboard/{worker}\" = \"codex-main\"")));
+        let kind = if matches!(worker, "bugs" | "correctness") {
+            "claude"
+        } else {
+            "codex"
+        };
+        assert!(catalog.contains(&format!("\"onboard/{worker}\" = \"{kind}-main\"")));
     }
 }
 
@@ -1535,7 +1571,11 @@ else:
  elif 'Goal evaluator' in str(r):
   outputs={'result':[{'outcome':'passed','reason':'The fixture exists and the check passed.'}]}
  else:
-  outputs={'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}
+  assignment=r.get('inputs',{}).get('assignment',[{'payload':{'findings':[]}}])[0]['payload']
+  claims=os.path.exists(home+'/native-review-claims')
+  reports=[{'severity':'major','file':'subject.txt','line':1,'title':'Retained native claim','body':'The selected source still contains the claim','fix':'Repair the source','confidence':0.9}] if claims and not assignment['findings'] else []
+  dispositions=[{'finding_id':f['finding_id'],'position':'corroborate','reason':'Checked the complete current Subject'} for f in assignment['findings']]
+  outputs={'result':[{'reports':reports,'benchmark_demands':[],'dispositions':dispositions}]}
  message=json.dumps({'schema':'af.worker-reply/1','outputs':outputs})
  with open(home+'/turns','a') as f: f.write('worker\n')
 if '-o' in sys.argv:
@@ -1565,7 +1605,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_inp
         .arg(root.path().join("state"))
         .env("AF_PROVIDERS_FILE", &provider)
         .env("USER", "fixture")
-        .env("PATH", path)
+        .env("PATH", &path)
         .output()
         .unwrap();
     assert!(run.status.success(), "{}\n{}", stdout(&run), stderr(&run));
@@ -1575,4 +1615,335 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_inp
         auth.join("turns").exists(),
         "the Task did not call a Worker"
     );
+    // The default scaffold's standalone Review is a real current Task, independent of the
+    // implementation starter. Planning spends no Attempts; resume confirms precisely that plan.
+    let review_file = root.path().join("review.json");
+    std::fs::copy(
+        repo.join(".af/task-packages/onboard/review-code/task.json"),
+        &review_file,
+    )
+    .unwrap();
+    let state = root.path().join("review-state");
+    let invoke = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(args)
+            .arg("--state")
+            .arg(&state)
+            .arg("--json")
+            .env("AF_PROVIDERS_FILE", &provider)
+            .env("USER", "fixture")
+            .env("AF_TELEMETRY__LEVEL", "spans")
+            .env(
+                "AF_TELEMETRY__DIR",
+                root.path().join("native-model-telemetry"),
+            )
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+    };
+    let planned = invoke(&["review", "plan", "--file", review_file.to_str().unwrap()]);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(plan["attempts"], 0);
+    assert_eq!(plan["chargeable_tokens"], "0");
+    let turns_before = std::fs::read_to_string(auth.join("turns"))
+        .unwrap()
+        .lines()
+        .count();
+    let reviewed = invoke(&[
+        "review",
+        "resume",
+        "review",
+        "--confirm-plan",
+        plan["plan_id"].as_str().unwrap(),
+    ]);
+    assert!(
+        reviewed.status.success(),
+        "{}\n{}",
+        stdout(&reviewed),
+        stderr(&reviewed)
+    );
+    let review: serde_json::Value = serde_json::from_slice(&reviewed.stdout).unwrap();
+    assert_eq!(review["result"]["acceptance"], "satisfied", "{review:#}");
+    assert_eq!(review["result"]["domain_conclusion"], "pass", "{review:#}");
+    assert_eq!(review["attempts"], 4);
+    assert_eq!(review["chargeable_tokens"], "36");
+    let context = invoke(&["review", "decision-context", "review"]);
+    assert!(context.status.success(), "{}", stderr(&context));
+    let context: serde_json::Value = serde_json::from_slice(&context.stdout).unwrap();
+    let whole_tree = root.path().join("whole-tree-decision.json");
+    std::fs::write(&whole_tree, serde_json::to_vec(&serde_json::json!({
+        "schema":"af.review-decisions/1", "review_id":context["review_id"],
+        "policy_id":context["review"]["policy_id"], "subject_id":context["review"]["subject_id"],
+        "snapshot_id":context["review"]["snapshot_id"], "actor":"fixture-operator", "reason":"Whole-tree policy decision",
+        "actions":[{"kind":"policy_time","time":{"tick":1,"actor":"fixture-operator","reason":"Explicit whole-tree clock"}}]
+    })).unwrap()).unwrap();
+    let whole_tree = invoke(&[
+        "review",
+        "decide",
+        "whole-tree-human",
+        "--from",
+        "review",
+        "--file",
+        whole_tree.to_str().unwrap(),
+        "--execute",
+    ]);
+    assert!(
+        whole_tree.status.success(),
+        "{}\n{}",
+        stdout(&whole_tree),
+        stderr(&whole_tree)
+    );
+    let whole_tree: serde_json::Value = serde_json::from_slice(&whole_tree.stdout).unwrap();
+    assert_eq!(whole_tree["attempts"], 0);
+    assert_eq!(whole_tree["chargeable_tokens"], "0");
+    assert!(whole_tree["plan"]["inputs"].get("base").is_none());
+
+    assert_eq!(
+        std::fs::read_to_string(auth.join("turns"))
+            .unwrap()
+            .lines()
+            .count(),
+        turns_before + 2
+    );
+    // Both advertised Base forms must survive actual standalone `review continue` planning,
+    // exact-plan resume and cold replay. The captured file of the CLI form has no Base label.
+    let base = {
+        let output = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    std::fs::write(repo.join("subject.txt"), "claim remains\n").unwrap();
+    commit(&repo);
+    std::fs::write(auth.join("native-review-claims"), "enabled").unwrap();
+    for cli_base in [false, true] {
+        let id = if cli_base {
+            "standalone-cli-base"
+        } else {
+            "standalone-file-base"
+        };
+        let next = format!("{id}-continued");
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&review_file).unwrap()).unwrap();
+        file["task_id"] = serde_json::json!(id);
+        if !cli_base {
+            file["base"] = serde_json::json!({"commit":base});
+        }
+        std::fs::write(&review_file, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        let mut args = vec![
+            "review",
+            "run",
+            "--file",
+            review_file.to_str().unwrap(),
+            "--authority",
+            base.as_str(),
+            "--candidate",
+            "HEAD",
+        ];
+        if cli_base {
+            args.extend(["--base", base.as_str()]);
+        }
+        let first = invoke(&args);
+        assert_eq!(
+            first.status.code(),
+            Some(3),
+            "{}\n{}",
+            stdout(&first),
+            stderr(&first)
+        );
+        let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+        assert_eq!(first["chargeable_tokens"], "36");
+        // A later zero-token human Task must retain each original model, even in a new
+        // process with no Worker bindings of its own. It advances no discovery Round.
+        let context_output = invoke(&["review", "decision-context", id]);
+        assert!(
+            context_output.status.success(),
+            "{}",
+            stderr(&context_output)
+        );
+        let context: serde_json::Value = serde_json::from_slice(&context_output.stdout).unwrap();
+        let action_id = format!("{id}-human");
+        let action_file = root.path().join(format!("{action_id}.json"));
+        std::fs::write(&action_file, serde_json::to_vec(&serde_json::json!({
+            "schema":"af.review-decisions/1", "review_id":context["review_id"],
+            "policy_id":context["review"]["policy_id"], "subject_id":context["review"]["subject_id"],
+            "snapshot_id":context["review"]["snapshot_id"], "base_snapshot_id":context["subject"]["base_snapshot_id"],
+            "actor":"fixture-operator", "reason":"Advance explicit native policy time",
+            "actions":[{"kind":"policy_time","time":{"tick":1,"actor":"fixture-operator","reason":"Explicit policy clock"}}]
+        })).unwrap()).unwrap();
+        let action = invoke(&[
+            "review",
+            "decide",
+            &action_id,
+            "--from",
+            id,
+            "--file",
+            action_file.to_str().unwrap(),
+            "--execute",
+        ]);
+        assert_eq!(
+            action.status.code(),
+            Some(3),
+            "{}\n{}",
+            stdout(&action),
+            stderr(&action)
+        );
+        let action: serde_json::Value = serde_json::from_slice(&action.stdout).unwrap();
+        assert_eq!(action["attempts"], 0);
+        assert_eq!(action["chargeable_tokens"], "0");
+        let ledger = crate::telemetry_ledger::read_ledger(
+            &root.path().join("native-model-telemetry"),
+            &af_store::store::task::task_run_id(&action_id).unwrap(),
+        );
+        assert_eq!(ledger.coverage, "complete", "{:?}", ledger.coverage_reasons);
+        assert!(!ledger.findings.is_empty());
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+        let plan: af_contracts::task::plan::ExecutionPlan = serde_json::from_value(
+            cas.get_artifact(first["plan_id"].as_str().unwrap())
+                .unwrap()
+                .payload,
+        )
+        .unwrap();
+        let graph: af_graph::task::CompiledTask =
+            serde_json::from_value(cas.get_artifact(&plan.compiled_graph_id).unwrap().payload)
+                .unwrap();
+        for finding in &ledger.findings {
+            let af_graph::task::CompiledOperator::Primitive {
+                operator: af_contracts::task::pipeline::TaskOperatorV1::Verify { slot },
+                ..
+            } = &graph.nodes[&finding.node_id].operator
+            else {
+                panic!("Finding lost its original reviewer");
+            };
+            let af_contracts::task::plan::WorkerExecutionV3::Model { model, .. } =
+                &plan.bindings[slot].execution
+            else {
+                panic!("Expected the fixture's model binding");
+            };
+            assert_eq!(finding.model.as_ref(), Some(model));
+        }
+
+        let planned = invoke(&["review", "continue", &next, "--from", id]);
+        assert!(
+            planned.status.success(),
+            "{}\n{}",
+            stdout(&planned),
+            stderr(&planned)
+        );
+        let planned: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+        assert_eq!(planned["attempts"], 0);
+        assert_eq!(planned["chargeable_tokens"], "0");
+        let source_state =
+            af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let source_cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+        let original = source_state
+            .task_projection(&source_cas, id)
+            .unwrap()
+            .unwrap();
+        let inputs = serde_json::to_value(&original.revision.inputs).unwrap();
+        assert_eq!(planned["plan"]["inputs"]["base"], inputs["base"]);
+        let base_snapshot = inputs["base"]["snapshot_id"].as_str().unwrap();
+        let source_snapshot = inputs["source"]["snapshot_id"].as_str().unwrap();
+        let (_, original_base) =
+            af_source_git::task::read_snapshot(&source_cas, base_snapshot).unwrap();
+        let (_, original_source) =
+            af_source_git::task::read_snapshot(&source_cas, source_snapshot).unwrap();
+        assert_ne!(
+            base_snapshot, source_snapshot,
+            "independent candidate and Base"
+        );
+        assert!(
+            !original_base
+                .entries
+                .iter()
+                .any(|e| e.path == "subject.txt")
+        );
+        assert!(
+            original_source
+                .entries
+                .iter()
+                .any(|e| e.path == "subject.txt")
+        );
+
+        assert_eq!(
+            planned["plan"]["inputs"]["source"]["snapshot_id"],
+            inputs["source"]["snapshot_id"]
+        );
+        assert_eq!(
+            planned["plan"]["inputs"]["history"],
+            first["result"]["outputs"]["history"]
+        );
+        assert!(planned["plan"]["inputs"].get("findings").is_none());
+        let finished = invoke(&[
+            "review",
+            "resume",
+            &next,
+            "--confirm-plan",
+            planned["plan_id"].as_str().unwrap(),
+        ]);
+        assert_eq!(
+            finished.status.code(),
+            Some(3),
+            "{}\n{}",
+            stdout(&finished),
+            stderr(&finished)
+        );
+        let finished: serde_json::Value = serde_json::from_slice(&finished.stdout).unwrap();
+        assert_eq!(finished["attempts"], 4);
+        assert_eq!(finished["chargeable_tokens"], "36");
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+        let ledger = |value: &serde_json::Value| {
+            let round = value["result"]["outputs"]["review"]["artifact_ids"][0]
+                .as_str()
+                .unwrap();
+            af_runtime::task::review::ReviewTaskDomain::recorded_ledger(&cas, round).unwrap()
+        };
+        let before = ledger(&first);
+        let after = ledger(&finished);
+        assert_eq!(before.findings().len(), 2);
+        assert_eq!(after.findings().len(), 2);
+        for finding in before.findings() {
+            let current = after.get(&finding.key).unwrap();
+            assert_eq!(current.status, af_store::Status::Open);
+            assert!(current.reports.len() > finding.reports.len());
+            assert!(
+                current
+                    .reports
+                    .iter()
+                    .any(|r| r.report_id == finding.reports[0].report_id)
+            );
+        }
+        let prior = invoke(&["review", "show", id]);
+        assert!(prior.status.success());
+        let prior: serde_json::Value = serde_json::from_slice(&prior.stdout).unwrap();
+        assert_eq!(
+            prior["chargeable_tokens"], "36",
+            "a new Task never rewrites prior accounting"
+        );
+        let refused = invoke(&[
+            "review",
+            "continue",
+            &format!("{next}-past-bound"),
+            "--from",
+            &next,
+        ]);
+        assert_eq!(refused.status.code(), Some(1));
+        assert!(
+            stderr(&refused).contains("Round bound") || stdout(&refused).contains("Round bound"),
+            "{}{}",
+            stdout(&refused),
+            stderr(&refused)
+        );
+        // Each case starts from the original generated file, rather than inheriting the other form.
+        std::fs::copy(
+            repo.join(".af/task-packages/onboard/review-code/task.json"),
+            &review_file,
+        )
+        .unwrap();
+    }
 }

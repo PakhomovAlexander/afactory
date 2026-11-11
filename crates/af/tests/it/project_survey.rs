@@ -267,7 +267,7 @@ fn fixture(root: &Path) -> PathBuf {
     write(
         &repo,
         ".af/af.toml",
-        b"version = 1\n\n[project]\nname = \"survey-fixture\"\nmin_af = \"0.1\"\n\n[defaults]\n\
+        b"version = 2\n\n[project]\nname = \"survey-fixture\"\nmin_af = \"0.1\"\n\n[defaults]\n\
           pipeline = \"review\"\n\n[survey]\nmax_file_bytes = 512\n\n[survey.languages]\n\
           \"*.rs\" = \"rust\"\n\"src/**\" = \"source\"\n",
     );

@@ -28,7 +28,7 @@ fn manifest(cas: &Cas, entries: &[(&str, EntryKind, &[u8])]) -> Manifest {
 fn snapshot(cas: &Cas, manifest: &Manifest) -> (String, ArtifactInputV1) {
     let origin = cas
         .put_json(
-            &json!({"schema":"af.task-source-origin/1","repository_id":"fixture",
+            &json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture",
             "source_revision":"0".repeat(40),"content_digest":manifest.content_digest()}),
         )
         .unwrap();
@@ -81,7 +81,7 @@ fn domain(cas: &Cas) -> ReportTaskDomain {
         .unwrap();
     let signatures = report_signatures(&policy_id, &policy).unwrap();
     let mut graph: CompiledTask = serde_json::from_value(json!({
-        "schema":"af.compiled-task/1","nodes":{},"order":[],"inputs":{},"outputs":{},
+        "schema":"af.compiled-task/6","nodes":{},"order":[],"inputs":{},"outputs":{},
         "coverage":{},"calls":{},"slots":{},"max_parallel":1,"allowances":{}
     }))
     .unwrap();
@@ -141,13 +141,19 @@ fn cite(path: &str, line: Option<u64>) -> RepositoryCitationV1 {
     }
 }
 
-fn draft(citations: &[RepositoryCitationV1]) -> DocumentDraftV2 {
-    DocumentDraftV2 {
-        schema: "af.document-draft/2".into(),
+fn draft(citations: &[RepositoryCitationV1]) -> DocumentDraft {
+    DocumentDraft {
+        schema: "af.document-draft/3".into(),
         title: "Where the time goes".into(),
         sections: vec![section("Findings", "Tests dominate: 12 of 14 minutes.")],
-        citations: BTreeSet::from(["r1".into()]),
-        repository_citations: citations.iter().cloned().collect(),
+        citations: std::iter::once("r1".into())
+            .chain(
+                citations
+                    .iter()
+                    .cloned()
+                    .map(|location| DraftCitation::Repository { location }),
+            )
+            .collect(),
     }
 }
 
@@ -167,20 +173,15 @@ fn sources() -> ReportSourcesV1 {
 }
 
 #[test]
-fn a_first_version_draft_renders_exactly_as_the_document_renderer_renders_it() {
-    let draft = draft(&[]).as_first_version();
+fn the_shared_draft_renders_exactly_as_the_document_renderer_without_repository_citations() {
+    let draft = draft(&[]);
     let report = sources();
     let document = DocumentSourcesV1 {
         schema: report.schema.clone(),
         sources: report.sources.clone(),
     };
     assert_eq!(
-        render_report(&ReportDraft::V1(draft.clone()), &report).unwrap(),
-        super::super::document::render_document(&draft, &document).unwrap()
-    );
-    // A second-version draft without repository citations renders the same bytes too.
-    assert_eq!(
-        render_report(&ReportDraft::V2(self::draft(&[])), &report).unwrap(),
+        render_report(&draft.clone(), &report).unwrap(),
         super::super::document::render_document(&draft, &document).unwrap()
     );
 }
@@ -188,11 +189,11 @@ fn a_first_version_draft_renders_exactly_as_the_document_renderer_renders_it() {
 #[test]
 fn repository_citations_render_as_path_or_path_line_in_a_closed_code_span() {
     let rendered = render_report(
-        &ReportDraft::V2(draft(&[
+        &draft(&[
             cite("src/lib.rs", None),
             cite("src/lib.rs", Some(2)),
             cite("docs/a`b.md", Some(1)),
-        ])),
+        ]),
         &sources(),
     )
     .unwrap();
@@ -206,8 +207,9 @@ fn repository_citations_render_as_path_or_path_line_in_a_closed_code_span() {
     assert_eq!(code_span("a``b"), "```a``b```");
     // The empty set of sources renders no Sources section and still renders citations.
     let mut bare = draft(&[cite("README.md", None)]);
-    bare.citations.clear();
-    let rendered = render_report(&ReportDraft::V2(bare), &ReportSourcesV1::empty()).unwrap();
+    bare.citations
+        .retain(|c| matches!(c, DraftCitation::Repository { .. }));
+    let rendered = render_report(&bare, &ReportSourcesV1::empty()).unwrap();
     assert!(!rendered.contains("## Sources"));
     assert!(rendered.contains("- `README.md`"));
 }
@@ -266,12 +268,12 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
             ("requirements".into(), port("af/Requirements@1", false)),
             ("source".into(), port(SOURCE_TREE_V1, false)),
         ]),
-        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V3, false))]),
     };
     assert!(author_contract(&author));
     author
         .outputs
-        .insert("draft".into(), same_source(DOCUMENT_DRAFT_V1, false));
+        .insert("draft".into(), same_source(DOCUMENT_DRAFT_V3, false));
     assert!(author_contract(&author));
     author
         .inputs
@@ -299,7 +301,7 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
     let mut unbound = author.clone();
     unbound
         .outputs
-        .insert("draft".into(), port(DOCUMENT_DRAFT_V2, false));
+        .insert("draft".into(), port(DOCUMENT_DRAFT_V3, false));
     assert!(!author_contract(&unbound));
     let mut candidate = author.clone();
     candidate
@@ -358,7 +360,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     };
     let draft_id = cas
         .put_artifact(
-            DOCUMENT_DRAFT_V2,
+            DOCUMENT_DRAFT_V3,
             attempt("root.nodes.author"),
             vec![],
             Some(cited.clone()),
@@ -380,7 +382,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     let seal = invocation(
         "root.nodes.seal",
         vec![
-            ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
+            ("draft", one(draft_id, DOCUMENT_DRAFT_V3, Some(&cited))),
             ("sources", sources_port.clone()),
             ("source", source.clone()),
         ],
@@ -472,7 +474,7 @@ fn a_failed_citation_fails_the_check_receipt_and_names_its_reason() {
     let (cited, source) = snapshot(&cas, &tree);
     let draft_id = cas
         .put_artifact(
-            DOCUMENT_DRAFT_V2,
+            DOCUMENT_DRAFT_V3,
             attempt("root.nodes.author"),
             vec![],
             Some(cited.clone()),
@@ -509,7 +511,7 @@ fn a_failed_citation_fails_the_check_receipt_and_names_its_reason() {
             &invocation(
                 "root.nodes.seal",
                 vec![
-                    ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
+                    ("draft", one(draft_id, DOCUMENT_DRAFT_V3, Some(&cited))),
                     ("sources", sources_port.clone()),
                     ("source", source.clone()),
                 ],
@@ -569,38 +571,37 @@ fn a_failed_citation_fails_the_check_receipt_and_names_its_reason() {
 }
 
 #[test]
-fn the_seal_binds_exactly_one_draft() {
-    let (_directory, cas) = store();
-    let tree = manifest(&cas, &[("a", EntryKind::File, b"a\n")]);
-    let (cited, source) = snapshot(&cas, &tree);
+fn the_seal_requires_the_current_draft_and_refuses_retired_ports() {
     let id = format!("sha256:{}", "3".repeat(64));
-    let both = TaskInvocationV1 {
+    let snapshot = format!("sha256:{}", "4".repeat(64));
+    let mut input = TaskInvocationV1 {
         plan_id: id.clone(),
         node: "root.nodes.seal".into(),
-        inputs: BTreeMap::from([
-            (
-                "draft".into(),
-                one(id.clone(), DOCUMENT_DRAFT_V2, Some(&cited)),
-            ),
-            (
-                "draft_v1".into(),
-                one(id.clone(), DOCUMENT_DRAFT_V1, Some(&cited)),
-            ),
-            ("source".into(), source),
-        ]),
+        inputs: BTreeMap::from([(
+            "draft".into(),
+            one(id.clone(), DOCUMENT_DRAFT_V3, Some(&snapshot)),
+        )]),
     };
-    assert!(
-        draft_input(&both, &cited)
-            .unwrap_err()
-            .contains("exactly one draft")
+    assert_eq!(draft_input(&input, &snapshot).unwrap(), id);
+    input.inputs.insert(
+        "draft_v1".into(),
+        one(id.clone(), DOCUMENT_DRAFT_V3, Some(&snapshot)),
     );
-    let mut none = both.clone();
-    none.inputs.remove("draft");
-    none.inputs.remove("draft_v1");
-    assert!(draft_input(&none, &cited).is_err());
-    let mut first = both;
-    first.inputs.remove("draft");
-    assert_eq!(draft_input(&first, &cited).unwrap(), id);
+    assert!(draft_input(&input, &snapshot).is_err());
+    input.inputs.remove("draft");
+    assert!(draft_input(&input, &snapshot).is_err());
+    input.inputs.remove("draft_v1");
+    assert!(draft_input(&input, &snapshot).is_err());
+    for retired in ["af/DocumentDraft@1", "af/DocumentDraft@2"] {
+        input
+            .inputs
+            .insert("draft".into(), one(id.clone(), retired, Some(&snapshot)));
+        assert!(draft_input(&input, &snapshot).is_err());
+    }
+    input
+        .inputs
+        .insert("draft".into(), one(id, DOCUMENT_DRAFT_V3, Some(&snapshot)));
+    assert!(draft_input(&input, &format!("sha256:{}", "5".repeat(64))).is_err());
 }
 
 #[test]
@@ -751,7 +752,7 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
     uncited.citations.clear();
     let draft_id = cas
         .put_artifact(
-            DOCUMENT_DRAFT_V2,
+            DOCUMENT_DRAFT_V3,
             attempt("root.nodes.author"),
             vec![],
             Some(cited.clone()),
@@ -775,7 +776,7 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
                 vec![
                     (
                         "draft",
-                        one(draft_id.clone(), DOCUMENT_DRAFT_V2, Some(&cited)),
+                        one(draft_id.clone(), DOCUMENT_DRAFT_V3, Some(&cited)),
                     ),
                     ("source", source.clone()),
                 ],
@@ -884,7 +885,7 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
             &invocation(
                 "root.nodes.seal",
                 vec![
-                    ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
+                    ("draft", one(draft_id, DOCUMENT_DRAFT_V3, Some(&cited))),
                     (
                         "sources",
                         one(with_sources.clone(), REPORT_SOURCES_V1, None),
@@ -979,7 +980,7 @@ fn author_invocation(cas: &Cas) -> (ReportTaskDomain, TaskInvocationV1) {
                     ("requirements".into(), port("af/Requirements@1", false)),
                     ("source".into(), port(SOURCE_TREE_V1, false)),
                 ]),
-                outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+                outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V3, false))]),
             },
             inputs: BTreeMap::new(),
             conditions: vec![],
@@ -1039,7 +1040,7 @@ fn a_draft_is_validated_for_shape_before_sealing_and_each_check_fails_alone() {
     assert_eq!(passed.policy.required_sections, policy().required_sections);
 
     let mut unnamed = good.clone();
-    unnamed["citations"] = json!(["not a name!"]);
+    unnamed["citations"] = json!([{"kind":"source","name":"not a name!"}]);
     let mut untitled = good.clone();
     untitled["sections"] = json!([{"heading": "Summary", "body": "b"}]);
     for (case, drafts, check, words) in [
@@ -1054,7 +1055,7 @@ fn a_draft_is_validated_for_shape_before_sealing_and_each_check_fails_alone() {
             "an unnamed citation",
             vec![unnamed],
             "sets",
-            "the draft is not a valid af/DocumentDraft@2: ",
+            "the draft is not a valid af/DocumentDraft@3: ",
         ),
         (
             "a missing section",
@@ -1148,7 +1149,7 @@ fn accepted_research_document_is_a_narrow_optional_report_worker_input() {
             ("source".into(), port(SOURCE_TREE_V1, false)),
             ("research_report".into(), port(DOCUMENT_V1, true)),
         ]),
-        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+        outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V3, false))]),
     };
     assert!(author_contract(&author));
     let mut verifier = author.clone();

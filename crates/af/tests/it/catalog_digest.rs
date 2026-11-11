@@ -103,6 +103,18 @@ fn every_published_package_pin_reproduces() {
         checked += assert_reproduces(&repo, &catalog);
     }
     assert!(checked >= 28, "fixture catalogs held {checked} pins");
+    let mut telemetry = 0;
+    for entry in std::fs::read_dir(root.join("fixtures/telemetry-bench")).unwrap() {
+        let repo = entry.unwrap().path().join("repo");
+        let catalog = repo.join(".af/task-catalog.toml");
+        if catalog.is_file() {
+            telemetry += assert_reproduces(&repo, &catalog);
+        }
+    }
+    assert_eq!(
+        telemetry, 20,
+        "every current telemetry fixture package is pinned"
+    );
 }
 
 const RAW_CODEX_MODELS: &[u8] =
@@ -402,7 +414,7 @@ const LIGHT_ROLES: [(&str, &str, &str); 3] = [
 ];
 
 fn selected_light_workers() -> (
-    af_contracts::task::pipeline::PipelineDefinitionV1,
+    af_contracts::task::pipeline::PipelineDefinition,
     BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
 ) {
     let root = workspace();
@@ -432,7 +444,7 @@ fn selected_light_workers() -> (
 /// Shared by the positive cross-artifact audit and independent role mutations below. Display
 /// labels are emitted only after the selected slot and Worker agree on the expected role.
 fn validate_small_issue_rubrics(
-    pipeline: &af_contracts::task::pipeline::PipelineDefinitionV1,
+    pipeline: &af_contracts::task::pipeline::PipelineDefinition,
     workers: &BTreeMap<String, af_pipeline_config::task::catalog::TaskWorkerManifest>,
 ) -> Result<(), String> {
     use af_pipeline_config::task::catalog::TaskWorkerRunner;
@@ -551,71 +563,6 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
             error.starts_with(&format!("{slot_name}: Worker.signature.roles")),
             "{error}"
         );
-    }
-}
-
-/// Legacy Review pipelines use the same current judges. Resolve every locked package through
-/// the real parser and validate each declared pipeline's byte pin and referenced Workers.
-#[test]
-fn every_declared_legacy_pipeline_resolves_current_codex_judges_and_pins() {
-    use af_pipeline_config::lock::{
-        Lockfile, PackageManifest, Registry, ReviewerBackend,
-        reviewer_runner_settings_from_manifest,
-    };
-
-    let root = workspace();
-    let lock =
-        Lockfile::from_toml(&std::fs::read_to_string(root.join(".af/af.lock")).unwrap()).unwrap();
-    let registry = Registry::new(root.join(".af/workers"));
-    let models = recorded_codex_models();
-    for name in lock.workers.keys() {
-        let worker = lock
-            .resolve_for_subject(name, &registry, af_contracts::SubjectKind::Diff)
-            .unwrap();
-        let manifest: PackageManifest = toml::from_str(
-            &std::fs::read_to_string(root.join(".af/workers").join(name).join("reviewer.toml"))
-                .unwrap(),
-        )
-        .unwrap();
-        let settings = reviewer_runner_settings_from_manifest(&manifest).unwrap();
-        assert_eq!(settings.backend, ReviewerBackend::Codex, "{name}");
-        assert_eq!(settings.model, "gpt-6.1-terra", "{name}");
-        assert_recorded_codex_support(&models, name, &settings.model, &settings.effort);
-        assert_eq!(
-            settings.effort,
-            if name.contains("xhigh") || name == "performance" {
-                "xhigh"
-            } else {
-                "high"
-            },
-            "{name}"
-        );
-        assert_eq!(worker.version, manifest.version);
-    }
-    for entry in std::fs::read_dir(root.join(".af/pipelines")).unwrap() {
-        let path = entry.unwrap().path();
-        let name = path.file_stem().unwrap().to_str().unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(
-            lock.pipelines[name].digest,
-            af_store::canonical::blob_content_id(&bytes),
-            "{name}"
-        );
-        let pipeline =
-            af_pipeline_config::Definition::from_toml(std::str::from_utf8(&bytes).unwrap())
-                .unwrap();
-        let subject = pipeline.subject.unwrap().kind;
-        for node in pipeline.nodes {
-            if matches!(node.kind, af_pipeline_config::NodeKindSpec::Reviewer) {
-                assert!(
-                    node.runner.is_none(),
-                    "{name}: shipped reviewers must use pinned packages"
-                );
-                let package = node.package.expect("shipped reviewer has a package pin");
-                lock.resolve_for_subject(&package, &registry, subject)
-                    .unwrap();
-            }
-        }
     }
 }
 
@@ -1091,7 +1038,7 @@ fn staged_catalog_contract_fixtures_match_native_interfaces() {
         }
         compiler.validate_dependency_closure().unwrap();
         let expected = CatalogContractFixtures {
-            schema: "af.catalog-contract-fixtures/1".into(),
+            schema: "af.catalog-contract-fixtures/2".into(),
             pipelines: compiler
                 .pipelines()
                 .iter()

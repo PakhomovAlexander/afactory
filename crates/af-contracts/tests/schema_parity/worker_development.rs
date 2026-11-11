@@ -507,23 +507,10 @@ fn worker_cache_policies_warm_selections_build_provenance_and_capture_receipts_h
 }
 
 #[test]
-fn a_worker_cache_is_refused_as_gate_capture_evidence() {
-    use af_contracts::{
-        BuildCacheCapturedPayloadV1, BuildCacheKindV1, EventType, event::validate_event_payload,
-    };
-    let payload = BuildCacheCapturedPayloadV1 {
-        gate_node: "gate".into(),
-        gate_attempt_id: Some("a".repeat(26)),
-        head_snapshot_id: identity(),
-        kind: BuildCacheKindV1::Worker,
-        limits: af_contracts::BuildCacheLimitsV1::default(),
-        build_cache_artifact_id: Some(identity()),
-        refused: None,
-        entries: 1,
-        bytes: 1,
-    };
-    let value = serde_json::to_value(payload).unwrap();
-    assert!(validate_event_payload(EventType::BuildCacheCapturedV1, &value).is_err());
-    let event = serde_json::json!({"event_id":"a".repeat(26),"run_id":"task:fixture","sequence":1,"type":"BuildCacheCaptured@1","occurred_at":"2026-11-04T00:00:00Z","payload":value});
-    assert!(!validator("run-event-v1.json").is_valid(&event));
+fn retired_gate_capture_events_cannot_admit_worker_cache_evidence() {
+    assert!(
+        "BuildCacheCaptured@1"
+            .parse::<af_contracts::EventType>()
+            .is_err()
+    );
 }

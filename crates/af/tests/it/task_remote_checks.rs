@@ -84,6 +84,9 @@ fn fixture() -> Fixture {
     .unwrap();
     let local = repo.join(".af/task-packages/fixture/implementation/pipeline.toml");
     let original = std::fs::read_to_string(&local).unwrap();
+    let original_manifest: af_contracts::task::pipeline::PipelineDefinition =
+        af_pipeline_config::task::parse_task_pipeline(&original).unwrap();
+    let version = original_manifest.version;
     let twin = original
         .replace(
             &format!("name = \"{LOCAL}\""),
@@ -101,7 +104,7 @@ fn fixture() -> Fixture {
     let catalog = repo.join(".af/task-catalog.toml");
     let mut text = std::fs::read_to_string(&catalog).unwrap();
     text.push_str(&format!(
-        "\n[packages.\"{REMOTE}\"]\nversion = \"1.0.0\"\ndigest = \"{digest}\"\n\
+        "\n[packages.\"{REMOTE}\"]\nversion = \"{version}\"\ndigest = \"{digest}\"\n\
          path = \".af/task-packages/{REMOTE}\"\n"
     ));
     std::fs::write(&catalog, text).unwrap();
@@ -451,7 +454,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v17.json"),
+        &crate::schemas::validator("task-inspection-v20.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {

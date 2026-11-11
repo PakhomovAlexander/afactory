@@ -1,5 +1,5 @@
-schema = "af.task-kind/2"
+schema = "af.task-kind/3"
 name = "custom/triage-kind"
-version = "1.0.0"
+version = "1.0.1"
 kind = "triage"
 profile = "structured"

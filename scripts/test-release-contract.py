@@ -75,6 +75,10 @@ class ReleaseContract(unittest.TestCase):
 
     def test_explicit_compatible_version_passes(self):
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.1')
+        self.version('0.15.1-rc.2')
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.2')
+        self.version('0.15.1-rc.3')
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
         # A future compatible release still requires an explicit reviewed declaration.
         self.version('9.0.0')
         path = self.root / 'scripts/telemetry-overhead.py'
@@ -82,10 +86,26 @@ class ReleaseContract(unittest.TestCase):
         self.assertEqual(PREFLIGHT.check(self.root), '9.0.0')
 
     def test_undeclared_and_incompatible_versions_fail(self):
-        for version in ('9.0.0', '0.13.0'):
+        for version in ('9.0.0', '0.13.0', '0.11.9', '0.0.0', '0.14.0',
+                        '0.14.0-rc.8', '0.15.1', '0.15.1-rc.4',
+                        '0.15.1-rc.1+unknown', '0.15.1-rc.2+unknown', '0.15.1-rc.20',
+                        '0.15.1-rc.3+unknown', '0.15.1-rc.30',
+                        '0.14.0-nightly.20261102', '0.14.0-rc.5+unknown', '0.14.0-rc.7+unknown'):
             self.version(version)
             with self.assertRaises(ValueError):
                 PREFLIGHT.check(self.root)
+
+    def test_declared_release_cannot_select_a_retired_workload_or_receipt(self):
+        path = self.root / 'scripts/telemetry-overhead.py'
+        current = path.read_text()
+        for old, retired in (("CURRENT_CONTRACT = 'native-task-review@1'",
+                              "CURRENT_CONTRACT = 'check-receipt@2'"),
+                             ("CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'",
+                              "CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@1'")):
+            with self.subTest(retired=retired):
+                path.write_text(current.replace(old, retired))
+                with self.assertRaisesRegex(ValueError, 'current committed fixtures'):
+                    PREFLIGHT.check(self.root)
 
     def test_stale_missing_and_retired_lab_schemas_fail(self):
         name = next(iter(contracts.schema_documents()))
@@ -112,7 +132,9 @@ class ReleaseContract(unittest.TestCase):
     def test_missing_smoke_artifact_names_captured_stderr(self):
         smoke = telemetry_lab.script_module('scripts/performance/tests/telemetry_runtime_smoke.py')
         with self.assertRaisesRegex(AssertionError, 'named by no fixture contract'):
-            smoke.run_document(self.root, b'0.99.0 is named by no fixture contract')
+            from perflab.telemetry_exec import Outcome
+            smoke.failed_task_document(self.root,
+                Outcome(1, b'', 0, b'0.99.0 is named by no fixture contract', 52, 0))
 
     def test_real_preflight_cli_and_schema_writer_refuse_drift(self):
         shutil.copy(ROOT / 'scripts/release-contract.py', self.root / 'scripts')
@@ -125,6 +147,14 @@ class ReleaseContract(unittest.TestCase):
                                   capture_output=True, text=True, cwd=self.root)
         result = run('scripts/release-contract.py')
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.version('0.15.1-rc.3')
+        result = run('scripts/release-contract.py')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('0.15.1-rc.3 explicitly selects current telemetry fixtures', result.stdout)
+        self.version('0.15.1-rc.4')
+        result = run('scripts/release-contract.py')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('named by no fixture contract', result.stderr)
         self.version('9.0.0')
         result = run('scripts/release-contract.py')
         self.assertEqual(result.returncode, 1)

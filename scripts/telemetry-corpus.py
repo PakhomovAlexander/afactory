@@ -284,7 +284,7 @@ def segment_records(layout, execution, blobs, pad):
             sequence += 1
             refs = [f'sha256:{sha(f"ref:{layout.seed}:{execution}:{sequence}:{k}")}'
                     for k in range(pads[mirrored])]
-            attributes = {'af.store.event.type': 'TaskTransition@5',
+            attributes = {'af.store.event.type': 'TaskTransition@6',
                           'af.store.event.sequence': str(sequence)}
             if refs:
                 attributes['artifact_refs'] = refs

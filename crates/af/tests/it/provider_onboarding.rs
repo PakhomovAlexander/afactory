@@ -623,7 +623,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             ),
             (
                 vec!["provider", "models", "pi-personal", "--json"],
-                "provider-models-v3.json",
+                "provider-models-v4.json",
             ),
             (
                 vec![
@@ -642,7 +642,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                     },
                     "--json",
                 ],
-                "provider-models-v3.json",
+                "provider-models-v4.json",
             ),
         ] {
             let out = invoke(&args);
@@ -686,7 +686,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             ]);
             assert!(page.status.success(), "{}", err(&page));
             let value = document(&page);
-            valid("provider-models-v3.json", &value);
+            valid("provider-models-v4.json", &value);
             assert_eq!(value["providers"][0]["models"].as_array().unwrap().len(), 6);
             assert_eq!(value["providers"][0]["catalog_page"]["total"], 70);
             assert_eq!(

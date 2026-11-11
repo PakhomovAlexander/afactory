@@ -1003,13 +1003,16 @@ class Task:
         journal.save()
         planned = strict_json(self.command('plan', '--file', str(directory / 'task.json'),
                                           '--authority', identity['main_commit'], '--json'))
-        require(planned.get('schema') == 'af/task-inspection@17', 'Task plan schema refused')
+        require(planned.get('schema') == 'af/task-inspection@20', 'Task plan schema refused')
         require(planned['task_id'] == generation['task_id'] and planned['attempts'] == 0, 'plan identity refused')
         plan = planned['plan']
         source = plan['inputs']['source']['snapshot_id']
         snapshot = self.cas(source)
         origin = self.cas(snapshot['origin_id'])
-        require(origin['source_revision'] == identity['main_commit'], 'Task source is not captured main')
+        require(origin.get('schema') == 'af.task-source-origin/3'
+                and origin.get('kind') == 'captured' and 'bound_from' not in origin
+                and origin.get('source_revision') == identity['main_commit'],
+                'Task source is not current captured main')
         source_ids = plan['inputs']['sources']['artifact_ids']
         require(len(source_ids) == 1 and self.envelope(source_ids[0], 'af/ReportSources@1') == generation['bundle'],
                 'Task sources differ from generation')
@@ -1021,7 +1024,7 @@ class Task:
 
     def collect(self, generation, journal, key):
         show = strict_json(self.command('show', generation['task_id'], '--json'))
-        require(show.get('schema') == 'af/task-inspection@17', 'Task show schema refused')
+        require(show.get('schema') == 'af/task-inspection@20', 'Task show schema refused')
         require(show['task_id'] == generation['task_id'], 'Task show identity refused')
         journal.settle(key, show)
         require(show.get('phase', {}).get('kind') == 'finished', 'Task did not finish; no guessed triage')

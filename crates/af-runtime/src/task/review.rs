@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::pipeline::*;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::review::*;
 use af_contracts::task::verification::TASK_CHECK_RECEIPT_V2;
 use af_contracts::task::*;
@@ -25,8 +25,12 @@ use super::host::TaskDomain;
 use super::source::{invocation_producer, source_input};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 mod continuation;
+mod decisions;
 mod implementation;
+mod integration;
+pub mod proposal;
 mod repair;
+mod scatter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +45,7 @@ pub struct ReviewTaskPolicy {
     pub max_rounds: u32,
     pub allow_targeted_repairs: bool,
 }
-/// The one Task Review policy: Subject@2, one assignment per reviewer and ReviewerResult@2.
+/// The one Task Review policy: Subject@3, one assignment per reviewer and ReviewerResult@2.
 pub const REVIEW_TASK_POLICY_SCHEMA: &str = "af.review-task-policy/2";
 const RESULT_TYPE: &str = af_contracts::contract::REVIEWER_RESULT_V2;
 
@@ -111,7 +115,7 @@ pub fn review_signatures(
     let history = port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}, false);
     let mut bind_outputs = BTreeMap::from([(
         "subject".into(),
-        port(TASK_REVIEW_SUBJECT_V2, same(), false),
+        port(TASK_REVIEW_SUBJECT_V3, same(), false),
     )]);
     for name in policy.reviewers.keys() {
         bind_outputs.insert(name.clone(), port(TASK_REVIEW_ASSIGNMENT_V1, same(), false));
@@ -143,7 +147,7 @@ pub fn review_signatures(
         ("history".into(), history),
         (
             "subject".into(),
-            port(TASK_REVIEW_SUBJECT_V2, same(), false),
+            port(TASK_REVIEW_SUBJECT_V3, same(), false),
         ),
         ("checks".into(), port(TASK_CHECK_RECEIPT_V2, same(), true)),
     ]);
@@ -186,8 +190,19 @@ pub fn review_signatures(
         .filter(|(_, requirement)| **requirement == DemandRequirement::Advisory)
         .map(|(name, _)| name.clone())
         .collect();
+    let mut integrated_bind = bind.clone();
+    integrated_bind.contract.inputs.remove("continuation");
+    integrated_bind.contract.inputs.insert(
+        "integration".into(),
+        port(
+            af_contracts::task::native_review::TASK_REVIEW_COMMIT_V1,
+            same(),
+            false,
+        ),
+    );
     let mut installed = BTreeMap::from([
         ("operator/review-bind".into(), bind),
+        ("operator/review-bind-integrated".into(), integrated_bind),
         ("operator/review-reduce".into(), reduce),
         (
             "operator/review-accept".into(),
@@ -195,7 +210,13 @@ pub fn review_signatures(
         ),
     ]);
     installed.extend(repair::signatures(policy_id, policy.allow_targeted_repairs));
+    installed.extend(integration::signatures(policy));
+    installed.insert("operator/review-slice".into(), scatter::slice_signature());
     installed.insert("operator/review-continue".into(), continuation::signature());
+    installed.insert(
+        "operator/review-decisions".into(),
+        decisions::signature(policy_id),
+    );
     Ok(installed)
 }
 
@@ -222,8 +243,36 @@ impl ReviewTaskDomain {
         let policy: ReviewTaskPolicy =
             serde_json::from_value(cas.get_json(policy_id).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
+        graph.native_integration_successors()?;
         let installed = review_signatures(policy_id, &policy)?;
         for node in graph.nodes.values() {
+            if let CompiledOperator::Primitive {
+                operator: TaskOperatorV1::ReviewReduce {},
+                signature,
+            } = &node.operator
+                && signature == "operator/review-decisions"
+            {
+                if node.contract != installed[signature].contract
+                    || node.inputs.iter().any(|(name, address)| {
+                        address.node != "root.inputs" || &address.port != name
+                    })
+                    || !graph.slots.is_empty()
+                    || graph.nodes.len() != 2
+                    || graph.nodes.values().any(|n| {
+                        matches!(
+                            n.operator,
+                            CompiledOperator::Primitive {
+                                operator: TaskOperatorV1::ReviewCommit {}
+                                    | TaskOperatorV1::ReviewIntegrate { .. },
+                                ..
+                            }
+                        )
+                    })
+                {
+                    return Err("Human Review decisions require exact root inputs and a read-only Task without Workers or Integration".into());
+                }
+                continue;
+            }
             if let CompiledOperator::Primitive {
                 operator,
                 signature,
@@ -231,25 +280,85 @@ impl ReviewTaskDomain {
                 && matches!(
                     operator,
                     TaskOperatorV1::ReviewBind {}
+                        | TaskOperatorV1::ReviewBindIntegrated {}
+                        | TaskOperatorV1::ReviewIntegrate { .. }
+                        | TaskOperatorV1::ReviewCommit {}
+                        | TaskOperatorV1::ReviewIntegrationSource {}
+                        | TaskOperatorV1::ReviewSlice { .. }
                         | TaskOperatorV1::ReviewReduce {}
                         | TaskOperatorV1::ReviewAccept {}
                         | TaskOperatorV1::AttestFixes {}
                         | TaskOperatorV1::RepairAccept {}
                         | TaskOperatorV1::ReviewContinue {}
                 )
-                && installed
-                    .get(signature)
-                    .is_none_or(|s| s.contract != node.contract)
+                && installed.get(signature).is_none_or(|s| match operator {
+                    TaskOperatorV1::ReviewIntegrate { reviewers, .. } => {
+                        af_graph::task::review_integration_signature(s, reviewers)
+                            .map_or(true, |s| s.contract != node.contract)
+                    }
+                    _ => s.contract != node.contract,
+                })
             {
                 return Err("Compiled Review operator changed its installed contract".into());
             }
             if matches!(
                 node.operator,
                 CompiledOperator::Primitive {
-                    operator: TaskOperatorV1::ReviewReduce {},
+                    operator: TaskOperatorV1::ReviewReduce {}
+                        | TaskOperatorV1::ReviewReduceShards { .. },
                     ..
                 }
             ) {
+                let (sharded, closeout) = match &node.operator {
+                    CompiledOperator::Primitive {
+                        operator:
+                            TaskOperatorV1::ReviewReduceShards {
+                                reviewers,
+                                closeout,
+                            },
+                        ..
+                    } => {
+                        let mut expected = installed["operator/review-reduce"].contract.clone();
+                        for name in reviewers {
+                            expected
+                                .inputs
+                                .get_mut(name)
+                                .ok_or("Sharded reducer names an unknown reviewer")?
+                                .artifact_type = af_contracts::contract::SHARD_SET_V1.into();
+                        }
+                        if expected != node.contract
+                            || policy.reviewers.get(closeout) != Some(&DemandRequirement::Required)
+                        {
+                            return Err("Sharded reducer changed its installed contract or required whole-Subject closeout".into());
+                        }
+                        (reviewers.clone(), Some(closeout))
+                    }
+                    _ => (BTreeSet::new(), None),
+                };
+                let maximum_stages = node
+                    .inputs
+                    .keys()
+                    .filter(|name| policy.reviewers.contains_key(*name))
+                    .try_fold(0usize, |count, name| {
+                        let stages = if sharded.contains(name) {
+                            let address = &node.inputs[name];
+                            graph
+                                .owned_children
+                                .get(&address.node)
+                                .ok_or("Sharded reviewer lacks its captured owned template")?
+                                .max_children as usize
+                        } else {
+                            1
+                        };
+                        count
+                            .checked_add(stages)
+                            .ok_or("Review stage bound overflow")
+                    })?;
+                if maximum_stages > 64 {
+                    return Err(
+                        "Complete native Review exceeds the shared reducer's 64-stage bound".into(),
+                    );
+                }
                 for (name, requirement) in &policy.reviewers {
                     let Some(address) = node.inputs.get(name) else {
                         if *requirement == DemandRequirement::Advisory {
@@ -262,15 +371,27 @@ impl ReviewTaskDomain {
                         .nodes
                         .get(&address.node)
                         .ok_or("Review binding has no Worker node")?;
-                    if !matches!(
-                        reviewer.operator,
-                        CompiledOperator::Primitive {
-                            operator: TaskOperatorV1::Verify { .. },
-                            ..
-                        }
-                    ) || ["source", "subject", "history", "checks"]
-                        .iter()
-                        .any(|port| reviewer.inputs.get(*port) != node.inputs.get(*port))
+                    let correct_role = if sharded.contains(name) {
+                        matches!(
+                            reviewer.operator,
+                            CompiledOperator::Primitive {
+                                operator: TaskOperatorV1::ReviewScatter { .. },
+                                ..
+                            }
+                        )
+                    } else {
+                        matches!(
+                            reviewer.operator,
+                            CompiledOperator::Primitive {
+                                operator: TaskOperatorV1::Verify { .. },
+                                ..
+                            }
+                        )
+                    };
+                    if !correct_role
+                        || ["source", "subject", "history", "checks"]
+                            .iter()
+                            .any(|port| reviewer.inputs.get(*port) != node.inputs.get(*port))
                     {
                         return Err("Required reviewer must use a reserved verification role and the reducer's exact declared inputs".into());
                     }
@@ -293,7 +414,8 @@ impl ReviewTaskDomain {
                             !matches!(
                                 n.operator,
                                 CompiledOperator::Primitive {
-                                    operator: TaskOperatorV1::ReviewBind {},
+                                    operator: TaskOperatorV1::ReviewBind {}
+                                        | TaskOperatorV1::ReviewBindIntegrated {},
                                     ..
                                 }
                             )
@@ -302,9 +424,30 @@ impl ReviewTaskDomain {
                             .contract
                             .outputs
                             .get(&address.port)
-                            .is_none_or(|p| p.artifact_type != RESULT_TYPE)
+                            .is_none_or(|p| {
+                                p.artifact_type
+                                    != if sharded.contains(name) {
+                                        af_contracts::contract::SHARD_SET_V1
+                                    } else {
+                                        RESULT_TYPE
+                                    }
+                            })
                     {
                         return Err("Reviewer must retain its own captured assignment and ReviewerResult@2 contract".into());
+                    }
+                    if closeout == Some(name)
+                        && (reviewer
+                            .contract
+                            .inputs
+                            .values()
+                            .any(|p| p.artifact_type == af_contracts::contract::REVIEW_SLICE_V1)
+                            || sharded.iter().any(|shard| {
+                                node.inputs.get(shard).is_none_or(|address| {
+                                    !reviewer.inputs.values().any(|bound| bound == address)
+                                })
+                            }))
+                    {
+                        return Err("Whole-Subject closeout must consume every complete Shard Set before it runs".into());
                     }
                 }
             }
@@ -405,24 +548,69 @@ impl ReviewTaskDomain {
     }
 
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
-        match &self
-            .graph
-            .nodes
-            .get(&input.node)
-            .ok_or("Unknown Review operator")?
-            .operator
-        {
+        let operator = if let Some(node) = self.graph.nodes.get(&input.node) {
+            &node.operator
+        } else {
+            &self.dynamic_template(input)?.1.operator
+        };
+        match operator {
             CompiledOperator::Primitive { operator, .. } => Ok(operator),
             _ => Err("Not a domain operator".into()),
         }
     }
     fn reviewer(&self, input: &TaskInvocationV1) -> bool {
-        self.graph.nodes.get(&input.node).is_some_and(|node| {
-            node.contract
+        let contract = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .map(|n| &n.contract)
+            .or_else(|| self.dynamic_template(input).ok().map(|(_, t)| &t.contract));
+        contract.is_some_and(|contract| {
+            contract
                 .outputs
                 .values()
                 .any(|p| p.artifact_type == RESULT_TYPE)
         })
+    }
+
+    fn dynamic_template(
+        &self,
+        input: &TaskInvocationV1,
+    ) -> Result<
+        (
+            &af_graph::task::CompiledNode,
+            &af_graph::task::OwnedChildTemplateV1,
+        ),
+        String,
+    > {
+        let (parent, index) = input
+            .node
+            .rsplit_once(".slice")
+            .ok_or("Unknown native Review node")?;
+        let template = self
+            .graph
+            .owned_children
+            .get(parent)
+            .ok_or("Unknown native Scatter owner")?;
+        let index: u32 = index.parse().map_err(|_| "Invalid native shard ordinal")?;
+        if index == 0
+            || index > template.max_children
+            || input.node != format!("{parent}.slice{index}")
+        {
+            return Err("Native shard is outside its exact captured fanout".into());
+        }
+        Ok((&self.graph.nodes[parent], template))
+    }
+
+    fn input_addresses(
+        &self,
+        input: &TaskInvocationV1,
+    ) -> Result<&BTreeMap<String, af_graph::task::Address>, String> {
+        if let Some(node) = self.graph.nodes.get(&input.node) {
+            Ok(&node.inputs)
+        } else {
+            Ok(&self.dynamic_template(input)?.0.inputs)
+        }
     }
     fn value<T: serde::de::DeserializeOwned>(
         &self,
@@ -487,7 +675,7 @@ impl ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-    ) -> Result<TaskReviewSubjectV1, String> {
+    ) -> Result<ResolvedReviewSubject, String> {
         let snapshot = source_input(
             cas,
             input.inputs.get("source").ok_or("Review has no source")?,
@@ -539,7 +727,7 @@ impl ReviewTaskDomain {
                     .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
             })
             .transpose()?;
-        let bound = TaskReviewSubjectV1 {
+        let bound = ResolvedReviewSubject {
             subject_id: subject_id.clone(),
             subject,
             change_set,
@@ -548,12 +736,13 @@ impl ReviewTaskDomain {
             continuation_id: input
                 .inputs
                 .get("continuation")
+                .or_else(|| input.inputs.get("integration"))
                 .map(|p| p.artifact_ids[0].clone()),
             round,
         };
         bound.validate()?;
         if let Some(id) = &bound.continuation_id {
-            self.restore_continuation(cas, id, &bound, input)?;
+            self.validate_continuation_binding(cas, id, &bound, input)?;
         }
         Ok(bound)
     }
@@ -562,7 +751,7 @@ impl ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-    ) -> Result<TaskReviewSubjectV1, String> {
+    ) -> Result<ResolvedReviewSubject, String> {
         let subject = self.read_subject(cas, input)?;
         subject.validate()?;
         let (history_id, history): (_, ReviewHistoryV1) =
@@ -601,7 +790,7 @@ impl ReviewTaskDomain {
             return Err("Review context changed its captured Subject or Change Set bytes".into());
         }
         if let Some(id) = &subject.continuation_id {
-            self.restore_continuation(cas, id, &subject, input)?;
+            self.validate_continuation_binding(cas, id, &subject, input)?;
         }
         Ok(subject)
     }
@@ -610,7 +799,7 @@ impl ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        subject: &TaskReviewSubjectV1,
+        subject: &ResolvedReviewSubject,
         depth: u32,
     ) -> Result<Ledger, String> {
         let (_, history): (_, ReviewHistoryV1) =
@@ -634,10 +823,27 @@ impl ReviewTaskDomain {
                 {
                     return Err("Review history changed its original closed Round and views".into());
                 }
+                if let Some(id) = &subject.continuation_id
+                    && envelope(cas, id)?.artifact_type
+                        == af_contracts::task::native_review::TASK_REVIEW_COMMIT_V1
+                {
+                    let commit = self.restore_integration_commit(cas, id, subject, input)?;
+                    ledger
+                        .project_task_integration(id, &commit.pending_claims)
+                        .map_err(|e| e.to_string())?;
+                }
                 ledger
                     .bind_task_subject(cas, &subject.subject_id, prior.round)
                     .map_err(|e| e.to_string())?;
                 if let Some(id) = &subject.continuation_id {
+                    if envelope(cas, id)?.artifact_type
+                        == af_contracts::task::native_review::TASK_REVIEW_COMMIT_V1
+                    {
+                        ledger
+                            .bind_task_subject(cas, &subject.subject_id, subject.round)
+                            .map_err(|e| e.to_string())?;
+                        return Ok(ledger);
+                    }
                     let continuation = self.restore_continuation(cas, id, subject, input)?;
                     // A failed or unavailable current check cannot promote any positive claim.
                     if self.code.review_checks(cas, &continuation.invocation)?
@@ -655,6 +861,36 @@ impl ReviewTaskDomain {
             }
             _ => Err("Review Round has no admitted preceding history".into()),
         }
+    }
+
+    /// Rebuild a complete native Round for read-only observers. CAS presence alone is not
+    /// evidence: the captured plan, policy, assignments and entire reduction are rechecked.
+    pub fn recorded_ledger(cas: &Cas, id: &str) -> Result<Ledger, String> {
+        let view = cas.verifying_existing();
+        let cas = &view;
+        let record = envelope(cas, id)?;
+        if record.artifact_type != TASK_REVIEW_ROUND_V1 {
+            return Err("Expected a native Task Review Round".into());
+        }
+        let receipt: TaskReviewRoundV1 =
+            serde_json::from_value(record.payload).map_err(|e| e.to_string())?;
+        receipt.validate()?;
+        let plan_record = envelope(cas, &receipt.invocation.plan_id)?;
+        if plan_record.artifact_type != af_contracts::task::EXECUTION_PLAN_V4 {
+            return Err("Native Round has no current plan".into());
+        }
+        let plan: ExecutionPlan =
+            serde_json::from_value(plan_record.payload).map_err(|e| e.to_string())?;
+        plan.validate()?;
+        let graph_record = envelope(cas, &plan.compiled_graph_id)?;
+        if graph_record.artifact_type != af_pipeline_config::task::catalog::COMPILED_TASK_V4 {
+            return Err("Native Round has no current graph".into());
+        }
+        let graph: CompiledTask =
+            serde_json::from_value(graph_record.payload).map_err(|e| e.to_string())?;
+        Self::captured(cas, &receipt.policy_id, graph)?
+            .restore_round(cas, id, 0)
+            .map(|(ledger, _)| ledger)
     }
 
     fn restore_round(
@@ -680,13 +916,32 @@ impl ReviewTaskDomain {
         let receipt: TaskReviewRoundV1 =
             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
         receipt.validate()?;
+        // Prior Rounds retain their own captured graph and requirements. A new authorized
+        // Task has another graph even when it uses the same Pipeline and Review policy.
+        // Recompute under that exact original graph, preserving the shared depth bound.
+        let original_plan = envelope(cas, &receipt.invocation.plan_id)?;
+        if original_plan.artifact_type != af_contracts::task::EXECUTION_PLAN_V4 {
+            return Err("Review history lost its current captured plan".into());
+        }
+        let original_plan: ExecutionPlan =
+            serde_json::from_value(original_plan.payload).map_err(|e| e.to_string())?;
+        original_plan.validate()?;
+        let original_graph = envelope(cas, &original_plan.compiled_graph_id)?;
+        if original_graph.artifact_type != af_pipeline_config::task::catalog::COMPILED_TASK_V4 {
+            return Err("Review history lost its current captured graph".into());
+        }
+        if original_graph.payload != serde_json::to_value(&self.graph).map_err(|e| e.to_string())? {
+            let graph: CompiledTask =
+                serde_json::from_value(original_graph.payload).map_err(|e| e.to_string())?;
+            return Self::captured(cas, &self.policy_id, graph)?.restore_round(cas, id, depth);
+        }
         if artifact.artifact_type != TASK_REVIEW_ROUND_V1
             || receipt.policy_id != self.policy_id
             || artifact.producer != invocation_producer(cas, &receipt.invocation, None)?
             || artifact.subject_snapshot_id.as_ref() != Some(&receipt.snapshot_id)
             || !matches!(
                 self.operator(&receipt.invocation)?,
-                TaskOperatorV1::ReviewReduce {}
+                TaskOperatorV1::ReviewReduce {} | TaskOperatorV1::ReviewReduceShards { .. }
             )
         {
             return Err("Review Round has no captured reducer authority".into());
@@ -712,6 +967,11 @@ impl ReviewTaskDomain {
         input: &TaskInvocationV1,
         depth: u32,
     ) -> Result<(TaskReviewRoundV1, Option<Ledger>), String> {
+        if self.is_decision(input) {
+            return self
+                .reduce_decisions(cas, input, depth)
+                .map(|(receipt, ledger)| (receipt, Some(ledger)));
+        }
         let subject = self.current_subject(cas, input)?;
         let ledger = self.prior_ledger(cas, input, &subject, depth)?;
         let mut results = Vec::new();
@@ -730,60 +990,57 @@ impl ReviewTaskDomain {
                 }
                 ReviewerPresence::Answered => {}
             }
-            let (id, stage): (_, serde_json::Value) = self.value(cas, input, name, RESULT_TYPE)?;
-            let stage = crate::reviewer_stage_output(stage)?;
-            let artifact = envelope(cas, &id)?;
-            let assignment = self.assignment(&ledger, &subject, name)?;
-            self.validate_stage(&stage, &assignment)?;
-            self.validate_result_assignment(cas, input, name, &artifact, &assignment)?;
-            let Producer::Attempt {
-                run_id,
-                node_id,
-                attempt_id,
-            } = &artifact.producer
-            else {
-                return Err("Review result has no selected Worker Attempt".into());
-            };
-            let expected_run = match invocation_producer(cas, input, None)? {
-                Producer::KernelOperation { run_id, .. } => run_id,
-                _ => unreachable!(),
-            };
-            let address = self.graph.nodes[&input.node]
-                .inputs
-                .get(name)
-                .ok_or("Review result has no declared producer")?;
-            if run_id != &expected_run
-                || node_id != &address.node
-                || artifact.subject_snapshot_id.as_ref() != Some(&subject.snapshot_id)
-                || !artifact
-                    .input_artifacts
-                    .contains(&input.inputs["subject"].artifact_ids[0])
-            {
-                return Err(
-                    "Review result changed its Task, Subject, Snapshot or declared Worker".into(),
-                );
+            let address = &self.graph.nodes[&input.node].inputs[name];
+            let sharded = matches!(self.operator(input)?, TaskOperatorV1::ReviewReduceShards {reviewers, ..} if reviewers.contains(name));
+            if sharded {
+                let (_, _, shards) = self.checked_shards(cas, input, name)?;
+                if !shards.complete() {
+                    missing.insert(name.clone());
+                }
+                for (index, shard) in shards.shards.iter().enumerate() {
+                    if let af_contracts::ShardOutcomeV1::Completed {
+                        result_artifact_ids,
+                    } = &shard.outcome
+                    {
+                        let [id] = result_artifact_ids.as_slice() else {
+                            return Err(
+                                "Native shard must retain exactly one Reviewer Result".into()
+                            );
+                        };
+                        let item = self.selected_stage(
+                            cas,
+                            input,
+                            &subject,
+                            &ledger,
+                            name,
+                            id,
+                            &format!("{}.slice{}", address.node, index + 1),
+                        )?;
+                        let key = format!("{name}_slice{}", index + 1);
+                        if self.policy.reviewers.contains_key(&key)
+                            || selected.insert(key, id.clone()).is_some()
+                        {
+                            return Err(
+                                "Native shard result identity collides with a configured reviewer"
+                                    .into(),
+                            );
+                        }
+                        results.push(item);
+                    }
+                }
+            } else {
+                let id = input.inputs[name].artifact_ids[0].clone();
+                results.push(self.selected_stage(
+                    cas,
+                    input,
+                    &subject,
+                    &ledger,
+                    name,
+                    &id,
+                    &address.node,
+                )?);
+                selected.insert(name.clone(), id);
             }
-            if self
-                .graph
-                .inputs
-                .get("requirements")
-                .is_some_and(|requirements| {
-                    requirements
-                        .artifact_ids
-                        .iter()
-                        .any(|id| !artifact.input_artifacts.contains(id))
-                })
-            {
-                return Err("Review result lost the exact Task Requirements".into());
-            }
-            selected.insert(name.clone(), id.clone());
-            results.push((
-                name.clone(),
-                id,
-                stage,
-                attempt_id.clone(),
-                artifact.input_artifacts,
-            ));
         }
         let checks = if input.inputs.contains_key("checks") {
             self.code.review_checks(cas, input)?
@@ -824,8 +1081,14 @@ impl ReviewTaskDomain {
                 subject_id: &subject.subject_id,
             })
             .collect();
-        let reduction = af_store::prepare_canonical_task_review(cas, &run_id, &ledger, &stages)
-            .map_err(|e| e.to_string())?;
+        let reduction = af_store::prepare_canonical_task_review_with_shards(
+            cas,
+            &run_id,
+            &ledger,
+            &stages,
+            &self.shard_membership(cas, input)?,
+        )
+        .map_err(|e| e.to_string())?;
         let (_, prior): (_, ReviewHistoryV1) =
             self.value(cas, input, "history", REVIEW_HISTORY_V1)?;
         let (prior_findings, prior_demands) = match prior {
@@ -847,7 +1110,7 @@ impl ReviewTaskDomain {
             identity_policy: af_contracts::CANONICAL_FINDING_IDENTITY_POLICY.into(),
             selected_report_ids: reduction.reduction.selected_report_ids,
             relation_ids: reduction.reduction.relation_ids,
-            resolution_ids: vec![],
+            resolution_ids: reduction.ledger.resolution_artifact_ids(),
             findings: crate::finding_set_entries(&reduction.ledger),
         };
         findings.validate()?;
@@ -857,8 +1120,8 @@ impl ReviewTaskDomain {
             prior_demand_set_id: prior_demands,
             reducer_version: af_contracts::DEMAND_REDUCER_VERSION.into(),
             selected_demand_artifact_ids: reduction.reduction.selected_demand_artifact_ids,
-            satisfaction_artifact_ids: vec![],
-            waiver_artifact_ids: vec![],
+            satisfaction_artifact_ids: reduction.ledger.demand_reduction_artifact_ids().1,
+            waiver_artifact_ids: reduction.ledger.demand_reduction_artifact_ids().2,
             demands: reduction.ledger.demand_views(),
         };
         demands.validate()?;
@@ -915,12 +1178,13 @@ impl ReviewTaskDomain {
         input: &TaskInvocationV1,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
         let (receipt, ledger) = self.reduce(cas, input, 0)?;
-        let refs = receipt
+        let mut refs: Vec<String> = receipt
             .finding_set_id
             .iter()
             .chain(receipt.demand_set_id.iter())
             .cloned()
             .collect();
+        refs.extend(self.closure_refs(cas, input, ledger.is_some())?);
         let result = self.put(
             cas,
             input,
@@ -1033,10 +1297,11 @@ impl ReviewTaskDomain {
             .collect();
         let mut result = TaskResultV1 {
             task_revision_id: state.revision_id.clone(),
-            execution: if report
-                .outcomes
-                .iter()
-                .any(|(_, o)| matches!(o, NodeOutcome::Failed { .. }))
+            execution: if execution.budget.breached()
+                || report
+                    .outcomes
+                    .iter()
+                    .any(|(_, o)| matches!(o, NodeOutcome::Failed { .. }))
             {
                 TaskExecutionV1::Exhausted
             } else {
@@ -1049,6 +1314,16 @@ impl ReviewTaskDomain {
             missing_obligations: BTreeSet::new(),
         };
         self.assess(cas, &state.revision, &mut result)?;
+        af_store::store::task::review_integration::require_native_successors(cas, state, &result)
+            .map_err(|e| e.to_string())?;
+        if self.review_task
+            && let Some(id) = af_store::store::task::review_integration::native_review_conclusion(
+                cas, state, &result,
+            )
+            .map_err(|e| e.to_string())?
+        {
+            result.evidence.insert(id);
+        }
         result.validate()?;
         Ok(result)
     }
@@ -1075,6 +1350,7 @@ impl ReviewTaskDomain {
                 .coverage
                 .get(name)
                 .ok_or("Review obligation has no public coverage")?;
+            let origins = self.graph.evidence_origins(address)?;
             let mut covered = false;
             for id in &result.evidence {
                 let artifact = envelope(cas, id)?;
@@ -1086,7 +1362,7 @@ impl ReviewTaskDomain {
                 else {
                     continue;
                 };
-                if node != &address.node
+                if !origins.iter().any(|origin| &origin.node == node)
                     || run_id != &task_run_id(&task.task_id).map_err(|e| e.to_string())?
                 {
                     continue;
@@ -1097,7 +1373,7 @@ impl ReviewTaskDomain {
                 let receipt: TaskReviewRoundV1 =
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 receipt.validate()?;
-                let plan: ExecutionPlanV3 =
+                let plan: ExecutionPlan =
                     serde_json::from_value(envelope(cas, &receipt.invocation.plan_id)?.payload)
                         .map_err(|e| e.to_string())?;
                 if plan.task_revision_id != result.task_revision_id
@@ -1108,7 +1384,7 @@ impl ReviewTaskDomain {
                     || artifact.subject_snapshot_id.as_ref() != Some(&receipt.snapshot_id)
                     || !matches!(
                         self.operator(&receipt.invocation)?,
-                        TaskOperatorV1::ReviewReduce {}
+                        TaskOperatorV1::ReviewReduce {} | TaskOperatorV1::ReviewReduceShards { .. }
                     )
                     || self.reduce(cas, &receipt.invocation, 0)?.0 != receipt
                 {
@@ -1158,6 +1434,24 @@ impl ReviewTaskDomain {
 }
 
 impl TaskOperatorHost for ReviewTaskDomain {
+    fn prepare_owned_children(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<super::TaskOwnedChildrenInputs, String> {
+        let _operation = self.begin_operation()?;
+        self.prepare_native_children(cas, input)
+    }
+    fn complete_owned_children(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[af_store::store::task::execution::owned::TaskOwnedChildEvidence],
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        let _operation = self.begin_operation()?;
+        self.native_shards(cas, input, children, facts)
+    }
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -1182,7 +1476,13 @@ impl TaskOperatorHost for ReviewTaskDomain {
         if !matches!(
             self.operator(input),
             Ok(TaskOperatorV1::ReviewBind {}
+                | TaskOperatorV1::ReviewBindIntegrated {}
+                | TaskOperatorV1::ReviewIntegrate { .. }
+                | TaskOperatorV1::ReviewCommit {}
+                | TaskOperatorV1::ReviewIntegrationSource {}
+                | TaskOperatorV1::ReviewSlice { .. }
                 | TaskOperatorV1::ReviewReduce {}
+                | TaskOperatorV1::ReviewReduceShards { .. }
                 | TaskOperatorV1::ReviewAccept {}
                 | TaskOperatorV1::AttestFixes {}
                 | TaskOperatorV1::RepairAccept {}
@@ -1197,8 +1497,18 @@ impl TaskOperatorHost for ReviewTaskDomain {
             Err(error) => return super::control::refused(error),
         };
         let outputs = match self.operator(input) {
-            Ok(TaskOperatorV1::ReviewBind {}) => self.bind_outputs(cas, input),
-            Ok(TaskOperatorV1::ReviewReduce {}) => self.reduce_outputs(cas, input),
+            Ok(TaskOperatorV1::ReviewBind {} | TaskOperatorV1::ReviewBindIntegrated {}) => {
+                self.bind_outputs(cas, input)
+            }
+            Ok(TaskOperatorV1::ReviewIntegrate { .. }) => self.integrate_outputs(cas, input),
+            Ok(TaskOperatorV1::ReviewCommit {}) => self.commit_integration_outputs(cas, input),
+            Ok(TaskOperatorV1::ReviewIntegrationSource {}) => {
+                self.integration_source_outputs(cas, input)
+            }
+            Ok(TaskOperatorV1::ReviewSlice { .. }) => self.slice_outputs(cas, input),
+            Ok(TaskOperatorV1::ReviewReduce {} | TaskOperatorV1::ReviewReduceShards { .. }) => {
+                self.reduce_outputs(cas, input)
+            }
             Ok(TaskOperatorV1::ReviewAccept {}) => self.accept_implementation(cas, input),
             Ok(TaskOperatorV1::AttestFixes {}) => self.attest_fixes(cas, input),
             Ok(TaskOperatorV1::RepairAccept {}) => self.accept_repair(cas, input),
@@ -1224,6 +1534,33 @@ impl TaskOperatorHost for ReviewTaskDomain {
     }
 }
 impl TaskDomain for ReviewTaskDomain {
+    fn validate_owned_children(
+        &self,
+        cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlan,
+        parent: &TaskInvocationV1,
+        children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
+        self.check_native_children(cas, parent, children)
+    }
+    fn validate_owned_completion(
+        &self,
+        cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlan,
+        parent: &TaskInvocationV1,
+        children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[af_store::store::task::execution::owned::TaskOwnedChildEvidence],
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
+        if output.outputs != self.native_shards(cas, parent, children, facts)? {
+            return Err("Native Shard Set differs from every durable child outcome".into());
+        }
+        Ok(())
+    }
     fn admit_checks(
         &self,
         cas: &Cas,
@@ -1272,15 +1609,30 @@ impl TaskDomain for ReviewTaskDomain {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,
     ) -> Result<(), String> {
         let _operation = self.begin_operation()?;
+        if matches!(self.operator(input)?, TaskOperatorV1::ReviewScatter { .. }) {
+            // Only the protected owned-completion operation can publish this coordinator;
+            // validate_owned_completion recomputes all registered child facts below.
+            return Ok(());
+        }
         let expected = match self.operator(input)? {
-            TaskOperatorV1::ReviewBind {} => Some(self.bind_outputs(cas, input)?),
-            TaskOperatorV1::ReviewReduce {} => Some(self.reduce_outputs(cas, input)?),
+            TaskOperatorV1::ReviewBind {} | TaskOperatorV1::ReviewBindIntegrated {} => {
+                Some(self.bind_outputs(cas, input)?)
+            }
+            TaskOperatorV1::ReviewIntegrate { .. } => Some(self.integrate_outputs(cas, input)?),
+            TaskOperatorV1::ReviewCommit {} => Some(self.commit_integration_outputs(cas, input)?),
+            TaskOperatorV1::ReviewIntegrationSource {} => {
+                Some(self.integration_source_outputs(cas, input)?)
+            }
+            TaskOperatorV1::ReviewSlice { .. } => Some(self.slice_outputs(cas, input)?),
+            TaskOperatorV1::ReviewReduce {} | TaskOperatorV1::ReviewReduceShards { .. } => {
+                Some(self.reduce_outputs(cas, input)?)
+            }
             TaskOperatorV1::ReviewAccept {} => Some(self.accept_implementation(cas, input)?),
             TaskOperatorV1::AttestFixes {} => Some(self.attest_fixes(cas, input)?),
             TaskOperatorV1::RepairAccept {} => Some(self.accept_repair(cas, input)?),
@@ -1301,6 +1653,23 @@ impl TaskDomain for ReviewTaskDomain {
             for port in output.outputs.values() {
                 for id in &port.artifact_ids {
                     let artifact = envelope(cas, id)?;
+                    if artifact.artifact_type == af_source_git::task::CANDIDATE_TREE_V1 {
+                        let candidate: af_source_git::task::CandidateTree =
+                            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                        if candidate.parent_snapshot_id != subject.snapshot_id {
+                            return Err("Proposal candidate changed its reviewed Snapshot".into());
+                        }
+                        af_source_git::task::read_manifest(cas, &candidate.manifest_id)?;
+                        continue;
+                    }
+                    if artifact.artifact_type
+                        == af_contracts::task::native_review::TASK_REVIEW_PROPOSAL_V1
+                    {
+                        let proposal: af_contracts::task::native_review::TaskReviewProposalV1 =
+                            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                        proposal.validate()?;
+                        continue;
+                    }
                     if artifact.artifact_type
                         == af_contracts::task::verification::IMPLEMENTATION_TEST_EVIDENCE_V1
                     {
@@ -1480,7 +1849,7 @@ mod advisory_reviewer_tests {
     /// graph.
     #[test]
     fn an_advisory_bugs_reviewer_admits_a_correctness_only_review_graph() {
-        use af_graph::task::{Address, COMPILED_TASK_SCHEMA_V1, CompiledNode};
+        use af_graph::task::{Address, COMPILED_TASK_SCHEMA_V6, CompiledNode};
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let code: super::super::code::CodeTaskPolicy = serde_json::from_value(serde_json::json!({
@@ -1549,7 +1918,7 @@ mod advisory_reviewer_tests {
             outputs: BTreeMap::from([("result".to_string(), port(RESULT_TYPE, same(), false))]),
         };
         let graph = CompiledTask {
-            schema: COMPILED_TASK_SCHEMA_V1.into(),
+            schema: COMPILED_TASK_SCHEMA_V6.into(),
             nodes: BTreeMap::from([
                 (
                     "bind".to_string(),
@@ -1609,7 +1978,6 @@ mod advisory_reviewer_tests {
             allowances: BTreeMap::new(),
             owned_children: BTreeMap::new(),
             experimental_slots: BTreeMap::new(),
-            review_integration: None,
             token_scopes: BTreeMap::new(),
         };
         assert_eq!(

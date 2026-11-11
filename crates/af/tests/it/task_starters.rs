@@ -74,7 +74,7 @@ fn setup(root: &Path, key: Option<&str>) -> (PathBuf, PathBuf) {
         .unwrap();
         assert_eq!(
             worker.signature.contract.inputs["subject"].artifact_type,
-            "af/TaskReviewSubject@2"
+            "af/TaskReviewSubject@3"
         );
         assert_eq!(
             worker.signature.contract.inputs["assignment"].artifact_type,
@@ -166,7 +166,7 @@ fn emitted_starters_validate_and_execute_without_credentials_on_one_common_runti
     commit(&repo);
     for (name, attempts, rounds) in [("review-light", 3, 1), ("review-heavy", 6, 2)] {
         let file = format!("{name}.json");
-        let result = task(&repo, &state, &["review", "--file", &file], 0);
+        let result = task(&repo, &state, &["review", "run", "--file", &file], 0);
         assert_eq!(result["result"]["acceptance"], "satisfied");
         assert_eq!(result["attempts"], attempts);
         assert_eq!(result["review_rounds"].as_array().unwrap().len(), rounds);
@@ -501,7 +501,7 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
 }
 
 fn reviewed_implementation_preserves_evidence(failed_review: bool) {
-    use af_contracts::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
+    use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1};
     use af_pipeline_config::task::catalog::TaskWorkerManifest;
     let root = tempfile::tempdir().unwrap();
     let (repo, state) = setup(root.path(), None);
@@ -539,7 +539,7 @@ fn reviewed_implementation_preserves_evidence(failed_review: bool) {
                 .unwrap(),
         )
         .join("pipeline.toml");
-    let mut pipeline: PipelineDefinitionV1 =
+    let mut pipeline: PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
     let mut node = pipeline
         .nodes
@@ -860,7 +860,7 @@ fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
         let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
         let envelope = cas.get_json(result["plan_id"].as_str().unwrap()).unwrap();
         assert_eq!(envelope["type"], "af/ExecutionPlan@4");
-        let plan: af_contracts::task::plan::ExecutionPlanV3 =
+        let plan: af_contracts::task::plan::ExecutionPlan =
             serde_json::from_value(envelope["payload"].clone()).unwrap();
         plan.validate().unwrap();
         let bindings = &envelope["payload"]["bindings"];

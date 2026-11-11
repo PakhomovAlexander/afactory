@@ -7,16 +7,14 @@ names the decision that would have to change first.
 
 ### Running a subset of a pipeline (`--only <node>`)
 
-A pipeline defines what a review *is*; running a subset of it produces a different review
-wearing the same Campaign's name. Findings fold into the Ledger during the graph run, before
-convergence is computed, so a one-reviewer probe would advance the news Round and leave the other
-reviewers' prior Findings unconfirmed while correctly failing to close the Round. The supported
-cheap-iteration path is a separate pipeline file (`--pipeline quick.toml`) with one reviewer, its
-own budgets, its own Campaign and its own Ledger.
+A committed Task Pipeline defines the complete Review and its required siblings. Selecting one
+Worker cannot satisfy that captured contract. A cheaper review uses an explicitly separate native
+Pipeline package and Review Task file, with its own bounded allowance. Incomplete sibling output
+can be inspected as recorded but cannot form a partial Ledger or satisfy acceptance.
 
 ### Applying Proposals from the kernel (`af review apply`)
 
-`af review export <proposal-id>` followed by `git apply` keeps the kernel's boundary literally
+`af review export TASK_ID PROPOSAL_ID` followed by `git apply` keeps the kernel's boundary literally
 true: nothing in it mutates a repository, and Git handles a stale patch better than the kernel
 could. Export refuses stale Proposals by default; applying one with `--allow-stale` and
 `git apply --3way` is an explicit human decision
@@ -43,13 +41,13 @@ workspace-wide, including the worktree-versus-index form that runs the candidate
 Tree diffs go through one typed method instead
 ([ADR-0001](adr/0001-tree-diff-behind-a-typed-method.md)).
 
-### Automatic Integration for static review graphs
+### Integration without exact complete Review and successor acceptance
 
-Automatic Integration is admitted only behind a captured Slicer/Scatter closure route; a static
-review graph gets no `[integration]` without whole-Subject and semantic closure. Generalizing
-closure to static graphs would be new work; bypassing closure is not on the table
-([ADR-0039](adr/0039-own-dynamic-shards-inside-a-typed-scatter-node.md),
-[ADR-0040](adr/0040-promote-only-checked-derived-snapshots.md)).
+Native Integration admits only selected, sealed, disjoint Proposals tied to a complete current
+Round. Ordinary Task checks inspect the derived head before commit; acceptance must select the
+full exact successor Review, including a changes-requested verdict. Static reachability to a
+successor does not authorize ignoring its actual result. Slice/Scatter routes additionally retain
+whole-Subject closure ([native consolidation](adr/2026-11-08-consolidate-current-contracts-and-task-review.md)).
 
 ### Host cache passthrough for safe pipelines
 

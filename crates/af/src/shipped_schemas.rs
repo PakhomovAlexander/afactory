@@ -48,13 +48,11 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("performance-publication-activation", 1),
     schema!("pi-provider-setup", 4),
     schema!("provider-detect", 4),
-    schema!("provider-models", 3),
+    schema!("provider-models", 4),
     schema!("provider-setup", 2),
     schema!("provider-status", 6),
-    schema!("review-ledger", 1),
-    schema!("review-render", 2),
-    schema!("review-report", 5),
-    schema!("review-show", 1),
+    schema!("review-decision-context", 1),
+    schema!("review-ledger", 2),
     schema!("scenario-adapter-request", 4),
     schema!("scenario-adapter-response", 1),
     schema!("scenario-bundle", 5),
@@ -82,9 +80,9 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-collected-inspection", 3),
     schema!("task-detached", 3),
     schema!("task-diff", 1),
-    schema!("task-event", 1),
+    schema!("task-event", 2),
     schema!("task-findings", 2),
-    schema!("task-inspection", 17),
+    schema!("task-inspection", 20),
     schema!("task-list-entry", 4),
     schema!("task-list", 4),
     schema!("task-materialized", 1),
@@ -245,6 +243,7 @@ mod tests {
             refusal("task-status-v2.json"),
             "this af ships no schema task-status-v2.json; `af schema show` lists the ids it ships"
         );
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
         assert!(listing.starts_with("af/ant-list@5  "), "{listing}");

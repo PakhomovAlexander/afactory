@@ -2,8 +2,8 @@
 
 The candidate for issues [#575](https://github.com/PakhomovAlexander/afactory/issues/575) and
 [#576](https://github.com/PakhomovAlexander/afactory/issues/576) retains the permanent unit and
-native report repairs. The RC6 continuation adds an explicit telemetry fixture contract and
-restores coverage across RC4, RC5 and RC6. These are source and regression checks; sealed Task
+native report repairs. The current telemetry continuation replaces historical fixture overlays with one native Task
+benchmark contract. These are source and regression checks; sealed Task
 acceptance remains the outer runtime's responsibility.
 
 ## Secret access and telemetry contracts
@@ -14,15 +14,12 @@ group `af-perf-readers`. The build also adds `docker`. The signing key and publi
 `test_nightly_measure.Units` checks the actual committed units, including
 `test_build_and_publish_read_nightly_secrets_and_build_keeps_docker_access`.
 
-The [source evidence](telemetry.md#performance) records the receipt writer, definition, schema,
-package digest paths and fixture pins supporting `check-receipt@2` for RC4, RC5 and RC6.
-`test_telemetry_bench_contracts.FixtureContracts` checks explicit selection, requested-contract
-mismatch and unnamed-version refusal. Its
-`test_rc4_rc5_and_rc6_keep_all_committed_fixtures_without_contract_specific_pins` checks every
-fixture for all three versions, independently validates the committed package pins and requires
-byte-identical copies with no receipt renaming. The Store fixture has no Task catalog.
-`test_workspace_release_has_an_explicit_valid_telemetry_contract` reads `Cargo.toml`, preventing
-a workspace version bump from silently shipping without a declared telemetry workload.
+Current telemetry uses `native-task-review@1`, with exact source-schema admission, committed
+package digest checks and the measured binary's own zero-Attempt planner. The
+[contract description](telemetry.md#performance) supersedes the historical release tables.
+`test_telemetry_bench_contracts.FixtureContracts` covers current identity, malformed contracts,
+package tampering, zero-Attempt admission and original early-exit diagnostics. The Store fixture
+now has its own native Task catalog. Release version alone supplies no capability proof.
 These tests stay in the perf laboratory selection; the fast gate does not claim to run them.
 
 ## Native report producers and admission

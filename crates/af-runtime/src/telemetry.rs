@@ -21,7 +21,7 @@ pub use mirror::{
     FINDING_DISPOSITION, STORE_EVENT, StoreMirror, USAGE_STATE, USAGE_WALL, install_store_mirror,
 };
 
-use af_contracts::task::plan::{ExecutionPlanV3, WorkerExecutionV3};
+use af_contracts::task::plan::{ExecutionPlan, WorkerExecutionV3};
 use af_graph::task::{CompiledNode, CompiledTask};
 use af_store::store::task::{TaskLease, TaskProjection, task_run_id};
 use af_store::{Cas, EventStore};
@@ -57,14 +57,6 @@ static KIND: Mutex<RunKind> = Mutex::new(RunKind::Task);
 /// self-optimizer `optimize`; a Task run is the default.
 pub fn set_run_kind(kind: RunKind) {
     *lock(&KIND) = kind;
-}
-
-static CAMPAIGN: Mutex<Option<(String, u32)>> = Mutex::new(None);
-
-/// The Campaign and Round the review run this process opens next works on (`af.campaign`,
-/// `af.round`).
-pub fn set_campaign(campaign: &str, round: u32) {
-    *lock(&CAMPAIGN) = Some((campaign.to_string(), round));
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -173,11 +165,11 @@ pub fn record_binding(node_id: &str, attempt_id: Option<&str>, model: &str) {
 }
 
 /// The model the admitting Worker was bound to: its Attempt's binding, else the one model this
-/// process's plans bound its node to; `None` when the kernel recorded no binding (a command
+/// process's plans bound its node to only when no Attempt was named; `None` when the kernel recorded no binding (a command
 /// Worker, an operator's commit) or the node was bound to several.
 pub(crate) fn bound_model(attempt_id: Option<&str>, node_id: &str) -> Option<String> {
-    if let Some(model) = attempt_id.and_then(|attempt| lock(&BOUND_MODELS).get(attempt).cloned()) {
-        return Some(model);
+    if let Some(attempt) = attempt_id {
+        return lock(&BOUND_MODELS).get(attempt).cloned();
     }
     let nodes = lock(&NODE_MODELS);
     let models = nodes.get(node_id)?;
@@ -493,7 +485,6 @@ impl RunTelemetry {
                 None
             }
         };
-        let campaign = lock(&CAMPAIGN).clone();
         let parent = subscriber::command_span_id();
         let span = tracing::info_span!(
             parent: parent,
@@ -505,8 +496,8 @@ impl RunTelemetry {
             af.execution.ordinal = ordinal,
             af.store.sequence_at_start = sequence,
             af.task_id = ids.task.as_str(),
-            af.campaign = campaign.as_ref().map(|(campaign, _)| campaign.as_str()),
-            af.round = campaign.as_ref().map(|(_, round)| u64::from(*round)),
+            af.campaign = Empty,
+            af.round = Empty,
             af.epoch = lease.epoch(),
             af.policy_rev = Empty,
             af.pipeline = Empty,
@@ -598,7 +589,7 @@ impl RunTelemetry {
         load: &tracing::Span,
         cas: &Cas,
         plan_id: &str,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         graph: &CompiledTask,
         task_kind: &str,
     ) {
@@ -701,7 +692,7 @@ impl RunTelemetry {
     fn record_config(
         &self,
         cas: &Cas,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         graph: &CompiledTask,
         pipeline: Option<&str>,
         task_kind: &str,
@@ -1592,7 +1583,7 @@ mod tests {
             );
         }
         let graph: CompiledTask = serde_json::from_value(serde_json::json!({
-            "schema": "af.compiled-task/1",
+            "schema": "af.compiled-task/6",
             "nodes": nodes,
             "order": [],
             "inputs": {},
@@ -1648,5 +1639,32 @@ mod tests {
             }
         }
         writer.finish(af_telemetry::record::SealExit::Ok).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod native_summary_binding_tests {
+    #[test]
+    fn a_prior_attempt_cannot_borrow_a_successor_nodes_model() {
+        super::record_binding(
+            "native-summary.nodes.reviewer",
+            Some("native-summary-current"),
+            "current-model",
+        );
+        assert_eq!(
+            super::bound_model(
+                Some("native-summary-current"),
+                "native-summary.nodes.reviewer"
+            )
+            .as_deref(),
+            Some("current-model")
+        );
+        assert_eq!(
+            super::bound_model(
+                Some("native-summary-prior"),
+                "native-summary.nodes.reviewer"
+            ),
+            None
+        );
     }
 }

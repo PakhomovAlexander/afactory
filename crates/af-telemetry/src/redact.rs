@@ -1226,9 +1226,9 @@ pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 12] = [
         "af/TaskReviewAssignment@1",
         &["subject_id", "prior_history_id", "findings/*/report_ids/*"],
     ),
-    // task-review-subject-v2.json
+    // task-review-subject-v3.json
     (
-        "af/TaskReviewSubject@2",
+        "af/TaskReviewSubject@3",
         &[
             "subject_id",
             "snapshot_id",

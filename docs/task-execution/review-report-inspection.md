@@ -1,52 +1,34 @@
 # Review accounting inspection
 
-`af review report --format json` always uses
-[`af/review-report@5`](../../schemas/review-report-v5.json). A Campaign whose first Task capture
-failed has no Task: its report is the same document, with an empty `task_accounting` array, no
-Rounds and a null `coverage`. The `task_accounting` array reads each
-distinct Task's validated common execution ledger, including failures before the first
-canonical report or selected Reviewer output. Inspection opens the Store and CAS read-only and
-does not create events, receipts or missing artifacts.
+`af review report TASK_ID --json` reads the same `af/task-report@3` document as
+`af task report TASK_ID --json`. `af review inspect TASK_ID --json` reads
+`af/task-inspection@20`: current and recorded plans, exact Attempt accounting, checked Task
+history, selected Review Rounds, execution outputs and recovery evidence. There is one Task
+Store and one cumulative allowance. A missing accounting observation remains absent or unknown;
+report snapshots are never added together as independent spend.
 
-Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
-and started Attempt counts. Token totals and per-Attempt cumulative charges are canonical
-u128 decimal strings. Attempt counts and original reservation caps remain canonical u64 decimal
-strings. Native usage components are exact u128 counters accumulated across native turns.
-Sequence numbers and wall-clock fields are JSON numbers.
+`af review ledger TASK_ID --json` prints `af/review-ledger@2`: the complete selected canonical
+Finding Set envelope, original Report envelopes keyed by exact ID, and an `inspection` view
+with current Finding statuses, severity counts and reviewer coverage. Reports retain their
+original producer and Snapshot; the inspection's reviewer result IDs describe current Round
+coverage. Not-reproduced and dispute-only later Rounds never hide unresolved original Findings.
+`af task findings` remains a current-Round report view. Its agent prompts target the selected
+Round's Snapshot; original claim provenance is retained separately by the Ledger.
+Missing siblings remain visible as recorded results with a null canonical Finding Set; they
+cannot form a partial authoritative Ledger or satisfy closure. `--round N` selects a recorded
+Round. Text includes Finding and Report identities; `--format sarif` uses the common SARIF
+profile with complete canonical Findings, current statuses and original Report provenance in
+each result's message.
 
-Counts include failed, abandoned and fenced work, and exclude reservations released before
-starting. The three categories add up to the common budget's started Attempt count. A Provider
-admission shared by several binding slots appears once, with all its slots. Reviewer and Scatter
-Worker Attempts are business work; gates and other operations have their own category.
-Each Attempt retains its original plan, invocation and reservation identities. Classification
-and Review Round attribution use that plan's captured graph and inputs, including after a later
-plan replaces the active graph. Wall-clock sidecars contribute display details; their Task-local
-Round and epoch fields do not replace captured Review Round authority.
+`af review export TASK_ID PROPOSAL_ID` validates the sealed candidate and its original
+Report/Finding linkage before printing patch bytes; `--finding FINDING_ID` selects a unique
+applicable proposal. A changes-requested Review can still expose valid repairs. Automatic
+Integration eligibility and passing whole-Task acceptance are separate from human-directed
+export. A changed current head requires explicit `--allow-stale` authority. Export never promotes,
+creates a branch, pushes or publishes.
 
-Each Round row's `task_chargeable_tokens_at_report` and `task_accounting` preserve the
-cumulative total and exact Task log prefix its RunReport@6 recorded. These are snapshots, not
-Round costs. Reports of 100 and 150 tokens for one Task contribute one current Task total of
-150, not 250. Late usage can raise that current total to 170 while both reports remain
-unchanged. Inspection reads the ledger's effective charge, which can exceed the original
-terminal receipt, and never subtracts snapshots to infer Round costs or changes an original
-reservation cap.
-
-Text and Markdown distinguish “Task cumulative charge at report” from current “Task accounting”.
-The same historical snapshot label is used by Campaign listing.
-
-## Findings handoff and coverage
-
-Each finding carries an `agent_prompt` and a `verified_fix`
-([ADR-0248](../adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)). The prompt
-names the finding's location on the head Snapshot of the Round that last saw it, its evidence,
-the requested change and how the next Round judges a fix. `verified_fix` is non-null only when
-the finding's fixed Resolution names a positive `FixVerification@1`: the record and the Snapshot
-of its Subject. A `fixed` status without that record stays `null`.
-
-`coverage` describes the last recorded run: its Round and head Snapshot, each `reviewer` and
-`scatter` node of the pinned plan as `reviewed` or `not_run` with the reason its outcome
-recorded, and each path of the Round's Subject as `reviewed`, `partially_reviewed` or
-`not_reviewed`, then each path a finding of that Round names outside it as `outside_round`. Text
-and Markdown print the same coverage before the findings. `--format sarif` prints the findings
-as one SARIF 2.1.0 log; a finding with a verified fix is listed in the run's `verified_fixed`
-instead of as a result.
+The previous `af/review-report@5`, `af/review-ledger@1`, `af/review-show@1` and
+`af/review-render@2` documents are retired. Their schemas and frontend readers are removed;
+there is no migration or fallback reader. See [the facade](campaign-review.md) and
+[the capability record](../design/current-contracts-and-task-review.md) for current paths, tests
+and completed consolidation with its validation boundaries.

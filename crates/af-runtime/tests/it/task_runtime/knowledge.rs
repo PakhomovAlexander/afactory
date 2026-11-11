@@ -43,7 +43,7 @@ impl TaskDomain for RetrievalDomain {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _: &af_graph::task::CompiledNode,
@@ -279,7 +279,7 @@ fn run_knowledge_task(model: bool, private_notes: bool) {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let base = root.join("fixtures/task-contracts/v1");
-    let mut pipeline: PipelineDefinitionV1 =
+    let mut pipeline: PipelineDefinition =
         serde_json::from_slice(&std::fs::read(base.join("pipeline-definition.json")).unwrap())
             .unwrap();
     let mut task: TaskRevisionV1 =
@@ -365,7 +365,9 @@ fn run_knowledge_task(model: bool, private_notes: bool) {
         }
     }
     let manifest = Manifest::new(entries).unwrap();
-    let snapshot = capture_snapshot(&cas, &manifest, &policy, None).unwrap();
+    let origin = cas.put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured",
+        "repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()})).unwrap();
+    let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
     let source = source_tree(&cas, producer(), &snapshot, vec![]).unwrap();
     task.inputs = BTreeMap::from([("source".into(), source.clone())]);
     if private_notes {
@@ -378,8 +380,10 @@ fn run_knowledge_task(model: bool, private_notes: bool) {
             .unwrap();
         unrelated.content = cas.put(b"after").unwrap();
         unrelated.size = 5;
-        let updated =
-            capture_snapshot(&cas, &Manifest::new(entries).unwrap(), &policy, None).unwrap();
+        let updated_manifest = Manifest::new(entries).unwrap();
+        let updated_origin = cas.put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured",
+            "repository_id":"fixture","source_revision":null,"content_digest":updated_manifest.content_digest()})).unwrap();
+        let updated = capture_snapshot(&cas, &updated_manifest, &updated_origin, None).unwrap();
         task.inputs.insert(
             "updated_source".into(),
             source_tree(&cas, producer(), &updated, vec![]).unwrap(),

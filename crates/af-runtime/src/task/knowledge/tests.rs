@@ -149,7 +149,7 @@ fn source(cas: &Cas, fact: &str, dependency: &str, unrelated: &str) -> TaskInvoc
     )
     .unwrap();
     let origin = cas
-        .put_json(&json!({"fixture":"knowledge source"}))
+        .put_json(&json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()}))
         .unwrap();
     let snapshot = capture_snapshot(cas, &manifest, &origin, None).unwrap();
     let input = source_tree(

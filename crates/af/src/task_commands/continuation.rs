@@ -9,7 +9,9 @@
 //! reviewer reports and the evaluator's verdict become one `af/TaskReviewFindings@1` artifact on
 //! the Pipeline's optional `findings` port. Nothing is pasted into the goal: the candidate is bound
 //! as a Snapshot and the findings as an artifact, so neither counts against the 64 KiB
-//! Requirements bound.
+//! Requirements bound. Standalone native Review instead binds its exact original SourceTree,
+//! Base and complete ReviewHistory; original claims are recomputed under their captured plans.
+//! It creates no implementation-only findings input or fabricated repair receipt.
 
 use super::*;
 use af_contracts::task::attempt_wall::*;
@@ -53,13 +55,21 @@ pub(super) enum Lineage {
     Reviewed { findings_id: String },
     /// The partial tree an Attempt wall left (ADR-0257): no review ran, so no findings travel.
     Partial { wall_end_id: String },
+    /// Standalone native discovery carries the complete canonical history and its original Base.
+    ReviewTask {
+        findings_id: String,
+        history: ArtifactInputV1,
+        base: Option<ArtifactInputV1>,
+    },
 }
 
 impl Continued {
     /// The record the new revision's provenance keeps.
     pub(super) fn provenance_id(&self) -> String {
         match &self.lineage {
-            Lineage::Reviewed { findings_id, .. } => findings_id.clone(),
+            Lineage::Reviewed { findings_id, .. } | Lineage::ReviewTask { findings_id, .. } => {
+                findings_id.clone()
+            }
             Lineage::Partial { wall_end_id } => wall_end_id.clone(),
         }
     }
@@ -73,9 +83,17 @@ impl Continued {
                 cardinality: PortCardinality::One,
                 snapshot_id: None,
             }),
-            Lineage::Partial { .. } => None,
+            Lineage::Partial { .. } | Lineage::ReviewTask { .. } => None,
         }
     }
+}
+
+pub(super) fn is_standalone_review(revision: &TaskRevisionV1) -> bool {
+    !revision.acceptance.is_empty()
+        && revision
+            .acceptance
+            .values()
+            .all(|a| a.evidence_type == af_contracts::task::review::TASK_REVIEW_ROUND_V1)
 }
 
 /// The partial tree a Task's source-writing Worker left when its Attempt wall ended it
@@ -315,31 +333,53 @@ pub(super) fn resolve(
         None => recorded.iter().enumerate().next_back().expect("nonempty"),
     };
     let (position, (round_id, round)) = (chosen.0, chosen.1.clone());
-    let (output_id, port) = candidate_output(cas, store, &run_id, &result, result_id, &round)?
-        .ok_or_else(|| {
-            format!(
-                "continue: Task `{shown}` round {} reviewed Snapshot {}, and no output the Task \
-                 recorded holds it, so a continuation could not record where its source came \
-                 from; continue from another round (`af task findings {shown} --round N` shows \
-                 each), or omit --round for the last",
-                round.round, round.snapshot_id
-            )
-        })?;
-    let referenced = ReferencedTaskV1 {
-        task_id: task.clone(),
-        task_revision_id: result.task_revision_id.clone(),
-        result_id: output_id,
-        port,
-        acceptance: result.acceptance,
-        domain_conclusion: result.domain_conclusion.clone(),
+    let native = is_standalone_review(&projection.revision);
+    let (source, manifest) = if native {
+        let policy: af_runtime::task::review::ReviewTaskPolicy =
+            serde_json::from_value(cas.get_json(&round.policy_id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        policy.validate()?;
+        if round.round >= policy.max_rounds {
+            return Err("continue: standalone Review reached its captured Round bound; start a new Review without inherited convergence authority".into());
+        }
+
+        if !round.missing_reviewers.is_empty()
+            || round.finding_set_id.is_none()
+            || round.demand_set_id.is_none()
+        {
+            return Err("continue: standalone Review requires a complete recorded Round; resume an incomplete Task or start a fresh Review".into());
+        }
+        let source = source_tree(cas, producer(), &round.snapshot_id, vec![round_id.clone()])?;
+        let (_, manifest) = af_source_git::task::read_snapshot(cas, &round.snapshot_id)?;
+        (source, manifest)
+    } else {
+        let (output_id, port) = candidate_output(cas, store, &run_id, &result, result_id, &round)?
+            .ok_or_else(|| {
+                format!(
+                    "continue: Task `{shown}` round {} reviewed Snapshot {}, and no output the Task \
+                     recorded holds it, so a continuation could not record where its source came \
+                     from; continue from another round (`af task findings {shown} --round N` shows \
+                     each), or omit --round for the last",
+                    round.round, round.snapshot_id
+                )
+            })?;
+        let referenced = ReferencedTaskV1 {
+            task_id: task.clone(),
+            task_revision_id: result.task_revision_id.clone(),
+            result_id: output_id,
+            port,
+            acceptance: result.acceptance,
+            domain_conclusion: result.domain_conclusion.clone(),
+        };
+        referenced.validate()?;
+        // The candidate the round reviewed, as an `af/SourceTree@1` of its own: a sealed candidate
+        // is derived, so binding it re-roots it over the identical Manifest, exactly as an `inputs`
+        // binding of a derived tree does (ADR-0117).
+        let candidate = source_tree(cas, producer(), &round.snapshot_id, vec![round_id.clone()])?;
+        let (source, _, manifest) = input_bindings::bind_source(cas, candidate, Some(&referenced))
+            .map_err(|error| format!("continue: Task `{shown}`'s candidate: {error}"))?;
+        (source, manifest)
     };
-    referenced.validate()?;
-    // The candidate the round reviewed, as an `af/SourceTree@1` of its own: a sealed candidate
-    // is derived, so binding it re-roots it over the identical Manifest, exactly as an `inputs`
-    // binding of a derived tree does (ADR-0117).
-    let candidate = source_tree(cas, producer(), &round.snapshot_id, vec![round_id.clone()])?;
-    let (source, _, manifest) = input_bindings::bind_source(cas, candidate, Some(&referenced))
-        .map_err(|error| format!("continue: Task `{shown}`'s candidate: {error}"))?;
     let mut findings = reviewer_findings(cas, &round)?;
     findings.extend(evaluator_finding(cas, store, &run_id, position)?);
     if findings.len() > MAX_FINDINGS {
@@ -378,7 +418,32 @@ pub(super) fn resolve(
         task_revision_id: result.task_revision_id.clone(),
         source,
         manifest,
-        lineage: Lineage::Reviewed { findings_id },
+        lineage: if native {
+            let history = result
+                .outputs
+                .get("history")
+                .filter(|p| p.artifact_type == af_contracts::task::REVIEW_HISTORY_V1)
+                .ok_or("continue: standalone Review did not publish its canonical history")?
+                .clone();
+            let value: af_contracts::task::review::ReviewHistoryV1 = artifact(
+                cas,
+                &history.artifact_ids[0],
+                af_contracts::task::REVIEW_HISTORY_V1,
+            )?;
+            value.validate()?;
+            if !matches!(value, af_contracts::task::review::ReviewHistoryV1::Recorded { round_report_id, subject_id, finding_set_id, demand_set_id, .. }
+                if round_report_id == record.continues.round_id && subject_id == round.subject_id && Some(&finding_set_id) == round.finding_set_id.as_ref() && Some(&demand_set_id) == round.demand_set_id.as_ref())
+            {
+                return Err("continue: selected Round differs from the standalone Review's complete published history".into());
+            }
+            Lineage::ReviewTask {
+                findings_id,
+                history,
+                base: projection.revision.inputs.get("base").cloned(),
+            }
+        } else {
+            Lineage::Reviewed { findings_id }
+        },
     })
 }
 
@@ -434,7 +499,7 @@ pub(super) fn recorded_partial(
     Ok(None)
 }
 
-/// The `continues` member of `af/task-inspection@17` for a partial tree (ADR-0257): the
+/// The `continues` member of `af/task-inspection@20` for a partial tree (ADR-0257): the
 /// continued Task, the node and Attempt its wall stopped, the wall end, the partial candidate
 /// and the Snapshot of the tree the new Task reads.
 pub(super) fn partial_inspection_value(
@@ -452,7 +517,7 @@ pub(super) fn partial_inspection_value(
     })
 }
 
-/// The `continues` member of `af/task-inspection@17`: the continued Task and round, the
+/// The `continues` member of `af/task-inspection@20`: the continued Task and round, the
 /// candidate the new Task reads, and the findings artifact with its count.
 pub(super) fn inspection_value(
     findings_id: &str,
@@ -482,7 +547,7 @@ pub(super) fn show_line(inspection: &serde_json::Value) -> Option<String> {
     }
     let count = continues["findings"].as_u64().unwrap_or_default();
     Some(format!(
-        "continues {} round {} ({count} finding{} on the findings port)",
+        "continues {} round {} ({count} finding{} in the recorded review history)",
         preview::text(continues["task_id"].as_str().unwrap_or_default()),
         continues["round"],
         if count == 1 { "" } else { "s" }
@@ -533,11 +598,16 @@ pub(super) fn derived_file(
     if let Some(goal) = goal {
         file.goal = goal;
     }
-    // The continued candidate is the new Task's base, whatever the old file declared.
+    // Exact native Review Base is restored from the recorded revision, never re-resolved from a Git label.
     file.base = None;
     if let Some(inputs) = &mut file.inputs {
         inputs.remove("source");
         inputs.remove(FINDINGS_PORT);
+        if is_standalone_review(&projection.revision) {
+            inputs.remove("base");
+            inputs.remove("history");
+            inputs.remove("continuation");
+        }
         if inputs.is_empty() {
             file.inputs = None;
         }

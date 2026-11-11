@@ -875,6 +875,7 @@ struct Detail {
     kind: String,
     goal: String,
     stages: Vec<Stage>,
+    findings: Vec<String>,
 }
 
 impl Detail {
@@ -891,6 +892,7 @@ impl Detail {
             goal: text(&revision["payload"]["goal"])?.to_owned(),
             document,
             stages,
+            findings: task_commands::recorded_findings_lines(dir, task_id)?,
         })
     }
 
@@ -981,6 +983,21 @@ impl Detail {
             spent("dependency_preparation"),
         )));
         rows.push(Row::blank());
+        if !self.findings.is_empty() {
+            rows.push(Row::painted("FINDINGS  (af review ledger)", Paint::Title));
+            rows.extend(self.findings.iter().map(|line| Row::plain(line.clone())));
+            rows.push(Row::plain(format!(
+                "  :review ledger {} --state {}",
+                self.task_id,
+                shell_words::quote(&self.dir.to_string_lossy())
+            )));
+            rows.push(Row::plain(format!(
+                "  :review report {} --state {}",
+                self.task_id,
+                shell_words::quote(&self.dir.to_string_lossy())
+            )));
+            rows.push(Row::blank());
+        }
         rows.push(Row::painted("HISTORY  (af task show)", Paint::Title));
         let mut kinds: BTreeMap<&str, &str> = BTreeMap::new();
         for entry in array(&document["execution_records"]) {

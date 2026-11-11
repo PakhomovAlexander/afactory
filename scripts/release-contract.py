@@ -20,13 +20,13 @@ def check(root=ROOT):
     manifest = toml_file.loads((root / 'Cargo.toml').read_bytes(), 'Cargo.toml')
     version = manifest['workspace']['package']['version']
     try:
-        selected = overhead.select_contract(version)
+        if version not in overhead.CURRENT_RELEASES:
+            raise overhead.BenchError('%s is named by no fixture contract release declaration' % version)
+        selected = overhead.select_contract()
     except overhead.BenchError as error:
         raise ValueError(str(error)) from error
-    contract = overhead.FIXTURE_CONTRACTS[selected]
-    if (selected != overhead.CURRENT_CONTRACT
-            or contract['check_receipt'] != overhead.CHECK_RECEIPT_CURRENT
-            or contract['pins'] is not None):
+    if (selected != 'native-task-review@1'
+            or overhead.CHECK_RECEIPT_CURRENT != 'af/TaskCheckReceipt@2'):
         raise ValueError('workspace release must explicitly select the current committed fixtures')
     directory = root / 'schemas'
     generated = contracts.schema_documents()

@@ -49,7 +49,7 @@ scope filters the same Store by repository identity. `arg_required_else_help` on
 reads anything, a few milliseconds after `af` starts. The scope resolves and every pane loads on
 a thread of their own; the splash animates while it waits on that load a step at a time and ends
 the moment the load arrives, so the browser is never later than it would be without one. That
-load reads no Store: a pane that lists Stores (Tasks, Campaigns and, in a project scope, Workers)
+load reads no Store: a pane that lists Stores (Tasks and, in a project scope, Workers)
 starts their read on a thread of its own and the event loop collects each Store as it is read,
 after the first frame, since the loop paints before it polls. The splash therefore waits for the
 scope only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of
@@ -168,7 +168,7 @@ The browser releases the terminal first. The child's process group then owns the
 foreground, so `<C-c>` stops the child and never the browser. When the child ends, the released
 screen shows one line, `af LINE: exit N -- Enter returns to the browser` (or the signal that
 ended it), and waits for Enter. Then the browser re-enters and reads again the scope, the
-settings and the Tasks, Campaigns, Workers and Providers panes (Providers with the usage probe, since
+settings and the Tasks, Workers and Providers panes (Providers with the usage probe, since
 the command may have spent a window). It
 keeps what is opened and the bar's selection. The status line says `af LINE: exit N`.
 
@@ -197,8 +197,8 @@ directory  ~/bs/apkhmv-main/af.toml                   absent
 project    .af/af.toml                                present   <- edit with e
 local      .af/af.local.toml                          absent
 
-[defaults]
-pipeline = "review"                                   .af/af.toml:8
+[task.defaults]
+pipeline = "builtin/implementation@1.0.0"                                   .af/af.toml:8
 [self]
 keep_versions = 3                                     ~/.config/af/config.toml:4
 ```
@@ -263,7 +263,8 @@ spinner in the bar row, polled from the event loop without blocking key handling
 
 The bar lists Worker packages found in the declared directories, in this order and with the
 source folded in as a second-level group when more than one exists:
-`.af/workers/` (reviewer Workers), `.af/task-packages/`, `.af/packages/`, `.af/vendor/`.
+`.af/task-packages/`, `.af/packages/`, `.af/vendor/`. Only current `worker.toml` Task packages
+are read; Reviewer manifests and `af.lock` Worker metadata are not executable authority.
 The user scope lists no Worker, and synced catalogs are not read.
 A project scope's folder lists its Workers from the start: the load records the read and the
 first poll after the first frame starts it, opened or not, as the other folders load
@@ -273,8 +274,8 @@ spinner on `workers/`, never on the key loop.
 
 Main pane, three sections separated by rules:
 
-1. **Identity** — `name`, `version`, `schema`, source path, lock pin from `af.lock` (or
-   `unpinned`), runner (`program` + args as `af.lock` records them), attempt bounds
+1. **Identity** — `name`, `version`, `schema`, source path, package digest pin from `task-catalog.toml` (or
+   `unpinned`), current Worker runner declaration, attempt bounds
    (`signature.attempt.tokens`, `wall_ms`), effects and roles.
 2. **State** — derived only from Store records for this scope, this checkout's own Store and
    the default Store of every other checkout of the Project the Tasks pane discovers (§5.5):
@@ -299,7 +300,7 @@ For now the pane is the text `af task explain --tree` prints, produced by
 `task_commands::preview::render(…, tree = true)`, verbatim:
 
 ```
-PIPE  review@1.0.0 (.af/pipelines/review.toml)  [configured]
+PIPE  fixture/review@1.0.1 (.af/task-packages/fixture/review/pipeline.toml)  [configured]
 +-- correctness: slot -> workers/correctness  attempts 1..1
 +-- bugs: slot -> workers/bugs  attempts 1..1
 '-- verify: call fixture/verify
@@ -328,15 +329,13 @@ same kind of tree: `attempts N at most, M in parallel`, then one row per node in
 `evaluate  verify evaluator -> ...  when check=passed`), a `call` expanded into the package the
 catalog pins by that name, as committed, with the call's slot bindings applied the way the
 kernel applies them (a bound slot is the caller's Worker, role and bounds); the contract follows
-the tree and the refusal, when there is one, comes last. A review Pipeline under
-`.af/pipelines/` is planned against a diff selector the browser does not hold, so it is always
-drawn from its declaration: the Subject, the convergence policy, the budgets and the checks,
-then one row per node (`correctness  reviewer -> correctness  after gate  demands required`,
-`gather  <- correctness, bugs`), and the `af review plan` command that plans it against a diff.
+the tree and the refusal, when there is one, comes last. A retired Campaign declaration under
+`.af/pipelines/` receives an explicit refusal pointing to the native Task catalog and a Review
+Task file. The browser does not parse or compile that retired declaration.
 No pane prints a declaration's TOML; `gf` opens the file. Selecting a Task's pipeline from the
 Tasks pane shows the captured `ExecutionPlan`. `j`/`k` highlight a row; the status line shows
 its slot binding and provider on a kernel plan, and the slot's declared Worker, role and bounds
-(or a reviewer's package or runner) on a declared tree. The ASCII DAG from the review TUI is
+on a declared tree. The ASCII DAG from the review TUI is
 not carried over; it can return as a `:set dag` view later.
 
 ### 5.5 Tasks
@@ -466,57 +465,17 @@ and a space, and leaves the Task ID for the user to type, which keeps delivery's
 a Task that is not verified says why on the status line. Neither verb submits the line. Enter
 runs it, handing the terminal over as described in §4.
 
-### 5.6 Campaigns
+### 5.6 Review Tasks
 
-Mirrors `af review campaigns --format json` and `af review report --format json`, read by the
-functions behind them (`enumerate_campaigns`, `read_campaign_view`, the report view), silently:
-a warning the CLI prints on stderr would land on the screen. The sources are the default Campaign root, each
-Store a plain `af review run` keeps under `review/local/`, and every `review` Store and
-`review_root` directory the Store registry records. A Store reached twice is listed once.
+Native Review appears under `tasks/` with the same state, stage Attempts, accounting and history
+as other Tasks. Opening one also shows the exact common Findings renderer: reviewer coverage,
+recorded partial results, canonical Findings and their original claims. The pane offers
+`:review ledger ID --state DIR` and `:review report ID --state DIR`. No separate Campaign pane
+or Campaign Store reader is installed.
 
-```
-CAMPAIGNS  project: hub
-
-~/.local/state/af/review/campaigns
-  pr-42                 round 1.1  open  -
-      spend 40000 tok  wall 4.2 s  last write 2026-10-23 06:12Z
-      nodes  correctness  bugs
-```
-
-The bar lists each Campaign by its label, with its state as a chip: `open` (blue) while its newest
-Round has no Run Report, else its verdict: `pass` (green), `fail` or `incomplete` (pink); `new`
-before its first Round. The folder shows each Store's path, then per Campaign its newest Round,
-state and verdict, its spend (the Tasks' cumulative charge and the Rounds' wall-clock, as `af
-review report` counts them) and its Store's last write in UTC, and the reviewer nodes of the newest
-Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`): only that
-Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
-the latest Attempt is the one that started last, not the last one listed. Every read runs on a
-thread, started at the first poll after the load or `R` that records it, each source listed as
-it is read behind a spinner on `campaigns/`;
-a Store is listed once, where the source that answers it first in source order puts it, and
-that answer takes the place of what the last read listed for the Store wherever that was (a
-Campaign a root listed may be a registered Store's answer this time, and a Campaign becomes the
-refusal a source reports for its Store the moment that arrives); a Store no source answered yet
-stays listed from the last read until one does, or until the read is done, so a source list
-that changed within the scope never unlists an opened Campaign before a source answers for its
-Store. The groups stand in source order.
-While the pane shows, that thread reads every source again: once a second while any listed
-Round is open, the Tasks pane's cadence, and every five seconds otherwise, so a Campaign started
-meanwhile appears without a key.
-
-One Campaign's pane shows STATE, SPEND and STORE, NODES (each reviewer's latest outcome,
-charge and wall), LEDGER (the report's verdict and findings summary, then its findings grouped by
-the reviewer that reported each) and COMMANDS: `review report`, `review ledger --long`, `review
-show … KEY` and, while a Round is open, `review run … --restart-round`, each with `--campaign
-LABEL` and, unless the default root resolves it by its label, `--state DIR`. Enter on a command
-or a finding puts the line on the `:` line, unsubmitted. `y` copies the label. Stores another
-release wrote are one muted row, as in the Tasks pane, with one command per release that wrote
-them; another unreadable Store, a log that cannot even be looked at included, is an error row
-naming its path and the error, and a `! … unreadable` bar entry. Nothing is written.
-
-`af review campaigns` without `--format json` prints the same Campaigns as a 100-column table:
-`CAMPAIGN  ROUND  STATE  VERDICT  TOKENS  WALL  UPDATED`, a cut cell ending in `~`, then its
-problems.
+Retired `.af/pipelines/*.toml` entries may be listed for replacement, but their contents are not
+parsed. The pane states the refusal and points to a native Pipeline pinned by
+`.af/task-catalog.toml` and `af review plan --file ../review.json`.
 
 ## 6. Architecture
 
@@ -628,10 +587,8 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
 6. Campaigns, every Task Store, help and discoverability. **Delivered** (package P12). §3, §4,
    §5.2, §5.5 and §5.6 describe it. Deviations:
    - `?` opens the help overlay, so vim's backward search moved to `/` then `N`.
-   - The Campaigns pane lists every Campaign of the machine in both scopes, as `af review
-     campaigns` does: a Campaign records no repository path to filter by.
-   - The commands a Campaign's pane offers are the CLI's own selectors (`--campaign LABEL
-     [--state DIR]`), not a positional id.
+   - Review Tasks use common Task IDs and Store selection. Their Findings and report commands
+     carry that exact ID and `--state DIR`.
    - A node chip's state is its latest Attempt's outcome in the Task accounting; the report
      records no per-node state of its own.
 

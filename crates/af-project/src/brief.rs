@@ -22,7 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use af_contracts::project::SurveyCompletenessV1;
-use af_contracts::task::pipeline::{PipelineContractV1, PipelineDefinitionV1, TaskOperatorV1};
+use af_contracts::task::pipeline::{PipelineContractV1, PipelineDefinition, TaskOperatorV1};
 use af_contracts::task::project_brief::{
     NOT_KERNEL_CONSTRUCTED, ORIENT, PORT_REQUIRED_BY_PREFIX, PROJECT_BRIEF_CAPTURE_V1,
     PROJECT_BRIEF_RECEIPT_V1, PROJECT_BRIEF_V1, PROJECT_SURVEY_PIN_V1, ProjectBriefAncestryV1,
@@ -405,7 +405,7 @@ fn ancestry(
 /// constructed (ADR-0160 clause 6), so a Task whose every Brief port is bound reads no Survey
 /// and pins none.
 pub fn constructs(
-    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: &BTreeMap<String, PipelineDefinition>,
     requested: Option<&PipelineChoiceV1>,
     no_match: NoMatchPolicy,
     planner: bool,

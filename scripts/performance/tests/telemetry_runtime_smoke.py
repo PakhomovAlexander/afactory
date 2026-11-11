@@ -58,22 +58,25 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         else:
             assert outcome.code == 0, (label, outcome.code, outcome.stdout, outcome.stderr)
         print('real AF setup:', label, 'exit', outcome.code, flush=True)
-        return run, json.loads(outcome.stdout) if outcome.stdout else None, outcome.stderr
+        return run, json.loads(outcome.stdout) if outcome.stdout else None, outcome
 
     if refuse:
-        run, _, stderr = execute('overhead', 'overhead')
-        document = run_document(run, stderr)
+        run, _, outcome = execute('overhead', 'overhead')
+        document = failed_task_document(run, outcome)
         assert document['phase']['kind'] == 'finished'
         assert document['result']['execution'] == 'exhausted'
         assert document['result']['acceptance'] == 'inconclusive'
         assert document['attempts'] == 1
         report = document['run_reports'][0]
         check = next(node for node in report['report']['nodes'] if node['node'] == 'root.nodes.check')
-        assert check['outcome']['kind'] == 'failed' and check['outcome']['class'] == 'resources'
-        assert report['diagnostics']['root.nodes.check']['message'] == 'Task runtime evidence cannot be empty'
-        assert b'finished/exhausted/budget' in outcome_stderr(run)
+        assert check['outcome']['kind'] == 'completed', report
+        assert 'Task runtime evidence cannot be empty' not in json.dumps(report)
+        receipts = document.get('runtime_observations', [])
+        assert not receipts, receipts
+        assert b'insufficient_disk:' in outcome_stderr(run)
+        assert b'finished/gate_failed/preflight_failed' in outcome_stderr(run)
         # Inspect only public typed receipts, never Worker stdout/stderr or transcripts.
-        print('4 GiB reproduces the public check resource failure before any reviewer', flush=True)
+        print('4 GiB retains the public disk refusal before any reviewer', flush=True)
     else:
         _, overhead, _ = execute('overhead', 'overhead')
         assert overhead['gate']['verdict'] == 'not_judged'
@@ -102,13 +105,14 @@ def exercise(executor, registry, config, af, refuse=False, deadline=None):
         owner.work_cleaned()
 
 
-def run_document(run, captured_stderr):
+def failed_task_document(run, outcome):
+    """A failed script may never have reached its first Task; retain that original reason."""
     path = run / 'bench/telemetry-bench-concurrent/00-off/stdout'
     try:
         return json.loads(path.read_bytes())
     except (OSError, ValueError) as error:
-        raise AssertionError('missing or invalid run artifact %s: %s; captured stderr: %r'
-                             % (path, error, captured_stderr)) from error
+        raise AssertionError('missing or invalid run artifact %s: %s; original diagnostic: %r'
+                             % (path, error, (outcome.code, outcome.stdout, outcome.stderr))) from error
 
 
 def outcome_stderr(run):

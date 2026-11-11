@@ -157,7 +157,6 @@ fn paused_publication_at_report(
         task_revision_id: f.revision_id.clone(),
         plan_id: f.plan_id.clone(),
         through_sequence: state.next_sequence,
-        phase_id: None,
         nodes: execution
             .graph
             .order
@@ -180,7 +179,7 @@ fn paused_publication_at_report(
     let id = f
         .cas
         .put_artifact(
-            TASK_RUN_REPORT_V2,
+            TASK_RUN_REPORT_V3,
             producer(),
             vec![],
             None,
@@ -306,7 +305,7 @@ fn recording_resume_pins_exact_report_and_outputs_without_dispatch_or_new_resour
             .contains("fenced")
     );
     let forged = transition(&f, &current);
-    let (kind, raw) = crate::store::task::review_handoff::encode_transition(&forged).unwrap();
+    let (kind, raw) = crate::store::task::journal::encode_transition(&forged).unwrap();
     let state = f.state();
     let event = NewEvent::new(kind, raw)
         .referencing(references(&f.cas, &forged.change, Some(&state)).unwrap());
@@ -322,7 +321,7 @@ fn recording_resume_pins_exact_report_and_outputs_without_dispatch_or_new_resour
         .store
         .resume_task_for_recording(&f.cas, &current, &f.authority)
         .unwrap();
-    assert_eq!(event.event_type, EventType::TaskTransitionV5);
+    assert_eq!(event.event_type, EventType::TaskTransitionV6);
     assert!(event.artifact_refs.contains(&output));
     f.store = EventStore::open(&f.path).unwrap();
     let after = f.state();
@@ -486,7 +485,7 @@ fn recording_resume_rejects_revoked_decision_or_replaced_latest_report() {
     let id = f
         .cas
         .put_artifact(
-            TASK_RUN_REPORT_V2,
+            TASK_RUN_REPORT_V3,
             producer(),
             vec![],
             None,
@@ -532,51 +531,4 @@ fn assert_conflict<T: std::fmt::Debug>(result: Result<T, StoreError>, cause: &st
         result.unwrap_err().to_string(),
         format!("event store conflict: {cause}")
     );
-}
-
-#[test]
-fn recording_resume_compares_review_round_inside_the_write_transaction() {
-    let (f, round) = review::round::round_fixture();
-    let (mut f, lease, _) = expired_publication(f, false);
-    let state = f.state();
-    let transition = transition(&f, &lease);
-    let (event_type, value) =
-        crate::store::task::review_handoff::encode_transition(&transition).unwrap();
-    let event = NewEvent::new(event_type, value.clone())
-        .referencing(references(&f.cas, &transition.change, Some(&state)).unwrap());
-    let run = task_run_id(lease.task_id()).unwrap();
-    let permit = WritePermit {
-        bound_tasks: vec![],
-        run_id: run.clone(),
-        first: state.next_sequence,
-        payloads: vec![value],
-        event_type,
-        valid_until: Some(state.lease_until),
-        review_round: review_round::fence_for_transition(&f.cas, &transition, Some(&state))
-            .unwrap(),
-        review_prefix: None,
-    };
-    permit
-        .validate(
-            &f.store.conn,
-            &run,
-            state.next_sequence as i64,
-            &[event.clone()],
-        )
-        .unwrap();
-    review::round::supersede(&f, &round);
-    assert_eq!(f.state().next_sequence, state.next_sequence);
-    assert!(
-        f.store
-            .append_batch_inner(&run, &f.cas, &[event], Some(&permit), None)
-            .unwrap_err()
-            .to_string()
-            .contains("superseded or closed")
-    );
-    assert!(
-        f.store
-            .resume_task_for_recording(&f.cas, &lease, &f.authority)
-            .is_err()
-    );
-    assert_eq!(f.state().next_sequence, state.next_sequence);
 }

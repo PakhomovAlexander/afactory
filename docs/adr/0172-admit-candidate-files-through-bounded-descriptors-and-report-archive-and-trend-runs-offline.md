@@ -1,6 +1,6 @@
 # ADR-0172: Admit candidate files through bounded descriptors, observe streamed JSON by path, and report, archive and trend runs offline
 
-**Status:** accepted (2026-10-20); decisions 1 and 7 amended by
+**Status:** accepted (2026-10-20); benchmark event mix partially superseded by [Task observation](2026-11-10-reuse-validated-artifacts-for-task-observation.md); decisions 1 and 7 amended by
 [ADR-0173](0173-own-the-supervisor-a-test-runs-and-bound-admission-collection-scratch-and-cancellation-by-absolute-deadlines.md) (enumeration bounded while it reads, and one absolute deadline per HTTPS
 exchange). Closes five inherited admission and oracle findings against
 the sealed snapshot of
@@ -9,9 +9,6 @@ whose own acceptance was still pending when this package began, and implements p
 (reports, archive and history) of the
 [continuous performance laboratory](../design/continuous-performance.md). Its decisions stand
 except where this ADR amends them:
-Benchmark event-mix requirements are superseded by the
-[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
-ordered-history and complete-output oracle requirements remain.
 
 - decision 3 (the run's deadline now also bounds the artifacts' admission);
 - decision 4 (the `task show` rules), which this ADR replaces.

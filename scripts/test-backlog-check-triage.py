@@ -26,6 +26,17 @@ STAGED = ROOT / 'fixtures' / 'issue-triage'
 HAND = json.loads((STAGED / 'hand-triage-2026-10-30.json').read_text(encoding='utf-8'))
 
 
+def candidate_af():
+    """Use the normal gate build, including Cargo's configured target directory, never PATH af."""
+    metadata = subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps',
+                               '--locked', '--offline'], cwd=ROOT, capture_output=True,
+                              text=True, check=True)
+    binary = Path(json.loads(metadata.stdout)['target_directory']) / 'debug' / 'af'
+    if not binary.is_file():
+        raise FileNotFoundError(f'{binary}: build the candidate first with cargo test --locked --no-run')
+    return binary
+
+
 def load():
     spec = importlib.util.spec_from_file_location('backlog_check_triage', ROOT / 'scripts' / 'backlog-check-triage.py')
     module = importlib.util.module_from_spec(spec)
@@ -167,7 +178,7 @@ class Documents(unittest.TestCase):
         self.assertEqual(triage.author_document(document=rendered(tick, fence='````')), tick)
 
     def test_the_triage_block_is_read_from_the_draft(self):
-        draft = {'schema': 'af.document-draft/2', 'title': 'Triage of issue #432', 'citations': [],
+        draft = {'schema': 'af.document-draft/3', 'title': 'Triage of issue #432', 'citations': [],
                  'sections': [{'heading': 'Triage', 'body': '```json\n' + json.dumps(doc()) + '\n```'},
                               {'heading': 'Rationale', 'body': 'Why.'}]}
         self.assertEqual(triage.author_document(draft=draft), doc())
@@ -554,7 +565,7 @@ class Cli(unittest.TestCase):
             verifier_block = copy.deepcopy(author)
         path = self.dir / ('author.json' if draft else 'report.md')
         if draft:
-            path.write_text(json.dumps({'schema': 'af.document-draft/2', 'title': 't', 'citations': [],
+            path.write_text(json.dumps({'schema': 'af.document-draft/3', 'title': 't', 'citations': [],
                                        'sections': sections if sections is not None else [
                 {'heading': 'Triage', 'body': '```json\n' + json.dumps(author) + '\n```'},
                 {'heading': 'Rationale', 'body': 'Why.'}]}))
@@ -765,7 +776,7 @@ class Cli(unittest.TestCase):
         # Include the evaluator's exact sections: 42 reproduction and other non-array shapes.
         for sections in (42, None, False, '', 'Triage', {}, {'heading': 'Triage'}):
             path = self.dir / 'malformed-draft.json'
-            path.write_text(json.dumps({'schema': 'af.document-draft/2', 'sections': sections}))
+            path.write_text(json.dumps({'schema': 'af.document-draft/3', 'sections': sections}))
             for label in (None, *triage.HOLD_LABELS):
                 for owner_label in (None, *triage.HOLD_LABELS):
                     with self.subTest(sections=sections, label=label, owner_label=owner_label):
@@ -900,23 +911,57 @@ class Staged(unittest.TestCase):
             self.assertRegex(manifest, r'(?m)^effects = \["read-source"\]$')
 
     def test_the_staged_pins_are_the_digests_of_the_staged_packages(self):
-        af = shutil.which('af')
-        if af is None:
-            self.skipTest('af is not on PATH; the Rust test task_triage checks these digests')
         catalog = (STAGED / 'catalog.toml').read_text(encoding='utf-8')
         pins = re.findall(r'\[packages\."([^"]+)"\]\ndigest = "([^"]+)"\npath = "([^"]+)"', catalog)
         self.assertEqual([name for name, _, _ in pins],
                          ['backlog/triage', 'backlog/triage-author', 'backlog/triage-kind', 'backlog/triage-verifier'])
         with tempfile.TemporaryDirectory() as home:
+            # An installed release cannot validate current-source package formats. Keep a
+            # conflicting executable first on PATH to exercise the real candidate selection.
+            installed = Path(home) / 'bin'
+            installed.mkdir()
+            trap = installed / 'af'
+            trap.write_text('#!/bin/sh\necho "installed af must not validate candidate fixtures" >&2\nexit 91\n')
+            trap.chmod(0o755)
+            with mock.patch.dict(os.environ, PATH=str(installed) + os.pathsep + os.environ['PATH']):
+                self.assertEqual(shutil.which('af'), str(trap))
+                af = candidate_af()
             # A private home, and no release source: `af` must not reach the developer's real state.
             env = dict(os.environ, HOME=home, XDG_CONFIG_HOME=f'{home}/config', XDG_CACHE_HOME=f'{home}/cache',
-                       XDG_DATA_HOME=f'{home}/data', XDG_STATE_HOME=f'{home}/state', AF_SELF_OFFLINE='1')
+                       XDG_DATA_HOME=f'{home}/data', XDG_STATE_HOME=f'{home}/state', AF_SELF_OFFLINE='1',
+                       PATH=str(installed) + os.pathsep + os.environ['PATH'])
             for name, digest, path in pins:
                 with self.subTest(name):
                     printed = subprocess.run([af, 'catalog', 'digest', str(ROOT / path)], capture_output=True,
                                              text=True, cwd=home, env=env)
                     self.assertEqual(printed.returncode, 0, printed.stderr)
                     self.assertEqual(printed.stdout.strip(), digest)
+
+    def test_candidate_binary_uses_cargos_reported_target_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Exercise Cargo's own resolution, including a configured path with spaces.
+            target = Path(tmp) / 'configured target'
+            binary = target / 'debug' / 'af'
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            with mock.patch.dict(os.environ, CARGO_TARGET_DIR=str(target)):
+                self.assertEqual(candidate_af(), binary)
+
+    def test_missing_candidate_binary_fails_without_an_installed_binary_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata = subprocess.CompletedProcess([], 0, json.dumps({'target_directory': tmp}), '')
+            with mock.patch.object(subprocess, 'run', return_value=metadata), \
+                    mock.patch.object(shutil, 'which') as installed:
+                with self.assertRaisesRegex(FileNotFoundError, 'build the candidate first'):
+                    candidate_af()
+                installed.assert_not_called()
+
+    def test_candidate_metadata_failure_is_not_replaced_by_an_installed_binary(self):
+        with mock.patch.object(subprocess, 'run', side_effect=subprocess.CalledProcessError(101, 'cargo')), \
+                mock.patch.object(shutil, 'which') as installed:
+            with self.assertRaises(subprocess.CalledProcessError):
+                candidate_af()
+            installed.assert_not_called()
 
 
 if __name__ == '__main__':

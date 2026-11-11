@@ -14,18 +14,17 @@ pub struct PipelineContractFixture {
     pub max_parallel: u32,
 }
 
-/// `af.catalog-contract-fixtures/1` names no pipeline version, so it carries only
-/// `af.pipeline/1` contracts: a pipeline with a Project Brief port (`af.pipeline/2`, ADR-0160) is
-/// neither exported nor admitted from a shared catalog.
+/// Shared interface fixtures carry no Brief constructor authority, so Pipelines declaring
+/// a Project Brief port are neither exported nor admitted from a shared catalog.
 fn brief_not_shared(name: &str) -> String {
     format!(
-        "Cannot share {name}: it declares a Project Brief port (af.pipeline/2), which a shared \
-         catalog's af.catalog-contract-fixtures/1 does not carry"
+        "Cannot share {name}: it declares a Project Brief port (af.pipeline/6), which a shared \
+         catalog's af.catalog-contract-fixtures/2 does not carry"
     )
 }
 
-impl From<&PipelineDefinitionV1> for PipelineContractFixture {
-    fn from(pipeline: &PipelineDefinitionV1) -> Self {
+impl From<&PipelineDefinition> for PipelineContractFixture {
+    fn from(pipeline: &PipelineDefinition) -> Self {
         Self {
             contract: pipeline.contract.clone(),
             accepts: pipeline.accepts.clone(),
@@ -153,7 +152,7 @@ impl TaskPlanCompiler {
         let mut files = BTreeMap::new();
         let mut packages = BTreeMap::new();
         let mut contracts = CatalogContractFixtures {
-            schema: "af.catalog-contract-fixtures/1".into(),
+            schema: "af.catalog-contract-fixtures/2".into(),
             pipelines: BTreeMap::new(),
             workers: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -247,7 +246,7 @@ impl TaskPlanCompiler {
             return Err(brief_not_shared(name));
         }
         let expected = CatalogContractFixtures {
-            schema: "af.catalog-contract-fixtures/1".into(),
+            schema: "af.catalog-contract-fixtures/2".into(),
             pipelines: self
                 .pipelines
                 .iter()

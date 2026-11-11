@@ -33,6 +33,16 @@ impl Fixture {
             &repo.join("custom-tasks/triage/worker/outputs/triage.schema.json"),
             &contract["outputs"]["triage"]["schema"],
         );
+        let pipeline = repo.join("custom-tasks/triage/pipeline/pipeline.toml");
+        let text = std::fs::read_to_string(&pipeline).unwrap();
+        std::fs::write(
+            &pipeline,
+            text.replace(
+                "role = \"triage\"",
+                "role = \"triage\"\nrecovery_attempts = 2",
+            ),
+        )
+        .unwrap();
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
                 .unwrap();
@@ -180,46 +190,67 @@ fn two_custom_kinds_use_the_real_model_adapter_and_structural_acceptance() {
             assert!(authority.get(name).is_none(), "{authority}");
         }
 
-        assert_eq!(planned["graph"]["schema"], "af.compiled-task/3");
+        assert_eq!(planned["graph"]["schema"], "af.compiled-task/6");
         crate::schemas::valid(
-            &crate::schemas::validator("compiled-task-v3.json"),
+            &crate::schemas::validator("compiled-task-v6.json"),
             &planned["graph"],
         );
-        let mut old_graph: af_graph::task::CompiledTask =
-            serde_json::from_value(planned["graph"].clone()).unwrap();
-        old_graph.schema = "af.compiled-task/2".into();
-        assert!(old_graph.validate_schema().is_err());
+        for retired in [
+            "af.compiled-task/1",
+            "af.compiled-task/2",
+            "af.compiled-task/3",
+        ] {
+            let mut old_graph: af_graph::task::CompiledTask =
+                serde_json::from_value(planned["graph"].clone()).unwrap();
+            old_graph.schema = retired.into();
+            assert!(old_graph.validate_schema().is_err());
+            assert!(
+                !crate::schemas::validator("compiled-task-v6.json")
+                    .is_valid(&serde_json::to_value(old_graph).unwrap())
+            );
+        }
+        if kind == "triage" {
+            assert_eq!(
+                planned["graph"]["slots"]["root.slots.triage"]["recovery_attempts"],
+                2
+            );
+        }
         let pipeline_path = f
             .repo
             .join(format!("custom-tasks/{kind}/pipeline/pipeline.toml"));
-        let pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+        let pipeline: af_contracts::task::pipeline::PipelineDefinition =
             af_pipeline_config::task::parse_task_pipeline(
                 &std::fs::read_to_string(pipeline_path).unwrap(),
             )
             .unwrap();
         crate::schemas::valid(
-            &crate::schemas::validator("pipeline-definition-v4.json"),
+            &crate::schemas::validator("pipeline-definition-v6.json"),
             &serde_json::to_value(&pipeline).unwrap(),
         );
-        let mut old_pipeline = pipeline;
-        old_pipeline.schema = af_contracts::task::pipeline::PipelineSchema::V1;
-        assert!(old_pipeline.validate().is_err());
+        let mut old_pipeline = serde_json::to_value(&pipeline).unwrap();
+        old_pipeline["schema"] = json!("af.pipeline/4");
+        assert!(
+            serde_json::from_value::<af_contracts::task::pipeline::PipelineDefinition>(
+                old_pipeline
+            )
+            .is_err()
+        );
         let kind_path = f.repo.join(format!("custom-tasks/{kind}/kind/kind.toml"));
         let mut kind_manifest: af_pipeline_config::task::kind::TaskKindManifest =
             toml::from_str(&std::fs::read_to_string(kind_path).unwrap()).unwrap();
         kind_manifest.validate().unwrap();
         crate::schemas::valid(
-            &crate::schemas::validator("task-kind-v2.json"),
+            &crate::schemas::validator("task-kind-v3.json"),
             &serde_json::to_value(&kind_manifest).unwrap(),
         );
         let mut report_alias = kind_manifest.clone();
         report_alias.kind = "report".into();
         assert!(report_alias.validate().is_err());
         assert!(
-            !crate::schemas::validator("task-kind-v2.json")
+            !crate::schemas::validator("task-kind-v3.json")
                 .is_valid(&serde_json::to_value(report_alias).unwrap())
         );
-        kind_manifest.schema = "af.task-kind/1".into();
+        kind_manifest.schema = "af.task-kind/2".into();
         assert!(kind_manifest.validate().is_err());
         // Mutable source files cannot alter what the recorded plan delivers to its Worker.
         let input_name = if kind == "triage" { "issue" } else { "note" };
