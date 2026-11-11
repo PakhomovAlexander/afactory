@@ -128,6 +128,63 @@ class ExecutorFixture(TempDir):
         return path, plan
 
 
+class PreflightCli(ExecutorFixture):
+    def invoke(self, *options):
+        import cli
+        output, errors = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(executor.Journal, "submit",
+                                  side_effect=AssertionError("preflight reserved an original")), \
+                mock.patch.object(executor, "execute_local",
+                                  side_effect=AssertionError("preflight executed work")), \
+                mock.patch.object(sys, "stdout", stdout), mock.patch.object(sys, "stderr", errors):
+            code = cli.main(["executor", "--config", "operator.toml", "preflight", "--work", "core",
+                             "--base", self.base, "--head", self.head, "--key", "readiness"]
+                            + list(options))
+            stdout.flush()
+        with executor.Journal(self.c) as journal:
+            self.assertEqual(journal.names(), [], "preflight reserves no original")
+        return code, output.getvalue(), errors.getvalue()
+
+    def configure(self, status):
+        if status == "refused":
+            self.c["core"]["shards"] = 4
+
+    def test_output_writes_validated_ready_and_refused_receipts(self):
+        for status, expected_code in (("ready", 0), ("refused", 4)):
+            with self.subTest(status=status):
+                self.configure(status)
+                path = self.path(status + ".json")
+                code, output, errors = self.invoke("--output", path)
+                self.assertEqual((code, output, errors), (expected_code, b"", ""))
+                doc = contracts.read_json(read(path), "executor-preflight")
+                self.assertEqual(doc["status"], status)
+                self.assertEqual(doc["request"] is None, status == "refused")
+                if status == "refused":
+                    self.assertIn("never more shards than instances", doc["detail"])
+
+    def test_no_output_keeps_ready_and_refused_receipts_on_stdout(self):
+        for status, expected_code in (("ready", 0), ("refused", 4)):
+            with self.subTest(status=status):
+                self.configure(status)
+                code, output, errors = self.invoke()
+                self.assertEqual((code, errors), (expected_code, ""))
+                self.assertEqual(contracts.read_json(output, "executor-preflight")["status"], status)
+
+    def test_output_write_errors_refuse_without_claim_or_execution(self):
+        for status in ("ready", "refused"):
+            self.configure(status)
+            for path in (self.tmp, self.path("missing-parent/receipt.json")):
+                with self.subTest(status=status, path=path):
+                    code, output, errors = self.invoke("--output", path)
+                    self.assertEqual(code, 4)
+                    doc = contracts.read_json(output, "plan-refusal")
+                    self.assertEqual(doc["reason"], "executor_refused")
+                    self.assertIn(path, doc["detail"])
+                    self.assertIn("refused (executor_refused)", errors)
+
+
 class Journal(ExecutorFixture):
     def assert_required_anchor_bound(self, cycle):
         with executor.Journal(self.c) as j:
