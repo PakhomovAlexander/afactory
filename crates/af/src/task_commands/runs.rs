@@ -596,10 +596,17 @@ pub(super) fn wait_status(
             said = true;
         }
         if settled || expired {
+            // Capture before discovery can establish its SQL snapshot, including streams
+            // that are nonwinning or have no matching execution row yet. Polling does not
+            // construct history or capture this token until a return is being considered.
+            let discovery = opened
+                .store
+                .database_observation()
+                .map_err(|e| e.to_string())?;
             let document = opened.track_display(|| status_document(opened, view.state.clone()));
             // This includes newly built views and the final Gate-history reads, not just
             // artifacts retained by an earlier polling iteration. Retry only on changed data.
-            if opened.refresh_if_changed()?
+            if opened.refresh_status_if_changed(&discovery)?
                 || (running && opened.task.lease_until_unix_ms() <= now_ms())
             {
                 view = opened.view()?.1;

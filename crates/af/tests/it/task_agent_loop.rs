@@ -2099,6 +2099,276 @@ fn a_settled_wait_rechecks_completion_during_final_gate_history_read() {
     completion_inside_wait_observation("gate-history-1", false, false);
 }
 
+/// A real history writer commits after the indexed cursor has established its snapshot.
+/// Neither an absent bound nor an older, nonwinning bound causes this writer to be replayed
+/// in the stale document. Only the discovery observation can detect its new winning check.
+fn winning_history_inside_wait_discovery(previously_matching: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    let ready = root.path().join("evaluator-ready");
+    let proceed = root.path().join("evaluator-proceed");
+    std::fs::write(&proceed, []).unwrap();
+    let package = repo.join(".af/task-packages/fixture");
+    let evaluator = package.join("evaluator/worker.py");
+    let original = std::fs::read_to_string(&evaluator).unwrap();
+    let marker = "request=json.load(sys.stdin)\n";
+    assert_eq!(original.matches(marker).count(), 1);
+    let hold = format!(
+        "{marker}import os,pathlib,time\nready=pathlib.Path({ready:?})\nproceed=pathlib.Path({proceed:?})\nif not proceed.exists():\n    parent=os.getppid()\n    ready.touch()\n    while not proceed.exists():\n        if os.getppid()!=parent:\n            sys.exit(1)\n        time.sleep(0.01)\n",
+        ready = ready.to_str().unwrap(),
+        proceed = proceed.to_str().unwrap(),
+    );
+    std::fs::write(&evaluator, original.replacen(marker, &hold, 1)).unwrap();
+    let mut pipeline: toml::Value =
+        toml::from_str(&std::fs::read_to_string(package.join("plain/pipeline.toml")).unwrap())
+            .unwrap();
+    pipeline["name"] = "fixture/history".into();
+    // Four ordinary Attempts (implement, two checks, evaluate) and one intentional
+    // evaluator cancellation/recovery. Existing Worker/check deadlines stay unchanged.
+    pipeline["max_attempts"] = 5.into();
+    let nodes = pipeline["nodes"].as_array_mut().unwrap();
+    let mut check = nodes
+        .iter()
+        .find(|node| node["id"].as_str() == Some("check"))
+        .unwrap()
+        .clone();
+    check["id"] = "check-new".into();
+    check["operator"]["checks"] =
+        toml::Value::Array(vec!["pagination".into(), "zz-history-new".into()]);
+    // Use the first verified Snapshot as a dependency: the evaluator must settle before
+    // the second check starts. Keep the fixture's existing conditional evaluation intact.
+    check["inputs"]["source"]["node"] = "accept".into();
+    check["inputs"]["source"]["port"] = "snapshot".into();
+    let mut accept = nodes
+        .iter()
+        .find(|node| node["id"].as_str() == Some("accept"))
+        .unwrap()
+        .clone();
+    accept["id"] = "accept-new".into();
+    accept["inputs"]["checks"]["node"] = "check-new".into();
+    nodes.push(check);
+    nodes.push(accept);
+    for port in ["snapshot", "verification"] {
+        pipeline["outputs"][port]["node"] = "accept-new".into();
+    }
+    pipeline["coverage"]["verified"]["node"] = "accept-new".into();
+    std::fs::create_dir(package.join("history")).unwrap();
+    std::fs::write(
+        package.join("history/pipeline.toml"),
+        toml::to_string(&pipeline).unwrap(),
+    )
+    .unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    let mut pin = catalog["packages"]["fixture/plain"].clone();
+    pin["path"] = ".af/task-packages/fixture/history".into();
+    catalog["packages"]
+        .as_table_mut()
+        .unwrap()
+        .insert("fixture/history".into(), pin);
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    let policy_path = repo.join(".af/code-policy.toml");
+    let mut policy: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+    let mut check = policy["checks"]["pagination"].clone();
+    check["name"] = "zz-history-new".into();
+    // The original mandatory pagination check remains in both verification receipts. This
+    // extra named measurement distinguishes the new winner from the plain Task's history.
+    check["required"] = false.into();
+    policy["checks"]
+        .as_table_mut()
+        .unwrap()
+        .insert("zz-history-new".into(), check);
+    std::fs::write(policy_path, toml::to_string(&policy).unwrap()).unwrap();
+    let task = "gc-newer";
+    let mut file: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("gc-newer.json")).unwrap()).unwrap();
+    file["pipeline"]["name"] = "fixture/history".into();
+    file["limits"]["max_attempts"] = 5.into();
+    file["limits"]["verification"]["attempts"] = 4.into();
+    file["limits"]["verification"]["wall_ms"] = 20000.into();
+    std::fs::write(
+        repo.join("gc-newer.json"),
+        serde_json::to_vec(&file).unwrap(),
+    )
+    .unwrap();
+    file["task_id"] = "history-race".into();
+    std::fs::write(
+        repo.join("history-race.json"),
+        serde_json::to_vec(&file).unwrap(),
+    )
+    .unwrap();
+    pin_and_commit(&repo, "history discovery race fixture");
+
+    expect(
+        &af(
+            &repo,
+            &state,
+            &["task", "plan", "--file", "history-race.json"],
+        ),
+        0,
+    );
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let history_plan = store
+        .task_projection(&cas, "history-race")
+        .unwrap()
+        .unwrap()
+        .plan_id
+        .unwrap();
+    if previously_matching {
+        std::fs::remove_file(&proceed).unwrap();
+        let writer = crate::common::af()
+            .current_dir(&repo)
+            .args([
+                "task",
+                "run",
+                "history-race",
+                "--confirm-plan",
+                &history_plan,
+                "--state",
+            ])
+            .arg(&state)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut writer = task_interrupt::ChildGuard(Some(writer));
+        await_observation_read(&mut writer, &ready);
+        expect(&af(&repo, &state, &["task", "cancel", "history-race"]), 0);
+        let cancelled = writer.0.take().unwrap().wait_with_output().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(cancelled.status.signal(), Some(nix::libc::SIGTERM));
+        assert!(err(&cancelled).contains("interrupted by SIGTERM"));
+        std::fs::write(&proceed, []).unwrap();
+    }
+    task_gc::start(&repo, &state, "gc-older.json");
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-newer.json"]),
+        0,
+    );
+    let lease = store
+        .take_task_lease(&cas, task, "history-observer", 60_000)
+        .unwrap();
+    let before = store
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap()
+        .next_sequence;
+    let baseline = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        None,
+    );
+    assert!(
+        baseline["last_gate"]
+            .as_str()
+            .unwrap()
+            .starts_with("pagination:"),
+        "{baseline}"
+    );
+    let barriers = root.path().join("history-barriers");
+    let barrier = barriers.join("gate-history-1");
+    std::fs::create_dir_all(&barrier).unwrap();
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--timeout", "1", "--json", "--state"])
+        .arg(&state)
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    await_observation_read(&mut waiter, &barrier.join("ready"));
+    // This is a new, normally executed check on another Task, not a CAS rewrite or a lease
+    // change on the waited Task. The discovery cursor is still live at the artifact barrier.
+    expect(
+        &af(
+            &repo,
+            &state,
+            &[
+                "task",
+                "run",
+                "history-race",
+                "--confirm-plan",
+                &history_plan,
+            ],
+        ),
+        0,
+    );
+    assert_eq!(
+        store
+            .task_projection(&cas, task)
+            .unwrap()
+            .unwrap()
+            .next_sequence,
+        before
+    );
+    std::fs::write(barrier.join("proceed"), []).unwrap();
+    let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+    let waited = document(&output, 124, Some("task-status-v2.json"));
+    assert_eq!(
+        waited["state"], baseline["state"],
+        "the waited Task stays running"
+    );
+    assert!(
+        waited["last_gate"]
+            .as_str()
+            .unwrap()
+            .starts_with("zz-history-new:"),
+        "{waited}"
+    );
+    let fresh = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        None,
+    );
+    // This manually held planned Task has no execution clock; even elapsed_ms stays fixed.
+    assert!(waited["elapsed_ms"].is_null());
+    assert_eq!(
+        waited, fresh,
+        "the complete returned document observes the winning history"
+    );
+    assert_eq!(
+        store
+            .task_projection(&cas, task)
+            .unwrap()
+            .unwrap()
+            .next_sequence,
+        before
+    );
+    store.release_task_lease(&cas, &lease).unwrap();
+}
+
+fn await_observation_read(child: &mut task_interrupt::ChildGuard, ready: &Path) {
+    let until = Instant::now() + Duration::from_secs(60);
+    while !ready.exists() {
+        if child.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+            let output = child.0.take().unwrap().wait_with_output().unwrap();
+            panic!(
+                "no read at {}: {}\n{}",
+                ready.display(),
+                out(&output),
+                err(&output)
+            );
+        }
+        assert!(Instant::now() < until, "no read at {}", ready.display());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn an_expired_wait_rechecks_a_previously_nonwinning_history_task_during_discovery() {
+    winning_history_inside_wait_discovery(true);
+}
+
+#[test]
+fn an_expired_wait_rechecks_a_newly_qualifying_history_task_during_discovery() {
+    winning_history_inside_wait_discovery(false);
+}
+
 /// A detached run that is neither holding the Task nor admitted when the window passes is not
 /// claimed to run: `--detach` exits 4 with `admitted: false` and `af task status ID` next, and
 /// the run, held back here as a loaded machine can, still starts and finishes afterwards.

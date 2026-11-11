@@ -3960,10 +3960,55 @@ impl OpenedTask {
         {
             return Ok(false);
         }
+        self.reset_observation()?;
+        Ok(true)
+    }
+
+    /// Discovery can observe rows that never cause a replay (or no rows at all). Check its
+    /// database token around the complete artifact/stream verification too. Collection during
+    /// verification discards the document even if a now-unreachable artifact read failed.
+    fn refresh_status_if_changed(
+        &mut self,
+        discovery: &af_store::store::DatabaseObservation,
+    ) -> Result<bool, String> {
+        self.refresh_status_if_changed_with(discovery, |cas, id| {
+            cas.verify(id).map(|_| ()).map_err(|e| e.to_string())
+        })
+    }
+
+    fn refresh_status_if_changed_with(
+        &mut self,
+        discovery: &af_store::store::DatabaseObservation,
+        verify_display: impl FnMut(&Cas, &str) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if self
+            .store
+            .database_observation_unchanged(discovery)
+            .map_err(|e| e.to_string())?
+        {
+            let refreshed = self.refresh_if_changed_with(verify_display);
+            // A changed stream already discarded the document. Its replacement will get
+            // a fresh discovery token; do not project the same Task twice here.
+            if matches!(refreshed, Ok(true)) {
+                return refreshed;
+            }
+            if self
+                .store
+                .database_observation_unchanged(discovery)
+                .map_err(|e| e.to_string())?
+            {
+                return refreshed;
+            }
+        }
+        self.reset_observation()?;
+        Ok(true)
+    }
+
+    fn reset_observation(&mut self) -> Result<(), String> {
         self.refresh()?;
         self.view_artifacts.borrow_mut().clear();
         self.view_runs.borrow_mut().clear();
-        Ok(true)
+        Ok(())
     }
 
     /// Project the Task again from the Store, for a command that watches it change.
