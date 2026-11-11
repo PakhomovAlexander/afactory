@@ -1,6 +1,8 @@
 //! Pi's token-free setup/status/catalog boundary. Raw credentials never enter this process.
 use super::*;
+use af_process::{ExitPolicy, run_supervised_with_policy};
 use af_runner_pi::{PiConfig, Ready};
+use std::os::unix::ffi::OsStrExt;
 
 pub(super) fn registry_config(
     kind: ProviderKind,
@@ -27,31 +29,85 @@ pub(super) fn registry_config(
     config.validate()?;
     Ok(Some(config))
 }
-fn safe_installation(program: &Path) -> Result<PathBuf, String> {
+/// One invocation repository lookup is shared by every installation check in an operation.
+#[derive(Default)]
+struct InstallationOwnership {
+    repository: std::cell::OnceCell<Result<Option<PathBuf>, String>>,
+}
+
+fn safe_installation(program: &Path, ownership: &InstallationOwnership) -> Result<PathBuf, String> {
     let program = fs::canonicalize(program).map_err(|_| "Pi installation is missing; install Node >=22.19 and official Pi SDK 1.4.0 outside the repository")?;
-    let cwd = std::env::current_dir()
-        .and_then(fs::canonicalize)
-        .map_err(|_| "Cannot resolve current directory")?;
-    if program.starts_with(&cwd)
-        || program
-            .ancestors()
-            .any(|p| p.join(".git").exists() || p.join(".af").is_dir())
+    let repository = ownership.repository.get_or_init(|| {
+        let cwd = std::env::current_dir()
+            .and_then(fs::canonicalize)
+            .map_err(|_| "Cannot resolve current directory".to_string())?;
+        Ok(invocation_repository_toplevel(&cwd))
+    });
+    let repository = repository.as_ref().map_err(Clone::clone)?;
+    if program
+        .ancestors()
+        .any(|p| p.join(".git").exists() || p.join(".af").is_dir())
+        || repository
+            .as_ref()
+            .is_some_and(|root| program.starts_with(root))
     {
         return Err("Pi must use an installed SDK/Node outside repository-owned paths".into());
     }
     Ok(program)
 }
-/// Resolve installed layouts without executing (or interpreting) the Pi launcher.
-/// Managed installations select only the supported release, never a path from shell text.
-fn discover_sdk() -> Result<PathBuf, String> {
-    let unresolved = "Cannot safely resolve Pi SDK; pass --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
-    let launcher = resolve_program("pi").ok_or(unresolved)?;
-    discover_sdk_from_launcher(&launcher)
+
+/// Only a discovered Git toplevel makes the invocation directory relevant to ownership.
+/// A missing system Git binary, failed discovery or deadline contributes no repository.
+fn invocation_repository_toplevel(cwd: &Path) -> Option<PathBuf> {
+    // PATH is candidate-controlled, even when its `git` resolves to a trap Node. Bootstrap
+    // discovery only with an absolute OS installation, admitted without running any program.
+    let git = ["/usr/bin/git", "/bin/git"]
+        .into_iter()
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .find(|path| {
+            is_executable(path)
+                && !path
+                    .ancestors()
+                    .any(|p| p.join(".git").exists() || p.join(".af").is_dir())
+        })?;
+    let mut command = Command::new(git);
+    command
+        .env_clear()
+        .envs(af_source_git::git::isolated_environment(Path::new(
+            "/dev/null",
+        )))
+        .current_dir(cwd)
+        .args(af_source_git::git::CAPTURE_OVERRIDES)
+        .args(["rev-parse", "--show-toplevel"]);
+    let output = run_supervised_with_policy(
+        &mut command,
+        None,
+        Duration::from_secs(10),
+        ExitPolicy::KillProcessGroup,
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // Git writes literal path bytes followed by one newline; whitespace is part of the path.
+    let path = output.stdout.strip_suffix(b"\n")?;
+    fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(path))).ok()
 }
 
-fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
+/// Resolve installed layouts without executing (or interpreting) the Pi launcher.
+/// Managed installations select only the supported release, never a path from shell text.
+fn discover_sdk(ownership: &InstallationOwnership) -> Result<PathBuf, String> {
+    let unresolved = "Cannot safely resolve Pi SDK; pass --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
+    let launcher = resolve_program("pi").ok_or(unresolved)?;
+    discover_sdk_from_launcher(&launcher, ownership)
+}
+
+fn discover_sdk_from_launcher(
+    launcher: &Path,
+    ownership: &InstallationOwnership,
+) -> Result<PathBuf, String> {
     let unresolved = "Cannot safely resolve Pi SDK; pass an explicit installed --sdk-entrypoint";
-    let launcher = safe_installation(launcher)?;
+    let launcher = safe_installation(launcher, ownership)?;
     let bin = launcher.parent().ok_or(unresolved)?;
     let agent = bin.parent().ok_or(unresolved)?;
     let install = agent.join("install");
@@ -60,7 +116,7 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
         && install.exists()
     {
         let invalid = "Pi managed installation requires a regular current-version containing exactly supported SDK version 1.4.0 and an SDK inside that release";
-        if safe_installation(&install)? != install {
+        if safe_installation(&install, ownership)? != install {
             return Err(invalid.into());
         }
         // Bound reads and refuse links/special files before consulting the version.
@@ -83,13 +139,13 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
             return Err(invalid.into());
         }
         let release = install.join("releases").join(version);
-        let canonical_release = safe_installation(&release)?;
+        let canonical_release = safe_installation(&release, ownership)?;
         // A symlinked install/release or package must not redirect discovery elsewhere.
         if canonical_release != release {
             return Err(invalid.into());
         }
         let entry = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
-        let canonical_entry = safe_installation(&entry)?;
+        let canonical_entry = safe_installation(&entry, ownership)?;
         if !canonical_entry.starts_with(&release) || !canonical_entry.is_file() {
             return Err(invalid.into());
         }
@@ -98,19 +154,31 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
     // Existing SDK bundle CLI layout: dist/bundle/cli.js -> dist/index.js.
     Ok(agent.join("index.js"))
 }
-pub(super) fn node() -> Result<PathBuf, String> {
-    safe_installation(&resolve_program("node").ok_or("Pi requires Node >=22.19 on PATH")?)
+fn node(ownership: &InstallationOwnership) -> Result<PathBuf, String> {
+    safe_installation(
+        &resolve_program("node").ok_or("Pi requires Node >=22.19 on PATH")?,
+        ownership,
+    )
 }
 pub(super) fn probe(
     spec: &ProviderSpec,
     cancelled: &AtomicBool,
     timeout: Duration,
 ) -> Result<(PathBuf, Ready), String> {
+    probe_with_ownership(spec, cancelled, timeout, &InstallationOwnership::default())
+}
+
+fn probe_with_ownership(
+    spec: &ProviderSpec,
+    cancelled: &AtomicBool,
+    timeout: Duration,
+    ownership: &InstallationOwnership,
+) -> Result<(PathBuf, Ready), String> {
     let config = spec
         .pi
         .as_ref()
         .ok_or("Pi registration lacks backend/SDK authority")?;
-    safe_installation(&config.sdk_entrypoint)?;
+    safe_installation(&config.sdk_entrypoint, ownership)?;
     let auth = spec
         .auth_dir
         .as_deref()
@@ -122,7 +190,7 @@ pub(super) fn probe(
     {
         return Err("Pi profile must be machine-local and outside repository-owned paths; select an external --auth-dir".into());
     }
-    let node = node()?;
+    let node = node(ownership)?;
     let ready = af_runner_pi::probe(&node, config, auth, timeout, Some(cancelled))?;
     Ok((node, ready))
 }
@@ -207,16 +275,17 @@ fn setup_outcome(
         return Err("Pi profile must be machine-local and outside repository-owned paths; select an external --auth-dir".into());
     }
     let auth = fs::canonicalize(auth).map_err(|_| "Pi auth directory is missing")?;
+    let ownership = &InstallationOwnership::default();
     let resolved = match sdk {
         Some(path) => path.to_path_buf(),
-        None => discover_sdk()?,
+        None => discover_sdk(ownership)?,
     };
     let mut config = PiConfig {
         backend: backend.into(),
         sdk_entrypoint: resolved,
     };
     config.validate()?;
-    config.sdk_entrypoint = safe_installation(&config.sdk_entrypoint)?;
+    config.sdk_entrypoint = safe_installation(&config.sdk_entrypoint, ownership)?;
     let registry = registry_path()
         .map_err(|_| "Cannot resolve Pi Provider registry")?
         .ok_or("Cannot locate Provider registry")?;
@@ -231,7 +300,7 @@ fn setup_outcome(
     };
     let cancelled = AtomicBool::new(false);
     // Probe diagnostics are a closed AF-authored vocabulary; no native stderr escapes.
-    let (_, ready) = probe(&spec, &cancelled, PROBE_TIMEOUT)?;
+    let (_, ready) = probe_with_ownership(&spec, &cancelled, PROBE_TIMEOUT, ownership)?;
     let _lock = registry_lock(&registry).map_err(|_| "Cannot lock Pi Provider registry")?;
     let identity_detail = if ready.principal.is_none() {
         "account identity unavailable; auth context only; account substitution cannot be detected"
@@ -279,6 +348,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invocation_git_toplevel_preserves_literal_paths_and_absent_repository() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        assert_eq!(invocation_repository_toplevel(&root), None);
+        let repository = root.join("repository ' $(literal)\n");
+        let cwd = repository.join("nested/cwd");
+        fs::create_dir_all(&cwd).unwrap();
+        let output = af_source_git::git::isolated_command(&repository, Path::new("/dev/null"))
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(invocation_repository_toplevel(&cwd), Some(repository));
+    }
+
+    #[test]
     fn pi_setup_login_refusal_precedes_discovery_and_authentication() {
         assert_eq!(
             setup_outcome("pi-one", None, None, None, true).unwrap_err(),
@@ -319,30 +408,33 @@ mod tests {
         ] {
             fs::write(&current, bad).unwrap();
             assert!(
-                discover_sdk_from_launcher(&launcher).is_err(),
+                discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err(),
                 "accepted {bad:?}"
             );
             assert!(!marker.exists());
         }
         fs::write(&current, [0xff, 0xfe]).unwrap();
-        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         for version in ["1.4.0", "1.4.0\n", "1.4.0\r\n"] {
             fs::write(&current, version).unwrap();
-            assert_eq!(discover_sdk_from_launcher(&launcher).unwrap(), sdk);
+            assert_eq!(
+                discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).unwrap(),
+                sdk
+            );
         }
         let saved = root.join("saved-version");
         fs::rename(&current, &saved).unwrap();
         std::os::unix::fs::symlink(&saved, &current).unwrap();
-        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         fs::remove_file(&current).unwrap();
         fs::create_dir(&current).unwrap();
-        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         fs::remove_dir(&current).unwrap();
         fs::rename(&saved, &current).unwrap();
         let escaped = root.join("escaped-release");
         fs::rename(&release, &escaped).unwrap();
         std::os::unix::fs::symlink(&escaped, &release).unwrap();
-        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         assert!(!marker.exists());
     }
 }
