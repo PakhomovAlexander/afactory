@@ -1461,7 +1461,14 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         0,
         Some("task-status-v2.json"),
     );
-    let waited = af(&repo, &state, &["task", "wait", task, "--timeout", "1"]);
+    // Both readers observe the same live prefix independently. Running their existing
+    // one-second observations together leaves the Task's unchanged wall for its resume.
+    let (waited, partial) = std::thread::scope(|scope| {
+        let waited = scope.spawn(|| af(&repo, &state, &["task", "wait", task, "--timeout", "1"]));
+        let partial =
+            scope.spawn(|| af(&repo, &state, &["task", "events", task, "--timeout", "1"]));
+        (waited.join().unwrap(), partial.join().unwrap())
+    });
     assert_eq!(waited.status.code(), Some(124), "{}", err(&waited));
     assert!(
         err(&waited).contains("still runs after"),
@@ -1469,7 +1476,6 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         err(&waited)
     );
     // The stream so far: every recorded event, no terminal record, and the --after that goes on.
-    let partial = af(&repo, &state, &["task", "events", task, "--timeout", "1"]);
     assert_eq!(partial.status.code(), Some(124), "{}", err(&partial));
     let so_far = event_lines(&out(&partial), 0);
     assert!(
@@ -1524,11 +1530,34 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     assert!(alive(pid), "a refusal signals nothing");
     std::fs::write(&record_path, record).unwrap();
 
+    // Reuse the notifier wait already exercised below as a concurrent reader of the live
+    // prefix. No extra af process is needed to prove it follows the cancellation commit.
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task", "wait", task, "--notify", "--bell", "--json", "--state",
+        ])
+        .arg(&state)
+        .env("PATH", "/a-notifier-that-does-not-exist")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    let mut waiting = std::io::BufReader::new(waiter.0.as_mut().unwrap().stderr.take().unwrap());
+    let mut first = String::new();
+    std::io::BufRead::read_line(&mut waiting, &mut first).unwrap();
+    assert!(first.contains("is running; waiting"), "{first}");
     let cancelled = document(
         &af(&repo, &state, &["task", "cancel", task, "--json"]),
         0,
         Some("task-cancelled-v2.json"),
     );
+    let mut notified = waiter.0.take().unwrap().wait_with_output().unwrap();
+    notified.stderr.extend_from_slice(first.as_bytes());
+    std::io::Read::read_to_end(&mut waiting, &mut notified.stderr).unwrap();
+    let waited = document(&notified, 4, Some("task-status-v2.json"));
+    assert_eq!(waited["state"]["cause"], "host_cancelled", "{waited}");
     assert_eq!(cancelled["request"]["pid"], pid);
     assert_eq!(
         cancelled["state"],
@@ -1543,103 +1572,130 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let shown = expect(&af(&repo, &state, &["task", "show", task]), 0);
-    assert!(
-        shown.starts_with(&format!(
-            "Task {task}: abandoned/cancelled/host_cancelled\n"
-        )),
-        "{shown}"
-    );
-    assert!(shown.contains("cancelled: run 1 by "), "{shown}");
-    assert!(
-        shown.ends_with(&format!(
-            "next: af task run {task} --state {}\n",
-            state.display()
-        )),
-        "{shown}"
-    );
-    // The follower saw the cancel: every event from 0, then the one terminal record.
     let stdout = follower.stdout.take().unwrap();
     let followed = bounded_follower(follower, stdout, Duration::from_secs(60));
     leftovers
         .0
         .retain(|recorded| recorded.pid() != i32::try_from(follower_pid).unwrap());
-    assert_eq!(followed.status.code(), Some(4), "{}", err(&followed));
-    let lines = event_lines(&out(&followed), 0);
-    let terminal = lines.last().unwrap();
-    assert_eq!(terminal["record"], "terminal", "{}", out(&followed));
-    assert_eq!(terminal["exit_code"], 4);
-    assert_eq!(terminal["state"]["outcome"], "cancelled");
-    assert_eq!(
-        terminal["state"]["next_action"],
-        format!("af task run {task} --state {}", state.display())
-    );
-    let followed_last = terminal["last_sequence"].as_u64().unwrap();
-    assert_eq!(lines[lines.len() - 2]["sequence"], followed_last);
-    // Read again from the start, the stream is the follower's, then what the stopped run
-    // recorded after it, under the same state.
-    let whole = af(&repo, &state, &["task", "events", task]);
-    assert_eq!(whole.status.code(), Some(4), "{}", err(&whole));
-    let whole = event_lines(&out(&whole), 0);
-    let whole_terminal = whole.last().unwrap();
-    assert_eq!(whole_terminal["state"], terminal["state"]);
-    assert_eq!(&whole[..lines.len() - 1], &lines[..lines.len() - 1]);
-    let last = whole_terminal["last_sequence"].as_u64().unwrap();
-    // Reconnecting with the last sequence it read, a follower gets only the rest.
-    let rest = af(
-        &repo,
-        &state,
-        &["task", "events", task, "--after", &seen.to_string()],
-    );
-    assert_eq!(rest.status.code(), Some(4), "{}", err(&rest));
-    let rest_lines = event_lines(&out(&rest), seen + 1);
-    assert_eq!(
-        &rest_lines[..],
-        &whole[usize::try_from(seen).unwrap() + 1..]
-    );
-    let beyond = af(
-        &repo,
-        &state,
-        &["task", "events", task, "--after", &(last + 1).to_string()],
-    );
-    assert_eq!(beyond.status.code(), Some(1), "{}", err(&beyond));
-    assert!(
-        err(&beyond).contains(&format!("so --after {} names none of them", last + 1)),
-        "{}",
-        err(&beyond)
-    );
-    let refusal: Value = serde_json::from_slice(&beyond.stdout).unwrap();
-    schemas::valid(&schemas::validator("error-v2.json"), &refusal);
-    let again = af(&repo, &state, &["task", "cancel", task]);
-    assert_eq!(again.status.code(), Some(1));
-    assert!(err(&again).contains("is not running"), "{}", err(&again));
-    let waited = af(&repo, &state, &["task", "wait", task]);
-    assert_eq!(
-        waited.status.code(),
-        Some(4),
-        "a cancelled Task waits as cancelled"
-    );
-    let notified = crate::common::af()
-        .current_dir(&repo)
-        .args(["task", "wait", task, "--notify", "--bell", "--state"])
-        .arg(&state)
-        .env("PATH", "/a-notifier-that-does-not-exist")
-        .output()
-        .unwrap();
-    assert_eq!(notified.status.code(), Some(4), "{}", err(&notified));
-    assert!(
-        err(&notified).contains("warning: notifier unavailable"),
-        "{}",
-        err(&notified)
-    );
-    assert!(
-        !err(&notified).contains('\u{7}'),
-        "a pipe is not a terminal"
-    );
+    // The writer has stopped. Preserve every settled-state check while independent
+    // readers share its fixed prefix rather than consuming the Task wall serially.
+    let (shown, whole, rest, waited) = std::thread::scope(|scope| {
+        let shown = scope.spawn(|| af(&repo, &state, &["task", "show", task]));
+        let whole = scope.spawn(|| af(&repo, &state, &["task", "events", task]));
+        let rest = scope.spawn(|| {
+            af(
+                &repo,
+                &state,
+                &["task", "events", task, "--after", &seen.to_string()],
+            )
+        });
+        let waited = scope.spawn(|| af(&repo, &state, &["task", "wait", task]));
+        (
+            shown.join().unwrap(),
+            whole.join().unwrap(),
+            rest.join().unwrap(),
+            waited.join().unwrap(),
+        )
+    });
+    let captured_terminal: Value =
+        serde_json::from_str(out(&whole).lines().last().unwrap()).unwrap();
+    let captured_last = captured_terminal["last_sequence"].as_u64().unwrap();
+    let (beyond, again) = std::thread::scope(|scope| {
+        let beyond = scope.spawn(|| {
+            af(
+                &repo,
+                &state,
+                &[
+                    "task",
+                    "events",
+                    task,
+                    "--after",
+                    &(captured_last + 1).to_string(),
+                ],
+            )
+        });
+        let again = scope.spawn(|| af(&repo, &state, &["task", "cancel", task]));
+        (beyond.join().unwrap(), again.join().unwrap())
+    });
+    // Every canceled-state reader has finished before resuming. Validate their captured
+    // output concurrently with the foreground run, keeping schema assertions off its
+    // admission path. The scoped thread is joined even on a panic.
+    let (resumed, last) = std::thread::scope(|scope| {
+        std::fs::write(&resume, b"").unwrap();
+        let resumed = scope.spawn(|| af(&repo, &state, &["task", "run", task]));
+        let shown = expect(&shown, 0);
+        assert!(
+            shown.starts_with(&format!(
+                "Task {task}: abandoned/cancelled/host_cancelled\n"
+            )),
+            "{shown}"
+        );
+        assert!(shown.contains("cancelled: run 1 by "), "{shown}");
+        assert!(
+            shown.ends_with(&format!(
+                "next: af task run {task} --state {}\n",
+                state.display()
+            )),
+            "{shown}"
+        );
+        // The follower saw the cancel: every event from 0, then the one terminal record.
+        assert_eq!(followed.status.code(), Some(4), "{}", err(&followed));
+        let lines = event_lines(&out(&followed), 0);
+        let terminal = lines.last().unwrap();
+        assert_eq!(terminal["record"], "terminal", "{}", out(&followed));
+        assert_eq!(terminal["exit_code"], 4);
+        assert_eq!(terminal["state"]["outcome"], "cancelled");
+        assert_eq!(
+            terminal["state"]["next_action"],
+            format!("af task run {task} --state {}", state.display())
+        );
+        let followed_last = terminal["last_sequence"].as_u64().unwrap();
+        assert_eq!(lines[lines.len() - 2]["sequence"], followed_last);
+        // Read again from the start, the stream is the follower's, then what the stopped run
+        // recorded after it, under the same state.
+        assert_eq!(whole.status.code(), Some(4), "{}", err(&whole));
+        let whole = event_lines(&out(&whole), 0);
+        let whole_terminal = whole.last().unwrap();
+        assert_eq!(whole_terminal["state"], terminal["state"]);
+        assert_eq!(&whole[..lines.len() - 1], &lines[..lines.len() - 1]);
+        let last = whole_terminal["last_sequence"].as_u64().unwrap();
+        assert_eq!(last, captured_last);
+        // Reconnecting with the last sequence it read, a follower gets only the rest.
+        assert_eq!(rest.status.code(), Some(4), "{}", err(&rest));
+        let rest_lines = event_lines(&out(&rest), seen + 1);
+        assert_eq!(
+            &rest_lines[..],
+            &whole[usize::try_from(seen).unwrap() + 1..]
+        );
+        assert_eq!(beyond.status.code(), Some(1), "{}", err(&beyond));
+        assert!(
+            err(&beyond).contains(&format!("so --after {} names none of them", last + 1)),
+            "{}",
+            err(&beyond)
+        );
+        let refusal: Value = serde_json::from_slice(&beyond.stdout).unwrap();
+        schemas::valid(&schemas::validator("error-v2.json"), &refusal);
+        assert_eq!(again.status.code(), Some(1));
+        assert!(err(&again).contains("is not running"), "{}", err(&again));
+        assert_eq!(
+            waited.status.code(),
+            Some(4),
+            "a cancelled Task waits as cancelled"
+        );
+        assert_eq!(notified.status.code(), Some(4), "{}", err(&notified));
+        assert!(
+            err(&notified).contains("warning: notifier unavailable"),
+            "{}",
+            err(&notified)
+        );
+        assert!(
+            !err(&notified).contains('\u{7}'),
+            "a pipe is not a terminal"
+        );
 
-    // A foreground run resumes it, with its progress on stderr and its state last.
-    std::fs::write(&resume, b"").unwrap();
-    let resumed = af(&repo, &state, &["task", "run", task]);
+        (resumed.join().unwrap(), last)
+    });
+    // The foreground run prints its progress on stderr and its state last.
     let stderr = err(&resumed);
     assert_eq!(
         resumed.status.code(),
@@ -1837,6 +1893,79 @@ fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
         "no terminal record:\n{}",
         out(&followed)
     );
+}
+
+/// An unchanged SQLite prefix must not hide an in-place CAS mutation from a running waiter.
+/// The first diagnostic is the handoff: the waiter has fully opened the Task before mutation.
+#[test]
+fn an_unchanged_wait_rechecks_artifact_bytes_before_its_next_observation() {
+    use std::io::{BufRead, Read, Seek, Write};
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(root.path(), "pagination");
+    let task = task_interrupt::TASK;
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
+        0,
+    );
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let lease = store
+        .take_task_lease(&cas, task, "wait-integrity", 60_000)
+        .unwrap();
+    let projection = store.task_projection(&cas, task).unwrap().unwrap();
+    let sequence = projection.next_sequence;
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--json", "--state"])
+        .arg(&state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    let mut diagnostic = std::io::BufReader::new(waiter.0.as_mut().unwrap().stderr.take().unwrap());
+    let mut first = String::new();
+    diagnostic.read_line(&mut first).unwrap();
+    assert!(first.contains("is running; waiting"), "{first}");
+    let hex = projection.revision_id.strip_prefix("sha256:").unwrap();
+    let path = state.join("cas/objects").join(&hex[..2]).join(&hex[2..]);
+    let mut object = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let old_times = object.metadata().unwrap();
+    let mut byte = [0];
+    object.read_exact(&mut byte).unwrap();
+    object.rewind().unwrap();
+    object.write_all(&[byte[0] ^ 1]).unwrap();
+    object
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(old_times.accessed().unwrap())
+                .set_modified(old_times.modified().unwrap()),
+        )
+        .unwrap();
+    // No event, lease or metadata timestamp signals the change.
+    assert_eq!(
+        store
+            .len(&review_store::store::task::task_run_id(task).unwrap())
+            .unwrap(),
+        sequence
+    );
+    let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let mut rest = String::new();
+    diagnostic.read_to_string(&mut rest).unwrap();
+    assert!(
+        rest.contains("CAS object") || rest.contains("cas object"),
+        "{rest}"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("af/error@2"));
+    // The writer capability remains untouched; restore its bytes before releasing it.
+    object.rewind().unwrap();
+    object.write_all(&byte).unwrap();
+    store.release_task_lease(&cas, &lease).unwrap();
 }
 
 /// A detached run that is neither holding the Task nor admitted when the window passes is not

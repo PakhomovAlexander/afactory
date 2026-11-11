@@ -5,6 +5,9 @@
 the unverified snapshot of
 [ADR-0169](0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md).
 Its decisions stand except where this ADR amends them:
+Benchmark event-mix requirements are superseded by the
+[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
+ordered-history and complete-output oracle requirements remain.
 
 - decision 5 (seeds now cover native fixtures);
 - decision 6 (the build image is frozen by the plan, not chosen by the build);

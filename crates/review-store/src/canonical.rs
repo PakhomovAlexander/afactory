@@ -14,7 +14,8 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::fmt::Write as _;
+use std::io::Read;
 
 /// Domain separator for `content_id` — hashes the payload alone.
 const DOMAIN_CONTENT: &[u8] = b"review.kernel/content-id/v1\0";
@@ -51,7 +52,139 @@ pub fn canonicalize(value: &Value) -> Result<Vec<u8>, CanonicalError> {
     Ok(out)
 }
 
-fn write_value(value: &Value, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+/// Infallible sinks keep canonical errors independent of the destination. Hashing and
+/// comparison never allocate a second serialized document.
+trait Sink {
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+    fn push(&mut self, byte: u8) {
+        self.extend_from_slice(&[byte]);
+    }
+}
+
+impl Sink for Vec<u8> {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+}
+
+struct FormatSink<'a, S>(&'a mut S);
+impl<S: Sink> std::fmt::Write for FormatSink<'_, S> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(text.as_bytes());
+        Ok(())
+    }
+}
+
+struct HashSink {
+    hasher: Sha256,
+    buffer: [u8; 1024],
+    used: usize,
+}
+impl HashSink {
+    fn new(domain: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(domain);
+        Self {
+            hasher,
+            buffer: [0; 1024],
+            used: 0,
+        }
+    }
+    fn finish(mut self) -> String {
+        self.hasher.update(&self.buffer[..self.used]);
+        format!(
+            "sha256:{}",
+            review_core::hex::encode(&self.hasher.finalize())
+        )
+    }
+}
+impl Sink for HashSink {
+    fn extend_from_slice(&mut self, mut bytes: &[u8]) {
+        if self.used + bytes.len() > self.buffer.len() {
+            self.hasher.update(&self.buffer[..self.used]);
+            self.used = 0;
+            if bytes.len() >= self.buffer.len() {
+                self.hasher.update(bytes);
+                bytes = &[];
+            }
+        }
+        self.buffer[self.used..self.used + bytes.len()].copy_from_slice(bytes);
+        self.used += bytes.len();
+    }
+}
+
+struct CompareSink<'a> {
+    remaining: &'a [u8],
+    equal: bool,
+}
+impl Sink for CompareSink<'_> {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        if self.remaining.starts_with(bytes) {
+            self.remaining = &self.remaining[bytes.len()..];
+        } else {
+            self.equal = false;
+        }
+    }
+}
+
+pub(crate) fn is_canonical(value: &Value, bytes: &[u8]) -> Result<bool, CanonicalError> {
+    let mut sink = CompareSink {
+        remaining: bytes,
+        equal: true,
+    };
+    write_value(value, &mut sink)?;
+    Ok(sink.equal && sink.remaining.is_empty())
+}
+
+// Static envelope fields are already in UTF-16 order. Borrow the payload rather than
+// converting the whole envelope to a second Value just to omit artifact_id.
+fn write_envelope(
+    envelope: &review_core::ArtifactEnvelope,
+    out: &mut impl Sink,
+    include_id: bool,
+) -> Result<(), CanonicalError> {
+    out.push(b'{');
+    if include_id {
+        out.extend_from_slice(b"\"artifact_id\":");
+        write_string(&envelope.artifact_id, out);
+        out.push(b',');
+    }
+    out.extend_from_slice(b"\"content_id\":");
+    write_string(&envelope.content_id, out);
+    out.extend_from_slice(b",\"input_artifacts\":[");
+    for (index, id) in envelope.input_artifacts.iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        write_string(id, out);
+    }
+    out.extend_from_slice(b"],\"payload\":");
+    write_value(&envelope.payload, out)?;
+    out.extend_from_slice(b",\"producer\":");
+    write_value(
+        &serde_json::to_value(&envelope.producer).expect("producer serializes"),
+        out,
+    )?;
+    if let Some(subject) = &envelope.subject_snapshot_id {
+        out.extend_from_slice(b",\"subject_snapshot_id\":");
+        write_string(subject, out);
+    }
+    out.extend_from_slice(b",\"type\":");
+    write_string(&envelope.artifact_type, out);
+    out.push(b'}');
+    Ok(())
+}
+
+pub(crate) fn canonicalize_envelope(
+    envelope: &review_core::ArtifactEnvelope,
+) -> Result<Vec<u8>, CanonicalError> {
+    let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::Canonicalize);
+    let mut bytes = Vec::new();
+    write_envelope(envelope, &mut bytes, true)?;
+    Ok(bytes)
+}
+
+fn write_value(value: &Value, out: &mut impl Sink) -> Result<(), CanonicalError> {
     match value {
         Value::Null => out.extend_from_slice(b"null"),
         Value::Bool(true) => out.extend_from_slice(b"true"),
@@ -69,22 +202,39 @@ fn write_value(value: &Value, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
             out.push(b']');
         }
         Value::Object(fields) => {
-            // RFC 8785 orders members by their UTF-16 code units, which is NOT byte order for
-            // anything outside the BMP. Sorting by `str` would silently disagree on such keys.
-            let mut keys: Vec<&String> = fields.keys().collect();
-            keys.sort_by(|a, b| utf16_cmp(a, b));
-            out.push(b'{');
-            for (index, key) in keys.into_iter().enumerate() {
-                if index > 0 {
-                    out.push(b',');
-                }
-                write_string(key, out);
-                out.push(b':');
-                write_value(&fields[key], out)?;
+            // Most parsed maps already have canonical order. Check it without assuming a
+            // serde_json map implementation or allocating keys on that common path.
+            if fields
+                .keys()
+                .zip(fields.keys().skip(1))
+                .all(|(a, b)| utf16_cmp(a, b).is_le())
+            {
+                write_fields(fields.iter(), out)?;
+            } else {
+                // RFC 8785 orders by UTF-16, not UTF-8/scalar order for non-BMP keys.
+                let mut keys: Vec<&String> = fields.keys().collect();
+                keys.sort_by(|a, b| utf16_cmp(a, b));
+                write_fields(keys.into_iter().map(|key| (key, &fields[key])), out)?;
             }
-            out.push(b'}');
         }
     }
+    Ok(())
+}
+
+fn write_fields<'a>(
+    fields: impl IntoIterator<Item = (&'a String, &'a Value)>,
+    out: &mut impl Sink,
+) -> Result<(), CanonicalError> {
+    out.push(b'{');
+    for (index, (key, value)) in fields.into_iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        write_string(key, out);
+        out.push(b':');
+        write_value(value, out)?;
+    }
+    out.push(b'}');
     Ok(())
 }
 
@@ -95,14 +245,14 @@ fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
 }
 
-fn write_number(n: &serde_json::Number, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
-    // Vec writes cannot return I/O errors, and integer Display is infallible.
+fn write_number(n: &serde_json::Number, out: &mut impl Sink) -> Result<(), CanonicalError> {
+    // Canonical sinks cannot return I/O errors, and integer Display is infallible.
     if let Some(i) = n.as_i64() {
-        write!(out, "{i}").expect("integer formatting into Vec cannot fail");
+        write!(FormatSink(out), "{i}").expect("integer formatting into canonical sink cannot fail");
         return Ok(());
     }
     if let Some(u) = n.as_u64() {
-        write!(out, "{u}").expect("integer formatting into Vec cannot fail");
+        write!(FormatSink(out), "{u}").expect("integer formatting into canonical sink cannot fail");
         return Ok(());
     }
     let f = n
@@ -127,7 +277,7 @@ fn write_number(n: &serde_json::Number, out: &mut Vec<u8>) -> Result<(), Canonic
     Ok(())
 }
 
-fn write_string(s: &str, out: &mut Vec<u8>) {
+fn write_string(s: &str, out: &mut impl Sink) {
     out.push(b'"');
     // JSON escapes only these ASCII bytes. Preserve whole intervening UTF-8 spans instead
     // of decoding, encoding and extending the output separately for every scalar value.
@@ -173,7 +323,9 @@ fn digest(domain: &[u8], bytes: &[u8]) -> String {
 
 /// `content_id` — the identity of the payload bytes alone.
 pub fn content_id(payload: &Value) -> Result<String, CanonicalError> {
-    Ok(digest(DOMAIN_CONTENT, &canonicalize(payload)?))
+    let mut sink = HashSink::new(DOMAIN_CONTENT);
+    write_value(payload, &mut sink)?;
+    Ok(sink.finish())
 }
 
 /// `content_id` for an opaque blob (a diff, a log, a test artifact).
@@ -217,11 +369,9 @@ pub fn blob_content_id_reader_with_buffer(
 /// Deliberately excludes `artifact_id` itself, and is computed over the same canonical form the
 /// envelope serializes to, so an envelope round-tripped through JSON keeps its identity.
 pub fn artifact_id(envelope: &review_core::ArtifactEnvelope) -> Result<String, CanonicalError> {
-    let mut value = serde_json::to_value(envelope).expect("envelope serializes");
-    if let Some(object) = value.as_object_mut() {
-        object.remove("artifact_id");
-    }
-    Ok(digest(DOMAIN_ARTIFACT, &canonicalize(&value)?))
+    let mut sink = HashSink::new(DOMAIN_ARTIFACT);
+    write_envelope(envelope, &mut sink, false)?;
+    Ok(sink.finish())
 }
 
 /// Validate both identities carried by a decoded artifact envelope.
@@ -243,6 +393,77 @@ pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(),
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn streaming_sinks_match_materialized_bytes_and_borrowed_envelope_identity() {
+        let values = [
+            json!({"z": [null, true, false, -42, 0.000001, 0.9], "a": "é\n𐀀\u{0}\\\""}),
+            json!({"\u{FF3A}": {"\u{1D400}": "nested"}, "\u{1D400}": [1, 2]}),
+            json!({"padding": "x".repeat(32_769)}),
+        ];
+        for payload in values {
+            let bytes = canonicalize(&payload).unwrap();
+            assert_eq!(
+                content_id(&payload).unwrap(),
+                digest(DOMAIN_CONTENT, &bytes)
+            );
+            assert!(is_canonical(&payload, &bytes).unwrap());
+            for damaged in [
+                bytes[..bytes.len() - 1].to_vec(),
+                [bytes.as_slice(), b" "].concat(),
+                vec![b'x'; bytes.len()],
+            ] {
+                assert!(!is_canonical(&payload, &damaged).unwrap());
+            }
+            for producer in [
+                review_core::Producer::KernelOperation {
+                    run_id: "run".into(),
+                    node_id: None,
+                    operation_id: "op".into(),
+                },
+                review_core::Producer::KernelOperation {
+                    run_id: "run".into(),
+                    node_id: Some("node".into()),
+                    operation_id: "op".into(),
+                },
+                review_core::Producer::Attempt {
+                    run_id: "run".into(),
+                    node_id: "node".into(),
+                    attempt_id: "0".repeat(26),
+                },
+            ] {
+                for subject in [None, Some(blob_content_id(b"subject"))] {
+                    let envelope = review_core::ArtifactEnvelope {
+                        artifact_type: "af/SinkProbe@1".into(),
+                        artifact_id: blob_content_id(b"id"),
+                        content_id: content_id(&payload).unwrap(),
+                        producer: producer.clone(),
+                        input_artifacts: vec![blob_content_id(b"input")],
+                        subject_snapshot_id: subject,
+                        payload: payload.clone(),
+                    };
+                    let mut value = serde_json::to_value(&envelope).unwrap();
+                    let mut full = Vec::new();
+                    write_envelope(&envelope, &mut full, true).unwrap();
+                    assert_eq!(full, canonicalize(&value).unwrap());
+                    value.as_object_mut().unwrap().remove("artifact_id");
+                    assert_eq!(
+                        artifact_id(&envelope).unwrap(),
+                        digest(DOMAIN_ARTIFACT, &canonicalize(&value).unwrap())
+                    );
+                }
+            }
+        }
+        let invalid = serde_json::from_str::<Value>("1e21").unwrap();
+        assert_eq!(
+            content_id(&invalid).unwrap_err(),
+            canonicalize(&invalid).unwrap_err()
+        );
+        assert_eq!(
+            is_canonical(&invalid, b"1e21").unwrap_err(),
+            canonicalize(&invalid).unwrap_err()
+        );
+    }
 
     #[test]
     fn signed_and_unsigned_integers_retain_exact_canonical_bytes() {

@@ -101,6 +101,13 @@ registry_home() {
 }
 
 case "$setup" in
+waiter_state)
+    # Each sample gets its own public-writer fixture and final production lease. Setup is
+    # outside the measured CLI lifetime; the waiter still opens and validates cold.
+    mkdir "$scratch/waiter" "$scratch/repo"
+    /usr/bin/python3 -I "$fixtures/waiter-state.py" "$scratch/waiter" "$probe" "$argument" \
+        >"$scratch/writer.json"
+    ;;
 task_repository)
     task_repository
     ;;

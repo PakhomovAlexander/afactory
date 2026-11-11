@@ -201,7 +201,7 @@ SOURCE_TREES = (100, 10000)
 PERSISTENCE_BLOB_BYTES = 1024 * 1024
 PERSISTENCE_EVENTS = 100
 # Open, propose and admit, then the production lease refresh immediately before the region.
-PERSISTENCE_PREFIX_EVENTS = 4
+PERSISTENCE_PREFIX_EVENTS = 5
 PROJECTION_EVENTS = 10000
 TASK_ID = "perf-probe-task"
 GRAPH_ORDER = ["root.inputs", "root.nodes.draft", "root.nodes.check"]
@@ -546,7 +546,7 @@ def golden_entry(doc, instance, contract_id, cache):
                       "source-manifest digest of the reference paths and contents" + (
                           ", as the seed writer reads its written tree back"
                           if contract_id == "source_capture_seed_v1" else ""))
-    if contract_id in ("state_projection_v2", "state_projection_seed_v1"):
+    if contract_id in ("state_projection_v3", "state_projection_seed_v2"):
         events = fixtures[params["log"]]["events"]
         semantic = {"admitted": True, "events": events, "next_sequence": events,
                     "phase": {"kind": "running"}, "plan_recorded": True, "task_id": TASK_ID}
@@ -558,7 +558,7 @@ def golden_entry(doc, instance, contract_id, cache):
         return _entry(instance, contract_id, env.artifact_id, _digest_of(semantic),
                       len(env.bytes), semantic,
                       "graph invariants and reference identities of every captured package")
-    if contract_id == "persistence_fs_v1":
+    if contract_id == "persistence_fs_v2":
         if params["operation"] == "cas_write_read":
             blob = content_id(persistence_blob())
             return _entry(instance, contract_id, blob, blob,
@@ -567,7 +567,7 @@ def golden_entry(doc, instance, contract_id, cache):
         semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@5"],
                     "prefix_events": PERSISTENCE_PREFIX_EVENTS}
         return _entry(instance, contract_id, None, _digest_of(semantic), PERSISTENCE_EVENTS,
-                      semantic, "explicit facts of the appended and read-back lease renewals")
+                      semantic, "explicit facts of the appended and read-back lease handoff transitions")
     if contract_id == "sentinel_canonical_v1":
         once = canonical(SENTINEL_VALUE, "sentinel")
         return _entry(instance, contract_id, None, content_id(once * SENTINEL_REPETITIONS),
@@ -648,9 +648,9 @@ def golden_document(doc):
                                     "trees": trees}
         elif fixture["kind"] == "event_log":
             fixtures[fixture_id] = {
-                "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
-                "relevant_events": "TaskTransition@5 opened, plan proposed, plan admitted, then "
-                                   "production 60000 ms lease renewals"}
+                "kind": "event_log", "events": fixture["events"], "prefix_events": 1,
+                "relevant_events": "TaskTransition@5 opened, clock-independent pauses/resumes, "
+                                   "plan proposed, plan admitted, normal 60000 ms lease handoff"}
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"
                                 % (fixture_id, fixture["kind"]))

@@ -530,8 +530,8 @@ pub(crate) fn wait(
     let started = std::time::Instant::now();
     let limit = timeout.map(Duration::from_secs);
     let mut said = false;
+    let (_, mut view) = opened.view()?;
     loop {
-        let (_, view) = opened.view()?;
         let running = view.state.phase == TaskStatePhaseV1::Running;
         let starting = !running && starting_run(&opened.state, &opened.task).is_some();
         if !running && !starting {
@@ -572,7 +572,15 @@ pub(crate) fn wait(
             return Ok(124);
         }
         std::thread::sleep(Duration::from_millis(250));
-        opened.refresh()?;
+        let changed = opened.refresh_if_changed()?;
+        // A live unchanged lease keeps the same running state. Expiry is a clock event,
+        // independent of SQLite, and startup/cancellation must still use the ordinary view.
+        if changed
+            || view.state.phase != TaskStatePhaseV1::Running
+            || opened.task.lease_until_unix_ms() <= now_ms()
+        {
+            view = opened.view()?.1;
+        }
     }
 }
 

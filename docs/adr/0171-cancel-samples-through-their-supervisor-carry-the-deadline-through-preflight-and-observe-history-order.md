@@ -10,6 +10,9 @@ and p3 of the [continuous performance laboratory](../design/continuous-performan
 against the sealed snapshot of
 [ADR-0170](0170-seed-native-fixtures-freeze-the-build-image-and-bound-the-run-by-one-deadline.md).
 Its decisions stand except where this ADR amends them:
+Benchmark event-mix requirements are superseded by the
+[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
+ordered-history and complete-output oracle requirements remain.
 
 - decision 4 (the host backstop and the total deadline);
 - decision 6 (the total deadline now bounds the preflight too);

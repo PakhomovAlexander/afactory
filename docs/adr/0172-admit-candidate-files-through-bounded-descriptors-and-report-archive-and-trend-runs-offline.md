@@ -9,6 +9,9 @@ whose own acceptance was still pending when this package began, and implements p
 (reports, archive and history) of the
 [continuous performance laboratory](../design/continuous-performance.md). Its decisions stand
 except where this ADR amends them:
+Benchmark event-mix requirements are superseded by the
+[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
+ordered-history and complete-output oracle requirements remain.
 
 - decision 3 (the run's deadline now also bounds the artifacts' admission);
 - decision 4 (the `task show` rules), which this ADR replaces.

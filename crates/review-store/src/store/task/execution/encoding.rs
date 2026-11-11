@@ -3,6 +3,7 @@
 use super::super::conflict;
 use crate::{Cas, StoreError};
 use review_core::{ArtifactEnvelope, task::execution::*};
+use serde::Deserialize as _;
 
 pub struct DecodedTaskExecutionRecord {
     pub envelope: ArtifactEnvelope,
@@ -19,7 +20,7 @@ pub fn read_execution_record(
     if envelope.artifact_type != TASK_EXECUTION_RECORD_V5 {
         return Err(conflict("Expected a typed Task execution record"));
     }
-    let record: TaskExecutionRecordV1 = serde_json::from_value(envelope.payload.clone())?;
+    let record: TaskExecutionRecordV1 = TaskExecutionRecordV1::deserialize(&envelope.payload)?;
     record.validate().map_err(conflict)?;
     Ok(DecodedTaskExecutionRecord { envelope, record })
 }

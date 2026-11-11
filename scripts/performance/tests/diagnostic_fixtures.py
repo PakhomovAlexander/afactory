@@ -48,7 +48,7 @@ def line(stream):
     return out
 if request["contract_id"] in config.get("refuse", []):
     sys.exit(2)
-if request["contract_id"] == "cli_state_fixture_v1":
+if request["contract_id"] == "cli_state_fixture_v2":
     # The CLI Task state seed setup.sh writes through the side's probe: its state below
     # probe-work and a message whose check reports exactly 10,000 events.
     os.makedirs(os.path.join(request["scratch"], "probe-work"))
@@ -56,7 +56,9 @@ if request["contract_id"] == "cli_state_fixture_v1":
     sys.stdout.write('{"schema":"af.perf-probe/1","correctness":{"status":"passed",'
                      '"count":10000,"detail":"fake cli seed"}}\n')
     sys.exit(0)
-if request["contract_id"].endswith("_seed_v1"):
+is_seed = request["contract_id"] in (
+    "source_capture_seed_v1", "state_projection_seed_v2", "authority_seed_v1")
+if is_seed:
     # A seed writer writes below its own work directory, as the real probe does.
     os.mkdir(os.path.join(request["scratch"], "probe-work"))
     open(os.path.join(request["scratch"], "probe-work", "written-seed"), "w").close()
@@ -73,7 +75,7 @@ with open(os.path.join(here, "executions"), "a") as stream:
 mark("setup")
 # Fresh declared state: the scratch is new and empty for every repetition.
 used = os.path.join(request["scratch"], "used-by-a-repetition")
-if os.listdir(request["scratch"]) and not request["contract_id"].endswith("_seed_v1"):
+if os.listdir(request["scratch"]) and not is_seed:
     sys.stderr.write("stale scratch\n"); sys.exit(4)
 if request["seed"] is not None:
     # Reads the private copy of what its side's seed writer wrote.
@@ -446,10 +448,15 @@ if args[:2] == ["task", "show"]:
     out = sys.stdout
     out.write('{"task_id":"perf-probe-task","history":[')
     first = True
+    kinds = ["opened"]
+    for pair in range(4997):
+        kinds += (["lease_released", "lease_taken"] if (pair + 1) % 64 == 0
+                  else ["waiting", "resumed"])
+    kinds += ["waiting", "plan_proposed", "plan_admitted", "lease_released", "lease_taken"]
     for number in range(10000):
         if number == skip:
             continue
-        kind = "lease_renewed" if 2 <= number <= 9998 else "phase_changed"
+        kind = kinds[number]
         out.write(("" if first else ",") + '{"sequence":%d,"transition":{"change":{"kind":'
                   '"%s"}},"note":"%s"}' % (number, kind, "x" * 140))
         first = False

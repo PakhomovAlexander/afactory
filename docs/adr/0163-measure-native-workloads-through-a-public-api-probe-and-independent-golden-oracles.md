@@ -11,6 +11,9 @@ Package p2 of the accepted
 contracts of [ADR-0162](0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md).
 Build and overlay orchestration (p3a), paired execution, CLI fixtures and health (p3b) are later
 packages and are not decided here.
+Benchmark event-mix requirements are superseded by the
+[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
+ordered-history and complete-output oracle requirements remain.
 
 ## Context
 

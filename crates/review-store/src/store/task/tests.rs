@@ -1546,6 +1546,11 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
             }
             let healthy = f.state(); // Warm the exact prefix, including all settled evidence.
             let sequence = healthy.next_sequence;
+            assert!(
+                f.store
+                    .task_observation_unchanged(&f.cas, &healthy)
+                    .unwrap()
+            );
             assert_eq!(
                 healthy
                     .execution
@@ -1570,6 +1575,12 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
                     } else {
                         std::fs::write(&path, b"corrupt evidence").unwrap();
                     }
+                    assert!(
+                        f.store
+                            .task_observation_unchanged(&f.cas, &healthy)
+                            .is_err(),
+                        "unchanged observation accepted {id}, missing={missing}"
+                    );
                     assert!(
                         f.store.task_projection(&f.cas, "task-1").is_err(),
                         "warm accepted {id}, missing={missing}"
@@ -1597,6 +1608,140 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
             }
         }
     });
+}
+
+#[test]
+fn unchanged_observation_checks_bytes_without_projecting_and_sees_concurrent_renewal_and_release() {
+    test_clock::with_time(1_000_000, |time| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let healthy = f.state();
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        for _ in 0..8 {
+            assert!(
+                f.store
+                    .task_observation_unchanged(&f.cas, &healthy)
+                    .unwrap()
+            );
+        }
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 0);
+        assert!(healthy.lease_held_at(time.get()));
+        // Clock expiry is independent of whether the log changed. A waiter must use it,
+        // rather than treating an unchanged observation as evidence of a live lease.
+        assert!(!healthy.lease_held_at(healthy.lease_until_unix_ms()));
+        assert!(
+            f.store
+                .task_observation_unchanged(&f.cas, &healthy)
+                .unwrap()
+        );
+        time.set(time.get() + 1);
+        let path = f.path.clone();
+        let cas_root = f._dir.path().join("cas");
+        let observed_time = time.get();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut writer = EventStore::open(path).unwrap();
+                    let cas = Cas::open_existing(cas_root).unwrap();
+                    test_clock::with_time(observed_time, |_| {
+                        writer.renew_task_lease(&cas, &lease, 1_000_000).unwrap();
+                    });
+                })
+                .join()
+                .unwrap();
+        });
+        assert!(
+            !f.store
+                .task_observation_unchanged(&f.cas, &healthy)
+                .unwrap()
+        );
+        let renewed = f.state();
+        assert!(renewed.lease_until_unix_ms() > healthy.lease_until_unix_ms());
+        assert!(
+            f.store
+                .task_observation_unchanged(&f.cas, &renewed)
+                .unwrap()
+        );
+        f.store.release_task_lease(&f.cas, &lease).unwrap();
+        assert!(
+            !f.store
+                .task_observation_unchanged(&f.cas, &renewed)
+                .unwrap()
+        );
+        assert!(!f.state().lease_held_at(time.get()));
+    });
+}
+
+#[test]
+fn execution_history_index_omits_lease_only_tasks_and_checks_selected_rows() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    let mut visited = Vec::new();
+    f.store
+        .visit_task_execution_history(&f.cas, |run, record| visited.push((run.to_owned(), record)))
+        .unwrap();
+    assert!(visited.is_empty());
+    let invocation = f.record_execution_inputs(&lease);
+    f.store
+        .visit_task_execution_history(&f.cas, |run, record| visited.push((run.to_owned(), record)))
+        .unwrap();
+    assert!(!visited.is_empty());
+    assert!(
+        visited
+            .iter()
+            .all(|(run, _)| run == &task_run_id("task-1").unwrap())
+    );
+    assert!(
+        visited
+            .iter()
+            .any(|(_, record)| record.artifact_refs().contains(&invocation.as_str()))
+    );
+    let run = task_run_id("task-1").unwrap();
+    assert_eq!(f.store.task_label_for_run(&f.cas, &run).unwrap(), "task-1");
+    let query_plan: String = f
+        .store
+        .conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT run_id,sequence FROM events WHERE type='TaskTransition@5'
+         AND json_extract(payload,'$.change.kind')='execution_recorded' ORDER BY run_id,sequence",
+            [],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(
+        query_plan.contains("task_execution_history"),
+        "{query_plan}"
+    );
+    let mut record_id = None;
+    for event in f.store.replay(&run).unwrap() {
+        if let TaskChangeV1::ExecutionRecorded { record_id: id } =
+            read_task_transition(&event).unwrap().change
+        {
+            record_id = Some(id);
+            break;
+        }
+    }
+    let id = record_id.unwrap();
+    let path = f
+        ._dir
+        .path()
+        .join("cas/objects")
+        .join(&id[7..9])
+        .join(&id[9..]);
+    std::fs::write(path, b"corrupt indexed record").unwrap();
+    assert!(
+        f.store
+            .visit_task_execution_history(&f.cas, |_, _| {})
+            .is_err()
+    );
 }
 
 #[test]

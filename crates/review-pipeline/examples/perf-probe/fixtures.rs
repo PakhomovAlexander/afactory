@@ -355,7 +355,7 @@ pub fn persistence_blob() -> Vec<u8> {
         .collect()
 }
 
-/// Lease renewals the state-append diagnostic writes and reads back.
+/// Lease release/take transitions the state-append diagnostic writes and reads back.
 pub const PERSISTENCE_EVENTS: u64 = 100;
 
 /// Exactly this many valid relevant events in the state projection fixture's Task log.
@@ -364,6 +364,27 @@ pub const PROJECTION_EVENTS: u64 = 10_000;
 /// Exactly this many valid relevant events in the CLI state fixture's Task log
 /// (`fixtures/performance/cli.toml`, registry fixture `cli_state_10000`).
 pub const CLI_STATE_EVENTS: u64 = 10_000;
+
+/// Waiter workloads keep the old small CLI fixture and add controlled event, artifact and
+/// historical-Task scales. History is in the same Store; it is not a registry of other Stores.
+pub const WAIT_STATES: &[&str] = &[
+    "cli_wait_small_100",
+    "cli_wait_small_10000",
+    "cli_wait_large_10000",
+    "cli_wait_small_history_100",
+    "cli_wait_large_history_100",
+];
+
+pub fn wait_state(id: &str) -> Option<(u64, bool, usize)> {
+    Some(match id {
+        "cli_wait_small_100" => (100, false, 0),
+        "cli_wait_small_10000" => (10_000, false, 0),
+        "cli_wait_large_10000" => (10_000, true, 0),
+        "cli_wait_small_history_100" => (10_000, false, 100),
+        "cli_wait_large_history_100" => (10_000, true, 100),
+        _ => return None,
+    })
+}
 
 /// Exactly this many valid relevant events in the CLI Campaign fixture's Campaign log
 /// (`fixtures/performance/cli.toml`, seed `campaign_state`).

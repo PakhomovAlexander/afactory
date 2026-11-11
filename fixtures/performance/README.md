@@ -19,12 +19,18 @@ The data of the continuous performance laboratory
   and process instance, the actual AF argv, its untimed fixture setup and the independent
   oracle rules, and the seeds each side writes once per shard. `task show`'s whole output must
   be one complete JSON document whose `task_id`, history numbered exactly 0..9999 in order and
-  9,997 lease renewals the supervisor observes past any retained log (`json_stream_*`,
-  ADR-0172); whitespace, member order and undeclared fields are free. `cli/setup.sh` performs the
+  exact transition counts the supervisor observes past any retained log (`json_stream_*`,
+  ADR-0172 and the [Task observation decision](../../docs/adr/2026-11-10-reuse-validated-artifacts-for-task-observation.md)); whitespace, member order and undeclared fields are free. `cli/setup.sh` performs the
   setups and seed writers. `cli/task-roots` is the CLI Task fixture, whose catalog pins a test
   checks against the reference digests. `cli/campaign-roots` is the model-free review whose
   Campaign the `review ledger` and `review report` commands read; a test checks its pipeline
   pin.
+- `cli/waiter-state.py` selects the side's public-writer wait fixture. `cli_task_wait` keeps
+  the original 10,000-event fixture and adds small and `issue_255_large` authority, 100/10,000
+  events and zero/100 historical Tasks in the same Store. Every sample receives a final normal
+  lease; exit 124 and a running status are required. Total CPU is user plus system from one
+  rusage record; wall and RSS are separate. See the
+  [procedure](../../docs/measurements/task-wait-validation-reuse.md).
 - `cli/tui-open.py` — the stdlib-only 100x30 PTY driver (`af.perf-tui-open/1`), run as
   `{python} -I` with the absolute interpreter `{python}` names. It reports canonical decimal
   millisecond strings for first output (`splash_ms`) and for the read that completes the

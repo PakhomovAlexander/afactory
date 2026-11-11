@@ -73,6 +73,10 @@ pub fn capture_author_package(cas: &Cas, padding: Option<Vec<u8>>) -> Result<Str
 }
 
 fn compiler(cas: &Cas) -> Result<TaskPlanCompiler, String> {
+    compiler_configured(cas, false)
+}
+
+fn compiler_configured(cas: &Cas, waiter: bool) -> Result<TaskPlanCompiler, String> {
     let policy = cas
         .put_json(&fixtures::policy_document())
         .map_err(|error| error.to_string())?;
@@ -82,11 +86,29 @@ fn compiler(cas: &Cas) -> Result<TaskPlanCompiler, String> {
             fixtures::POLICY_ID
         ));
     }
+    let (policy, installed) = if waiter {
+        let policy = cas
+            .put_json(&json!({"code_policy_id": policy, "fixture": "cli-waiter"}))
+            .map_err(|error| error.to_string())?;
+        let signature = waiter_check_signature();
+        (
+            policy,
+            BTreeMap::from([
+                ("operator/check".into(), signature.clone()),
+                ("operator/check/perf".into(), signature),
+            ]),
+        )
+    } else {
+        (policy, BTreeMap::new())
+    };
     TaskPlanCompiler::new(
         policy.clone(),
         policy,
-        BTreeMap::new(),
-        BTreeMap::from([("checked".into(), "document".into())]),
+        installed,
+        BTreeMap::from([(
+            "checked".into(),
+            if waiter { "checks" } else { "document" }.into(),
+        )]),
         IndependencePolicyV1::default(),
     )
 }
@@ -111,6 +133,146 @@ fn revision(requirements: &str, deadline: u64) -> Result<TaskRevisionV1, String>
         "facts": {}
     }))
     .map_err(|error| error.to_string())
+}
+
+fn waiter_source_port() -> review_core::task::pipeline::PipelinePortV1 {
+    serde_json::from_value(
+        json!({"artifact_type": "af/SourceTree@1", "cardinality": "one",
+        "optional": false, "affinity": {"kind": "unbound"}, "covers": []}),
+    )
+    .expect("fixture source port")
+}
+
+fn waiter_check_signature() -> review_graph::task::OperatorSignature {
+    // A captured check interface, never dispatched by this fixture. Its public source input
+    // and declared check name make the CLI perform its ordinary history lookup at closeout.
+    serde_json::from_value(json!({
+        "contract": {"inputs": {"source": waiter_source_port()}, "outputs": {"checks": {
+            "artifact_type": "af/TaskCheckReceipt@2", "cardinality": "one", "optional": false,
+            "affinity": {"kind": "same_as", "input": "source"}, "covers": ["checked"]}}},
+        "effects": [], "evidence": {"checks": [fixtures::POLICY_ID]}, "retains": {}, "roles": ["check"],
+        "attempt": {"tokens": 0, "wall_ms": 1000}
+    }))
+    .expect("fixture check signature")
+}
+
+fn waiter_pipeline() -> Result<BTreeMap<String, Vec<u8>>, String> {
+    use review_core::task::pipeline::*;
+    let mut files = fixtures::pipeline_files();
+    let mut pipeline: PipelineDefinitionV1 =
+        toml::from_str(std::str::from_utf8(&files["pipeline.toml"]).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    pipeline
+        .contract
+        .inputs
+        .insert("source".into(), waiter_source_port());
+    // Keep the same two-attempt verification reserve: the native check replaces the checker
+    // Worker. The author still captures the same heavy package and publishes the document;
+    // the declared check supplies the separate typed acceptance evidence.
+    pipeline.nodes.retain(|node| node.id != "check");
+    pipeline.slots.remove("checker");
+    pipeline.contract.outputs = BTreeMap::from([(
+        "checks".into(),
+        waiter_check_signature().contract.outputs["checks"].clone(),
+    )]);
+    pipeline.outputs = BTreeMap::from([(
+        "checks".into(),
+        ValueRefV1::Node {
+            node: "history".into(),
+            port: "checks".into(),
+        },
+    )]);
+    pipeline.coverage.insert(
+        "checked".into(),
+        ValueRefV1::Node {
+            node: "history".into(),
+            port: "checks".into(),
+        },
+    );
+    pipeline.nodes.push(TaskNodeV1 {
+        id: "history".into(),
+        operator: TaskOperatorV1::Check {
+            checks: std::collections::BTreeSet::from(["perf".into()]),
+            remote_checks: Default::default(),
+        },
+        inputs: BTreeMap::from([(
+            "source".into(),
+            ValueRefV1::Input {
+                port: "source".into(),
+            },
+        )]),
+        when: None,
+    });
+    files.insert(
+        "pipeline.toml".into(),
+        toml::to_string(&pipeline)
+            .map_err(|e| e.to_string())?
+            .into_bytes(),
+    );
+    Ok(files)
+}
+
+struct EventLogSpec {
+    events: u64,
+    history: usize,
+    source_check: bool,
+}
+
+/// The heavy wait fixture captures the same issue_255_large package bytes as authority
+/// probes. Recorded pauses/resumes precede proposal so setup does not repeatedly hash
+/// unreferenced authority or require a host millisecond per event. The final public lease
+/// handoff leaves a normal lease immediately before CLI launch.
+pub fn build_waiter(
+    root: &Path,
+    padding: Option<Vec<u8>>,
+    events: u64,
+    history: usize,
+) -> Result<AuthorityFixture, Failure> {
+    if events < 6 || events % 2 != 0 {
+        return Err(Failure::new(
+            FailureKind::FixtureFailed,
+            "waiter fixture needs an even event count of at least six",
+        ));
+    }
+    build_configured(
+        root,
+        padding,
+        fixtures::TASK_LEASE_MS,
+        Setup::default(),
+        Some(EventLogSpec {
+            events,
+            history,
+            source_check: true,
+        }),
+        |_, _, _, _, _| (),
+    )
+    .map(|(fixture, ())| fixture)
+}
+
+/// The original two-node state workload, with an exact clock-independent event count.
+/// This preserves its artifact workload while avoiding a host millisecond per renewal.
+pub fn build_event_log(root: &Path, events: u64) -> Result<AuthorityFixture, Failure> {
+    if events < 6 || events % 2 != 0 {
+        return Err(Failure::new(
+            FailureKind::FixtureFailed,
+            format!(
+                "the fixture requires an even event count of at least six, not exactly {events}"
+            ),
+        ));
+    }
+    build_configured(
+        root,
+        None,
+        fixtures::TASK_LEASE_MS,
+        Setup::default(),
+        Some(EventLogSpec {
+            events,
+            history: 0,
+            source_check: false,
+        }),
+        |_, _, _, _, _| (),
+    )
+    .map(|(fixture, ())| fixture)
 }
 
 /// Build, propose and admit the Task in a fresh Store and CAS under `root`. `lease_ms` is the
@@ -186,14 +348,34 @@ pub fn build_then<T>(
     setup: Setup<'_>,
     then: impl FnOnce(&mut EventStore, &Cas, &TaskLease, &BTreeMap<String, String>, &Region<'_>) -> T,
 ) -> Result<(AuthorityFixture, T), Failure> {
+    build_configured(root, padding, lease_ms, setup, None, then)
+}
+
+fn build_configured<T>(
+    root: &Path,
+    padding: Option<Vec<u8>>,
+    lease_ms: u64,
+    setup: Setup<'_>,
+    waiter: Option<EventLogSpec>,
+    then: impl FnOnce(&mut EventStore, &Cas, &TaskLease, &BTreeMap<String, String>, &Region<'_>) -> T,
+) -> Result<(AuthorityFixture, T), Failure> {
     let fixture = |error: String| Failure::new(FailureKind::FixtureFailed, error);
     let cas = Cas::open(root.join("cas")).map_err(|error| fixture(error.to_string()))?;
     let mut store =
         EventStore::open(root.join("events.sqlite")).map_err(|error| fixture(error.to_string()))?;
-    let mut compiler = compiler(&cas).map_err(fixture)?;
+    let mut compiler =
+        compiler_configured(&cas, waiter.as_ref().is_some_and(|spec| spec.source_check))
+            .map_err(fixture)?;
     let mut packages = BTreeMap::new();
     for (name, files) in [
-        (fixtures::PIPELINE_PACKAGE, fixtures::pipeline_files()),
+        (
+            fixtures::PIPELINE_PACKAGE,
+            if waiter.as_ref().is_some_and(|spec| spec.source_check) {
+                waiter_pipeline().map_err(fixture)?
+            } else {
+                fixtures::pipeline_files()
+            },
+        ),
         (fixtures::AUTHOR_PACKAGE, fixtures::author_files(padding)),
         (fixtures::CHECKER_PACKAGE, fixtures::checker_files()),
     ] {
@@ -220,7 +402,34 @@ pub fn build_then<T>(
             fixtures::requirements_payload(64),
         )
         .map_err(|error| fixture(error.to_string()))?;
-    let task = revision(&requirements, now_ms().map_err(fixture)? + 3_600_000).map_err(fixture)?;
+    let mut task =
+        revision(&requirements, now_ms().map_err(fixture)? + 3_600_000).map_err(fixture)?;
+    if waiter.as_ref().is_some_and(|spec| spec.source_check) {
+        task.required_outputs = serde_json::from_value(json!({"checks": {
+            "artifact_type": "af/TaskCheckReceipt@2", "cardinality": "one"}}))
+        .map_err(|e| fixture(e.to_string()))?;
+        task.acceptance
+            .get_mut("checked")
+            .expect("checked")
+            .evidence_type = "af/TaskCheckReceipt@2".into();
+        task.authority.policy_id = cas
+            .put_json(&json!({"code_policy_id": fixtures::POLICY_ID, "fixture": "cli-waiter"}))
+            .map_err(|e| fixture(e.to_string()))?;
+        let manifest =
+            review_source_git::Manifest::new(vec![]).map_err(|e| fixture(e.to_string()))?;
+        let origin = cas
+            .put_json(&json!({"schema": "af.task-source-origin/1",
+            "repository_id": review_store::canonical::blob_content_id(b"cli-waiter-repository"),
+            "content_digest": manifest.content_digest()}))
+            .map_err(|e| fixture(e.to_string()))?;
+        let snapshot = review_source_git::task::capture_snapshot(&cas, &manifest, &origin, None)
+            .map_err(fixture)?;
+        task.inputs.insert(
+            "source".into(),
+            review_source_git::task::source_tree(&cas, fixtures::producer(), &snapshot, vec![])
+                .map_err(fixture)?,
+        );
+    }
     let (revision_id, _) = cas
         .put_artifact(
             TASK_REVISION_V1,
@@ -250,10 +459,65 @@ pub fn build_then<T>(
         graph.clone(),
         |authority, _| {
             (setup.after_capture)().map_err(fixture)?;
-            let lease = store
+            let mut lease = store
                 .open_task(&cas, &revision_id, WRITER, lease_ms)
                 .map_err(|error| fixture(error.to_string()))?;
             (setup.after_open)(&store, &lease).map_err(fixture)?;
+            if let Some(spec) = &waiter {
+                for number in 0..spec.history {
+                    let mut historical = task.clone();
+                    historical.task_id = format!("perf-history-{number:04}");
+                    let id = cas
+                        .put_artifact(
+                            TASK_REVISION_V1,
+                            fixtures::producer(),
+                            vec![],
+                            None,
+                            serde_json::to_value(historical).map_err(|e| fixture(e.to_string()))?,
+                        )
+                        .map_err(|e| fixture(e.to_string()))?
+                        .0;
+                    let historical = store
+                        .open_task(&cas, &id, WRITER, lease_ms)
+                        .map_err(|e| fixture(e.to_string()))?;
+                    store
+                        .release_task_lease(&cas, &historical)
+                        .map_err(|e| fixture(e.to_string()))?;
+                }
+                // Opened + pairs + pause + proposal + admission + release + take = events.
+                // Pauses before proposal grant no execution authority and are clock independent.
+                for pair in 0..(spec.events - 6) / 2 {
+                    // A release/take pair replaces a pause/resume pair, preserving the exact
+                    // event count. Keep setup under normal live leases without requiring a
+                    // clock tick. An expired release fails; it is never healed by taking again.
+                    if (pair + 1) % 64 == 0 {
+                        store
+                            .release_task_lease(&cas, &lease)
+                            .map_err(|e| fixture(e.to_string()))?;
+                        lease = store
+                            .take_task_lease(&cas, TASK_ID, WRITER, lease_ms)
+                            .map_err(|e| fixture(e.to_string()))?;
+                        continue;
+                    }
+                    store
+                        .wait_task(
+                            &cas,
+                            &lease,
+                            review_core::task::TaskWaitingReasonV1::NeedsHuman,
+                        )
+                        .map_err(|e| fixture(e.to_string()))?;
+                    store
+                        .resume_task(&cas, &lease, authority)
+                        .map_err(|e| fixture(e.to_string()))?;
+                }
+                store
+                    .wait_task(
+                        &cas,
+                        &lease,
+                        review_core::task::TaskWaitingReasonV1::NeedsHuman,
+                    )
+                    .map_err(|e| fixture(e.to_string()))?;
+            }
             let proposed = store.propose_task_plan(&cas, &lease, &plan_id, authority);
             written(&store, &lease, proposed)?;
             let lease = if setup.hand_over {
@@ -269,6 +533,16 @@ pub fn build_then<T>(
             };
             let admitted = store.admit_task_plan(&cas, &lease, authority);
             written(&store, &lease, admitted)?;
+            let lease = if waiter.is_some() {
+                store
+                    .release_task_lease(&cas, &lease)
+                    .map_err(|e| fixture(e.to_string()))?;
+                store
+                    .take_task_lease(&cas, TASK_ID, WRITER, lease_ms)
+                    .map_err(|e| fixture(e.to_string()))?
+            } else {
+                lease
+            };
             if setup.hand_over {
                 hand_over(&mut store, &cas, &lease)?;
             }
@@ -514,12 +788,17 @@ fn captured<T>(
 }
 
 impl AuthorityFixture {
-    /// Renew the production lease; called immediately before a timed region.
-    pub fn renew(&mut self) -> Result<(), String> {
+    /// Release a live lease and take a fresh normal lease. Neither operation waits for a
+    /// clock tick or retries a failed publication, and an expired release stops before take.
+    pub fn handoff(&mut self) -> Result<(), String> {
         self.store
-            .renew_task_lease(&self.cas, &self.lease, fixtures::TASK_LEASE_MS)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            .release_task_lease(&self.cas, &self.lease)
+            .map_err(|e| e.to_string())?;
+        self.lease = self
+            .store
+            .take_task_lease(&self.cas, TASK_ID, WRITER, fixtures::TASK_LEASE_MS)
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn run_id(&self) -> Result<String, String> {

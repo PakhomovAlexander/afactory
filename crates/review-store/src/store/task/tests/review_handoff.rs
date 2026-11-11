@@ -252,6 +252,17 @@ fn review_handoff_retains_original_budget_late_charge_and_exact_reopen_without_a
             1,
             "cold replay shares one canonical prefix"
         );
+        assert_eq!(
+            next.observed_runs[&round.campaign_id],
+            f.store.len(&round.campaign_id).unwrap()
+        );
+        REVIEW_REPLAY_LOADS.with(|loads| loads.set(0));
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        for _ in 0..4 {
+            assert!(f.store.task_observation_unchanged(&f.cas, &next).unwrap());
+        }
+        assert_eq!(REVIEW_REPLAY_LOADS.with(|loads| loads.get()), 0);
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 0);
         let refs = next.artifact_refs.len();
         let bytes: u64 = next
             .artifact_refs
@@ -379,6 +390,33 @@ fn review_handoff_retains_original_budget_late_charge_and_exact_reopen_without_a
         assert_eq!(
             f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap(),
             before
+        );
+        // The Task log stays fixed while its canonical Campaign changes. The cheap observer
+        // must invalidate on that other stream, then keep the revalidated prefix's accounting.
+        let observed = f.state();
+        {
+            let bound = f
+                .store
+                .latest_round_started(&round.campaign_id)
+                .unwrap()
+                .unwrap()
+                .event_id;
+            let mut ingest = crate::Ingest::new(&mut f.store, &f.cas, &round.campaign_id)
+                .unwrap()
+                .under_round(bound);
+            ingest.advance().unwrap();
+        }
+        assert!(
+            !f.store
+                .task_observation_unchanged(&f.cas, &observed)
+                .unwrap()
+        );
+        let refreshed = f.state();
+        assert_eq!(refreshed.next_sequence, observed.next_sequence);
+        assert!(
+            f.store
+                .task_observation_unchanged(&f.cas, &refreshed)
+                .unwrap()
         );
     }
 }

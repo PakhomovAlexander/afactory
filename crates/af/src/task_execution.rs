@@ -3657,6 +3657,7 @@ pub(super) struct OpenedTask {
     pub(super) cas: Cas,
     pub(super) store: EventStore,
     pub(super) task: TaskProjection,
+    view_artifacts: std::cell::RefCell<BTreeSet<String>>,
 }
 
 pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<OpenedTask, String> {
@@ -3691,6 +3692,7 @@ pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<O
         cas,
         store,
         task,
+        view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
     })
 }
 
@@ -3704,8 +3706,30 @@ impl OpenedTask {
             _ => None,
         };
         let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
-        let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
+        let (view, reads) = self.cas.track_reads(|| {
+            selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)
+        });
+        let view = view?;
+        self.view_artifacts.borrow_mut().extend(reads);
         Ok((result, view))
+    }
+
+    /// Reuse this projection only after exact byte checks of its full read closure. The
+    /// caller still observes run/cancel files and lease deadlines independently of the log.
+    pub(super) fn refresh_if_changed(&mut self) -> Result<bool, String> {
+        if self
+            .store
+            .task_observation_unchanged(&self.cas, &self.task)
+            .map_err(|e| e.to_string())?
+        {
+            for id in self.view_artifacts.borrow().iter() {
+                self.cas.verify(id).map_err(|e| e.to_string())?;
+            }
+            return Ok(false);
+        }
+        self.refresh()?;
+        self.view_artifacts.borrow_mut().clear();
+        Ok(true)
     }
 
     /// Project the Task again from the Store, for a command that watches it change.

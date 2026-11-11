@@ -12,6 +12,9 @@ writable scratch bind) and decision 3 (adapter overlays), and makes the supervis
 `af.perf-supervisor-request/2`, its result `af.perf-supervisor-result/3`, the sample
 `af.perf-sample/2` and the shard record `af.perf-shard/2`. Reports, archive, profiles and CI stay
 later packages.
+Benchmark event-mix requirements are superseded by the
+[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
+ordered-history and complete-output oracle requirements remain.
 
 ## Context
 

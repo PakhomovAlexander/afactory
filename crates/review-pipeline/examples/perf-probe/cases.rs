@@ -104,8 +104,8 @@ pub fn execute(request: &Request, work: &Path) -> Outcome {
         "cas_typed_get_validate_v1" => cas_typed_get(request, work, started),
         "source_capture_v2" => source_capture(request, work, started),
         "source_capture_seed_v1" => source_capture_seed(request, work, started),
-        "state_projection_v2" => state_projection(request, work, started),
-        "state_projection_seed_v1" => state_projection_seed(work, started),
+        "state_projection_v3" => state_projection(request, work, started),
+        "state_projection_seed_v2" => state_projection_seed(work, started),
         "authority_seed_v1" => authority_seed(request, work, started),
         "authority_plan_check_v3" | "authority_runtime_new_v3" => authority_sample_from(
             request.text("package"),
@@ -123,8 +123,9 @@ pub fn execute(request: &Request, work: &Path) -> Outcome {
             SetupHooks::default(),
             true,
         ),
-        "persistence_fs_v1" => persistence(request, work, started),
-        "cli_state_fixture_v1" => cli_state_fixture(work, started),
+        "persistence_fs_v2" => persistence(request, work, started),
+        "cli_state_fixture_v2" => cli_state_fixture(work, started),
+        "cli_wait_fixture_v1" => cli_wait_fixture(request, work, started),
         "cli_campaign_fixture_v1" => cli_campaign_fixture(request, started),
         "sentinel_canonical_v1" => sentinel(request, started),
         other => before_region(
@@ -506,8 +507,9 @@ fn source_capture(request: &Request, work: &Path, started: Instant) -> Outcome {
 
 // State projection ----------------------------------------------------------------------------
 
-/// The admitted fixture Task with exactly `events` relevant events in its log: open, propose,
-/// admit and production lease renewals, each through the protected public writer. A seed writer
+/// The admitted fixture Task with exactly `events` relevant events in its log: open,
+/// pauses/resumes, propose, admit and a final normal lease handoff, through the protected public
+/// writer. A seed writer
 /// the driver gave a preparation directory ([`fixture_prep`]) writes the log there and publishes
 /// it to `work`; every sample writes it in `work` itself.
 pub fn event_log(work: &Path, events: u64) -> Result<(), Failure> {
@@ -529,14 +531,8 @@ pub fn event_log(work: &Path, events: u64) -> Result<(), Failure> {
 }
 
 fn write_event_log(work: &Path, events: u64) -> Result<(), Failure> {
-    let mut fixture =
-        authority::build(work, None, fixtures::TASK_LEASE_MS).map_err(fixture_error)?;
+    let fixture = authority::build_event_log(work, events)?;
     let run = fixture.run_id().map_err(fixture_error)?;
-    let mut length = fixture.store.len(&run).map_err(fixture_error)?;
-    while length < events {
-        fixture.renew().map_err(fixture_error)?;
-        length += 1;
-    }
     let recorded = fixture.store.len(&run).map_err(fixture_error)?;
     if recorded != events {
         return Err(fixture_error(format!(
@@ -794,6 +790,72 @@ fn cli_state_fixture(work: &Path, started: Instant) -> Outcome {
     state_projection_sample(work, fixtures::CLI_STATE_EVENTS, false, started, |_| Ok(()))
 }
 
+fn cli_wait_fixture(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let (events, heavy, history) =
+        fixtures::wait_state(request.text("state")).expect("admitted wait fixture");
+    sample(
+        started,
+        || {
+            let padding = if heavy {
+                let Envelope::Package { digits, tens } =
+                    fixtures::envelope_fixture("issue_255_large")
+                        .expect("large fixture")
+                        .envelope
+                else {
+                    unreachable!()
+                };
+                Some(fixtures::padding(digits, tens))
+            } else {
+                None
+            };
+            let fixture = authority::build_waiter(work, padding, events, history)?;
+            Ok((None, fixture))
+        },
+        |fixture| {
+            fixture
+                .store
+                .task_projection(&fixture.cas, authority::TASK_ID)
+        },
+        |fixture, projected| {
+            let task = projected
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("missing waiter Task"))?;
+            let run = fixture.run_id().map_err(operation_error)?;
+            let count = fixture.store.len(&run).map_err(operation_error)?;
+            let tasks = fixture
+                .store
+                .run_ids()
+                .map_err(operation_error)?
+                .iter()
+                .filter(|run| run.starts_with("task:"))
+                .count();
+            if count != events
+                || tasks != history + 1
+                || !task.lease_held_at(authority::now_ms().map_err(operation_error)?)
+            {
+                return Err(operation_error(
+                    "waiter fixture event count, history count or live lease differs",
+                ));
+            }
+            let (plan, graph) = load_plan_and_graph(
+                &fixture.cas,
+                task.plan_id
+                    .as_deref()
+                    .ok_or_else(|| operation_error("unplanned waiter"))?,
+            )?;
+            let semantic = authority::semantic_projection(&fixture.cas, &task, &plan, &graph)
+                .map_err(operation_error)?;
+            Ok(observed(
+                digest_of(&semantic)?,
+                count,
+                format!(
+                    "events={count} historical_tasks={history} issue_255_large={heavy}; final production lease"
+                ),
+            ))
+        },
+    )
+}
+
 /// The CLI Campaign fixture (ADR-0169). The side's own `af review run` wrote the Campaign
 /// [`fixtures::CLI_CAMPAIGN`] with exactly [`fixtures::CLI_CAMPAIGN_FINDINGS`] Findings into the
 /// state directory [`fixtures::CLI_CAMPAIGN_STATE`] beside this request's scratch. Its setup
@@ -927,18 +989,18 @@ pub enum AuthorityRegion {
 }
 
 /// How a sample holds its production lease. Immediately before the region every state-persistence
-/// request renews it, and every authority request takes a fresh one after its setup writer
+/// request hands it off, and every authority request takes a fresh one after its setup writer
 /// handed its lease over ([`PRODUCTION_LEASE`]); only the expiry tests keep the setup lease and
 /// let it lapse at that boundary, waiting until the Store itself reports it lapsed, to prove
 /// expiry is reported as the side's failure and never retried.
 #[derive(Debug, Clone, Copy)]
 pub struct LeasePolicy {
-    pub renew_before_region: bool,
+    pub refresh_before_region: bool,
     pub wait_for_expiry: bool,
 }
 
 pub const PRODUCTION_LEASE: LeasePolicy = LeasePolicy {
-    renew_before_region: true,
+    refresh_before_region: true,
     wait_for_expiry: false,
 };
 
@@ -1183,7 +1245,7 @@ pub fn authority_sample_from(
             after_region_capture().map_err(|error| (Some(author.clone()), fixture_error(error)))?;
             // The setup writers' leases ended after their writes; the region's own
             // production lease is taken here, as the last Store write before it.
-            let region_lease = if lease.renew_before_region {
+            let region_lease = if lease.refresh_before_region {
                 authority::take_fresh_lease(store, cas)
                     .map_err(|error| (Some(author.clone()), fixture_error(error)))?
             } else {
@@ -1272,7 +1334,7 @@ pub fn authority_sample_from(
             Some(padding),
             fixtures::TASK_LEASE_MS,
             authority::Setup {
-                hand_over: lease.renew_before_region,
+                hand_over: lease.refresh_before_region,
                 after_capture: hooks.after_capture,
                 between_writes: hooks.between_writes,
                 ..authority::Setup::default()
@@ -1366,7 +1428,7 @@ fn persistence(request: &Request, work: &Path, started: Instant) -> Outcome {
     }
 }
 
-/// The advisory state round trip: [`fixtures::PERSISTENCE_EVENTS`] production lease renewals
+/// The advisory state round trip: [`fixtures::PERSISTENCE_EVENTS`] lease handoff transitions
 /// appended and the log read back, with the production lease.
 pub fn persistence_state_sample(work: &Path, lease: LeasePolicy, started: Instant) -> Outcome {
     persistence_state_sample_with(work, lease, started, |_| Ok(()))
@@ -1377,8 +1439,8 @@ pub fn persistence_state_sample(work: &Path, lease: LeasePolicy, started: Instan
 ///
 /// Setup reads the run ID and the built log's length first, then refreshes the fixture's lease
 /// as its last successful operation, so the region starts with a full production lease whatever
-/// setup cost. The refresh appends exactly one event, counted into the prefix without reading
-/// the Store again. A failed refresh, or a renewal that fails in the region, is classified by
+/// setup cost. A public release/take handoff appends exactly two events, counted into the prefix
+/// without reading the Store again. A failed refresh or handoff in the region is classified by
 /// the Store's own lease state, and the first failure ends the sample without retry. A
 /// scheduler pause between the refresh and the region can still consume the lease; that is
 /// reported as `lease_expired`, never hidden. Only the expiry test passes a policy other than
@@ -1397,8 +1459,8 @@ pub fn persistence_state_sample_with(
             let run = fixture.run_id().map_err(fixture_error)?;
             let built = fixture.store.len(&run).map_err(fixture_error)?;
             before_refresh(&fixture).map_err(fixture_error)?;
-            let prefix = if lease.renew_before_region {
-                fixture.renew().map_err(|error| {
+            let prefix = if lease.refresh_before_region {
+                fixture.handoff().map_err(|error| {
                     classify(
                         &fixture.store,
                         &fixture.lease,
@@ -1406,7 +1468,7 @@ pub fn persistence_state_sample_with(
                         FailureKind::FixtureFailed,
                     )
                 })?;
-                built + 1
+                built + 2
             } else {
                 built
             };
@@ -1415,11 +1477,11 @@ pub fn persistence_state_sample_with(
             }
             Ok((None, (fixture, run, prefix)))
         },
-        // Flush semantics: each renewal is one SQLite transaction at synchronous=FULL in
+        // Flush semantics: each transition is one SQLite transaction at synchronous=FULL in
         // WAL mode, committed before the next begins; the read is a full ordered replay.
         |(fixture, run, _): &mut (AuthorityFixture, String, u64)| {
-            for _ in 0..fixtures::PERSISTENCE_EVENTS {
-                if let Err(error) = fixture.renew() {
+            for _ in 0..fixtures::PERSISTENCE_EVENTS / 2 {
+                if let Err(error) = fixture.handoff() {
                     return Err(classify(
                         &fixture.store,
                         &fixture.lease,

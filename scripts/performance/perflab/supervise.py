@@ -418,6 +418,8 @@ def optional_metrics(result, wanted):
     """The declared optional metrics a supervised result supports, as exact decimals, and the
     reason for each one it does not (`({key: metric}, {key: reason})`).
 
+    Total CPU is user plus system CPU from that same record, summed before conversion.
+    Wall time is the child process lifetime, including startup and final rendering.
     CPU, faults, switches and `wait4_maxrss_bytes` come from the one reaped child's rusage,
     already converted to bytes per platform; each counter is the sum of that record's own
     minor and major (or voluntary and involuntary) fields, never of overlapping records.
@@ -429,6 +431,8 @@ def optional_metrics(result, wanted):
     ms = lambda nanos: {"value": format_decimal(Fraction(int(nanos), 1000000)),  # noqa: E731
                         "unit": "ms"}
     sources = {
+        "wall_ms": lambda: ms(result["timing"]["child_wall_ns"]),
+        "total_cpu_ms": lambda: ms(int(usage["user_cpu_ns"]) + int(usage["system_cpu_ns"])),
         "user_cpu_ms": lambda: ms(usage["user_cpu_ns"]),
         "system_cpu_ms": lambda: ms(usage["system_cpu_ns"]),
         "page_faults": lambda: {"value": str(usage["minor_faults"] + usage["major_faults"]),
@@ -440,7 +444,9 @@ def optional_metrics(result, wanted):
     }
     for key in wanted:
         if key in sources:
-            if usage is None:
+            if key == "wall_ms" and result["timing"]["child_wall_ns"] is None:
+                unavailable[key] = "child lifetime was not observed"
+            elif usage is None and key != "wall_ms":
                 unavailable[key] = ("rusage unavailable: %s" % result["rusage_unavailable"])[:256]
             else:
                 metrics[key] = sources[key]()

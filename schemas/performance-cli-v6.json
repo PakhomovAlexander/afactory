@@ -162,6 +162,7 @@
                   "setup": {
                     "type": "string",
                     "enum": [
+                      "waiter_state",
                       "none",
                       "task_repository",
                       "task_started",

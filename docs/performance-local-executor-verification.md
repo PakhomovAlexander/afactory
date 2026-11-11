@@ -1937,3 +1937,13 @@ The new test had already passed alone before this run (1 test, OK, 20.958 second
 ```sh
 python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_comparison.Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
 ```
+
+## Task wait workload coverage (2026-11-10)
+
+The counts above are historical receipts for their named producers. The current full nightly
+comparison has 39 instances (37 judged, 2 exploratory), including the original whole-CLI waiter
+and five controlled event/artifact/history variants. Its eight-shard plan has 3,436 slots;
+four shards have 3,356 slots. The guide and its executable check now require those counts.
+The same 45-minute sampling windows, 120-minute total, eight serial shards and twelve manual
+telemetry runs remain. This update adds no measurement or calibrated speedup claim. See the
+[Task wait procedure](measurements/task-wait-validation-reuse.md).

@@ -2456,7 +2456,7 @@ def validate_tui_open(doc, where="tui-open"):
             parse_decimal(doc["browser_ms"], where + ".browser_ms"),
             where + ": splash arrived after the browser frame")
     return doc
-CLI_SETUPS = ("none", "task_repository", "task_started", "seed_copy", "registry_empty",
+CLI_SETUPS = ("waiter_state", "none", "task_repository", "task_started", "seed_copy", "registry_empty",
               "registry_stores_20x10000")
 CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version", "fixtures", "python")
 # The reviewed PTY driver's command (ADR-0263): the absolute interpreter `{python}` names, never

@@ -482,6 +482,10 @@ impl EventStore {
                  ON events (run_id, type, sequence DESC);
              CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
                  ON events (run_id, causation_id, type, sequence);
+             CREATE INDEX IF NOT EXISTS task_execution_history
+                 ON events (run_id, sequence)
+                 WHERE type = 'TaskTransition@5'
+                   AND json_extract(payload, '$.change.kind') = 'execution_recorded';
              CREATE TABLE IF NOT EXISTS attempt_wall (
                  run_id             TEXT    NOT NULL,
                  attempt_id         TEXT    NOT NULL,
