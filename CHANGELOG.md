@@ -19,6 +19,211 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.1-rc.3] - 2026-11-11
+
+### Authority compatibility
+
+Committed .af authority needs manual updates to the current native Task contracts (including af.pipeline/6 and af.task-kind/3), followed by refreshed package pins; see docs/design/current-contracts-and-task-review.md. Retired formats are refused without migration. Release installation, dispatch, rollback and retention remain supported.
+
+### Changes
+
+- release: v0.15.1-rc.2 (#761)
+- refactor: consolidate current contracts and native Task Review (#787)
+- Prepare rc.3 contract and deterministic diagnostic sample test (#793)
+
+- Validate staged triage package pins with the current source build, using Cargo's configured
+  target directory. An installed `af` on `PATH` can no longer select an older contract reader;
+  missing build output fails explicitly. Digest assertions, private state and offline behavior
+  remain required. Refresh the performance CLI receipt overlay's nested pins to the current
+  Pipeline and TaskKind packages. See the
+  [current-format consolidation](../docs/design/current-contracts-and-task-review.md).
+
+- Remove 31 schema files with no current producer or reader, retain four candidates with concrete
+  consumers and all feature-selected current formats, and repair performance schema ownership and
+  earlier-version rejection checks. Record the
+  [staged plan](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md),
+  preserving release dispatch, rollback, retention, provenance and generic storage behavior.
+
+- Consolidate Document and Report drafts into `af/DocumentDraft@3` with explicit source and
+  repository citation kinds; Document Tasks still have no repository Snapshot and Report citations
+  still resolve against their exact captured Snapshot. Retired draft formats are refused. See the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+- Use `af/TaskReviewSubject@3` with shared borrowed validation, retaining complete changed paths,
+  exact base/head identities, bounded readable patches and reviewer assignments. Task source origins
+  use `af.task-source-origin/3`, tagged `captured` or `bound`; bound outputs cannot claim a commit.
+- Remove obsolete DTO conversions and correct internal Pipeline, plan and Provider admission names
+  without changing their wire identities. Release dispatch, retention and storage remain unchanged.
+
+- Re-pin Task runtime and telemetry fixture packages after the current contract consolidation,
+  so locked review fixtures plan successfully and published package pins reproduce. Preserve
+  test-populated placeholders and the assembled historical receipt overlay.
+
+- Refresh the exact cold-Task document golden from two independent candidate runs after the
+  intentional Task Pipeline format revision. Keep the full comparison, literal content identities
+  and cold-cache checks; warm checks still preserve the current documents. See the
+  [consolidation record](../docs/design/current-contracts-and-task-review.md).
+
+- Align the Pipeline browser's exact declaration-tree regression with the current `1.0.1`
+  fixture package, preserving nested-call, contract and authority assertions. See the
+  [consolidation record](../docs/design/current-contracts-and-task-review.md).
+
+- Use one current format for every Task Pipeline (`af.pipeline/6`), compiled graph
+  (`af.compiled-task/5`, `af/CompiledTask@3`) and installed kind (`af.task-kind/3`). Project Briefs,
+  bounded recovery and structural acceptance retain their explicit capabilities, authority and
+  validation. The Pipeline discriminator requires its canonical string form. Retired formats are
+  refused without migration; shipped packages and starters use
+  the current formats. Task inspection is `af/task-inspection@19`, recorded-plan inspection is
+  `af/task-plan-inspection@5`, and catalog contract fixtures use `af.catalog-contract-fixtures/2`.
+  See the [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Use one current native Task benchmark contract, with exact source-schema, package-pin and
+  binary-planner admission. Retire historical telemetry fixture overlays; retain release dispatch,
+  rollback, retention, signing and generic storage management. Benchmark documents are `/3` and
+  the experiment registry is `/4`.
+- Port the Store benchmark to native Review with 1,000 checks over two bounded Tasks, each with four reviewers.
+  Preserve original early-exit and disk-refusal diagnostics, canonical Evidence lifecycle telemetry,
+  and exact negative human-decision proofs. Parse copyable onboarding commands across legitimate
+  shell continuations, including long repository paths. See the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Run the existing live sandbox probes, timeout cleanup and exact native Task/Review containment
+  test from full `make check` and `scripts/verify.sh --profile full`, with hard failure when a
+  runtime or proof is unavailable. Preserve Rust-only `make test`, selective e2e execution and
+  gate-owned reports; regress actual sequential/parallel full routing and failure propagation.
+
+- Restore human Review evidence, Demand satisfaction/reuse/waiver, resolutions, challenges,
+  policy time and grouping through exact-plan-approved native decision Tasks. Original Review
+  history, source/Base, charges and independent fix verification remain authoritative; no
+  Campaign executor or generic Store append returns. This completes the human-operation part of
+  the [native Review decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+- Record native satisfaction/reuse and disposition telemetry from checked domain history,
+  retaining original Evidence, Subject, Snapshot and producer/model attribution. Keep telemetry
+  readers in the CLI consumer and retain truthful missing-prefix coverage.
+- Update release-lock regression fixtures to the generated native Review scaffold and current
+  zero-spend selection refusal without changing version enforcement or release management.
+
+- Route the live native Task/Review containment test through the gate-owned nextest report
+  store so it can execute against a read-only source Snapshot.
+
+- Restore contained native Task checks through the shared container provider, with pinned-image
+  admission and execution evidence, fail-closed runtime refusal and live Task/Review proof.
+  The live target refuses an empty test selection and retains the sandbox escape probes.
+- Keep unresolved original Findings visible in Review Ledger text, SARIF and versioned JSON
+  (`af/review-ledger@2`), including current statuses, exact counts and original Report provenance.
+- Replace retired stress-proof selections with native reuse, head-change waiver and actionable
+  selector-refusal tests; retain dynamic-budget advisories and correct architecture/capability
+  records under the [native consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Require a complete Review Round over every native Integration commit before Task acceptance,
+  including embedded implementation and verification. Keep each Scatter child's exact Diff Subject,
+  accept complete sharded Review through the common acceptance path, and deduplicate identical sealed
+  edits while retaining original claims and refusing distinct overlaps.
+- Version current Task Pipelines as `af.pipeline/6` and compiled graphs as `af.compiled-task/5` in
+  `af/CompiledTask@3`, with closed shared schema definitions v4, real compiler parity and refreshed
+  package pins and fixtures. Retired formats fail closed, as required by the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Route `af review` planning, execution, inspection, Findings, accounting and continuation through
+  native Tasks. Remove the Campaign execution/phase bridge and its separate browser pane; refuse
+  retired Campaign selectors. Preserve shared canonical Review and generic storage contracts.
+- Export admitted sealed proposed repairs independently of passing whole-Task acceptance or
+  automatic nomination, checking their exact original Report/Finding, candidate and base.
+- Version the changed closed graph, engine, inspection, transition, report and event contracts;
+  add current native Review performance fixtures. The deletion-stage capability record identifies
+  completed validation and remaining consumer/policy retirement work under the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Correct active native Review guidance for fail-closed Report Scope, persisted Task conclusions,
+  bounded convergence, Task state, typed proposals and checked Integration; preserve human
+  authorization and canonical history/accounting guarantees. See the
+  [native Review decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Generate standalone native Review and implementation authority in the common committed Task
+  catalog during onboarding. Doctor validates current Task packages, reports bounded file
+  locations and refuses links; retired Review definitions are no longer parsed by onboarding
+  or the pipeline browser. Keep release pins and additive authority protection.
+- Port release smoke and release-dispatch probes to current native commands and exact
+  zero-Attempt Provider-refusal receipts, preserving release integrity assertions.
+- Refuse empty native Review Diffs during planning as well as execution, document exact-plan
+  resume, and show native Findings, coverage, accounting and history in the Tasks browser.
+- Export sealed proposed repairs from negative Review Tasks, including credential-bearing
+  authors and archived current-format plans. Check durable commit publication order for stale
+  bases; `--allow-stale` grants patch export alone. This continues the
+  [native Review consolidation](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md);
+  Campaign Store lifecycle retirement remains incomplete in this candidate.
+
+- Finish native Review retirement: remove Campaign bootstrap and Registry readers, retain shared
+  canonical Ledger integrity, and continue standalone Reviews with exact Base, history, prior
+  claims and truthful Task accounting within existing bounds. See the
+  [decision](../docs/adr/2026-11-10-retire-campaign-bootstrap-and-continue-native-review.md).
+- Project authority now requires `af.toml` version 2 and Task defaults; Campaign routing is
+  refused. Provider model configuration prints current Worker and binding templates. Changed
+  closed contracts use RunEvent@3 and provider-models@4; retired formats fail closed.
+
+- Native Task Review acceptance now consumes the selected committed successor Round, or a later
+  canonical Round carrying its exact history. A Select condition cannot hide successor Findings
+  behind an earlier passing Review; embedded acceptance and Store finish/replay enforce the same
+  boundary. Campaign Review remains available during the staged port.
+- Captured engines use `af.task-engine/3`, Task inspection uses `af/task-inspection@19`, recorded
+  plan inspection uses `af/task-plan-inspection@5`, and Experimental execution plans use
+  `af/ExperimentExecutionPlan@2` with `af.experiment-execution-plan/2`. Their retired generations
+  fail closed. See the [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md)
+  and [implementation evidence](../docs/design/current-contracts-and-task-review.md).
+
+- Native Review acceptance now preserves a committed Integration's Snapshot ancestry through
+  later canonical Rounds and returns the selected checked head. Original-source, sibling and
+  mismatched public-Snapshot substitutions are refused at assembly and Store finish/replay.
+- Preserve no-commit source transport for an admitted SourceTree from an earlier Task while
+  retaining exact authoritative Review evidence checks and embedded Snapshot binding.
+
+- Record reproducible current native Review source counts: 396,961 Rust/Python source lines,
+  a net reduction of 44,249 from original main, with tests, schemas and fixtures counted separately.
+
+- Restore browser usage guidance for `af review tui` and its `tu` near miss without adding a
+  Review command. The browser command line shows the same refusal.
+- Clarify Task onboarding examples and validate them under their documented preconditions.
+  Default onboarding already includes Task authority; use plain `af onboard` to validate it.
+  `--tasks` continues to refuse existing Task settings without writing.
+
+- Remove orphaned Campaign reviewer DTOs, package adapters and flat reply transport. Native
+  Task adapters retain captured schemas, security flags, accounting and recovery.
+- Refuse type-changed telemetry source schemas before reservation or build, preserve Evidence
+  satisfaction before a same-batch waiver, and prove specific human-decision and unsupported
+  core CLI release refusals. See the
+  [consolidation decision](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Add native Task Proposal Integration, owned review Scatter and whole-Subject closure, with
+  exact cumulative conclusion accounting, Worker disk-floor admission and recovery from
+  interrupted publication. Preserve
+  the temporary Campaign frontend while its CLI cutover is isolated in the next stage of the
+  [contract and review consolidation](../docs/adr/2026-11-08-consolidate-current-contracts-and-task-review.md).
+
+- Resolve ordinary, Project Brief and recovery parser fixtures through the runtime
+  `AF_WORKSPACE_ROOT`, so cached test binaries use the current sandbox's current-format fixtures.
+  See the [consolidation record](../docs/design/current-contracts-and-task-review.md).
+
+- Keep fake Provider catalogs writable in their test-owned directories when the source fixtures
+  are read-only, so generated tutorials can install them repeatedly.
+- Execute generated light and heavy Review starter regressions through `af review run --file`,
+  preserving their shared Task runtime, acceptance, Attempt and Round checks.
+
+- Admit exactly `0.15.1-rc.3` to the current native Task Review telemetry fixture contract;
+  undeclared releases still fail the offline release preflight.
+- Make the diagnostic cache-cleanup test's whole-command samples deterministic under host load,
+  preserving diagnostic sample requirements, capture budgets and cleanup assertions.
+
+- Resolve the current-contract integration's performance harness fixture conflicts by regenerating
+  the inventory and content pins from the combined tree. Preserve native Task Review contracts,
+  explicit release fixture admission, macOS deadline fixes and equal paired benchmark test counts.
+
+- Integrate the native Task and Review contracts with RC2 release preflight, exact laboratory
+  schema ownership, system Python fixture support and hierarchical PR line reporting.
+- Preserve original telemetry setup diagnostics when a measured Task artifact is absent or invalid;
+  require current native fixture pins and planner admission without historical receipt rewrites.
+
+- Regenerate guarded performance fixture pins for the integrated native Task Review contracts
+  and 0.15.1-rc.2 release, preserving current release fixture admission and paired sample counts.
+
 ## [0.15.1-rc.2] - 2026-11-10
 
 ### Authority compatibility
