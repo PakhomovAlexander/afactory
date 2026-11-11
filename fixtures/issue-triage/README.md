@@ -15,7 +15,7 @@ policy that install names as `report_policy = ".af/report-policy.toml"`.
 2. Add the four packages to `.af/task-catalog.toml` with the versions and digests in
    `catalog.toml` and the paths under `.af/task-packages/backlog/`.
 3. Add `triage = "backlog/triage-kind"` under `[kinds]`, and the `[providers]` entries
-   `"backlog/triage-author" = "codex-main"` and `"backlog/triage-verifier" = "codex-main"`, so
+   `"backlog/triage-author" = "codex-personal"` and `"backlog/triage-verifier" = "codex-personal"`, so
    the two triagers use distinct models on one admitted Codex Provider.
 4. Commit the authority.
 
@@ -77,7 +77,7 @@ directories with offline self-management.
 `example/` holds a Task for issue #432 and its sources, built by hand from this tree and the
 issue on 2026-10-30 in the `af.document-sources/1` shape §6.2 gives: `issue`, `citations`,
 `pulls`, `neighbours`, `excerpts` and `rubric`. Once the packages are installed, on a machine
-whose Provider bindings admit `codex-main`:
+whose Provider bindings admit `codex-personal`:
 
 ```sh
 af task plan --file fixtures/issue-triage/example/task.json --json

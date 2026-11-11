@@ -328,6 +328,7 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         "pi-light/implementation",
         "warm/implementation-reviewed",
         "kernel/implementation-reviewed",
+        "owner-default/implementation",
     ]
     .into_iter()
     .enumerate()

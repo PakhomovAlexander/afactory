@@ -1,0 +1,156 @@
+"schema" = "af.task-catalog/2"
+"code_policy" = ".af/code-policy.toml"
+"report_policy" = ".af/report-policy.toml"
+"no_match" = "refuse"
+
+["review"]
+"generation" = 2
+"gate" = "major"
+"clean_rounds" = 1
+"max_rounds" = 2
+"allow_targeted_repairs" = false
+
+["review"."reviewers"]
+"bugs" = "advisory"
+"correctness" = "required"
+
+["packages"]
+
+["packages"."kernel/implementation-reviewed"]
+"path" = ".af/task-packages/kernel/implementation-reviewed"
+"version" = "1.4.1"
+"digest" = "sha256:3a0d4d181458f3f0e4894213f03990ff1cc331787d9e2c0895793a693b75d1b0"
+
+["packages"."kernel/review-code"]
+"path" = ".af/task-packages/kernel/review-code"
+"version" = "1.1.1"
+"digest" = "sha256:b4f4e5ac3c30c1e632365f6b1de8c2544c08700b2047fef5b1181560f3104c36"
+
+["packages"."kernel/verification-reviewed"]
+"path" = ".af/task-packages/kernel/verification-reviewed"
+"version" = "1.2.1"
+"digest" = "sha256:8257a710dfde4567788187fbf90095b090a4305a5a93748b7279af0fa3c71836"
+
+["packages"."kernel/report"]
+"path" = ".af/task-packages/kernel/report"
+"version" = "1.0.1"
+"digest" = "sha256:e25ffad24c118e69be2662d0f8e9ec0e5413499228189077f42cc5f004ef3b28"
+
+["packages"."kernel/implementer"]
+"path" = ".af/task-packages/kernel/implementer"
+"version" = "1.8.3"
+"digest" = "sha256:325df992bec17f691a52e80f758ff1879285613fac077b9006435b7401ba7648"
+
+["packages"."kernel/bugs"]
+"path" = ".af/task-packages/kernel/bugs"
+"version" = "1.6.1"
+"digest" = "sha256:e3b0ac5bf8d62490c59248a2ae08a5d8d5ce16ea0cdd4fe97af3bbcfcd53a1ce"
+
+["packages"."kernel/correctness"]
+"path" = ".af/task-packages/kernel/correctness"
+"version" = "1.4.1"
+"digest" = "sha256:3f165ed5a646e6cd0afc9c3f4ee775859b8e3d6bd26c67cfeb7ea1eb3f5086ae"
+
+["packages"."kernel/evaluator"]
+"path" = ".af/task-packages/kernel/evaluator"
+"version" = "1.3.1"
+"digest" = "sha256:1d42d5c56c5ffa084254879426488af00fd138b7c22b1266479e95ab1d74336a"
+
+["packages"."kernel/analyst"]
+"path" = ".af/task-packages/kernel/analyst"
+"version" = "1.0.1"
+"digest" = "sha256:f26fdb07ae6ecbbe6d4e79ef9f4c6286334d8ce8d56a5bfab8c3b1bcfb508e30"
+
+["packages"."kernel/report-verifier"]
+"path" = ".af/task-packages/kernel/report-verifier"
+"version" = "1.0.1"
+"digest" = "sha256:09de80f3c990b42c6c80fab74e5170d7582e8ecd3a5232624a5510c35ee71304"
+
+["packages"."owner-default/implementer"]
+"path" = ".af/task-packages/owner-default/implementer"
+"version" = "1.0.0"
+"digest" = "sha256:9aed8b01432ad4abc2e895af45832b7c96954ab9cd528cd8213645547edc6911"
+
+["packages"."owner-default/bugs"]
+"path" = ".af/task-packages/owner-default/bugs"
+"version" = "1.0.0"
+"digest" = "sha256:f77033b629be9ea605f3bbbd1274f1c075ec0d506b5c5b87e1d82f3c062d5dae"
+
+["packages"."owner-default/correctness"]
+"path" = ".af/task-packages/owner-default/correctness"
+"version" = "1.0.1"
+"digest" = "sha256:6143c57ce6adceac6a1bfb8763a890797d61d6e7f8def22f19e5faae6560b017"
+
+["packages"."owner-default/evaluator"]
+"path" = ".af/task-packages/owner-default/evaluator"
+"version" = "1.0.1"
+"digest" = "sha256:c301322bcaa3c3c99a128928cd2d8ff8058e02e7c7202b67a7aef871d08e9968"
+
+["packages"."owner-default/report-author"]
+"path" = ".af/task-packages/owner-default/report-author"
+"version" = "1.0.0"
+"digest" = "sha256:2c5e211826d8a47a1cd627d293e8046d03d4dea2b99ebc175cc25e2487b06906"
+
+["packages"."warm/verification-kind"]
+"path" = ".af/task-packages/warm/verification-kind"
+"version" = "1.0.1"
+"digest" = "sha256:a6c787092d77542548d9c56a1929ef0a878f7aa40faa27d2c3f14b6b42c1b998"
+
+["packages"."pi-light/implementer"]
+"path" = ".af/task-packages/pi-light/implementer"
+"version" = "1.1.0"
+"digest" = "sha256:4fbbec8c0ad4158999428d3c3557030e1301b5a17916edba08af60bd97de01c1"
+
+["packages"."pi-light/correctness"]
+"path" = ".af/task-packages/pi-light/correctness"
+"version" = "1.1.1"
+"digest" = "sha256:438d31d8b03bb9d8bddad8482e7bb1cbdb1f06e158b3b4df0d29e830bc6f456e"
+
+["packages"."pi-light/evaluator"]
+"path" = ".af/task-packages/pi-light/evaluator"
+"version" = "1.1.1"
+"digest" = "sha256:ec4e1b0248036587789732bde354b6a2a8ed7cecfbe1e3d516a9d6fcb7b2b978"
+
+["packages"."pi-light/implementation"]
+"path" = ".af/task-packages/pi-light/implementation"
+"version" = "1.1.1"
+"digest" = "sha256:1b4492643f71bd37da2e26a7472cfeab6b47d58975faef5da39025be19cf1506"
+
+["packages"."pi-light/verification"]
+"path" = ".af/task-packages/pi-light/verification"
+"version" = "1.1.1"
+"digest" = "sha256:c2087354cd629b7bac6cb83eed2fa13e16df9c29e9e24455dee5268190cc7b47"
+
+["packages"."pi-light/review"]
+"path" = ".af/task-packages/pi-light/review"
+"version" = "1.1.1"
+"digest" = "sha256:558519fb6f3f29fab996dd4e1cde09ed8b46307c3b76b775233540567c14b9a4"
+
+["kinds"]
+"verification" = "warm/verification-kind"
+
+["independence"]
+"command_workers_by_package" = true
+"distinct_principals" = false
+"distinct_providers" = false
+"distinct_models" = true
+
+["providers"]
+"kernel/implementer" = "codex-main"
+"kernel/bugs" = "codex-main"
+"kernel/correctness" = "codex-main"
+"kernel/evaluator" = "codex-main"
+"kernel/analyst" = "codex-main"
+"kernel/report-verifier" = "codex-main"
+"owner-default/implementer" = "codex-main"
+"owner-default/bugs" = "codex-main"
+"owner-default/correctness" = "codex-main"
+"owner-default/evaluator" = "codex-main"
+"owner-default/report-author" = "codex-main"
+"pi-light/implementer" = "pi-kimi"
+"pi-light/correctness" = "codex-main"
+"pi-light/evaluator" = "codex-main"
+
+["provider_admission"]
+"tokens" = 32768
+"wall_ms" = 45000

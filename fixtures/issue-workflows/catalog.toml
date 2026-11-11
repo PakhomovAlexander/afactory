@@ -9,7 +9,7 @@
 
 ["packages"."backlog/triage-author"]
 "version" = "1.0.2"
-"digest" = "sha256:7b736bd5d7524cb151f69fa17c0bd5b649951b166c745e31ada5876270634e56"
+"digest" = "sha256:6311ab6c2183e234fd19dfe08b603bb13ba43a45ded70c781311ec492bd22cb1"
 "path" = "fixtures/issue-workflows/task-packages/backlog/triage-author"
 
 ["packages"."backlog/triage-kind"]
@@ -19,7 +19,7 @@
 
 ["packages"."backlog/triage-verifier"]
 "version" = "1.0.2"
-"digest" = "sha256:c040156a030229389a5396c9ec8f955e91095359f539eb885fa8193b274af391"
+"digest" = "sha256:6e58c0e563b8f0ade32740b94c3363fbeec5111504e50953c3f7b1110374c632"
 "path" = "fixtures/issue-workflows/task-packages/backlog/triage-verifier"
 
 ["packages"."bugfix/default-codex"]
@@ -89,7 +89,7 @@
 
 ["packages"."issue-internal/implementer"]
 "version" = "1.0.0"
-"digest" = "sha256:929fc6e09268577fb5f5edfee974e226c605d50fff03f1a53bd6fe27576c39c0"
+"digest" = "sha256:bc464cbfadb4e9042f2629a5d85eff99371c3d9c4dda89a8b8fcb488a00221cb"
 "path" = "fixtures/issue-workflows/task-packages/issue-internal/implementer"
 
 ["packages"."issue-internal/investigator"]
@@ -124,7 +124,7 @@
 
 ["packages"."issue-internal/researched-implementer"]
 "version" = "1.0.0"
-"digest" = "sha256:82cd4f0c0b0ecf39452beb7a903dbe9291e84999e13e08915e420e2c35cadda9"
+"digest" = "sha256:a21644707a7208d121c359b2cec68dcadd19a50dc28eb3824f9ad2e531bbf954"
 "path" = "fixtures/issue-workflows/task-packages/issue-internal/researched-implementer"
 
 ["packages"."issue-internal/review"]

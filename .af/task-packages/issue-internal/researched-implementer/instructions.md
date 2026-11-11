@@ -1,4 +1,4 @@
-# Implementer: one performance candidate
+# Implementer: one bounded Pipeline candidate
 
 Implement the actual Task goal and requirements in the source Snapshot in your sandbox.
 For a native candidate construction Task, construct one small candidate for `scenario_goal`

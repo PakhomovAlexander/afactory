@@ -72,7 +72,7 @@ class Workflows(unittest.TestCase):
                                  'research-fix.json', 'verify.json'])
 
     def test_old_public_names_are_refused_without_aliases(self):
-        for family in ('default', 'default-light', 'pi-light', 'warm', 'kernel'):
+        for family in ('default', 'default-light', 'pi-light', 'warm', 'kernel', 'owner-default'):
             with self.assertRaises(ValueError):
                 w.selection(family + '/implementation')
         self.assertEqual(len(w.catalog()['selections']), 7)

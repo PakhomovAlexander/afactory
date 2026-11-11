@@ -150,6 +150,24 @@ python3 -I scripts/issue-workflows.py --af /absolute/path/to/candidate/af \
   --file /private/pilot/known-fix.json --routing /private/pilot/routing-known.json
 ```
 
+Save the plan response, inspect the Task with the same binary, repository and Store, and
+validate the exact effective plan before authorizing it:
+
+```sh
+af task explain TASK_ID --repo /project --state /private/tasks --json > /private/pilot/inspection.json
+python3 -I scripts/issue-workflows.py check-plan bugfix/light-codex /private/pilot/inspection.json
+af task run TASK_ID --repo /project --state /private/tasks --confirm-plan EXACT_PLAN_ID
+```
+
+Use the same explicitly selected candidate binary for the native commands above. Review the
+exact `plan_id` in the inspection, the local kernel/Markdown checks and absence of remote checks.
+Before any owner-authorized execution, admit at most six concurrent owner runs and require at
+least 12 GiB free on every execution volume. These are operator admission conditions, not checks
+implemented by this planning-only launcher. Do not launch automatically or use local model,
+slot or package overrides. For composed workflows, validate and confirm the exact Scenario pin
+as described above; retain all child Task accounting. This committed entry point replaces private
+`step.py` and `mk_task.py` selection logic.
+
 Use native composition for final independent verification, and for every staged selection.
 `check-plan SELECTION inspection.json` checks effective role/model/effort/Provider and the exact
 native package closure from `af task explain TASK --json`. It validates data; it does not
@@ -194,3 +212,15 @@ validates composed native Scenarios using exact captured template pins. Provider
 catalog fixtures, never live model calls. Script tests cover routing, composition, active-history
 migration refusal, personal bindings and cumulative-chain reconciliation. The Task gate runs
 fast validation after sealing; live bounded pilots and installation remain operator work.
+
+## Root activation after integration verification
+
+This integration candidate changes staged triage instructions and implementation prompt titles.
+The root operator must copy the updated staged `task-packages/` and replace
+`.af/task-catalog.toml` with `replacement-catalog.toml` in one reviewed authority update;
+retain code/report policies and existing Task pins. In particular, replace both
+`.af/task-packages/backlog/triage-{author,verifier}/instructions.md` and their catalog pins.
+Workers in this Task cannot perform that operation. The installed-catalog audit checks installed
+bindings and pins; the rubric audit checks the updated staged authority and active docs/examples.
+After that update, remove `.af/task-packages/{default,default-light,pi-light,warm,kernel,owner-default}`.
+Generic digest and schema tests use supported staged packages and do not read those directories.

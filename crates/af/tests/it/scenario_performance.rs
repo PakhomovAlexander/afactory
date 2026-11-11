@@ -85,7 +85,7 @@ fn copy_mutable_fixture_file(source: &Path, target: &Path) {
     std::fs::set_permissions(target, permissions).unwrap();
 }
 
-// Operator authority is copied into this disposable consuming repository before editing.
+// Explicit generic contract authority is copied into a disposable consuming repository.
 // Sealed gate inputs stay read-only; only the copies gain their owner-write bit.
 fn copy_operator_authority(source: &Path, repo: &Path) {
     for name in ["task-catalog.toml", "report-policy.toml"] {
@@ -134,7 +134,7 @@ struct Performance {
 }
 impl Performance {
     fn new() -> Self {
-        Self::from_source(&workspace())
+        Self::from_source(&workspace().join("fixtures/native-catalog-contracts"))
     }
     fn from_source(source: &Path) -> Self {
         let f = Fixture::bare();
@@ -192,7 +192,10 @@ impl Performance {
             toml::from_str(&std::fs::read_to_string(source.join(".af/task-catalog.toml")).unwrap())
                 .unwrap();
         let committed: toml::Value = toml::from_str(
-            &std::fs::read_to_string(workspace().join(".af/task-catalog.toml")).unwrap(),
+            &std::fs::read_to_string(
+                workspace().join("fixtures/native-catalog-contracts/.af/task-catalog.toml"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(fixture["review"], shipped["review"]);
@@ -274,7 +277,8 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
             path,
             task_state,
             commit,
-            packet_source: source.join("fixtures/performance/schema/evidence-packet/valid.json"),
+            packet_source: workspace()
+                .join("fixtures/performance/schema/evidence-packet/valid.json"),
         }
     }
     fn output(&self, state: &Path, args: &[&str]) -> Output {
@@ -529,7 +533,7 @@ fn assert_owner_performance_instruction_contracts(repo: &Path, candidate: &Value
 /// the shipped Worker signatures; diff_subject is optional kernel-derived context.
 #[test]
 fn owner_judge_evidence_matches_candidate_and_verification_input_contracts() {
-    let repo = workspace();
+    let repo = workspace().join("fixtures/native-catalog-contracts");
     let pipeline = |name: &str| -> toml::Value {
         toml::from_str(
             &std::fs::read_to_string(
@@ -874,7 +878,12 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     // Keep every copied input's bytes and mode to prove only disposable consumer files change.
     let source = tempfile::tempdir().unwrap();
     for directory in [".af", "fixtures/performance/schema/evidence-packet"] {
-        crate::task_cli::copy_tree(&workspace().join(directory), &source.path().join(directory));
+        let input = if directory == ".af" {
+            workspace().join("fixtures/native-catalog-contracts/.af")
+        } else {
+            workspace().join(directory)
+        };
+        crate::task_cli::copy_tree(&input, &source.path().join(directory));
     }
     let mut sealed = Vec::new();
     let mut stack = vec![source.path().to_path_buf()];
