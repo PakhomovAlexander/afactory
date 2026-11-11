@@ -137,24 +137,18 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         &std::fs::read(repo.join("fixtures/issue-workflows/selections.json")).unwrap(),
     )
     .unwrap();
-    let plan = |name: &str, id: &str, evidence: bool| {
+    let example = |file: &str| -> Value {
+        serde_json::from_slice(
+            &std::fs::read(repo.join("fixtures/issue-workflows").join(file)).unwrap(),
+        )
+        .unwrap()
+    };
+    let plan_document = |mut task: Value, id: &str, evidence: bool| {
         let file = temp.path().join(format!("{id}.json"));
-        let mut task = json!({"schema":"af.task-file/1","task_id":id,"kind":"implement","goal":"Resolve one bounded issue against the pinned source","pipeline":{"name":name,"fallback":"refuse"},"strategy":"small","verification":"review","facts":{"standard":true},"limits":{"tokens":16000000,"max_attempts":64,"wall_ms":172800000,"verification":{"tokens":8000000,"attempts":40,"wall_ms":86400000}}});
-        if evidence
-            && (name.contains("research") || name.contains("design"))
-            && !name.starts_with("issue-internal/")
-        {
+        task["task_id"] = json!(id);
+        task["goal"] = json!("Resolve one bounded issue against the pinned source");
+        if evidence {
             task["inputs"] = json!({"research_report":{"task":report_task,"port":"report"}});
-        }
-        if name == "issue-internal/report" || name == "issue-internal/design" {
-            task["kind"] = json!("report");
-            task["strategy"] = json!("report");
-            task.as_object_mut().unwrap().remove("verification");
-        }
-        if name == "issue-internal/verification" {
-            task["kind"] = json!("verification");
-            task["strategy"] = json!("light");
-            task["verification"] = json!("evaluation");
         }
         std::fs::write(&file, serde_json::to_vec(&task).unwrap()).unwrap();
         common::af()
@@ -172,6 +166,53 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
             .arg("--json")
             .output()
             .unwrap()
+    };
+    // Exercise the shipped documents with only identity, goal and accepted evidence replaced.
+    for (i, file) in [
+        "known-fix.json",
+        "research-fix.json",
+        "diagnose.json",
+        "design.json",
+        "verify.json",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let task = example(file);
+        let evidence = file == "research-fix.json";
+        let o = plan_document(task.clone(), &format!("example-{i}"), evidence);
+        assert!(o.status.success(), "{file}: {}", text(&o));
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["attempts"], 0);
+        if matches!(file, "known-fix.json" | "research-fix.json" | "verify.json") {
+            let mut missing = task.clone();
+            missing.as_object_mut().unwrap().remove("facts");
+            let o = plan_document(missing, &format!("example-missing-facts-{i}"), evidence);
+            assert!(!o.status.success(), "{file}: missing facts must refuse");
+            assert!(text(&o).contains("needs facts: standard"), "{}", text(&o));
+        }
+        if evidence {
+            let o = plan_document(task, "example-missing-research", false);
+            assert!(
+                !o.status.success(),
+                "{file}: missing accepted Document must refuse"
+            );
+            assert!(text(&o).contains("research_report"), "{}", text(&o));
+        }
+    }
+    // Reuse those documents for the other catalog selections without synthesizing facts,
+    // strategies, limits or verification settings that could conceal example omissions.
+    let plan = |name: &str, id: &str, evidence: bool| {
+        let file = match name {
+            "issue-internal/report" => "diagnose.json",
+            "issue-internal/design" => "design.json",
+            "issue-internal/verification" => "verify.json",
+            _ if name.contains("research") || name.contains("design") => "research-fix.json",
+            _ => "known-fix.json",
+        };
+        let mut task = example(file);
+        task["pipeline"]["name"] = json!(name);
+        plan_document(task, id, evidence && file == "research-fix.json")
     };
     for (i, (name, _)) in selections["selections"]
         .as_object()

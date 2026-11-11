@@ -54,6 +54,23 @@ class Workflows(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     w.composition(name, pins, FACTS)
 
+    def test_shipped_task_examples_supply_their_pipeline_required_facts(self):
+        examples = ROOT / 'fixtures/issue-workflows'
+        files = []
+        for file in sorted(examples.glob('*.json')):
+            task = w.read(file)
+            if task.get('schema') != 'af.task-file/1':
+                continue
+            files.append(file.name)
+            with self.subTest(example=file.name):
+                pipeline = w.toml(examples / 'task-packages' / task['pipeline']['name'] / 'pipeline.toml')
+                self.assertIn(task['kind'], pipeline['accepts']['kinds'])
+                for fact, value in pipeline['accepts']['required_facts'].items():
+                    self.assertIn(fact, task.get('facts', {}))
+                    self.assertEqual(task['facts'][fact], value)
+        self.assertEqual(files, ['design.json', 'diagnose.json', 'known-fix.json',
+                                 'research-fix.json', 'verify.json'])
+
     def test_old_public_names_are_refused_without_aliases(self):
         for family in ('default', 'default-light', 'pi-light', 'warm', 'kernel'):
             with self.assertRaises(ValueError):

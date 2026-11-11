@@ -8,6 +8,9 @@
     "fallback": "refuse"
   },
   "strategy": "light",
+  "facts": {
+    "standard": true
+  },
   "limits": {
     "tokens": 16000000,
     "max_attempts": 64,
