@@ -1215,13 +1215,13 @@ of their `wait4` high-water marks, and a failed first Task prevents the second. 
 from the retired Campaign event representation. The fixture's checks and Findings remain real;
 only the native orchestration and its resulting event count change.
 
-Release preparation explicitly declares `0.15.1-rc.1` and `0.15.1-rc.2` for this current
+Release preparation explicitly declares `0.15.1-rc.1`, `0.15.1-rc.2` and `0.15.1-rc.3` for this current
 native workload. `scripts/release-contract.py` checks that declaration and exact laboratory
 schema ownership in always-run `release-check` and `base-check`, including fast and `no-perf`
 PRs. Release preparation invokes it after the version bump, before committing or publishing the
 PR. A future version requires a reviewed declaration; that declaration does not replace source
 schema checks, exact package pins or the measured binary's planner admission. The regression
-`test_workspace_and_rc2_release_guard_keep_the_current_native_contract` binds RC2 preparation
+`test_workspace_and_rc2_rc3_release_guard_keep_the_current_native_contract` binds RC2 and RC3 preparation
 to the native contract. `test_every_fixture_has_exact_current_package_pins_and_no_rewrite`
 checks all five catalogs against actual package bytes and verifies that contract admission
 changes no fixture file. The contained smoke retains captured stderr, exit status and stdout
