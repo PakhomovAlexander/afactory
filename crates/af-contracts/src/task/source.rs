@@ -1,4 +1,4 @@
-//! A captured issue supplies business data, never execution authority.
+//! Captured issue data and Task Snapshot metadata grant no execution authority.
 use super::{present_option, require};
 use crate::is_digest;
 use serde::{Deserialize, Serialize};
@@ -152,4 +152,64 @@ impl IssueInputV1 {
             specification,
         }
     }
+}
+
+/// Captured Task Snapshot metadata. Source adapters validate the Manifest and origin bytes;
+/// acceptance replay uses the same closed record to follow immutable captured ancestry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSnapshot {
+    pub schema: String,
+    pub manifest_id: String,
+    pub content_digest: String,
+    pub origin_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub parent_snapshot_id: Option<String>,
+}
+impl TaskSnapshot {
+    pub fn validate(&self, id: &str) -> Result<(), String> {
+        require(
+            is_digest(id)
+                && self.schema == "af.task-snapshot/1"
+                && [&self.manifest_id, &self.content_digest, &self.origin_id]
+                    .into_iter()
+                    .all(|id| is_digest(id))
+                && self
+                    .parent_snapshot_id
+                    .as_deref()
+                    .is_none_or(|parent| is_digest(parent) && parent != id),
+            "Unsupported or invalid Task Snapshot",
+        )
+    }
+}
+
+/// Follow only captured same-origin parent links, with the existing 64-Snapshot bound.
+/// The caller supplies its layer's reader; source capture retains full tree validation.
+pub fn snapshot_descends_from(
+    child: &str,
+    ancestor: &str,
+    mut read: impl FnMut(&str) -> Result<TaskSnapshot, String>,
+) -> Result<bool, String> {
+    let root = read(ancestor)?;
+    let mut current = child.to_owned();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..64 {
+        if !seen.insert(current.clone()) {
+            return Err("Cyclic Task Snapshot ancestry".into());
+        }
+        let snapshot = read(&current)?;
+        if snapshot.origin_id != root.origin_id {
+            return Err("Task Snapshot ancestry changed origin".into());
+        }
+        match snapshot.parent_snapshot_id {
+            Some(parent) if parent == ancestor => return Ok(true),
+            Some(parent) => current = parent,
+            None => return Ok(false),
+        }
+    }
+    Err("Task Snapshot ancestry exceeds graph bound".into())
 }

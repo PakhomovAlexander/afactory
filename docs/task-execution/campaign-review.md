@@ -1,163 +1,61 @@
-# Campaign Review on the Task runtime
+# Campaign frontend retirement
 
-`af review run` executions and the Provider doctor use the common Task runtime alongside
-Task-file and embedded Review, for every Campaign. Missing common Task state refuses instead of
-falling back. A Campaign whose log holds a record this release does not write, such as one
-another af release wrote, is refused by the replay error that names it; no reader recognizes or
-reopens it. This page maps the Campaign Review operations onto that runtime and records the CLI
-boundaries. See [ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md) and
-[ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
+The installed `af review` interface uses native Task review and the common Task Store. There is
+no Campaign execution fallback, captured Review host, phase translator or separate Campaign UI
+pane. Campaign selectors such as `--campaign`, `--policy-rev`, `--pipeline` and `--heavy` are
+refused on Review run/plan; their authority cannot be inferred from an old `.af/pipelines/` file. The retired `.af/workers/`
+Registry root is undeclared; current packages belong in the Task catalog
+and its declared package directories.
 
-## Adapter boundaries
+Use a Review Task file and committed `.af/task-catalog.toml` authority. Select its trusted commit
+with `--authority`, its candidate with `--candidate` or `--uncommitted`, and the Diff Base with
+`--base`. The Pipeline must declare the required source ports. An empty Diff is refused before
+Gates, Provider admissions and Workers.
 
-The common runtime now reserves a real Attempt before context capture, binds the admitted
-context, starts work, settles usage and publishes typed ports. It records scheduler diagnostics
-and retries idempotent domain publication after a lost acknowledgement. A domain can read the
-same serialized Store connection without holding its lock across a Worker invocation.
+| Command | Native path |
+| --- | --- |
+| `af review plan --file FILE` | Capture and compile a common Task plan without beginning an Attempt |
+| `af review run --file FILE` | Capture and execute native Review under one Task allowance |
+| `af review inspect ID` | Common Task explanation, graph, bindings, limits and history |
+| `af review show ID` | Common Task state and check visibility |
+| `af review ledger ID --json` | `af/review-ledger@2`, complete canonical Findings and original Report provenance, including missing reviewer coverage |
+| `af review report ID --json` | `af/task-report@3`, exact cumulative Task accounting |
+| `af review resume ID --confirm-plan PLAN_ID` | Resume the original common Task plan |
+| `af review continue ID --from PRIOR_ID` | New native Task plan with exact prior Review history and Base |
+| `af review export ID PROPOSAL_ID` | Validate and print the exact sealed proposed repair |
+| `af review decision-context ID --json` | Checked canonical identities, Demand lifecycle, current resolutions and policy time |
+| `af review decide NEW --from ID --file BATCH` | Plan an exact zero-token human decision Task; `--pipeline` selects its committed native Task package |
 
-The Campaign Review adapter separates the following operations from Attempt accounting:
+`af review ledger ID --format sarif` emits the common SARIF profile. `inspect --plan PLAN_ID`
+reads a recorded plan. `--repo`, `--state` and `--workspace` use the same selectors as Task
+inspection; the Store stays outside the repository. The terminal browser exposes Review in
+`tasks/`, alongside implementation and other Task kinds.
 
-- Resolve only exact declared reviewer inputs, then bind the actual Attempt and captured Round,
-  Subject, package and policy authority before rendering.
-- Seal the Attempt's sandbox and capture the canonical flat Reviewer Result, its typed
-  `TaskReviewAttemptProvenance` and a prepared or refused Proposal. Selection remains the common
-  Task's responsibility.
+`af provider doctor ID --confirm-plan PLAN_ID` executes only that captured Task's bounded
+Provider admission nodes. Their selected receipts and charges are the same ones execution uses.
 
-`af/TaskReviewResultMetadata@1` carries the result contract, canonical result and provenance IDs,
-and a closed Proposal disposition: absent, prepared candidate, or explicit refusal reason. Its
-references preserve existing identities; metadata alone cannot admit a result, authorize an
-operation or publish a Proposal. The actual Reviewer Result remains a typed result payload,
-with metadata beside it rather than inside the frozen flat result.
+`continue` plans a new authorized Task; `resume` resumes the original exact plan. A standalone
+Review continuation restores the previous reviewed SourceTree and its exact Base, including a
+Base originally supplied by `--base`, and binds the completed canonical ReviewHistory. It does
+not require an implementation candidate or an implementation-only findings port. Prior Reports,
+Finding identities and corroborating claims remain in the history. Each Task reports its own
+exact cumulative charges; continuation does not reset or rewrite its predecessor's accounting.
+The captured Review policy's existing Round bound still applies across this history. A heavy
+Round inside one Task uses that Task's allowance and bounded convergence policy.
 
-The common Store also exposes a currentness check for an already-started Attempt. It checks the
-exact prepared capability, active plan and approval, writer lease, reservation deadline and
-absence of settlement. Domain effects must use this authority instead of a second ledger.
+A sealed Proposal can be inspected/exported even when its whole Review requests changes or its
+author did not nominate it for automatic Integration. Its original selected Reviewer Result,
+Report indices, Finding provenance, complete candidate diff and original base are validated.
+`--allow-stale` is explicit authority to print an older-base patch; it grants no promotion,
+delivery, branch, push or publication authority. Automatic Integration retains its separate
+credential and eligibility restrictions.
 
-Trusted usage observations now commit cumulative spend during an Attempt as well as after
-settlement. The remaining reservation stays held, an overrun blocks further effects, and lower
-terminal reports or writer-loss recovery cannot refund known usage. Duplicate observations do
-not double-charge. The original settlement bytes and exact replay comparison are preserved
-([ADR-0068](../adr/0068-retain-inflight-task-usage-in-the-common-budget.md)). Provider
-readiness and business calls retain separate captured policies and reservations in that same
-Task budget ([ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md)).
+Export defaults to the current plan. `--plan PLAN_ID` selects a plan from this Task's recorded
+current-format history, validated through an exact log prefix. The current authoritative head
+still controls stale-base refusal. No archived inspection restores execution approval.
 
-## Compiled Review topology
-
-The installed frontend compiles the captured topology into an explicit public Task contract,
-typed per-edge lanes and inherited Gate conditions. Flat JSON is adapted through explicit
-codecs; envelopes within a Campaign keep their identities and captured Snapshots across Rounds.
-`af/LegacyReviewRound@1` binds input capture to the exact current Campaign Round. Generation and
-capture reopen without creating execution events. The compiler and operation host exercise
-common plan admission and execution
-([ADR-0069](../adr/0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)).
-
-```text
-captured Review configuration + exact Round inputs
-                         |
-                         v
-              compiled Task execution plan
-                         |
-                         v
-       common reservation / context / start / settlement
-                         |
-              one Review domain operation
-                         |
-                         v
-             published typed Task output
-                         |
-                         v
-        checked canonical Review selection + Proposal
-                         |
-                         v
-             downstream gather / Ledger / verdict
-```
-
-The Store connection now binds the actual Task, plan, node, Attempt and published output to the
-exact canonical result through `TaskReviewResultSelected@1`. It derives routing from the
-Attempt's admitted `TaskReviewContext@1`, checks both logs in one transaction, and refuses
-ordinary append of selection JSON. Receipt guards consume the selected result; Proposal guards
-also require the selected side metadata's exact disposition. Reopening reuses one selection and
-one Task charge ([ADR-0067](../adr/0067-project-common-task-selections-into-canonical-review.md)).
-
-The canonical operations now live in a shared `ReviewDomainState` without a second Attempt
-ledger, retry loop, Worker transport or budget; the Task host composes that state. The
-common runtime publishes domain invocation identity before reserving an Attempt and rendering
-its context; lost acknowledgement is recoverable with the same durable invocation. New Task
-dispatch and publication compare the captured Round under the same SQLite writer lock.
-Ordinary dispatch stops on superseded or closed Rounds while late usage, settlement and release
-remain recordable ([ADR-0070](../adr/0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)).
-Captured post-Round Integration and factual publication recovery use their separate, narrowly
-fenced transitions; they do not reopen ordinary Round dispatch.
-
-Canonical RunReport publication is also a domain operation. The Task supplies its exact
-cumulative spend and accounting prefix, the conclusion is always `RunReport@6`, and automatic
-Integration runs afterwards as the Task's own post-Round operation. Verdict ordering, cache
-evidence and the one-conclusion guard are the domain's; publication adds neither an execution
-ledger nor a new public verdict policy.
-
-The trusted context adapter now uses actual common Attempts and canonical replay. Task-backed
-inspection reads canonical reports and exact common accounting. Installed Review CLI and
-Provider doctor use this path. Native invocations recheck their captured Provider identity
-before private send; exact writer loss interrupts supervised work and retains observed usage.
-See the [model and cancellation boundary](model-bindings.md).
-
-The captured definition loader is now shared with the CLI, retaining package/policy validation,
-Snapshot reachability and recorded light/heavy mode. Common compiled graphs support named
-aggregate token scopes for retries and bounded child groups. Reservations and all usage count
-against the same Run and matching scopes; graph replacement retains original scope charges.
-Review's captured compiler assigns scopes by Campaign and numeric Round, preserving epochs
-without resetting lifetime Task spend ([ADR-0071](../adr/0071-share-captured-review-authority-and-task-token-scopes.md)).
-
-Bounded Scatter keeps its parent DAG fixed while the common runtime owns every registered child
-invocation and its accounting. Heavy Campaign continuation retains the original Task allowance
-and prior spend across Round revisions; each successor plan requires admission. The
-[heavy Review walkthrough](heavy-review.md) records the shared history and acceptance boundary.
-
-The captured Round can now compile directly from its recorded Campaign Manifest, authority
-Snapshot and packages. The installed resource translator derives Worker timeouts, two-Attempt
-retry capacity, four-way parallelism and one wall bound for the complete Gate check sequence.
-An originally uncapped Campaign requires an explicit bounded fallback in the new Task policy;
-its old manifest remains uncapped. Static Node caps retain aggregate retry charges, while
-Scatter descendants share the captured FanOut cap without inheriting the static parent cap.
-Round scopes include common Provider admission and use the numeric Round rather than its epoch.
-
-`CampaignReviewPlanCompiler` now attaches exact Worker/Provider bindings, dependency wrappers,
-invocation-policy digests, public evidence coverage and the common TaskAuthority admission
-boundary. Original TOML and ReviewerPackage artifacts remain unchanged; typed dependency
-wrappers retain their exact IDs and file closure. The Task policy is independent of the numeric
-Round and records the bounded fallback and local execution choices. Native runners require
-matching model/effort/backend bindings and the common Provider admission operation.
-
-Plan validation rederives the graph and every dependency, binding, contract and policy from the
-recorded artifacts without recreating missing CAS objects. Reviewer metadata, Gate outcomes
-and Scatter evidence supplement the selected public outputs, including nodes not consumed by
-the original Ledger. The operation host additionally retains mandatory Finding Set/Demand Set
-companions, actual common Worker execution, canonical publication recovery and domain acceptance.
-Canonical `RunReport@6` and the Task-backed Review inspection view retain exact cumulative
-accounting. Owned Scatter execution, heavy-Round handoff and post-Round Integration now use
-that same runtime.
-
-Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
-producer, changed Round or changed head; it does not recreate missing CAS objects. Historical
-Round reconstruction is separate from the active-epoch check used for dispatch. A Ledger's
-`FindingSet@1` output carries the canonical Finding Set envelope, and every Ledger node also
-publishes its `finding_set` and `demand_set` companions. A Scatter's slices answer
-`ReviewerResult@2`, like every reviewer, so a Scatter must inherit Generation's exact Finding Set
-input.
-
-## Common operation host
-
-`CampaignReviewTaskHost` now executes the captured Command and packaged Model paths, shared pure
-operations and Gates using common Attempts. The same slot-bound adapter performs Provider
-admission and Review; account/model/effort/credential-mode substitutions are refused before
-dispatch. A malformed response retains charge and supplies typed bounded retry feedback. Gate
-materialization, container detection and each Check consume the original absolute deadline.
-
-Publication recovery on either side of canonical commit preserves the selected Attempt and
-original outputs. Typed Gate facts retain failed cache setup through settlement and Store
-reopen, alongside existing successful cache receipts. Final Task acceptance reads the recorded
-scheduler report and canonical Review verdict; blocking Findings and required Demands remain
-unsatisfied even when execution completes. Conclusion publication compares both logs with the
-current Task writer, and recoverable publication failures cannot be finalized. Recovery between
-canonical conclusion and Task finish does no execution. See
-[ADR-0077](../adr/0077-run-captured-review-operations-under-common-task-attempts.md).
+See [Review Tasks](review-task.md) for the executable token-free fixture and canonical reduction,
+[the capability record](../design/current-contracts-and-task-review.md) for concrete native owners and regressions, and [bounded repair](bounded-repair.md) for native repair operators.
+Generic storage inventory, registered Store retention and writer locks remain supported,
+including directories whose storage category is named Campaign. Historical release dispatch,
+installation, rollback, signing and byte pins are unchanged.

@@ -42,6 +42,15 @@ class Preflight(unittest.TestCase):
         self.assertTrue(value["advisory_only"])
         self.assertEqual(value["lineage"]["candidate_replay"], "not_verified")
         self.assertEqual(before, self.inspection)
+        retired = copy.deepcopy(self.inspection)
+        retired["schema"] = "af/task-inspection@18"
+        with self.assertRaisesRegex(ValueError, r"expected af task explain --json \(@20\)"):
+            MODULE.report(retired, self.checklist, self.now)
+
+    def test_retired_campaign_plan_is_refused_without_a_reader(self):
+        with self.assertRaisesRegex(ValueError, "af task diff"):
+            MODULE.report(self.inspection, self.checklist, self.now,
+                          {"schema": "af/review-plan@1"})
 
     def test_candidate_rerooting_is_reported_and_replay_is_not_inferred(self):
         self.checklist["retained_candidate_snapshot_id"] = self.checklist["original_source_snapshot_id"]
@@ -53,18 +62,18 @@ class Preflight(unittest.TestCase):
         self.assertIn("stale_checklist", self.codes())
 
     def test_retained_diff_must_match_exact_identities(self):
-        plan = json.loads((ROOT / "fixtures/task-runtime/preflight/review-plan.json").read_text())
-        candidate = plan["resolved"]["candidate_snapshot_id"]
-        self.checklist["original_source_snapshot_id"] = plan["resolved"]["base_snapshot_id"]
-        self.inspection["plan"]["inputs"]["source"]["snapshot_id"] = plan["resolved"]["base_snapshot_id"]
+        plan = json.loads((ROOT / "fixtures/task-runtime/preflight/task-diff.json").read_text())
+        candidate = plan["snapshot_id"]
+        self.checklist["original_source_snapshot_id"] = plan["base_snapshot_id"]
+        self.inspection["plan"]["inputs"]["source"]["snapshot_id"] = plan["base_snapshot_id"]
         self.checklist["retained_candidate_snapshot_id"] = candidate
         value = MODULE.report(self.inspection, self.checklist, self.now, plan)
         self.assertEqual(value["lineage"]["intended_diff"], "nonempty_export")
         self.assertEqual(value["lineage"]["candidate_replay"], "not_verified")
-        plan["subject"].update(empty=True, changed_paths=[])
+        plan.update(files=[], patch="")
         value = MODULE.report(self.inspection, self.checklist, self.now, plan)
         self.assertIn("empty_intended_diff", {row["code"] for row in value["issues"]})
-        plan["resolved"]["candidate_snapshot_id"] = "sha256:" + "c" * 64
+        plan["snapshot_id"] = "sha256:" + "c" * 64
         value = MODULE.report(self.inspection, self.checklist, self.now, plan)
         self.assertIn("diff_identity_mismatch", {row["code"] for row in value["issues"]})
 
@@ -134,6 +143,12 @@ class Preflight(unittest.TestCase):
         self.assertEqual(value["budget"]["owned_child_templates"]["root.children"], child)
         self.assertEqual(value["budget"]["token_scopes"], scopes)
         self.assertIn("dynamic_budget_unknown", self.codes())
+
+    def test_experimental_slots_keep_dynamic_budget_advisory_without_retired_fields(self):
+        self.assertNotIn("dynamic_budget_unknown", self.codes())
+        self.inspection["graph"]["experimental_slots"] = {"experiment": {"max_trials": 2}}
+        self.assertIn("dynamic_budget_unknown", self.codes())
+        self.assertNotIn("review_integration", self.inspection["graph"])
 
     def test_provider_admission_cost_is_visible(self):
         node = copy.deepcopy(self.inspection["graph"]["nodes"]["root.nodes.check"])

@@ -39,7 +39,7 @@ impl TaskDomain for CheckedText {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,

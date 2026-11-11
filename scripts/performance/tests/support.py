@@ -213,6 +213,10 @@ def lab_repo(path, suite_bytes=None):
                                                                    "fixtures/performance/cli.toml"))
         files["fixtures/performance/adapters.toml"] = read(
             os.path.join(ROOT, "fixtures/performance/adapters.toml"))
+    from perflab import telemetry_lab
+    module = telemetry_lab.script_module("scripts/telemetry-overhead.py")
+    for name in module.CONTRACT_SCHEMAS:
+        files['schemas/' + name] = read(os.path.join(ROOT, 'schemas', name))
     root = repo.commit("lab", files)
     return repo, root
 

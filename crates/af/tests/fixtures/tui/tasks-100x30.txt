@@ -14,7 +14,7 @@ v hub  (project)            |
         pagination-c~  100% |    pagination-cli           verified           100%  0 tok
     v failed/ (1)           |  failed/
         pagination-u~  100% |    pagination-unfinished    changes_requested  100%  0 tok
-  v campaigns/              |
+                            |
                             |
                             |
                             |

@@ -1,5 +1,4 @@
 use af_contracts::{Producer, task::usage::*};
-use af_runner::TokenUsage;
 use af_runner::task::usage::{persist_task_usage_exact, read_task_usage_exact};
 use af_store::Cas;
 
@@ -14,10 +13,10 @@ fn every_usage_width_is_one_exact_generation_that_reopens() {
         node_id: None,
         operation_id: "capture@1".into(),
     };
-    let narrow = TokenUsage {
-        input_tokens: Some(u64::MAX),
-        chargeable_tokens: 7,
-        ..TokenUsage::default()
+    let narrow = TaskTokenUsageV3 {
+        input_tokens: Some(u128::from(u64::MAX).into()),
+        chargeable_tokens: 7u128.into(),
+        ..Default::default()
     };
     let wide = TaskTokenUsageV3 {
         input_tokens: Some((u128::from(u64::MAX) + 20).into()),
@@ -34,10 +33,7 @@ fn every_usage_width_is_one_exact_generation_that_reopens() {
     }
     drop(cas);
     let cas = Cas::open(&path).unwrap();
-    assert_eq!(
-        read_task_usage_exact(&cas, &narrow_id).unwrap(),
-        TaskTokenUsageV3::from(&narrow)
-    );
+    assert_eq!(read_task_usage_exact(&cas, &narrow_id).unwrap(), narrow);
     assert_eq!(read_task_usage_exact(&cas, &wide_id).unwrap(), wide);
 
     // Another generation or an unenveloped usage blob is not Task usage.

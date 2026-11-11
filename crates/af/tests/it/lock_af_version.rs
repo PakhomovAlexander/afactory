@@ -95,17 +95,14 @@ fn commit_all(repo: &Path) {
 }
 
 fn plan(repo: &Path) -> Output {
+    let file = repo.join(".af/task-packages/onboard/review-code/task.json");
     af(&[
         "review",
         "plan",
+        "--file",
+        file.to_str().unwrap(),
         "--repo",
         repo.to_str().unwrap(),
-        "--policy-rev",
-        "HEAD",
-        "--base",
-        "HEAD",
-        "--candidate",
-        "HEAD",
         "--json",
     ])
 }
@@ -261,9 +258,16 @@ fn a_newer_af_proceeds_and_says_so() {
     let planned = plan(&repo);
     assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
     let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
-    assert_eq!(document["cause"], "review_binding_missing");
+    assert_eq!(document["schema"], "af/task-selection@3");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-selection-v3.json"),
+        &document,
+    );
+    assert_eq!(document["selection"]["decision"]["kind"], "unavailable");
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(document["chargeable_tokens"], 0);
     assert!(
-        stderr(&planned).contains("pinned by af 0.0.1"),
+        stderr(&planned).contains("pins af 0.0.1"),
         "the note goes to stderr, leaving JSON stdout intact: {}",
         stderr(&planned)
     );
@@ -304,7 +308,14 @@ fn an_unpinned_lock_stays_silent() {
     let planned = plan(&repo);
     assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
     let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
-    assert_eq!(document["cause"], "review_binding_missing");
+    assert_eq!(document["schema"], "af/task-selection@3");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-selection-v3.json"),
+        &document,
+    );
+    assert_eq!(document["selection"]["decision"]["kind"], "unavailable");
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(document["chargeable_tokens"], 0);
     assert!(
         !stderr(&planned).contains("pinned by af"),
         "{}",

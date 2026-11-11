@@ -1,19 +1,14 @@
-# Preflight export fixture
+# Native preflight fixtures
 
-`review-plan.json` is an actual `af 0.9.0-rc.8` token-free export from a disposable
-review repository containing the helper patch and its native inspection fixture:
+The helper reads current `af/task-inspection@20` and `af/task-diff@1` advisory documents.
+The bound-source example is `../bound-inputs/inspection-bound.json`; its optional evaluation
+input and conditional verifier remain unknowns in the advisory report. Tests consume that
+current captured document and actual CLI/script output, with exact refusal and schema checks.
 
-```sh
-af review plan --repo af-preflight-review --policy-rev HEAD \
-  --base HEAD~1 --candidate HEAD --provider design=claude-personal --json
-```
-
-It captures a nonempty Diff over the six helper/documentation changes. Identities and provider
-labels are recorded data, not executable configuration or secrets. Tests consume the real
-export, then mutate its identity and empty-Diff fields to cover refused combinations.
-Native `af review plan` refuses an empty Diff before emitting a successful plan; that case is
-therefore deliberately a malformed/mutated fixture, not a claimed successful native capture.
-
-The helper checks the fields it uses; this fixture does not define or authenticate the full
-Review plan format. The Task side uses `../bound-inputs/inspection-bound.json`, whose optional
-evaluation input and conditional verifier must appear as unknowns in the advisory report.
+For a captured native Review Task, export its real inspection with
+`af review inspect TASK_ID --json`. Export a native diff with `af task diff TASK_ID --json`,
+using explicit recorded Snapshot IDs when inspecting a planned Task with no candidate output.
+These documents describe recorded data; they grant no execution, promotion or publication authority.
+Native Review planning and execution both refuse an empty Diff. The helper also refuses an empty
+Diff advisory document and the retired `af/review-plan@1` identity. No successful empty Review
+plan is fabricated. See the [preflight guide](../../../docs/task-execution/preflight.md).

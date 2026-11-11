@@ -1,37 +1,6 @@
-//! The Claude adapter's package surface, without a model: the adapter-owned security flags that
-//! follow package model flags, the package arguments it refuses, and the exact input
-//! `af review render` shows. No model, no network, no spend.
-
-use std::path::Path;
-
+//! Native Task adapter security flags and model admission; no model or network.
 use af_contracts::{Arg, Command};
-use af_pipeline_config::lock::{Lockfile, Registry};
-use af_runner::ReviewerAdapter;
 use af_runner_claude::task::ClaudeTaskAdapter;
-
-/// A locked package whose manifest names `program` with `args` (TOML array items).
-fn package(dir: &Path, program: &str, args: &str) -> af_pipeline_config::lock::ResolvedReviewer {
-    let registry_root = dir.join("registry");
-    let package = registry_root.join("tester");
-    std::fs::create_dir_all(&package).unwrap();
-    std::fs::write(
-        package.join("reviewer.toml"),
-        format!(
-            "name = \"tester\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n[runner]\nprogram = \"{program}\"\nargs = [{args}]\n"
-        ),
-    )
-    .unwrap();
-    std::fs::write(package.join("reviewer.md"), "You are a test reviewer.\n").unwrap();
-    let registry = Registry::new(registry_root);
-    let mut lockfile = Lockfile::empty();
-    lockfile.workers.insert(
-        "tester".to_string(),
-        Lockfile::pin("tester", &registry).unwrap(),
-    );
-    lockfile
-        .resolve_for_subject("tester", &registry, af_contracts::SubjectKind::WholeTree)
-        .unwrap()
-}
 
 /// The command a Task Attempt runs: package model flags first, then the adapter-owned security
 /// flags, which therefore win; and no session flag, because no session is assigned, captured or
@@ -117,98 +86,24 @@ fn package_cannot_add_filesystem_settings_or_mcp_authority() {
     }
 }
 
-/// Rendering refuses a package whose arguments the Task adapter would refuse, so `af review
-/// render` never shows a package that cannot run.
-#[test]
-fn rendering_refuses_a_package_argument_that_widens_authority() {
-    let dir = tempfile::tempdir().unwrap();
-    let package = package(
-        dir.path(),
-        "claude",
-        "{ value = \"--model\" }, { value = \"claude-opus-5-5\" }, { value = \"--add-dir\" }, { value = \"/\" }",
-    );
-    let error = af_runner_claude::ClaudeAdapter::from_package(&package)
-        .map(|_| ())
-        .unwrap_err();
-    assert!(error.contains("packages may set only"), "{error}");
-}
-
 /// A reviewer package that names an alias is refused when it is parsed, with the exact ID the
 /// alias resolves to and the command that lists the spellings (ADR-0148).
 #[test]
 fn a_package_naming_an_alias_is_refused_with_its_exact_id() {
-    let dir = tempfile::tempdir().unwrap();
-    let package = package(
-        dir.path(),
+    let error = ClaudeTaskAdapter::new(&Command::new(
         "claude",
-        "{ value = \"--model\" }, { value = \"opus\" }, { value = \"--effort\" }, { value = \"high\" }",
-    );
-    let error = af_runner_claude::ClaudeAdapter::from_package(&package)
-        .map(|_| ())
-        .unwrap_err();
+        ["--model", "opus", "--effort", "high"]
+            .into_iter()
+            .map(Arg::literal)
+            .collect(),
+    ))
+    .map(|_| ())
+    .unwrap_err();
     for part in [
-        "runner args: af refused the binding of model opus (effort high) for a claude Provider",
+        "af refused the binding of model opus (effort high) for a claude Provider",
         "the exact ID claude-opus-5-5",
         "`af provider models` (token-free)",
     ] {
         assert!(error.contains(part), "{part}: {error}");
     }
-}
-
-/// The adapter refuses a package that names anything but claude.
-#[test]
-fn a_package_naming_another_runner_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let package = package(dir.path(), "/opt/bin/codex", "");
-
-    let error = af_runner_claude::ClaudeAdapter::from_package(&package)
-        .map(|_| ())
-        .unwrap_err();
-    assert!(error.contains("drives claude"), "{error}");
-}
-
-/// `render_input` is the prompt composition the Task host sends: the package instructions with
-/// the focus narrowing, then the labelled inputs. Rendering spawns nothing.
-#[test]
-fn rendered_input_is_the_composed_prompt() {
-    let dir = tempfile::tempdir().unwrap();
-    let dump = dir.path().join("prompt-dump");
-    let stub_path = dir.path().join("claude");
-    std::fs::write(
-        &stub_path,
-        format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", dump.display()),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let package = package(
-        dir.path(),
-        stub_path.to_str().unwrap(),
-        "{ value = \"--model\" }, { value = \"claude-opus-5-5\" }",
-    );
-    let adapter = af_runner_claude::ClaudeAdapter::from_package(&package)
-        .unwrap()
-        .with_focus("the parser");
-    let inputs = af_runner::ReviewerInputs {
-        result_contract: af_contracts::ReviewerResultContract::V2,
-        refused_attempts: vec!["previous answer was not JSON".into()],
-        ..Default::default()
-    };
-
-    let rendered = adapter.render_input(&inputs).unwrap();
-    assert_eq!(rendered.transport, af_runner::InputTransport::Prompt);
-    assert_eq!(
-        rendered.manifest.rendered_bytes,
-        rendered.bytes.len() as u64
-    );
-    let (prompt, manifest) = af_runner::compose_model_prompt(
-        "You are a test reviewer.\n\n\n## Focus for this run\n\nthe parser",
-        &inputs,
-    )
-    .unwrap();
-    assert_eq!(rendered.bytes, prompt.into_bytes());
-    assert_eq!(rendered.manifest, manifest);
-    assert!(!dump.exists(), "rendering must not spawn the model");
 }

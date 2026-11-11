@@ -5,7 +5,7 @@ use super::source::invocation_producer;
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
 use af_contracts::task::pipeline::ReceiptOutcomeV1;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::provider::*;
 use af_contracts::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use af_graph::task::{CompiledOperator, CompiledTask};
@@ -35,7 +35,7 @@ impl ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-    ) -> Result<TaskProviderAdmissionV3, String> {
+    ) -> Result<TaskProviderAdmission, String> {
         if !input.inputs.is_empty() {
             return Err("Provider admission cannot consume business inputs".into());
         }
@@ -46,7 +46,7 @@ impl ProviderTaskDomain<'_> {
             .models
             .get(slots.first().ok_or("Empty Provider capability")?)
             .ok_or("Provider admission has no captured adapter")?;
-        let plan: ExecutionPlanV3 = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
+        let plan: ExecutionPlan = serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
             .map_err(|e| e.to_string())?;
         for slot in slots {
             let model = self
@@ -66,7 +66,7 @@ impl ProviderTaskDomain<'_> {
                 );
             }
         }
-        let receipt = TaskProviderAdmissionV3 {
+        let receipt = TaskProviderAdmission {
             plan_id: input.plan_id.clone(),
             bindings: slots.clone(),
             execution: first.binding.execution.clone(),
@@ -439,9 +439,8 @@ impl ProviderTaskDomain<'_> {
     /// admission recheck must render identically, so all three go through here. The probe
     /// carries no Attempt authority, so it renders from the feedback list alone.
     ///
-    /// Public only for `tests/it/task_campaign_review/host/native.rs`'s
-    /// `provider_admission_renders_only_its_fixed_context_and_refuses_changed_identity`, which
-    /// cannot construct a `ReservedTaskAttempt`; not part of the crate's stable surface.
+    /// Native admission and its recheck share these exact bytes without manufacturing an
+    /// Attempt capability. This is not part of the crate's stable surface.
     #[doc(hidden)]
     pub fn render_probe_context(
         &self,
@@ -509,63 +508,18 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &af_contracts::task::TaskRevisionV1,
-        plan: &af_contracts::task::plan::ExecutionPlanV3,
+        plan: &af_contracts::task::plan::ExecutionPlan,
         prepared: &af_contracts::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.inner
             .validate_experiment_preparation(cas, task, plan, prepared)
     }
-    fn validate_review_integration_selection(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
-        phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        self.inner
-            .validate_review_integration_selection(cas, task, plan, phase, evidence)
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_integration_completion(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
-        phase: &af_contracts::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &af_contracts::task::run_report::TaskRunReportV1,
-        events: &[af_store::NewEvent],
-        evidence: &af_store::store::task::review_integration::TaskReviewIntegrationEvidence,
-    ) -> Result<(), String> {
-        self.inner.validate_review_integration_completion(
-            cas, task, plan, phase, report, events, evidence,
-        )
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    fn validate_review_continuation(
-        &self,
-        cas: &Cas,
-        previous: &TaskRevisionV1,
-        next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV3,
-        next_plan: &ExecutionPlanV3,
-        handoff: &af_contracts::task::review_handoff::TaskReviewHandoffV1,
-    ) -> Result<(), String> {
-        self.inner.validate_review_continuation(
-            cas,
-            previous,
-            next,
-            previous_plan,
-            next_plan,
-            handoff,
-        )
-    }
     fn validate_owned_children(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         parent: &TaskInvocationV1,
         children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -576,7 +530,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         parent: &TaskInvocationV1,
         children: &af_contracts::task::owned_children::TaskOwnedChildSetV1,
         facts: &[af_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -590,7 +544,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -627,7 +581,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV3,
+        plan: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &af_graph::task::CompiledNode,

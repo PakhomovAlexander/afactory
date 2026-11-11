@@ -1,4 +1,4 @@
-//! `af task events ID` (ADR-0250): a Task's log as JSON lines, one `af/task-event@1` document per
+//! `af task events ID` (ADR-0250): a Task's log as JSON lines, one `af/task-event@2` document per
 //! event the Store recorded, followed until the Task settles and ended by one terminal record.
 //! Every line is read from the Task's own log and projection, never from a second record: an
 //! event's `sequence` is the Store's, so the stream is gap-free and `--after N` resumes it.
@@ -81,7 +81,7 @@ pub(crate) fn events(
             let state = view.state;
             let exit_code = TaskEventTerminalV1::exit_code_of(&state);
             write_line(&TaskEventV1::Terminal(TaskEventTerminalV1 {
-                schema: TASK_EVENT_V1.into(),
+                schema: TASK_EVENT_V2.into(),
                 task_id: id.into(),
                 last_sequence: through.saturating_sub(1),
                 state,
@@ -156,7 +156,7 @@ fn entry(
             .map_err(|e| format!("event {} of the Task's log: {e}", event.sequence))
     }
     let mut line = TaskEventEntryV1 {
-        schema: TASK_EVENT_V1.into(),
+        schema: TASK_EVENT_V2.into(),
         task_id: task_id.into(),
         sequence: event.sequence,
         event_id: event.event_id.clone(),
@@ -170,7 +170,7 @@ fn entry(
         charged_tokens: None,
     };
     match event.event_type {
-        EventType::TaskTransitionV5 => {
+        EventType::TaskTransitionV6 => {
             let transition: TaskTransitionV1 = payload(event)?;
             line.at_unix_ms = transition.now_unix_ms;
             line.change = TaskEventChangeV1::of(&transition.change);
@@ -326,7 +326,7 @@ mod tests {
         let attempts = BTreeMap::new();
         let waiting = event(
             7,
-            EventType::TaskTransitionV5,
+            EventType::TaskTransitionV6,
             transition(TaskChangeV1::Waiting {
                 reason: TaskWaitingReasonV1::NeedsPlanReview,
             }),
@@ -335,13 +335,13 @@ mod tests {
         TaskEventV1::Event(line.clone()).validate().unwrap();
         assert_eq!(line.sequence, 7);
         assert_eq!(line.event_id, "0123456789abcdef0123456789");
-        assert_eq!(line.event_type, "TaskTransition@5");
+        assert_eq!(line.event_type, "TaskTransition@6");
         assert_eq!(line.change, TaskEventChangeV1::Waiting);
         assert_eq!(line.detail.as_deref(), Some("needs_plan_review"));
         assert_eq!(line.at_unix_ms, 1_700_000_000_000);
         let lease = event(
             8,
-            EventType::TaskTransitionV5,
+            EventType::TaskTransitionV6,
             transition(TaskChangeV1::LeaseRenewed {
                 lease_until_unix_ms: 1_700_000_060_000,
             }),

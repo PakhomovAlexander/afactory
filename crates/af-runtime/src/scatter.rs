@@ -85,18 +85,6 @@ impl StaticSlicePolicy {
     }
 }
 
-pub(crate) fn slice_producer(
-    run: &str,
-    scatter: &str,
-    slice: &ReviewSliceV1,
-) -> af_contracts::Producer {
-    af_contracts::Producer::KernelOperation {
-        run_id: run.into(),
-        node_id: Some(scatter.into()),
-        operation_id: format!("slice:{}", slice.slice_id),
-    }
-}
-
 /// The lossless canonical fold shared by legacy execution and common Task ownership.
 pub(crate) fn fold_shards(
     slice_set: &SliceSetV1,

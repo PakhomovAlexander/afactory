@@ -17,7 +17,7 @@
       "const": "af/task-checks@3"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "state": {
       "$ref": "urn:af:schema:task-state:2#/$defs/state"
@@ -53,7 +53,7 @@
               "maxLength": 4096
             },
             "receipt_id": {
-              "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
             },
             "outcome": {
               "enum": [
@@ -89,7 +89,7 @@
       ],
       "properties": {
         "name": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
         },
         "status": {
           "enum": [
@@ -157,10 +157,10 @@
           }
         },
         "stdout_id": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "stderr_id": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "stderr_tail": {
           "description": "The last 40 lines of the check's stderr, display-safe.",

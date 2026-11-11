@@ -244,7 +244,7 @@ else:
   if 'research_report' in i:
    assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
    text+=' Final report retains research artifact '+i['research_report'][0]['artifact_id']+' and its evidence: '+i['research_report'][0]['payload']['text']
-  reply={'draft':[{'schema':'af.document-draft/2','title':'Research chain','sections':[{'heading':'Findings','body':text},{'heading':'Recommendation','body':text}],'citations':[],'repository_citations':[{'path':'subject.txt','line':1}]}]}
+  reply={'draft':[{'schema':'af.document-draft/3','title':'Research chain','sections':[{'heading':'Findings','body':text},{'heading':'Recommendation','body':text}],'citations':[{'kind':'repository','location':{'path':'subject.txt','line':1}}]}]}
  elif 'report' in ports:
   assert 'DISTINCT-RESEARCH' in i['research_report'][0]['payload']['text']
   root=pathlib.Path(sys.argv[sys.argv.index('-C')+1]) if '-C' in sys.argv else pathlib.Path.cwd()

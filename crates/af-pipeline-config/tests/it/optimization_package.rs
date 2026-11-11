@@ -1,4 +1,4 @@
-use af_contracts::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinition;
 use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
 use af_pipeline_config::task::kind::TaskKindManifest;
 
@@ -9,7 +9,7 @@ fn report_only_optimizer_package_has_exact_public_contract_and_no_worker_slots()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("fixtures/self-optimizer/catalog");
-    let pipeline: PipelineDefinitionV1 =
+    let pipeline: PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(root.join("optimization/pipeline.toml")).unwrap())
             .unwrap();
     pipeline.validate().unwrap();
@@ -38,7 +38,7 @@ fn light_optimizer_ships_role_scoped_model_workers_with_captured_instructions() 
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("fixtures/self-optimizer/catalog");
-    let pipeline: PipelineDefinitionV1 = toml::from_str(
+    let pipeline: PipelineDefinition = toml::from_str(
         &std::fs::read_to_string(root.join("optimization-light-model/pipeline.toml")).unwrap(),
     )
     .unwrap();

@@ -68,9 +68,7 @@ impl TaskProjection {
             .execution
             .as_ref()
             .ok_or_else(|| conflict("Recording recovery has no execution"))?;
-        if report.phase_id.is_some()
-            || execution.active_review_integration().is_some()
-            || report.task_revision_id != revision_id
+        if report.task_revision_id != revision_id
             || report.plan_id != plan_id
             || !execution.pending_attempts().is_empty()
             || !report.nodes.iter().any(|node| {
@@ -109,10 +107,7 @@ impl TaskProjection {
             .ok_or_else(|| conflict("Task has no exact recording recovery capability"))?;
         // Retain the report's identity on cached and fresh projections alike.
         let report = read_task_run_report(cas, &recovery.report_id)?;
-        if report.phase_id.is_some()
-            || report.task_revision_id != recovery.revision_id
-            || report.plan_id != recovery.plan_id
-        {
+        if report.task_revision_id != recovery.revision_id || report.plan_id != recovery.plan_id {
             return Err(conflict("Recording recovery report changed identity"));
         }
         let execution = self
@@ -166,9 +161,6 @@ impl EventStore {
                 .map_err(conflict)?;
         }
         state.validate_recording_resume(cas, &state.revision_id, plan_id, report_id, time)?;
-        if let Some(round) = review_round::ReviewRoundFence::for_state(cas, &state)? {
-            round.validate(&self.conn)?;
-        }
         // The prefix comparison, decision/lease expiry and Round fence are repeated by
         // the append transaction. A callback cannot substitute another plan or report.
         self.append_task_transition_with_owned_prefix(
@@ -194,7 +186,7 @@ impl EventStore {
         lease: &TaskLease,
         output_id: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<(TaskProjection, ExecutionPlanV3), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlan), StoreError> {
         let (state, plan) = self.checked_task_recording(cas, lease, authority)?;
         state.check_recorded_output(cas, output_id)?;
         Ok((state, plan))
@@ -208,8 +200,8 @@ impl EventStore {
         lease: &TaskLease,
         invocation_id: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<ExecutionPlanV3, StoreError> {
-        let (state, plan) = self.checked_task_recording(cas, lease, authority)?;
+    ) -> Result<ExecutionPlan, StoreError> {
+        let (state, _) = self.checked_task_recording(cas, lease, authority)?;
         let execution = state
             .execution
             .as_ref()
@@ -219,7 +211,7 @@ impl EventStore {
             .values()
             .find(|(_, out)| out.invocation_id == invocation_id)
             .ok_or_else(|| conflict("Invocation has no pinned published output"))?;
-        state.check_recorded_output(cas, output_id)?;
+        let (_, plan) = self.checked_recorded_output(cas, lease, output_id, authority)?;
         Ok(plan)
     }
 }

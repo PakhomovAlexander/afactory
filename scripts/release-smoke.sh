@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The functional smoke every packaged af binary passes before a release publishes it: onboard a
-# fresh repository and plan it, token-free, with no Campaign state and no Provider.
+# fresh repository and plan native Review, token-free, without an admitted Provider.
 #
 #   scripts/release-smoke.sh AF [SCRATCH]
 #
@@ -21,7 +21,8 @@ else
   scratch="$(mktemp -d)"
   trap 'rm -rf "$scratch"' EXIT
 fi
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 AF_SELF_OFFLINE=1
+export AF_PROVIDERS_FILE="$scratch/providers.toml"
 # A private home: the caller's Providers, Stores and configuration neither change the outcome
 # nor receive anything.
 export HOME="$scratch/home" XDG_CONFIG_HOME="$scratch/home/.config" \
@@ -35,22 +36,29 @@ git -C "$repo" init -q
 git -C "$repo" add -A
 git -C "$repo" -c user.name=release -c user.email=release@example.invalid \
   commit -q -m "onboarded by the built binary"
-# With no Provider registered the plan is refused for its missing bindings (exit 1, cause
-# review_binding_missing) and carried whole in the refusal's details.plan (#363, #434); any
-# other failure stops the release.
+# A native Review file selects the committed Task catalog. Keep the request outside source;
+# a real change gives the Diff guard meaningful input before any model or Gate can run.
+cp "$repo/.af/task-packages/onboard/review-code/task.json" "$scratch/review.json"
+printf 'A source change for native Review planning.\n' > "$repo/change.txt"
 status=0
-"$af" review plan --repo "$repo" \
-  --policy-rev HEAD --base HEAD --candidate HEAD --json > "$scratch/plan.json" || status=$?
-if [[ "$status" -eq 0 ]]; then
-  filter='.schema'
-elif [[ "$status" -eq 1 ]]; then
-  filter='select(.cause == "review_binding_missing") | .details.plan.schema'
-else
-  filter='empty'
-fi
-jq -e "$filter == \"af/review-plan@1\"" "$scratch/plan.json" >/dev/null || {
-  echo "the built binary planned no af/review-plan@1 document (exit $status)" >&2
+"$af" review plan --repo "$repo" --file "$scratch/review.json" \
+  --authority HEAD --base HEAD --uncommitted --json > "$scratch/plan.json" || status=$?
+# Missing Providers produce the current native selection receipt, not an invented Review
+# plan. Accept only that precise, uncharged refusal; every other failure stops publication.
+jq -e --argjson status "$status" '
+  $status == 1 and .schema == "af/task-selection@3" and
+  .task_id == "review" and .attempts == 0 and .chargeable_tokens == 0 and
+  (.selection_id | startswith("sha256:")) and
+  (.request_revision_id | startswith("sha256:")) and
+  .selection.decision.kind == "unavailable" and
+  (.selection.candidates | length) == 1 and
+  .selection.candidates[0].pipeline == "onboard/review-code" and
+  .selection.candidates[0].state.kind == "unavailable" and
+  (.selection.candidates[0].state.reason |
+    contains("provider `codex-main` is not an explicit entry in the machine-local registry"))
+' "$scratch/plan.json" >/dev/null || {
+  echo "the built binary produced no native missing-Provider selection receipt (exit $status)" >&2
   cat "$scratch/plan.json" >&2
   exit 1
 }
-echo "release smoke: onboarded and planned with $af"
+echo "release smoke: onboarded native Review and checked the zero-Attempt Provider refusal with $af"

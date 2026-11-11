@@ -1391,9 +1391,6 @@ mod tests {
     }
 
     fn source_port(cas: &Cas, files: &[(&str, &[u8])]) -> ArtifactInputV1 {
-        let origin = cas
-            .put_json(&serde_json::json!({"origin":"fixture"}))
-            .unwrap();
         let entries = files
             .iter()
             .map(|(path, bytes)| Entry {
@@ -1403,8 +1400,10 @@ mod tests {
                 size: bytes.len() as u64,
             })
             .collect();
-        let snapshot_id =
-            capture_snapshot(cas, &Manifest::new(entries).unwrap(), &origin, None).unwrap();
+        let manifest = Manifest::new(entries).unwrap();
+        let origin = cas.put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured",
+            "repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()})).unwrap();
+        let snapshot_id = capture_snapshot(cas, &manifest, &origin, None).unwrap();
         let artifact_id = cas
             .put_artifact(
                 SOURCE_TREE_V1,

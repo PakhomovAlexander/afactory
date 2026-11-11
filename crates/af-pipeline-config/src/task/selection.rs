@@ -1,7 +1,7 @@
 //! Deterministic selection over captured facts and public contracts. Only semantic no-fit
 //! can request generation; missing information, broken authority and unavailable resources
 //! remain explicit refusals. This module never invokes a Planner or downloads a package.
-use af_contracts::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinition;
 use af_contracts::task::{PipelineChoiceV1, PipelineFallbackV1, TaskRevisionV1};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,7 +55,7 @@ pub struct PipelineSelection {
     pub decision: SelectionDecision,
 }
 
-pub fn semantic_fit(task: &TaskRevisionV1, pipeline: &PipelineDefinitionV1) -> CandidateState {
+pub fn semantic_fit(task: &TaskRevisionV1, pipeline: &PipelineDefinition) -> CandidateState {
     let mut reasons = Vec::new();
     let mut unknown = BTreeSet::new();
     if !pipeline.accepts.kinds.contains(&task.kind) {
@@ -133,7 +133,7 @@ pub fn effective_fallback(
 /// request refuses a fallback. A capture made before selection covers exactly these.
 pub fn candidate_names(
     requested: Option<&PipelineChoiceV1>,
-    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: &BTreeMap<String, PipelineDefinition>,
     no_match: NoMatchPolicy,
 ) -> BTreeSet<String> {
     let mut names: BTreeSet<_> =
@@ -153,7 +153,7 @@ pub fn candidate_names(
 pub fn select_with_policy(
     task: &TaskRevisionV1,
     requested: Option<&PipelineChoiceV1>,
-    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    pipelines: &BTreeMap<String, PipelineDefinition>,
     priorities: &BTreeMap<String, u32>,
     no_match: NoMatchPolicy,
     mut admit: impl FnMut(&str) -> CandidateState,
@@ -299,7 +299,7 @@ mod tests {
     fn select(
         task: &TaskRevisionV1,
         requested: &PipelineChoiceV1,
-        pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+        pipelines: &BTreeMap<String, PipelineDefinition>,
         priorities: &BTreeMap<String, u32>,
         admit: impl FnMut(&str) -> CandidateState,
     ) -> Result<PipelineSelection, String> {
@@ -312,14 +312,14 @@ mod tests {
             admit,
         )
     }
-    fn fixtures() -> (TaskRevisionV1, BTreeMap<String, PipelineDefinitionV1>) {
+    fn fixtures() -> (TaskRevisionV1, BTreeMap<String, PipelineDefinition>) {
         let root = std::env::var_os("AF_WORKSPACE_ROOT")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join("fixtures/task-contracts/v1");
         let task = serde_json::from_slice(&std::fs::read(root.join("task-revision.json")).unwrap())
             .unwrap();
-        let mut small: PipelineDefinitionV1 =
+        let mut small: PipelineDefinition =
             serde_json::from_slice(&std::fs::read(root.join("pipeline-definition.json")).unwrap())
                 .unwrap();
         small.name = "project/small".into();

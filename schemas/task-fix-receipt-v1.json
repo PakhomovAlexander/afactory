@@ -21,10 +21,10 @@
       "minLength": 1
     },
     "continuation_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "subject_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "decision": {
       "type": "object",
@@ -37,10 +37,10 @@
       ],
       "properties": {
         "expected_view_id": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "attestation_id": {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         "outcome": {
           "enum": [
@@ -59,7 +59,7 @@
     "verifier_output_id": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
         },
         {
           "type": "null"

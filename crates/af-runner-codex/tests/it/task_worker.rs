@@ -552,19 +552,26 @@ fn a_typed_request_passes_its_reply_contract_as_the_output_schema_file() {
     assert!(!copy.exists());
 }
 
-/// ADR-0246: a review-Campaign reviewer's prompt is no typed request, yet its dispatch writes
-/// the strict Reviewer Result schema for `--output-schema`, byte for byte what `af review render`
-/// shows. What the strict schema made the model write — `null` for an absent proposal, notes or
-/// line — is removed before the kernel's unchanged parser reads the reply; the `-o` file is kept
-/// as it was written. A reply that never reached the `-o` file is no reply, its usage kept.
+/// Current Task strict reply normalization preserves raw bytes; a missing final message
+/// retains usage and never admits a business output.
 #[test]
-fn a_campaign_reviewer_passes_the_strict_reviewer_result_schema_file() {
-    use af_runner::ReviewerAdapter;
-    use af_runner::task::reply_schema::ReplyContract;
+fn a_typed_request_keeps_raw_strict_reply_and_missing_message_usage() {
+    use af_runner::task::{WorkerContract, WorkerRequest, reply_schema::ReplyContract};
+    use serde_json::json;
+    use std::collections::BTreeMap;
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path().join("cas")).unwrap();
     let copy = temp.path().join("schema-copy.json");
-    let reply = r#"{"reports":[{"severity":"minor","file":"a.rs","line":null,"title":"t","body":"b","fix":"f","confidence":null,"rule_id":null,"occurrence_key":null}],"benchmark_demands":[],"dispositions":[],"proposal":null,"notes":null}"#;
+    let payload = json!({"type":"object","additionalProperties":false,"required":["outcome"],
+        "properties":{"outcome":{"enum":["passed","failed"]},"note":{"type":"string"}}});
+    let outputs = BTreeMap::from([("result".into(), payload)]);
+    let contract =
+        WorkerContract::capture(&cas, json!({"type":"object"}), outputs.clone()).unwrap();
+    let request = WorkerRequest::new("Judge it.", BTreeMap::new(), Vec::new(), outputs)
+        .rendered()
+        .unwrap();
+    let reply =
+        r#"{"schema":"af.worker-reply/1","outputs":{"result":[{"outcome":"passed","note":null}]}}"#;
     let script = |write: &str| {
         format!(
             "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nschema=; prev=; for arg in \"$@\"; do [ \"$prev\" = --output-schema ] && schema=$arg; prev=$arg; done\n[ -n \"$schema\" ] && cp \"$schema\" '{}'\n{write}printf '%s\\n' '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":7,\"output_tokens\":2}}}}'\n",
@@ -580,12 +587,12 @@ fn a_campaign_reviewer_passes_the_strict_reviewer_result_schema_file() {
             .invoke_constrained(
                 &cas,
                 temp.path(),
-                b"Review the change.\n\n## Output contract\n\n...".to_vec(),
+                request.clone(),
                 LOAD_SAFE_WALL,
                 WorkerAccess::WriteSource,
                 None,
                 &[],
-                ReplyContract::ReviewerResult,
+                ReplyContract::Request,
             )
             .unwrap_or_else(|unstarted| *unstarted.0)
     };
@@ -593,19 +600,9 @@ fn a_campaign_reviewer_passes_the_strict_reviewer_result_schema_file() {
     let message = returned.message.unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&message).unwrap(),
-        serde_json::json!({"reports":[{"severity":"minor","file":"a.rs","title":"t","body":"b","fix":"f"}],
-            "benchmark_demands":[],"dispositions":[]})
+        json!({"schema":"af.worker-reply/1","outputs":{"result":[{"outcome":"passed"}]}})
     );
-    let text = std::str::from_utf8(&message).unwrap();
-    assert_eq!(
-        af_runner::parse_reviewer_result(text)
-            .unwrap()
-            .reports
-            .len(),
-        1
-    );
-    assert_eq!(af_runner::parse_proposal_declaration(text), Ok(None));
-    assert_eq!(af_runner::parse_notes_declaration(text), Ok(None));
+    contract.validate_reply(&message).unwrap();
     let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
     let flags: Vec<_> = flags.lines().collect();
     let at = flags
@@ -613,24 +610,13 @@ fn a_campaign_reviewer_passes_the_strict_reviewer_result_schema_file() {
         .position(|flag| *flag == "--output-schema")
         .expect("the schema argument is passed");
     assert!(flags[at + 1].ends_with("/reply-schema.json"), "{flags:?}");
-    let package = af_runner::ResolvedReviewer::new(
-        "fixture",
-        "1.0.0",
-        "fixture-digest",
-        "/fixture",
-        Command::new("codex", vec![]),
-        std::collections::BTreeMap::from([("reviewer.md".to_string(), b"Review it.".to_vec())]),
-    );
-    let rendered = af_runner_codex::CodexAdapter::from_package(&package)
-        .unwrap()
-        .render_input(&af_runner::ReviewerInputs::default())
-        .unwrap()
-        .reply_schema
-        .unwrap();
-    assert_eq!(rendered.option, "--output-schema");
     assert_eq!(
         std::fs::read_to_string(&copy).unwrap(),
-        rendered.schema.to_string()
+        ReplyContract::Request
+            .strict(&request)
+            .unwrap()
+            .unwrap()
+            .to_string()
     );
     assert!(
         returned

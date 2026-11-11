@@ -106,7 +106,7 @@ OUTPUT_SCHEMA = ('{"type":"object","additionalProperties":false,"required":["out
                  '"text":{"type":"string"}}}')
 INSTRUCTIONS = "Performance fixture Worker. It is never executed.\n"
 
-PIPELINE_TOML = """schema = "af.pipeline/1"
+PIPELINE_TOML = """schema = "af.pipeline/6"
 name = "perf/two-node"
 version = "1.0.0"
 max_attempts = 3
@@ -564,7 +564,7 @@ def golden_entry(doc, instance, contract_id, cache):
             return _entry(instance, contract_id, blob, blob,
                           persistence_logical_bytes("cas_write_read"), None,
                           "the reference object read back; count is logical bytes written+read")
-        semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@5"],
+        semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@6"],
                     "prefix_events": PERSISTENCE_PREFIX_EVENTS}
         return _entry(instance, contract_id, None, _digest_of(semantic), PERSISTENCE_EVENTS,
                       semantic, "explicit facts of the appended and read-back lease renewals")
@@ -649,7 +649,7 @@ def golden_document(doc):
         elif fixture["kind"] == "event_log":
             fixtures[fixture_id] = {
                 "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
-                "relevant_events": "TaskTransition@5 opened, plan proposed, plan admitted, then "
+                "relevant_events": "TaskTransition@6 opened, plan proposed, plan admitted, then "
                                    "production 60000 ms lease renewals"}
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"

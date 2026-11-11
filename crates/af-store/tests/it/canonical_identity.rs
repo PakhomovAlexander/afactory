@@ -2,10 +2,11 @@ use crate::support;
 
 use af_contracts::{
     EventType, FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1, Producer,
-    ReviewerStageOutput, RoundStartedPayloadV1, RunEvent, SubjectV1,
+    ReviewerStageOutput, RunEvent, SubjectV1,
 };
-use af_store::{CanonicalStage, Cas, EventStore, Ingest, LedgerProjection, NewEvent};
+use af_store::{CanonicalStage, Cas, NewEvent};
 use support::opened_round;
+use support::{Ingest, LedgerEvents as EventStore, NativeProjection as LedgerProjection};
 
 fn stage() -> ReviewerStageOutput {
     serde_json::from_value(serde_json::json!({
@@ -98,7 +99,7 @@ fn apply_resolution(
 }
 
 #[test]
-fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_store() {
+fn native_canonical_reduction_is_pure_and_replays_identically() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -374,31 +375,6 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
         rebuilt.get(&corrupted_key).unwrap().authority_diagnostic,
         "unreadable canonical Report authority must remain replayable and fail closed"
     );
-
-    // Keep all bootstrap IDs live until the manifest-corruption case deliberately breaks one.
-    assert!(cas.contains(&authority.authority));
-    assert!(cas.contains(&authority.manifest));
-    assert!(cas.contains(&authority.subject));
-    assert!(cas.contains(&authority.findings));
-    assert!(cas.contains(&authority.demands));
-
-    let manifest_path = directory
-        .path()
-        .join("cas/objects")
-        .join(&authority.manifest[7..9])
-        .join(&authority.manifest[9..]);
-    std::fs::write(manifest_path, b"corrupt manifest").unwrap();
-    let rebuilt = LedgerProjection::rebuild(&store, &cas, run_id)
-        .unwrap()
-        .into_ledger();
-    assert_eq!(rebuilt.finding_identity_policy(), None);
-    assert!(
-        rebuilt
-            .convergence(support::default_policy())
-            .authority_failures_recent
-            > 0,
-        "unreadable Campaign policy must remain replayable but block convergence"
-    );
 }
 
 #[test]
@@ -633,32 +609,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
     let next_subject = cas
         .put_json(&serde_json::to_value(SubjectV1::whole_tree(&next_head)).unwrap())
         .unwrap();
-    ledger
-        .apply_event(
-            &RunEvent {
-                event_id: "group-round-2".into(),
-                run_id: run_id.into(),
-                sequence: 101,
-                event_type: EventType::RoundStartedV1,
-                occurred_at: "2026-08-28T00:00:00Z".into(),
-                node_id: None,
-                attempt_id: None,
-                causation_id: None,
-                correlation_id: Some(next_subject.clone()),
-                artifact_refs: Vec::new(),
-                payload: serde_json::to_value(RoundStartedPayloadV1 {
-                    round: 2,
-                    epoch: 1,
-                    campaign_manifest_id: authority.manifest.clone(),
-                    subject_id: next_subject.clone(),
-                    prior_finding_set_id: authority.findings.clone(),
-                    prior_demand_set_id: authority.demands.clone(),
-                })
-                .unwrap(),
-            },
-            &cas,
-        )
-        .unwrap();
+    ledger.bind_task_subject(&cas, &next_subject, 2).unwrap();
     let mut lower_report = stage().reports.remove(0).into_report(0).unwrap();
     lower_report.severity = af_contracts::Severity::Minor;
     lower_report.body = "lower-severity evidence from a different Subject".into();
@@ -1155,28 +1106,7 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
     let subject_id = cas
         .put_json(&serde_json::to_value(SubjectV1::diff(&head, &base, &change_set_id)).unwrap())
         .unwrap();
-    let round = RunEvent {
-        event_id: "round-2".into(),
-        run_id: run_id.into(),
-        sequence: 100,
-        event_type: EventType::RoundStartedV1,
-        occurred_at: "2026-08-28T00:00:00Z".into(),
-        node_id: None,
-        attempt_id: None,
-        causation_id: None,
-        correlation_id: Some(subject_id.clone()),
-        artifact_refs: vec![],
-        payload: serde_json::to_value(RoundStartedPayloadV1 {
-            round: 2,
-            epoch: 1,
-            campaign_manifest_id: authority.manifest,
-            subject_id: subject_id.clone(),
-            prior_finding_set_id: authority.findings,
-            prior_demand_set_id: authority.demands,
-        })
-        .unwrap(),
-    };
-    ledger.apply_event(&round, &cas).unwrap();
+    ledger.bind_task_subject(&cas, &subject_id, 2).unwrap();
 
     let recorded_event = |event_type, record_id: String| RunEvent {
         event_id: format!("{event_type}-{record_id}"),
@@ -1748,43 +1678,8 @@ fn an_in_scope_higher_severity_re_report_challenges_a_typed_declined_resolution(
     }
 
     // The next Round reviews the same Subject.
-    for (event_type, payload) in [
-        (
-            EventType::RoundStartedV1,
-            serde_json::to_value(RoundStartedPayloadV1 {
-                round: 2,
-                epoch: 1,
-                campaign_manifest_id: round.manifest.clone(),
-                subject_id: round.subject.clone(),
-                prior_finding_set_id: round.findings.clone(),
-                prior_demand_set_id: round.demands.clone(),
-            })
-            .unwrap(),
-        ),
-        (
-            EventType::GenerationAdvancedV1,
-            serde_json::json!({ "round": 2 }),
-        ),
-    ] {
-        ledger
-            .apply_event(
-                &RunEvent {
-                    event_id: format!("round-2-{event_type}"),
-                    run_id: run_id.into(),
-                    sequence: 200,
-                    event_type,
-                    occurred_at: "2026-08-28T00:00:00Z".into(),
-                    node_id: None,
-                    attempt_id: None,
-                    causation_id: None,
-                    correlation_id: None,
-                    artifact_refs: vec![],
-                    payload,
-                },
-                &cas,
-            )
-            .unwrap();
-    }
+    ledger.bind_task_subject(&cas, &round.subject, 2).unwrap();
+
     let second = flat_stage(
         serde_json::json!([
             claim("Rejected then escalated", "blocker"),

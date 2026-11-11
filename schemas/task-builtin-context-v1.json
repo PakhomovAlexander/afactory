@@ -18,11 +18,11 @@
       "maxItems": 16,
       "uniqueItems": true,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
       }
     },
     "policy_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     }
   },
   "$comment": "Existing af/TaskBuiltinContext@1 payload for common code built-ins. Feedback bounds come from common Prepared/Reserved admission. Installed domain validation rederives exact invocation, policy and envelope bytes; names and digests alone grant no operation authority."

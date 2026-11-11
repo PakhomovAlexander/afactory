@@ -1,8 +1,8 @@
 """The scripted reviewer of `telemetry-bench-store` (fixtures/telemetry-bench/README.md).
 
 It reads its request and reports `findings_per_reviewer` minor Findings from `bench.json`, each
-with its own title and occurrence key, so the Round's publication appends one
-`FindingReported@1` event per Finding. Minor Findings under the `major` gate leave the Round
+with its own title and occurrence key; native Round publication preserves every Report and
+its canonical Finding identity. Minor Findings under the `major` gate leave the Round
 clean. Credential-free; never touches the network.
 """
 
@@ -26,4 +26,4 @@ findings = [
     }
     for index in range(count)
 ]
-print(json.dumps({"findings": findings, "benchmark_demands": [], "dispositions": []}))
+print(json.dumps({"schema":"af.worker-reply/1", "outputs":{"result":[{"reports": findings, "benchmark_demands": [], "dispositions": []}]}}))

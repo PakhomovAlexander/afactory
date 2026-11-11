@@ -298,7 +298,7 @@ impl Snapshots {
         .unwrap();
         let origin = cas
             .put_json(
-                &json!({"schema": "af.task-source-origin/1", "repository_id": ROOT,
+                &json!({"schema":"af.task-source-origin/3","kind":"captured", "repository_id": ROOT,
                 "source_revision": null, "content_digest": source.content_digest()}),
             )
             .unwrap();

@@ -58,7 +58,7 @@ impl TaskDomain for ToolchainDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _: &af_graph::task::CompiledNode,
@@ -418,10 +418,12 @@ fi
             .collect(),
     )
     .unwrap();
-    let snapshot = capture_snapshot(&cas, &manifest, &policy, None).unwrap();
+    let origin = cas.put_json(&serde_json::json!({"schema":"af.task-source-origin/3","kind":"captured",
+        "repository_id":"fixture","source_revision":null,"content_digest":manifest.content_digest()})).unwrap();
+    let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
     let source = source_tree(&cas, producer(), &snapshot, vec![]).unwrap();
     let base = root().join("fixtures/task-contracts/v1");
-    let mut pipeline: PipelineDefinitionV1 =
+    let mut pipeline: PipelineDefinition =
         serde_json::from_slice(&std::fs::read(base.join("pipeline-definition.json")).unwrap())
             .unwrap();
     pipeline.contract.inputs = worker.signature.contract.inputs.clone();

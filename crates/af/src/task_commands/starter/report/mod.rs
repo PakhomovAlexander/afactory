@@ -142,7 +142,7 @@ fn worker(
     }
 }
 
-fn pipeline(author: &TaskWorkerManifest, verifier: &TaskWorkerManifest) -> PipelineDefinitionV1 {
+fn pipeline(author: &TaskWorkerManifest, verifier: &TaskWorkerManifest) -> PipelineDefinition {
     let mut p = definition(
         "report",
         "report",
@@ -253,7 +253,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         "report-author",
         "author",
         root_inputs(),
-        ports(&[("draft", same(DOCUMENT_DRAFT_V2))]),
+        ports(&[("draft", same(DOCUMENT_DRAFT_V3))]),
         "af/ReportInput@1",
         &["read-source", "execute-checks"],
     );
@@ -278,7 +278,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::from([(".af/report-policy.toml".into(), toml_bytes(&policy)?)]);
     let mut packages = BTreeMap::new();
     let mut contracts = CatalogContractFixtures {
-        schema: "af.catalog-contract-fixtures/1".into(),
+        schema: "af.catalog-contract-fixtures/2".into(),
         pipelines: BTreeMap::from([(pipeline.name.clone(), (&pipeline).into())]),
         workers: BTreeMap::new(),
         kinds: BTreeMap::new(),
@@ -288,7 +288,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
             &author,
             include_str!("author.py"),
             "draft",
-            include_bytes!("../../../../../../schemas/document-draft-v2.json").as_slice(),
+            include_bytes!("../../../../../../schemas/document-draft-v3.json").as_slice(),
         ),
         (
             &verifier,

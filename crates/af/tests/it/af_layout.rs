@@ -96,7 +96,7 @@ fn every_authority_path_the_kernel_resolves_is_declared_in_the_layout_table() {
         "af.local.toml",
         "af.lock",
         "pipelines",
-        "workers",
+        "task-packages",
         "task-catalog.toml",
         "code-policy.toml",
     ];

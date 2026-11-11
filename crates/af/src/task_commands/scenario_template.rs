@@ -308,6 +308,8 @@ pub(crate) fn plan(
         .to_owned();
     with_bindings(template.bindings.as_ref(), |local| {
         let options = StartOptions {
+            review_inputs: None,
+            review_selectors: None,
             input_json: Vec::new(),
             file: PathBuf::from("scenario-task.json"),
             bindings: local.map(Path::to_path_buf),
@@ -351,7 +353,7 @@ pub(crate) fn plan(
             .plan_id
             .as_deref()
             .ok_or("Template Task has no native plan")?;
-        let plan: ExecutionPlanV3 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V4)?;
+        let plan: ExecutionPlan = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V4)?;
         let file: TaskFile = serde_json::from_value(document.clone()).map_err(|e| e.to_string())?;
         let limits = file
             .limits
@@ -472,7 +474,7 @@ fn performance_wall(total: u64, verification: u64) -> Result<(), String> {
 }
 
 /// Production performance development requires the complete exact model team.
-pub(super) fn performance_roles(plan: &ExecutionPlanV3, kind: &str) -> Result<(), String> {
+pub(super) fn performance_roles(plan: &ExecutionPlan, kind: &str) -> Result<(), String> {
     performance_executions(
         plan.bindings
             .iter()
@@ -553,19 +555,19 @@ mod tests {
         let empty = Manifest::new(vec![]).unwrap();
         let origin = cas
             .put_json(
-                &json!({"schema":"af.task-source-origin/1","repository_id":"fixture",
+                &json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"fixture",
             "source_revision":null,"content_digest":empty.content_digest()}),
             )
             .unwrap();
         let original = capture_snapshot(&cas, &empty, &origin, None).unwrap();
-        let bound = cas.put_json(&json!({"schema":"af.task-source-origin/2","repository_id":"fixture",
+        let bound = cas.put_json(&json!({"schema":"af.task-source-origin/3","kind":"bound","repository_id":"fixture",
             "content_digest":empty.content_digest(),"bound_from":{"artifact_id":format!("sha256:{}","1".repeat(64)),
                 "snapshot_id":original}})).unwrap();
         let rerooted = capture_snapshot(&cas, &empty, &bound, None).unwrap();
         experiment_source_matches(&cas, &rerooted, &original).unwrap();
         let foreign_origin = cas
             .put_json(
-                &json!({"schema":"af.task-source-origin/1","repository_id":"other",
+                &json!({"schema":"af.task-source-origin/3","kind":"captured","repository_id":"other",
             "source_revision":null,"content_digest":empty.content_digest()}),
             )
             .unwrap();

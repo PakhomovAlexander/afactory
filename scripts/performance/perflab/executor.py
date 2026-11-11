@@ -7,6 +7,7 @@ import contextlib
 import fcntl
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import signal
@@ -210,23 +211,42 @@ def source_release(git, sha, side):
 
 
 def telemetry_workload(git, sources, experiments, installed=ROOT):
-    """Each side's declared telemetry workload, before any claim or build: the overhead and
-    invocation-cost bench scripts of the installed authority measure a release only under the
-    fixture contract that names the release its retained source declares (`select_contract`),
-    never the current contract by default. The read-latency corpus is one for every release.
-    Returns the admission's detail; raises ContractError."""
+    """Admit both retained sources against the authority's exact current schema contract.
+
+    The unchanged release string cannot prove capability after a breaking consolidation.
+    The scripts also ask each built binary to plan the exact pinned workload before timing.
+    """
     if not set(experiments) & {"overhead", "invocation_cost"}:
         return ""
     module = telemetry_lab.script_module("scripts/telemetry-overhead.py", installed)
     named = []
     for side, key in (("baseline", "baseline_sha"), ("candidate", "candidate_sha")):
         version = source_release(git, sources[key], side)
-        try:
-            contract = module.select_contract(version)
-        except module.BenchError as error:
-            raise ContractError("telemetry refused before any claim or build: the %s source "
-                                "%s is af %s: %s" % (side, sources[key][:12], version, error))
-        named.append("%s af %s under %s" % (side, version, contract))
+        for schema in module.CONTRACT_SCHEMAS:
+            relative = "schemas/" + schema
+            expected = json.loads(Path(installed, relative).read_bytes())
+            raw = git.read_file(sources[key], relative)
+            try:
+                actual = json.loads(raw) if raw is not None else None
+            except ValueError:
+                actual = None
+            if isinstance(actual, dict) and any(
+                    annotation in actual and not isinstance(actual[annotation], str)
+                    for annotation in ("title", "description", "$comment")):
+                actual = None
+            # Descriptive top-level annotations do not affect accepted wire values. Resource
+            # identity, references and every constraint remain exact; release equality is not
+            # a substitute. In particular a corrected envelope title need not block an
+            # otherwise identical baseline that the measured binary's planner still accepts.
+            for annotation in ("title", "description", "$comment"):
+                expected.pop(annotation, None)
+                if isinstance(actual, dict):
+                    actual.pop(annotation, None)
+            require(canonical_digest(actual) == canonical_digest(expected), "telemetry refused before any claim or build: the %s "
+                    "source %s is af %s: current fixture contract %s requires exact %s; "
+                    "release equality is not workload admission" %
+                    (side, sources[key][:12], version, module.CURRENT_CONTRACT, relative))
+        named.append("%s af %s under %s" % (side, version, module.CURRENT_CONTRACT))
     return "telemetry workload: " + ", ".join(named)
 
 

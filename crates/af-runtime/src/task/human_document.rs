@@ -23,7 +23,7 @@ use af_contracts::PortCardinality;
 use af_contracts::task::document::*;
 use af_contracts::task::execution::TaskInvocationV1;
 use af_contracts::task::pipeline::ReceiptOutcomeV1;
-use af_contracts::task::plan::ExecutionPlanV3;
+use af_contracts::task::plan::ExecutionPlan;
 use af_contracts::task::report_domain::*;
 use af_contracts::task::{
     ArtifactInputV1, EXECUTION_PLAN_V4, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1,
@@ -33,7 +33,7 @@ use af_contracts::{ArtifactEnvelope, Producer, is_digest};
 use af_store::Cas;
 use af_store::store::task::task_run_id;
 use serde::de::DeserializeOwned;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// The `af task output --format` value that selects this presentation.
 pub const HUMAN_MARKDOWN: &str = "human-markdown";
@@ -68,8 +68,7 @@ enum Review {
 pub struct HumanDocument {
     task_id: String,
     port: String,
-    draft: DocumentDraftV1,
-    repository_citations: BTreeSet<RepositoryCitationV1>,
+    draft: DocumentDraft,
     sources: BTreeMap<String, DocumentSourceV1>,
     acceptance: TaskAcceptanceV1,
     execution: TaskExecutionV1,
@@ -243,7 +242,7 @@ impl<'a> Lineage<'a> {
         if plan.artifact_type != EXECUTION_PLAN_V4 {
             return Ok(false);
         }
-        let plan: ExecutionPlanV3 = payload(&plan)?;
+        let plan: ExecutionPlan = payload(&plan)?;
         if plan.task_revision_id != self.result.task_revision_id
             || plan.authority != self.task.authority
             || plan.inputs != self.task.inputs
@@ -557,37 +556,30 @@ impl HumanDocument {
         if sources.subject_snapshot_id.is_some() {
             return Err("Document sources must be data-only".into());
         }
-        let (draft, repository_citations, captured, canonical, review) =
-            match (sources.artifact_type.as_str(), snapshot) {
-                (REPORT_SOURCES_V1, Some(snapshot)) if is_digest(snapshot) => {
-                    let captured: ReportSourcesV1 = payload(&sources)?;
-                    let draft = read_draft(cas, &document.draft_id, snapshot)?;
-                    let canonical = render_report(&draft, &captured)?;
-                    let review =
-                        report_review(cas, &lineage, document_id, &document, snapshot, &captured)?;
-                    (
-                        draft.first_version(),
-                        draft.repository_citations(),
-                        captured.sources,
-                        canonical,
-                        review,
-                    )
-                }
-                (DOCUMENT_SOURCES_V1, None) => {
-                    let captured: DocumentSourcesV1 = payload(&sources)?;
-                    let draft: DocumentDraftV1 =
-                        payload(&typed(cas, &document.draft_id, DOCUMENT_DRAFT_V1, None)?)?;
-                    let canonical = render_document(&draft, &captured)?;
-                    let review = document_review(cas, &lineage, document_id, &document)?;
-                    (draft, BTreeSet::new(), captured.sources, canonical, review)
-                }
-                _ => {
-                    return Err(
-                        "Document names sources of neither the Document nor the report profile"
-                            .into(),
-                    );
-                }
-            };
+        let (draft, captured, canonical, review) = match (sources.artifact_type.as_str(), snapshot)
+        {
+            (REPORT_SOURCES_V1, Some(snapshot)) if is_digest(snapshot) => {
+                let captured: ReportSourcesV1 = payload(&sources)?;
+                let draft = read_draft(cas, &document.draft_id, snapshot)?;
+                let canonical = render_report(&draft, &captured)?;
+                let review =
+                    report_review(cas, &lineage, document_id, &document, snapshot, &captured)?;
+                (draft, captured.sources, canonical, review)
+            }
+            (DOCUMENT_SOURCES_V1, None) => {
+                let captured: DocumentSourcesV1 = payload(&sources)?;
+                let draft: DocumentDraft =
+                    payload(&typed(cas, &document.draft_id, DOCUMENT_DRAFT_V3, None)?)?;
+                let canonical = render_document(&draft, &captured)?;
+                let review = document_review(cas, &lineage, document_id, &document)?;
+                (draft, captured.sources, canonical, review)
+            }
+            _ => {
+                return Err(
+                    "Document names sources of neither the Document nor the report profile".into(),
+                );
+            }
+        };
         if canonical != document.text {
             return Err(
                 "The recorded Document differs from its draft and sources rendered again; nothing was written"
@@ -598,7 +590,6 @@ impl HumanDocument {
             task_id: task_id.into(),
             port: port.into(),
             draft,
-            repository_citations,
             sources: captured,
             acceptance: result.acceptance,
             execution: result.execution,
@@ -617,15 +608,15 @@ impl HumanDocument {
             blocks.push(format!("## {}", heading(&section.heading)));
             blocks.extend(body(&section.body));
         }
-        if !self.draft.citations.is_empty() {
+        if self.draft.named_citations().next().is_some() {
             blocks.push("## Sources".into());
             blocks.push(self.sources_list());
         }
-        if !self.repository_citations.is_empty() {
+        if self.draft.repository_citations().next().is_some() {
             blocks.push("## Repository citations".into());
             blocks.push(
-                self.repository_citations
-                    .iter()
+                self.draft
+                    .repository_citations()
                     .map(|citation| format!("- {}", inert_code(&citation.display())))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -680,8 +671,7 @@ impl HumanDocument {
 
     fn sources_list(&self) -> String {
         self.draft
-            .citations
-            .iter()
+            .named_citations()
             .filter_map(|name| self.sources.get(name))
             .map(|source| {
                 if safe_source_location(&source.uri) && source.uri.starts_with("https://") {

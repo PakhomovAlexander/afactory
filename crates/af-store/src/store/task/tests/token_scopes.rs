@@ -8,7 +8,7 @@ use af_graph::task::CompiledTask;
 fn compiled_scope_survives_store_reopen_and_blocks_retry_without_another_event() {
     let mut f = Fixture::new(false).with_execution_graph();
     let mut graph: CompiledTask =
-        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     graph.token_scopes.insert(
         "review.round1.author".into(),
         TaskTokenScope {
@@ -32,7 +32,7 @@ fn compiled_scope_survives_store_reopen_and_blocks_retry_without_another_event()
     f.plan.compiled_graph_id = f
         .cas
         .put_artifact(
-            "af/CompiledTask@1",
+            "af/CompiledTask@4",
             producer(),
             vec![],
             None,
@@ -139,7 +139,7 @@ fn compiled_scope_survives_store_reopen_and_blocks_retry_without_another_event()
 fn a_recovered_attempt_without_usage_leaves_its_reserve_room_for_the_next_attempt() {
     let mut f = Fixture::new(false).with_execution_graph();
     let mut graph: CompiledTask =
-        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     graph.token_scopes.insert(
         "review.round1.verify".into(),
         TaskTokenScope {
@@ -150,7 +150,7 @@ fn a_recovered_attempt_without_usage_leaves_its_reserve_room_for_the_next_attemp
     f.plan.compiled_graph_id = f
         .cas
         .put_artifact(
-            "af/CompiledTask@1",
+            "af/CompiledTask@4",
             producer(),
             vec![],
             None,

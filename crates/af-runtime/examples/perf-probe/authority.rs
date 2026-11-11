@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use af_contracts::task::execution::{TaskInvocationV1, TaskOutputV1};
-use af_contracts::task::plan::{ExecutionPlanV3, IndependencePolicyV1, WorkerExecutionV3};
+use af_contracts::task::plan::{ExecutionPlan, IndependencePolicyV1, WorkerExecutionV3};
 use af_contracts::task::{EXECUTION_PLAN_V4, TASK_REVISION_V1, TaskResultV1, TaskRevisionV1};
 use af_graph::task::{CompiledNode, CompiledTask};
 use af_pipeline_config::lock::package_digest_from_files;
@@ -334,7 +334,7 @@ pub fn restore_then<T>(
     let plan_id = state
         .plan_id
         .ok_or_else(|| fixture("the seed Task has no plan".into()))?;
-    let plan: ExecutionPlanV3 = serde_json::from_value(
+    let plan: ExecutionPlan = serde_json::from_value(
         cas.get_artifact(&plan_id)
             .map_err(|e| fixture(e.to_string()))?
             .payload,
@@ -428,7 +428,7 @@ pub struct Region<'a> {
     cas: &'a Cas,
     compiler: &'a TaskPlanCompiler,
     task: &'a TaskRevisionV1,
-    plan: &'a ExecutionPlanV3,
+    plan: &'a ExecutionPlan,
     graph: &'a CompiledTask,
 }
 
@@ -490,7 +490,7 @@ fn captured<T>(
     cas: &Cas,
     compiler: &TaskPlanCompiler,
     task: &TaskRevisionV1,
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     graph: CompiledTask,
     operation: impl FnOnce(&CapturedTaskAuthority<'_>, &dyn TaskOperatorHost) -> T,
 ) -> Result<T, String> {
@@ -529,7 +529,7 @@ impl AuthorityFixture {
 pub fn semantic_projection(
     cas: &Cas,
     state: &TaskProjection,
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     graph: &CompiledTask,
 ) -> Result<Value, String> {
     let mut packages = serde_json::Map::new();
@@ -604,7 +604,7 @@ impl TaskDomain for ProbeDomain {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _: &CompiledNode,

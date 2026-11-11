@@ -6,7 +6,7 @@ version = "1.0.0"
 effects = ["read-source"]
 roles = ["author"]
 worker_input_type = "af/ReportInput@2"
-worker_output_type = "af/DocumentDraft@2"
+worker_output_type = "af/DocumentDraft@3"
 
 [signature.contract.inputs.comparison]
 artifact_type = "af/MeasurementComparison@1"
@@ -54,7 +54,7 @@ covers = []
 kind = "unbound"
 
 [signature.contract.outputs.draft]
-artifact_type = "af/DocumentDraft@2"
+artifact_type = "af/DocumentDraft@3"
 cardinality = "one"
 optional = false
 covers = []

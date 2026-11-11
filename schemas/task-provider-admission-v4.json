@@ -13,10 +13,10 @@
   ],
   "properties": {
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "invocation_policy_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
     },
     "outcome": {
       "const": "passed"
@@ -36,7 +36,7 @@
     "execution": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:task-contracts:3#/$defs/workerExecution"
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/workerExecution"
         },
         {
           "properties": {

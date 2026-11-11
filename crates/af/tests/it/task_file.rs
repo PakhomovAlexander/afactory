@@ -605,7 +605,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         providers.insert(package, toml::Value::String(provider.clone()));
     }
     let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-    let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
             .unwrap();
     pipeline.max_attempts = 4;
@@ -812,7 +812,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["schema"], "af/task-inspection@17");
+        assert_eq!(result["schema"], "af/task-inspection@20");
         assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
@@ -955,7 +955,7 @@ fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
         let package_name = "team/task-kind";
         let package = repo.join(".af/task-packages/team/task-kind");
         std::fs::create_dir_all(&package).unwrap();
-        std::fs::write(package.join("kind.toml"), toml::to_string(&serde_json::json!({"schema":"af.task-kind/1","name":package_name,"version":"1.0.0","kind":kind,"profile":profile})).unwrap()).unwrap();
+        std::fs::write(package.join("kind.toml"), toml::to_string(&serde_json::json!({"schema":"af.task-kind/3","name":package_name,"version":"1.0.0","kind":kind,"profile":profile})).unwrap()).unwrap();
         let file = repo.join(file_name);
         let mut ticket: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         ticket["kind"] = Value::String(kind.into());
@@ -1048,7 +1048,7 @@ fn embedded_review_never_accepts(case: &str) {
         }
         "missing_coverage" => {
             let path = packages.join("review/pipeline.toml");
-            let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
                 af_pipeline_config::task::parse_task_pipeline(
                     &std::fs::read_to_string(&path).unwrap(),
                 )
@@ -1065,7 +1065,7 @@ fn embedded_review_never_accepts(case: &str) {
         }
         "stale_checks" => {
             let path = packages.join("implementation/pipeline.toml");
-            let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+            let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
                 af_pipeline_config::task::parse_task_pipeline(
                     &std::fs::read_to_string(&path).unwrap(),
                 )
@@ -1360,7 +1360,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@17");
+    assert_eq!(planned["schema"], "af/task-inspection@20");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());
@@ -1474,8 +1474,680 @@ fn current_review_catalog_uses_exact_assignments_and_reopens_without_dispatch() 
     );
     let explained = invoke(&["task", "explain", "review-cli"]);
     let graph = serde_json::to_string(&explained["graph"]).unwrap();
-    assert!(graph.contains("af/TaskReviewSubject@2"));
+    assert!(graph.contains("af/TaskReviewSubject@3"));
     assert!(graph.contains("af/TaskReviewAssignment@1"));
     assert!(graph.contains("review.kernel/ReviewerResult@2"));
     assert_eq!(invoke(&["task", "run", "--execute", "review-cli"]), result);
+}
+
+/// Native Review exposes valid proposed repairs even when its complete verdict requests changes.
+/// All subprocesses use the isolated CLI helper; these command Workers spend no model tokens.
+#[test]
+fn native_review_facade_exports_non_nominated_repairs_and_refuses_false_original_claims() {
+    use af_contracts::task::native_review::TASK_REVIEW_PROPOSAL_V1;
+    use af_contracts::task::pipeline::{PipelineDefinition, TaskNodeV1};
+    for fault in [
+        "none",
+        "paths",
+        "report",
+        "result",
+        "stale",
+        "credential",
+        "archive",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let (repo, state) = fixture_named(directory.path(), "review");
+        let source_before = std::fs::read(repo.join("lib.rs")).unwrap();
+        let packages = repo.join(".af/task-packages/fixture");
+        let author = packages.join("propose");
+        std::fs::create_dir_all(author.join("outputs")).unwrap();
+        let source = serde_json::json!({"artifact_type":"af/SourceTree@1","cardinality":"one","optional":false,"affinity":{"kind":"unbound"},"covers":[]});
+        let same = |ty: &str| serde_json::json!({"artifact_type":ty,"cardinality":"one","optional":false,"affinity":{"kind":"same_as","input":"source"},"covers":[]});
+        let manifest = serde_json::json!({"schema":"af.worker/1","name":"fixture/propose","version":"1.0.0",
+            "signature":{"contract":{"inputs":{"source":source,"review":same("af/TaskReviewRound@1")},"outputs":{"candidate":same("af/CandidateTree@1"),"proposal":same(TASK_REVIEW_PROPOSAL_V1)}},
+            "effects":["read-source","write-source"],"roles":["implement"],"evidence":{},"retains":{"proposal":["source","review"]},"unbound_allowed":[],
+            "worker_input_type":"af/ProposalInput@1","worker_output_type":TASK_REVIEW_PROPOSAL_V1,"attempt":{"tokens":0,"wall_ms":5000}},
+            "runner":{"kind":"command","command":{"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"@package/worker.py","provenance":"literal"}]}}});
+        std::fs::write(
+            author.join("worker.toml"),
+            toml::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(author.join("input.schema.json"), r#"{"type":"object","required":["source","review"],"additionalProperties":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object"}}}"#).unwrap();
+        std::fs::write(author.join("outputs/proposal.schema.json"), r#"{"type":"object","additionalProperties":false,"required":["result_id","paths","report_indices","evidence_ids","auto_apply_nominated"],"properties":{"result_id":{"type":"string"},"paths":{"type":"array"},"report_indices":{"type":"array"},"evidence_ids":{"type":"array"},"auto_apply_nominated":{"type":"boolean"}}}"#).unwrap();
+        std::fs::write(author.join("worker.py"), format!(r#"import json,sys,pathlib
+r=json.load(sys.stdin)
+pathlib.Path('lib.rs').write_text('pub fn repaired() {{}}\n')
+p={{'result_id':r['inputs']['review'][0]['payload']['selected_results']['correctness'],'paths':['lib.rs'],'report_indices':[0],'evidence_ids':[],'auto_apply_nominated':False}}
+if {fault:?}=='stale': p['auto_apply_nominated']=True
+if {fault:?}=='paths': p['paths']=['other.rs']
+if {fault:?}=='report': p['report_indices']=[999]
+if {fault:?}=='result': p['result_id']='sha256:'+'0'*64
+print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'proposal':[p]}}}}))
+"#)).unwrap();
+        let model =
+            (fault == "credential").then(|| credential_proposal_author(directory.path(), &author));
+        let path = packages.join("review/pipeline.toml");
+        let mut pipeline: PipelineDefinition =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        pipeline.slots.insert("propose".into(), serde_json::from_value(serde_json::json!({"worker":"fixture/propose","role":"implement","input_type":"af/ProposalInput@1","output_type":TASK_REVIEW_PROPOSAL_V1,"min_attempts":1,"max_attempts":1,"allow_local_replacement":false,"independent_from":["bugs","correctness"]})).unwrap());
+        let node: TaskNodeV1 = serde_json::from_value(serde_json::json!({"id":"propose","operator":{"op":"worker","slot":"propose"},"inputs":{"source":{"kind":"input","port":"source"},"review":{"kind":"node","node":"reduce","port":"result"}}})).unwrap();
+        pipeline.nodes.push(node);
+        // This new fixture has one additional mandatory Proposal author.
+        pipeline.max_attempts += 1;
+        if fault == "stale" {
+            export_integration(&repo, &mut pipeline);
+        }
+        let review_path = repo.join("review.json");
+        let mut request: Value =
+            serde_json::from_slice(&std::fs::read(&review_path).unwrap()).unwrap();
+        request["limits"]["max_attempts"] =
+            serde_json::json!(request["limits"]["max_attempts"].as_u64().unwrap() + 1);
+        if fault == "archive" {
+            request["issue"] = serde_json::json!({"kind":"local","path":"issue.json"});
+            std::fs::write(repo.join("issue.json"), serde_json::to_vec(&serde_json::json!({"schema":"af.issue-input/1","id":"42","key":"AF-42","revision":"v1","summary":"Review current source","description":"Check the declared behavior","acceptance":{}})).unwrap()).unwrap();
+            pipeline.contract.inputs.insert("requirements".into(), serde_json::from_value(serde_json::json!({"artifact_type":"af/Requirements@1","cardinality":"one","optional":false,"affinity":{"kind":"unbound"},"covers":[]})).unwrap());
+        }
+        if fault == "credential" {
+            request["limits"]["tokens"] = serde_json::json!(10000);
+            // Four protected verification slots plus the author and its admission.
+            request["limits"]["max_attempts"] = serde_json::json!(6);
+            request["limits"]["wall_ms"] = serde_json::json!(300000);
+            request["limits"]["verification"] =
+                serde_json::json!({"tokens":4096,"attempts":4,"wall_ms":60000});
+            pipeline.max_attempts = 6;
+        }
+        if fault == "stale" {
+            request["limits"]["max_attempts"] = serde_json::json!(7);
+            request["limits"]["verification"]["attempts"] = serde_json::json!(6);
+            request["limits"]["verification"]["wall_ms"] = serde_json::json!(30000);
+        }
+        std::fs::write(review_path, serde_json::to_vec(&request).unwrap()).unwrap();
+        std::fs::write(&path, toml::to_string(&pipeline).unwrap()).unwrap();
+        let catalog_path = repo.join(".af/task-catalog.toml");
+        let mut catalog: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        if fault == "credential" {
+            catalog.as_table_mut().unwrap().insert(
+                "providers".into(),
+                toml::Value::try_from(serde_json::json!({"fixture/propose":"proposal-author"}))
+                    .unwrap(),
+            );
+        }
+        if fault == "stale" {
+            catalog["review"]["max_rounds"] = toml::Value::Integer(2);
+        }
+        for name in ["propose", "review", "bugs", "correctness"] {
+            let package = format!("fixture/{name}");
+            let version = if name == "review" { "1.0.1" } else { "1.0.0" };
+            catalog["packages"].as_table_mut().unwrap().insert(package.clone(), toml::Value::try_from(serde_json::json!({"version":version,"digest":af_pipeline_config::lock::package_digest(&package,&packages.join(name)).unwrap(),"path":format!(".af/task-packages/fixture/{name}")})).unwrap());
+        }
+        std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        for args in [
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "native Proposal authority"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .current_dir(&repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let cli = |args: &[&str]| {
+            let mut command = crate::common::af();
+            command
+                .current_dir(&repo)
+                .args(args)
+                .arg("--state")
+                .arg(&state);
+            if let Some((registry, path)) = &model {
+                command
+                    .env("AF_PROVIDERS_FILE", registry)
+                    .env("PATH", path)
+                    .env("USER", "fixture");
+            }
+            command.output().unwrap()
+        };
+        let result = cli(&["review", "run", "--file", "review.json", "--json"]);
+        assert_eq!(
+            result.status.code(),
+            Some(3),
+            "{fault}: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let document: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(
+            document["result"]["domain_conclusion"],
+            if fault == "stale" {
+                "convergence_exhausted"
+            } else {
+                "changes_requested"
+            }
+        );
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let task = store.task_projection(&cas, "review-cli").unwrap().unwrap();
+        let execution = task.execution.unwrap();
+        let proposal =
+            &execution.outputs["root.nodes.propose"].1.outputs["proposal"].artifact_ids[0];
+        let exported = cli(&["review", "export", "review-cli", proposal]);
+        if fault == "stale" {
+            assert_eq!(exported.status.code(), Some(1));
+            assert!(
+                String::from_utf8_lossy(&exported.stderr).contains("is stale"),
+                "{exported:?}"
+            );
+            assert!(exported.stdout.is_empty());
+            let deliberate = cli(&["review", "export", "review-cli", proposal, "--allow-stale"]);
+            assert!(deliberate.status.success(), "{deliberate:?}");
+            assert!(String::from_utf8_lossy(&deliberate.stdout).contains("+pub fn repaired() {}"));
+            assert_eq!(std::fs::read(repo.join("lib.rs")).unwrap(), source_before);
+            let reopened = cli(&["review", "report", "review-cli", "--json"]);
+            assert!(reopened.status.success());
+        } else if matches!(fault, "none" | "credential" | "archive") {
+            assert!(
+                exported.status.success(),
+                "{}",
+                String::from_utf8_lossy(&exported.stderr)
+            );
+            let plan_id = document["plan_id"].as_str().unwrap();
+            assert!(
+                cli(&[
+                    "review",
+                    "export",
+                    "review-cli",
+                    proposal,
+                    "--plan",
+                    plan_id
+                ])
+                .status
+                .success()
+            );
+            let false_plan = cli(&[
+                "review",
+                "export",
+                "review-cli",
+                proposal,
+                "--plan",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            ]);
+            assert_eq!(false_plan.status.code(), Some(1));
+            assert!(false_plan.stdout.is_empty());
+            let patch = String::from_utf8(exported.stdout).unwrap();
+            assert!(
+                patch.contains("diff --git a/lib.rs b/lib.rs")
+                    && patch.contains("+pub fn repaired() {}"),
+                "{patch}"
+            );
+            let round_id = &document["result"]["outputs"]["review"]["artifact_ids"][0];
+            let round = cas.get_artifact(round_id.as_str().unwrap()).unwrap();
+            let set = cas
+                .get_artifact(round.payload["finding_set_id"].as_str().unwrap())
+                .unwrap();
+            let finding = set.payload["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["source"] == "correctness")
+                .unwrap()["finding_id"]
+                .as_str()
+                .unwrap();
+            assert!(
+                cli(&["review", "export", "review-cli", "--finding", finding])
+                    .status
+                    .success()
+            );
+            for args in [
+                vec!["review", "inspect", "review-cli", "--json"],
+                vec!["review", "ledger", "review-cli", "--json"],
+                vec!["review", "report", "review-cli", "--json"],
+                vec!["review", "resume", "review-cli", "--json"],
+            ] {
+                let shown = cli(&args);
+                assert!(
+                    matches!(shown.status.code(), Some(0 | 3)),
+                    "{}",
+                    String::from_utf8_lossy(&shown.stderr)
+                );
+                let _: Value = serde_json::from_slice(&shown.stdout).unwrap();
+            }
+            assert_eq!(
+                cli(&[
+                    "review",
+                    "export",
+                    "review-cli",
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                ])
+                .status
+                .code(),
+                Some(1)
+            );
+            if fault == "archive" {
+                let mut issue: Value =
+                    serde_json::from_slice(&std::fs::read(repo.join("issue.json")).unwrap())
+                        .unwrap();
+                issue["revision"] = serde_json::json!("v2");
+                issue["description"] = serde_json::json!("Also inspect error handling");
+                std::fs::write(repo.join("issue.json"), serde_json::to_vec(&issue).unwrap())
+                    .unwrap();
+                let refresh = cli(&["task", "refresh", "review-cli", "--json"]);
+                assert!(refresh.status.success(), "{refresh:?}");
+                let shown = cli(&[
+                    "review",
+                    "inspect",
+                    "review-cli",
+                    "--plan",
+                    plan_id,
+                    "--json",
+                ]);
+                assert!(shown.status.success(), "{shown:?}");
+                let archived: Value = serde_json::from_slice(&shown.stdout).unwrap();
+                assert_eq!(archived["schema"], "af/task-plan-inspection@6");
+                assert_eq!(archived["current_plan"], false);
+                assert_eq!(archived["graph"]["schema"], "af.compiled-task/6");
+                let exported = cli(&[
+                    "review",
+                    "export",
+                    "review-cli",
+                    proposal,
+                    "--plan",
+                    plan_id,
+                ]);
+                assert!(exported.status.success(), "{exported:?}");
+                assert_eq!(String::from_utf8(exported.stdout).unwrap(), patch);
+                assert!(
+                    !cli(&["review", "export", "review-cli", proposal])
+                        .status
+                        .success()
+                );
+                let current = cli(&["review", "show", "review-cli", "--json"]);
+                assert!(current.status.success(), "{current:?}");
+                let current: Value = serde_json::from_slice(&current.stdout).unwrap();
+                assert_eq!(current["state"]["phase"], "waiting");
+                assert_eq!(current["phase"]["reason"], "needs_resources");
+                assert_eq!(current["attempts"], document["attempts"]);
+                assert_eq!(current["chargeable_tokens"], document["chargeable_tokens"]);
+                assert_ne!(current["plan_id"], document["plan_id"]);
+            }
+            assert_eq!(std::fs::read(repo.join("lib.rs")).unwrap(), source_before);
+        } else {
+            assert_eq!(
+                exported.status.code(),
+                Some(1),
+                "{fault}: {}",
+                String::from_utf8_lossy(&exported.stdout)
+            );
+            assert!(exported.stdout.is_empty());
+        }
+    }
+}
+
+/// The guide's advisory exports are real native documents; neither planning nor execution
+/// manufactures a successful empty-Diff Review. No checks or Workers run in these refusals.
+#[test]
+fn native_review_preflight_commands_inspect_real_task_documents_and_refuse_empty_diff() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = native_review_with_base(directory.path());
+    let cli = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(args)
+            .arg("--state")
+            .arg(&state)
+            .output()
+            .unwrap()
+    };
+    for action in ["plan", "run"] {
+        let output = cli(&[
+            "review",
+            action,
+            "--file",
+            "review.json",
+            "--base",
+            "HEAD",
+            "--candidate",
+            "HEAD",
+            "--json",
+        ]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.to_lowercase().contains("empty"), "{error}");
+        assert!(
+            error.contains("--candidate")
+                && error.contains("--base")
+                && error.contains("--uncommitted"),
+            "actionable selector fix: {error}"
+        );
+        let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        assert!(
+            store.task_projection(&cas, "review-cli").unwrap().is_none(),
+            "empty Diff cannot admit a Task"
+        );
+    }
+    let planned = cli(&["review", "plan", "--file", "review.json", "--json"]);
+    assert!(planned.status.success(), "{planned:?}");
+    let explained = cli(&["task", "explain", "review-cli", "--json"]);
+    assert!(explained.status.success(), "{explained:?}");
+    let value: Value = serde_json::from_slice(&explained.stdout).unwrap();
+    assert_eq!(value["schema"], "af/task-inspection@20");
+    assert!(value["plan"].is_object() && value["graph"].is_object());
+    assert_eq!(value["attempts"], 0);
+    let source = value["plan"]["inputs"]["source"]["snapshot_id"]
+        .as_str()
+        .unwrap();
+    let diff = cli(&[
+        "task",
+        "diff",
+        "review-cli",
+        "--snapshot",
+        source,
+        "--base",
+        source,
+        "--json",
+    ]);
+    assert!(diff.status.success(), "{diff:?}");
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(diff["schema"], "af/task-diff@1");
+    crate::schemas::valid(&crate::schemas::validator("task-diff-v1.json"), &diff);
+    assert!(diff["files"].as_array().unwrap().is_empty());
+}
+
+/// A real checked Integration followed by its exact successor makes the original Proposal
+/// stale. This fixture adds precisely one check and two reviewer Attempts to the original Round.
+fn export_integration(
+    repo: &Path,
+    pipeline: &mut af_contracts::task::pipeline::PipelineDefinition,
+) {
+    use af_contracts::task::pipeline::{PortAffinityV1, TaskNodeV1};
+    let root = |port: &str| serde_json::json!({"kind":"input","port":port});
+    let from = |node: &str, port: &str| serde_json::json!({"kind":"node","node":node,"port":port});
+    let mut push = |id: &str, op: Value, inputs: Value, conditional: bool| {
+        let mut value = serde_json::json!({"id":id,"operator":op,"inputs":inputs});
+        if conditional {
+            value["when"] = serde_json::json!({"node":"prepare","outcome":"passed"});
+        }
+        pipeline
+            .nodes
+            .push(serde_json::from_value::<TaskNodeV1>(value).unwrap());
+    };
+    push(
+        "prepare",
+        serde_json::json!({"op":"review_integrate","reviewers":["correctness"],"protected_paths":[]}),
+        serde_json::json!({"source":root("source"),"review":from("reduce","result"),"candidate_correctness":from("propose","candidate"),"proposal_correctness":from("propose","proposal")}),
+        false,
+    );
+    push(
+        "unpromoted",
+        serde_json::json!({"op":"review_integration_source"}),
+        serde_json::json!({"source":root("source"),"integration":from("prepare","result")}),
+        true,
+    );
+    push(
+        "post_check",
+        serde_json::json!({"op":"check","checks":["syntax"]}),
+        serde_json::json!({"source":from("unpromoted","source")}),
+        true,
+    );
+    push(
+        "commit",
+        serde_json::json!({"op":"review_commit"}),
+        serde_json::json!({"source":from("unpromoted","source"),"integration":from("prepare","result"),"checks":from("post_check","result")}),
+        true,
+    );
+    push(
+        "integrated_bind",
+        serde_json::json!({"op":"review_bind_integrated"}),
+        serde_json::json!({"source":from("unpromoted","source"),"history":from("commit","history"),"integration":from("commit","result")}),
+        true,
+    );
+    for name in ["bugs", "correctness"] {
+        push(
+            &format!("integrated_{name}"),
+            serde_json::json!({"op":"verify","slot":name}),
+            serde_json::json!({"source":from("unpromoted","source"),"subject":from("integrated_bind","subject"),"assignment":from("integrated_bind",name),"history":from("commit","history"),"checks":from("post_check","result")}),
+            true,
+        );
+    }
+    push(
+        "integrated_reduce",
+        serde_json::json!({"op":"review_reduce"}),
+        serde_json::json!({"source":from("unpromoted","source"),"subject":from("integrated_bind","subject"),"history":from("commit","history"),"checks":from("post_check","result"),"bugs":from("integrated_bugs","result"),"correctness":from("integrated_correctness","result")}),
+        true,
+    );
+    for (port, selected) in [("review", "result"), ("history", "history")] {
+        let id = format!("select_{port}");
+        push(
+            &id,
+            serde_json::json!({"op":"select"}),
+            serde_json::json!({"condition":from("prepare","result"),"passed":from("integrated_reduce",selected),"failed":from("reduce",selected),"inconclusive":from("reduce",selected)}),
+            false,
+        );
+    }
+    for (port, selected) in [("review", "result"), ("history", "history")] {
+        let _ = selected;
+        pipeline.contract.outputs.get_mut(port).unwrap().affinity = PortAffinityV1::Unbound {};
+        pipeline.outputs.insert(
+            port.into(),
+            serde_json::from_value(from(&format!("select_{port}"), "output")).unwrap(),
+        );
+    }
+    pipeline.coverage.insert(
+        "reviewed".into(),
+        serde_json::from_value(from("select_review", "output")).unwrap(),
+    );
+    pipeline.max_attempts = 7;
+    for name in ["bugs", "correctness"] {
+        pipeline.slots.get_mut(name).unwrap().max_attempts = 2;
+    }
+    // Preserve the original claim and supply explicit dispositions on the integrated Subject.
+    for name in ["bugs", "correctness"] {
+        std::fs::write(repo.join(format!(".af/task-packages/fixture/{name}/worker.py")), r#"import json,sys
+r=json.load(sys.stdin)
+a=r['inputs']['assignment'][0]['payload']
+s=r['inputs']['subject'][0]['payload']
+stage={'reports':[{'severity':'major','file':'lib.rs','line':1,'title':'Missing behavior','body':'The source needs repair','fix':'Apply the repair','confidence':0.9}] if s['round']==1 else [],'benchmark_demands':[],'dispositions':[{'finding_id':f['finding_id'],'position':'not_reproduced','reason':'Checked the complete current Subject'} for f in a['findings']]}
+print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[stage]}}))
+"#).unwrap();
+    }
+}
+
+/// A credential-bearing model author, driven by a hermetic fake CLI. The real model adapter
+/// captures Provider admission and seals its sandbox; the fake inference spends no model tokens.
+fn credential_proposal_author(root: &Path, author: &Path) -> (PathBuf, std::ffi::OsString) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = root.join("fake-provider-bin");
+    let auth = root.join("fake-auth");
+    crate::fake_models::install("codex", &bin, &auth);
+    let executable = bin.join("codex");
+    let mut script = std::fs::read_to_string(&executable).unwrap();
+    let offset = script.rfind("sys.exit(64)").unwrap();
+    script.truncate(offset);
+    script.push_str(r#"request=sys.stdin.read()
+if request==PROBE_INPUT:
+ message='OK'
+else:
+ import pathlib
+ r=json.loads(request)
+ pathlib.Path('lib.rs').write_text('pub fn repaired() {}\n')
+ p={'result_id':r['inputs']['review'][0]['payload']['selected_results']['correctness'],'paths':['lib.rs'],'report_indices':[0],'evidence_ids':[],'auto_apply_nominated':True}
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':{'proposal':[p]}})
+if '-o' in sys.argv: open(sys.argv[sys.argv.index('-o')+1],'w').write(message)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-proposal'}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}}))
+"#);
+    std::fs::write(&executable, crate::provider_cli::with_probe(&script)).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let registry = root.join("model-providers.toml");
+    std::fs::write(
+        &registry,
+        format!(
+            "version=4\n[[providers]]\nid='proposal-author'\nkind='codex'\nauth_dir={}\n",
+            toml::Value::String(auth.display().to_string())
+        ),
+    )
+    .unwrap();
+    let path = author.join("worker.toml");
+    let mut worker: Value = serde_json::to_value(
+        toml::from_str::<toml::Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+    )
+    .unwrap();
+    worker["runner"] = serde_json::json!({"kind":"model","provider_kind":"codex","model":"gpt-6.1-sol","effort":"high"});
+    worker["signature"]["attempt"] = serde_json::json!({"tokens":1000,"wall_ms":120000});
+    std::fs::write(path, toml::to_string(&worker).unwrap()).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    (registry, path)
+}
+
+fn native_review_with_base(root: &Path) -> (PathBuf, PathBuf) {
+    let (repo, state) = fixture_named(root, "review-v2");
+    let package = repo.join(".af/task-packages/fixture/review");
+    let path = package.join("pipeline.toml");
+    let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    pipeline.contract.inputs.insert("base".into(), serde_json::from_value(serde_json::json!({"artifact_type":"af/SourceTree@1","cardinality":"one","optional":true,"affinity":{"kind":"unbound"},"covers":[]})).unwrap());
+    for node in &mut pipeline.nodes {
+        if matches!(
+            node.operator,
+            af_contracts::task::pipeline::TaskOperatorV1::ReviewBind {}
+        ) {
+            node.inputs.insert(
+                "base".into(),
+                serde_json::from_value(serde_json::json!({"kind":"input","port":"base"})).unwrap(),
+            );
+        }
+    }
+    std::fs::write(&path, toml::to_string(&pipeline).unwrap()).unwrap();
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    catalog["packages"]["fixture/review"]["digest"] =
+        af_pipeline_config::lock::package_digest("fixture/review", &package)
+            .unwrap()
+            .into();
+    std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
+    for args in [["add", "-A"], ["commit", "-qm"]] {
+        let mut command = Command::new("git");
+        command.current_dir(&repo).args(args);
+        if args[0] == "commit" {
+            command.arg("declare native Base selection");
+        }
+        assert!(command.status().unwrap().success());
+    }
+    (repo, state)
+}
+
+#[test]
+fn native_review_facade_pins_independent_authority_candidate_and_base() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = native_review_with_base(directory.path());
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let authority = git(&["rev-parse", "HEAD"]);
+    let original = std::fs::read(repo.join("lib.rs")).unwrap();
+    let candidate_bytes = format!(
+        "pub fn candidate_selected() {{}}\n{}",
+        "// readable source change\n".repeat(40000)
+    );
+    std::fs::write(repo.join("lib.rs"), &candidate_bytes).unwrap();
+    // Candidate configuration cannot replace the separately captured committed authority.
+    std::fs::write(
+        repo.join(".af/task-catalog.toml"),
+        "candidate_must_not_be_authority = [\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "candidate with untrusted authority edits"]);
+    let candidate = git(&["rev-parse", "HEAD"]);
+    let planned = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "review",
+            "plan",
+            "--file",
+            "review.json",
+            "--authority",
+            &authority,
+            "--candidate",
+            &candidate,
+            "--base",
+            &authority,
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(planned.status.success(), "{planned:?}");
+    let plan: Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let snapshot = |port: &str| {
+        let id = plan["plan"]["inputs"][port]["snapshot_id"]
+            .as_str()
+            .unwrap();
+        af_source_git::task::read_snapshot(&cas, id).unwrap()
+    };
+    let (source, manifest) = snapshot("source");
+    assert_eq!(
+        af_source_git::task::read_origin(&cas, &source.origin_id)
+            .unwrap()
+            .source_revision(),
+        Some(candidate.as_str())
+    );
+    assert_eq!(
+        cas.get(&manifest.get("lib.rs").unwrap().content).unwrap(),
+        candidate_bytes.as_bytes()
+    );
+    let (base, manifest) = snapshot("base");
+    assert_eq!(
+        af_source_git::task::read_origin(&cas, &base.origin_id)
+            .unwrap()
+            .source_revision(),
+        Some(authority.as_str())
+    );
+    assert_eq!(
+        cas.get(&manifest.get("lib.rs").unwrap().content).unwrap(),
+        original
+    );
+    assert_ne!(
+        plan["plan"]["inputs"]["source"]["snapshot_id"],
+        plan["plan"]["inputs"]["base"]["snapshot_id"]
+    );
+    let resumed = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "review",
+            "resume",
+            "review-cli",
+            "--confirm-plan",
+            plan["plan_id"].as_str().unwrap(),
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert_eq!(resumed.status.code(), Some(3), "{resumed:?}");
+    let result: Value = serde_json::from_slice(&resumed.stdout).unwrap();
+    assert_eq!(result["plan_id"], plan["plan_id"]);
+    assert_eq!(result["result"]["acceptance"], "satisfied");
+    assert_eq!(
+        std::fs::read(repo.join("lib.rs")).unwrap(),
+        candidate_bytes.as_bytes()
+    );
 }

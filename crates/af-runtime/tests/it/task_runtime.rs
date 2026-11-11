@@ -48,6 +48,8 @@ mod usage_recovery;
 #[path = "task_runtime/wide_usage.rs"]
 mod wide_usage;
 
+use crate::support::schema_registry;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     cas: Cas,
@@ -55,7 +57,7 @@ struct Fixture {
     compiler: TaskPlanCompiler,
     task: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV3,
+    plan: ExecutionPlan,
     plan_id: String,
     graph: CompiledTask,
 }
@@ -67,7 +69,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
         OPTIMIZATION_EXECUTION_CONFIGURATION_V1, OptimizationExecutionConfigurationV1,
     };
     use af_graph::task::{
-        EXPERIMENT_EXECUTION_PLAN_V1, ExperimentExecutionPlanV1, ExperimentPlannedChildV1,
+        EXPERIMENT_EXECUTION_PLAN_V3, ExperimentExecutionPlanV3, ExperimentPlannedChildV1,
         ExperimentalSlotTemplateV1,
     };
     use af_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
@@ -171,7 +173,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             cas: &Cas,
             _: &TaskRevisionV1,
-            _: &ExecutionPlanV3,
+            _: &ExecutionPlan,
             prepared: &ExperimentPreparedV1,
         ) -> Result<(), String> {
             let prepared_id = self
@@ -203,7 +205,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskRevisionV1,
-            _: &ExecutionPlanV3,
+            _: &ExecutionPlan,
             _: &TaskInvocationV1,
             _: &TaskOutputV1,
             _definition: &af_graph::task::CompiledNode,
@@ -513,15 +515,29 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             },
         });
     }
-    let child_plan = ExperimentExecutionPlanV1 {
-        schema: "af.experiment-execution-plan/1".into(),
+    let child_plan = ExperimentExecutionPlanV3 {
+        schema: "af.experiment-execution-plan/3".into(),
         parent_node: parent.into(),
         children: planned,
     };
+    let serialized = serde_json::to_value(&child_plan).unwrap();
+    let validator = schema_registry::validator("experiment-execution-plan-v3.json");
+    assert!(validator.is_valid(&serialized));
+    let mut retired = serialized.clone();
+    retired["schema"] = json!("af.experiment-execution-plan/1");
+    assert!(!validator.is_valid(&retired));
+    let mut open = serialized;
+    open["children"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()["definition"]["operator"]["unadmitted_authority"] = json!(true);
+    assert!(!validator.is_valid(&open));
     let child_plan_id = f
         .cas
         .put_artifact(
-            EXPERIMENT_EXECUTION_PLAN_V1,
+            EXPERIMENT_EXECUTION_PLAN_V3,
             producer(),
             closures.iter().map(|c| c.invocation_id.clone()).collect(),
             None,
@@ -920,7 +936,7 @@ impl Fixture {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join("fixtures/task-contracts/v1");
-        let pipeline: PipelineDefinitionV1 =
+        let pipeline: PipelineDefinition =
             serde_json::from_slice(&std::fs::read(root.join("pipeline-definition.json")).unwrap())
                 .unwrap();
         let mut task: TaskRevisionV1 =
@@ -1168,7 +1184,7 @@ impl TaskDomain for DocumentDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &af_graph::task::CompiledNode,
@@ -1852,7 +1868,7 @@ fn telemetry_execution_marker_is_identical_at_off_and_content() {
     assert_eq!(content[marker].3, "test-writer", "the lease's own writer");
     assert!(
         !kinds.contains(&"execution_started"),
-        "no TaskTransition@5 carries it"
+        "no TaskTransition@6 carries it"
     );
     let first_record = kinds
         .iter()

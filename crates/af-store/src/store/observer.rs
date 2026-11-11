@@ -23,8 +23,7 @@ pub struct Commit<'a> {
     /// The Store that committed it, for reads only.
     pub store: &'a EventStore,
     pub cas: &'a Cas,
-    /// Its events in committed order: one run's, or, for a Round publication or an atomic
-    /// integration, a Campaign's and a Task's in the order they were inserted.
+    /// Its native Task or collection events in the order the transaction inserted them.
     pub events: &'a [RunEvent],
     /// For one Task transition, the Task projection as that transition left it: the state the
     /// Store validated and committed, at exactly the committed event's sequence.

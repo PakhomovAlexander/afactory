@@ -11,10 +11,6 @@ mod renewal_race;
 mod report;
 mod reservation;
 mod retry;
-mod review;
-mod review_handoff;
-mod review_integration;
-mod review_round_publication;
 mod source;
 mod token_scopes;
 mod wide_usage;
@@ -71,7 +67,7 @@ impl TaskAuthority for Authority {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &af_contracts::task::execution::TaskInvocationV1,
         previous: &BTreeMap<String, af_contracts::task::execution::TaskAttemptResultV1>,
     ) -> Result<(), String> {
@@ -99,7 +95,7 @@ impl TaskAuthority for Authority {
         _: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
     ) -> Result<(), String> {
         if previous.inputs != next.inputs {
             return Err("Fixture has no root input constructors".into());
@@ -110,7 +106,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &af_contracts::task::execution::TaskInvocationV1,
         _: &crate::store::task::execution::ReservedTaskAttempt,
         _: &str,
@@ -121,7 +117,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         Ok(self.generated.clone())
     }
@@ -154,7 +150,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV3,
+        _: &ExecutionPlan,
         _: &af_contracts::task::execution::TaskInvocationV1,
         _: &af_contracts::task::execution::TaskOutputV1,
         _: &af_graph::task::CompiledNode,
@@ -185,7 +181,7 @@ struct Fixture {
     store: EventStore,
     revision: TaskRevisionV1,
     revision_id: String,
-    plan: ExecutionPlanV3,
+    plan: ExecutionPlan,
     plan_id: String,
     authority: Authority,
 }
@@ -249,8 +245,7 @@ impl Fixture {
                 read("pipeline-definition.json"),
             )
             .unwrap();
-        let mut plan: ExecutionPlanV3 =
-            serde_json::from_value(read("execution-plan.json")).unwrap();
+        let mut plan: ExecutionPlan = serde_json::from_value(read("execution-plan.json")).unwrap();
         plan.task_revision_id = revision_id.clone();
         plan.authority = revision.authority.clone();
         plan.limits = revision.limits.clone();
@@ -350,7 +345,7 @@ impl Fixture {
         use af_graph::task::{
             CompileContext, OperatorAttemptCost, OperatorSignature, compile_task,
         };
-        let pipeline: PipelineDefinitionV1 =
+        let pipeline: PipelineDefinition =
             payload(&self.cas, &self.plan.pipeline_id, PIPELINE_V1).unwrap();
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
@@ -399,7 +394,7 @@ impl Fixture {
         self.plan.compiled_graph_id = self
             .cas
             .put_artifact(
-                "af/CompiledTask@1",
+                "af/CompiledTask@4",
                 producer(),
                 vec![],
                 None,
@@ -583,7 +578,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
             .is_err()
     );
     let fake = NewEvent::new(
-        EventType::TaskTransitionV5,
+        EventType::TaskTransitionV6,
         serde_json::to_value(TaskTransitionV1 {
             writer: "writer-1".into(),
             epoch: 1,
@@ -600,7 +595,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
             .is_err()
     );
     let campaign = NewEvent::new(
-        EventType::CampaignOpenedV1,
+        EventType::SourceCapturedV1,
         json!({
             "campaign_manifest_id":f.authority.authorization_id, "authority_snapshot_id":f.authority.authorization_id,
         }),
@@ -792,15 +787,14 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         },
     };
     let value = serde_json::to_value(&transition).unwrap();
-    let event = NewEvent::new(EventType::TaskTransitionV5, value.clone())
+    let event = NewEvent::new(EventType::TaskTransitionV6, value.clone())
         .referencing(references(&f.cas, &transition.change, Some(&f.state())).unwrap());
     let permit = WritePermit {
         run_id: task_run_id("task-1").unwrap(),
         first,
         payloads: vec![value],
-        event_type: EventType::TaskTransitionV5,
+        event_type: EventType::TaskTransitionV6,
         valid_until: None,
-        review_round: None,
         review_prefix: None,
         bound_tasks: vec![],
     };
@@ -815,7 +809,6 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
                 &f.cas,
                 &[event],
                 Some(&permit),
-                None
             )
             .is_err()
     );
@@ -1719,24 +1712,6 @@ fn context_binding_checks_before_and_after_callback_without_a_third_projection()
 }
 
 #[test]
-fn review_replay_reuses_only_one_operation_and_refreshes_an_appended_prefix() {
-    let mut f = Fixture::new(false);
-    let lease = f.open();
-    let run = task_run_id(lease.task_id()).unwrap();
-    let mut replays = ReviewReplays::default();
-    let original = replays.read(&f.store, &run).unwrap();
-    let repeated = replays.read(&f.store, &run).unwrap();
-    assert!(std::sync::Arc::ptr_eq(&original, &repeated));
-    f.propose(&lease);
-    let appended = replays.read(&f.store, &run).unwrap();
-    assert!(!std::sync::Arc::ptr_eq(&original, &appended));
-    assert_eq!(appended.len(), original.len() + 1);
-    let next_operation = ReviewReplays::default().read(&f.store, &run).unwrap();
-    assert!(!std::sync::Arc::ptr_eq(&appended, &next_operation));
-    assert_eq!(next_operation.len(), appended.len());
-}
-
-#[test]
 fn native_usage_classification_keeps_exact_attempt_context_and_charge_guards() {
     test_clock::with_time(1_000_000, |_| {
         use af_contracts::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
@@ -1914,7 +1889,7 @@ fn short_attempt_fixture_paths_refuse_expired_dispatch_without_spend() {
 fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
     let fixture = Fixture::new(false);
     let value = serde_json::to_value(&fixture.plan).unwrap();
-    let current: ExecutionPlanV3 =
+    let current: ExecutionPlan =
         payload(&fixture.cas, &fixture.plan_id, task::EXECUTION_PLAN_V4).unwrap();
     assert_eq!(serde_json::to_value(current).unwrap(), value);
     for old_type in ["af/ExecutionPlan@1", "af/ExecutionPlan@2"] {
@@ -1924,11 +1899,52 @@ fn pi_authority_version_bump_refuses_old_execution_plan_artifact_types() {
             .unwrap()
             .0;
         let error =
-            payload::<ExecutionPlanV3>(&fixture.cas, &old, task::EXECUTION_PLAN_V4).unwrap_err();
+            payload::<ExecutionPlan>(&fixture.cas, &old, task::EXECUTION_PLAN_V4).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("Expected exact af/ExecutionPlan@4")
         );
     }
+}
+
+#[test]
+fn archived_plan_prefix_replays_current_records_without_changing_the_live_projection() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    let opened = f.state();
+    f.propose(&lease);
+    let planned = f.state();
+    assert_eq!(planned.plan_id.as_deref(), Some(f.plan_id.as_str()));
+    let prefix = f
+        .store
+        .task_projection_at_sequence(&f.cas, "task-1", opened.next_sequence - 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prefix.plan_id, None);
+    assert_eq!(prefix.next_sequence, opened.next_sequence);
+    assert_eq!(
+        f.state().plan_id,
+        planned.plan_id,
+        "prefix inspection must not replace the live parse cache"
+    );
+    let checked = f
+        .store
+        .task_projection_at_sequence(&f.cas, "task-1", planned.next_sequence - 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(checked.plan_id, planned.plan_id);
+    assert_eq!(checked.revision_id, planned.revision_id);
+    drop(f.store);
+    let store = EventStore::open_read_only(&f.path).unwrap();
+    let reopened = store
+        .task_projection_at_sequence(&f.cas, "task-1", planned.next_sequence - 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.plan_id, planned.plan_id);
+    assert_eq!(reopened.next_sequence, planned.next_sequence);
+    assert_eq!(
+        store.len(&task_run_id("task-1").unwrap()).unwrap(),
+        planned.next_sequence
+    );
 }

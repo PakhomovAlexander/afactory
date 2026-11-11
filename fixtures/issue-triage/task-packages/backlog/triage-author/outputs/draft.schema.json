@@ -1,4 +1,6 @@
 {
+  "type": "object",
+  "additionalProperties": false,
   "required": [
     "schema",
     "title",
@@ -7,7 +9,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af.document-draft/2"
+      "const": "af.document-draft/3"
     },
     "title": {
       "type": "string",
@@ -58,47 +60,95 @@
     },
     "citations": {
       "type": "array",
-      "maxItems": 32,
       "uniqueItems": true,
+      "maxItems": 96,
       "items": {
-        "type": "string",
-        "maxLength": 128,
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-      }
-    },
-    "repository_citations": {
-      "type": "array",
-      "maxItems": 64,
-      "uniqueItems": true,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "path"
-        ],
-        "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "pattern": "^\\S(?:.*\\S)?$",
-            "allOf": [
-              {
-                "not": {
-                  "pattern": "[\\x00-\\x1f\\x7f]"
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "const": "source"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "location"
+            ],
+            "properties": {
+              "kind": {
+                "const": "repository"
+              },
+              "location": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "^\\S(?:.*\\S)?$",
+                    "allOf": [
+                      {
+                        "not": {
+                          "pattern": "[\\x00-\\x1f\\x7f]"
+                        }
+                      }
+                    ]
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
                 }
               }
-            ]
-          },
-          "line": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+            }
           }
+        ]
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "source"
+              }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 32
+        },
+        {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "repository"
+              }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 64
         }
-      }
+      ]
     }
   },
-  "type": "object",
-  "additionalProperties": false
+  "title": "DocumentDraft@3"
 }

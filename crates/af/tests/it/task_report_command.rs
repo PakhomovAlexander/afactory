@@ -328,7 +328,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     // has no review to report.
     assert!(
         markdown.contains(
-            "\n**fixture/implementation@1.0.0**: implement (command) → gate (pagination) → \
+            "\n**fixture/implementation@1.0.1**: implement (command) → gate (pagination) → \
              evaluate (command)\n"
         ),
         "{markdown}"
@@ -646,7 +646,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v17.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -1179,7 +1179,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
 /// finished.
 #[test]
 fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own_worker() {
-    use af_contracts::task::pipeline::PipelineDefinitionV1;
+    use af_contracts::task::pipeline::PipelineDefinition;
     use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
@@ -1227,7 +1227,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     worker.signature.attempt.as_mut().unwrap().wall_ms = 180000;
     std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
     let definition = packages.join("implementation/pipeline.toml");
-    let mut command: PipelineDefinitionV1 =
+    let mut command: PipelineDefinition =
         toml::from_str(&std::fs::read_to_string(&definition).unwrap()).unwrap();
     // The abandoned Attempt keeps its charge, so the finishing run needs a second implementer
     // Attempt within the slot and pipeline limits.
@@ -1249,7 +1249,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     for name in ["model-implementer", "model-implementation"] {
         catalog["packages"].as_table_mut().unwrap().insert(
             format!("fixture/{name}"),
-            toml::Value::try_from(serde_json::json!({"version": "1.0.0", "digest": "",
+            toml::Value::try_from(serde_json::json!({"version": if name == "model-implementation" { &model.version } else { &worker.version }, "digest": "",
                 "path": format!(".af/task-packages/fixture/{name}")}))
             .unwrap(),
         );
@@ -1372,7 +1372,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
 
     let value = document(&repo, &state, &[task_interrupt::TASK]);
     let task = &value["tasks"][0];
-    assert_eq!(task["pipeline"], "fixture/implementation@1.0.0", "{task:#}");
+    assert_eq!(task["pipeline"], "fixture/implementation@1.0.1", "{task:#}");
     assert_eq!(task["runs"], 2, "the refresh is not a run: {task:#}");
     let rows: Vec<&Value> = task["nodes"]
         .as_array()
@@ -1481,7 +1481,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
             .to_string()
     );
     for task in tasks {
-        assert_eq!(task["pipeline"], "fixture/plain@1.0.0");
+        assert_eq!(task["pipeline"], "fixture/plain@1.0.1");
         assert_eq!(task["runs"], 1);
         assert_eq!(task["attempts"]["failed"], 0);
     }
@@ -1499,7 +1499,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     assert_eq!(
         markdown
             .lines()
-            .filter(|line| line.starts_with("**fixture/plain@1.0.0**: "))
+            .filter(|line| line.starts_with("**fixture/plain@1.0.1**: "))
             .count(),
         1,
         "{markdown}"
@@ -1575,7 +1575,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     };
     // The collected Task's plan is gone: one line says its pipeline is not retained.
     assert_eq!(pipelines(&markdown).len(), 2, "{markdown}");
-    assert!(pipelines(&markdown)[0].starts_with("**fixture/plain@1.0.0**: "));
+    assert!(pipelines(&markdown)[0].starts_with("**fixture/plain@1.0.1**: "));
     assert_eq!(pipelines(&markdown)[1], TASK_REPORT_UNKNOWN_PIPELINE);
     assert_block_is_checked(&markdown);
 
@@ -1923,14 +1923,14 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
         .collect();
     assert_eq!(
         labels,
-        ["fixture/implementation@1.0.0", "fixture/plain@1.0.0"],
+        ["fixture/implementation@1.0.1", "fixture/plain@1.0.1"],
         "{value:#}"
     );
     let markdown = stdout(&report(&repo, &state, &ids, false));
     let lines: Vec<&str> = markdown.lines().collect();
     assert_eq!(lines[..3], [TASK_REPORT_BEGIN, "### af task report", ""]);
     assert!(
-        lines[3].starts_with("**fixture/implementation@1.0.0**: implement (command) → "),
+        lines[3].starts_with("**fixture/implementation@1.0.1**: implement (command) → "),
         "{markdown}"
     );
     assert!(
@@ -1939,7 +1939,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
     );
     assert_eq!(
         lines[5],
-        "**fixture/plain@1.0.0**: implement (command) → gate (pagination) → evaluate (command)",
+        "**fixture/plain@1.0.1**: implement (command) → gate (pagination) → evaluate (command)",
         "{markdown}"
     );
     assert_eq!(
@@ -2008,7 +2008,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
         .collect();
     assert_eq!(
         pipelines,
-        ["**fixture/plain@1.0.0", "**fixture/implementation@1.0.0"],
+        ["**fixture/plain@1.0.1", "**fixture/implementation@1.0.1"],
         "{reversed}"
     );
     assert_block_is_checked(&reversed);

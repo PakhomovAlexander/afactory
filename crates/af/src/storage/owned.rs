@@ -234,6 +234,7 @@ pub(crate) struct Removed {
 /// directory, and the rest is left. The directory itself goes too when it is marked, held
 /// nothing but af's entries, and is empty once they went: it is removed by `rmdir`, which a
 /// file created in it meanwhile refuses, so such a file is never removed with it.
+#[cfg(test)]
 pub(crate) fn remove(
     anchor: &Path,
     path: &Path,

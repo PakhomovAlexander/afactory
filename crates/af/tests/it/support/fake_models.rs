@@ -89,6 +89,10 @@ sys.exit(64)
 
 /// Install the fake `kind` CLI into `bin`, and the recorded catalog it serves into `auth`.
 pub fn install(kind: &str, bin: &Path, auth: &Path) {
+    install_from(kind, bin, auth, &fixtures());
+}
+
+fn install_from(kind: &str, bin: &Path, auth: &Path, catalogs: &Path) {
     std::fs::create_dir_all(bin).unwrap();
     std::fs::create_dir_all(auth).unwrap();
     std::fs::set_permissions(auth, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -101,11 +105,66 @@ pub fn install(kind: &str, bin: &Path, auth: &Path) {
         _ => panic!("unknown Provider kind {kind}"),
     };
     for file in files {
-        std::fs::copy(fixtures().join(file), auth.join(file)).unwrap();
+        let installed = auth.join(file);
+        std::fs::copy(catalogs.join(file), &installed).unwrap();
+        // copy preserves sealed source permissions. These are the fixture's own mutable
+        // catalogs, so a later installation must be able to overwrite them.
+        std::fs::set_permissions(installed, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     let program = bin.join(kind);
     std::fs::write(&program, crate::provider_cli::with_help(kind, script)).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn reinstalling_catalogs_from_read_only_fixtures_keeps_owned_copies_writable() {
+    let root = tempfile::tempdir().unwrap();
+    let catalogs = root.path().join("catalogs");
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&catalogs).unwrap();
+    for (kind, files) in [
+        (
+            "claude",
+            ["claude-list-models.json", "claude-binary-version.json"],
+        ),
+        (
+            "codex",
+            ["codex-model-list.json", "codex-models-cache.json"],
+        ),
+    ] {
+        for file in files {
+            let source = catalogs.join(file);
+            std::fs::write(&source, std::fs::read(fixtures().join(file)).unwrap()).unwrap();
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+        }
+        let auth = root.path().join(format!("{kind}-auth"));
+        // The generated tutorials install into the same owned directories twice. The source
+        // catalogs can be sealed read-only; their permissions must not prevent that reuse.
+        install_from(kind, &bin, &auth, &catalogs);
+        install_from(kind, &bin, &auth, &catalogs);
+        for file in files {
+            let source = catalogs.join(file);
+            let installed = auth.join(file);
+            assert_eq!(
+                std::fs::read(&installed).unwrap(),
+                std::fs::read(&source).unwrap()
+            );
+            assert_eq!(
+                std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
+                0o444
+            );
+            assert_eq!(
+                std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(bin.join(kind)).unwrap(),
+            crate::provider_cli::with_help(kind, if kind == "claude" { CLAUDE } else { CODEX })
+        );
+        assert!(started(&auth).is_empty());
+        assert!(turns(&auth).is_empty());
+    }
 }
 
 /// The processes the fake started in `auth`, one line each; empty when none started.

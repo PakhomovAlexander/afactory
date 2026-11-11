@@ -2,7 +2,7 @@
 //! failing — a wait before it calls again after a transient failure, a re-ask of a typed reply
 //! that did not parse, an identity recheck that probed again or found only a CLI update, an
 //! admission probe sent again in its alternate wording. It is its own event kind of the Task's
-//! log, `TaskProviderEvent@1`, beside `TaskTransition@5` and `TaskExecutionStarted@1`, whose
+//! log, `TaskProviderEvent@1`, beside `TaskTransition@6` and `TaskExecutionStarted@1`, whose
 //! shapes it leaves unchanged (ADR-0145). It names the lease that wrote it, the Attempt and its
 //! node; it references no artifact, never changes a charge, a reservation, a deadline or the
 //! Task's result, and the Store refuses it for an Attempt that is not started and unsettled.

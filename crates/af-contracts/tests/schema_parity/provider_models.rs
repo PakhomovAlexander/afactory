@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-models@3` document (ADR-0148).
+//! The agent-facing `af/provider-models@4` document (ADR-0148).
 //!
 //! Like the onboarding documents it carries no Rust type: `af provider models` builds it from
 //! what each harness's own protocol answered. The schema is the contract, and these cases pin
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-models-v3.json";
+const SCHEMA: &str = "provider-models-v4.json";
 
 fn fable() -> Value {
     json!({
@@ -24,7 +24,7 @@ fn fable() -> Value {
 
 fn listed() -> Value {
     json!({
-        "schema": "af/provider-models@3",
+        "schema": "af/provider-models@4",
         "exit_code": 0,
         "token_free": true,
         "proves": "af recognises these spellings for this Provider",
@@ -57,7 +57,6 @@ fn resolved() -> Value {
         "effort_check": "listed",
         "effort_levels": ["low", "medium", "high", "xhigh", "max"],
         "configuration": {
-            "reviewer_runner": "[runner] program = \"claude\"",
             "worker_runner": "[runner]\nkind = \"model\"",
             "binding": "[providers] \"PACKAGE\" = \"claude-work\"",
         },
@@ -87,6 +86,12 @@ fn listed_unavailable_and_resolved_documents_are_valid() {
     let mut resolution = listed();
     resolution["providers"][0]["resolution"] = resolved();
     assert_valid(SCHEMA, &resolution);
+    let mut retired = resolution.clone();
+    retired["schema"] = json!("af/provider-models@3");
+    assert_invalid(SCHEMA, &retired, "retired enclosing contract");
+    let mut retired = resolution.clone();
+    retired["providers"][0]["resolution"]["configuration"]["reviewer_runner"] = json!("[runner]");
+    assert_invalid(SCHEMA, &retired, "retired Reviewer manifest template");
 
     let mut not_listed = listed();
     let mut outcome = resolved();

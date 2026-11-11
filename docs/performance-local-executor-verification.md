@@ -1018,28 +1018,18 @@ this host and run in the outer operator's Linux validation and CI.
   Journal, a completed overhead-only telemetry original, then the full comparison; also the
   same-configuration idempotent resubmission). The unchanged full-comparison test proves the
   valid resumed launch and no replay.
-- **Telemetry registry version.** The registry is `af.perf-telemetry-lab/3`
-  (`schemas/performance-telemetry-lab-v3.json`, regenerated; v2 removed); the fixtures and docs
-  name `/3`, and `invalid-prior-version.toml` is the current registry under `/2`. Test:
-  `TelemetryLabVersion` and the parity suite. The Task14 `af.perf-telemetry-build/2` is
-  unchanged.
-- **Pre-build workload and sample admission.** `select_contract` refuses a release no fixture
-  contract names (at this recorded verification, `check-receipt@2` named 0.14.0-rc.1 to rc.3;
-  [RC4, RC5 and RC6 are now also declared](telemetry.md#performance)); `Journal._submit` admits, from
-  each side's retained Cargo.lock, the telemetry contract of both sides and, for a plan with
-  CLI cases, the authority's CLI registry and an adapter for both sides, before any claim or
-  build. `image_admission` runs the sample image's own `/usr/bin/python3` once in a probe
-  container (`sample_admission`: this account, no network, read-only root, no capability, no
-  new privileges, removal confirmed) and refuses a missing interpreter, shell or driver module,
-  or missing containment or cgroup v2. Library cases then kept their compile-time probe
-  adapters; the final-slot cancellation and selected-workload section below admits them
-  before any claim or build.
-  Tests: `WorkloadAdmission` (0.11.9 refused for telemetry and CLI with nothing reserved;
-  v0.13.0 against v0.14.0-rc.1 admitted with `check-receipt@1`/`@2` and `af_cli_v2`/`af_cli_v3`),
-  `test_an_unusable_sample_runtime_tool_or_containment_refuses_before_any_claim` (ten probe
-  answers, the fence settled clean), the ready-admission test's `sample_runtime` record, and
-  `test_a_release_no_contract_names_is_refused_never_given_the_current_contract`. The Rust
-  `telemetry_bench` judges' recorded documents now name 0.14.0-rc.1.
+- **Current telemetry contract.** `af.perf-telemetry-lab/4` names the `/3` benchmark documents.
+  The generator, reader, current fixtures and `TelemetryLabVersion` refuse registry `/3` and
+  benchmark `/2`. No earlier document reader or fixture overlay remains.
+- **Pre-build workload and sample admission.** `telemetry_workload` compares exact current
+  schemas from both retained source trees before reserving or building. Release equality is
+  insufficient: `WorkloadAdmission` refuses changed or missing schemas even with identical
+  release strings. Each measured binary must then reproduce package pins and plan the exact
+  workload before timing; malformed admission output and original refusals are checked in
+  `FixtureContracts`. CLI and native-probe adapter capability checks remain separate. Existing
+  sample-image, containment, cgroup and cleanup admission remains required. The current cleanup
+  record lists focused commands actually run; these statements do not assert a hosted rollout
+  or cumulative full-profile gate receipt.
 
 ### Historical TUI first-frame audit (operator evidence, Claw, 2026-10-30)
 

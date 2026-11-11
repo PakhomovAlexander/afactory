@@ -22,7 +22,7 @@ fn optional(mut port: PipelinePortV1) -> PipelinePortV1 {
 /// The candidate half: measure the sealed source, compare it with the baseline under the
 /// `smaller` objective, and evaluate it only when the comparison passed. The parent calls it
 /// only after passed checks, so the evaluator is gated on both.
-fn trial(evaluator: &TaskWorkerManifest) -> PipelineDefinitionV1 {
+fn trial(evaluator: &TaskWorkerManifest) -> PipelineDefinition {
     let mut p = definition(
         "experiment-trial",
         "implement",
@@ -85,7 +85,7 @@ fn trial(evaluator: &TaskWorkerManifest) -> PipelineDefinitionV1 {
     p
 }
 
-fn experiment(author: &TaskWorkerManifest, evaluator: &TaskWorkerManifest) -> PipelineDefinitionV1 {
+fn experiment(author: &TaskWorkerManifest, evaluator: &TaskWorkerManifest) -> PipelineDefinition {
     let mut p = definition(
         "experiment",
         "implement",
@@ -248,7 +248,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     ]);
     let mut packages = BTreeMap::new();
     let mut contracts = CatalogContractFixtures {
-        schema: "af.catalog-contract-fixtures/1".into(),
+        schema: "af.catalog-contract-fixtures/2".into(),
         pipelines: BTreeMap::new(),
         workers: BTreeMap::new(),
         kinds: BTreeMap::new(),

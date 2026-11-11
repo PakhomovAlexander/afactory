@@ -63,12 +63,7 @@ fn worker(root: &Path, dir: &str, name: &str) {
 }
 
 fn reviewer(root: &Path, dir: &str, name: &str) {
-    let text = format!(
-        "name = \"{name}\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n[runner]\n\
-         program = \"codex\"\nargs = [{{ value = \"--model\" }}, {{ value = \"gpt-6-sol\" }}, \
-         {{ value = \"-c\" }}, {{ value = \"model_reasoning_effort=\\\"high\\\"\" }}]\n"
-    );
-    write(root, &format!(".af/workers/{dir}/reviewer.toml"), &text);
+    worker(root, &format!(".af/packages/reviewers/{dir}"), name);
 }
 
 fn scope(root: &Path) -> Scope {
@@ -99,8 +94,12 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     reviewer(root, "bugs", "bugs");
-    // A reviewer is one directory under `.af/workers/`; anything deeper is not one.
-    reviewer(root, "nested/deeper", "deeper");
+    // A reviewer is one directory under `.af/packages/reviewers/`; anything deeper is not one.
+    write(
+        root,
+        ".af/workers/nested/deeper/reviewer.toml",
+        "name = \"retired\"\n",
+    );
     worker(
         root,
         ".af/task-packages/kernel/implementer",
@@ -127,13 +126,13 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
     assert_eq!(
         listed,
         [
-            (".af/workers/bugs/reviewer.toml", "bugs"),
             (".af/task-packages/a/b/c/d/e/f/worker.toml", "deep/f"),
             (
                 ".af/task-packages/kernel/implementer/worker.toml",
                 "kernel/implementer"
             ),
             (".af/packages/p/worker.toml", "p"),
+            (".af/packages/reviewers/bugs/worker.toml", "bugs"),
             (".af/vendor/v/w/worker.toml", "v/w"),
         ]
     );
@@ -151,18 +150,13 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
     let groups: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
     assert_eq!(
         groups,
-        [
-            "workers/ (1)",
-            "task-packages/ (2)",
-            "packages/ (1)",
-            "vendor/ (1)"
-        ]
+        ["task-packages/ (2)", "packages/ (2)", "vendor/ (1)"]
     );
     assert_eq!(
         ids(&pane)[0],
         (
-            ".af/workers/".into(),
-            ".af/workers/bugs/reviewer.toml".into()
+            ".af/task-packages/".into(),
+            ".af/task-packages/a/b/c/d/e/f/worker.toml".into()
         )
     );
     // One source only: the entries are listed flat, with no group.
@@ -353,12 +347,6 @@ fn the_pin_is_the_committed_lock_entry_at_this_package() {
     reviewer(root, "bugs", "bugs");
     reviewer(root, "renamed", "correctness");
     reviewer(root, "free", "free");
-    write(
-        root,
-        LOCK,
-        "version = 1\n[workers.bugs]\nversion = \"1.0.0\"\ndigest = \"sha256:628f116e7e\"\n\
-         [workers.correctness]\nversion = \"1.0.0\"\ndigest = \"sha256:5e8328803396\"\n",
-    );
     commit_all(root, "pins");
     let entries = discover(root).unwrap().entries;
     let pin = |id: &str| {
@@ -383,17 +371,6 @@ fn the_pin_is_the_committed_lock_entry_at_this_package() {
         pin(".af/packages/loose/worker.toml"),
         (Pin::Unpinned, "unpinned".into())
     );
-    assert_eq!(
-        pin(".af/workers/bugs/reviewer.toml").1,
-        ".af/af.lock  1.0.0  628f116e"
-    );
-    // `af.lock` pins a reviewer by name at `.af/workers/<name>`: a directory of another name
-    // is not the package the lock pins.
-    assert_eq!(
-        pin(".af/workers/renamed/reviewer.toml").1,
-        "pinned elsewhere: .af/af.lock pins correctness at .af/workers/correctness"
-    );
-    assert_eq!(pin(".af/workers/free/reviewer.toml").0, Pin::Unpinned);
 }
 
 #[test]
@@ -455,19 +432,12 @@ fn identity_shows_only_what_the_declaration_carries() {
             "roles     -",
         ]
     );
-    // A reviewer declares its model and effort in its args; they are read as the kernel reads
-    // them, and the args are shown as declared.
-    let rows = identity(&mut pane, ".af/workers/bugs/reviewer.toml");
-    assert_eq!(rows[0], "IDENTITY  reviewer.toml at HEAD");
-    assert_eq!(rows[3], "schema    -");
-    assert_eq!(
-        rows[6],
-        "runner    kind -  program codex  model gpt-6-sol  effort high  verdict (static \
-         rules): ok"
-    );
-    assert_eq!(
-        rows[7],
-        "args      --model gpt-6-sol -c 'model_reasoning_effort=\"high\"'"
+    let rows = identity(&mut pane, ".af/packages/reviewers/bugs/worker.toml");
+    assert_eq!(rows[0], "IDENTITY  worker.toml at HEAD");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("provider claude") && r.contains("claude-opus-5-5")),
+        "{rows:?}"
     );
 }
 
@@ -478,7 +448,7 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
     reviewer(root, "bugs", "bugs");
     write(
         root,
-        ".af/workers/bugs/reviewer.md",
+        ".af/packages/reviewers/bugs/instructions.md",
         "Find bugs.\n\tIndented.\n",
     );
     worker(root, ".af/task-packages/task", "fixture/task");
@@ -500,7 +470,6 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
         "Not a prompt either.\n",
     );
     commit_all(root, "prompts");
-    assert_eq!(Kind::Reviewer.prompt(), "reviewer.md");
     assert_eq!(Kind::Task.prompt(), "instructions.md");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
@@ -511,16 +480,20 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
         texts(&pane.rows()[pane.prompt_row..])
     };
     assert_eq!(
-        prompt(&mut pane, ".af/workers/bugs/reviewer.toml"),
-        ["PROMPT  reviewer.md at HEAD", "Find bugs.", " Indented."]
+        prompt(&mut pane, ".af/packages/reviewers/bugs/worker.toml"),
+        [
+            "PROMPT  instructions.md at HEAD",
+            "Find bugs.",
+            " Indented."
+        ]
     );
     // `gf` below the PROMPT rule opens the prompt's working-tree file; above it, the declaration.
-    let prompt_file = root.join(".af/workers/bugs/reviewer.md");
+    let prompt_file = root.join(".af/packages/reviewers/bugs/instructions.md");
     assert_eq!(pane.file(pane.prompt_row), Some(prompt_file.clone()));
-    let declaration = root.join(".af/workers/bugs/reviewer.toml");
+    let declaration = root.join(".af/packages/reviewers/bugs/worker.toml");
     assert_eq!(pane.file(0), Some(declaration));
     assert_eq!(
-        pane.entry_file(".af/workers/bugs/reviewer.toml"),
+        pane.entry_file(".af/packages/reviewers/bugs/worker.toml"),
         Some(prompt_file)
     );
     assert_eq!(
@@ -607,8 +580,7 @@ fn graph() -> Json {
                 "operator": {"op": "worker", "slot": "root.slots.writer"}}},
             "root.nodes.implementer": {"operator": {"kind": "primitive",
                 "operator": {"op": "verify", "slot": "root.slots.judge"}}},
-            "root.nodes.review": {"operator": {"kind": "review_domain", "review_node": "r",
-                "operation": {"kind": "reviewer", "slot": "root.slots.bugs"}}},
+            "root.nodes.review": {"operator": {"kind":"primitive", "operator":{"op":"worker", "slot":"root.slots.bugs"}}},
             "root.nodes.admit": {"operator": {"kind": "provider_admission",
                 "bindings": ["root.slots.writer", "root.slots.judge"]}},
             "root.nodes.check": {"operator": {"kind": "primitive",
@@ -665,7 +637,7 @@ fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
     );
     assert_eq!(
         worker_of(&plan(graph()), "root.nodes.review"),
-        Some((Kind::Reviewer, "bugs".to_owned(), None))
+        Some((Kind::Task, "bugs".to_owned(), None))
     );
     // A Provider admission serves several slots, and a check none: no one Worker ran either.
     assert_eq!(worker_of(&plan(graph()), "root.nodes.admit"), None);
@@ -857,8 +829,7 @@ fn the_accounting_takes_each_attempts_highest_charge_and_skips_released_reservat
 #[test]
 fn an_owned_shard_runs_the_operator_its_owner_registered() {
     let mut graph = graph();
-    graph["owned_children"] = json!({"root.nodes.review": {"operator": {"kind": "review_domain",
-        "review_node": "r", "operation": {"kind": "reviewer", "slot": "root.slots.bugs"}}}});
+    graph["owned_children"] = json!({"root.nodes.review": {"operator": {"kind":"primitive", "operator":{"op":"worker", "slot":"root.slots.bugs"}}}});
     let document = json!({
         "plan_id": "plan",
         "graph": graph,
@@ -893,7 +864,7 @@ fn an_owned_shard_runs_the_operator_its_owner_registered() {
     };
     let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
     let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
-    let bugs = (Kind::Reviewer, "bugs".to_owned(), None);
+    let bugs = (Kind::Task, "bugs".to_owned(), None);
     assert_eq!(tallies.keys().collect::<Vec<_>>(), [&bugs]);
     assert_eq!(
         tallies[&bugs],
@@ -909,7 +880,7 @@ fn an_owned_shard_runs_the_operator_its_owner_registered() {
 }
 
 #[test]
-fn a_reviewer_and_a_task_package_sharing_a_name_keep_their_own_attempts() {
+fn native_review_and_implementation_attempts_share_the_current_worker_identity() {
     let mut graph = graph();
     graph["slots"]["root.slots.writer"]["worker"] = json!("bugs");
     let document = json!({
@@ -936,11 +907,11 @@ fn a_reviewer_and_a_task_package_sharing_a_name_keep_their_own_attempts() {
     let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
     let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
     assert_eq!(tallies[&task("bugs")].ok, 1);
-    assert_eq!(tallies[&task("bugs")].tokens, 10);
-    let review = &tallies[&(Kind::Reviewer, "bugs".to_owned(), None)];
-    assert_eq!((review.failed, review.tokens), (1, 3));
+    assert_eq!(tallies[&task("bugs")].tokens, 13);
+    let review = &tallies[&(Kind::Task, "bugs".to_owned(), None)];
+    assert_eq!((review.failed, review.tokens), (1, 13));
 
-    // In the pane, each package shows only its own kind's Attempts.
+    // Native Review uses the current Task package; obsolete declarations acquire no usage.
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     reviewer(root, "bugs", "bugs");
@@ -969,13 +940,10 @@ fn a_reviewer_and_a_task_package_sharing_a_name_keep_their_own_attempts() {
             .find(|row| row.starts_with("tokens"))
             .unwrap()
     };
-    assert_eq!(
-        state(&mut pane, ".af/workers/bugs/reviewer.toml"),
-        "tokens    charged 3"
-    );
+
     assert_eq!(
         state(&mut pane, ".af/task-packages/bugs/worker.toml"),
-        "tokens    charged 10"
+        "tokens    charged 13"
     );
 }
 
@@ -1116,65 +1084,6 @@ fn a_declaration_without_a_name_yanks_nothing() {
     assert_eq!(pane.items()[0].label, "nameless");
     assert_eq!(pane.yank(0), None);
     assert_eq!(pane.entry_name(id), None);
-}
-
-#[test]
-fn a_captured_review_attempt_is_its_reviewers_at_the_package_it_ran() {
-    // A captured Review binds the reviewer slot to a Review dependency: its own digest covers
-    // Campaign data; the reviewer package it ran is its original package digest.
-    let bindings = json!({
-        "root.slots.bugs": {"package_digest": "sha256:dependency",
-            "package_artifact_id": "sha256:dep-artifact"},
-        "root.slots.writer": {"package_digest": "sha256:task-package",
-            "package_artifact_id": "sha256:task-artifact"}
-    });
-    let document = json!({
-        "plan_id": "plan",
-        "graph": graph(),
-        "plan": {"bindings": bindings},
-        "execution_records": [
-            reserved("r", "inv-review"),
-            settled("r", "5", "succeeded"),
-            reserved("w", "inv-implement"),
-            settled("w", "9", "succeeded"),
-        ],
-        "attempt_walls": []
-    });
-    let mut invoked = |id: &str| {
-        let node = match id {
-            "inv-review" => "root.nodes.review",
-            _ => "root.nodes.implement",
-        };
-        Ok(Invoked {
-            node: node.to_owned(),
-            plan_id: None,
-        })
-    };
-    let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
-    let mut package = |id: &str| match id {
-        "sha256:dep-artifact" => Ok(json!({"type": "af/LegacyReviewDependency@1",
-            "payload": {"name": "bugs", "original_package_digest": "sha256:reviewer"}})),
-        "sha256:task-artifact" => Ok(json!({"type": "af/TaskPackage@1",
-            "payload": {"digest": "sha256:task-package"}})),
-        other => Err(format!("no package {other}")),
-    };
-    let tallies = tally(&document, &mut invoked, &mut compiled, &mut package).unwrap();
-    let reviewer = (
-        Kind::Reviewer,
-        "bugs".to_owned(),
-        Some("sha256:reviewer".to_owned()),
-    );
-    assert_eq!(tallies[&reviewer].tokens, 5);
-    let writer = (
-        Kind::Task,
-        "fixture/implementer".to_owned(),
-        Some("sha256:task-package".to_owned()),
-    );
-    assert_eq!(tallies[&writer].tokens, 9);
-    assert_eq!(tallies.len(), 2);
-    // A binding whose package cannot be read refuses the Task, never guesses its digest.
-    let mut unreadable = |id: &str| Err(format!("no package {id}"));
-    assert!(tally(&document, &mut invoked, &mut compiled, &mut unreadable).is_err());
 }
 
 #[test]
@@ -1411,7 +1320,10 @@ fn the_runner_row_carries_the_verdict_against_the_providers_catalog() {
             ".af/task-packages/ultra/worker.toml",
             "verdict claude-work: effort not listed: low, medium, high, xhigh, max",
         ),
-        (".af/workers/bugs/reviewer.toml", "verdict codex-main: ok"),
+        (
+            ".af/packages/reviewers/bugs/worker.toml",
+            "verdict claude-work: ok",
+        ),
     ] {
         let row = runner(&mut pane, id);
         assert!(row.ends_with(verdict), "{id}: {row}");

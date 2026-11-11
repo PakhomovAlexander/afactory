@@ -896,7 +896,7 @@ LOAD_KEYS = ("load_average", "cpu_steal", "cpu_pressure", "memory_pressure", "io
 LOAD = Obj(*[Field(key, OBSERVATION) for key in LOAD_KEYS])
 
 # The cli/setup.sh steps that write a side's seed, once per shard (ADR-0169).
-CLI_SEED_WRITERS = ("seed_task_state", "seed_campaign_state")
+CLI_SEED_WRITERS = ("seed_task_state", "seed_campaign_state", "seed_native_review_state")
 # One side's seed in a shard: written once by that side's own writers under the supervisor,
 # published, hashed and sealed; each sample that needs it copies it privately. A `cli` seed's
 # writer is a cli/setup.sh step (ADR-0169); a `native` seed's is the probe's writer contract,
@@ -2441,9 +2441,9 @@ def validate_adapters(doc, where="adapters.toml"):
     return doc
 
 
-# af.perf-cli/6 -----------------------------------------------------------------------------
+# af.perf-cli/7 -----------------------------------------------------------------------------
 
-CLI_SCHEMA = "af.perf-cli/6"
+CLI_SCHEMA = "af.perf-cli/7"
 TUI_OPEN_SCHEMA = "af.perf-tui-open/1"
 TUI_OPEN = Obj(Field("schema", Const(TUI_OPEN_SCHEMA)),
                Field("browser_ms", DECIMAL),
@@ -4239,12 +4239,12 @@ def validate_enforcement(doc, where="enforcement.toml"):
 
 
 # Telemetry experiments (ADR-0214) ----------------------------------------------------------
-# af.perf-telemetry-lab/3 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/3 one
+# af.perf-telemetry-lab/4 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/3 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
 # and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
 # verdict, sample or required check reads any of them.
 
-TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/3"
+TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/4"
 TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/3"
 TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
 # A separate immutable Actions planning artifact, emitted before any candidate execution.
@@ -4266,10 +4266,10 @@ def validate_telemetry_binding(doc, where="binding.json"):
 
 TELEMETRY_EXPERIMENTS = ("overhead", "invocation_cost", "read_latency")
 TELEMETRY_PROFILES = ("pr", "nightly", "release", "manual")
-TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@2", "telemetry-overhead-v2.json",
+TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@3", "telemetry-overhead-v3.json",
                                     "scripts/telemetry-overhead.py", ("off", "spans")),
-                       "invocation_cost": ("af/telemetry-invocation-cost@2",
-                                           "telemetry-invocation-cost-v2.json",
+                       "invocation_cost": ("af/telemetry-invocation-cost@3",
+                                           "telemetry-invocation-cost-v3.json",
                                            "scripts/telemetry-invocation-cost.py",
                                            ("off", "spans")),
                        "read_latency": ("af/telemetry-read-latency@2",

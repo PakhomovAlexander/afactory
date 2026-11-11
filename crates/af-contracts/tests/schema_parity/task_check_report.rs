@@ -240,7 +240,7 @@ fn a_gate_retry_event_names_its_lease_result_and_failed_gates() {
     af_contracts::event::validate_event_payload(af_contracts::EventType::TaskGateRetriedV1, &value)
         .unwrap();
     let event = json!({
-        "event_id": "01jd8m4qz9k7v3n2p6r8t0w202",
+        "schema": "review.kernel/RunEvent@3", "event_id": "01jd8m4qz9k7v3n2p6r8t0w202",
         "run_id": "task:retry",
         "sequence": 12,
         "type": "TaskGateRetried@1",
@@ -248,7 +248,7 @@ fn a_gate_retry_event_names_its_lease_result_and_failed_gates() {
         "artifact_refs": retry.artifact_refs(),
         "payload": value,
     });
-    assert_valid("run-event-v1.json", &event);
+    assert_valid("run-event-v3.json", &event);
     let mutate = |edit: &dyn Fn(&mut Value)| {
         let mut changed = serde_json::to_value(&retry).unwrap();
         edit(&mut changed);
@@ -280,7 +280,7 @@ fn a_gate_retry_event_names_its_lease_result_and_failed_gates() {
     }
 }
 
-/// `af task show --json` (`af/task-inspection@17`) carries a gate's evidence under `gate`
+/// `af task show --json` (`af/task-inspection@20`) carries a gate's evidence under `gate`
 /// beside its summary: each check node's latest check report, as recorded, and every gate
 /// retry of the Task's log (here a retry whose writer was lost before its check finished).
 /// Both are optional, never empty, and hold only those two shapes.
@@ -289,7 +289,7 @@ fn an_inspection_carries_its_gate_s_check_reports_and_retries() {
     let report = serde_json::to_value(report()).unwrap();
     let retry = serde_json::to_value(retry()).unwrap();
     let value = json!({
-        "schema":"af/task-inspection@17", "task_id":"pagination-cli", "revision_id":digest('1'),
+        "schema":"af/task-inspection@20", "task_id":"pagination-cli", "revision_id":digest('1'),
         "phase":{"kind":"running"},
         "state":{"phase":"abandoned","outcome":"cancelled","cause":"writer_lost",
             "next_action":"af task run pagination-cli"},
@@ -302,12 +302,12 @@ fn an_inspection_carries_its_gate_s_check_reports_and_retries() {
             "retries":[retry]},
         "history":[], "execution_records":[], "run_reports":[]
     });
-    assert_valid("task-inspection-v17.json", &value);
+    assert_valid("task-inspection-v20.json", &value);
     let mut summary_only = value.clone();
     let gate = summary_only["gate"].as_object_mut().unwrap();
     gate.remove("check_reports");
     gate.remove("retries");
-    assert_valid("task-inspection-v17.json", &summary_only);
+    assert_valid("task-inspection-v20.json", &summary_only);
     for (pointer, replacement, why) in [
         ("/gate/check_reports", json!([]), "an empty report list"),
         ("/gate/retries", json!([]), "an empty retry list"),
@@ -339,7 +339,7 @@ fn an_inspection_carries_its_gate_s_check_reports_and_retries() {
     ] {
         let mut changed = value.clone();
         *changed.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-inspection-v17.json", &changed, why);
+        assert_invalid("task-inspection-v20.json", &changed, why);
     }
     for field in ["node", "record"] {
         let mut changed = value.clone();
@@ -347,12 +347,12 @@ fn an_inspection_carries_its_gate_s_check_reports_and_retries() {
             .as_object_mut()
             .unwrap()
             .remove(field);
-        assert_invalid("task-inspection-v17.json", &changed, field);
+        assert_invalid("task-inspection-v20.json", &changed, field);
     }
     let mut extra = value;
     extra["gate"]["receipts"] = json!([]);
     assert_invalid(
-        "task-inspection-v17.json",
+        "task-inspection-v20.json",
         &extra,
         "a gate field the inspection does not declare",
     );

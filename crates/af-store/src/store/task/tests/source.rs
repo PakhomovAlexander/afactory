@@ -109,12 +109,12 @@ pub(super) fn next(f: &Fixture) -> TaskRevisionV1 {
 pub(super) fn plan_for(f: &Fixture, revision: &TaskRevisionV1) -> (String, String) {
     let revision_id = put(&f.cas, task::TASK_REVISION_V1, revision);
     let mut graph: af_graph::task::CompiledTask =
-        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@4").unwrap();
     graph.inputs = revision.inputs.clone();
     let mut plan = f.plan.clone();
     plan.task_revision_id = revision_id.clone();
     plan.inputs = revision.inputs.clone();
-    plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
+    plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@4", &graph);
     (revision_id, put(&f.cas, task::EXECUTION_PLAN_V4, &plan))
 }
 #[test]

@@ -370,9 +370,9 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
     };
     let mut registry = jsonschema::Registry::new();
     for name in [
-        "task-contracts-v3.json",
+        "task-contracts-v4.json",
         "task-operator-signature-v1.json",
-        "task-kind-v1.json",
+        "task-kind-v3.json",
     ] {
         let value = schema(name);
         let id = value["$id"].as_str().unwrap().to_owned();
@@ -383,7 +383,7 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
     let registry = registry.prepare().unwrap();
     for (name, value) in [
         (
-            "catalog-contract-fixtures-v1.json",
+            "catalog-contract-fixtures-v2.json",
             serde_json::to_value(&exported.contracts).unwrap(),
         ),
         (
@@ -404,6 +404,9 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
         invalid["approval"] = json!(true);
         assert!(!validator.is_valid(&invalid));
     }
+    let mut retired = exported.contracts.clone();
+    retired.schema = "af.catalog-contract-fixtures/1".into();
+    assert!(compiler.check_contract_fixtures(&retired).is_err());
     let mut changed = exported.contracts.clone();
     changed
         .pipelines
@@ -593,7 +596,7 @@ impl Fixture {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join("fixtures/task-contracts/v1");
-        let pipeline: PipelineDefinitionV1 =
+        let pipeline: PipelineDefinition =
             serde_json::from_slice(&std::fs::read(root.join("pipeline-definition.json")).unwrap())
                 .unwrap();
         let mut task: TaskRevisionV1 =
@@ -892,7 +895,7 @@ fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
     }
     let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
     pipeline.contract.inputs.insert("project".into(), port);
-    pipeline.schema = af_contracts::task::pipeline::PipelineSchema::V2;
+    pipeline.schema = af_contracts::task::pipeline::PipelineSchema::V6;
     let wired: Vec<String> = pipeline
         .nodes
         .iter_mut()
@@ -943,8 +946,8 @@ fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
     assert_eq!(built.1.lock().unwrap().len(), 1);
 }
 
-/// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0160), so the containers that
-/// carry version-1 contracts without a version label never carry it: the Planner's request
+/// A Pipeline with a Project Brief port needs constructor authority (ADR-0160), which the
+/// planning and shared-catalog interfaces do not grant: the Planner's request
 /// leaves it out, a shared catalog neither exports nor admits it, and a Worker manifest that
 /// declares the root default on its own port is refused when it loads.
 #[test]
@@ -972,7 +975,7 @@ fn a_brief_pipeline_stays_out_of_version_1_containers_and_worker_ports_name_no_v
         .contract
         .inputs
         .insert("project".into(), port.clone());
-    pipeline.schema = PipelineSchema::V2;
+    pipeline.schema = PipelineSchema::V6;
     pipeline.validate().unwrap();
     let request = f.compiler.planning_request(&f.task).unwrap();
     assert!(
@@ -992,7 +995,7 @@ fn a_brief_pipeline_stays_out_of_version_1_containers_and_worker_ports_name_no_v
         .check_contract_fixtures(&exported.contracts)
         .unwrap_err();
     assert!(
-        refused.contains("af.catalog-contract-fixtures/1"),
+        refused.contains("af.catalog-contract-fixtures/2"),
         "{refused}"
     );
 
@@ -1104,6 +1107,49 @@ fn exact_captured_plan_recompiles_without_registry_reads_and_changed_authority_f
         "root.nodes.write.output"
     );
     assert!(f.compiler.validate_plan(&f.cas, &f.task, &plan).is_ok());
+    for retired in [
+        "af.compiled-task/1",
+        "af.compiled-task/2",
+        "af.compiled-task/3",
+        "af.compiled-task/4",
+    ] {
+        let mut old_graph = graph.clone();
+        old_graph.schema = retired.into();
+        let mut old_plan = plan.clone();
+        old_plan.compiled_graph_id = f
+            .cas
+            .put_artifact(
+                COMPILED_TASK_V4,
+                capture_producer(),
+                vec![f.revision_id.clone(), plan.engine_id.clone()],
+                None,
+                serde_json::to_value(old_graph).unwrap(),
+            )
+            .unwrap()
+            .0;
+        assert!(
+            f.compiler
+                .validate_plan(&f.cas, &f.task, &old_plan)
+                .is_err()
+        );
+    }
+    let mut old_plan = plan.clone();
+    old_plan.compiled_graph_id = f
+        .cas
+        .put_artifact(
+            "af/CompiledTask@2",
+            capture_producer(),
+            vec![f.revision_id.clone(), plan.engine_id.clone()],
+            None,
+            serde_json::to_value(&graph).unwrap(),
+        )
+        .unwrap()
+        .0;
+    assert!(
+        f.compiler
+            .validate_plan(&f.cas, &f.task, &old_plan)
+            .is_err()
+    );
     f.project.clear();
     let (repeated, _) = f
         .compiler
@@ -1126,7 +1172,7 @@ fn exact_captured_plan_recompiles_without_registry_reads_and_changed_authority_f
                 modified.compiled_graph_id = f
                     .cas
                     .put_artifact(
-                        COMPILED_TASK_V1,
+                        COMPILED_TASK_V4,
                         capture_producer(),
                         vec![f.revision_id.clone(), plan.engine_id.clone()],
                         None,
@@ -1481,7 +1527,7 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
             serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap())
                 .unwrap()
         };
-        for name in ["task-contracts-v3.json", "task-operator-signature-v1.json"] {
+        for name in ["task-contracts-v4.json", "task-operator-signature-v1.json"] {
             let value = schema(name);
             let id = value["$id"].as_str().unwrap().to_owned();
             registry = registry

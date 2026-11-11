@@ -114,20 +114,18 @@ fn task_prerequisites_keep_signature_and_checksum_only_installs_apart() {
 #[test]
 fn preflight_guide_separates_empty_plan_inspection_from_the_run_guard() {
     let guide = collapsed(&workspace_file("docs/task-execution/preflight.md"));
-    assert!(
-        !guide.contains("refuses native empty-Diff planning"),
-        "{guide}"
-    );
     for statement in [
-        "`af review plan` inspects it and succeeds: it exits 0, exports `subject.empty` as `true`",
-        "its text output marks the subject `EMPTY — run will refuse`",
-        "`af review run` is the guard: it refuses the empty Diff before Gates, Provider admission \
-         or Worker dispatch",
-        "([Quickstart](../../README.md#quickstart))",
+        "af task explain TASK_ID --repo /path/to/repository --json > /tmp/task-explain.json",
+        "`af/task-inspection@20` with `plan` and `graph` present",
+        "An export can be edited or stale",
+        "None means accepted, approved or safe to dispatch",
+        "Native Review planning and execution refuse an empty Diff before Gates, Provider admission or Workers",
         "is the `empty_intended_diff` conflict (exit 2), never a successful diff check",
+        "It refuses the retired `af/review-plan@1` document",
     ] {
         assert!(guide.contains(statement), "{statement}\n{guide}");
     }
+    assert!(!guide.contains("EMPTY — run will refuse"));
     let helper = workspace_file("scripts/task-preflight.py");
     assert!(helper.contains("issue(\"empty_intended_diff\""));
 }

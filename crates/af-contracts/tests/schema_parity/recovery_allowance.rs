@@ -1,14 +1,11 @@
-//! A slot's `recovery_attempts` (ADR-0209) is `af.pipeline/3`'s alone: each version's schema
-//! and Rust admission accept the pipelines of its own shape and refuse every other.
+//! Current Pipeline capabilities preserve recovery bounds and refuse retired identities.
 
-use af_contracts::task::pipeline::PipelineDefinitionV1;
+use af_contracts::task::pipeline::PipelineDefinition;
 use serde_json::{Value, json};
 
 use super::{assert_invalid, assert_valid};
 
-const PIPELINE_V1: &str = "pipeline-definition-v1.json";
-const PIPELINE_V2: &str = "pipeline-definition-v2.json";
-const PIPELINE_V3: &str = "pipeline-definition-v3.json";
+const PIPELINE: &str = "pipeline-definition-v6.json";
 
 fn fixture(version: &str) -> Value {
     let path = super::workspace_root()
@@ -20,7 +17,7 @@ fn fixture(version: &str) -> Value {
 
 /// Rust admission of a pipeline: the typed round trip and its validation.
 fn admitted(value: &Value) -> Result<(), String> {
-    let definition: PipelineDefinitionV1 =
+    let definition: PipelineDefinition =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
     definition.validate()?;
     assert_eq!(&serde_json::to_value(&definition).unwrap(), value);
@@ -34,75 +31,45 @@ fn labelled(value: &Value, schema: &str) -> Value {
 }
 
 #[test]
-fn a_recovery_allowance_is_af_pipeline_3_and_no_other_version_carries_it() {
-    let v3 = fixture("v3");
-    assert_eq!(v3["slots"]["author"]["recovery_attempts"], 2);
-    assert_valid(PIPELINE_V3, &v3);
-    admitted(&v3).unwrap();
-    assert_invalid(PIPELINE_V1, &v3, "af.pipeline/1 is its own label");
-
-    // The old versions carrying the new key: refused by every schema and by Rust, naming the
-    // version the pipeline needs.
-    for old in ["af.pipeline/1", "af.pipeline/2"] {
-        let relabelled = labelled(&v3, old);
-        assert_invalid(
-            PIPELINE_V1,
-            &relabelled,
-            "no recovery allowance in version 1",
-        );
-        assert_invalid(
-            PIPELINE_V2,
-            &relabelled,
-            "no recovery allowance in version 2",
-        );
-        assert_invalid(PIPELINE_V3, &relabelled, "af.pipeline/3 is its own label");
-        let refused = admitted(&relabelled).unwrap_err();
-        assert!(
-            refused.contains(&format!(
-                "declares recovery_attempts on slot author under {old}"
-            )) && refused.contains("af.pipeline/3"),
-            "{refused}"
-        );
+fn recovery_is_optional_bounded_and_retired_pipeline_formats_are_refused() {
+    let recovering = fixture("v3");
+    assert_eq!(recovering["slots"]["author"]["recovery_attempts"], 2);
+    assert_valid(PIPELINE, &recovering);
+    admitted(&recovering).unwrap();
+    for old in [
+        "af.pipeline/1",
+        "af.pipeline/2",
+        "af.pipeline/3",
+        "af.pipeline/4",
+    ] {
+        let retired = labelled(&recovering, old);
+        assert_invalid(PIPELINE, &retired, "retired Pipeline format");
+        assert!(admitted(&retired).is_err());
     }
-
-    // Without the key the pipeline is version 1, never a second spelling of it.
-    let mut plain = v3.clone();
+    let mut plain = recovering.clone();
     plain["slots"]["author"]
         .as_object_mut()
         .unwrap()
         .remove("recovery_attempts");
-    assert_invalid(
-        PIPELINE_V3,
-        &plain,
-        "af.pipeline/3 declares a recovery allowance",
-    );
-    let refused = admitted(&plain).unwrap_err();
-    assert!(
-        refused.contains("is af.pipeline/3 but no slot declares recovery_attempts"),
-        "{refused}"
-    );
-    let plain = labelled(&plain, "af.pipeline/1");
-    assert_valid(PIPELINE_V1, &plain);
+    assert_valid(PIPELINE, &plain);
     admitted(&plain).unwrap();
-    assert_eq!(
-        plain,
-        fixture("v1"),
-        "the same pipeline as the version-1 fixture"
-    );
-
-    // The allowance is bounded.
-    let mut many = v3.clone();
-    many["slots"]["author"]["recovery_attempts"] = json!(9);
-    assert_invalid(PIPELINE_V3, &many, "at most 8 recoveries");
-    assert!(admitted(&many).unwrap_err().contains("at most 8"));
-    many["slots"]["author"]["recovery_attempts"] = json!(0);
-    assert_valid(PIPELINE_V3, &many);
-    admitted(&many).unwrap();
+    assert_eq!(plain, fixture("v1"));
+    for allowance in [0, 1, 8] {
+        let mut bounded = recovering.clone();
+        bounded["slots"]["author"]["recovery_attempts"] = json!(allowance);
+        assert_valid(PIPELINE, &bounded);
+        admitted(&bounded).unwrap();
+    }
+    for invalid in [json!(9), json!(-1), json!(null)] {
+        let mut many = recovering.clone();
+        many["slots"]["author"]["recovery_attempts"] = invalid;
+        assert_invalid(PIPELINE, &many, "bounded non-null recovery allowance");
+        assert!(admitted(&many).is_err());
+    }
 }
 
-/// A pipeline with both a Project Brief port and a recovery allowance is `af.pipeline/3`.
 #[test]
-fn a_briefed_pipeline_with_a_recovery_allowance_is_af_pipeline_3() {
+fn brief_and_recovery_combine_in_the_same_current_format() {
     let mut both = fixture("v2");
     let slot = both["slots"]
         .as_object_mut()
@@ -111,10 +78,6 @@ fn a_briefed_pipeline_with_a_recovery_allowance_is_af_pipeline_3() {
         .next()
         .unwrap();
     slot["recovery_attempts"] = json!(1);
-    let refused = admitted(&both).unwrap_err();
-    assert!(refused.contains("under af.pipeline/2"), "{refused}");
-    assert_invalid(PIPELINE_V2, &both, "no recovery allowance in version 2");
-    let both = labelled(&both, "af.pipeline/3");
-    assert_valid(PIPELINE_V3, &both);
+    assert_valid(PIPELINE, &both);
     admitted(&both).unwrap();
 }

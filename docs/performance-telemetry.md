@@ -125,7 +125,7 @@ views.
 
 ## Telemetry experiments
 
-`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/3`) declares the experiments and
+`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/4`) declares the experiments and
 one bounded profile per trigger:
 
 | Experiment | Script | Levels | Each side judged by |
@@ -158,7 +158,9 @@ parallel workers when they request more than one job.
 `validate.yml` runs `telemetry_runtime_smoke.py` when perf is selected, with actual release AF
 built in the pinned GNU image. Full selections require it in both stable validation aggregates;
 fast selections without perf explicitly skip it as NOT RUN. Failed, cancelled, missing or skipped
-selected smoke jobs fail aggregation. It reproduces the former 4 GiB concurrent fixture failure from public Task state, then
+selected smoke jobs fail aggregation. At the former 4 GiB capacity it retains the concurrent
+fixture's original `insufficient_disk` preflight refusal from public Task state and stderr,
+without inventing empty runtime evidence or starting a reviewer, then
 uses the registry's 16 GiB PR capacity for one smoke pair of every overhead/invocation case and
 the three reads of a 10-run corpus, through the same contained executor with `--ipc none`.
 The test has an eight-minute total deadline, confirms execution and filesystem cleanup, and

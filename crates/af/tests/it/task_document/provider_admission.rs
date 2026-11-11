@@ -44,7 +44,7 @@ else:
  kind='author'; r=json.loads(request)
  assert set(r['inputs'])=={'requirements','sources'}
  s=r['inputs']['sources'][0]['payload']['sources']
- message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/1','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':sorted(s)}]}})
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/3','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':[{'kind':'source','name':name} for name in sorted(s)]}]}})
  usage={'input_tokens':3,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
 with open(home+'/calls','a') as f: f.write(kind+'\n')
 if '-o' in sys.argv:
@@ -107,7 +107,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
                 .as_str()
                 .unwrap(),
         );
-        let mut pipeline: af_contracts::task::pipeline::PipelineDefinitionV1 =
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
             toml::from_str(&std::fs::read_to_string(package.join("pipeline.toml")).unwrap())
                 .unwrap();
         pipeline.max_attempts = 4;
@@ -389,7 +389,7 @@ fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch
 
 fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     let contracts: Value = serde_json::from_str(include_str!(
-        "../../../../../schemas/task-contracts-v3.json"
+        "../../../../../schemas/task-contracts-v4.json"
     ))
     .unwrap();
     let planner: Value = serde_json::from_str(include_str!(
@@ -398,7 +398,7 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     .unwrap();
     let registry = jsonschema::Registry::new()
         .add(
-            "urn:af:schema:task-contracts:3",
+            "urn:af:schema:task-contracts:4",
             jsonschema::Resource::from_contents(contracts),
         )
         .unwrap()

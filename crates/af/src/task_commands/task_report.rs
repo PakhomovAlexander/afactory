@@ -19,7 +19,7 @@ use af_contracts::task::runtime::{
 };
 use af_contracts::task::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use af_contracts::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
-use af_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
+use af_graph::task::{CompiledNode, CompiledOperator};
 use af_store::store::task::execution::TaskAttemptAccounting;
 
 /// The report over `task_ids`, in the order given, from the Store under `state`. An ID the
@@ -569,7 +569,7 @@ fn has_review(graph: &CompiledTask) -> bool {
             CompiledOperator::Primitive {
                 operator: TaskOperatorV1::ReviewReduce {},
                 ..
-            } | CompiledOperator::ReviewDomain { .. }
+            }
         )
     })
 }
@@ -583,10 +583,6 @@ fn slot_of(node: &CompiledNode) -> Option<&str> {
                 | TaskOperatorV1::Verify { slot }
                 | TaskOperatorV1::FixVerify { slot },
             ..
-        }
-        | CompiledOperator::ReviewDomain {
-            operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
-            ..
         } => Some(slot),
         _ => None,
     }
@@ -594,7 +590,7 @@ fn slot_of(node: &CompiledNode) -> Option<&str> {
 
 /// The Worker `plan` binds `slot` to, named by Provider kind, model and effort only: never the
 /// binding's label or principal, and a model value that is not a model identity is `unknown`.
-fn bound_worker(plan: &ExecutionPlanV3, slot: &str) -> Option<TaskReportWorkerV1> {
+fn bound_worker(plan: &ExecutionPlan, slot: &str) -> Option<TaskReportWorkerV1> {
     plan.bindings
         .get(slot)
         .map(|binding| match &binding.execution {
@@ -626,7 +622,7 @@ fn slot_role(graph: &CompiledTask, slot: &str) -> String {
 /// bookkeeping nodes (seal, bind, reduce, accept, select) and Provider admission are left out.
 fn pipeline(
     cas: &Cas,
-    plan: &ExecutionPlanV3,
+    plan: &ExecutionPlan,
     graph: &CompiledTask,
 ) -> Result<TaskReportPipelineV1, String> {
     let root = graph
@@ -858,13 +854,13 @@ fn tally_runs(events: &[(u64, u64, Mark)]) -> Option<EventTimes> {
 
 /// Each recorded plan and its compiled graph, read once.
 #[derive(Default)]
-struct Plans(BTreeMap<String, (ExecutionPlanV3, CompiledTask)>);
+struct Plans(BTreeMap<String, (ExecutionPlan, CompiledTask)>);
 
 impl Plans {
-    fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlanV3, &CompiledTask), String> {
+    fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlan, &CompiledTask), String> {
         if !self.0.contains_key(id) {
-            let plan: ExecutionPlanV3 = artifact(cas, id, EXECUTION_PLAN_V4)?;
-            let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+            let plan: ExecutionPlan = artifact(cas, id, EXECUTION_PLAN_V4)?;
+            let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V4)?;
             self.0.insert(id.to_owned(), (plan, graph));
         }
         let (plan, graph) = &self.0[id];
@@ -1133,16 +1129,6 @@ fn role_and_worker(
                 false,
             ),
         },
-        Some(CompiledOperator::ReviewDomain { operation, .. }) => match operation {
-            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot } => {
-                (slot_role(graph, slot), bound_worker(plan, slot), true)
-            }
-            ReviewOperation::Generation => ("review_generation".into(), None, false),
-            ReviewOperation::Gate => ("review_gate".into(), None, false),
-            ReviewOperation::Gather => ("review_gather".into(), None, false),
-            ReviewOperation::Ledger => ("review_ledger".into(), None, false),
-            ReviewOperation::Slicer => ("review_slicer".into(), None, false),
-        },
         // All listed slots share one captured Provider capability.
         Some(CompiledOperator::ProviderAdmission { bindings }) => (
             "provider_admission".into(),
@@ -1152,9 +1138,6 @@ fn role_and_worker(
                 .and_then(|slot| bound_worker(plan, slot)),
             false,
         ),
-        Some(CompiledOperator::ReviewIntegrationChecks { .. }) => {
-            ("integration_checks".into(), None, false)
-        }
         Some(CompiledOperator::RootInputs) => ("root_inputs".into(), None, false),
         Some(CompiledOperator::Select) => ("select".into(), None, false),
     })
