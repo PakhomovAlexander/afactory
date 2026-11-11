@@ -35,19 +35,34 @@ without inventing historical check measurements; the optional Gate hint belongs 
 and is not part of `task wait --json`. Separate history tests
 cover measured check ordering, identity, cache annotations and corrupt evidence.
 
-All state-log fixtures use public pause/resume transitions before proposing their large authority,
-with a live release/take handoff replacing every 64th pair, then admit and hand off to a fresh
-normal 60-second lease as the final write. They do not need
-10,000 distinct host-clock milliseconds or repeated validation of unreferenced large packages in
-setup. The original fixture keeps its case identity, two-node artifact workload and exact 10,000
-events. Its workload contracts are now `state_projection_v3`, `state_projection_seed_v2` and
-`cli_state_fixture_v2`; the old versions are refused. The full `task show` oracle checks 4,920 waits, 4,919 resumes, one proposal, one admission, 79 releases and 79 lease takes,
-as well as all ordered sequences. `persistence_fs_v2` measures 100 committed release/take
-transitions after a five-event setup prefix. Earlier renewal loops could fail when two writes
-shared one millisecond; no writer rule, retry bound or timing tolerance is relaxed.
+The original renewal coverage is retained separately from waiter setup. `state_projection_v2`,
+`state_projection_seed_v1` and `cli_state_fixture_v1` write open, propose, admit and exactly
+9,997 production renewals through the protected writer. The full `task show` oracle checks
+all 10,000 sequences, numbered 0..9999 once each in order, and exactly 9,997 `lease_renewed`
+transitions. Fixture setup observes the live durable expiry and waits only when the current
+host millisecond cannot advance it. Each eligibility check has a one-second monotonic bound;
+expiry/fencing fails promptly, and every protected write is attempted once. This coordination
+is outside measured CLI/projection regions. Projection timing boundaries remain unchanged.
 
-Setup is outside the measured CLI process. No
-background writer, Provider inference, longer-than-production lease or relaxed envelope cap is involved.
+All six waiter fixtures instead use pause/resume setup with live release/take handoffs every
+64th pair, then admit and take a fresh normal 60-second lease as the final write. The
+`cli_state_10000` waiter uses the separately named `cli_wait_original_fixture_v1` writer;
+it preserves the two-node authority and its existing waiter workload without changing the
+renewal seed used by `task show`. The other five use `cli_wait_fixture_v1`.
+
+The persistence diagnostic again appends exactly 100 production renewals after one setup
+renewal (a four-event prefix), with FULL-synchronous SQLite transactions and complete ordered
+replay. Its `persistence_fs_v3` contract explicitly includes clock-eligibility reads/waits in
+the measured region: these renewals require advancing milliseconds even on a fast filesystem.
+It preserves renewal coverage and semantic oracles, but is not timing-comparable with
+`persistence_fs_v1`. The discarded `persistence_fs_v2` handoff workload is not a substitute
+for renewal coverage. No writer rule, retry bound, budget or timing tolerance is relaxed.
+See the [restoration decision](../adr/2026-11-11-preserve-renewal-performance-workloads.md).
+
+Setup is outside the measured CLI process. No background writer, Provider inference,
+longer-than-production lease or relaxed envelope cap is involved. Historical GNU/shared-host
+numbers predate reconciliation and this restoration; they remain diagnostic history, not
+calibrated or current-head measurements.
 
 `total_cpu_ms` sums user and system nanoseconds from the same reaped child's rusage before exact
 decimal conversion. The process runner and comparator use `reaped_child_rusage` for that metric.

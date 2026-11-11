@@ -31,12 +31,12 @@ contracts = [
   "canonical_validate_v1",
   "cas_raw_get_verify_v1",
   "cas_typed_get_validate_v1",
-  "persistence_fs_v2",
+  "persistence_fs_v3",
   "sentinel_canonical_v1",
   "source_capture_seed_v1",
   "source_capture_v2",
-  "state_projection_seed_v2",
-  "state_projection_v3",
+  "state_projection_seed_v1",
+  "state_projection_v2",
 ]
 closure = [
   "crates/af-runtime/examples/perf-probe.rs",

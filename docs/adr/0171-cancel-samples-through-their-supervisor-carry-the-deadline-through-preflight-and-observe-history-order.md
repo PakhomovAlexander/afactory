@@ -1,6 +1,6 @@
 # ADR-0171: Cancel samples through their supervisor, carry the deadline through preflight, and observe history order
 
-**Status:** accepted (2026-10-20); benchmark event mix partially superseded by [Task observation](2026-11-10-reuse-validated-artifacts-for-task-observation.md); decisions 3 and 4 amended by
+**Status:** accepted (2026-10-20); benchmark renewal coverage restored by [renewal workloads](2026-11-11-preserve-renewal-performance-workloads.md); decisions 3 and 4 amended by
 [ADR-0172](0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md)
 (the deadline before artifact admission, and streamed JSON in place of the history's prefix
 observation), and decisions 1 and 3 by

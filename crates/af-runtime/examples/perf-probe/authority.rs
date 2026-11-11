@@ -249,9 +249,8 @@ pub fn build_waiter(
     .map(|(fixture, ())| fixture)
 }
 
-/// The original two-node state workload, with an exact clock-independent event count.
-/// This preserves its artifact workload while avoiding a host millisecond per renewal.
-pub fn build_event_log(root: &Path, events: u64) -> Result<AuthorityFixture, Failure> {
+/// The separate two-node waiter workload, with pauses/resumes and a final normal lease.
+pub fn build_original_waiter(root: &Path, events: u64) -> Result<AuthorityFixture, Failure> {
     if events < 6 || events % 2 != 0 {
         return Err(Failure::new(
             FailureKind::FixtureFailed,
@@ -788,17 +787,34 @@ fn captured<T>(
 }
 
 impl AuthorityFixture {
-    /// Release a live lease and take a fresh normal lease. Neither operation waits for a
-    /// clock tick or retries a failed publication, and an expired release stops before take.
-    pub fn handoff(&mut self) -> Result<(), String> {
+    /// Wait only until a production renewal can advance the durable expiry, then perform
+    /// exactly one protected write. This is setup for log fixtures; persistence_fs_v3
+    /// explicitly includes this coordination and its reads in the measured region.
+    /// No write is retried. A stalled/backwards wall clock is bounded by one monotonic second;
+    /// lease expiry/fencing is checked on every observation and still checked by the writer.
+    pub fn renew(&mut self) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let expiry = self
+                .store
+                .task_lease_state(&self.lease)
+                .map_err(|e| e.to_string())?;
+            let now = now_ms()?;
+            if now
+                .checked_add(fixtures::TASK_LEASE_MS)
+                .is_some_and(|next| next > expiry)
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("host clock did not permit a lease renewal within one second".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         self.store
-            .release_task_lease(&self.cas, &self.lease)
-            .map_err(|e| e.to_string())?;
-        self.lease = self
-            .store
-            .take_task_lease(&self.cas, TASK_ID, WRITER, fixtures::TASK_LEASE_MS)
-            .map_err(|e| e.to_string())?;
-        Ok(())
+            .renew_task_lease(&self.cas, &self.lease, fixtures::TASK_LEASE_MS)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     pub fn run_id(&self) -> Result<String, String> {

@@ -100,11 +100,7 @@ elif args[:2] == ["review", "run"]:
     sys.stdout.write('{"schema":"af/review-outcome@3"}\n')
 elif args[:2] == ["task", "show"]:
     read_private_copy(os.path.join(state(), "events.sqlite"))
-    kinds = ["opened"]
-    for pair in range(4997):
-        kinds += (["lease_released", "lease_taken"] if (pair + 1) %% 64 == 0
-                  else ["waiting", "resumed"])
-    kinds += ["waiting", "plan_proposed", "plan_admitted", "lease_released", "lease_taken"]
+    kinds = ["opened", "plan_proposed", "plan_admitted"] + ["lease_renewed"] * 9997
     sys.stdout.write('{"task_id":"perf-probe-task","history":[' + ",".join(
         '{"sequence":%%d,"transition":{"change":{"kind":"%%s"}}}' %% (index, kind)
         for index, kind in enumerate(kinds)) + "]}\n")
@@ -1122,7 +1118,7 @@ class NativeSeeds(SeedHarness):
     def test_a_plan_seed_other_than_the_registry_s_is_refused_before_anything_runs(self):
         plan, plan_path, build = self.seeded("native_identity", cases=(COLD,))
         plan["cases"][0]["seed"] = dict(plan["cases"][0]["seed"],
-                                        contract_id="state_projection_seed_v1")
+                                        contract_id="state_projection_seed_v2")
         plan["plan_digest"] = contracts.plan_digest(plan)
         with open(plan_path, "wb") as stream:
             stream.write(contracts.write_bytes(plan, "run"))
@@ -1868,6 +1864,19 @@ class CliRegistry(TempDir):
             self.assertEqual(cli_cases.setup_argument(entry, {}, "baseline", "-"),
                              entry["parameters"]["state"])
 
+    def test_renewal_cli_seed_is_distinct_from_the_original_shaped_waiter(self):
+        doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        self.assertEqual(doc["seeds"]["task_state"]["contract_id"], "cli_state_fixture_v1")
+        writer = runpy.run_path(os.path.join(ROOT, "fixtures/performance/cli/waiter-state.py"))
+        self.assertEqual(writer["STATES"]["cli_state_10000"],
+                         ("cli_wait_original_fixture", "cli_wait_original_fixture_v1", 10000))
+        for adapter in doc["adapters"].values():
+            shows = [e for e in adapter["commands"]
+                     if e["parameters"].get("command") == "task_show"]
+            self.assertEqual(len(shows), 1)
+            self.assertIn({"kind": "json_stream_count", "path": "history.*.transition.change.kind",
+                           "value": "lease_renewed", "count": 9997}, shows[0]["rules"])
+
     def test_waiter_setup_driver_selects_the_public_writer_and_refuses_false_receipts(self):
         writer = runpy.run_path(os.path.join(ROOT, "fixtures/performance/cli/waiter-state.py"))
         declared = suite_module.load(SUITE).doc["cases"]["cli_task_wait"]["parameters"]["state"]["values"]
@@ -2248,11 +2257,7 @@ class CliOracle(TempDir):
     RETAINED = 196608
 
     def events(self, numbers, kinds=None):
-        expected = ["opened"]
-        for pair in range(4997):
-            expected += (["lease_released", "lease_taken"] if (pair + 1) % 64 == 0
-                         else ["waiting", "resumed"])
-        expected += ["waiting", "plan_proposed", "plan_admitted", "lease_released", "lease_taken"]
+        expected = ["opened", "plan_proposed", "plan_admitted"] + ["lease_renewed"] * 9997
         return [{"sequence": number, "transition": {"change": {
             "kind": (kinds or {}).get(index, expected[index] if index < len(expected) else "extra")}}}
                 for index, number in enumerate(numbers)]
@@ -2334,7 +2339,7 @@ class CliOracle(TempDir):
                 self.assertIn(why, detail)
         self.assertTrue(self.judge_show(whole)[0])
 
-    def test_the_task_identity_and_handoff_transitions_are_selected_semantics(self):
+    def test_the_task_identity_and_renewals_are_selected_semantics(self):
         whole = self.task_show(self.events(range(10000)))
         passed, detail, _ = self.judge_show(self.task_show(self.events(range(10000)),
                                                            task_id="another-task"))
@@ -2348,8 +2353,8 @@ class CliOracle(TempDir):
         transitions = self.task_show(self.events(range(10000), kinds={5000: "lease_lost"}))
         passed, detail, _ = self.judge_show(transitions)
         self.assertFalse(passed)
-        self.assertIn('history.*.transition.change.kind is "resumed" 4918 times, not '
-                      '4919', detail)
+        self.assertIn('history.*.transition.change.kind is "lease_renewed" 9996 times, not '
+                      '9997', detail)
 
     def test_the_history_is_judged_whole_at_every_retention_and_chunk_boundary(self):
         document = self.task_show(self.events(range(10000)))

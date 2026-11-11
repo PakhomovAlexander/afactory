@@ -26,7 +26,7 @@ CHECK_SCHEMA = "af.perf-probe-check/1"
 EXIT_REFUSED = 2
 REQUIRED_METRICS = ("wall_ms", "setup_ms")
 # Metrics a contract's successful message must also carry.
-CONTRACT_METRICS = {"persistence_fs_v2": ("logical_bytes",)}
+CONTRACT_METRICS = {"persistence_fs_v3": ("logical_bytes",)}
 DETAIL_MAX = 4096
 # A cleanup diagnostic appended to a failure never takes more than this, so the original
 # diagnostic always keeps the rest; the complete cleanup report goes to stderr, bounded too.

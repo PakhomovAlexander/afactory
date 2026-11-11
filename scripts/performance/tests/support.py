@@ -331,7 +331,7 @@ overrides_path = os.path.join(here, "overrides.json")
 overrides = json.load(open(overrides_path)) if os.path.exists(overrides_path) else {}
 action = overrides.get(str(call))
 if action is None and any('"' + name + '"' in request["stdin"] for name in (
-        "source_capture_seed_v1", "state_projection_seed_v2", "authority_seed_v1")):
+        "source_capture_seed_v1", "state_projection_seed_v1", "authority_seed_v1")):
     # Every native seed writer's request (ADR-0170), whatever its index.
     action = overrides.get("native_seed_writer")
 elif action is None and any(arg.endswith("/tui-open.py") for arg in request["argv"]):

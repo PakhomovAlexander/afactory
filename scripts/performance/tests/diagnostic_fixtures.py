@@ -50,7 +50,7 @@ def line(stream):
     return out
 if request["contract_id"] in config.get("refuse", []):
     sys.exit(2)
-if request["contract_id"] == "cli_state_fixture_v2":
+if request["contract_id"] == "cli_state_fixture_v1":
     # The CLI Task state seed setup.sh writes through the side's probe: its state below
     # probe-work and a message whose check reports exactly 10,000 events.
     os.makedirs(os.path.join(request["scratch"], "probe-work"))
@@ -59,7 +59,7 @@ if request["contract_id"] == "cli_state_fixture_v2":
                      '"count":10000,"detail":"fake cli seed"}}\n')
     sys.exit(0)
 is_seed = request["contract_id"] in (
-    "source_capture_seed_v1", "state_projection_seed_v2", "authority_seed_v1")
+    "source_capture_seed_v1", "state_projection_seed_v1", "authority_seed_v1")
 if is_seed:
     # A seed writer writes below its own work directory, as the real probe does.
     os.mkdir(os.path.join(request["scratch"], "probe-work"))
@@ -455,11 +455,7 @@ if args[:2] == ["task", "show"]:
     out = sys.stdout
     out.write('{"task_id":"perf-probe-task","history":[')
     first = True
-    kinds = ["opened"]
-    for pair in range(4997):
-        kinds += (["lease_released", "lease_taken"] if (pair + 1) % 64 == 0
-                  else ["waiting", "resumed"])
-    kinds += ["waiting", "plan_proposed", "plan_admitted", "lease_released", "lease_taken"]
+    kinds = ["opened", "plan_proposed", "plan_admitted"] + ["lease_renewed"] * 9997
     for number in range(10000):
         if number == skip:
             continue

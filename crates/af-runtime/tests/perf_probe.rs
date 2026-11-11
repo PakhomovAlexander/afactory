@@ -434,9 +434,9 @@ fn the_declared_contracts_are_the_registry_cases() {
         }
     }
     assert_eq!(
-        declared + 7,
+        declared + 8,
         protocol::CONTRACTS.len(),
-        "plus the sentinel, three CLI fixture writers and three native seed writers"
+        "plus the sentinel, four CLI fixture writers and three native seed writers"
     );
     // A seeded case's probe reads exactly the seed the registry declares, which its writer
     // contract writes over exactly the declared parameters (ADR-0170).
@@ -609,10 +609,11 @@ fn requests_outside_the_declared_contracts_are_refused() {
         }
     }
     for (case, contract) in [
-        ("state_projection", "state_projection_v2"),
-        ("state_projection_seed", "state_projection_seed_v1"),
-        ("cli_state_fixture", "cli_state_fixture_v1"),
+        ("state_projection", "state_projection_v3"),
+        ("state_projection_seed", "state_projection_seed_v2"),
+        ("cli_state_fixture", "cli_state_fixture_v2"),
         ("persistence_fs", "persistence_fs_v1"),
+        ("persistence_fs", "persistence_fs_v2"),
     ] {
         let mut request = base.clone();
         request["case_id"] = json!(case);
@@ -1287,8 +1288,7 @@ fn a_seed_writer_s_check_must_match_its_golden_seed_entry() {
 
 #[test]
 fn an_event_fixture_must_be_exact_and_its_damage_is_reported() {
-    // The exact clock-independent fixture requires an opening, pause, proposal, admission
-    // and final release/take: fewer than six events cannot be the fixture.
+    // Open, propose and admit require three events before the renewal suffix.
     let (_owner, scratch) = empty_scratch();
     let failure = cases::event_log(&scratch, 2).unwrap_err();
     assert_eq!(failure.kind, protocol::FailureKind::FixtureFailed);
@@ -1585,6 +1585,37 @@ fn the_probe_leaves_its_work_for_the_caller_and_reports_only_the_sample() {
     assert!(reply.stderr.is_empty());
 }
 
+#[test]
+fn fixture_renewals_advance_expiry_and_a_released_lease_is_never_healed() {
+    let (_owner, scratch) = empty_scratch();
+    let mut fixture = authority::build(&scratch, None, fixtures::TASK_LEASE_MS).unwrap();
+    let run = fixture.run_id().unwrap();
+    let mut expiry = fixture.store.task_lease_state(&fixture.lease).unwrap();
+    for _ in 0..100 {
+        fixture.renew().unwrap();
+        let next = fixture.store.task_lease_state(&fixture.lease).unwrap();
+        assert!(next > expiry);
+        expiry = next;
+    }
+    let events = fixture.store.replay(&run).unwrap();
+    assert_eq!(events.len(), 103);
+    assert!(
+        events[3..]
+            .iter()
+            .all(|event| event.payload["change"]["kind"] == "lease_renewed")
+    );
+    fixture
+        .store
+        .release_task_lease(&fixture.cas, &fixture.lease)
+        .unwrap();
+    assert!(fixture.renew().is_err());
+    assert_eq!(
+        fixture.store.len(&run).unwrap(),
+        104,
+        "a failed precondition never writes or heals"
+    );
+}
+
 // State persistence lease ---------------------------------------------------------------------
 
 #[test]
@@ -1593,11 +1624,11 @@ fn the_state_persistence_region_starts_with_a_refreshed_production_lease() {
     let outcome =
         cases::persistence_state_sample(&scratch, cases::PRODUCTION_LEASE, Instant::now());
     let observation = outcome.result.as_ref().unwrap();
-    // Open, propose and admit, then a handoff: the region's 100 transitions follow it.
+    // Open, propose and admit, then one refresh: 100 measured renewals follow it.
     assert!(
         observation
             .detail
-            .contains("appended=100 prefix=5 lease=refreshed_before_region"),
+            .contains("appended=100 prefix=4 lease=refreshed_before_region"),
         "{}",
         observation.detail
     );
@@ -1617,7 +1648,7 @@ fn a_production_lease_lapsing_at_the_state_persistence_boundary_fails_without_re
     let outcome = cases::persistence_state_sample(&scratch, lapsed, Instant::now());
     assert!(
         outcome.region_nanos.is_some(),
-        "the first release ran and failed"
+        "the first renewal ran and failed"
     );
     let failure = outcome.result.as_ref().unwrap_err();
     assert_eq!(
@@ -1632,10 +1663,10 @@ fn a_production_lease_lapsing_at_the_state_persistence_boundary_fails_without_re
         "{}",
         failure.detail
     );
-    // No release was retried or recorded after the lapse: the log ends at the handoff.
+    // No renewal was retried or recorded after the lapse: the log ends at the refresh.
     let store = af_store::EventStore::open(scratch.join("events.sqlite")).unwrap();
     let run = af_store::store::task::task_run_id(authority::TASK_ID).unwrap();
-    assert_eq!(store.len(&run).unwrap(), 5);
+    assert_eq!(store.len(&run).unwrap(), 4);
     let golden = golden();
     let entry = golden["entries"]
         .as_array()
@@ -1937,7 +1968,7 @@ fn the_region_checks_through_a_cold_authority_that_no_setup_write_used() {
 fn the_state_persistence_refresh_is_the_last_setup_step_after_a_delayed_store_read() {
     // A delayed Store read before the refresh is setup cost, not lease time: the refresh
     // follows it, the prefix counts the refresh without another read, and the region's
-    // handoffs follow the refresh directly.
+    // renewals follow the refresh directly.
     let (_owner, scratch) = empty_scratch();
     let mut finished_ms = 0;
     let outcome = cases::persistence_state_sample_with(
@@ -1954,18 +1985,16 @@ fn the_state_persistence_refresh_is_the_last_setup_step_after_a_delayed_store_re
     );
     let observation = outcome.result.as_ref().unwrap();
     assert!(
-        observation.detail.contains("appended=100 prefix=5"),
+        observation.detail.contains("appended=100 prefix=4"),
         "{}",
         observation.detail
     );
     let store = af_store::EventStore::open(scratch.join("events.sqlite")).unwrap();
     let run = af_store::store::task::task_run_id(authority::TASK_ID).unwrap();
     let events = store.replay(&run).unwrap();
-    assert_eq!(events.len(), 105);
-    let (_, released) = transition(&events[3]);
-    assert_eq!(released["kind"], "lease_released");
-    let (refreshed_ms, change) = transition(&events[4]);
-    assert_eq!(change["kind"], "lease_taken", "{change}");
+    assert_eq!(events.len(), 104);
+    let (refreshed_ms, change) = transition(&events[3]);
+    assert_eq!(change["kind"], "lease_renewed", "{change}");
     assert!(
         refreshed_ms >= finished_ms,
         "the refresh followed the delay"
@@ -1978,9 +2007,19 @@ fn the_state_persistence_refresh_is_the_last_setup_step_after_a_delayed_store_re
         change["lease_until_unix_ms"].as_u64().unwrap() - refreshed_ms,
         af_runtime::task::lease::TASK_LEASE_MS
     );
-    let (first_handoff_ms, change) = transition(&events[5]);
-    assert_eq!(change["kind"], "lease_released", "{change}");
-    assert!(first_handoff_ms >= refreshed_ms);
+    let (first_renewal_ms, change) = transition(&events[4]);
+    assert_eq!(change["kind"], "lease_renewed", "{change}");
+    assert!(first_renewal_ms > refreshed_ms);
+    assert!(
+        events[4..]
+            .iter()
+            .all(|event| event.payload["change"]["kind"] == "lease_renewed")
+    );
+    assert!(events[3..].windows(2).all(|pair| {
+        let (before, _) = transition(&pair[0]);
+        let (after, _) = transition(&pair[1]);
+        after > before
+    }));
     // A failing pre-refresh read is the fixture's failure; nothing is refreshed after it.
     let (_owner, scratch) = empty_scratch();
     let outcome = cases::persistence_state_sample_with(
@@ -2155,13 +2194,13 @@ fn actual_af_task_show_over_a_side_written_seed_passes_the_whole_history_oracle(
     // shard's seed writer does; the actual `af task show` reads a private copy of it under the
     // actual supervisor. Its document is larger than any retained log, and the oracle still
     // judges it whole as one complete JSON document: the Task's identity, every history entry
-    // numbered 0..9999 once and in order, with exact clock-independent transition counts.
+    // numbered 0..9999 once and in order, with exactly 9,997 lease renewals.
     let (_writer_owner, written) = empty_scratch();
     let seed = written.join("seed");
     std::fs::create_dir(&seed).unwrap();
     let writer = json!({"case_id": "cli_state_fixture",
                         "instance_id": "cli_state_fixture__state_cli_state_10000",
-                        "contract_id": "cli_state_fixture_v2",
+                        "contract_id": "cli_state_fixture_v1",
                         "parameters": {"state": "cli_state_10000"}});
     let reply = protocol::run(&serde_json::to_vec(&request(&writer, &seed)).unwrap());
     assert_eq!(
@@ -2170,6 +2209,31 @@ fn actual_af_task_show_over_a_side_written_seed_passes_the_whole_history_oracle(
         "the seed writer failed: {}",
         String::from_utf8_lossy(&reply.stdout)
     );
+    let store = af_store::EventStore::open(seed.join("probe-work/events.sqlite")).unwrap();
+    let run = af_store::store::task::task_run_id(authority::TASK_ID).unwrap();
+    let events = store.replay(&run).unwrap();
+    assert_eq!(events.len(), 10_000);
+    assert_eq!(
+        &kinds(&events)[..3],
+        ["opened", "plan_proposed", "plan_admitted"]
+    );
+    assert!(
+        events[3..]
+            .iter()
+            .all(|event| event.payload["change"]["kind"] == "lease_renewed")
+    );
+    for (sequence, event) in events.iter().enumerate() {
+        assert_eq!(event.sequence, sequence as u64);
+    }
+    for pair in events[3..].windows(2) {
+        let (before, _) = transition(&pair[0]);
+        let (after, change) = transition(&pair[1]);
+        assert!(after > before);
+        assert_eq!(
+            change["lease_until_unix_ms"].as_u64().unwrap() - after,
+            fixtures::TASK_LEASE_MS
+        );
+    }
     let (_owner, sample) = empty_scratch();
     copy_tree(&seed, &sample.join("seed"));
     let output = Command::new("python3")
@@ -2216,8 +2280,92 @@ fn actual_af_task_show_over_a_side_written_seed_passes_the_whole_history_oracle(
         (&sequence["first"], &sequence["last"]),
         (&json!(0), &json!(9999))
     );
-    for (index, count) in [4920, 4919, 1, 1, 79, 79].into_iter().enumerate() {
-        selected(index + 2, 10000, 10000, json!([count]));
+    selected(2, 10000, 10000, json!([9997]));
+}
+
+/// Execute every declared waiter through the same registry, side writer, supervisor and
+/// independent CLI oracle. Correctness evidence only: no threshold or speedup claim.
+#[test]
+fn all_six_full_cli_waiter_fixtures_pass_running_timeout_and_rusage_oracles() {
+    let (_owner, scratch) = empty_scratch();
+    let output = Command::new("python3")
+        .args(["-I", "-B", "-c", r#"
+import json, os, subprocess, sys
+from fractions import Fraction
+sys.path.insert(0, sys.argv[1])
+from perflab import cli_cases, runner, supervise
+from perflab import suite as suite_module
+supervisor, af, probe, scratch = sys.argv[2:6]
+root = os.path.join(sys.argv[1], "..", "..")
+fixtures = os.path.join(root, "fixtures/performance/cli")
+doc = cli_cases.load(os.path.join(root, "fixtures/performance/cli.toml"))
+case = suite_module.load(os.path.join(root, "fixtures/performance/suite.toml")).doc["cases"]["cli_task_wait"]
+results = []
+for entry in doc["adapters"]["af_cli_v4"]["commands"]:
+    if entry["case_id"] != "cli_task_wait":
+        continue
+    state = entry["parameters"]["state"]
+    sample = os.path.join(scratch, state)
+    os.makedirs(os.path.join(sample, "waiter"))
+    os.mkdir(os.path.join(sample, "repo"))
+    environment = dict(runner.CLI_ENVIRONMENT)
+    environment.update(supervise.scratch_environment(sample))
+    # Correctness tests retain the production storage floor; their TMPDIR is under target.
+    written = subprocess.run([sys.executable, "-I", "-B", os.path.join(fixtures, "waiter-state.py"),
+                              os.path.join(sample, "waiter"), probe, state],
+                             env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             timeout=120, check=False)
+    assert written.returncode == 0, (state, written.stderr.decode("utf-8", "replace"))
+    receipt = json.loads(written.stdout)
+    values = {"af": af, "probe": probe, "scratch": sample, "package_version": "", "fixtures": fixtures}
+    order = supervise.request([cli_cases.expand(text, values) for text in entry["argv"]],
+                              environment, cli_cases.expand(entry["cwd"], values), "",
+                              120000, 196608, 262144, grace_ms=runner.GRACE_MS,
+                              patterns=cli_cases.patterns(entry), selectors=cli_cases.selectors(entry))
+    supervised = supervise.launch([supervisor], order)
+    result = supervised.result
+    kind, detail, _ = supervise.outcome(supervised, "process_group", control_record=False)
+    passed, why, _ = cli_cases.judge(entry, values, supervise.returncode(result), supervised.stdout,
+                                    result["stdout"]["truncated"], result["stdout_pattern_counts"],
+                                    result["stdout_json"])
+    wanted = [case["primary_metric"]] + [m for m in case["optional_metrics"] if m != "cgroup_peak_memory_bytes"]
+    metrics, missing = supervise.optional_metrics(result, wanted)
+    assert not missing, missing
+    assert Fraction(metrics["total_cpu_ms"]["value"]) == (
+        Fraction(metrics["user_cpu_ms"]["value"]) + Fraction(metrics["system_cpu_ms"]["value"]))
+    assert Fraction(metrics["wall_ms"]["value"]) > 0
+    assert int(metrics["wait4_maxrss_bytes"]["value"]) > 0
+    assert kind is None and passed, (state, kind, detail, why, supervised.stderr)
+    assert supervise.returncode(result) == 124
+    results.append({"state": state, "events": receipt["correctness"]["count"], "passed": passed,
+                    "metrics": metrics})
+print(json.dumps(results))
+"#])
+        .arg(root().join("scripts/performance"))
+        .arg(supervisor_binary())
+        .arg(af_binary())
+        .arg(probe_binary())
+        .arg(&scratch)
+        .output()
+        .expect("python3 runs the trusted driver");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let results: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let results = results.as_array().unwrap();
+    assert_eq!(results.len(), 6);
+    for result in results {
+        assert_eq!(result["passed"], true, "{result}");
+        assert_eq!(
+            result["events"],
+            if result["state"] == "cli_wait_small_100" {
+                100
+            } else {
+                10000
+            }
+        );
     }
 }
 

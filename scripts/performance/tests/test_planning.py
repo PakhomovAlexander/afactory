@@ -753,7 +753,7 @@ class FrozenBuild(History):
                          cases=["state_projection", "source_capture", "cli_discovery"])
         seeds = dict((case["instance_id"], case["seed"]) for case in plan["cases"])
         log = {"seed_id": "state_projection_seed__log_events_10000",
-               "case_id": "state_projection_seed", "contract_id": "state_projection_seed_v2",
+               "case_id": "state_projection_seed", "contract_id": "state_projection_seed_v1",
                "parameters": {"log": "events_10000"}}
         self.assertEqual(seeds["state_projection__log_events_10000_projection_prewarmed"], log)
         self.assertEqual(seeds["state_projection__log_events_10000_projection_application_cold"],
