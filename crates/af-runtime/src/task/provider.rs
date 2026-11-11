@@ -174,6 +174,7 @@ impl ProviderTaskDomain<'_> {
             .as_ref()
             .map(|usage| usage.chargeable_tokens.get());
         let mut notes = std::mem::take(&mut returned.notes);
+        notes.native_failure = returned.native_failure;
         // An environment failure is its own closed class, never an account change (ADR-0257).
         notes.environment |= returned.native_failure
             == Some(af_runner::native_failure::NativeFailureKind::Environment);

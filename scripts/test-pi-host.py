@@ -366,6 +366,300 @@ def fixture_sdk(root, state):
 
 
 class HostTests(unittest.TestCase):
+    def test_terminal_sdk_callback_sequence_and_sanitization_without_auth_io(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        script = r'''
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const host = await import(pathToFileURL(process.argv[2]).href);
+async function invoke(options = {}) {
+  const records = []; let listener; let bound;
+  const model = {id:'k3',provider:'kimi-coding',api:'openai-completions',maxTokens:32768};
+  const diagnostic = host.diagnosticFilter();
+  diagnostic.remember({access:'private-access',refresh:'private-refresh',type:'oauth'});
+  diagnostic.remember(options.headers);
+  const state = {request:{backend:model.provider},diagnostic,verifyContext:()=>{},
+    credentials:{read:async()=>{}},checkAuth:async()=>{},effectiveIdentity:()=> 'pinned-model'};
+  const message = {role:'assistant',provider:model.provider,model:options.wrongModel ? 'wrong-model' : model.id,
+    stopReason:options.stop ?? 'toolUse',content:[{type:'text',text:'FINAL_REPLY'}]};
+  const end = msg => listener({type:'message_end',message:msg});
+  const session = {subscribe:fn=>{listener=fn;},dispose:()=>{},async prompt() {
+    const entry = bound.beginInference(model);
+    bound.observe(entry,{usage:options.usage ?? {prompt_tokens:439,completion_tokens:38,
+      completion_tokens_details:{reasoning_tokens:24}}},model);
+    end(message);
+    if (options.late !== false) end({...message,stopReason:options.lateStop ?? 'error',
+      errorMessage:options.missingDiagnostic ? undefined : options.diagnostic ?? 'Kimi terminal 764: tool-call continuation rejected'});
+    if (options.replyAfterError) end({...message,stopReason:'stop'});
+    if (options.continueAfterError) assert.throws(()=>bound.beginInference(model),/unsafe_accounting/);
+    if (!options.unsettled) listener({type:'agent_settled',aborted:options.aborted ?? false});
+    if (options.promptError) throw Error(options.promptError);
+  }};
+  bound = host.bindInferenceSession(session,state,model,{model_identity:'pinned-model'},
+    new host.InferenceBudget(1000,model.provider),(type,data={})=>records.push({type,...data}));
+  await bound.run('PRIVATE_PROMPT','sha256:'+'e'.repeat(64));
+  return records;
+}
+const records = await invoke();
+const finalized = records.filter(r=>r.type==='usage' && r.complete);
+assert.equal(finalized.length,1);
+assert.deepEqual(finalized[0],{type:'usage',inference:1,complete:true,observations:1,
+  input:439,output:38,cache_read:null,cache_write:null,reasoning:24});
+assert.deepEqual(records.at(-1),{type:'error',code:'inference_failed',
+  diagnostic:'Kimi terminal 764: tool-call continuation rejected',failure_kind:'environment',accounting_complete:true});
+assert(!records.some(r=>['message','settled'].includes(r.type)));
+for (const options of [{replyAfterError:true},{aborted:true},{lateStop:'aborted'},
+  {unsettled:true},{wrongModel:true},{usage:{prompt_tokens:-1,completion_tokens:38}},
+  {usage:{completion_tokens:38}},{usage:{prompt_tokens:439,completion_tokens:38,cached_tokens:440}}]) {
+  const refused = await invoke(options);
+  assert.equal(refused.at(-1).type,'error',JSON.stringify(options));
+  assert.equal(refused.at(-1).accounting_complete,false,JSON.stringify(options));
+  assert(!refused.some(r=>['message','settled'].includes(r.type)));
+}
+assert.equal((await invoke({continueAfterError:true})).at(-1).type,'error');
+const stop = await invoke({stop:'stop',late:false});
+assert.equal(stop.at(-1).type,'settled');
+assert.equal(stop.at(-2).text,'FINAL_REPLY');
+const thrown = await invoke({stop:'stop',late:false,promptError:'Distinctive prompt exception 764'});
+assert.equal(thrown.at(-1).diagnostic,'Distinctive prompt exception 764');
+assert.equal(thrown.at(-1).accounting_complete,true);
+assert(!thrown.some(r=>r.type==='message'));
+const missing = await invoke({missingDiagnostic:true,promptError:'Actual prompt error after empty SDK error'});
+assert.equal(missing.at(-1).diagnostic,'Actual prompt error after empty SDK error');
+const first = await invoke({promptError:'later less useful prompt exception'});
+assert.equal(first.at(-1).diagnostic,'Kimi terminal 764: tool-call continuation rejected');
+for (const diagnostic of ['private-access','private-refresh','pri\nvate-access','Bearer short','api_key=short',
+  'password short','https://user:pass@host/?key=short','{"details":"body"}','[1,2,3]','a'.repeat(5000),
+  'safe text '.repeat(30)+'private-refresh']) {
+  const terminal = (await invoke({diagnostic})).at(-1);
+  assert(terminal.diagnostic.includes('withheld'));
+  assert(terminal.diagnostic.length<=240);
+  assert(terminal.accounting_complete);
+}
+const filter = host.diagnosticFilter();
+assert.equal(filter.safe('\x1b[31mDistinctive\x1b[0m\nterminal\0 error'),'Distinctive terminal error');
+const safeLong = Array(100).fill('safe diagnostic').join(' ');
+assert.equal(filter.safe(safeLong).length,240);
+assert.equal(filter.safe('{"error":{"message":"Distinctive structured SDK error"},"headers":"PRIVATE_PAYLOAD"}'),
+  'Distinctive structured SDK error');
+assert.equal(filter.safe('[SDK Error] Distinctive failure'),'[SDK Error] Distinctive failure');
+// Refreshed/short literal credentials have no token prefix to guess from.
+filter.remember({access:'rotated-small-value'});
+assert(filter.safe('error rotated-small-value').includes('withheld'));
+filter.remember({headers:{type:'violet aardvark'}});
+assert(filter.safe('violet aardvark').includes('withheld'));
+filter.remember({headers:{nested:{type:'\x1b[31mshort\x1b[0m\0credential'}}});
+assert(filter.safe('short credential').includes('withheld'));
+// Authorization schemes can be echoed as just their private credential components.
+// Exercise the real terminal callback as well as the filter, including case and OWS.
+const basic = Buffer.from('dapple-user:ochre-pass').toString('base64');
+for (const [name, value, secrets] of [
+  ['Authorization', 'Bearer zebra-123', ['Bearer zebra-123', 'zebra-123']],
+  ['authorization', ' \tbEaReR\t wren-456 \t', ['wren-456']],
+  ['Proxy-Authorization', 'Basic '+basic, [basic, 'dapple-user:ochre-pass', 'dapple-user', 'ochre-pass']],
+  ['AUTHORIZATION', 'basic\t'+basic.replace(/=+$/, ''), ['ochre-pass']],
+]) {
+  const headers = {[name]:value};
+  const privateHeader = host.diagnosticFilter();
+  privateHeader.remember(headers);
+  assert.equal(privateHeader.safe('Distinctive terminal error'), 'Distinctive terminal error');
+  for (const secret of secrets) {
+    const diagnostic = 'provider rejected '+secret;
+    assert(privateHeader.safe(diagnostic).includes('withheld'), name);
+    const terminal = (await invoke({headers, diagnostic})).at(-1);
+    assert.equal(terminal.diagnostic, '[Pi diagnostic withheld: sensitive text]');
+    assert.equal(terminal.failure_kind, 'environment');
+    assert(terminal.accounting_complete);
+  }
+}
+// Unsupported compound schemes or unrepresentable Basic credentials must not
+// guess at which components a provider might echo. Withhold all diagnostic text.
+for (const value of ['Digest username="small", response="tiny"', 'Custom small tiny',
+  'Bearer zebra-123, another', 'Bearer', 'Basic invalid!', 'Basic '+Buffer.from('no-colon').toString('base64'),
+  'Basic '+Buffer.from([0xff,0x3a,0x61]).toString('base64'), 'Bearer '+'x'.repeat(4097)]) {
+  const headers = {Authorization:value};
+  const privateHeader = host.diagnosticFilter();
+  privateHeader.remember({headers});
+  assert(privateHeader.safe('provider rejected tiny').includes('withheld'));
+  assert((await invoke({headers,diagnostic:'Distinctive terminal error'})).at(-1).diagnostic.includes('withheld'));
+}
+for (const [text, expected] of [
+  ['HTTP 429 rate limit exceeded at https://api.example.com','quota'],
+  ['\x1b[31mrate\x1b[0m\nlimit reached at https://api.example.com','quota'],
+  ['{"error":{"message":"HTTP 429 at https://api.example.com"},"credential":"expired"}','quota'],
+  ['HTTP 401 unauthorized: Bearer private-access','auth_rejected'],
+  ['network connection failed at https://api.example.com','network'],
+  ['refresh token failed: another refresh in progress','auth_refresh_contended'],
+  ['credentials revoked','auth_revoked'], ['credentials expired','auth_expired'],
+  ['missing credentials','auth_missing'], ['credential refresh failed','auth_refresh_failed'],
+  ['model at capacity','capacity'], ['model unavailable','model_unavailable'],
+  ['safeguards flagged this message','model_refused'], ['unknown SDK error','environment'],
+]) {
+  assert.equal(host.failureKind(text),expected);
+  assert.equal((await invoke({diagnostic:text})).at(-1).failure_kind,expected);
+}
+// Structured codes classify neutral messages but never become diagnostic text.
+for (const [payload, expected, diagnostic] of [
+  [{error:{type:'rate_limit_error',message:'Please slow down'}},'quota','Please slow down'],
+  [{error:{code:'model_not_found',message:'Request refused'}},'model_unavailable','Request refused'],
+  [{type:'rate_limit_error',message:'Please slow down'},'quota','Please slow down'],
+  [{code:'model_not_found',message:'Request refused'},'model_unavailable','Request refused'],
+  [{error:{type:'rate_limit_error'}},'quota','[Pi diagnostic withheld: structured payload]'],
+  [{error:{code:'model_not_found',message:'private-access'}},'model_unavailable','[Pi diagnostic withheld: sensitive text]'],
+]) {
+  const categorized = await invoke({diagnostic:JSON.stringify(payload)});
+  const terminal = categorized.at(-1);
+  assert.equal(terminal.failure_kind,expected);
+  assert.equal(terminal.diagnostic,diagnostic);
+  assert(terminal.accounting_complete);
+  assert.deepEqual(categorized.filter(r=>r.type==='usage' && r.complete),finalized);
+  assert(!categorized.some(r=>['message','settled'].includes(r.type)));
+}
+for (const payload of [
+  {error:{type:['rate_limit_error'],message:'Neutral'}},
+  {error:{code:{value:'model_not_found'},message:'Neutral'}},
+  {error:{code:'x'.repeat(128)+'model_not_found',message:'Neutral'}},
+  {error:{code:'model_not_found invalid',message:'Neutral'}},
+  {details:{code:'model_not_found'},message:'Neutral'},
+]) assert.equal(host.failureKind(JSON.stringify(payload)),'environment');
+assert.equal(host.failureKind('x'.repeat(4096)+' HTTP 429'),'environment');
+for (const file of ['[default]\naws_secret_access_key = orange-lantern-47\n',
+  '{"type":"orange-lantern-47"}', 'orange-lantern-47\n', 'key = "orange-lantern-47"']) {
+  const privateFile = host.diagnosticFilter();
+  privateFile.rememberFile(Buffer.from(file));
+  assert(privateFile.safe('orange-lantern-47').includes('withheld'));
+}
+// URL selectors hide their query values from public context identity, but a
+// provider can echo only the decoded value. Remember every sensitive occurrence.
+for (const [url, secrets] of [
+  ['https://auth.example/path?token=briefvalue', ['briefvalue']],
+  [' \nhttps://auth.example/path?token=briefvalue\n', ['briefvalue']],
+  ['ht\ttps://auth.example/path?token=briefvalue', ['briefvalue']],
+  ['https://auth.example/path?token=first&token=second&api_key=third', ['first','second','third']],
+  ['https://auth.example/path?signature=short%2Dvalue&password=two+words', ['short-value','two words']],
+  ['https://auth.example/path?auth=%E9%9B%AA', ['雪']],
+  ['https://auth.example/path?secret=%00', ['unrepresentable diagnostic']],
+  ['https://auth.example/path?token=%FF', ['unrepresentable diagnostic']],
+]) {
+  const privateFile = host.diagnosticFilter();
+  privateFile.rememberFile(Buffer.from(JSON.stringify({credential_source:{url}})));
+  for (const secret of secrets) assert(privateFile.safe('provider rejected '+secret).includes('withheld'),url);
+}
+const overflow = host.diagnosticFilter();
+overflow.remember('x'.repeat(4097));
+assert(overflow.safe('short SDK error').includes('withheld'));
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            contract = Path(directory) / 'terminal-callbacks.mjs'
+            contract.write_text(script)
+            result = subprocess.run([node, str(contract), str(HOST)], capture_output=True,
+                                    text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # Refuse the previous protocol before loading an SDK or any credentials.
+            old = subprocess.run([node, '--no-addons', str(HOST)],
+                                 input=json.dumps({'schema': 'af.pi-host/6', 'type': 'init'}) + '\n',
+                                 capture_output=True, text=True, timeout=30,
+                                 env={'HOME': directory}, check=False)
+            self.assertEqual(old.returncode, 1)
+            self.assertEqual(json.loads(old.stdout), {'schema': 'af.pi-host/7', 'type': 'error',
+                                                     'code': 'host_refused'})
+            self.assertEqual(old.stderr, '')
+
+    def test_terminal_sdk_error_after_complete_tool_use_retains_safe_diagnostic_and_charge(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / 'state.json'
+            sdk = fixture_sdk(root, state)
+            auth = root / 'auth'
+            auth.mkdir()
+            (auth / 'auth.json').write_text(json.dumps({'kimi-coding': {
+                'type': 'oauth', 'access': 'PRIVATE_SHORT_ACCESS',
+                'refresh': 'PRIVATE_SHORT_REFRESH', 'expires': 9999999999999}}))
+            # Exercise the selected profile and captured credential-file closure,
+            # including values with neither a recognizable prefix nor a secret label.
+            def private(name, text):
+                file = root / name
+                file.write_text(text)
+                file.chmod(0o600)
+                return str(file.resolve())
+            aws = private('aws-credentials', '[default]\naws_secret_access_key = orange-lantern-47\n')
+            token = private('subject-token', 'teal-juniper-73')
+            adc = private('adc.json', json.dumps({'private_key': 'silver marigold',
+                                                'credential_source': {'file': token,
+                                                                      'url': 'https://auth.example/path?token=briefvalue'}}))
+            private('auth/models.json', json.dumps({'providers': {'kimi-coding': {
+                'headers': {'type': 'violet aardvark', 'Authorization': 'Bearer zebra-123'}}}}))
+            private('auth/af-context.json', json.dumps({'schema': 'af.pi-context/1', 'environment': {
+                'AWS_SHARED_CREDENTIALS_FILE': aws, 'GOOGLE_APPLICATION_CREDENTIALS': adc}}))
+            init = {'schema': 'af.pi-host/7', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
+                    'auth_dir': str(auth), 'principal': None,
+                    'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
+                    'cwd': directory, 'home': directory, 'readable': [directory], 'writable': [], 'probe': True}
+            def invoke(inputs):
+                result = subprocess.run([node, '--no-addons', str(HOST)],
+                                        input=''.join(json.dumps(r) + '\n' for r in inputs),
+                                        capture_output=True, text=True, cwd=root, timeout=30,
+                                        env={'HOME': directory, 'PI_OFFLINE': '1'}, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                return [json.loads(line) for line in result.stdout.splitlines()]
+            state.write_text(json.dumps({'backend': 'kimi-coding'}))
+            ready = invoke([init])[0]
+            prepare = {'schema': 'af.pi-host/7', 'type': 'prepare', 'model': 'k3', 'effort': 'high',
+                       'model_identity': ready['models'][0]['identity'], 'remaining_tokens': 1000,
+                       'reply_schema': None}
+            prompt = {'schema': 'af.pi-host/7', 'type': 'prompt', 'text': 'PRIVATE_WORKER_REQUEST',
+                      'prompt_nonce': 'sha256:' + 'e'*64}
+            distinctive = 'Kimi terminal 764: tool-call continuation rejected'
+            base = {'backend': 'kimi-coding', 'stopReason': 'toolUse',
+                    'usage': {'prompt_tokens': 439, 'completion_tokens': 38,
+                              'completion_tokens_details': {'reasoning_tokens': 24}},
+                    'lateError': distinctive}
+            for extra, complete in [({}, True), ({'wrongMessageModel': True}, False),
+                                    ({'usage': {'prompt_tokens': -1, 'completion_tokens': 38}}, False)]:
+                with self.subTest(extra=extra):
+                    state.write_text(json.dumps({**base, **extra}))
+                    records = invoke([{**init, 'probe': False}, prepare, prompt])
+                    self.assertEqual(records[-1]['type'], 'error', records)
+                    # Usage/model refusals can stop before the SDK emits its late error.
+                    if 'usage' not in extra:
+                        self.assertEqual(records[-1]['diagnostic'], distinctive)
+                    self.assertEqual(records[-1]['accounting_complete'], complete)
+                    self.assertFalse(any(r['type'] in ['message', 'settled'] for r in records))
+                    usage = [r for r in records if r['type'] == 'usage'][-1]
+                    self.assertEqual(usage['output'], 38)
+                    if 'usage' not in extra:
+                        self.assertEqual((usage['input'], usage['reasoning']), (439, 24))
+                        self.assertEqual(usage['complete'], 'wrongMessageModel' not in extra)
+            # A real final stop continues to succeed; a thrown prompt error after the
+            # same accounted stream can never release that final reply.
+            for thrown in [None, 'Distinctive prompt rejection 764']:
+                control = {**base, 'stopReason': 'stop'}
+                del control['lateError']
+                if thrown:
+                    control['promptError'] = thrown
+                state.write_text(json.dumps(control))
+                records = invoke([{**init, 'probe': False}, prepare, prompt])
+                self.assertEqual(records[-1]['type'], 'error' if thrown else 'settled')
+                if thrown:
+                    self.assertEqual(records[-1]['diagnostic'], thrown)
+                    self.assertTrue(records[-1]['accounting_complete'])
+                    self.assertFalse(any(r['type'] == 'message' for r in records))
+            # The real credential filter also recognizes short literal credentials.
+            for unsafe in ['PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'violet aardvark',
+                           'orange-lantern-47', 'silver marigold', 'teal-juniper-73',
+                           'provider rejected briefvalue', 'provider rejected zebra-123']:
+                state.write_text(json.dumps({**base, 'lateError': unsafe}))
+                records = invoke([{**init, 'probe': False}, prepare, prompt])
+                diagnostic = records[-1]['diagnostic']
+                self.assertIn('withheld', diagnostic)
+                self.assertLessEqual(len(diagnostic), 240)
+                self.assertTrue(records[-1]['accounting_complete'])
+                for secret in [unsafe, 'briefvalue', 'zebra-123', 'PRIVATE_SHORT_ACCESS', 'PRIVATE_SHORT_REFRESH', 'PRIVATE_WORKER_REQUEST']:
+                    self.assertNotIn(secret, json.dumps(records))
+
     def test_official_catalog_invariant_covers_every_chat_provider_transport_and_native_usage(self):
         sdk = installed_sdk()
         if not sdk:
@@ -606,7 +900,7 @@ if(process.argv[3]==='invoke')assert.equal(calls,1);
                         custom = {k: v for k, v in definition.items() if k != 'provider'}
                         private_json('models.json', {'providers': {backend: {'api': 'openai-completions',
                                                                            'baseUrl': definition['baseUrl'], 'models': [custom]}}})
-                    init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': sdk,
+                    init = {'schema': 'af.pi-host/7', 'type': 'init', 'sdk': sdk,
                             'backend': backend, 'principal': None, 'auth_dir': str(auth),
                             'auth_context_id': 'sha256:'+hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                             'cwd': str(root), 'home': str(home), 'readable': [str(root)], 'writable': [], 'probe': True}
@@ -619,10 +913,10 @@ if(process.argv[3]==='invoke')assert.equal(calls,1);
                     if mode == 'private':
                         self.assertNotIn('123456789012', probe.stdout+probe.stderr)
                     self.assertIn(effort, selected['efforts'])
-                    prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'model': public_model,
+                    prepare = {'schema': 'af.pi-host/7', 'type': 'prepare', 'model': public_model,
                                'effort': effort, 'remaining_tokens': 1000, 'reply_schema': None,
                                'model_identity': selected['identity']}
-                    prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'text': 'Reply OK',
+                    prompt = {'schema': 'af.pi-host/7', 'type': 'prompt', 'text': 'Reply OK',
                               'prompt_nonce': 'sha256:'+'a'*64}
                     result = invoke([{**init, 'probe': False}, prepare, prompt], True)
                     self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
@@ -690,7 +984,7 @@ const host=await import(pathToFileURL(process.argv[2]).href);await host.main();
                                           input=''.join(json.dumps(r)+'\n' for r in records),
                                           capture_output=True, text=True, cwd=root, timeout=30,
                                           env={'HOME': str(home), 'PI_OFFLINE': '1'}, check=False)
-                init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': sdk,
+                init = {'schema': 'af.pi-host/7', 'type': 'init', 'sdk': sdk,
                         'backend': 'anthropic', 'principal': None, 'auth_dir': str(auth),
                         'auth_context_id': 'sha256:'+hashlib.sha256(os.fsencode(auth)).hexdigest(),
                         'cwd': str(root), 'home': str(home), 'readable': [str(root)], 'writable': [], 'probe': True}
@@ -698,10 +992,10 @@ const host=await import(pathToFileURL(process.argv[2]).href);await host.main();
                 probe = invoke([init])
                 self.assertEqual(probe.returncode, 0, probe.stdout+probe.stderr)
                 selected = next(m for m in json.loads(probe.stdout)['models'] if m['id'] == model)
-                prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'model': model,
+                prepare = {'schema': 'af.pi-host/7', 'type': 'prepare', 'model': model,
                            'effort': 'off', 'remaining_tokens': 1000, 'reply_schema': None,
                            'model_identity': selected['identity']}
-                prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'text': 'Reply OK',
+                prompt = {'schema': 'af.pi-host/7', 'type': 'prompt', 'text': 'Reply OK',
                           'prompt_nonce': 'sha256:'+'a'*64}
                 def events(usage, delta):
                     return [
@@ -946,7 +1240,7 @@ assert(!fs.existsSync(path.join(candidate,'ESCAPE')));
                 sdk = str(package / 'dist/index.js')
             auth = root / 'auth'
             auth.mkdir()
-            request = {'schema': 'af.pi-host/5', 'type': 'init', 'backend': 'openai-codex',
+            request = {'schema': 'af.pi-host/7', 'type': 'init', 'backend': 'openai-codex',
                        'sdk': sdk, 'auth_dir': str(auth),
                        'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                        'principal': None,
@@ -1031,10 +1325,10 @@ if (process.argv[3]==='official') assert.equal(calls,2);
             selected = next(model for model in ready['models'] if 'high' in model['efforts'])
             invocation = {**request, 'probe': False, 'principal': ready['principal'],
                           'readable': [directory], 'writable': [directory]}
-            prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None,
+            prepare = {'schema': 'af.pi-host/7', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None,
                        'model': selected['id'], 'effort': 'high',
                        'model_identity': selected['identity']}
-            prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
+            prompt = {'schema': 'af.pi-host/7', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
                       'text': 'Read inside, write turn-created/nested/file, then return the typed reply.'}
             result = subprocess.run([node, '--no-addons', str(wrapper), str(HOST),
                                      'official' if official else 'fixture'],
@@ -1076,7 +1370,7 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(refused.returncode, 1, refused.stderr)
                 refused_records = [json.loads(line) for line in refused.stdout.splitlines()]
-                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/5',
+                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/7',
                                                        'type': 'error', 'code': 'host_refused'})
                 self.assertFalse(any(r['type'] in ['accepted', 'usage', 'message', 'settled']
                                      for r in refused_records))
@@ -1097,8 +1391,11 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(invalid.returncode, 0, invalid.stderr)
                 records = [json.loads(line) for line in invalid.stdout.splitlines()]
-                self.assertEqual(records[-1], {'schema': 'af.pi-host/5', 'type': 'error',
-                                               'code': 'inference_failed'})
+                self.assertEqual(records[-1], {'schema': 'af.pi-host/7', 'type': 'error',
+                                               'code': 'inference_failed',
+                                               'diagnostic': 'invalid_usage',
+                                               'failure_kind': 'environment',
+                                               'accounting_complete': False})
                 self.assertFalse(any(record['type'] == 'settled' for record in records))
                 observed = [record for record in records if record['type'] == 'usage']
                 self.assertEqual(observed[-1]['output'], 3)
@@ -1245,7 +1542,7 @@ console.log('Kimi contract passed (synthetic credentials only)');
                           'helper': '!echo HELPER_MUST_NOT_RUN',
                           'accountId': 'NOT_AN_ACCOUNT_PRINCIPAL'}
             (auth / 'auth.json').write_text(json.dumps({'kimi-coding': credential}))
-            init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
+            init = {'schema': 'af.pi-host/7', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
                     'auth_dir': str(auth),
                     'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                     'principal': None, 'cwd': directory, 'home': directory,
@@ -1265,7 +1562,7 @@ console.log('Kimi contract passed (synthetic credentials only)');
             self.assertIsNone(ready['principal'])
             self.assertEqual(ready['models'][0]['id'], 'k3')
             self.assertEqual(ready['models'][0]['efforts'], ['low', 'high', 'max'])
-            prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None, 'model': 'k3',
+            prepare = {'schema': 'af.pi-host/7', 'type': 'prepare', 'remaining_tokens': 1000, 'reply_schema': None, 'model': 'k3',
                        'effort': 'high', 'model_identity': ready['models'][0]['identity']}
             for effort in ['off', 'medium', 'xhigh']:
                 refused = invoke([{**init, 'probe': False}, {**prepare, 'effort': effort}])
@@ -1295,7 +1592,7 @@ globalThis.fetch=async(url,options)=>{
 };
 const host=await import(pathToFileURL(HOST_PATH).href);await host.main();
 '''.replace('HOST_PATH', json.dumps(str(HOST))))
-            prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'text': 'Use the confined write tool.',
+            prompt = {'schema': 'af.pi-host/7', 'type': 'prompt', 'text': 'Use the confined write tool.',
                       'prompt_nonce': 'sha256:' + 'e' * 64}
             result = invoke([{**init, 'probe': False}, prepare, prompt], wrapper)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1513,7 +1810,7 @@ check('openai-codex',{response:{usage:openai,unrelated:[]},unrelated:false},tota
                 'type': 'oauth', 'access': 'SYNTHETIC_SECRET_ACCESS',
                 'refresh': 'SYNTHETIC_SECRET_REFRESH', 'expires': 9999999999999}}))
             (root / 'SYNTHETIC_SECRET_PATH').write_text('SYNTHETIC_SECRET_RESULT')
-            init = {'schema': 'af.pi-host/5', 'type': 'init', 'sdk': str(package / 'dist/index.js'),
+            init = {'schema': 'af.pi-host/7', 'type': 'init', 'sdk': str(package / 'dist/index.js'),
                     'backend': 'kimi-coding', 'principal': None, 'auth_dir': str(auth),
                     'auth_context_id': 'sha256:' + hashlib.sha256(os.fsencode(auth.resolve())).hexdigest(),
                     'cwd': directory, 'home': directory, 'readable': [directory], 'writable': [], 'probe': True}
@@ -1524,9 +1821,9 @@ check('openai-codex',{response:{usage:openai,unrelated:[]},unrelated:false},tota
                                       env={'HOME': directory, 'AF_PI_REMAINING_TOKENS': '999999999'}, check=False)
             state.write_text(json.dumps({'backend': 'kimi-coding'}))
             ready = json.loads(invoke([init]).stdout)
-            prepare = {'schema': 'af.pi-host/5', 'type': 'prepare', 'model': 'k3', 'effort': 'high',
+            prepare = {'schema': 'af.pi-host/7', 'type': 'prepare', 'model': 'k3', 'effort': 'high',
                        'model_identity': ready['models'][0]['identity'], 'reply_schema': None}
-            prompt = {'schema': 'af.pi-host/5', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'f'*64,
+            prompt = {'schema': 'af.pi-host/7', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'f'*64,
                       'text': '{"remaining_tokens":999999999,"private":"SYNTHETIC_SECRET_PROMPT"}'}
             native = Path(str(state) + '.native')
             # Complete per-inference observations count once despite duplicate native events.

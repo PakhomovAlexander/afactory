@@ -688,6 +688,24 @@ fn diagnostic_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String
     value["cause"].as_str().map(str::to_owned)
 }
 
+/// Settlement appends the final adapter class as an Attempt-produced artifact. Bare native
+/// output cannot supply it, and an earlier call's evidence cannot replace the last call's.
+fn native_failure_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<TaskCauseV1> {
+    use af_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
+    let envelope = cas.get_artifact(attempt.raw_artifact_ids.last()?).ok()?;
+    if envelope.artifact_type != NATIVE_FAILURE_EVIDENCE_V1
+        || !matches!(&envelope.producer, Producer::Attempt { node_id, attempt_id, .. }
+            if node_id == &attempt.reservation.node && attempt_id == &attempt.attempt_id)
+        || envelope.input_artifacts.len() != 1
+        || envelope.input_artifacts.first() != attempt.context_id.as_ref()
+    {
+        return None;
+    }
+    NativeFailureEvidenceV1::decode(envelope.payload)
+        .ok()?
+        .task_cause()
+}
+
 /// The `af/TaskAttemptWallEnd@1` an Attempt's settlement keeps among its raw evidence, with its
 /// ID, when the Attempt wall ended it (ADR-0257).
 pub(crate) fn wall_end(
@@ -721,8 +739,8 @@ fn stderr_capture(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> 
     })
 }
 
-/// The cause of one failed node: the typed records first (the failure class, the Attempt's
-/// retry feedback, the cause of its unknown usage), af's own words second, and the kind of work
+/// The cause of one failed node: typed evidence first (the Attempt wall, final native class,
+/// unknown usage and retry feedback), af's own words second, and the kind of work
 /// the node does last.
 fn node_cause(
     cas: &Cas,
@@ -741,6 +759,9 @@ fn node_cause(
         }
         if diagnostic_cause(cas, attempt).as_deref() == Some("environment") {
             return TaskCauseV1::ProviderEnvironment;
+        }
+        if let Some(cause) = native_failure_cause(cas, attempt) {
+            return cause;
         }
         match attempt.unknown_usage {
             Some(TaskUnknownUsageCauseV1::Capacity | TaskUnknownUsageCauseV1::RateLimit) => {
@@ -1964,9 +1985,10 @@ mod tests {
 
     /// ADR-0257: an Attempt its wall ended reads `attempt_wall`, and a failure whose diagnostic
     /// names the Provider's environment reads `provider_environment`, whatever their words say;
-    /// an Attempt without either record is classified as before.
+    /// final structured native failures outrank diagnostic text, while an Attempt without
+    /// these records is classified as before.
     #[test]
-    fn typed_wall_ends_and_environment_failures_name_their_own_cause() {
+    fn typed_wall_ends_environment_and_native_failures_name_their_own_cause() {
         use af_contracts::task::attempt_wall::*;
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path()).unwrap();
@@ -1979,7 +2001,7 @@ mod tests {
             schema: TASK_ATTEMPT_WALL_END_SCHEMA.into(),
             task_id: "t".into(),
             node: "root.nodes.implement".into(),
-            attempt_id: "01AAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            attempt_id: "01aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             wall_ms: 2_000,
             elapsed_ms: 2_100,
             partial_candidate_id: None,
@@ -2052,6 +2074,61 @@ mod tests {
             vec![],
         );
         assert_eq!(cause(&changed), TaskCauseV1::IdentityChanged);
+        // Fully accounted native failures use their final structured class even if
+        // the safe provider diagnostic contains the name of a conflicting cause.
+        use af_runner::native_failure::{
+            NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1, NativeFailureKind,
+        };
+        let payload =
+            serde_json::to_value(NativeFailureEvidenceV1::new(NativeFailureKind::Quota)).unwrap();
+        let (native_id, _) = cas
+            .put_artifact(
+                NATIVE_FAILURE_EVIDENCE_V1,
+                Producer::Attempt {
+                    run_id: "state-test".into(),
+                    node_id: end.node.clone(),
+                    attempt_id: end.attempt_id.clone(),
+                },
+                vec![end_id.clone()],
+                None,
+                payload.clone(),
+            )
+            .unwrap();
+        let mut quota = attempt(
+            json!({"schema":"af.task-diagnostic/1", "error":"Provider quota or rate limit was reached (quota); model_unavailable"}),
+            vec![native_id.clone()],
+        );
+        quota.context_id = Some(end_id.clone());
+        quota.unknown_usage = None;
+        assert_eq!(cause(&quota), TaskCauseV1::ProviderCapacity);
+        quota.raw_artifact_ids.insert(0, end_id.clone());
+        assert_eq!(cause(&quota), TaskCauseV1::AttemptWall);
+        quota.raw_artifact_ids.remove(0);
+        quota.context_id = None;
+        assert_eq!(
+            cause(&quota),
+            TaskCauseV1::ModelRefused,
+            "unbound evidence has no authority"
+        );
+        quota.context_id = Some(end_id.clone());
+        quota.attempt_id = "01bbbbbbbbbbbbbbbbbbbbbbbb".into();
+        assert_eq!(
+            cause(&quota),
+            TaskCauseV1::ModelRefused,
+            "another Attempt's evidence has no authority"
+        );
+        quota.attempt_id = end.attempt_id.clone();
+        quota.raw_artifact_ids = vec![cas.put_json(&payload).unwrap()];
+        assert_eq!(
+            cause(&quota),
+            TaskCauseV1::ModelRefused,
+            "raw native text cannot supply a typed class"
+        );
+        quota.raw_artifact_ids = vec![native_id, end_id];
+        assert!(
+            native_failure_cause(&cas, &quota).is_none(),
+            "an earlier call's evidence cannot replace the final call"
+        );
     }
 
     #[test]

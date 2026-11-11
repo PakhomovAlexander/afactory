@@ -1027,6 +1027,7 @@ impl<'a> CapturedTaskHost<'a> {
             usage_observation = result.usage_observation;
             native_failure = result.native_failure;
             notes = result.notes;
+            notes.native_failure = native_failure;
             notes.environment |=
                 native_failure == Some(af_runner::native_failure::NativeFailureKind::Environment);
             let sandbox = sandbox

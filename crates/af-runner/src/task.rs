@@ -571,6 +571,8 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
 /// the kernel records as typed Task events (ADR-0208). Neither changes the Attempt's charge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallNotes {
+    /// The final native failure, carried to settlement independently of usage and prose.
+    pub native_failure: Option<crate::native_failure::NativeFailureKind>,
     /// The call failed for a reason the same input may get past after a wait.
     pub transient: Option<crate::native_failure::Transient>,
     /// What the call did about its Provider without failing, in order.
@@ -591,6 +593,7 @@ impl CallNotes {
         self.events.extend(later.events);
         self.transient = later.transient;
         self.environment = later.environment;
+        self.native_failure = later.native_failure;
         self.refusal_category = later.refusal_category.or(self.refusal_category);
         self
     }
@@ -944,6 +947,22 @@ fn canonical_sets(value: &mut Value) {
 #[cfg(test)]
 mod canonical_set_tests {
     use super::*;
+
+    #[test]
+    fn call_notes_keep_only_the_final_native_failure_after_another_call() {
+        use crate::native_failure::NativeFailureKind;
+        for final_kind in [None, Some(NativeFailureKind::Network)] {
+            let first = CallNotes {
+                native_failure: Some(NativeFailureKind::Quota),
+                ..Default::default()
+            };
+            let last = CallNotes {
+                native_failure: final_kind,
+                ..Default::default()
+            };
+            assert_eq!(first.then(last).native_failure, final_kind);
+        }
+    }
 
     #[test]
     fn a_drafts_sets_are_admitted_in_canonical_order_and_nothing_else_is_touched() {
