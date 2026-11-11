@@ -253,6 +253,7 @@ pub struct ModelRunner {
     /// What the `af.harness` span names: the GenAI provider and the bound model.
     harness: Option<(&'static str, Option<String>)>,
     output_cap: usize,
+    activity: Option<crate::activity::Sink>,
 }
 
 impl ModelRunner {
@@ -266,7 +267,14 @@ impl ModelRunner {
             exit_policy: ExitPolicy::PreserveProcessGroup,
             harness: None,
             output_cap: MAX_CAPTURED_STREAM_BYTES,
+            activity: None,
         }
+    }
+
+    /// A host-bound, metadata-only activity channel; separate from content admission.
+    pub fn with_activity(mut self, activity: Option<crate::activity::Sink>) -> Self {
+        self.activity = activity;
+        self
     }
 
     /// Name the harness on its `af.harness` span (design §7.1): the GenAI provider
@@ -563,6 +571,21 @@ impl ModelRunner {
                     .collect(),
             )
         });
+        let activity = self
+            .activity
+            .clone()
+            .and_then(crate::activity::Observation::start);
+        let observer = match (observation.as_ref(), activity.as_ref()) {
+            (Some(telemetry), Some(activity)) => Some(
+                telemetry
+                    .observer()
+                    .clone()
+                    .with_also(activity.observer().clone()),
+            ),
+            (Some(telemetry), None) => Some(telemetry.observer().clone()),
+            (None, Some(activity)) => Some(activity.observer().clone()),
+            (None, None) => None,
+        };
         let output = span.in_scope(|| {
             run_supervised_captured_bounded_observed(
                 &mut cmd,
@@ -570,10 +593,11 @@ impl ModelRunner {
                 self.timeout,
                 self.exit_policy,
                 cancellation,
-                observation.as_ref().map(Observation::observer),
+                observer.as_ref(),
                 self.output_cap,
             )
         });
+        drop(activity);
         if let Some(observation) = &observation {
             observation.close();
         }

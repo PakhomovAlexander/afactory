@@ -764,6 +764,19 @@ impl EventStore {
         lock.commit()?;
         *self.task_cache.borrow_mut() = None;
         self.committed(cas, &committed, None);
+        // Disposable activity follows Task collection, including leftovers from an interrupted
+        // earlier collection. It never changes the tombstone or CAS reachability accounting.
+        if let Some(path) = self.database_path()
+            && let Some(root) = path.parent()
+        {
+            for task_id in tombstoned.iter().map(String::as_str).chain(
+                plan.collected
+                    .iter()
+                    .map(|task| task.collected.task_id.as_str()),
+            ) {
+                let _ = crate::activity::forget_task(root, task_id);
+            }
+        }
         if stop_after_tombstones {
             return Ok(CollectionOutcome {
                 plan,

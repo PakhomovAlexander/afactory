@@ -3119,6 +3119,608 @@ fn a_project_store_that_cannot_be_read_is_a_warning_above_the_stores() {
 }
 
 #[test]
+fn inspector_keeps_parallel_attempts_and_retry_states_separate() {
+    let doc = json!({"plan_id":"p", "execution_records":[
+        {"record":{"kind":"reserved", "attempt_id":"a", "invocation_id":"one"}},
+        {"record":{"kind":"reserved", "attempt_id":"b", "invocation_id":"two"}},
+        {"record":{"kind":"started", "attempt_id":"a"}},
+        {"record":{"kind":"started", "attempt_id":"b"}},
+        {"record":{"kind":"settled", "attempt_id":"a", "result":{"kind":"failed"}}},
+        {"record":{"kind":"reserved", "attempt_id":"c", "invocation_id":"one"}},
+        {"record":{"kind":"reserved", "attempt_id":"old", "invocation_id":"old"}}
+    ]});
+    let attempts = inspector_attempts(&doc, &mut |id| {
+        Ok(Invoked {
+            node: if id == "two" { "second" } else { "first" }.into(),
+            plan_id: Some(if id == "old" { "old" } else { "p" }.into()),
+        })
+    })
+    .unwrap();
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|a| (a.id.as_str(), a.node.as_str(), a.state.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("a", "first", "failed"),
+            ("b", "second", "started"),
+            ("c", "first", "reserved")
+        ]
+    );
+}
+
+#[test]
+fn inspector_navigation_preserves_attempt_identity_across_a_retry() {
+    let stage = Stage {
+        node: "root.worker".into(),
+        mark: Mark::Running,
+        attempts: 1,
+        max_attempts: Some(2),
+        closed: false,
+        wall_ms: None,
+        tokens: None,
+        unknown: 0,
+    };
+    let attempt = InspectorAttempt {
+        id: "first".into(),
+        node: stage.node.clone(),
+        state: "started".into(),
+        started_ms: None,
+        ended_ms: None,
+        observed_ms: None,
+        records: vec![],
+    };
+    let mut pane = TasksPane {
+        detail: Some(Ok(Detail {
+            dir: PathBuf::new(),
+            task_id: "t".into(),
+            document: json!({}),
+            kind: "implement".into(),
+            goal: "goal".into(),
+            stages: vec![stage],
+            attempts: vec![attempt],
+            findings: vec![],
+        })),
+        inspector: Some(InspectorSelection::Node("root.worker".into())),
+        ..TasksPane::default()
+    };
+    pane.inspector_key(Key::Enter, 23);
+    assert_eq!(
+        pane.inspector,
+        Some(InspectorSelection::Attempt("first".into()))
+    );
+    pane.inspector_key(Key::Enter, 23);
+    if let Some(Ok(detail)) = &mut pane.detail {
+        detail.attempts[0].state = "failed".into();
+        detail.attempts.push(InspectorAttempt {
+            id: "retry".into(),
+            node: "root.worker".into(),
+            state: "started".into(),
+            started_ms: None,
+            ended_ms: None,
+            observed_ms: None,
+            records: vec![],
+        });
+    }
+    let (left, right, focused, _) = pane.inspector_rows();
+    assert!(
+        left.iter()
+            .any(|(label, selected)| label.contains("failed") && *selected)
+    );
+    assert!(focused && right.iter().any(|row| row.text().contains("first")));
+    for back in [Key::Esc, Key::Char('h')] {
+        assert!(!pane.inspector_key(back, 23));
+        assert!(!pane.inspector_focus_right);
+        assert!(!pane.inspector_log);
+        assert_eq!(
+            pane.inspector,
+            Some(InspectorSelection::Attempt("first".into()))
+        );
+        pane.inspector_key(Key::Enter, 23);
+        assert!(pane.inspector_log && pane.inspector_focus_right);
+    }
+    pane.inspector_key(Key::Esc, 23);
+    pane.inspector_key(Key::Left, 23);
+    assert_eq!(
+        pane.inspector,
+        Some(InspectorSelection::Node("root.worker".into()))
+    );
+    pane.inspector_key(Key::Left, 23);
+    assert!(pane.expanded.is_none(), "Left still collapses the node");
+    pane.inspector_key(Key::Left, 23);
+    assert_eq!(pane.inspector, Some(InspectorSelection::Steps));
+    assert!(pane.inspector_key(Key::Char('h'), 23));
+    assert!(!pane.inspecting());
+}
+
+#[test]
+fn stage_remains_running_when_a_parallel_attempt_settles() {
+    let doc = json!({"plan_id":"p", "phase":{"kind":"running"},
+    "graph":{"order":["worker"], "allowances":{}},
+    "execution_records":[
+        {"record":{"kind":"reserved", "attempt_id":"a", "invocation_id":"i"}},
+        {"record":{"kind":"reserved", "attempt_id":"b", "invocation_id":"i"}},
+        {"record":{"kind":"settled", "attempt_id":"a", "charged_tokens":"0", "result":{"kind":"failed"}}}
+    ]});
+    let found = stages(&doc, &mut |_| {
+        Ok(Invoked {
+            node: "worker".into(),
+            plan_id: Some("p".into()),
+        })
+    })
+    .unwrap();
+    assert_eq!(found[0].mark, Mark::Running);
+}
+
+#[test]
+fn inspector_sanitizes_untrusted_record_labels() {
+    let mut pane = TasksPane {
+        detail: Some(Ok(Detail {
+            dir: PathBuf::new(),
+            task_id: "task\u{1b}[2J".into(),
+            document: json!({}),
+            kind: "implement".into(),
+            goal: "goal".into(),
+            stages: vec![],
+            attempts: vec![InspectorAttempt {
+                id: "attempt\u{1b}[31m".into(),
+                node: "worker".into(),
+                state: "failed\nforged".into(),
+                started_ms: None,
+                ended_ms: None,
+                observed_ms: None,
+                records: vec![("event\u{1b}".into(), "source".into())],
+            }],
+            findings: vec![],
+        })),
+        inspector: Some(InspectorSelection::Attempt("attempt\u{1b}[31m".into())),
+        inspector_log: true,
+        ..TasksPane::default()
+    };
+    let (_, rows, _, _) = pane.inspector_rows();
+    assert!(
+        rows.iter()
+            .flat_map(|row| row.text().into_bytes())
+            .all(|byte| (0x20..=0x7e).contains(&byte))
+    );
+    assert!(!pane.inspector_key(Key::Esc, 23));
+}
+
+#[test]
+fn inspector_focus_and_page_navigation() {
+    let mut pane = TasksPane {
+        detail: Some(Ok(Detail {
+            dir: PathBuf::new(),
+            task_id: "t".into(),
+            document: json!({}),
+            kind: "implement".into(),
+            goal: "goal".into(),
+            stages: vec![],
+            attempts: vec![],
+            findings: vec![],
+        })),
+        inspector: Some(InspectorSelection::Overview),
+        ..TasksPane::default()
+    };
+    pane.inspector_key(Key::BackTab, 5);
+    assert!(pane.inspector_focus_right);
+    let len = pane.inspector_rows().1.len();
+    let last = len.saturating_sub(1);
+    let bottom = len.saturating_sub(5);
+    pane.inspector_key(Key::PageDown, 5);
+    assert_eq!(pane.inspector_cursor, 5.min(last));
+    assert_eq!(pane.inspector_scroll, 5.min(bottom));
+    pane.inspector_key(Key::Char('G'), 5);
+    assert_eq!(pane.inspector_scroll, bottom);
+    assert_eq!(pane.inspector_cursor, last);
+    pane.inspector_key(Key::PageUp, 5);
+    assert_eq!(pane.inspector_cursor, last.saturating_sub(5));
+    assert_eq!(pane.inspector_scroll, bottom.saturating_sub(5));
+    for back in [Key::Esc, Key::Char('h')] {
+        assert!(!pane.inspector_key(back, 5));
+        assert!(!pane.inspector_focus_right);
+        assert_eq!(pane.inspector, Some(InspectorSelection::Overview));
+        pane.inspector_key(Key::BackTab, 5);
+    }
+    pane.inspector_key(Key::Char('h'), 5);
+    assert!(pane.inspector_key(Key::Char('h'), 5));
+    assert!(!pane.inspecting());
+}
+
+#[test]
+fn inspector_artifacts_and_history_rows_map_to_recorded_artifacts() {
+    let mut pane = TasksPane {
+        detail: Some(Ok(Detail {
+            dir: PathBuf::new(),
+            task_id: "t".into(),
+            document: json!({
+                "execution_records": [{"artifact_id": "record", "record": {"kind": "started"}}],
+                "history": [{"sequence": 1, "transition": {"change": {"kind": "execution_recorded", "record_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}]
+            }),
+            kind: "implement".into(),
+            goal: "goal".into(),
+            stages: vec![],
+            attempts: vec![],
+            findings: vec![],
+        })),
+        inspector: Some(InspectorSelection::Artifacts),
+        inspector_focus_right: true,
+        inspector_cursor: 2,
+        ..TasksPane::default()
+    };
+    let row = pane.inspector_artifact_row().unwrap();
+    assert_eq!(pane.history.get(&row).map(String::as_str), Some("record"));
+    pane.inspector = Some(InspectorSelection::History);
+    pane.inspector_cursor = 2;
+    let row = pane.inspector_artifact_row().unwrap();
+    let Some(Ok(detail)) = &pane.detail else {
+        panic!("detail")
+    };
+    assert!(detail.rows(0).0[row].text().contains("execution_recorded"));
+    for back in [Key::Esc, Key::Char('h')] {
+        // An overlay returns to its exact row and viewport before detail returns left.
+        pane.inspector = Some(InspectorSelection::History);
+        pane.inspector_focus_right = true;
+        pane.artifact = Some(Opened { rows: vec![], row });
+        pane.inspector_cursor = 4;
+        pane.inspector_scroll = 1;
+        pane.inspector_artifact_opened();
+        assert_eq!((pane.inspector_cursor, pane.inspector_scroll), (0, 0));
+        assert!(!pane.inspector_key(back, 23));
+        assert!(pane.artifact.is_none());
+        assert_eq!((pane.inspector_cursor, pane.inspector_scroll), (4, 1));
+        assert!(pane.inspector_focus_right);
+        assert_eq!(pane.inspector, Some(InspectorSelection::History));
+        assert!(!pane.inspector_key(back, 23));
+        assert!(!pane.inspector_focus_right);
+        assert!(pane.inspector_key(back, 23));
+        assert!(!pane.inspecting());
+    }
+}
+
+#[test]
+fn activity_follows_pauses_counts_new_lines_and_keeps_attempt_and_viewport_through_retries() {
+    use af_store::activity::{Binding, Error, Operation, Phase, Record, SCHEMA};
+    let root = tempfile::tempdir().unwrap();
+    let binding = Binding::new(root.path(), "task", "first").unwrap();
+    let (job, send) = activity::Job::fed(binding);
+    let mut pane = TasksPane {
+        opened: true,
+        detail: Some(Ok(Detail {
+            dir: root.path().into(),
+            task_id: "task".into(),
+            kind: "implement".into(),
+            goal: "goal".into(),
+            document: json!({"graph":{"nodes":{"worker":{"operator":{"operator":{"slot":"slot"}}}},"slots":{"slot":{"worker":"fixture/author"}}},
+                "plan":{"bindings":{"slot":{"execution":{"provider_kind":"codex"}}}}}),
+            stages: vec![],
+            attempts: vec![InspectorAttempt {
+                id: "first".into(),
+                node: "worker".into(),
+                state: "started".into(),
+                started_ms: None,
+                ended_ms: None,
+                observed_ms: None,
+                records: vec![],
+            }],
+            findings: vec![],
+        })),
+        inspector: Some(InspectorSelection::Attempt("first".into())),
+        activity: Some(job),
+        ..TasksPane::default()
+    };
+    let snapshot = |last: u64| activity::Snapshot {
+        sequence: last,
+        lost: 0,
+        error: None,
+        records: (1..=last)
+            .map(|sequence| Record {
+                schema: SCHEMA.into(),
+                task_id: "task".into(),
+                attempt_id: "first".into(),
+                sequence,
+                unix_ms: 1,
+                operation: Operation::Command,
+                phase: Phase::Started,
+            })
+            .collect(),
+    };
+    send.send(snapshot(40)).unwrap();
+    pane.poll_activity();
+    pane.inspector_key(Key::Enter, 23);
+    assert!(pane.inspector_follow);
+    assert_eq!(
+        pane.inspector_scroll,
+        pane.inspector_rows().1.len().saturating_sub(23)
+    );
+    pane.inspector_key(Key::Up, 23);
+    assert!(!pane.inspector_follow);
+    let paused = pane.inspector_scroll;
+    send.send(snapshot(43)).unwrap();
+    pane.poll_activity();
+    assert_eq!(pane.inspector_scroll, paused);
+    assert_eq!(pane.inspector_status(), "paused (3 new)  ");
+    let Some(Ok(detail)) = &mut pane.detail else {
+        panic!("detail");
+    };
+    detail.attempts[0].state = "failed".into();
+    detail.attempts.push(InspectorAttempt {
+        id: "retry".into(),
+        ..detail.attempts[0].clone()
+    });
+    send.send(snapshot(44)).unwrap();
+    pane.poll_activity();
+    assert_eq!(
+        pane.inspector,
+        Some(InspectorSelection::Attempt("first".into()))
+    );
+    assert_eq!(pane.inspector_scroll, paused);
+    assert_eq!(pane.inspector_status(), "paused (4 new)  ");
+    pane.inspector_key(Key::Char('G'), 23);
+    assert!(pane.inspector_follow);
+    for body in [29, 23] {
+        pane.inspector_resize(body);
+        assert_eq!(
+            pane.inspector_scroll,
+            pane.inspector_rows().1.len().saturating_sub(body)
+        );
+        assert!(pane.inspector_sticky() < body);
+    }
+    let mut missing = snapshot(44);
+    missing.error = Some(Error::Missing);
+    send.send(missing).unwrap();
+    pane.poll_activity();
+    let text = pane
+        .inspector_rows()
+        .1
+        .iter()
+        .map(Row::text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("activity missing")
+            && text.contains("stale")
+            && text.contains("fixture/author"),
+        "{text}"
+    );
+    // Another Task with the same Attempt label cannot display the previous Task's snapshot.
+    let Some(Ok(detail)) = &mut pane.detail else {
+        panic!("detail");
+    };
+    detail.task_id = "other".into();
+    let text = pane
+        .inspector_rows()
+        .1
+        .iter()
+        .map(Row::text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains("#44"));
+    pane.inspector_key(Key::Char('h'), 23);
+    pane.inspector_key(Key::Char('j'), 23);
+    assert!(
+        pane.activity.is_none(),
+        "changing selection drops the old channel before polling"
+    );
+    assert_eq!(pane.inspector_seen, 0);
+}
+
+#[test]
+fn running_native_codex_publishes_safe_activity_before_exit_and_the_terminal_renders_updates() {
+    use af_runner::task::{RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter};
+    use af_store::activity::Binding;
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    for name in ["ready", "control"] {
+        nix::unistd::mkfifo(
+            &root.path().join(name),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+    }
+    let mut ready = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.path().join("ready"))
+        .unwrap();
+    let mut control = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.path().join("control"))
+        .unwrap();
+    enum Native {
+        Ready(u8),
+        Exited(Box<af_runner::task::ModelWorkerReturn>),
+    }
+    let (send, receive) = mpsc::channel();
+    let signals = send.clone();
+    let reading = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let mut byte = [0];
+            ready.read_exact(&mut byte).unwrap();
+            if signals.send(Native::Ready(byte[0])).is_err() {
+                break;
+            }
+        }
+    });
+    let program = root.path().join("codex");
+    let script = r#"#!/usr/bin/python3 -B
+import json,os,sys
+sys.stdin.read()
+ready=open('ready','wb',buffering=0)
+control=open('control','rb',buffering=0)
+print(json.dumps({'type':'item.started','item':{'type':'command_execution','command':'SECRET_ARGUMENT'+chr(27)+'[2J','aggregated_output':'SECRET_OUTPUT','reasoning':'SECRET_REASONING'}}),flush=True)
+ready.write(b'1')
+assert control.read(1)==b'1'
+print(json.dumps({'type':'item.started','item':{'type':'mcp_tool_call','tool':'SECRET_TOOL','arguments':{'prompt':'SECRET_PROMPT'}}}),flush=True)
+ready.write(b'2')
+assert control.read(1)==b'2'
+with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write('done')
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1}}),flush=True)
+"#;
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let binding = Binding::new(root.path(), "task", "first").unwrap();
+    let sink = af_runner::activity::Sink::create(binding).unwrap();
+    let dir = root.path().to_owned();
+    let worker = std::thread::spawn(move || {
+        let cas = af_store::Cas::open(dir.join("cas")).unwrap();
+        let adapter = af_runner_codex::task::CodexTaskAdapter::new(&af_contracts::Command::new(
+            program.to_str().unwrap(),
+            vec![
+                af_contracts::Arg::literal("--model"),
+                af_contracts::Arg::literal("gpt-fixture-1"),
+                af_contracts::Arg::literal("-c"),
+                af_contracts::Arg::literal("model_reasoning_effort=\"high\""),
+            ],
+        ))
+        .unwrap();
+        let result = adapter
+            .invoke_with_activity(
+                &cas,
+                &dir,
+                b"review".to_vec(),
+                Duration::from_secs(300),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+                RemainingTokenAllowance::new(100).unwrap(),
+                af_runner::task::reply_schema::ReplyContract::Request,
+                Some(sink),
+            )
+            .unwrap_or_else(|u| *u.0);
+        send.send(Native::Exited(Box::new(result))).ok();
+    });
+    let ready = |expected| match receive.recv().unwrap() {
+        Native::Ready(marker) => assert_eq!(marker, expected),
+        Native::Exited(result) => panic!("runner exited before activity: {:?}", result.message),
+    };
+    ready(b'1');
+    let mut pane = TasksPane {
+        opened: true,
+        detail: Some(Ok(Detail {
+            dir: root.path().into(),
+            task_id: "task".into(),
+            kind: "implement".into(),
+            goal: "goal".into(),
+            document: json!({"graph":{"nodes":{"worker":{"operator":{"operator":{"slot":"slot"}}}},"slots":{"slot":{"worker":"fixture/author"}}},
+                "plan":{"bindings":{"slot":{"execution":{"provider_kind":"codex"}}}}}),
+            stages: vec![Stage {
+                node: "worker".into(),
+                mark: Mark::Running,
+                attempts: 1,
+                max_attempts: Some(1),
+                closed: false,
+                wall_ms: None,
+                tokens: None,
+                unknown: 0,
+            }],
+            attempts: vec![InspectorAttempt {
+                id: "first".into(),
+                node: "worker".into(),
+                state: "started".into(),
+                started_ms: None,
+                ended_ms: None,
+                observed_ms: None,
+                records: vec![],
+            }],
+            findings: vec![],
+        })),
+        expanded: Some("worker".into()),
+        inspector: Some(InspectorSelection::Attempt("first".into())),
+        inspector_log: true,
+        inspector_follow: true,
+        inspector_focus_right: true,
+        ..TasksPane::default()
+    };
+    pane.poll_activity();
+    while pane.activity.as_ref().unwrap().snapshot.sequence < 1 {
+        assert!(
+            !worker.is_finished(),
+            "runner exited before its activity was observed"
+        );
+        pane.activity.as_mut().unwrap().receive();
+    }
+    assert!(
+        !worker.is_finished(),
+        "metadata must be published while the runner is alive"
+    );
+    for (width, height) in [(100, 30), (80, 24)] {
+        pane.inspector_resize(height - 1);
+        let mut frame = crate::tui::paint::Frame::new(width, height);
+        assert!(crate::tui::paint_inspector(
+            &pane,
+            &mut frame,
+            width,
+            height - 1
+        ));
+        let text = frame.text();
+        assert!(
+            text.contains("Worker: fixture/author (codex)")
+                && text.contains("Latest: Running command / started")
+                && text.contains("Activity age:"),
+            "{text}"
+        );
+        assert!(!text.contains("SECRET"));
+        assert!(
+            text.bytes()
+                .all(|b| b == b'\n' || (0x20..=0x7e).contains(&b))
+        );
+        let left_width = (width / 3).min(crate::tui::BAR_WIDTH);
+        assert!(
+            (0..height - 1)
+                .any(|r| (left_width..width).any(|c| frame.paint_at(r, c) == Paint::Cursor)),
+            "right focus visible: {text}"
+        );
+        pane.inspector_key(Key::BackTab, height - 1);
+        let mut left = crate::tui::paint::Frame::new(width, height);
+        assert!(!crate::tui::paint_inspector(
+            &pane,
+            &mut left,
+            width,
+            height - 1
+        ));
+        assert!(
+            (0..height - 1)
+                .any(|r| (0..left_width - 1).any(|c| left.paint_at(r, c) == Paint::Cursor)),
+            "left focus visible: {}",
+            left.text()
+        );
+        pane.inspector_key(Key::BackTab, height - 1);
+    }
+    control.write_all(b"1").unwrap();
+    ready(b'2');
+    while pane.activity.as_ref().unwrap().snapshot.sequence < 2 {
+        assert!(
+            !worker.is_finished(),
+            "runner exited before its activity was observed"
+        );
+        pane.activity.as_mut().unwrap().receive();
+    }
+    pane.inspector_resize(23);
+    let mut frame = crate::tui::paint::Frame::new(80, 24);
+    crate::tui::paint_inspector(&pane, &mut frame, 80, 23);
+    assert!(
+        frame.text().contains("Latest: Using tool / started"),
+        "{}",
+        frame.text()
+    );
+    assert!(!worker.is_finished());
+    assert_eq!(
+        pane.inspector,
+        Some(InspectorSelection::Attempt("first".into()))
+    );
+    control.write_all(b"2").unwrap();
+    let Native::Exited(result) = receive.recv().unwrap() else {
+        panic!("unexpected native marker");
+    };
+    assert!(result.message.is_ok(), "{:?}", result.message);
+    worker.join().unwrap();
+    reading.join().unwrap();
+}
+
+#[test]
 fn native_review_detail_keeps_findings_coverage_accounting_history_and_task_commands() {
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();

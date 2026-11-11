@@ -93,6 +93,23 @@ fn keeping_one_collects_the_older_task_and_sweeps_exactly_what_the_preview_said(
     let mut f = Fixture::new(false);
     let (older_revision, older_result) = finished(&mut f, "older", vec![]);
     let (newer_revision, newer_result) = finished(&mut f, "newer", vec![]);
+    let sidecar = |task: &str| {
+        let binding =
+            crate::activity::Binding::new(f.path.parent().unwrap(), task, "attempt").unwrap();
+        let mut writer = crate::activity::Writer::create(binding.clone()).unwrap();
+        writer
+            .publish(
+                crate::activity::Operation::Command,
+                crate::activity::Phase::Started,
+                1,
+            )
+            .unwrap();
+        crate::activity::Reader::new(binding)
+    };
+    let mut older_activity = sidecar("older");
+    let mut newer_activity = sidecar("newer");
+    older_activity.poll().unwrap();
+    newer_activity.poll().unwrap();
     let shared = f.revision.inputs["requirements"].artifact_ids[0].clone();
 
     let sizes = f.store.store_inventory(&f.cas).unwrap();
@@ -132,6 +149,12 @@ fn keeping_one_collects_the_older_task_and_sweeps_exactly_what_the_preview_said(
     let before = filed_bytes(&f.cas);
     let outcome = f.store.apply_task_collection(&f.cas, 0, 1, false).unwrap();
     assert_eq!(outcome.tombstoned, ["older"]);
+    assert_eq!(older_activity.poll(), Err(crate::activity::Error::Missing));
+    assert!(
+        newer_activity.poll().is_ok(),
+        "collecting one Task preserves another's activity"
+    );
+
     assert!(outcome.swept);
     assert_eq!(outcome.removed_bytes, plan.reclaimable_bytes);
     assert_eq!(before - filed_bytes(&f.cas), plan.reclaimable_bytes);
