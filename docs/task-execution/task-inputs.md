@@ -345,9 +345,12 @@ Tests:
 
 ## Accepted performance research
 
-The installed `bugfix/default-codex` and `issue-internal/report` Pipelines declare the optional
-`research_report` root port (`af/Document@1`, one, unbound). They forward it to the implementer,
-report author and report verifier through their closed Worker contracts and input schemas.
+The installed `bugfix/default-codex` Pipeline has no `research_report` root port.
+`bugfix/research-fix-codex`, `impl/design-codex` and `perf/research-experiment-codex` require
+`research_report` (`af/Document@1`, one, unbound) and forward it to the researched implementer.
+The internal `issue-internal/report` and `issue-internal/design` Pipelines accept the same port
+optionally and forward it to their author and verifier through their closed Worker contracts
+and input schemas.
 Scenario admission additionally checks the accepted research Task's exact result and original
 source, and refuses an envelope larger than 32 KiB. Native context receipts retain the same
 artifact ID throughout candidate construction and final reporting; no text is pasted into an

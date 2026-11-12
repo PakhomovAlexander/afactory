@@ -4,7 +4,14 @@
 //! `af onboard --help` written for a person with the agent notes last, and figures in units in
 //! human text, the raw figure only under `--json`.
 
+use std::path::PathBuf;
 use std::process::Output;
+
+fn workspace() -> PathBuf {
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
 
 fn af(args: &[&str]) -> Output {
     crate::common::af()
@@ -379,7 +386,7 @@ fn task_default_help_uses_the_installed_operator_selection() {
         assert!(help.contains("bugfix/default-codex"), "{help}");
         assert!(!help.contains("kernel/implementation-reviewed"), "{help}");
         if topic == "task-file" {
-            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let root = workspace();
             let catalog: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(root.join("fixtures/issue-workflows/selections.json")).unwrap(),
             )
