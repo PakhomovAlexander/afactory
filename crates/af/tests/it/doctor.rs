@@ -189,12 +189,12 @@ fn clean_host(codex_available: bool) {
     // Only fixture programs are discoverable: the developer's Provider CLIs and package
     // managers must not choose this test's hint or probe a real authentication context.
     let bin = machine.path("tools-path");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
     for tool in ["curl", "minisign"] {
         use std::os::unix::fs::PermissionsExt as _;
         let path = bin.join(tool);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        crate::common::provider_fixture_fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let kind = if codex_available {

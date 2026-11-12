@@ -413,10 +413,10 @@ mod tests {
             );
             assert!(!marker.exists());
         }
-        fs::write(&current, [0xff, 0xfe]).unwrap();
+        crate::providers::fixture_fs::write(&current, [0xff, 0xfe]).unwrap();
         assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         for version in ["1.4.0", "1.4.0\n", "1.4.0\r\n"] {
-            fs::write(&current, version).unwrap();
+            crate::providers::fixture_fs::write(&current, version).unwrap();
             assert_eq!(
                 discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).unwrap(),
                 sdk
@@ -427,7 +427,7 @@ mod tests {
         std::os::unix::fs::symlink(&saved, &current).unwrap();
         assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         fs::remove_file(&current).unwrap();
-        fs::create_dir(&current).unwrap();
+        crate::providers::fixture_fs::create_dir(&current).unwrap();
         assert!(discover_sdk_from_launcher(&launcher, &InstallationOwnership::default()).is_err());
         fs::remove_dir(&current).unwrap();
         fs::rename(&saved, &current).unwrap();

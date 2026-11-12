@@ -818,7 +818,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
         "af-directory",
         "git-configured-toplevel",
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         // Toplevel discovery must preserve shell characters and a trailing newline literally.
         let repository = root.path().join(if marker == "git-configured-toplevel" {
             "repository ' $(literal)\n"
@@ -826,7 +826,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             "repository"
         });
         let work = repository.join("nested/cwd");
-        std::fs::create_dir_all(&work).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&work).unwrap();
         let auth = root.path().join("auth");
         let (sdk, external_path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
         let invoke = |path: &std::ffi::OsStr, args: &[&str]| {
@@ -860,6 +860,11 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             "git-directory" => {
                 crate::common::provider_fixture_fs::create_dir(repository.join(".git")).unwrap()
             }
+            "git-worktree-file" => crate::common::provider_fixture_fs::write(
+                repository.join(".git"),
+                "gitdir: /synthetic/worktree\n",
+            )
+            .unwrap(),
             "git-configured-toplevel" => {
                 // Git's worktree root can be above its .git marker. The sibling bin has
                 // no .git/.af ancestor, so only the invocation repository lookup refuses it.
@@ -877,13 +882,13 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
                     assert!(output.status.success(), "{}", err(&output));
                 }
             }
-            _ => std::fs::create_dir(repository.join(".af")).unwrap(),
+            _ => crate::common::provider_fixture_fs::create_dir(repository.join(".af")).unwrap(),
         }
         // The same nested CWD permits a legitimate external SDK/Node installation.
         let setup = invoke(external_path.as_ref(), &setup_args);
         assert!(setup.status.success(), "{}", err(&setup));
         let bin = repository.join("bin");
-        std::fs::create_dir(&bin).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
         std::os::unix::fs::symlink(Path::new(&external_path).join("git"), bin.join("git")).unwrap();
         let trap = bin.join("node");
         let executed = root.path().join("node-executed");
@@ -950,7 +955,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
 
 #[test]
 fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_versions() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("auth");
     let (_, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
     let agent = root.path().join("agent");
