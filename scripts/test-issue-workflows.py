@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -114,7 +115,8 @@ class Workflows(unittest.TestCase):
         for kind in ('code', 'report'):
             self.assertEqual((staged / ('approved-' + kind + '-policy.toml')).read_bytes(),
                              (ROOT / ('.af/' + kind + '-policy.toml')).read_bytes())
-        files = {'task-catalog.toml': 'replacement-catalog.toml',
+        files = {'af.toml': 'replacement-af.toml',
+                 'task-catalog.toml': 'replacement-catalog.toml',
                  'code-policy.toml': 'approved-code-policy.toml',
                  'report-policy.toml': 'approved-report-policy.toml'}
         def capture(args, **kwargs):
@@ -132,6 +134,44 @@ class Workflows(unittest.TestCase):
             with self.subTest(file=file), mock.patch.object(w.subprocess, 'run', side_effect=changed):
                 with self.assertRaises(ValueError):
                     REAL_CAPTURED_CATALOG(pin('bugfix/default-codex')['template'])
+
+    def test_installed_settings_refuse_retired_default_and_limit_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            authority = Path(directory) / '.af'
+            authority.mkdir()
+            for installed, staged in [('af.toml', 'replacement-af.toml'),
+                                      ('task-catalog.toml', 'replacement-catalog.toml'),
+                                      ('code-policy.toml', 'approved-code-policy.toml'),
+                                      ('report-policy.toml', 'approved-report-policy.toml')]:
+                (authority / installed).write_bytes((w.STAGED / staged).read_bytes())
+            w.installed_authority(directory)
+            settings = (authority / 'af.toml').read_text()
+            for changed in [settings.replace('bugfix/default-codex', 'default/implementation'),
+                            settings.replace('8000000', '8000001')]:
+                (authority / 'af.toml').write_text(changed)
+                with self.assertRaisesRegex(ValueError, 'af.toml'):
+                    w.installed_authority(directory)
+
+    def test_performance_preview_follows_composed_tasks_and_pinned_dataflow(self):
+        name = 'perf/research-experiment-codex'
+        choice = w.selection(name)
+        pins = [pin(choice['research_pipeline'], 'report'), pin(name),
+                pin(w.catalog()['verification'], 'verification')]
+        pins[0]['template']['document']['requirements'] = research_requirements()
+        flow = w.composition(name, pins, FACTS)['definitions']['issue-workflow']['steps']
+        self.assertEqual([step['id'] for step in flow], ['research', 'implement', 'verify'])
+        self.assertEqual(flow[1]['inputs']['research_report']['step'], 'research')
+        self.assertEqual(flow[2]['inputs']['source']['step'], 'implement')
+        pipeline = w.toml(w.STAGED / 'task-packages' / name / 'pipeline.toml')
+        nodes = {node['id']: node for node in pipeline['nodes']}
+        self.assertEqual(nodes['baseline']['operator']['op'], 'measure')
+        self.assertEqual(nodes['review']['operator']['pipeline'], 'issue-internal/review')
+        self.assertEqual(nodes['trial']['inputs']['baseline']['node'], 'baseline')
+        self.assertEqual(nodes['trial']['inputs']['source']['node'], 'accept_goal')
+        self.assertEqual(nodes['accept_measurement']['inputs']['evaluation']['node'], 'trial')
+        self.assertEqual(choice['stages'], ['research', 'baseline', 'implementation', 'code review',
+                                           'measurement', 'comparison', 'measurement acceptance',
+                                           'verification'])
 
     def test_effective_policy_identity_review_binding_and_local_execution(self):
         revision = {'authority': {'policy_id': 'authority'}}

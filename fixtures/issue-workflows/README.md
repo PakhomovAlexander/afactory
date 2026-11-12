@@ -260,3 +260,14 @@ Workers in this Task cannot perform that operation. The installed-catalog audit 
 bindings and pins; the rubric audit checks the updated staged authority and active docs/examples.
 After that update, remove `.af/task-packages/{default,default-light,pi-light,warm,kernel,owner-default}`.
 Generic digest and schema tests use supported staged packages and do not read those directories.
+
+Inspection validation compares the complete supplied plan and graph, with JSON types preserved,
+against their content-checked native `af/ExecutionPlan@4` and `af/CompiledTask@4` artifacts. It
+checks Task/revision linkage before approved roles, policies and package closure. Installed and
+captured template authority must also contain the exact staged `replacement-af.toml` settings,
+including the default selector and unchanged limits. Validation grants no execution authority.
+
+The performance preview follows research, baseline, implementation, internal code Review,
+candidate measurement, Comparison, measurement acceptance and final shared whole-change
+verification. Internal Review and final verification are separate stages; earlier failures may
+prevent measurement or acceptance, and no preview establishes a measured improvement.

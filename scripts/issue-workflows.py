@@ -81,6 +81,7 @@ def validate_plan(name, value, state):
     internal = {catalog()['verification']} | {s['research_pipeline'] for s in catalog()['selections'].values()}
     if name not in internal:
         selection(name)
+    validate_native_projection(value, state)
     native = toml(STAGED / 'replacement-catalog.toml')
     plan, graph = value['plan'], value['graph']
     validate_policy(value, state)
@@ -142,8 +143,6 @@ def validate_plan(name, value, state):
     rendered = json.dumps(graph)
     if 'publish-gate' in rendered or 'codex-work' in rendered or any(s.rsplit('.', 1)[-1] in ('uix', 'advisor') for s in graph['slots']):
         raise ValueError('unexpected authority or advisory role')
-    # Exact native pipeline pins, rather than a prose stage list, own graph shape/dataflow.
-    # The independently compiled graph is checked by af; this validator checks effective roles.
     return {'selection': name, 'plan_id': value['plan_id'], 'revision_id': value['revision_id'],
             'roles': {slot: b['execution'] for slot, b in plan['bindings'].items()}}
 
@@ -202,6 +201,34 @@ def recorded(state, identity, kind=None):
             or (kind is not None and value.get('type') != kind)):
         raise ValueError('native artifact bytes or type differ')
     return value['payload'] if kind is not None else value
+
+
+def canonical(value):
+    parts = []
+    kernel_contracts._kernel_canonical(value, parts, 'inspection')
+    return b''.join(parts)
+
+
+def validate_native_projection(value, state):
+    """Authenticate complete projections before interpreting roles or policy.
+
+    This is evidence validation only; native exact-plan approval still owns execution.
+    """
+    if value.get('schema') != 'af/task-inspection@20':
+        raise ValueError('unsupported native inspection')
+    plan = recorded(state, value['plan_id'], 'af/ExecutionPlan@4')
+    if canonical(plan) != canonical(value['plan']):
+        raise ValueError('inspection plan differs from native stored plan')
+    graph = recorded(state, plan['compiled_graph_id'], 'af/CompiledTask@4')
+    if canonical(graph) != canonical(value['graph']):
+        raise ValueError('inspection graph differs from native stored graph')
+    revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
+    if (plan['task_revision_id'] != value['revision_id']
+            or revision['task_id'] != value['task_id']
+            or canonical(revision['inputs']) != canonical(plan['inputs'])
+            or canonical(revision['authority']) != canonical(plan['authority'])
+            or canonical(graph['inputs']) != canonical(plan['inputs'])):
+        raise ValueError('native Task/revision/plan linkage differs')
 
 
 def issue_identity(document):
@@ -444,6 +471,8 @@ def validate_policy(value, state):
 def installed_authority(repo):
     if toml(Path(repo) / '.af/task-catalog.toml') != toml(STAGED / 'replacement-catalog.toml'):
         raise ValueError('install and review the exact replacement catalog before planning')
+    if (Path(repo) / '.af/af.toml').read_bytes() != (STAGED / 'replacement-af.toml').read_bytes():
+        raise ValueError('installed approved af.toml settings bytes differ')
     for kind in ('code', 'report'):
         if (Path(repo) / ('.af/' + kind + '-policy.toml')).read_bytes() != (STAGED / ('approved-' + kind + '-policy.toml')).read_bytes():
             raise ValueError('installed approved ' + kind + ' policy bytes differ')
@@ -453,7 +482,8 @@ def captured_catalog(template):
     commit = template['authority_commit']
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('template requires exact source commit')
-    files = {'task-catalog.toml': 'replacement-catalog.toml',
+    files = {'af.toml': 'replacement-af.toml',
+             'task-catalog.toml': 'replacement-catalog.toml',
              'code-policy.toml': 'approved-code-policy.toml',
              'report-policy.toml': 'approved-report-policy.toml'}
     for installed, staged in files.items():

@@ -345,7 +345,7 @@ Tests:
 
 ## Accepted performance research
 
-The shipped `kernel/implementation-reviewed` and `kernel/report` pipelines declare the optional
+The installed `bugfix/default-codex` and `issue-internal/report` Pipelines declare the optional
 `research_report` root port (`af/Document@1`, one, unbound). They forward it to the implementer,
 report author and report verifier through their closed Worker contracts and input schemas.
 Scenario admission additionally checks the accepted research Task's exact result and original

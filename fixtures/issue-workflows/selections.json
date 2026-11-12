@@ -64,12 +64,14 @@
       "light": false,
       "research_pipeline": "issue-internal/report",
       "stages": [
-        "baseline",
         "research",
+        "baseline",
         "implementation",
-        "verification",
+        "code review",
         "measurement",
-        "comparison"
+        "comparison",
+        "measurement acceptance",
+        "verification"
       ]
     }
   }

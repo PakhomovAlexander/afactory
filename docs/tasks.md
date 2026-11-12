@@ -575,10 +575,9 @@ af task run pagination-2 --from pagination-cli --round 1 --goal goal.md --execut
 A Task file says the same with `"continue": {"task": "pagination-cli", "round": 1}`; it excludes
 `inputs.source` and `inputs.findings`. TASK must be finished and must have recorded a review
 round, or have kept the edits of a Worker its Attempt wall stopped (below), and for a reviewed
-round the selected Pipeline must declare `findings` (the kernel's
-`kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do, and so
-do [`bugfix/default-codex`](#the-default-pipeline) and
-[`bugfix/light-codex`](#the-light-default-pipeline)), or the
+round the selected Pipeline must declare `findings` (the installed
+[`bugfix/default-codex`](#the-default-pipeline) and
+[`bugfix/light-codex`](#the-light-default-pipeline) do), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
 carries `continues` (`af/task-inspection@20`), and `af task report` names it in NEW's row.
 
@@ -719,10 +718,8 @@ Attempt accounting. Provider Admission remains separate; see
   instructions state the report policy verbatim; its size and citations are judged by the
   report check after sealing, as before.
 
-The shipped reviewer and evaluator slots (`kernel/implementation-reviewed`,
-`kernel/verification-reviewed`, `kernel/verification`, `kernel/report`, `kernel/gate-bench`,
-`kernel/experiment` and `kernel/experiment-trial`) allow two Attempts each, so a Worker whose
-reply fails twice in one Attempt still has a second Attempt with typed feedback (issue #283).
+The installed issue catalog's reviewer and evaluator slots allow two Attempts each, so a Worker
+whose reply fails twice in one Attempt still has a second Attempt with typed feedback (issue #283).
 Every Provider event is in `af task show --json` as `provider_events`; for each failed node,
 `af task show` prints `NODE: CAUSE: FIRST LINE` (a retry history that ran out reads
 `provider_capacity`, `provider_network` or `provider_timeout`), and a node that failed only

@@ -46,11 +46,10 @@ fn install(repo: &Path) {
         &staged.join("replacement-catalog.toml"),
         &repo.join(".af/task-catalog.toml"),
     );
-    std::fs::write(
-        repo.join(".af/af.toml"),
-        "version = 2\n[project]\nname = \"fixture\"\n",
-    )
-    .unwrap();
+    copy_private_catalog(
+        &staged.join("replacement-af.toml"),
+        &repo.join(".af/af.toml"),
+    );
     if !repo.join("README.md").exists() {
         std::fs::write(repo.join("README.md"), "# Fixture\n").unwrap();
     }
@@ -209,6 +208,17 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
             .output()
             .unwrap()
     };
+    let default = plan_document(
+        json!({"task_id": "default", "kind": "implement", "goal": "A bounded known fix"}),
+        "three-field-default",
+        false,
+    );
+    assert!(default.status.success(), "{}", text(&default));
+    let default: Value = serde_json::from_slice(&default.stdout).unwrap();
+    assert_eq!(
+        default["selection"]["assessment"]["decision"]["pipeline"],
+        "bugfix/default-codex"
+    );
     // Exercise the shipped documents with only Task identity and accepted evidence replaced.
     for (i, file) in [
         "known-fix.json",
@@ -316,6 +326,35 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         if name.starts_with("perf/") {
             assert!(
                 rendered.contains("\"op\":\"measure\"") && rendered.contains("\"op\":\"compare\"")
+            );
+        }
+        if name.starts_with("perf/") {
+            let stages = selections["selections"][name]["stages"].as_array().unwrap();
+            let internal = [
+                ("baseline", "root.nodes.baseline"),
+                ("implementation", "root.nodes.implement"),
+                ("code review", "root.nodes.accept"),
+                ("measurement", "root.nodes.trial.nodes.measure"),
+                ("comparison", "root.nodes.trial.nodes.compare"),
+                ("measurement acceptance", "root.nodes.accept_measurement"),
+            ];
+            assert_eq!(stages.first().unwrap(), "research");
+            assert_eq!(stages.last().unwrap(), "verification");
+            let order = graph["order"].as_array().unwrap();
+            let positions: Vec<_> = internal
+                .iter()
+                .enumerate()
+                .map(|(i, (stage, node))| {
+                    assert_eq!(stages[i + 1], *stage);
+                    order
+                        .iter()
+                        .position(|id| id == node)
+                        .unwrap_or_else(|| panic!("{node}: {order:?}"))
+                })
+                .collect();
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1]),
+                "{positions:?}"
             );
         }
         // Follow real checked inspection IDs into the native Store. This proves the script
@@ -463,13 +502,72 @@ else:
                     "approved role substitution must refuse"
                 );
                 assert!(
-                    text(&checked).contains("declared role"),
+                    text(&checked).contains("native stored"),
                     "{}",
                     text(&checked)
                 );
             }
         }
         if i == 0 {
+            let gate = v["graph"]["nodes"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .find(|(_, node)| node["operator"]["operator"]["op"] == "check")
+                .map(|(id, _)| id.clone())
+                .expect("real local check node");
+            for case in [
+                "empty",
+                "removed-check",
+                "mutated-check",
+                "order",
+                "dataflow",
+                "plan-metadata",
+                "graph-id",
+                "plan-id",
+                "revision",
+                "task",
+                "json-type",
+            ] {
+                let mut altered = v.clone();
+                match case {
+                    "empty" => altered["graph"]["nodes"] = json!({}),
+                    "removed-check" => {
+                        altered["graph"]["nodes"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove(&gate);
+                    }
+                    "mutated-check" => {
+                        altered["graph"]["nodes"][&gate]["operator"]["operator"]["checks"] =
+                            json!([])
+                    }
+                    "order" => altered["graph"]["order"].as_array_mut().unwrap().reverse(),
+                    "dataflow" => altered["graph"]["nodes"][&gate]["inputs"] = json!({}),
+                    "plan-metadata" => altered["plan"]["limits"]["tokens"] = json!(1),
+                    "graph-id" => altered["plan"]["compiled_graph_id"] = v["plan_id"].clone(),
+                    "plan-id" => altered["plan_id"] = v["revision_id"].clone(),
+                    "revision" => altered["revision_id"] = report["revision_id"].clone(),
+                    "task" => altered["task_id"] = json!("another-task"),
+                    "json-type" => altered["graph"]["max_parallel"] = json!(true),
+                    _ => unreachable!(),
+                }
+                assert_ne!(altered, v, "{case} must change the native projection");
+                std::fs::write(&inspection, serde_json::to_vec(&altered).unwrap()).unwrap();
+                let checked = std::process::Command::new("python3")
+                    .arg("-I")
+                    .arg(workspace().join("scripts/issue-workflows.py"))
+                    .arg("--state")
+                    .arg(&state)
+                    .args(["check-plan", name])
+                    .arg(&inspection)
+                    .output()
+                    .unwrap();
+                assert!(
+                    !checked.status.success(),
+                    "{case}: accepted edited native inspection"
+                );
+            }
             for field in ["model", "effort", "provider"] {
                 let mut altered = v.clone();
                 altered["plan"]["bindings"]["root.slots.implementer"]["execution"][field] =
@@ -831,9 +929,26 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
     let approved: toml::Value =
         toml::from_str(std::str::from_utf8(&approved_bytes).unwrap()).unwrap();
     let catalog_bytes = std::fs::read(repo.join(".af/task-catalog.toml")).unwrap();
-    for (i, case) in ["command", "removed", "remote"].into_iter().enumerate() {
+    for (i, case) in ["settings", "command", "removed", "remote"]
+        .into_iter()
+        .enumerate()
+    {
+        let settings_file = repo.join(".af/af.toml");
+        let settings_bytes =
+            std::fs::read(workspace().join("fixtures/issue-workflows/replacement-af.toml"))
+                .unwrap();
+        std::fs::write(&settings_file, &settings_bytes).unwrap();
         let mut changed = approved.clone();
         match case {
+            "settings" => {
+                std::fs::write(
+                    &settings_file,
+                    String::from_utf8(settings_bytes.clone())
+                        .unwrap()
+                        .replace("bugfix/default-codex", "default/implementation"),
+                )
+                .unwrap();
+            }
             "command" => {
                 changed["checks"]["kernel"]["command"]["program"] =
                     toml::Value::String("/usr/bin/true".into());
@@ -851,8 +966,12 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
             }
             _ => unreachable!(),
         }
-        std::fs::write(&policy_file, toml::to_string(&changed).unwrap()).unwrap();
-        git(&repo, &["add", ".af/code-policy.toml"]);
+        if case == "settings" {
+            std::fs::write(&policy_file, &approved_bytes).unwrap();
+        } else {
+            std::fs::write(&policy_file, toml::to_string(&changed).unwrap()).unwrap();
+        }
+        git(&repo, &["add", ".af/code-policy.toml", ".af/af.toml"]);
         git(
             &repo,
             &["commit", "-qm", "negative same-catalog policy fixture"],
@@ -867,7 +986,31 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
             .output()
             .unwrap();
         let changed_commit = String::from_utf8(changed_commit.stdout).unwrap();
-        if case == "command" {
+        if case == "settings" {
+            assert_eq!(std::fs::read(&policy_file).unwrap(), approved_bytes);
+            let refused = plan_document(
+                json!({"task_id": "retired", "kind": "implement", "goal": "A bounded known fix"}),
+                "retired-three-field-default",
+                false,
+            );
+            assert!(!refused.status.success(), "retired default must refuse");
+            let launcher = std::process::Command::new("python3")
+                .arg("-I")
+                .arg(workspace().join("scripts/issue-workflows.py"))
+                .arg("--repo")
+                .arg(&repo)
+                .arg("--state")
+                .arg(&state)
+                .args(["plan", "bugfix/default-codex", "--file"])
+                .arg(repo.join("fixtures/issue-workflows/known-fix.json"))
+                .arg("--routing")
+                .arg(repo.join("fixtures/issue-workflows/routing-known.json"))
+                .output()
+                .unwrap();
+            assert!(!launcher.status.success());
+            assert!(text(&launcher).contains("af.toml"), "{}", text(&launcher));
+        }
+        if matches!(case, "command" | "settings") {
             let mut pins = Vec::new();
             for (j, file) in ["known-fix.json", "verify.json"].into_iter().enumerate() {
                 let mut document = example(file);
@@ -909,13 +1052,17 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
                 "changed policy composition must refuse"
             );
             assert!(
-                text(&composed).contains("code-policy.toml"),
+                text(&composed).contains(if case == "settings" {
+                    "af.toml"
+                } else {
+                    "code-policy.toml"
+                }),
                 "{}",
                 text(&composed)
             );
         }
         let o = plan("bugfix/default-codex", &format!("policy-{i}"), false);
-        if o.status.success() {
+        if o.status.success() && case != "settings" {
             let inspection = temp.path().join(format!("policy-inspection-{i}.json"));
             std::fs::write(&inspection, o.stdout).unwrap();
             let checked = std::process::Command::new("python3")
@@ -936,7 +1083,7 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
                 "{}",
                 text(&checked)
             );
-        } else {
+        } else if !o.status.success() {
             assert_eq!(case, "removed", "{case}: {}", text(&o));
         }
         let checked = std::process::Command::new("python3")
@@ -966,7 +1113,7 @@ for check in (lambda: w.installed_authority(repo),
         assert!(checked.status.success(), "{case}: {}", text(&checked));
     }
     std::fs::write(&policy_file, approved_bytes).unwrap();
-    git(&repo, &["add", ".af/code-policy.toml"]);
+    git(&repo, &["add", ".af/code-policy.toml", ".af/af.toml"]);
     git(&repo, &["commit", "-qm", "restore approved fixture policy"]);
     // Delete actual comparison evidence in copied fixture authority, then re-pin that copy.
     // No gate assertion, model contract, production authority or historical Task is relaxed.

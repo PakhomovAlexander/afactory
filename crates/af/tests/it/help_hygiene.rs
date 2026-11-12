@@ -371,3 +371,26 @@ fn json_help_names_the_documents_that_carry_a_state() {
         );
     }
 }
+
+#[test]
+fn task_default_help_uses_the_installed_operator_selection() {
+    for topic in ["config", "task-file"] {
+        let help = out(&af(&["help", topic]));
+        assert!(help.contains("bugfix/default-codex"), "{help}");
+        assert!(!help.contains("kernel/implementation-reviewed"), "{help}");
+        if topic == "task-file" {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let catalog: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join("fixtures/issue-workflows/selections.json")).unwrap(),
+            )
+            .unwrap();
+            for selection in catalog["selections"].as_object().unwrap().keys() {
+                assert!(help.contains(selection), "missing {selection}: {help}");
+            }
+            assert!(
+                help.contains(catalog["verification"].as_str().unwrap()),
+                "{help}"
+            );
+        }
+    }
+}
