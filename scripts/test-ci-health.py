@@ -769,6 +769,21 @@ class EvidenceTests(unittest.TestCase):
         self.journal.db.execute('DROP TRIGGER refuse_receipt')
         self.assertEqual(self.observe(), captured)
 
+    def test_two_later_successes_cannot_restore_an_already_closed_failure(self):
+        raw = service()
+        raw['nightly_receipt']['conclusion'] = 'success'
+        failure = copy.deepcopy(raw['jobs'][0])
+        failure['completed_at'] = '2026-11-09T01:00:00Z'
+        self.observe(dict(raw, jobs=[failure]))
+        first = copy.deepcopy(failure)
+        first.update(conclusion='success', job_id=202, completed_at='2026-11-09T02:00:00Z')
+        second = copy.deepcopy(failure)
+        second.update(conclusion='success', job_id=203, completed_at='2026-11-09T03:00:00Z')
+        observed = self.observe(dict(raw, jobs=[first, second]))
+        self.assertEqual(observed['failures'], [])
+        self.assertTrue(observed['complete'], observed['omissions'])
+        self.assertEqual(self.observe(dict(raw, jobs=[first, second])), observed)
+
     def test_green_closure_is_per_signature_and_never_erases_an_unresolved_sibling(self):
         raw = service()
         first = copy.deepcopy(raw['jobs'][0])
@@ -982,6 +997,7 @@ def production_routes():
         routes[prefix + f'actions/runs/{run}/attempts/2/jobs?per_page=100'] = {'total_count': 1, 'jobs': [{
             'id': job, 'name': 'validate', 'status': 'completed', 'conclusion': conclusion,
             'run_id': run, 'run_attempt': 2, 'head_sha': sha, 'labels': labels,
+            'completed_at': '2026-11-09T03:01:00Z',
             'check_run_url': f'https://api.github.com/{prefix}check-runs/{check}'}]}
         if conclusion == 'failure':
             routes[prefix + f'check-runs/{check}/annotations?per_page=100'] = []
@@ -1013,7 +1029,7 @@ def add_production_job(routes, sha, run, attempt, job, conclusion, started, upda
     jobs = routes.setdefault(route, {'total_count': 0, 'jobs': []})
     jobs['jobs'].append({'id': job, 'name': name, 'status': 'completed', 'conclusion': conclusion,
         'run_id': run, 'run_attempt': attempt, 'head_sha': sha,
-        'labels': labels or ['ubuntu-latest'],
+        'labels': labels or ['ubuntu-latest'], 'completed_at': updated,
         'check_run_url': f'https://api.github.com/{prefix}check-runs/{check}'})
     jobs['total_count'] = len(jobs['jobs'])
     if conclusion == 'failure':
@@ -1919,6 +1935,41 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual([f['job_id'] for f in snapshot['failures']], [403])
         self.assertFalse(snapshot['complete'])
         self.assertTrue(any('green closure' in reason for reason in snapshot['omissions']))
+
+    def test_unfinished_attempt_metadata_never_suppresses_failed_siblings(self):
+        prefix = 'repos/octo/project/'
+        for position in ('first', 'last'):
+            for mode in ('null_start', 'unavailable_attempt'):
+                routes = production_routes()
+                queued = {'id': 1998, 'workflow_id': 1, 'run_attempt': 1,
+                    'head_sha': 'd' * 40, 'status': 'in_progress',
+                    'path': '.github/workflows/validate.yml', 'created_at': '2026-11-09T03:20:00Z',
+                    'repository': {'full_name': 'octo/project'}}
+                runs_key = prefix + 'actions/runs?head_sha=' + 'd' * 40 + '&per_page=100'
+                routes[runs_key]['workflow_runs'].insert(0 if position == 'first' else 1, queued)
+                routes[runs_key]['total_count'] += 1
+                attempt = {**queued, 'run_started_at': None, 'updated_at': '2026-11-09T03:20:00Z'}
+                routes[prefix + 'actions/runs/1998/attempts/1'] = ValueError('404') if mode == 'unavailable_attempt' else attempt
+                snapshot = self.P.observe(self.options, opener=Transport(routes))
+                self.assertFalse(snapshot['complete'])
+                failure, = snapshot['failures']
+                self.assertEqual(failure['job_id'], 403, (position, mode, snapshot['omissions']))
+                self.assertTrue(failure['release_blocking'])
+
+    def test_missing_success_completion_cannot_close_failure(self):
+        routes = production_routes()
+        prefix = 'repos/octo/project/'
+        routes[prefix + 'actions/runs/301/attempts/2/jobs?per_page=100']['jobs'][0]['completed_at'] = '2026-11-09T03:10:00Z'
+        add_production_job(routes, 'd' * 40, 302, 1, 404, 'success',
+                           '2026-11-09T03:00:00Z', '2026-11-09T03:30:00Z',
+                           labels=['macos-14', 'ARM64'])
+        jobs_key = prefix + 'actions/runs/302/attempts/1/jobs?per_page=100'
+        del routes[jobs_key]['jobs'][0]['completed_at']
+        snapshot = self.P.observe(self.options, opener=Transport(routes))
+        self.assertFalse(snapshot['complete'])
+        failure, = snapshot['failures']
+        self.assertEqual(failure['job_id'], 403)
+        self.assertTrue(failure['release_blocking'])
 
     def test_unfinished_workflow_retains_its_completed_failed_job_and_alert(self):
         routes = production_routes()

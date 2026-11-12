@@ -370,7 +370,7 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
             runs = page(github.get(prefix + 'actions/runs?head_sha=' + sha + '&per_page=100'), 'workflow_runs')
             C.require(runs, 'Run evidence absent')
             matched = set()
-            for run in runs:
+            def process_run(run):
                 run_id, attempt, workflow = [positive(run[key]) for key in ('id', 'run_attempt', 'workflow_id')]
                 if run.get('status') != 'completed':
                     # A workflow may still be running while one of its matrix jobs has already
@@ -395,7 +395,7 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                 # A rerun has the original run's created_at. The selected attempt's own
                 # interval determines overlap, including a run completed in this window.
                 if started > C.instant(captured_at) or updated < C.instant(since):
-                    continue
+                    return
                 C.require(updated <= C.instant(captured_at), 'Attempt completion outside capture')
                 jobs = page(github.get(prefix + f'actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100'), 'jobs')
                 C.require(jobs, 'Job evidence absent')
@@ -425,7 +425,7 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                             'run_id': run_id, 'run_attempt': attempt, 'job_id': job_id, 'job_name': job['name'],
                             'platform': platform, 'head_sha': sha, 'conclusion': job['conclusion'],
                             'failing_tests': [], 'error_lines': [], 'log_artifacts': [], 'release_blocking': blocking}
-                        completed_at = job.get('completed_at') or (selected['updated_at'] if run['status'] == 'completed' and selected['status'] == 'completed' else None)
+                        completed_at = job.get('completed_at')
                         if completed_at is not None:
                             observation['completed_at'] = completed_at
                         ident = C.occurrence_id(github.repository, observation)
@@ -482,6 +482,11 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                         result['jobs'].append(observation)
                     except (ValueError, KeyError, TypeError):
                         omit('malformed or unavailable job evidence')
+            for run in runs:
+                try:
+                    process_run(run)
+                except (ValueError, KeyError, TypeError, UnicodeError):
+                    omit('incomplete or unavailable attempt evidence for run ' + str(run.get('id', 'unknown')))
             for ident, check in by_id.items():
                 if check['conclusion'] not in BENIGN and ident not in matched:
                     omit('Failed check lacks exact workflow/job evidence for job ' + str(ident))

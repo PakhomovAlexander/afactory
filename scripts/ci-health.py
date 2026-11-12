@@ -623,6 +623,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     previous_failures = previous_capture['snapshot']['failures'] if previous_capture else []
     seen = {}
     green_events = []
+    closed_all = set()
     def order(item):
         index, job = item
         if not isinstance(job, dict):
@@ -661,12 +662,13 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             folded = journal.fold(repository, job, at)
             if isinstance(folded, list):
                 closed = set(folded)
+                closed_all.update(closed)
                 scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
                 snapshot['failures'] = [f for f in snapshot['failures']
                     if not (all(f[key] == job[key] for key in scope) and f['signature_id'] in closed)]
                 for previous in previous_failures:
                     if (all(previous[key] == job[key] for key in scope)
-                            and previous['signature_id'] not in closed and previous['occurrence_id'] not in seen):
+                            and previous['signature_id'] not in closed_all and previous['occurrence_id'] not in seen):
                         retained = dict(previous)
                         retained['last_seen_at'] = at
                         structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
