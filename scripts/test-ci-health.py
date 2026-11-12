@@ -799,6 +799,28 @@ class EvidenceTests(unittest.TestCase):
         unavailable = self.observe(dict(raw, jobs=[]))
         self.assertEqual([f['job_id'] for f in unavailable['failures']], [valid['job_id']])
         self.assertTrue(unavailable['failures'][0]['release_blocking'])
+        unavailable_again = self.observe(dict(raw, jobs=[]))
+        self.assertEqual([f['job_id'] for f in unavailable_again['failures']], [valid['job_id']])
+        self.assertTrue(unavailable_again['failures'][0]['release_blocking'])
+
+    def test_release_advancement_supersedes_only_the_old_release_not_unchanged_main(self):
+        raw = service()
+        main = copy.deepcopy(raw['jobs'][0])
+        main.update(head_sha='a' * 40, completed_at='2026-11-09T01:00:00Z')
+        release = copy.deepcopy(main)
+        release.update(head_sha='b' * 40, job_id=404, run_attempt=2,
+                       completed_at='2026-11-09T02:00:00Z', release_blocking=True)
+        raw['release_pr'] = {'number': 7, 'head_sha': 'b' * 40}
+        self.observe(dict(raw, jobs=[main, release]))
+        raw['release_pr']['head_sha'] = 'c' * 40
+        observed = self.observe(dict(raw, jobs=[]))
+        self.assertFalse(observed['complete'])
+        self.assertEqual([f['head_sha'] for f in observed['failures']], ['a' * 40])
+        self.assertFalse(observed['failures'][0]['release_blocking'])
+        del raw['release_pr']
+        for _ in range(2):
+            observed = self.observe(dict(raw, jobs=[]))
+            self.assertEqual([f['head_sha'] for f in observed['failures']], ['a' * 40])
 
     def test_green_closure_preserves_other_heads_recurrence_and_release_alerts(self):
         raw = service()

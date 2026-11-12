@@ -698,11 +698,15 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     previous_release = previous_capture['snapshot']['release_pr'] if previous_capture else None
     current_release = service.get('release_pr')
     for previous in previous_failures:
-        release_superseded = (previous_release is not None and current_release is not None
-                              and previous_release['head_sha'] != current_release['head_sha'])
+        if current_release is not None:
+            selected_heads = {service['source_sha'], current_release['head_sha']}
+            superseded = previous['head_sha'] not in selected_heads
+        else:
+            # An unavailable release lookup is not evidence that a release was removed.
+            # Only an unchanged, non-release main head may be advanced by main itself.
+            superseded = previous_release is None and previous['head_sha'] != service['source_sha']
         if ((previous['signature_id'], previous['head_sha']) in closed_all
-                or previous['occurrence_id'] in admitted_occurrences or release_superseded
-                or (previous_release is None and previous['head_sha'] != service['source_sha'])
+                or previous['occurrence_id'] in admitted_occurrences or superseded
                 or now - instant(previous['last_seen_at']) >= dt.timedelta(days=14)):
             continue
         # Retain exact unresolved evidence without advancing its observation time or resurrecting
