@@ -752,10 +752,78 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
 }
 
 #[test]
+fn pi_home_installation_is_authenticated_from_non_repository_home() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let work = home.join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = home.join("auth");
+    let (sdk, path, state) = crate::fake_models::install_pi(&home, &auth, "review");
+    assert!(
+        home.ancestors()
+            .all(|p| !p.join(".git").exists() && !p.join(".af").exists())
+    );
+    let invoke = |cwd: &Path, args: &[&str]| {
+        crate::common::af()
+            .args(args)
+            .current_dir(cwd)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("AF_PROVIDERS_FILE", home.join("providers.toml"))
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+    };
+    let setup_args = [
+        "provider",
+        "setup",
+        "pi-home",
+        "--kind",
+        "pi",
+        "--backend",
+        "openai-codex",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--sdk-entrypoint",
+        sdk.to_str().unwrap(),
+        "--json",
+    ];
+    let registered = invoke(&work, &setup_args);
+    assert_eq!(code(&registered), 0, "{}", err(&registered));
+    for cwd in [&work, &home] {
+        let status = invoke(cwd, &["provider", "status", "--json"]);
+        assert_eq!(code(&status), 0, "{} {}", out(&status), err(&status));
+        let value = document(&status);
+        valid("provider-status-v6.json", &value);
+        assert_eq!(value["providers"][0]["auth"], "authenticated");
+    }
+    let setup = invoke(&home, &setup_args);
+    assert_eq!(code(&setup), 0, "{}", err(&setup));
+    assert_eq!(document(&setup)["outcome"], "already_registered");
+    // An absent PATH Git cannot turn this machine-local installation into a refusal.
+    std::fs::remove_file(Path::new(&path).join("git")).unwrap();
+    let status = invoke(&home, &["provider", "status", "--json"]);
+    assert_eq!(code(&status), 0, "{} {}", out(&status), err(&status));
+    assert_eq!(document(&status)["providers"][0]["auth"], "authenticated");
+    assert!(!state.with_extension("json.calls").exists());
+}
+
+#[test]
 fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
-    for marker in ["git-directory", "git-worktree-file", "af-directory"] {
+    for marker in [
+        "git-directory",
+        "git-worktree-file",
+        "af-directory",
+        "git-configured-toplevel",
+    ] {
         let root = tempfile::tempdir().unwrap();
-        let work = root.path().join("repository/nested/cwd");
+        // Toplevel discovery must preserve shell characters and a trailing newline literally.
+        let repository = root.path().join(if marker == "git-configured-toplevel" {
+            "repository ' $(literal)\n"
+        } else {
+            "repository"
+        });
+        let work = repository.join("nested/cwd");
         std::fs::create_dir_all(&work).unwrap();
         let auth = root.path().join("auth");
         let (sdk, external_path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
@@ -786,19 +854,36 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             sdk.to_str().unwrap(),
             "--json",
         ];
-        // The same nested CWD permits a legitimate external Node installation.
-        let setup = invoke(external_path.as_ref(), &setup_args);
-        assert!(setup.status.success(), "{}", err(&setup));
-        let repository = root.path().join("repository");
         match marker {
             "git-directory" => std::fs::create_dir(repository.join(".git")).unwrap(),
             "git-worktree-file" => {
                 std::fs::write(repository.join(".git"), "gitdir: /synthetic/worktree\n").unwrap()
             }
+            "git-configured-toplevel" => {
+                // Git's worktree root can be above its .git marker. The sibling bin has
+                // no .git/.af ancestor, so only the invocation repository lookup refuses it.
+                for args in [
+                    ["init", "-q"].as_slice(),
+                    &["config", "core.worktree", "../.."],
+                ] {
+                    let output = af_source_git::git::isolated_command(
+                        &repository.join("nested"),
+                        Path::new("/dev/null"),
+                    )
+                    .args(args)
+                    .output()
+                    .unwrap();
+                    assert!(output.status.success(), "{}", err(&output));
+                }
+            }
             _ => std::fs::create_dir(repository.join(".af")).unwrap(),
         }
+        // The same nested CWD permits a legitimate external SDK/Node installation.
+        let setup = invoke(external_path.as_ref(), &setup_args);
+        assert!(setup.status.success(), "{}", err(&setup));
         let bin = repository.join("bin");
         std::fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink(Path::new(&external_path).join("git"), bin.join("git")).unwrap();
         let trap = bin.join("node");
         let executed = root.path().join("node-executed");
         std::fs::write(
@@ -808,31 +893,56 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
         .unwrap();
         std::fs::set_permissions(&trap, std::fs::Permissions::from_mode(0o700)).unwrap();
         let absolute_path = bin.canonicalize().unwrap();
-        for args in [&["provider", "status", "--json"][..], &setup_args[..]] {
-            let output = invoke(absolute_path.as_os_str(), args);
-            assert!(!executed.exists(), "executed repository Node for {marker}");
-            let value = document(&output);
-            if args[1] == "setup" {
-                assert_eq!(code(&output), 3, "{}", err(&output));
-                valid("pi-provider-setup-v4.json", &value);
-                assert!(
-                    value["detail"]
-                        .as_str()
-                        .unwrap()
-                        .contains("outside repository-owned paths")
-                );
-                assert!(err(&output).starts_with("af provider setup: "));
-            } else {
-                valid("provider-status-v6.json", &value);
-                assert_ne!(value["providers"][0]["auth"], "authenticated");
-                let human = invoke(absolute_path.as_os_str(), &["provider", "status"]);
-                assert!(
-                    out(&human).contains("outside repository-owned paths"),
-                    "{}",
-                    out(&human)
-                );
+        let git_executed = root.path().join("git-executed");
+        for git in ["external", "trap", "node-symlink"] {
+            let git_path = bin.join("git");
+            if git != "external" {
+                std::fs::remove_file(&git_path).unwrap();
+                if git == "trap" {
+                    std::fs::write(
+                        &git_path,
+                        format!("#!/bin/sh\n: > '{}'\nexit 99\n", git_executed.display()),
+                    )
+                    .unwrap();
+                    std::fs::set_permissions(&git_path, std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                } else {
+                    std::os::unix::fs::symlink(&trap, &git_path).unwrap();
+                }
             }
-            assert!(!executed.exists(), "executed repository Node for {marker}");
+            for args in [&["provider", "status", "--json"][..], &setup_args[..]] {
+                let output = invoke(absolute_path.as_os_str(), args);
+                assert!(!executed.exists(), "executed repository Node for {marker}");
+                let value = document(&output);
+                if args[1] == "setup" {
+                    assert_eq!(code(&output), 3, "{}", err(&output));
+                    valid("pi-provider-setup-v4.json", &value);
+                    assert_eq!(
+                        value["detail"],
+                        "Pi must use an installed SDK/Node outside repository-owned paths"
+                    );
+                    assert!(err(&output).starts_with("af provider setup: "));
+                } else {
+                    assert_eq!(code(&output), 0, "{}", err(&output));
+                    valid("provider-status-v6.json", &value);
+                    assert_eq!(value["providers"][0]["auth"], "unavailable");
+                    let human = invoke(absolute_path.as_os_str(), &["provider", "status"]);
+                    assert!(
+                        out(&human).contains("outside repository-owned paths"),
+                        "{}",
+                        out(&human)
+                    );
+                }
+                assert!(!executed.exists(), "executed repository Node for {marker}");
+            }
+            assert!(
+                !git_executed.exists(),
+                "executed repository Git for {marker}/{git}"
+            );
+            assert!(
+                !executed.exists(),
+                "executed repository Node for {marker}/{git}"
+            );
         }
     }
 }
@@ -840,8 +950,6 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
 #[test]
 fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_versions() {
     let root = tempfile::tempdir().unwrap();
-    let work = root.path().join("work");
-    std::fs::create_dir(&work).unwrap();
     let auth = root.path().join("auth");
     let (_, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
     let agent = root.path().join("agent");
@@ -874,7 +982,7 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
                 auth.to_str().unwrap(),
                 "--json",
             ])
-            .current_dir(&work)
+            .current_dir(root.path())
             .env("HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path().join("config"))
             .env("PATH", &path)
