@@ -406,32 +406,20 @@ class LabelSetup(unittest.TestCase):
             self.assertEqual(calls[:10], [row[1:] for row in self.load_labels().commands('fixture/repo')])
             self.assertTrue(all(row[:2] == ['label', 'create'] and '--force' in row for row in calls))
 
-    def test_release_checks_profile_label_before_any_source_or_remote_write(self):
+    def test_release_shell_delegates_to_the_shared_developer_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             scripts = root / 'scripts'
             scripts.mkdir()
-            for name in ('release.sh', 'test-labels.py', 'test-classes.py'):
-                shutil.copy2(ROOT / 'scripts' / name, scripts / name)
-            gh = root / 'gh'
-            gh.write_text('#!' + sys.executable + '\nimport sys\n'
-                          'print("fixture/repo" if sys.argv[1:3] == ["repo", "view"] else "[]")\n')
-            gh.chmod(0o755)
-            env = {k: v for k, v in os.environ.items() if not k.startswith(('GH_', 'GITHUB_'))}
-            env['PATH'] = str(root) + os.pathsep + env['PATH']
-            for profile in ('fast', 'full'):
-                result = subprocess.run(['bash', str(scripts / 'release.sh'), '1.2.3', '--compat',
-                                         'unchanged', '--profile', profile, '--yes'],
-                                        env=env, cwd=root, capture_output=True, text=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('make test-labels APPLY=1', result.stderr)
-                self.assertIn('release:' + profile, result.stderr)
-            default = subprocess.run(['bash', str(scripts / 'release.sh'), '1.2.3', '--compat',
-                                      'unchanged', '--yes'], env=env, cwd=root,
-                                     capture_output=True, text=True)
-            self.assertNotEqual(default.returncode, 0)
-            self.assertIn('release:fast', default.stderr)
-            self.assertEqual(sorted(p.name for p in root.iterdir()), ['gh', 'scripts'])
+            shutil.copy2(ROOT / 'scripts/release.sh', scripts / 'release.sh')
+            dev = root / 'dev'
+            dev.write_text('#!' + sys.executable + '\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+            dev.chmod(0o755)
+            result = subprocess.run(['bash', str(scripts / 'release.sh'), '--repo', 'fixture/repo',
+                                     '--profile', 'full'], capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(result.stdout),
+                             ['release', 'rc', '--repo', 'fixture/repo', '--profile', 'full'])
+
 
     def test_release_linux_builds_pin_ubuntu24_for_static_qemu_execution(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
@@ -724,7 +712,7 @@ if mode == 'malformed':
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
         tests = ['test', 'scenario-github-adapter', 'scenario-git-workspace', 'scenario-merge-watch', 'performance-lab', 'workspace-fixture-benchmark',
                  'test-perf-trace', 'test-perf-calibration']
-        release = ['release-contract', 'release-contract-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
+        release = ['release-harness', 'release-contract', 'release-contract-tests', 'dev-release-tests', 'release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin']
         expected = [(label, 'preflight') for label in preflight]
         expected += [(label, 'lint') for label in lint] + [('test-build', 'build')]
@@ -748,7 +736,7 @@ if mode == 'malformed':
                         'performance/schemas.py', 'performance/cli.py',
                         'nextest-gate.py', 'changelog-notes.py', 'af-pin.py',
                         'test-changelog-notes.py', 'test-test-quarantine.py',
-                        'release-contract.py', 'test-release-contract.py']
+                        'release-contract.py', 'test-release-contract.py', 'test-dev-release.py']
             for name in payloads:
                 path = scripts / name
                 path.parent.mkdir(exist_ok=True)
@@ -1105,10 +1093,12 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py', 'test-dev-release.py'):
                 (scripts / name).write_text(sample)
             for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py'):
                 (scripts / name).write_text('pass\n')
+            (scripts / 'performance').mkdir(exist_ok=True)
+            (scripts / 'performance/cli.py').write_text('pass\n')
             (scripts / 'release-smoke.sh').write_text('[ "$1" = target/debug/af ]\n')
             tools = root / 'bin'
             tools.mkdir()
@@ -1132,7 +1122,7 @@ ET.ElementTree(root).write(path, encoding='unicode')
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             records = [json.loads(line) for line in (source / metrics_path).read_text().splitlines()]
             self.assertEqual([r['label'] for r in records], ['fmt', 'lint', 'lint-diagnostic-features',
-                             'release-contract', 'release-contract-tests', 'release-resolution',
+                             'release-harness', 'release-contract', 'release-contract-tests', 'dev-release-tests', 'release-resolution',
                              'changelog-notes-tests', 'changelog-notes', 'quarantine-scan-tests', 'af-pin-tests', 'af-pin',
                              'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke', 'release-smoke'])
             self.assertTrue(all(r['schema'] == 'af.ci-step/1' and r['exit_code'] == 0
@@ -1155,10 +1145,12 @@ ET.ElementTree(root).write(path, encoding='unicode')
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
             for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py',
-                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py'):
+                         'test-changelog-notes.py', 'test-test-quarantine.py', 'test-release-contract.py', 'test-dev-release.py'):
                 (scripts / name).write_text(sample)
             for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py', 'release-contract.py'):
                 (scripts / name).write_text('pass\n')
+            (scripts / 'performance').mkdir(exist_ok=True)
+            (scripts / 'performance/cli.py').write_text('pass\n')
             before = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
             files = [p for p in source.rglob('*') if p.is_file()]
             for p in files:
@@ -1178,9 +1170,9 @@ ET.ElementTree(root).write(path, encoding='unicode')
                 result = subprocess.run(['make', 'base-check'], cwd=source, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 7)
+                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 8)
                 records = [json.loads(line) for line in metrics.read_text().splitlines()]
-                self.assertEqual(len(records), 11)
+                self.assertEqual(len(records), 13)
                 self.assertTrue(all(r['exit_code'] == 0 for r in records))
                 after = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)

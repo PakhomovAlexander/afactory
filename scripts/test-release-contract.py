@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline release preflight regressions, with no binary, benchmark or GitHub access."""
+import json
 from pathlib import Path
 import shutil
 import stat
@@ -23,6 +24,9 @@ def copy_inputs(source, destination):
                     destination / 'scripts/telemetry-overhead.py')
     # copyfile does not preserve read-only file modes, unlike copy/copy2. copytree
     # still preserves the directory mode; schemas is a flat directory we also mutate.
+    shutil.copyfile(source / 'scripts/release-contract.json', destination / 'scripts/release-contract.json')
+    for fixture in (source / 'fixtures').glob('telemetry-bench'):
+        shutil.copytree(fixture, destination / 'fixtures' / fixture.name, copy_function=shutil.copyfile)
     schemas = destination / 'schemas'
     shutil.copytree(source / 'schemas', schemas, copy_function=shutil.copyfile)
     schemas.chmod(schemas.stat().st_mode | stat.S_IRWXU)
@@ -34,7 +38,7 @@ class ReleaseContract(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         copy_inputs(ROOT, self.root)
-        self.version('0.15.1-rc.1')
+        self.version('0.15.1-rc.3')
 
     def test_read_only_source_copies_allow_all_contract_mutations(self):
         # Model the AF gate's sealed source even in a writable developer checkout.
@@ -51,7 +55,10 @@ class ReleaseContract(unittest.TestCase):
         destination.mkdir()
         copy_inputs(source, destination)
         script = destination / 'scripts/telemetry-overhead.py'
-        script.write_text(script.read_text().replace("'0.15.1-rc.1'", "'0.15.1-rc.1', '9.0.0'"))
+        declaration = destination / 'scripts/release-contract.json'
+        document = json.loads(declaration.read_text())
+        document['version'] = '9.0.0'
+        declaration.write_text(json.dumps(document))
         (destination / 'Cargo.toml').write_text('[workspace.package]\nversion = "9.0.0"\n')
         self.assertEqual(PREFLIGHT.check(destination), '9.0.0')
         schema = destination / 'schemas' / next(iter(contracts.schema_documents()))
@@ -74,16 +81,23 @@ class ReleaseContract(unittest.TestCase):
         (self.root / 'Cargo.toml').write_text('[workspace.package]\nversion = "%s"\n' % version)
 
     def test_explicit_compatible_version_passes(self):
-        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.1')
-        self.version('0.15.1-rc.2')
-        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.2')
-        self.version('0.15.1-rc.3')
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
-        # A future compatible release still requires an explicit reviewed declaration.
-        self.version('9.0.0')
-        path = self.root / 'scripts/telemetry-overhead.py'
-        path.write_text(path.read_text().replace("'0.15.1-rc.1'", "'0.15.1-rc.1', '9.0.0'"))
-        self.assertEqual(PREFLIGHT.check(self.root), '9.0.0')
+        for version in ('0.15.1-rc.4', '9.0.0'):
+            self.version(version)
+            PREFLIGHT.prepare(self.root, 'a' * 40)
+            self.assertEqual(PREFLIGHT.check(self.root), version)
+            declaration = json.loads((self.root / 'scripts/release-contract.json').read_text())
+            self.assertEqual(declaration['source'], 'a' * 40)
+
+    def test_preparation_refuses_changed_capabilities(self):
+        self.version('0.15.1-rc.4')
+        path = self.root / 'scripts/release-contract.json'
+        original = path.read_bytes()
+        fixture = next((self.root / 'fixtures').glob('telemetry-bench/*/repo/bench.json'))
+        fixture.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+            PREFLIGHT.prepare(self.root, 'a' * 40)
+        self.assertEqual(path.read_bytes(), original)
 
     def test_undeclared_and_incompatible_versions_fail(self):
         for version in ('9.0.0', '0.13.0', '0.11.9', '0.0.0', '0.14.0',
@@ -177,8 +191,11 @@ class ReleaseContract(unittest.TestCase):
         validate = (ROOT / '.github/workflows/validate.yml').read_text()
         self.assertIn('make fmt lint base-check', validate)
         release = (ROOT / 'scripts/release.sh').read_text()
-        self.assertLess(release.index('scripts/release-contract.py'), release.index('git commit'))
-        self.assertLess(release.index('cargo update --workspace'), release.index('scripts/release-contract.py'))
+        self.assertIn('exec "$root/dev" release rc', release)
+        controller = (ROOT / 'scripts/dev-release.py').read_text()
+        self.assertIn("'scripts/release-contract.py', '--prepare'", controller)
+        self.assertIn('harness-digest', controller)
+
 
 
 if __name__ == '__main__':

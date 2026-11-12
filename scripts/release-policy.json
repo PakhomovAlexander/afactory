@@ -1,0 +1,50 @@
+{
+  "schema": "af.dev-release-policy/1",
+  "compatibility": "Breaking persisted Ant/Scenario shapes: Scenario Store 9, Ant state 7, inspection 2 and list 7. Finish or discard prior-release runs and state before upgrading; no migration or replay of retired shapes. Scenario definitions and pins remain generation 5. Review committed authority and refresh its lock with the published release; pin adoption is a separate reviewed PR.",
+  "required_features": {
+    "crates/af-scenario/src/retention.rs": [
+      "settlement",
+      "capacity"
+    ],
+    "crates/af-scenario/src/roadmap.rs": [
+      "roadmap"
+    ],
+    "crates/af-scenario/src/store.rs": [
+      "af/scenario-store@9",
+      "run_capacity"
+    ],
+    "schemas/ant-state-v7.json": [
+      "af/ant-state@7"
+    ],
+    "schemas/ant-inspection-v2.json": [
+      "af/ant-inspection@2"
+    ],
+    "schemas/ant-list-v7.json": [
+      "af/ant-list@7"
+    ]
+  },
+  "targets": [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl"
+  ],
+  "validation": [
+    [
+      "python3",
+      "-I",
+      "scripts/release-contract.py"
+    ],
+    [
+      "python3",
+      "-I",
+      "scripts/performance/cli.py",
+      "harness-digest",
+      "--check"
+    ],
+    [
+      "scripts/verify.sh",
+      "--profile",
+      "fast"
+    ]
+  ]
+}

@@ -52,10 +52,10 @@ else
 	$(error TEST_RUNNER must be nextest or cargo)
 endif
 
-# Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
-# workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.
+# Reserve the next RC and run the repository developer release controller. The
+# workflow tags, checks, builds, signs, and publishes; reviewed metadata states compatibility.
 release:
-	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)" --profile "$(or $(PROFILE),fast)"
+	./dev release rc --repo PakhomovAlexander/afactory --profile "$(or $(PROFILE),fast)" $(if $(VERSION),--version "$(VERSION)")
 
 # Run the tests NEXTEST_FILTER selects NEXTEST_REPEAT times in a row under the gate's scheduling,
 # stopping at the first run that fails and never rerunning anything: the proof that a flake is
@@ -103,8 +103,10 @@ telemetry-gate:
 # exercise the test quarantine scan on test-local task lists (ADR-0268),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
+	$(CI_STEP) --stage release release-harness python3 scripts/performance/cli.py harness-digest --check
 	$(CI_STEP) --stage release release-contract python3 scripts/release-contract.py
 	$(CI_STEP) --stage release release-contract-tests python3 scripts/test-class-python.py test-release-contract.py "$(BASE_EVIDENCE)/test-release-contract.py.xml"
+	$(CI_STEP) --stage release dev-release-tests python3 scripts/test-class-python.py test-dev-release.py "$(BASE_EVIDENCE)/test-dev-release.py.xml"
 	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check

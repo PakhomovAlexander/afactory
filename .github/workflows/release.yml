@@ -1,6 +1,6 @@
 # The release train (ADR-0045). One workflow, two entry points, two human merges (release and pin PRs):
 #
-#   scripts/release.sh X.Y.Z   →  a "release: vX.Y.Z" PR (version bump + CHANGELOG section)
+#   ./dev release rc --repo OWNER/REPO   →  a "release: vX.Y.Z" PR (version bump + CHANGELOG section)
 #   merge it                   →  this run tags vX.Y.Z, checks the tagged commit on Linux and
 #                                 macOS, builds every target, onboards and plans a fresh
 #                                 repository with each built binary, signs SHA256SUMS, and
@@ -201,7 +201,18 @@ jobs:
           [[ -n "$MINISIGN_SECRET_KEY" ]] || { echo "the MINISIGN_SECRET_KEY secret is not set; see crates/af/keys/README.md"; exit 1; }
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends minisign
-          (cd dist && sha256sum ./*.tar.gz) | sed 's| \./| |' > SHA256SUMS
+          python3 - <<'PYPROVENANCE'
+          import json, os
+          from pathlib import Path
+          Path('dist/release-provenance.json').write_text(json.dumps({
+              'schema': 'af.release-provenance/1',
+              'version': '${{ needs.resolve.outputs.version }}',
+              'source': '${{ github.sha }}',
+              'repository': '${{ github.repository }}',
+              'run_id': os.environ['GITHUB_RUN_ID'],
+          }, sort_keys=True) + '\n')
+          PYPROVENANCE
+          (cd dist && sha256sum ./*.tar.gz ./release-provenance.json) | sed 's| \./| |' > SHA256SUMS
           key="$RUNNER_TEMP/minisign.key"
           umask 077
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
@@ -245,11 +256,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.resolve.outputs.tag }}"
-          flags=(--verify-tag --title "$tag" --notes-file notes.md --draft)
-          [[ "${{ needs.resolve.outputs.prerelease }}" == "true" ]] && flags+=(--prerelease)
-          gh release create "$tag" "${flags[@]}" dist/*.tar.gz SHA256SUMS SHA256SUMS.minisig install.sh
-          gh release edit "$tag" --draft=false
-          echo "published $tag"
+          python3 -I scripts/release-publish.py "$tag" "${{ github.sha }}"
+
 
   # Publication opens a pin-only PR; CI and a second human merge pin the repository.
   # No deploy key or main-ruleset bypass is used. Missing PAT fails before install.

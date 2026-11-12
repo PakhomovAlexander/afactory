@@ -452,7 +452,8 @@ manual measurement: run `make perf-kernel-measure` before a pull request changin
 `crates/af-runtime/build.rs`, the experiment runtime or kernel receipts
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
-`make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
+`make release` (or `./dev release rc --repo PakhomovAlexander/afactory`) reserves the next RC
+and opens a normal release PR with `release:fast` by default;
 `PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.
@@ -470,8 +471,8 @@ The post-publication Performance measurement is asynchronous, not a publication 
 Every validation profile, including fast and `no-perf`, runs the cheap offline
 `python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
 runs it after changing the workspace version and before committing or publishing its PR.
-Declare that exact version under the compatible telemetry fixture contract in
-`scripts/telemetry-overhead.py` with source/fixture evidence; unknown versions are refused.
+Preparation generates `scripts/release-contract.json` for the exact version and source,
+retaining the reviewed schema/fixture capability digest; undeclared versions and drift are refused.
 Lab schema parity excludes only the four exact Rust publication schemas, and still refuses
 missing, stale and retired lab schemas. This is contract validation, not a performance measurement.
 
@@ -512,3 +513,9 @@ put the lock more than one non-yanked release behind (`scripts/af-pin.py --check
 See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
 and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,
 summed test-seconds and runner cost separate; replay scenarios are estimates, not measured savings.
+
+## Developer release CLI
+
+Use the repository-owned `./dev release` commands for deterministic release preparation and
+recovery. See [setup, authorization, examples and recovery](docs/dev-release.md). `make release`
+delegates to this same path; it does not invoke the product CLI or models.
