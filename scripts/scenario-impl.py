@@ -211,7 +211,7 @@ unresolved requirements means acceptance is not satisfied. Task acceptance permi
 it does not establish publication, PR checks, human merge or Scenario completion.
 """}
     for role in ROLES:
-        src = ROOT / ".af/task-packages/kernel" / role
+        src = ROOT / "fixtures/native-catalog-contracts/.af/task-packages/kernel" / role
         dest = output / role
         shutil.copytree(src, dest)
         # Captured source is read-only under the real Gate; only the new package copies
@@ -256,7 +256,7 @@ it does not establish publication, PR checks, human merge or Scenario completion
     for name, original in (("implementation", "implementation-reviewed"), ("review", "review-code")):
         dest = output / name
         dest.mkdir()
-        text = (ROOT / ".af/task-packages/kernel" / original / "pipeline.toml").read_text()
+        text = (ROOT / "fixtures/native-catalog-contracts/.af/task-packages/kernel" / original / "pipeline.toml").read_text()
         text = text.replace("kernel/implementation-reviewed", "impl/implementation").replace("kernel/review-code", "impl/review")
         for role in ROLES:
             text = text.replace("kernel/" + role, "impl/" + role)

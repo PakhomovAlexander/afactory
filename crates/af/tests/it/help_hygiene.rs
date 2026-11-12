@@ -371,3 +371,34 @@ fn json_help_names_the_documents_that_carry_a_state() {
         );
     }
 }
+
+#[test]
+fn task_help_separates_product_from_consuming_project_policy() {
+    for topic in ["config", "task-file"] {
+        let help = out(&af(&["help", topic]));
+        assert!(
+            help.contains("Illustrative") || help.contains("illustrative"),
+            "{help}"
+        );
+        for owner in [
+            "kimi",
+            "Terra",
+            "astra",
+            "issue-internal",
+            "8000000",
+            "43200000",
+        ] {
+            assert!(!help.contains(owner), "{owner}: {help}");
+        }
+        if topic == "task-file" {
+            for guidance in [
+                "consuming project's captured",
+                "af task plan --file task.json --json",
+                "af task explain TASK_ID --tree",
+                "af catalog test --help",
+            ] {
+                assert!(help.contains(guidance), "{help}");
+            }
+        }
+    }
+}

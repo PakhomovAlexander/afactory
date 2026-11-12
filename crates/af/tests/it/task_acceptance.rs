@@ -208,7 +208,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
     }
 }
 
-/// The shipped reviewed-verification topology publishes evaluator acceptance, while the
+/// The generic reviewed-verification fixture topology publishes evaluator acceptance, while the
 /// canonical Review receipt is retained by its public source. Both judgments must count,
 /// including when a base-backed source delivers the evaluator's typed Diff Subject.
 #[test]
@@ -231,7 +231,7 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         let base = String::from_utf8(base.stdout).unwrap();
         let packages = repo.join(".af/task-packages/fixture");
         let pipeline = include_str!(
-            "../../../../.af/task-packages/kernel/verification-reviewed/pipeline.toml"
+            "../../../../fixtures/native-catalog-contracts/.af/task-packages/kernel/verification-reviewed/pipeline.toml"
         )
         .replace("kernel/verification-reviewed", "fixture/implementation")
         .replace("kernel/review-code", "fixture/review")
@@ -244,13 +244,13 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         )
         .replace("standard = true", "");
         std::fs::write(packages.join("implementation/pipeline.toml"), pipeline).unwrap();
-        // This test installs the CURRENT shipped verification topology. Its evaluator
+        // This test installs the explicit generic verification contract fixture. Its evaluator
         // consumes EvaluationInput@2, including the optional exact diff Subject.
         let path = packages.join("evaluator/worker.toml");
         let mut evaluator: af_pipeline_config::task::catalog::TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let current: af_pipeline_config::task::catalog::TaskWorkerManifest = toml::from_str(
-            include_str!("../../../../.af/task-packages/kernel/evaluator/worker.toml"),
+            include_str!("../../../../fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/worker.toml"),
         )
         .unwrap();
         evaluator.signature.worker_input_type = current.signature.worker_input_type;
@@ -262,7 +262,7 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         let path = packages.join("evaluator/input.schema.json");
         let mut schema: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let current_schema: Value = serde_json::from_str(include_str!(
-            "../../../../.af/task-packages/kernel/evaluator/input.schema.json"
+            "../../../../fixtures/native-catalog-contracts/.af/task-packages/kernel/evaluator/input.schema.json"
         ))
         .unwrap();
         schema["properties"]["diff_subject"] = current_schema["properties"]["diff_subject"].clone();

@@ -1229,16 +1229,16 @@ fn a_repetition_past_its_wall_is_a_timeout_that_keeps_what_it_printed() {
     assert!(baseline.summary.is_empty());
 }
 
-/// Install the staged `kernel/experiment` packages and the `release_build` policy tables of
-/// `fixtures/kernel-experiment` into a copy of this repository's `.af/`, exactly as its README
-/// says, into a fresh Git repository — or, where a human has already taken a step in the
-/// committed `.af/`, verify that what they installed is what is staged.
+/// Install the staged experiment into explicit generic contract authority in a fresh repository.
 fn kernel_repository(root: &Path) -> PathBuf {
     let workspace = task_cli_workspace();
     let repo = root.join("kernel");
-    task_cli::copy_tree(&workspace.join(".af"), &repo.join(".af"));
-    // The release pin would dispatch to (and install) another `af`; this test runs this one.
-    std::fs::remove_file(repo.join(".af/af.lock")).unwrap();
+    task_cli::copy_tree(
+        &workspace.join("fixtures/native-catalog-contracts/.af"),
+        &repo.join(".af"),
+    );
+    let shared = "fixtures/native-catalog-contracts/.af/task-packages/kernel/implementer";
+    task_cli::copy_tree(&workspace.join(shared), &repo.join(shared));
     task_cli::copy_tree(
         &workspace.join("fixtures/kernel-experiment"),
         &repo.join("fixtures/kernel-experiment"),
@@ -1293,7 +1293,7 @@ fn kernel_repository(root: &Path) -> PathBuf {
             }
         }
     }
-    // The staged pin is the committed catalog's pin of the one package both share.
+    // The staged experiment and generic fixture share the exact implementer contract.
     assert_eq!(
         staged["packages"]["kernel/implementer"]["digest"],
         catalog["packages"]["kernel/implementer"]["digest"]

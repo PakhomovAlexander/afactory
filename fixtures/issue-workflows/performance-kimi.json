@@ -1,0 +1,35 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "pilot-small-bottleneck",
+  "kind": "implement",
+  "goal": "Improve the narrow known bottleneck in the committed release_build workload, measured by release_build_time.",
+  "pipeline": {
+    "name": "perf/research-kimi-codex",
+    "fallback": "refuse"
+  },
+  "strategy": "reviewed",
+  "facts": {
+    "standard": true
+  },
+  "limits": {
+    "tokens": 16000000,
+    "max_attempts": 64,
+    "wall_ms": 172800000,
+    "verification": {
+      "tokens": 8000000,
+      "attempts": 40,
+      "wall_ms": 86400000
+    }
+  },
+  "verification": "review",
+  "requirements": {
+    "acceptance": [
+      "Accepted research identifies the narrow known bottleneck with repository evidence and the operator-provided measured reproduction.",
+      "The native release_build baseline and candidate measurements produce an improving release_build_time comparison.",
+      "Independent code Review, comparison-aware acceptance and final whole-change verification pass."
+    ],
+    "workload": "release_build",
+    "objective": "release_build_time",
+    "reproduction": "Replace with the exact existing measured reproduction and known bottleneck evidence before planning; this template contains no measurements."
+  }
+}

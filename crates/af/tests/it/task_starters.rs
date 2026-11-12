@@ -726,12 +726,13 @@ fn the_experiment_starter_measures_compares_and_verifies() {
 }
 
 #[test]
-fn pi_light_family_compiles_current_receipts_exact_roles_and_local_checks() {
+fn fixture_pi_family_compiles_current_receipts_exact_roles_and_local_checks() {
     let root = tempfile::tempdir().unwrap();
     let (repo, state) = setup(root.path(), None);
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("fixtures/native-catalog-contracts");
     let home = root.path().join("private-home");
     let (sdk, path, pi_state) = crate::fake_models::install_pi(root.path(), &home, "kimi-document");
     let bin = PathBuf::from(&path);
