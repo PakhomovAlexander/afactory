@@ -430,8 +430,7 @@ class Journal:
         completed = job.get('completed_at')
         if completed is not None:
             completed = instant(completed)
-        closed = False
-        matched = False
+        closed_signatures = set()
         for repo, sig, raw in rows:
             state = loads(raw)
             structural(state, 'ci-signature-state')
@@ -441,16 +440,14 @@ class Journal:
                 self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
             elif repo == repository and job['conclusion'] == 'success':
                 for scope in state['scopes']:
-                    if all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')):
-                        matched = True
-                        if (completed is not None and completed > instant(scope['completed_at'])
-                                and now - instant(scope['last_seen_at']) < dt.timedelta(days=14)):
-                            self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
-                            closed = True
+                    if (all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha'))
+                            and completed is not None and completed > instant(scope['completed_at'])
+                            and now - instant(scope['last_seen_at']) < dt.timedelta(days=14)):
+                        self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
+                        closed_signatures.add(sig)
         if job['conclusion'] == 'success':
-            # None means either a demonstrated closure or no prior matching failure. False
-            # means a prior failure remains but its green timing is absent, equal or older.
-            return False if matched and not closed else None
+            # Closure is per signature, never per job scope. Every other failure is retained.
+            return sorted(closed_signatures)
         raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
         state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/2', 'scopes': [], 'first_seen_at': at,
             'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
@@ -625,6 +622,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     previous_capture = journal.metadata().get('capture')
     previous_failures = previous_capture['snapshot']['failures'] if previous_capture else []
     seen = {}
+    green_events = []
     def order(item):
         index, job = item
         if not isinstance(job, dict):
@@ -661,20 +659,20 @@ def fold_capture(service, journal, *, snapshot_fits=None):
                     log_artifacts=list(dict.fromkeys(refs)), release_blocking=bool(job.get('release_blocking', False)))
                 structural({**snapshot, 'failures': [preview]}, 'ci-health-snapshot')
             folded = journal.fold(repository, job, at)
-            if folded is None:
+            if isinstance(folded, list):
+                closed = set(folded)
                 scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
-                snapshot['failures'] = [f for f in snapshot['failures'] if not all(f[key] == job[key] for key in scope)]
-                continue
-            if folded is False:
-                omissions.append('green closure is absent, older than the failure or has ambiguous timing for job ' + str(index))
-                scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
+                snapshot['failures'] = [f for f in snapshot['failures']
+                    if not (all(f[key] == job[key] for key in scope) and f['signature_id'] in closed)]
                 for previous in previous_failures:
-                    if all(previous[key] == job[key] for key in scope) and previous['occurrence_id'] not in seen:
+                    if (all(previous[key] == job[key] for key in scope)
+                            and previous['signature_id'] not in closed and previous['occurrence_id'] not in seen):
                         retained = dict(previous)
                         retained['last_seen_at'] = at
                         structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
                         snapshot['failures'].append(retained)
                         seen[retained['occurrence_id']] = retained['conclusion']
+                green_events.append((job, closed))
                 continue
             failure = {key: job[key] for key in ('workflow_id', 'workflow_file', 'run_id', 'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion')}
             failure.update(folded, log_artifacts=list(dict.fromkeys(refs)), release_blocking=bool(job.get('release_blocking', False)))
@@ -682,6 +680,11 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             snapshot['failures'].append(failure)
         except (ValueError, KeyError, TypeError) as error:
             omissions.append('malformed job ' + str(index) + ': ' + str(error)[:160])
+    for success, closed in green_events:
+        scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
+        if any(all(f[key] == success[key] for key in scope) and f['signature_id'] not in closed
+               for f in snapshot['failures']):
+            omissions.append('green closure is absent, older than another failure or has ambiguous timing')
     if service.get('nightly_receipt', {}) is not None and service.get('nightly_receipt', {}).get('conclusion') in ('failure', 'failed') and not snapshot['failures']:
         omissions.append('nightly failure has no observed failed job')
     snapshot['failures'].sort(key=lambda f: f['occurrence_id'])

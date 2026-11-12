@@ -373,8 +373,9 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
             for run in runs:
                 run_id, attempt, workflow = [positive(run[key]) for key in ('id', 'run_attempt', 'workflow_id')]
                 if run.get('status') != 'completed':
+                    # A workflow may still be running while one of its matrix jobs has already
+                    # failed. Retain that exact job evidence instead of dropping the whole run.
                     omit('unfinished workflow run ' + str(run_id))
-                    continue
                 C.require(run['head_sha'] == sha, 'Run head mismatch')
                 created = C.instant(run['created_at'])
                 C.require(run['repository']['full_name'] == github.repository
@@ -386,7 +387,9 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                 C.require(all(positive(selected[key]) == run[key] for key in ('id', 'workflow_id', 'run_attempt'))
                           and all(selected[key] == run[key] for key in ('head_sha', 'path', 'created_at'))
                           and selected['repository']['full_name'] == github.repository
-                          and selected['status'] == 'completed', 'Selected run attempt mismatch')
+                          and isinstance(selected.get('status'), str), 'Selected run attempt mismatch')
+                if selected['status'] != 'completed':
+                    omit('unfinished selected attempt ' + str(run_id) + '/' + str(attempt))
                 started, updated = C.instant(selected['run_started_at']), C.instant(selected['updated_at'])
                 C.require(created <= started <= updated, 'Malformed selected attempt interval')
                 # A rerun has the original run's created_at. The selected attempt's own
@@ -421,8 +424,10 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                         observation = {'workflow_id': workflow, 'workflow_file': run['path'].split('@', 1)[0],
                             'run_id': run_id, 'run_attempt': attempt, 'job_id': job_id, 'job_name': job['name'],
                             'platform': platform, 'head_sha': sha, 'conclusion': job['conclusion'],
-                            'completed_at': selected['updated_at'],
                             'failing_tests': [], 'error_lines': [], 'log_artifacts': [], 'release_blocking': blocking}
+                        completed_at = job.get('completed_at') or (selected['updated_at'] if run['status'] == 'completed' and selected['status'] == 'completed' else None)
+                        if completed_at is not None:
+                            observation['completed_at'] = completed_at
                         ident = C.occurrence_id(github.repository, observation)
                         C.require(ident not in seen, 'Duplicate job attempt evidence')
                         seen.add(ident)
@@ -484,7 +489,7 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
             omit('incomplete or malformed checks/runs/jobs for head ' + sha)
     # API list order and run IDs are not completion order. Green closure uses only the
     # selected attempt's own completion timestamp; ties remain ambiguous and cannot erase failures.
-    result['jobs'].sort(key=lambda job: (job['completed_at'], job['run_id'], job['run_attempt'], job['job_id']))
+    result['jobs'].sort(key=lambda job: (job.get('completed_at', ''), job['run_id'], job['run_attempt'], job['job_id']))
     return result
 
 

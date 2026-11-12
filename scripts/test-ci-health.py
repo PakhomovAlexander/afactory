@@ -769,6 +769,32 @@ class EvidenceTests(unittest.TestCase):
         self.journal.db.execute('DROP TRIGGER refuse_receipt')
         self.assertEqual(self.observe(), captured)
 
+    def test_green_closure_is_per_signature_and_never_erases_an_unresolved_sibling(self):
+        raw = service()
+        first = copy.deepcopy(raw['jobs'][0])
+        second = copy.deepcopy(first)
+        first.update(completed_at='2026-11-09T01:00:00Z', failing_tests=['test:one'], release_blocking=True)
+        second.update(completed_at='2026-11-09T03:00:00Z', job_id=404, run_attempt=2,
+                      failing_tests=['test:two'], error_lines=['error: different failing test'], release_blocking=True)
+        raw['jobs'] = [first, second]
+        self.observe(raw)
+        success = copy.deepcopy(first)
+        success.update(conclusion='success', run_attempt=3, job_id=405,
+                       completed_at='2026-11-09T02:00:00Z')
+        observed = self.observe(dict(raw, jobs=[success]))
+        self.assertFalse(observed['complete'])
+        self.assertEqual([f['job_id'] for f in observed['failures']], [404])
+        self.assertTrue(observed['failures'][0]['release_blocking'])
+        self.assertTrue(any('another failure' in reason for reason in observed['omissions']))
+
+        # The same ordering rule holds when both failures and the intervening success share one capture.
+        self.journal.close()
+        self.journal = C.Journal(Path(self.temp.name) / 'observer-sibling.sqlite')
+        self.addCleanup(self.journal.close)
+        observed = self.observe(dict(raw, jobs=[first, success, second]))
+        self.assertFalse(observed['complete'])
+        self.assertEqual([f['job_id'] for f in observed['failures']], [404])
+
     def test_green_closure_is_order_independent_within_a_capture_and_conflicts_are_unknown(self):
         raw = service()
         passed = copy.deepcopy(raw['jobs'][0])
@@ -1893,6 +1919,20 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual([f['job_id'] for f in snapshot['failures']], [403])
         self.assertFalse(snapshot['complete'])
         self.assertTrue(any('green closure' in reason for reason in snapshot['omissions']))
+
+    def test_unfinished_workflow_retains_its_completed_failed_job_and_alert(self):
+        routes = production_routes()
+        prefix = 'repos/octo/project/'
+        routes[prefix + 'actions/runs?head_sha=' + 'd' * 40 + '&per_page=100']['workflow_runs'][0]['status'] = 'in_progress'
+        routes[prefix + 'actions/runs/301/attempts/2']['status'] = 'in_progress'
+        jobs_key = prefix + 'actions/runs/301/attempts/2/jobs?per_page=100'
+        routes[jobs_key]['jobs'][0]['completed_at'] = '2026-11-09T03:01:00Z'
+        snapshot = self.P.observe(self.options, opener=Transport(routes))
+        self.assertFalse(snapshot['complete'])
+        self.assertTrue(any('unfinished workflow run' in reason for reason in snapshot['omissions']))
+        failure, = snapshot['failures']
+        self.assertEqual(failure['job_id'], 403)
+        self.assertTrue(failure['release_blocking'])
 
     def test_unfinished_siblings_retain_completed_release_failure_and_alert(self):
         routes = production_routes()
