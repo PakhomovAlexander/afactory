@@ -8,12 +8,12 @@ ci-diagnosis = "ci/diagnosis-kind"
 [packages."ci/diagnosis-kind"]
 version = "1.0.1"
 path = "fixtures/scenarios/maintenance-ci-health/task/kind"
-digest = "sha256:d7afdcc85290df4d2f4fe94751929a1b3f1f29d60a786f0757fff7dcfed1aa2d"
+digest = "sha256:4a22102e0fb9efeac04dd2947e1a319605d1e5ce1b2ab1a6a87249cd7c904d71"
 
 [packages."ci/diagnosis-pipeline"]
 version = "1.0.0"
 path = "fixtures/scenarios/maintenance-ci-health/task/pipeline"
-digest = "sha256:cefd682fb4aed35d9c514e10fd3a428d44b508390f4b686fa8bfc18031048019"
+digest = "sha256:9173b5446b0419cdf7e3ecc17c7a7f5d7c91aa2f8d0d8fb4f0815bf2d41ac105"
 
 [packages."ci/diagnosis-worker"]
 version = "1.0.5"

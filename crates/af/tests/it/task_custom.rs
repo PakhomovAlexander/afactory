@@ -16,13 +16,9 @@ fn write(path: &Path, value: &Value) {
 }
 impl Fixture {
     fn new() -> Self {
-        // The harness home is writable even when the sandbox denies the ambient temp directory.
-        let home = crate::common::private_home_env()
-            .into_iter()
-            .find(|(name, _)| *name == "HOME")
-            .unwrap()
-            .1;
-        let root = tempfile::tempdir_in(home).unwrap();
+        // Task and Scenario state, machine policy and installed adapters must all live outside
+        // the Git checkout (including its target directory) under current native authority.
+        let root = tempfile::tempdir().unwrap();
         let (repo, state) = crate::task_cli::fixture_named(root.path(), "acceptance");
         crate::task_cli::copy_tree(
             &crate::task_report::workspace().join("fixtures/custom-tasks"),
@@ -150,6 +146,9 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
             .current_dir(&self.repo)
             .env("PATH", &self.path)
             .env("AF_PROVIDERS_FILE", self.root.path().join("providers.toml"))
+            // Disposable fixture roots live on small tmpfs volumes; storage-budget behavior is
+            // covered by its own integration tests, not by every custom-Task fixture.
+            .env("AF_STORAGE__MIN_FREE_BYTES", "0B")
             .args(args)
             .args(["--state", self.state.to_str().unwrap(), "--json"])
             .output()
@@ -1163,7 +1162,7 @@ print(json.dumps({'observation_service':service,'github_service':github}))
             "--authority",
             policy.to_str().unwrap(),
         ]);
-        let started = self.ok(&[
+        let mut started = self.ok(&[
             "scenario",
             "start",
             "ci-health-fixture",
@@ -1177,6 +1176,29 @@ print(json.dumps({'observation_service':service,'github_service':github}))
             checked["revision"].as_str().unwrap(),
             "--execute",
         ]);
+        // Current native Task steps may return an active Task wait instead of completing inline.
+        // Drive only those waits; condition and merge waits belong to the individual assertions.
+        let mut task_started = false;
+        for _ in 0..16 {
+            if started["status"] == "waiting" && started["waiting"]["kind"] == "task" {
+                if !task_started {
+                    // Current native Scenarios consume an explicitly started Task; they do not
+                    // approve and execute its generated plan inline. Run only on a real Task wait,
+                    // then resume the Scenario with that recorded accepted or refused result.
+                    let _ = self.cli(&[
+                        "task",
+                        "run",
+                        "ci-diagnose-one",
+                        "--confirm-plan",
+                        planned["plan_id"].as_str().unwrap(),
+                    ]);
+                    task_started = true;
+                }
+                started = self.ok(&["scenario", "resume", "ci-health-fixture"]);
+            } else {
+                break;
+            }
+        }
         (started, machine)
     }
 }
