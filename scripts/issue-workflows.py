@@ -490,7 +490,7 @@ def reconcile(af, repo, state, manifest):
                            'source_snapshot_id': revision['inputs']['source']['snapshot_id'],
                            'input_bindings': value.get('input_bindings')}],
                 'chain_chargeable_tokens': value['chargeable_tokens'],
-                'unknown_usage_attempts': value['unknown_usage_attempts'],
+                'unknown_usage_attempts': value.get('unknown_usage_attempts', 0),
                 'continuation_sources': [None], 'final_verification_recorded': False,
                 'pull_request_association': 'absent' if pr is None else 'unverified',
                 'remote_lookup_performed': False, 'quality_or_savings_claim': False}
