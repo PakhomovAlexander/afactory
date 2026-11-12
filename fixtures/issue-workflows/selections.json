@@ -1,6 +1,6 @@
 {
   "schema": "af.issue-workflows/1",
-  "default": "bugfix/default-codex",
+  "default": "bugfix/light-kimi-terra-sol",
   "verification": "issue-internal/verification",
   "selections": {
     "bugfix/light-kimi-terra-sol": {
@@ -49,20 +49,45 @@
         "verification"
       ]
     },
-    "impl/design-codex": {
-      "pipeline": "impl/design-codex",
-      "light": false,
-      "research_pipeline": "issue-internal/design",
-      "stages": [
-        "design",
-        "implementation",
-        "verification"
-      ]
-    },
     "perf/research-experiment-codex": {
       "pipeline": "perf/research-experiment-codex",
       "light": false,
       "research_pipeline": "issue-internal/report",
+      "stages": [
+        "research",
+        "baseline",
+        "implementation",
+        "code review",
+        "measurement",
+        "comparison",
+        "measurement acceptance",
+        "verification"
+      ]
+    },
+    "impl/light-kimi-codex": {
+      "pipeline": "impl/light-kimi-codex",
+      "light": true,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
+    },
+    "design/astra-kimi": {
+      "pipeline": "design/astra-kimi",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "design",
+        "Terra challenge",
+        "Kimi challenge",
+        "design acceptance"
+      ]
+    },
+    "perf/research-kimi-codex": {
+      "pipeline": "perf/research-kimi-codex",
+      "light": false,
+      "research_pipeline": "issue-internal/kimi-report",
       "stages": [
         "research",
         "baseline",

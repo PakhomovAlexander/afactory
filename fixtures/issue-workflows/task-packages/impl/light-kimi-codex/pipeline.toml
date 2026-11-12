@@ -1,7 +1,7 @@
 "schema" = "af.pipeline/6"
-"name" = "impl/design-codex"
+"name" = "impl/light-kimi-codex"
 "version" = "1.0.0"
-"max_attempts" = 32
+"max_attempts" = 16
 "max_parallel" = 3
 
 ["contract"]
@@ -45,15 +45,6 @@
 ["contract"."inputs"."source"."affinity"]
 "kind" = "unbound"
 
-["contract"."inputs"."research_report"]
-"artifact_type" = "af/Document@1"
-"cardinality" = "one"
-"optional" = false
-"covers" = []
-
-["contract"."inputs"."research_report"."affinity"]
-"kind" = "unbound"
-
 ["contract"."outputs"]
 
 ["contract"."outputs"."evaluation"]
@@ -94,7 +85,7 @@
 
 ["slots"]
 
-["slots"."bugs"]
+["slots"."correctness"]
 "worker" = "issue-internal/bugs"
 "role" = "review"
 "input_type" = "af/ReviewInput@2"
@@ -104,18 +95,8 @@
 "allow_local_replacement" = false
 "independent_from" = ["implementer"]
 
-["slots"."correctness"]
-"worker" = "issue-internal/correctness"
-"role" = "review"
-"input_type" = "af/ReviewInput@2"
-"output_type" = "review.kernel/ReviewerResult@2"
-"min_attempts" = 1
-"max_attempts" = 2
-"allow_local_replacement" = false
-"independent_from" = ["implementer"]
-
 ["slots"."evaluator"]
-"worker" = "issue-internal/evaluator"
+"worker" = "issue-internal/light-evaluator"
 "role" = "evaluate"
 "input_type" = "af/EvaluationInput@2"
 "output_type" = "af/TaskEvaluation@1"
@@ -125,7 +106,7 @@
 "independent_from" = ["implementer"]
 
 ["slots"."implementer"]
-"worker" = "issue-internal/researched-implementer"
+"worker" = "issue-internal/kimi-implementer"
 "role" = "implement"
 "input_type" = "af/ImplementationInput@2"
 "output_type" = "af/ImplementationReport@1"
@@ -155,10 +136,6 @@
 "kind" = "input"
 "port" = "source"
 
-["nodes"."inputs"."research_report"]
-"kind" = "input"
-"port" = "research_report"
-
 [["nodes"]]
 "id" = "seal"
 
@@ -177,10 +154,9 @@
 
 ["nodes"."operator"]
 "op" = "call"
-"pipeline" = "issue-internal/review"
+"pipeline" = "issue-internal/light-review"
 
 ["nodes"."operator"."bindings"]
-"bugs" = "bugs"
 "correctness" = "correctness"
 
 ["nodes"."inputs"]

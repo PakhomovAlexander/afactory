@@ -101,7 +101,7 @@ def pilot(name):
 
 REAL_CAPTURED_CATALOG = w.captured_catalog
 
-FACTS = w.read(ROOT / 'fixtures/issue-workflows/routing-known.json')
+FACTS = dict(w.read(ROOT / 'fixtures/issue-workflows/routing-known.json'), specified_requirements=True, deterministic_acceptance=True, known_bottleneck=True, measured_reproduction=True)
 
 
 class Workflows(unittest.TestCase):
@@ -109,6 +109,112 @@ class Workflows(unittest.TestCase):
         patcher = mock.patch.object(w, 'captured_catalog')
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def test_latest_models_per_family_and_fail_closed_catalogs(self):
+        models = [dict(id=m, effort_levels=['medium', 'high']) for m in
+                  ('gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6-sol',
+                   'gpt-5.6-sol', 'k3.1-pro', 'k99-pro-highspeed', 'gpt-99-luna')]
+        with mock.patch.object(w, 'available_models', return_value=models):
+            for name in w.catalog()['selections']:
+                w.check_latest_models('af', name)
+        for model, selection in [('gpt-6.2-sol', 'bugfix/default-codex'),
+                                 ('gpt-6.10-terra', 'bugfix/light-codex'),
+                                 ('gpt-6.1-astra', 'design/astra-kimi'),
+                                 ('k3.2-pro', 'issue-internal/kimi-report'),
+                                 ('gpt-6.1.0-sol', 'bugfix/default-codex')]:
+            changed = models + [dict(id=model, effort_levels=['medium', 'high'])]
+            with mock.patch.object(w, 'available_models', return_value=changed), self.assertRaises(ValueError):
+                w.check_latest_models('af', selection)
+        for changed in ([], [m for m in models if m['id'] != 'gpt-6-astra'],
+                        [dict(m, effort_levels=[]) for m in models]):
+            with mock.patch.object(w, 'available_models', return_value=changed), self.assertRaises(ValueError):
+                w.check_latest_models('af', 'bugfix/default-codex')
+        self.assertEqual(w.model_family('gpt-6.10-sol')[1], (6, 10))
+        self.assertIsNone(w.model_family('k3.1-pro-highspeed'))
+
+    def test_catalog_protocol_refuses_unavailable_duplicate_and_incomplete_pages(self):
+        row = dict(id='pi-personal', kind='pi', state='listed', skipped_entries=0,
+                   models=[dict(id='k3.1-pro', effort_levels=['high'])],
+                   catalog_page=dict(number=0, next=None, total=1))
+        value = dict(schema='af/provider-models@4', exit_code=0, token_free=True, providers=[row])
+        def response(v, code=0):
+            return mock.Mock(returncode=code, stdout=json.dumps(v).encode())
+        with mock.patch.object(w.subprocess, 'run', return_value=response(value)) as run:
+            self.assertEqual(w.available_models('af', 'pi-personal'), row['models'])
+            self.assertEqual(run.call_args.args[0], ['af', 'provider', 'models', 'pi-personal', '--json', '--page', '0'])
+        changes = [lambda v: v.update(token_free=False), lambda v: v.update(exit_code=7),
+                   lambda v: v['providers'].append(copy.deepcopy(row)),
+                   lambda v: v['providers'][0].update(state='unavailable'),
+                   lambda v: v['providers'][0].update(skipped_entries=1),
+                   lambda v: v['providers'][0].update(id='other'),
+                   lambda v: v['providers'][0]['catalog_page'].update(total=2),
+                   lambda v: v['providers'][0]['models'].append(copy.deepcopy(row['models'][0]))]
+        for change in changes:
+            changed = copy.deepcopy(value); change(changed)
+            with mock.patch.object(w.subprocess, 'run', return_value=response(changed)), self.assertRaises(ValueError):
+                w.available_models('af', 'pi-personal')
+        page0 = copy.deepcopy(value); page0['providers'][0]['catalog_page'].update(next=1, total=2)
+        page1 = copy.deepcopy(value); page1['providers'][0]['catalog_page'].update(number=1, total=2)
+        page1['providers'][0]['models'][0]['id'] = 'k3-pro'
+        with mock.patch.object(w.subprocess, 'run', side_effect=[response(page0), response(page1)]):
+            self.assertEqual(len(w.available_models('af', 'pi-personal')), 2)
+        with mock.patch.object(w.subprocess, 'run', return_value=response(value, 7)), self.assertRaises(ValueError):
+            w.available_models('af', 'pi-personal')
+
+    def test_light_implementation_and_small_bottleneck_routing(self):
+        facts = dict(FACTS, known_cause=False, deterministic_regression=False)
+        w.route('impl/light-kimi-codex', facts)
+        w.route('impl/light-kimi-codex', {k: v for k, v in facts.items() if k not in ('known_cause', 'deterministic_regression')})
+        w.route('perf/research-kimi-codex', dict(facts, known_cause=True))
+        for name, keys in [('impl/light-kimi-codex', ('specified_requirements', 'deterministic_acceptance', 'narrow_change')),
+                           ('perf/research-kimi-codex', ('known_cause', 'known_bottleneck', 'measured_reproduction', 'narrow_change'))]:
+            for key in keys:
+                with self.assertRaises(ValueError):
+                    w.route(name, dict(FACTS, **{key: False}))
+            for key in ('authority', 'contract', 'security', 'accounting', 'persistence', 'uncertain_concurrency'):
+                with self.assertRaises(ValueError):
+                    w.route(name, dict(FACTS, **{key: True}))
+
+    def test_design_only_reconciliation_preserves_source_issue_and_cost(self):
+        manifest, values, artifacts = pilot('design/astra-kimi')
+        manifest.update(tasks=['original'], research_tasks=[])
+        del manifest['verification_task']
+        artifacts['original-requirements']['payload']['specification'] = research_requirements(
+            'issue goal', {'acceptance': ['exact'], 'issue_url': manifest['issue']})
+        def reconcile():
+            with mock.patch.object(w, 'invoke', side_effect=lambda *a: values[a[-1]]), \
+                 mock.patch.object(w, 'recorded', side_effect=lambda state, identity, kind=None:
+                                   artifacts[identity]['payload'] if kind else artifacts[identity]), \
+                 mock.patch.object(w, 'validate_plan', side_effect=lambda n, v, state: check_selection(n, v)), \
+                 mock.patch.object(w.subprocess, 'check_output', return_value=b'root\n'):
+                return w.reconcile('af', '/project', '/state', manifest)
+        result = reconcile()
+        self.assertEqual(result['chain_chargeable_tokens'], '10')
+        self.assertFalse(result['final_verification_recorded'])
+        self.assertEqual(result['tasks'][0]['revision_id'], 'original-revision')
+        for field, bad in [('acceptance', 'unsatisfied'), ('execution', 'failed')]:
+            original = values['original']['result'][field]
+            values['original']['result'][field] = bad
+            with self.assertRaises(ValueError):
+                reconcile()
+            values['original']['result'][field] = original
+        manifest['tasks'].append('repair')
+        with self.assertRaises(ValueError):
+            reconcile()
+        manifest['tasks'].pop()
+        artifacts['origin']['source_revision'] = '2' * 40
+        with self.assertRaisesRegex(ValueError, 'source commit or repository'):
+            reconcile()
+
+    def test_design_reuse_requires_original_issue_and_exact_native_stage(self):
+        pins = [pin('design/astra-kimi', 'report'), pin('impl/default-codex'),
+                pin(w.catalog()['verification'], 'verification')]
+        pins[0]['template']['document']['requirements'] = research_requirements()
+        result = w.composition('impl/default-codex', pins, FACTS)['definitions']['issue-workflow']
+        self.assertEqual(result['steps'][1]['inputs']['research_report']['step'], 'research')
+        pins[0]['template']['document']['requirements']['original_issue']['goal'] = 'unrelated'
+        with self.assertRaisesRegex(ValueError, 'original issue contract'):
+            w.composition('impl/default-codex', pins, FACTS)
 
     def test_installed_and_captured_authority_pin_both_real_policies(self):
         staged = w.STAGED
@@ -146,7 +252,7 @@ class Workflows(unittest.TestCase):
                 (authority / installed).write_bytes((w.STAGED / staged).read_bytes())
             w.installed_authority(directory)
             settings = (authority / 'af.toml').read_text()
-            for changed in [settings.replace('bugfix/default-codex', 'default/implementation'),
+            for changed in [settings.replace('bugfix/light-kimi-terra-sol', 'default/implementation'),
                             settings.replace('8000000', '8000001')]:
                 (authority / 'af.toml').write_text(changed)
                 with self.assertRaisesRegex(ValueError, 'af.toml'):
@@ -243,17 +349,23 @@ class Workflows(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'blob identity'):
                 w.recorded_bytes(state, identity)
 
-    def test_all_seven_are_composed_from_native_tasks_with_no_actions(self):
+    def test_all_nine_are_composed_from_native_tasks_with_no_actions(self):
         for name, selection in w.catalog()['selections'].items():
             research = selection['research_pipeline']
             pins = ([pin(research, 'report')] if research else []) + [pin(name), pin(w.catalog()['verification'], 'verification')]
             if research:
                 pins[0]['template']['document']['goal'] = 'Distinct research question'
                 pins[0]['template']['document']['requirements'] = research_requirements()
+            if name == 'design/astra-kimi':
+                pins = [pin(name, 'report')]
+                pins[0]['template']['document']['requirements'] = research_requirements()
             composed = w.composition(name, pins, FACTS)['definitions']['issue-workflow']
             self.assertEqual(composed['authority']['grants'], [])
             self.assertEqual(composed['authority']['decision_owners'], [])
             steps = {s['id']: s for s in composed['steps']}
+            if name == 'design/astra-kimi':
+                self.assertEqual(list(steps), ['design'])
+                continue
             self.assertEqual(steps['verify']['operation']['bindings']['source']['port'], 'snapshot')
             self.assertEqual(steps['implement']['max_attempts'], 1)
             if research:
@@ -267,7 +379,7 @@ class Workflows(unittest.TestCase):
                     w.composition(name, pins, FACTS)
 
     def test_research_and_design_require_the_actual_implementation_contract(self):
-        for name in ('bugfix/research-fix-codex', 'impl/design-codex'):
+        for name in ('bugfix/research-fix-codex', 'perf/research-kimi-codex'):
             stage = w.selection(name)['research_pipeline']
             for change in ('missing', 'empty', 'goal', 'acceptance', 'type', 'extra', 'top-acceptance'):
                 pins = [pin(stage, 'report'), pin(name), pin(w.catalog()['verification'], 'verification')]
@@ -329,8 +441,8 @@ class Workflows(unittest.TestCase):
                 for fact, value in pipeline['accepts']['required_facts'].items():
                     self.assertIn(fact, task.get('facts', {}))
                     self.assertEqual(task['facts'][fact], value)
-        self.assertEqual(files, ['design.json', 'diagnose.json', 'known-fix.json',
-                                 'research-fix.json', 'verify.json'])
+        self.assertEqual(files, ['design.json', 'diagnose.json', 'known-fix.json', 'light-implementation.json',
+                                 'performance-kimi.json', 'research-fix.json', 'research-kimi.json', 'verify.json'])
 
     def test_only_ordinary_default_drops_the_standard_selector_fact(self):
         staged = ROOT / 'fixtures/issue-workflows'
@@ -339,16 +451,18 @@ class Workflows(unittest.TestCase):
             pipeline = w.toml(staged / 'task-packages' / name / 'pipeline.toml')
             facts = pipeline['accepts']['required_facts']
             self.assertEqual(facts, contracts[name]['accepts']['required_facts'])
-            if name == 'bugfix/default-codex':
+            if name == 'bugfix/light-kimi-terra-sol':
                 self.assertEqual(facts, {})
-            elif '/light-' not in name:
+            elif '/light-' not in name and not name.startswith('design/'):
                 self.assertIs(facts['standard'], True)
 
     def test_old_public_names_are_refused_without_aliases(self):
         for family in ('default', 'default-light', 'pi-light', 'warm', 'kernel', 'owner-default'):
             with self.assertRaises(ValueError):
                 w.selection(family + '/implementation')
-        self.assertEqual(len(w.catalog()['selections']), 7)
+        self.assertEqual(len(w.catalog()['selections']), 9)
+        with self.assertRaises(ValueError):
+            w.selection('impl/design-codex')
 
     def test_light_scope_requires_all_explicit_narrow_facts_and_no_sensitive_work(self):
         facts = dict(known_cause=True, deterministic_regression=True, narrow_change=True,
@@ -398,6 +512,8 @@ class Workflows(unittest.TestCase):
     def test_reconciliation_native_provenance_and_cumulative_accounting(self):
         # The native integration test separately proves these metadata paths against real CAS.
         for name, choice in w.catalog()['selections'].items():
+            if name == 'design/astra-kimi':
+                continue  # Design-only acceptance/provenance is covered separately.
             with self.subTest(selection=name):
                 manifest, values, artifacts = pilot(name)
                 def reconcile(m=manifest):

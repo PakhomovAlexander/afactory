@@ -125,7 +125,7 @@ refused, naming both.
 
 ```toml
 [task.defaults]
-pipeline = "bugfix/default-codex"
+pipeline = "bugfix/light-kimi-terra-sol"
 fallback = "refuse"
 
 [task.defaults.limits]
@@ -141,7 +141,7 @@ wall_ms = 18000000
 
 This is the table of this repository's `.af/af.toml`: its bounds are those of
 [the default pipeline](#the-default-pipeline) and leave room for the compiled reviewers,
-evaluator and repository checks of `bugfix/default-codex`; plan another Pipeline against its
+evaluator and repository checks of `bugfix/light-kimi-terra-sol`; plan another Pipeline against its
 own declared allowances.
 
 A goal can stay short and point at what it needs. `context` names files of the Task's source
@@ -612,17 +612,19 @@ the goal is visible before the Task runs.
 
 ## The default pipeline
 
-Afactory's committed operator catalog selects `bugfix/default-codex`. For implementation work
+Afactory's staged operator catalog selects `bugfix/light-kimi-terra-sol`. For implementation work
 select `impl/default-codex`; uncertain causes require `bugfix/research-fix-codex`, design work
-requires `impl/design-codex`, and measured performance uses `perf/research-experiment-codex`.
-The [versioned operator runbook](../fixtures/issue-workflows/README.md) lists all seven choices,
-accepted research/design handoffs, exact roles and native Scenario composition.
+uses design-only `design/astra-kimi`; measured performance uses `perf/research-kimi-codex` for
+small known bottlenecks or `perf/research-experiment-codex` for broader research.
+The [versioned operator runbook](../fixtures/issue-workflows/README.md) lists all nine choices,
+accepted research/design handoffs, exact roles and native Scenario composition. The table below
+describes Sol-written default/research implementation, separate from the Kimi light default.
 
 | Slot | Package | Model | Effort |
 |---|---|---|---|
 | `implementer` | `issue-internal/implementer` | `gpt-6.1-sol` | `medium` |
 | `bugs` | `issue-internal/bugs` | `gpt-6.1-terra` | `high` |
-| `correctness` | `issue-internal/correctness` | `gpt-6-sol` | `high` |
+| `correctness` | `issue-internal/correctness` | `gpt-6-astra` | `high` |
 | `evaluator` | `issue-internal/evaluator` | `gpt-6-astra` | `medium` |
 
 Research selections use `issue-internal/researched-implementer`, with the same model and effort
@@ -638,11 +640,12 @@ charges across manually authorized continuations; existing Tasks retain their ca
 
 ## The light default pipeline
 
-`bugfix/light-codex` uses the default Sol medium implementer, one Terra high reviewer in the
-`correctness` slot (`issue-internal/bugs`), and `issue-internal/light-evaluator` on `gpt-6-sol`
-medium. `bugfix/light-kimi-terra-sol` changes only the implementer to Pi `kimi-coding/k3.1-pro`
-high. Both require known cause, a deterministic regression and narrow scope without authority,
-contract, security, accounting, persistence or uncertain concurrency changes.
+`bugfix/light-kimi-terra-sol` is the staged default: Pi `kimi-coding/k3.1-pro` high
+implements, Terra6.1 high reviews and Sol6.1 medium evaluates. `bugfix/light-codex` uses Sol6.1
+medium implementation, Terra6.1 high review and Astra6 medium evaluation. Both require known
+cause, deterministic regression and narrow non-authority scope. `impl/light-kimi-codex` uses the
+Kimi roles for a specified small implementation with deterministic acceptance checks; it does
+not require an existing bug. Sensitive or uncertain scope requires explicit escalation.
 
 The [supported local launch recipe](../fixtures/issue-workflows/README.md#bounded-pilot-recipes)
 uses `scripts/issue-workflows.py` for versioned selection and exact-plan validation, followed by

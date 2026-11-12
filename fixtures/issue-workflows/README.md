@@ -5,7 +5,7 @@ The root operator installs it after the candidate verifies. This checkout's exis
 is deliberately not silently modified. The replacement catalog contains none of the old
 `default/*`, `default-light/*`, `pi-light/*`, `warm/*` or operator `kernel/*` choices; it retains
 backlog triage as an independent service. Captured historical Tasks keep their original bytes.
-The [decision](../../docs/adr/2026-11-11-issue-oriented-operator-pipelines.md) records the boundary.
+The [decision](../../docs/adr/2026-11-12-refresh-issue-workflow-model-families.md) records the boundary.
 
 ## Select and inspect
 
@@ -16,14 +16,16 @@ python3 -I scripts/issue-workflows.py preview
 | Selection / public implementation Pipeline | Required earlier stage | Implementer | Code judges |
 |---|---|---|---|
 | `bugfix/light-kimi-terra-sol` | Known cause and narrow deterministic regression | Pi `kimi-coding/k3.1-pro` high | Terra high review; Sol medium evaluation |
-| `bugfix/light-codex` | Same light scope | `gpt-6.1-sol` medium | Same light judges |
-| `bugfix/default-codex` | Cause understood | `gpt-6.1-sol` medium | Terra high bugs; Sol high correctness; Astra medium evaluation |
+| `bugfix/light-codex` | Same light scope | `gpt-6.1-sol` medium | Terra high review; Astra medium evaluation |
+| `bugfix/default-codex` | Cause understood | `gpt-6.1-sol` medium | Terra high bugs; Astra high correctness; Astra medium evaluation |
 | `bugfix/research-fix-codex` | Accepted diagnosis from Sol high, checked independently by Terra high | Default implementer | Default judges |
 | `impl/default-codex` | Requirements understood | Default implementer | Default judges |
-| `impl/design-codex` | Accepted Astra medium design, adversarially checked by Terra high | Default implementer | Default judges |
+| `impl/light-kimi-codex` | Small specified non-authority requirement with deterministic acceptance | Pi `kimi-coding/k3.1-pro` high | Terra high review; Sol medium evaluation |
+| `design/astra-kimi` | Original issue contract | Astra medium design author | Terra high challenge; Kimi high independent challenge; Sol medium final acceptance |
+| `perf/research-kimi-codex` | Small known bottleneck with measured reproduction; accepted Kimi high research checked by Terra high | Default implementer | Default judges plus Astra medium measurement evaluation |
 | `perf/research-experiment-codex` | Accepted Sol high research, checked by Terra high | Default implementer | Default judges plus Astra medium measurement evaluation |
 
-Terra means `gpt-6.1-terra`, Sol in judging means `gpt-6-sol`, and Astra means `gpt-6-astra`.
+Terra means `gpt-6.1-terra`, Sol means `gpt-6.1-sol`, and Astra means `gpt-6-astra`.
 Every Codex binding is `codex-personal`; Pi uses the machine-local alias `pi-personal` for an
 admitted `kimi-coding` Provider. No credential is supplied here. There is no advisory/uix Worker.
 The shared Review policy retains an optional bugs policy entry to allow light's single bound
@@ -33,11 +35,11 @@ Do not describe this as per-Pipeline enforcement of required benchmark Demands.
 The native `kernel` check still runs `scripts/verify.sh --profile fast` locally, and Markdown
 checks remain mandatory. No check node selects `remote_checks`. Independence is checked against
 the source writer. The final `issue-internal/verification` Task has no implementer and is shared
-by every selection; it is an internal capability, not seven extra selectable profiles.
+by every selection; it is an internal capability, not nine extra selectable profiles.
 
 `catalog.toml` pins the staged package bytes. `contracts.json` retains native public contracts.
 `replacement-catalog.toml` is complete replacement authority; `replacement-af.toml` selects
-`bugfix/default-codex` by default with the existing limits and reserves. This ordinary native
+`bugfix/light-kimi-terra-sol` by default with the existing limits and reserves. This ordinary native
 default accepts a Task containing only `task_id`, `kind` and `goal`, without a `standard` selector
 fact. Other staged selectors and the launcher's routing attestations remain required. Package definitions,
 role choices and pins are versioned here; local bindings may supply only personal account aliases.
@@ -96,7 +98,7 @@ inputs. A raw artifact cannot bind that root: native admission requires a record
 The supported complete workflow is the native Scenario emitted by `compose`:
 
 ```text
-[issue-internal/report or issue-internal/design, independently accepted]
+[issue-internal/report or issue-internal/kimi-report, independently accepted]
     report -> public implementation Pipeline.research_report
     snapshot -> issue-internal/verification.source
 ```
@@ -117,9 +119,9 @@ claims to have implemented the fix. Its `requirements.original_issue` must conta
 `goal`, `requirements` and `acceptance`, copied from the implementation's actual fields
 (use JSON `null` for omitted top-level `acceptance`). This includes all original structured
 requirements, including `issue_url` when present, alongside the full goal and acceptance. Do not wrap an unrelated goal in a common identity.
-Both report pipelines send this same native `af/Requirements@1` to their author and independent
+Every report pipeline sends this same native `af/Requirements@1` to their author and independent
 verifier; their staged prompts require checking the report against the embedded issue details.
-The five shipped examples describe the concrete same-source issue-contract substitution defect;
+The original issue-contract examples describe the concrete same-source issue-contract substitution defect;
 replace that whole contract consistently for a different issue. This contract-sensitive example
 uses the default known-fix route; select light only for a different, eligible narrow issue. Set verification's `base.commit`
 to the original source commit. Pin each stage from
@@ -138,9 +140,26 @@ python3 -I scripts/issue-workflows.py compose bugfix/research-fix-codex \
   > /private/pilot/workflow.json
 ```
 
-For design use `design.json` with `issue-internal/design` and select `impl/design-codex` in the
-implementation Task. Performance uses `issue-internal/report` research and selects
-`perf/research-experiment-codex`. Simple selections take only code and shared verification pins.
+For design use `design.json` with `design/astra-kimi`: it composes from **one** report pin and
+ends at an accepted reusable design, with no implementation or code verification stage.
+Astra medium authors the original design; Terra high and Kimi high independently challenge that
+same sealed Document. Sol medium final acceptance receives the original Document, original
+issue requirements and both required typed `af/ReportEvaluation@1` challenge inputs. Failed,
+inconclusive, duplicate, missing or stale challenges refuse final dispatch. Report acceptance
+retains the final evaluation whose provenance includes both challenge IDs. The retired
+`impl/design-codex` name has no alias.
+
+To reuse that accepted design, select `impl/default-codex` and give `compose` three pins in
+order: `design/astra-kimi`, `impl/default-codex`, shared verification. The optional
+`research_report` input is delivered from the accepted design Task, with exact original issue,
+source and producer checks; omitting that pin keeps the ordinary two-stage route. Native direct
+planning can bind `inputs.research_report = {"task":"DESIGN_TASK_ID","port":"report"}`;
+use composition for the launcher's additional original-issue validation. Research prose remains
+evidence, never execution authority.
+
+Broad performance uses `issue-internal/report` and `perf/research-experiment-codex`;
+small known bottlenecks use `issue-internal/kimi-report` and `perf/research-kimi-codex`.
+Simple selections take only code and shared verification pins.
 `compose` checks routing facts and the exact catalog and approved policies at the pinned Git commit. It refuses missing
 stages, missing or differing original research/design issue contracts, differing implementation
 and verification goals or structured requirements/acceptance, differing source
@@ -212,6 +231,14 @@ Base and issue acceptance, and run shared default verification over the **entire
 A second repair exits the light policy and requires a new reviewed default/research decision;
 never reset spending by reporting just its final delta.
 
+For `impl/light-kimi-codex`, routing additionally requires `specified_requirements` and
+`deterministic_acceptance`, alongside `narrow_change` and no sensitive flags. It does not require
+an existing failing bug or known bug cause. For `perf/research-kimi-codex`, require
+`known_cause`, `known_bottleneck`, `measured_reproduction`, `narrow_change` and no sensitive flags; broad or
+unknown cases go to `perf/research-experiment-codex`. These booleans are explicit operator
+attestations, not independently measured evidence. The performance Pipeline still measures only
+`release_build` / `release_build_time` using the unchanged native baseline/comparison policy.
+
 For a hard diagnosis pilot, use `routing-diagnosis.json`, state the competing causal hypotheses
 and exact reproduction requirements in `diagnose.json`, and compose research-fix. A rejected
 report is a failed pilot, not permission to implement a guessed cause. Design-first uses the same
@@ -254,8 +281,8 @@ Do not infer live quality, economic savings or throughput from deterministic pla
 
 ## Deterministic evidence
 
-`issue_workflows` in the native integration binary compiles all seven actual model plans,
-plans both Report stages and read-only verification, checks models/efforts and local gates,
+`issue_workflows` in the native integration binary compiles all nine public model plans,
+plans both research stages and read-only verification, checks models/efforts and local gates,
 consumes a real accepted hermetic Report output, refuses missing Documents and old names, and
 validates composed native Scenarios using exact captured template pins. Providers are isolated
 catalog fixtures, never live model calls. Script tests cover routing, composition, active-history
@@ -286,3 +313,30 @@ The performance preview follows research, baseline, implementation, internal cod
 candidate measurement, Comparison, measurement acceptance and final shared whole-change
 verification. Internal Review and final verification are separate stages; earlier failures may
 prevent measurement or acceptance, and no preview establishes a measured improvement.
+
+## Latest families at new planning boundaries
+
+Launcher `plan` and `compose` consult token-free `af provider models ID --json` catalogs for
+all selected Worker closures, including each composed research and final verification stage.
+Stable numeric versions are compared separately for Sol, Terra, Astra and ordinary Kimi Pro;
+`k3.1-pro-highspeed` and other model families cannot supersede ordinary Pro. Astra6 remains
+selected because the verified catalog contains no Astra6.1. Exact model pins remain versioned;
+no catalog result edits authority or silently substitutes a model. Unavailable, skipped,
+ambiguous, duplicate or incomplete catalog data refuses new planning. Catalogs describe exposed
+models and effort levels, not paid admission or account usability.
+
+`preview`, `migration`, `check-plan` and `reconcile` do not probe current catalogs or rewrite
+historical Tasks. Native direct `af task plan` / `af scenario template-pin` remains a lower-level
+interface without the launcher's latest-family guard or routing attestations. Installation and
+whole-change independent verification remain root operator work. Neither deterministic tests nor
+this catalog refresh establish a measured speedup.
+
+For Tasks captured under an earlier catalog, inspect natively or run that catalog's matching
+launcher from its preserved immutable source checkout. The current launcher's exact-authority
+checks deliberately refuse old package closures; they do not reinterpret old roles as new ones.
+
+`light-implementation.json` is a non-bug implementation template. `research-kimi.json` and
+`performance-kimi.json` share a release-build original issue contract. Fill in the exact narrow
+bottleneck and existing measured reproduction before using them, and make a verification Task
+with that same complete goal/requirements/acceptance. No sample contains measured timings or
+claims success. The routing booleans attest eligibility; they never replace native Measurements.

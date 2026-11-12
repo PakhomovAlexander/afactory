@@ -28,7 +28,7 @@ fn copy_private_catalog(source: &Path, destination: &Path) {
     std::fs::write(destination, std::fs::read(source).unwrap()).unwrap();
 }
 
-fn install(repo: &Path) {
+pub(crate) fn install(repo: &Path) {
     let root = workspace();
     let staged = root.join("fixtures/issue-workflows");
     task_cli::copy_tree(&staged, &repo.join("fixtures/issue-workflows"));
@@ -101,7 +101,7 @@ fn private_catalog_copy_is_writable_and_preserves_read_only_source() {
 }
 
 #[test]
-fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_dataflow() {
+fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_dataflow() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = crate::task_report::starter(temp.path());
     let original = std::process::Command::new("git")
@@ -217,7 +217,7 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
     let default: Value = serde_json::from_slice(&default.stdout).unwrap();
     assert_eq!(
         default["selection"]["assessment"]["decision"]["pipeline"],
-        "bugfix/default-codex"
+        "bugfix/light-kimi-terra-sol"
     );
     let mut unlinked = example("known-fix.json");
     unlinked["requirements"]
@@ -229,6 +229,9 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
     // Exercise the shipped documents with only Task identity and accepted evidence replaced.
     for (i, file) in [
         "known-fix.json",
+        "light-implementation.json",
+        "performance-kimi.json",
+        "research-kimi.json",
         "research-fix.json",
         "diagnose.json",
         "design.json",
@@ -238,12 +241,15 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
     .enumerate()
     {
         let task = example(file);
-        let evidence = file == "research-fix.json";
+        let evidence = matches!(file, "research-fix.json" | "performance-kimi.json");
         let o = plan_document(task.clone(), &format!("example-{i}"), evidence);
         assert!(o.status.success(), "{file}: {}", text(&o));
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
         assert_eq!(v["attempts"], 0);
-        if matches!(file, "research-fix.json" | "verify.json") {
+        if matches!(
+            file,
+            "research-fix.json" | "performance-kimi.json" | "verify.json"
+        ) {
             let mut missing = task.clone();
             missing.as_object_mut().unwrap().remove("facts");
             let o = plan_document(missing, &format!("example-missing-facts-{i}"), evidence);
@@ -264,7 +270,8 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
     let plan = |name: &str, id: &str, evidence: bool| {
         let file = match name {
             "issue-internal/report" => "diagnose.json",
-            "issue-internal/design" => "design.json",
+            "design/astra-kimi" => "design.json",
+            "issue-internal/kimi-report" => "diagnose.json",
             "issue-internal/verification" => "verify.json",
             _ if name.contains("research") || name.contains("design") => "research-fix.json",
             _ => "known-fix.json",
@@ -279,6 +286,9 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         .iter()
         .enumerate()
     {
+        if name.starts_with("design/") {
+            continue; // Compiled with report stages below; no implementation or code gates.
+        }
         let o = plan(name, &format!("selection-{i}"), true);
         assert!(o.status.success(), "{name}: {}", text(&o));
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
@@ -288,12 +298,12 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         for (slot, b) in bindings {
             let role = slot.rsplit('.').next().unwrap();
             let (model, effort) = match role {
-                "implementer" if name.contains("kimi") => ("k3.1-pro", "high"),
+                "implementer" if light && name.contains("kimi") => ("k3.1-pro", "high"),
                 "implementer" => ("gpt-6.1-sol", "medium"),
                 "bugs" => ("gpt-6.1-terra", "high"),
                 "correctness" if light => ("gpt-6.1-terra", "high"),
-                "correctness" => ("gpt-6-sol", "high"),
-                "evaluator" if light => ("gpt-6-sol", "medium"),
+                "correctness" => ("gpt-6-astra", "high"),
+                "evaluator" if light && name.contains("kimi") => ("gpt-6.1-sol", "medium"),
                 "evaluator" | "measurement_evaluator" => ("gpt-6-astra", "medium"),
                 "author" if name.contains("design") => ("gpt-6-astra", "medium"),
                 "author" => ("gpt-6.1-sol", "high"),
@@ -638,6 +648,7 @@ else:
         "warm/implementation-reviewed",
         "kernel/implementation-reviewed",
         "owner-default/implementation",
+        "impl/design-codex",
     ]
     .into_iter()
     .enumerate()
@@ -647,8 +658,9 @@ else:
     }
     for (i, name) in [
         "issue-internal/report",
-        "issue-internal/design",
+        "design/astra-kimi",
         "issue-internal/verification",
+        "issue-internal/kimi-report",
     ]
     .into_iter()
     .enumerate()
@@ -668,6 +680,38 @@ else:
             .output()
             .unwrap();
         assert!(checked.status.success(), "{name}: {}", text(&checked));
+        if name == "design/astra-kimi" {
+            let nodes = &v["graph"]["nodes"];
+            let final_inputs = &nodes["root.nodes.verify"]["inputs"];
+            assert_eq!(final_inputs["document"]["node"], "root.nodes.seal");
+            assert_eq!(
+                final_inputs["terra_challenge"]["node"],
+                "root.nodes.terra_challenger"
+            );
+            assert_eq!(
+                final_inputs["kimi_challenge"]["node"],
+                "root.nodes.kimi_challenger"
+            );
+            assert_eq!(
+                nodes["root.nodes.terra_challenger"]["inputs"]["document"],
+                final_inputs["document"]
+            );
+            assert_eq!(
+                nodes["root.nodes.kimi_challenger"]["inputs"]["document"],
+                final_inputs["document"]
+            );
+            for (role, model, effort) in [
+                ("author", "gpt-6-astra", "medium"),
+                ("terra_challenger", "gpt-6.1-terra", "high"),
+                ("kimi_challenger", "k3.1-pro", "high"),
+                ("verifier", "gpt-6.1-sol", "medium"),
+            ] {
+                let execution = &v["plan"]["bindings"][format!("root.slots.{role}")]["execution"];
+                assert_eq!(execution["model"], model);
+                assert_eq!(execution["effort"], effort);
+            }
+            assert!(!v["graph"]["outputs"].to_string().contains("snapshot"));
+        }
         if name.ends_with("verification") {
             assert!(!v["graph"]["slots"].to_string().contains("implementer"));
         } else {
@@ -683,7 +727,7 @@ else:
             // Report planning legitimately admits but the issue-workflow relationship refuses.
             let mut inspections = vec![v.clone()];
             for case in ["missing", "goal", "acceptance", "empty", "issue-url"] {
-                let mut task = example(if name.ends_with("design") {
+                let mut task = example(if name.starts_with("design/") {
                     "design.json"
                 } else {
                     "diagnose.json"
@@ -774,7 +818,7 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
     }
     for (i, name) in [
         "bugfix/research-fix-codex",
-        "impl/design-codex",
+        "perf/research-kimi-codex",
         "perf/research-experiment-codex",
     ]
     .into_iter()
@@ -801,15 +845,24 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
         .enumerate()
     {
         let mut stages = Vec::new();
+        if name == "impl/default-codex" {
+            stages.push("stage-1.json".to_owned()); // Native accepted design reuse.
+        }
         if !choice["research_pipeline"].is_null() {
-            stages.push(if name.contains("design") {
+            stages.push(if name == "perf/research-kimi-codex" {
+                "stage-3.json".to_owned()
+            } else if name.contains("design") {
                 "stage-1.json".to_owned()
             } else {
                 "stage-0.json".to_owned()
             });
         }
-        stages.push(format!("selection-{i}.json"));
-        stages.push("stage-2.json".to_owned());
+        if name.starts_with("design/") {
+            stages.push("stage-1.json".to_owned());
+        } else {
+            stages.push(format!("selection-{i}.json"));
+            stages.push("stage-2.json".to_owned());
+        }
         let mut pins = Vec::new();
         let mut ids = Vec::new();
         for (j, file) in stages.iter().enumerate() {
@@ -841,8 +894,13 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
             pins.push(pin);
         }
         let output = std::process::Command::new("python3")
+            .env("HOME", &home)
+            .env("AF_PROVIDERS_FILE", home.join("providers.toml"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .arg("-I")
             .arg(workspace().join("scripts/issue-workflows.py"))
+            .arg("--af")
+            .arg(common::af().get_program())
             .args(["compose", name])
             .args(&pins)
             .arg("--routing")
@@ -1062,7 +1120,7 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
                     &settings_file,
                     String::from_utf8(settings_bytes.clone())
                         .unwrap()
-                        .replace("bugfix/default-codex", "default/implementation"),
+                        .replace("bugfix/light-kimi-terra-sol", "default/implementation"),
                 )
                 .unwrap();
             }
@@ -1293,4 +1351,246 @@ fn pilot_manifest_schema_matches_fixture_and_refuses_unknown_or_lost_identity() 
     let mut bad = value;
     bad["unexpected"] = json!(true);
     assert!(!validator.is_valid(&bad));
+}
+
+#[test]
+fn design_acceptance_executes_both_challenges_and_refuses_a_failed_sibling() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, state) = crate::task_report::starter(temp.path());
+    install(&repo);
+    let home = temp.path().join("home");
+    let auth = home.join("codex");
+    let (sdk, pi_path, pi_state) = fake_models::install_pi(temp.path(), &home, "kimi-document");
+    let script = std::fs::read_to_string(&sdk)
+        .unwrap()
+        .replace("id: 'k3'", "id: 'k3.1-pro'");
+    let start = script
+        .find("          const sources=request.inputs.sources[0].payload.sources;")
+        .unwrap();
+    let end = script[start..]
+        .find("        } else if (mode==='retry'")
+        .unwrap()
+        + start;
+    let script = format!(
+        "{}{}{}",
+        &script[..start],
+        r#"
+          const i=Object.fromEntries(Object.entries(request.inputs).map(([k,v])=>[k,v[0]]));
+          const c=i.checks.payload;
+          answer=JSON.stringify({schema:'af.worker-reply/1',outputs:{result:[{
+            document_id:i.document.artifact_id,sources_id:c.sources_id,
+            requirements_id:i.requirements.artifact_id,check_receipt_id:i.checks.artifact_id,
+            source_snapshot_id:i.source.snapshot_id,outcome:state().rejectChallenge?'failed':'passed',
+            summary:'Independent Kimi challenge of the original design'}]}});
+"#,
+        &script[end..]
+    );
+    std::fs::write(&sdk, script).unwrap();
+    let bin = temp.path().join("bin");
+    fake_models::install("codex", &bin, &auth);
+    let codex = bin.join("codex");
+    let original = std::fs::read_to_string(&codex).unwrap();
+    let end = original.rfind("sys.exit(64)").unwrap();
+    let execution = r#"
+request=sys.stdin.read()
+if request==PROBE_INPUT:
+ message='OK'
+else:
+ r=json.loads(request); i={k:v[0] for k,v in r['inputs'].items()}
+ if 'document' not in i:
+  assert i['requirements']['payload']['specification']['original_issue']['requirements']['acceptance']
+  reply={'schema':'af.worker-reply/1','outputs':{'draft':[{
+   'schema':'af.document-draft/3','title':'Reusable design',
+   'sections':[{'heading':'Findings','body':'The original issue requires exact binding.'},
+               {'heading':'Recommendation','body':'Retain original issue and both challenges.'}],
+   'citations':[{'kind':'repository','location':{'path':'README.md'}}]}]}}
+ else:
+  c=i['checks']['payload']; assert c['outcome']=='passed'
+  summary='Independent Terra challenge'
+  if 'terra_challenge' in i or 'kimi_challenge' in i:
+   assert 'terra_challenge' in i and 'kimi_challenge' in i
+   for port in ('terra_challenge','kimi_challenge'):
+    e=i[port]['payload']; assert e['outcome']=='passed'
+    assert e['document_id']==i['document']['artifact_id']
+    assert e['requirements_id']==i['requirements']['artifact_id']
+   summary='Accepted original design after '+i['terra_challenge']['artifact_id']+' '+i['kimi_challenge']['artifact_id']
+  reply={'schema':'af.worker-reply/1','outputs':{'result':[{
+   'document_id':i['document']['artifact_id'],'sources_id':c['sources_id'],
+   'requirements_id':i['requirements']['artifact_id'],'check_receipt_id':i['checks']['artifact_id'],
+   'source_snapshot_id':i['source']['snapshot_id'],'outcome':'passed','summary':summary}]}}
+ message=json.dumps(reply)
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f:f.write(message)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-design'}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_input_tokens':0,'output_tokens':5}}))
+"#;
+    std::fs::write(
+        &codex,
+        crate::provider_cli::with_probe(&format!("{}{execution}", &original[..end])),
+    )
+    .unwrap();
+    let providers = home.join("providers.toml");
+    std::fs::write(&providers, toml::to_string(&json!({"version":4,"providers":[
+        {"id":"codex-personal","kind":"codex","auth_dir":auth},
+        {"id":"pi-personal","kind":"pi","backend":"kimi-coding","auth_dir":home,"sdk_entrypoint":sdk}
+    ]})).unwrap()).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin)
+            .chain(std::env::split_paths(&pi_path))
+            .chain([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]),
+    )
+    .unwrap();
+    let task: Value = serde_json::from_slice(
+        &std::fs::read(repo.join("fixtures/issue-workflows/design.json")).unwrap(),
+    )
+    .unwrap();
+    let run = |id: &str| {
+        let mut task = task.clone();
+        task["task_id"] = json!(id);
+        let file = temp.path().join(format!("{id}.json"));
+        std::fs::write(&file, serde_json::to_vec(&task).unwrap()).unwrap();
+        common::af()
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .env("AF_PI_HOST_MODULE", &sdk)
+            .env("AF_PROVIDERS_FILE", &providers)
+            .env("PATH", &path)
+            .args(["task", "start", "--execute", "--file"])
+            .arg(file)
+            .arg("--state")
+            .arg(&state)
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    let output = run("accepted-design");
+    assert!(output.status.success(), "{}", text(&output));
+    let done: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
+    let cas = af_store::Cas::open(state.join("cas")).unwrap();
+    let receipt = cas
+        .get_json(
+            done["result"]["outputs"]["verification"]["artifact_ids"][0]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    let evaluation = cas
+        .get_json(receipt["payload"]["evaluation_id"].as_str().unwrap())
+        .unwrap();
+    let summary = evaluation["payload"]["summary"].as_str().unwrap();
+    assert!(summary.starts_with("Accepted original design after sha256:"));
+    let challenges: Vec<_> = summary
+        .split_whitespace()
+        .filter(|s| s.starts_with("sha256:"))
+        .collect();
+    assert_eq!(challenges.len(), 2);
+    assert_ne!(challenges[0], challenges[1]);
+    for challenge in challenges {
+        assert!(
+            evaluation["input_artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| id == challenge)
+        );
+    }
+    assert_eq!(
+        receipt["payload"]["invocation"]["inputs"]["document"]["artifact_ids"][0],
+        done["result"]["outputs"]["report"]["artifact_ids"][0]
+    );
+    let mut pi: Value = serde_json::from_slice(&std::fs::read(&pi_state).unwrap()).unwrap();
+    pi["rejectChallenge"] = json!(true);
+    std::fs::write(pi_state, serde_json::to_vec(&pi).unwrap()).unwrap();
+    let rejected = run("rejected-design");
+    let rejected: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_ne!(rejected["result"]["acceptance"], "satisfied");
+    let explain = common::af()
+        .current_dir(&repo)
+        .args(["task", "explain", "rejected-design", "--json", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        text(&explain).contains("Design challenge failed"),
+        "{}",
+        text(&explain)
+    );
+    assert!(done["result"]["outputs"].get("snapshot").is_none());
+    let pipeline = repo.join(".af/task-packages/design/astra-kimi/pipeline.toml");
+    let mut definition: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&pipeline).unwrap()).unwrap();
+    let final_node = definition["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|n| n["id"].as_str() == Some("verify"))
+        .unwrap();
+    final_node["inputs"]
+        .as_table_mut()
+        .unwrap()
+        .remove("kimi_challenge");
+    std::fs::write(&pipeline, toml::to_string(&definition).unwrap()).unwrap();
+    crate::task_report::repin_and_commit(&repo);
+    let missing = run("missing-challenge-design");
+    assert!(!missing.status.success());
+    assert!(
+        text(&missing).contains("kimi_challenge"),
+        "{}",
+        text(&missing)
+    );
+}
+
+#[test]
+fn launcher_freshness_uses_native_catalog_and_refuses_stale_or_unavailable_without_inference() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let auth = home.join("codex");
+    let bin = temp.path().join("bin");
+    fake_models::install("codex", &bin, &auth);
+    let providers = home.join("providers.toml");
+    std::fs::write(
+        &providers,
+        toml::to_string(&json!({"version":4,"providers":[
+        {"id":"codex-personal","kind":"codex","auth_dir":auth}]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let probe = || {
+        std::process::Command::new("python3")
+            .env("HOME", &home).env("XDG_CONFIG_HOME", home.join("config"))
+            .env("XDG_STATE_HOME", home.join("state")).env("XDG_CACHE_HOME", home.join("cache"))
+            .env("AF_PROVIDERS_FILE", &providers).env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .args(["-I", "-c", "import importlib.util,sys; s=importlib.util.spec_from_file_location('w',sys.argv[1]); w=importlib.util.module_from_spec(s); s.loader.exec_module(w); w.check_latest_models(sys.argv[2], 'bugfix/default-codex')"])
+            .arg(workspace().join("scripts/issue-workflows.py")).arg(common::af().get_program())
+            .output().unwrap()
+    };
+    let fresh = probe();
+    assert!(fresh.status.success(), "{}", text(&fresh));
+    let catalog = auth.join("codex-model-list.json");
+    let original = std::fs::read(&catalog).unwrap();
+    let mut changed: Value = serde_json::from_slice(&original).unwrap();
+    let mut newer = changed["data"][0].clone();
+    newer["id"] = json!("gpt-6.2-sol");
+    newer["model"] = json!("gpt-6.2-sol");
+    changed["data"].as_array_mut().unwrap().push(newer);
+    std::fs::write(&catalog, serde_json::to_vec(&changed).unwrap()).unwrap();
+    let stale = probe();
+    assert!(!stale.status.success());
+    assert!(
+        text(&stale).contains("superseded or unavailable active model pin"),
+        "{}",
+        text(&stale)
+    );
+    std::fs::write(&catalog, original).unwrap();
+    std::fs::write(auth.join("catalog-broken"), "broken").unwrap();
+    let unavailable = probe();
+    assert!(!unavailable.status.success());
+    assert!(
+        text(&unavailable).contains("latest-model catalog unavailable"),
+        "{}",
+        text(&unavailable)
+    );
+    assert_eq!(fake_models::turns(&auth), "");
 }

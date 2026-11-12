@@ -1,6 +1,6 @@
 "schema" = "af.pipeline/6"
 "name" = "bugfix/light-codex"
-"version" = "1.0.0"
+"version" = "1.0.1"
 "max_attempts" = 16
 "max_parallel" = 3
 
@@ -96,7 +96,7 @@
 "independent_from" = ["implementer"]
 
 ["slots"."evaluator"]
-"worker" = "issue-internal/light-evaluator"
+"worker" = "issue-internal/codex-light-evaluator"
 "role" = "evaluate"
 "input_type" = "af/EvaluationInput@2"
 "output_type" = "af/TaskEvaluation@1"

@@ -346,12 +346,18 @@ Tests:
 ## Accepted performance research
 
 The installed `bugfix/default-codex` Pipeline has no `research_report` root port.
-`bugfix/research-fix-codex`, `impl/design-codex` and `perf/research-experiment-codex` require
+`bugfix/research-fix-codex`, `perf/research-kimi-codex` and `perf/research-experiment-codex` require
 `research_report` (`af/Document@1`, one, unbound) and forward it to the researched implementer.
-The internal `issue-internal/report` and `issue-internal/design` Pipelines accept the same port
+The internal `issue-internal/report`, `issue-internal/kimi-report` and `design/astra-kimi` Pipelines accept the same port
 optionally and forward it to their author and verifier through their closed Worker contracts
 and input schemas.
 Scenario admission additionally checks the accepted research Task's exact result and original
 source, and refuses an envelope larger than 32 KiB. Native context receipts retain the same
 artifact ID throughout candidate construction and final reporting; no text is pasted into an
 acceptance boolean. See [Performance Scenarios](../performance-scenarios.md).
+
+`impl/default-codex` additionally accepts optional accepted design evidence on `research_report`.
+The launcher composes `design/astra-kimi` -> implementation -> shared verification and checks
+original issue identity. Design itself ends at report acceptance: Sol medium reads the original
+Astra design and both independent Terra/Kimi challenges through the versioned
+`af/DesignAcceptanceInput@1` Worker contract. Missing or failed challenges cannot reach acceptance.

@@ -11,12 +11,13 @@ walkthroughs; the decisions themselves are
 See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
 expanded tree, Claude/Codex workflow and the automation boundary.
 
-This repository's operator catalog defaults to `bugfix/default-codex`. Its seven selections are
+This repository's operator catalog defaults to `bugfix/light-kimi-terra-sol`. Its nine selections are
 `bugfix/light-kimi-terra-sol`, `bugfix/light-codex`, `bugfix/default-codex`,
-`bugfix/research-fix-codex`, `impl/default-codex`, `impl/design-codex` and
-`perf/research-experiment-codex`. Every route ends with the shared read-only
-`issue-internal/verification` Pipeline over the whole candidate. Diagnosis and design use
-independently accepted Report Tasks before implementation. The performance route runs research,
+`bugfix/research-fix-codex`, `impl/default-codex`, `impl/light-kimi-codex`, `design/astra-kimi`,
+`perf/research-kimi-codex` and `perf/research-experiment-codex`. Every code route ends with the shared read-only
+`issue-internal/verification` Pipeline over the whole candidate. Diagnosis uses an independently accepted Report before implementation. Design-only
+`design/astra-kimi` ends at accepted reusable evidence after both independent challenges; a later
+`impl/default-codex` may consume it through the accepted-evidence path. The performance route runs research,
 baseline measurement, implementation, internal code Review, candidate measurement, Comparison
 and measurement acceptance, then final whole-change verification. Earlier checks can stop the
 flow; absent measurements never establish improvement.

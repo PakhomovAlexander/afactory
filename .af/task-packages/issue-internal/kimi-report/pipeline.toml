@@ -1,5 +1,5 @@
 "schema" = "af.pipeline/6"
-"name" = "issue-internal/design"
+"name" = "issue-internal/kimi-report"
 "version" = "1.0.0"
 "max_attempts" = 8
 "max_parallel" = 1
@@ -92,7 +92,7 @@
 ["slots"]
 
 ["slots"."author"]
-"worker" = "issue-internal/designer"
+"worker" = "issue-internal/kimi-researcher"
 "role" = "author"
 "input_type" = "af/ReportInput@2"
 "output_type" = "af/DocumentDraft@3"

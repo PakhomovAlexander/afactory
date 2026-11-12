@@ -7,7 +7,7 @@
 ["task"]
 
 ["task"."defaults"]
-"pipeline" = "bugfix/default-codex"
+"pipeline" = "bugfix/light-kimi-terra-sol"
 "fallback" = "refuse"
 
 ["task"."defaults"."limits"]

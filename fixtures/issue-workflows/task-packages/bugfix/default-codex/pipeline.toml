@@ -1,6 +1,6 @@
 "schema" = "af.pipeline/6"
 "name" = "bugfix/default-codex"
-"version" = "1.0.0"
+"version" = "1.0.1"
 "max_attempts" = 16
 "max_parallel" = 3
 
@@ -81,6 +81,7 @@
 "kinds" = ["implement"]
 
 ["accepts"."required_facts"]
+"standard" = true
 
 ["slots"]
 

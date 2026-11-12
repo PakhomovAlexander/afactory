@@ -383,7 +383,7 @@ fn json_help_names_the_documents_that_carry_a_state() {
 fn task_default_help_uses_the_installed_operator_selection() {
     for topic in ["config", "task-file"] {
         let help = out(&af(&["help", topic]));
-        assert!(help.contains("bugfix/default-codex"), "{help}");
+        assert!(help.contains("bugfix/light-kimi-terra-sol"), "{help}");
         assert!(!help.contains("kernel/implementation-reviewed"), "{help}");
         if topic == "task-file" {
             let root = workspace();

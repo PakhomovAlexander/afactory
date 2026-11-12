@@ -42,8 +42,10 @@
         "bugfix/default-codex",
         "bugfix/research-fix-codex",
         "impl/default-codex",
-        "impl/design-codex",
-        "perf/research-experiment-codex"
+        "perf/research-experiment-codex",
+        "impl/light-kimi-codex",
+        "design/astra-kimi",
+        "perf/research-kimi-codex"
       ]
     },
     "tasks": {

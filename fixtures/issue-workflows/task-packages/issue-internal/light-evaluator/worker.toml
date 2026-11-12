@@ -1,6 +1,6 @@
 "schema" = "af.worker/1"
 "name" = "issue-internal/light-evaluator"
-"version" = "1.0.0"
+"version" = "1.0.1"
 
 ["signature"]
 "effects" = ["read-source"]
@@ -76,5 +76,5 @@
 ["runner"]
 "kind" = "model"
 "provider_kind" = "codex"
-"model" = "gpt-6-sol"
+"model" = "gpt-6.1-sol"
 "effort" = "medium"

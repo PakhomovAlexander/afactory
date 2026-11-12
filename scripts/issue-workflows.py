@@ -65,14 +65,27 @@ def invoke(af, repo, state, *args):
 
 def route(name, facts):
     choice = selection(name)
-    exact(facts, ('known_cause', 'deterministic_regression', 'narrow_change', 'authority',
-                  'contract', 'security', 'accounting', 'persistence', 'uncertain_concurrency'))
+    common = ('narrow_change', 'authority', 'contract', 'security', 'accounting', 'persistence', 'uncertain_concurrency')
+    extra = ('known_cause', 'deterministic_regression', 'specified_requirements',
+             'deterministic_acceptance', 'measured_reproduction', 'known_bottleneck')
+    if name == 'impl/light-kimi-codex':
+        required = common + ('specified_requirements', 'deterministic_acceptance')
+    elif name == 'perf/research-kimi-codex':
+        required = common + ('known_cause', 'known_bottleneck', 'measured_reproduction')
+    else:
+        required = common + ('known_cause', 'deterministic_regression')
+    exact(facts, required, tuple(k for k in extra if k not in required))
     if any(type(v) is not bool for v in facts.values()):
         raise ValueError('routing facts must be explicit booleans')
     sensitive = any(facts[k] for k in ('authority', 'contract', 'security', 'accounting', 'persistence', 'uncertain_concurrency'))
-    if choice['light'] and (sensitive or not all(facts[k] for k in ('known_cause', 'deterministic_regression', 'narrow_change'))):
+    if name == 'impl/light-kimi-codex':
+        if sensitive or not all(facts.get(k) for k in ('specified_requirements', 'deterministic_acceptance', 'narrow_change')):
+            raise ValueError('light implementation requires specified requirements, deterministic acceptance and narrow non-authority scope; escalate to impl/default-codex or design/astra-kimi')
+    elif choice['light'] and (sensitive or not all(facts[k] for k in ('known_cause', 'deterministic_regression', 'narrow_change'))):
         raise ValueError('light requires known cause, deterministic regression and narrow non-authority scope')
-    if not facts['known_cause'] and name.startswith('bugfix/') and 'research-fix' not in name:
+    if name == 'perf/research-kimi-codex' and (sensitive or not all(facts.get(k) for k in ('known_cause', 'known_bottleneck', 'measured_reproduction', 'narrow_change'))):
+        raise ValueError('small-bottleneck research requires narrow known bottleneck and measured reproduction; use perf/research-experiment-codex for broad or unknown work')
+    if not facts.get('known_cause') and name.startswith('bugfix/') and 'research-fix' not in name:
         raise ValueError('unknown bug cause requires research-fix')
 
 
@@ -145,6 +158,103 @@ def validate_plan(name, value, state):
         raise ValueError('unexpected authority or advisory role')
     return {'selection': name, 'plan_id': value['plan_id'], 'revision_id': value['revision_id'],
             'roles': {slot: b['execution'] for slot, b in plan['bindings'].items()}}
+
+
+def model_family(model):
+    """Stable numeric versions only; ordinary Pro excludes highspeed and other variants."""
+    match = re.fullmatch(r'gpt-([0-9]+(?:\.[0-9]+)*)-(sol|terra|astra)', model)
+    if match:
+        family, spelling = match[2], match[1]
+    else:
+        match = re.fullmatch(r'k([0-9]+(?:\.[0-9]+)*)-pro', model)
+        if not match:
+            return None
+        family, spelling = 'kimi-pro', match[1]
+    numbers = [int(n) for n in spelling.split('.')]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return family, tuple(numbers)
+
+
+def available_models(af, provider):
+    models, total = [], None
+    for page in range(16):
+        response = subprocess.run([str(af), 'provider', 'models', provider, '--json', '--page', str(page)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False)
+        if response.returncode or len(response.stdout) > LIMIT:
+            raise ValueError('latest-model catalog unavailable: ' + provider)
+        value = json.loads(response.stdout)
+        if (value.get('schema') != 'af/provider-models@4' or value.get('token_free') is not True
+                or value.get('exit_code') != 0 or len(value.get('providers', [])) != 1):
+            raise ValueError('ambiguous native model catalog: ' + provider)
+        row = value['providers'][0]
+        if row.get('id') != provider or row.get('state') != 'listed' or row.get('skipped_entries') != 0:
+            raise ValueError('unavailable or incomplete model catalog: ' + provider)
+        if row.get('kind') != ('pi' if provider == 'pi-personal' else 'codex'):
+            raise ValueError('model catalog Provider kind differs')
+        models.extend(row['models'])
+        paging = row.get('catalog_page')
+        if paging is None:
+            if page:
+                raise ValueError('catalog pagination disappeared')
+            break
+        if paging.get('number') != page or (total is not None and total != paging.get('total')):
+            raise ValueError('model catalog changed during pagination')
+        total = paging['total']
+        if paging.get('next') is None:
+            if total != len(models):
+                raise ValueError('incomplete paged model catalog')
+            break
+        if paging['next'] != page + 1:
+            raise ValueError('ambiguous catalog pagination')
+    else:
+        raise ValueError('model catalog exceeds bounded pages')
+    if len({m['id'] for m in models}) != len(models):
+        raise ValueError('ambiguous duplicate model catalog entries')
+    return models
+
+
+def check_latest_models(af, name):
+    """New launcher plans/composition only. Never rewrite pins or recheck historical Tasks."""
+    native = toml(STAGED / 'replacement-catalog.toml')
+    workers, visited = set(), set()
+    def visit(package):
+        if package in visited:
+            return
+        visited.add(package)
+        directory = STAGED / 'task-packages' / package
+        if (directory / 'worker.toml').is_file():
+            workers.add(package)
+            return
+        definition = toml(directory / 'pipeline.toml')
+        for slot in definition['slots'].values():
+            visit(slot['worker'])
+        for node in definition['nodes']:
+            if node['operator']['op'] == 'call':
+                visit(node['operator']['pipeline'])
+    visit(name)
+    catalogs = {}
+    for worker in sorted(workers):
+        runner = toml(STAGED / 'task-packages' / worker / 'worker.toml')['runner']
+        provider = native['providers'][worker]
+        if provider not in catalogs:
+            catalogs[provider] = available_models(af, provider)
+        selected = model_family(runner['model'])
+        if selected is None:
+            raise ValueError('active model has no stable approved family: ' + worker)
+        candidates = [(m, model_family(m['id'])) for m in catalogs[provider]]
+        candidates = [(m, family[1])
+                      for m, family in candidates if family and family[0] == selected[0]]
+        if not candidates:
+            raise ValueError('selected model family unavailable: ' + worker)
+        latest = max(version for _, version in candidates)
+        winners = [m for m, version in candidates if version == latest]
+        if len(winners) != 1:
+            raise ValueError('ambiguous latest model family: ' + worker)
+        if winners[0]['id'] != runner['model']:
+            raise ValueError('superseded or unavailable active model pin: ' + worker + '; latest ' + winners[0]['id'])
+        if runner['effort'] not in winners[0]['effort_levels']:
+            raise ValueError('active model effort unavailable: ' + worker)
 
 
 def inventory(af, repo, state):
@@ -335,7 +445,10 @@ def reconcile(af, repo, state, manifest):
         raise ValueError('all stage Task identities must be unique and bounded native names')
     if choice['light'] and len(tasks) > 2:
         raise ValueError('light permits one implementation and at most one bounded repair')
-    if not choice['research_pipeline'] and research:
+    research_pipeline = choice['research_pipeline']
+    if manifest['selection'] == 'impl/default-codex' and research:
+        research_pipeline = 'design/astra-kimi'
+    if not research_pipeline and research:
         raise ValueError('this route has no research stage')
     values, revisions = {}, {}
     for task in all_tasks:
@@ -346,6 +459,36 @@ def reconcile(af, repo, state, manifest):
         if revision['task_id'] != task or revision['inputs'] != value['plan']['inputs']:
             raise ValueError('native revision/plan inputs differ')
         values[task], revisions[task] = value, revision
+    if manifest['selection'] == 'design/astra-kimi':
+        if len(tasks) != 1 or auxiliary:
+            raise ValueError('design-only pilot requires exactly one design Task and no implementation or auxiliary Tasks')
+        task = tasks[0]
+        value, revision = values[task], revisions[task]
+        check_stage(value, 'design/astra-kimi', state)
+        _, requirements, _ = json.loads(native_issue(state, revision))
+        contract = requirements.get('original_issue')
+        if not isinstance(contract, dict):
+            raise ValueError('design requires original issue contract')
+        exact(contract, ('goal', 'requirements', 'acceptance'))
+        check_research_issue(requirements, original_issue(**contract))
+        if contract['requirements'].get('issue_url') != manifest['issue']:
+            raise ValueError('pilot issue differs from original native requirements.issue_url')
+        _, origin = source_origin(state, revision['inputs']['source']['snapshot_id'])
+        roots = subprocess.check_output(['git', '-C', str(repo), 'rev-list', '--max-parents=0', 'HEAD'], timeout=30)
+        if (origin.get('kind') != 'captured' or not roots.strip()
+                or origin.get('source_revision') != manifest['source_commit']
+                or origin.get('repository_id') != ','.join(sorted(set(roots.decode().split())))):
+            raise ValueError('pilot source commit or repository differs from native origin')
+        return {'schema': 'af.issue-workflow-reconciliation/2', 'pilot': manifest,
+                'tasks': [{'task_id': task, 'revision_id': value['revision_id'], 'plan_id': value['plan_id'],
+                           'chargeable_tokens': value['chargeable_tokens'], 'state': value['state'],
+                           'source_snapshot_id': revision['inputs']['source']['snapshot_id'],
+                           'input_bindings': value.get('input_bindings')}],
+                'chain_chargeable_tokens': value['chargeable_tokens'],
+                'unknown_usage_attempts': value['unknown_usage_attempts'],
+                'continuation_sources': [None], 'final_verification_recorded': False,
+                'pull_request_association': 'absent' if pr is None else 'unverified',
+                'remote_lookup_performed': False, 'quality_or_savings_claim': False}
     original = revisions[tasks[0]]
     original_source = original['inputs']['source']['snapshot_id']
     _, origin = source_origin(state, original_source)
@@ -378,7 +521,7 @@ def reconcile(af, repo, state, manifest):
         elif value.get('continues'):
             raise ValueError('pilot must include original Task, not only last delta')
         binding = (value.get('input_bindings') or {}).get('bindings', {}).get('research_report')
-        if choice['research_pipeline']:
+        if research_pipeline:
             if not binding or binding.get('also') or not binding.get('task'):
                 raise ValueError('missing exact research producer binding')
             producer = binding['task']['task_id']
@@ -391,7 +534,7 @@ def reconcile(af, repo, state, manifest):
             if (report_origin != origin or report_revision['inputs']['source']['snapshot_id'] != original_source):
                 raise ValueError('research source differs from original implementation')
             check_native_research_issue(state, report_revision, contract)
-            check_stage(report, choice['research_pipeline'], state)
+            check_stage(report, research_pipeline, state)
             check_output(binding, report, revision['inputs']['research_report'], 'report', 'af/Document@1')
         elif binding or 'research_report' in revision['inputs']:
             raise ValueError('this route has no research stage')
@@ -482,7 +625,7 @@ def validate_policy(value, state):
         raise ValueError('effective policy authority differs from native revision')
     authority = recorded(state, policy_id)
     pipeline = value['selection']['assessment']['decision']['pipeline']
-    kind = 'report' if pipeline in ('issue-internal/report', 'issue-internal/design') else 'code'
+    kind = 'report' if pipeline in ('issue-internal/report', 'issue-internal/kimi-report', 'design/astra-kimi') else 'code'
     expected = approved_policy_id(kind)
     # catalog_id is the hash of raw captured TOML, not a parsed JSON projection.
     catalog_bytes = (STAGED / 'replacement-catalog.toml').read_bytes()
@@ -543,7 +686,10 @@ def composition(name, pins, facts):
     route(name, facts)
     choice = selection(name)
     research = choice['research_pipeline']
-    expected = ([research] if research else []) + [name, catalog()['verification']]
+    if name == 'impl/default-codex' and len(pins) == 3:
+        research = 'design/astra-kimi'
+    design = name == 'design/astra-kimi'
+    expected = [name] if design else ([research] if research else []) + [name, catalog()['verification']]
     if len(pins) != len(expected):
         raise ValueError('supply one exact native template pin per stage: ' + ', '.join(expected))
     templates, identities = [], []
@@ -570,16 +716,24 @@ def composition(name, pins, facts):
             raise ValueError('stage templates require personal accounts')
         templates.append(template)
         identities.append(pin['template_id'])
-    if issue_identity(templates[-2]['document']) != issue_identity(templates[-1]['document']):
+    if not design and issue_identity(templates[-2]['document']) != issue_identity(templates[-1]['document']):
         raise ValueError('verification must preserve exact original issue goal, requirements and acceptance')
-    implementation = templates[-2]['document']
-    contract = original_issue(implementation.get('goal'), implementation.get('requirements'),
-                              implementation.get('acceptance'))
+    if design:
+        document = templates[0]['document']
+        contract = document.get('requirements', {}).get('original_issue')
+        if not isinstance(contract, dict):
+            raise ValueError('design requires exact original issue contract')
+        exact(contract, ('goal', 'requirements', 'acceptance'))
+        check_research_issue(document['requirements'], original_issue(**contract))
+    else:
+        implementation = templates[-2]['document']
+        contract = original_issue(implementation.get('goal'), implementation.get('requirements'),
+                                  implementation.get('acceptance'))
     if research:
         check_research_issue(templates[0]['document'].get('requirements'), contract)
     steps = []
     for index, (template, pipeline) in enumerate(zip(templates, expected)):
-        stage = 'research' if research and index == 0 else 'verify' if index == len(expected) - 1 else 'implement'
+        stage = 'design' if design else 'research' if research and index == 0 else 'verify' if index == len(expected) - 1 else 'implement'
         inputs, bindings = {}, {}
         if stage == 'implement' and research:
             inputs['research_report'] = {'source': 'step', 'step': 'research', 'port': 'result'}
@@ -624,7 +778,10 @@ def main():
             parser.error('--state is required to check captured native policy authority')
         result = validate_plan(args.selection, read(args.inspection), args.state)
     elif args.command == 'compose':
-        result = composition(args.selection, [read(p) for p in args.pins], read(args.routing))
+        pins = [read(p) for p in args.pins]
+        result = composition(args.selection, pins, read(args.routing))
+        for pin in pins:
+            check_latest_models(args.af, pin['template']['document']['pipeline']['name'])
     elif args.state is None:
         parser.error('--state is required for native inventory, planning and reconciliation')
     elif args.command == 'migration':
@@ -649,6 +806,7 @@ def main():
             if any(p not in ('codex-personal', 'pi-personal') for p in local.get('providers', {}).values()):
                 raise ValueError('personal aliases required')
             extra = ['--bindings', str(args.bindings)]
+        check_latest_models(args.af, args.selection)
         result = validate_plan(args.selection, invoke(args.af, args.repo, args.state, 'plan', '--file', str(args.file), *extra), args.state)
     print(json.dumps(result, indent=2, sort_keys=True))
 

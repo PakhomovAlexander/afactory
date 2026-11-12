@@ -326,6 +326,25 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
         outputs: BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]),
     };
     assert!(verifier_contract(&verifier));
+    let mut design = verifier.clone();
+    design.inputs.insert(
+        "terra_challenge".into(),
+        same_source(REPORT_EVALUATION_V1, false),
+    );
+    assert!(
+        !verifier_contract(&design),
+        "a single challenge is not a design acceptance contract"
+    );
+    design.inputs.insert(
+        "kimi_challenge".into(),
+        same_source(REPORT_EVALUATION_V1, false),
+    );
+    assert!(verifier_contract(&design));
+    for port in ["terra_challenge", "kimi_challenge"] {
+        let mut optional = design.clone();
+        optional.inputs.get_mut(port).unwrap().optional = true;
+        assert!(!verifier_contract(&optional));
+    }
     verifier.inputs.remove("source");
     assert!(!verifier_contract(&verifier));
     verifier
@@ -343,7 +362,7 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
 #[test]
 fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     let (_directory, cas) = store();
-    let domain = domain(&cas);
+    let mut domain = domain(&cas);
     let tree = manifest(&cas, &[("src/lib.rs", EntryKind::File, b"a\nb\n")]);
     let (cited, source) = snapshot(&cas, &tree);
     let other = manifest(&cas, &[("src/lib.rs", EntryKind::File, b"a\nb\nchanged\n")]);
@@ -452,7 +471,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     };
     assert_eq!(
         domain
-            .admit_verifier(&cas, &verify(source, &cited))
+            .admit_verifier(&cas, &verify(source.clone(), &cited))
             .unwrap(),
         receipt
     );
@@ -464,6 +483,94 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
             .unwrap_err();
         assert!(refused.contains("Snapshot"), "{refused}");
     }
+
+    // A final design verifier requires both exact sibling evaluations of the original
+    // document, checks and requirements. Every malformed handoff fails before inference.
+    for role in ["terra_challenger", "kimi_challenger"] {
+        let node = domain.graph.nodes["root.nodes.verify"].clone();
+        domain
+            .graph
+            .nodes
+            .insert(format!("root.nodes.{role}"), node);
+    }
+    let final_node = domain.graph.nodes.get_mut("root.nodes.verify").unwrap();
+    for (port, role) in [
+        ("terra_challenge", "terra_challenger"),
+        ("kimi_challenge", "kimi_challenger"),
+    ] {
+        final_node
+            .contract
+            .inputs
+            .insert(port.into(), same_source(REPORT_EVALUATION_V1, false));
+        final_node.inputs.insert(
+            port.into(),
+            af_graph::task::Address {
+                node: format!("root.nodes.{role}"),
+                port: "result".into(),
+            },
+        );
+    }
+    let final_input = verify(source.clone(), &cited);
+    let challenge = |role: &str, outcome, foreign_requirements: bool| {
+        let requirements_id = if foreign_requirements {
+            plan_id.clone()
+        } else {
+            requirements.clone()
+        };
+        let evaluation = ReportEvaluationV1 {
+            document_id: receipt.document_id.clone(),
+            sources_id: receipt.sources_id.clone(),
+            requirements_id,
+            check_receipt_id: receipt_id.clone(),
+            source_snapshot_id: cited.clone(),
+            outcome,
+            summary: "Independent design challenge".into(),
+        };
+        let inputs = final_input
+            .inputs
+            .values()
+            .flat_map(|v| v.artifact_ids.clone())
+            .collect();
+        let id = cas
+            .put_artifact(
+                REPORT_EVALUATION_V1,
+                attempt(&format!("root.nodes.{role}")),
+                inputs,
+                Some(cited.clone()),
+                serde_json::to_value(evaluation).unwrap(),
+            )
+            .unwrap()
+            .0;
+        one(id, REPORT_EVALUATION_V1, Some(&cited))
+    };
+    let terra = challenge("terra_challenger", ReceiptOutcomeV1::Passed, false);
+    let kimi = challenge("kimi_challenger", ReceiptOutcomeV1::Passed, false);
+    let mut final_input = final_input.clone();
+    final_input
+        .inputs
+        .insert("terra_challenge".into(), terra.clone());
+    assert!(
+        domain.admit_verifier(&cas, &final_input).is_err(),
+        "missing Kimi challenge"
+    );
+    final_input
+        .inputs
+        .insert("kimi_challenge".into(), kimi.clone());
+    assert!(domain.admit_verifier(&cas, &final_input).is_ok());
+    for bad in [
+        terra,
+        challenge("kimi_challenger", ReceiptOutcomeV1::Failed, false),
+        challenge("kimi_challenger", ReceiptOutcomeV1::Inconclusive, false),
+        challenge("kimi_challenger", ReceiptOutcomeV1::Passed, true),
+        challenge("verify", ReceiptOutcomeV1::Passed, false),
+    ] {
+        final_input.inputs.insert("kimi_challenge".into(), bad);
+        assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    }
+    let mut stale = kimi;
+    stale.snapshot_id = Some(foreign.clone());
+    final_input.inputs.insert("kimi_challenge".into(), stale);
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
 }
 
 #[test]

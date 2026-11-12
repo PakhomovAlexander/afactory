@@ -4,7 +4,7 @@
   "kind": "report",
   "goal": "Design the requested change against the pinned source. Supply Findings and Recommendation, interfaces, invariants, rejected alternatives, repository citations and testable acceptance. No implementation before independent acceptance.",
   "pipeline": {
-    "name": "issue-internal/design",
+    "name": "design/astra-kimi",
     "fallback": "refuse"
   },
   "strategy": "report",

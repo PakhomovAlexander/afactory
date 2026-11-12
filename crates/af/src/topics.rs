@@ -439,7 +439,7 @@ dependencies are available-only, and Worker caches never supply Gate evidence. S
 
   version = 2
   [project]        name = \"myrepo\"      min_af = \"0.7\"
-  [task.defaults]  pipeline = \"bugfix/default-codex\"
+  [task.defaults]  pipeline = \"bugfix/light-kimi-terra-sol\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy, the `[storage]`
@@ -759,11 +759,11 @@ Project defaults: what a Task file omits comes from `[task.defaults]` of `.af/af
 committed Authority Snapshot: `limits` (tokens, max_attempts, wall_ms and the verification
 reserve), `pipeline` and its `fallback`. A field the Task file names wins whole; the default
 Pipeline applies only to a Task of a kind it accepts. `af task plan` prints on stderr what came
-from the defaults (`defaults: limits (...), pipeline bugfix/default-codex (fallback
+from the defaults (`defaults: limits (...), pipeline bugfix/light-kimi-terra-sol (fallback
 refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the plan is refused.
 
   [task.defaults]
-  pipeline = \"bugfix/default-codex\"
+  pipeline = \"bugfix/light-kimi-terra-sol\"
   fallback = \"refuse\"
   [task.defaults.limits]
   tokens = 8000000
@@ -775,12 +775,13 @@ refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the
   wall_ms = 18000000
 
 Afactory's operator catalog offers bugfix/light-kimi-terra-sol, bugfix/light-codex,
-bugfix/default-codex, bugfix/research-fix-codex, impl/default-codex, impl/design-codex and
-perf/research-experiment-codex. The shared final read-only Pipeline is
-issue-internal/verification. Diagnosis/design Report Tasks precede implementation; performance
-runs research, baseline, implementation, internal code Review, measurement, Comparison and
-measurement acceptance before final whole-change verification. Other projects define their own
-catalog; inspect their captured selections before choosing a Pipeline.
+bugfix/default-codex, bugfix/research-fix-codex, impl/default-codex, impl/light-kimi-codex,
+design/astra-kimi, perf/research-kimi-codex and perf/research-experiment-codex. Code routes end
+with shared read-only issue-internal/verification. Diagnosis Report Tasks precede implementation.
+design/astra-kimi produces accepted reusable evidence after independent Terra and Kimi challenges
+and Sol final acceptance. Performance runs research, baseline, implementation, internal code
+Review, measurement, Comparison and measurement acceptance before whole-change verification.
+Other projects define their own catalog; inspect captured selections before choosing a Pipeline.
 
 Context: each `context` entry names a file of the Task's source tree, with an optional
 `#section`. The Worker's requirements end with a \"Read first\" list naming the Snapshot the

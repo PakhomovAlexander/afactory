@@ -32,10 +32,10 @@ def definitions():
         ('size/L', 'F0B429', 'Contract, schema-version, budget or sandbox change, or several Tasks; '
                              'design review first'),
         ('size/XL', 'EE366A', 'Needs a design document and owner decisions before any code'),
-        ('pipeline/light', '36EEA8', 'bugfix/light-codex: Sol medium; Terra high review; Sol medium evaluation'),
-        ('pipeline/default', '9BE07A', 'bugfix/default-codex: Sol medium; Terra bugs; Sol correctness; '
+        ('pipeline/light', '36EEA8', 'bugfix/light-kimi-terra-sol: Kimi high; Terra high review; Sol medium evaluation'),
+        ('pipeline/default', '9BE07A', 'bugfix/default-codex: Sol medium; Terra bugs; Astra correctness; '
                                        'Astra medium evaluation'),
-        ('pipeline/design', 'F0B429', 'impl/design-codex: Astra design, Terra adversarial check, then default implementation'),
+        ('pipeline/design', 'F0B429', 'design/astra-kimi: Astra design, independent Terra/Kimi challenges, Sol acceptance'),
         ('pipeline/hand', '999999', 'A config edit, doc line or GitHub action; no model Task'),
         ('triage/pending', 'E4E669', 'Not yet triaged, or re-triage requested'),
         ('triage/needs-info', 'FBCA04', 'Triage could not reach a confident class or size; '

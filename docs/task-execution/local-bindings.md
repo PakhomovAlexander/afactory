@@ -72,7 +72,7 @@ changes their local files after planning, and verifies both captured executions.
 ## Afactory operator catalog migration
 
 Afactory's staged [issue-oriented catalog](../../fixtures/issue-workflows/README.md) owns its
-seven execution selections, exact role definitions and pins. Its launcher admits only personal
+nine public selections, exact role definitions and pins. Its launcher admits only personal
 account aliases in local bindings; it refuses slot/package replacements for these selections.
 This consuming policy leaves the generic native binding capability above available to other
 projects. Use the read-only migration inventory before changing machine-local workstream

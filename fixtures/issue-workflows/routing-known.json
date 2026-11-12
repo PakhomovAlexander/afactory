@@ -7,5 +7,9 @@
   "security": false,
   "accounting": false,
   "persistence": false,
-  "uncertain_concurrency": false
+  "uncertain_concurrency": false,
+  "specified_requirements": true,
+  "deterministic_acceptance": true,
+  "known_bottleneck": true,
+  "measured_reproduction": true
 }
