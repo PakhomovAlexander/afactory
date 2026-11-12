@@ -175,6 +175,28 @@ fn a_receipted_release_pins_itself_with_every_published_digest() {
     assert!(text.contains("[af]\nversion = "), "{text}");
     assert!(text.contains("[af.digests]"), "{text}");
 
+    // Reproduce the post-publication refresh on a hand-formatted current catalog.
+    // Signed release refreshes must change only the release pin, including on retry.
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let catalog = format!(
+        "# Keep project comments and layout.\n{}\n",
+        std::fs::read_to_string(&catalog_path).unwrap()
+    );
+    std::fs::write(&catalog_path, &catalog).unwrap();
+    set_lock_af_version(&repo, None);
+    for _ in 0..2 {
+        let refreshed = sandbox
+            .command(&real)
+            .args(["onboard", "--repo"])
+            .arg(&repo)
+            .args(["--refresh-lock", "--af", VERSION, "--json"])
+            .output()
+            .unwrap();
+        report(&refreshed);
+        assert_eq!(read_lock(&repo), lock);
+        assert_eq!(std::fs::read_to_string(&catalog_path).unwrap(), catalog);
+    }
+
     // Without the release source, the receipt still pins this target's bytes, with a warning.
     set_lock_af_version(&repo, None);
     let refreshed = sandbox

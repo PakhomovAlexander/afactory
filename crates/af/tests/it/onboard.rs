@@ -424,6 +424,34 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
 }
 
 #[test]
+fn refresh_preserves_current_catalog_bytes_and_still_validates_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    assert!(
+        af(&repo, &["--gate", "check=make check", "--apply"])
+            .status
+            .success()
+    );
+    let path = repo.join(".af/task-catalog.toml");
+    let catalog = format!(
+        "# Project-owned formatting must survive a release pin refresh.\n{}\n",
+        std::fs::read_to_string(&path).unwrap()
+    );
+    std::fs::write(&path, &catalog).unwrap();
+    for _ in 0..2 {
+        let refreshed = af(&repo, &["--refresh-lock", "--json"]);
+        assert!(refreshed.status.success(), "{}", stderr(&refreshed));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), catalog);
+    }
+    // Unchanged package digests do not bypass the rest of authority validation.
+    let invalid = catalog.replace("no_match = \"refuse\"", "no_match = \"invalid\"");
+    assert_ne!(invalid, catalog);
+    std::fs::write(&path, &invalid).unwrap();
+    assert!(!af(&repo, &["--refresh-lock", "--json"]).status.success());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+}
+
+#[test]
 fn tampering_fails_closed_and_explicit_refresh_repins_current_packages() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
