@@ -95,8 +95,19 @@ artifact ID in candidate/report provenance. Research prose carries evidence, not
 approval. Report operators do not run inside an implementation profile.
 
 Copy example Task files to a private directory. Set implementation and final verification to
-identical `goal`, `requirements`, `acceptance` and `issue` values (including absence); research
-may have its own goal. Copy the original issue acceptance exactly into both stages, and set the verification Task's `base.commit` to the original source commit. Pin each stage from
+identical `goal`, `requirements`, `acceptance` and `issue` values (including absence).
+`requirements.acceptance` must contain the original issue's nonempty acceptance criteria.
+Research/design keeps its own stage goal and acceptance: it judges report completeness, never
+claims to have implemented the fix. Its `requirements.original_issue` must contain exactly
+`goal`, `requirements` and `acceptance`, copied from the implementation's actual fields
+(use JSON `null` for omitted top-level `acceptance`). This includes all original structured
+requirements, not a shared URL or label. Do not wrap an unrelated goal in a common identity.
+Both report pipelines send this same native `af/Requirements@1` to their author and independent
+verifier; their staged prompts require checking the report against the embedded issue details.
+The five shipped examples describe the concrete same-source issue-contract substitution defect;
+replace that whole contract consistently for a different issue. This contract-sensitive example
+uses the default known-fix route; select light only for a different, eligible narrow issue. Set verification's `base.commit`
+to the original source commit. Pin each stage from
 that **same committed source** with `af scenario template-pin`. For example:
 
 ```sh
@@ -116,7 +127,8 @@ For design use `design.json` with `issue-internal/design` and select `impl/desig
 implementation Task. Performance uses `issue-internal/report` research and selects
 `perf/research-experiment-codex`. Simple selections take only code and shared verification pins.
 `compose` checks routing facts and the catalog at the pinned Git commit. It refuses missing
-stages, differing issue goals or structured requirements/acceptance, differing source
+stages, missing or differing original research/design issue contracts, differing implementation
+and verification goals or structured requirements/acceptance, differing source
 commits/Stores, substituted pipelines and
 nonpersonal bindings. Each stage retains its own native authority ID; profiles legitimately
 capture different authority objects on the same commit.
@@ -150,7 +162,7 @@ For direct single-stage planning of a simple selection:
 
 ```sh
 python3 -I scripts/issue-workflows.py --af /absolute/path/to/candidate/af \
-  --repo /project --state /private/tasks plan bugfix/light-codex \
+  --repo /project --state /private/tasks plan bugfix/default-codex \
   --file /private/pilot/known-fix.json --routing /private/pilot/routing-known.json
 ```
 
@@ -205,7 +217,11 @@ separately. It reads content-checked native CAS metadata named by inspections: t
 Snapshot origin must name the manifest commit and the invoking repository's exact native
 repository identity (sorted root commits). Every implementation must select the declared
 Pipeline. Recorded `research_report` bindings require exactly their accepted report/design
-producers, original source and report output/revision/result identities; all required charges
+producers, original source and report output/revision/result identities. Reconciliation also
+reads each producer's native Requirements and compares `specification.original_issue` against
+the original implementation's recorded goal, specification and native acceptance items.
+It refuses accepted reports about another issue, even on the same source and Pipeline; stage
+acceptance never substitutes for implementation acceptance. All required charges
 are counted once. Routes without research refuse research declarations. Final verification
 must bind the last candidate, retain the original Base and preserve the original goal and
 structured requirements/acceptance. Missing native metadata fails closed. Issue/PR links remain
@@ -225,10 +241,12 @@ fast validation after sealing; live bounded pilots and installation remain opera
 
 ## Root activation after integration verification
 
-This integration candidate changes staged triage instructions and implementation prompt titles.
+This integration candidate also changes staged investigator, designer and report-verifier prompts
+to evaluate the exact original issue contract. Their staged catalog pins bind the reviewed bytes.
 The root operator must copy the updated staged `task-packages/` and replace
 `.af/task-catalog.toml` with `replacement-catalog.toml` in one reviewed authority update;
-retain code/report policies and existing Task pins. In particular, replace both
+retain code/report policies and existing Task pins. Replace the three updated report Worker
+prompts and pins as well as both
 `.af/task-packages/backlog/triage-{author,verifier}/instructions.md` and their catalog pins.
 Workers in this Task cannot perform that operation. The installed-catalog audit checks installed
 bindings and pins; the rubric audit checks the updated staged authority and active docs/examples.

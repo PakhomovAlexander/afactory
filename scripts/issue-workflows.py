@@ -200,6 +200,37 @@ def issue_identity(document):
                       sort_keys=True, ensure_ascii=False, separators=(',', ':'))
 
 
+def original_issue(goal, requirements, acceptance=None):
+    """The business contract, derived from implementation fields, never a shared label."""
+    if (not isinstance(goal, str) or not goal.strip() or not isinstance(requirements, dict)
+            or not isinstance(requirements.get('acceptance'), list) or not requirements['acceptance']
+            or any(not isinstance(item, str) or not item.strip() for item in requirements['acceptance'])):
+        raise ValueError('original issue requires goal and structured requirements acceptance')
+    return {'goal': goal, 'requirements': requirements, 'acceptance': acceptance}
+
+
+def check_research_issue(requirements, original):
+    contract = requirements.get('original_issue') if isinstance(requirements, dict) else None
+    if not isinstance(contract, dict):
+        raise ValueError('research/design requires exact original issue contract')
+    exact(contract, ('goal', 'requirements', 'acceptance'))
+    original_issue(**contract)
+    # JSON equality retains types (True is not the integer 1).
+    if json.dumps(contract, sort_keys=True) != json.dumps(original, sort_keys=True):
+        raise ValueError('research/design original issue contract differs from implementation')
+
+
+def native_original_issue(state, revision):
+    goal, requirements, acceptance = json.loads(native_issue(state, revision))
+    return original_issue(goal, requirements, acceptance[0]['items'] if acceptance else None)
+
+
+def check_native_research_issue(state, revision, original):
+    # Only addressed native Requirements count; manifest prose cannot supply the contract.
+    _, requirements, _ = json.loads(native_issue(state, revision))
+    check_research_issue(requirements, original)
+
+
 def native_issue(state, revision):
     requirements = revision['inputs']['requirements']
     if requirements['artifact_type'] != 'af/Requirements@1' or len(requirements['artifact_ids']) != 1:
@@ -272,6 +303,7 @@ def reconcile(af, repo, state, manifest):
             or origin.get('repository_id') != repository_id or not repository_id):
         raise ValueError('pilot source commit or repository differs from native origin')
     issue = native_issue(state, original)
+    contract = native_original_issue(state, original)
     producers = set()
     for i, task in enumerate(tasks):
         value, revision = values[task], revisions[task]
@@ -303,6 +335,7 @@ def reconcile(af, repo, state, manifest):
             _, report_origin = source_origin(state, report_revision['inputs']['source']['snapshot_id'])
             if (report_origin != origin or report_revision['inputs']['source']['snapshot_id'] != original_source):
                 raise ValueError('research source differs from original implementation')
+            check_native_research_issue(state, report_revision, contract)
             check_stage(report, choice['research_pipeline'])
             check_output(binding, report, revision['inputs']['research_report'], 'report', 'af/Document@1')
         elif binding or 'research_report' in revision['inputs']:
@@ -406,6 +439,11 @@ def composition(name, pins, facts):
         identities.append(pin['template_id'])
     if issue_identity(templates[-2]['document']) != issue_identity(templates[-1]['document']):
         raise ValueError('verification must preserve exact original issue goal, requirements and acceptance')
+    implementation = templates[-2]['document']
+    contract = original_issue(implementation.get('goal'), implementation.get('requirements'),
+                              implementation.get('acceptance'))
+    if research:
+        check_research_issue(templates[0]['document'].get('requirements'), contract)
     steps = []
     for index, (template, pipeline) in enumerate(zip(templates, expected)):
         stage = 'research' if research and index == 0 else 'verify' if index == len(expected) - 1 else 'implement'

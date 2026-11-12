@@ -2,7 +2,7 @@
   "schema": "af.task-file/1",
   "task_id": "pilot-research-fix",
   "kind": "implement",
-  "goal": "Replace with the exact original issue goal, including its URL, reproduction and acceptance.",
+  "goal": "Refuse composition of an issue workflow when diagnosis or design concerns another issue on the same source.",
   "pipeline": {
     "name": "bugfix/research-fix-codex",
     "fallback": "refuse"
@@ -24,7 +24,9 @@
   "verification": "review",
   "requirements": {
     "acceptance": [
-      "Replace with the exact issue acceptance criteria; copy identically to final verification."
+      "Composition refuses a report stage whose original issue goal differs from the implementation.",
+      "Composition refuses missing issue details or different original acceptance, even with identical source and Pipeline.",
+      "Valid diagnosis and design keep distinct report acceptance and preserve exact final whole-change verification."
     ]
   }
 }

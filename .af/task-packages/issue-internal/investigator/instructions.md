@@ -7,6 +7,13 @@ working directory is a clone of the Task's source Snapshot: read it and inspect 
 evidence. You have only read-source authority; do not run builds, tests, measurements or other
 checks. Nothing you write is kept. A change to any file of the source fails your Attempt.
 
+The declared `requirements` input's `payload.specification.original_issue` carries the exact
+original implementation goal, structured requirements and optional acceptance items. Read all
+of it. Evaluate the diagnosis/design against those concrete issue details as well as this
+stage's own acceptance. Reject missing issue details or a report about another issue, even
+on the same source. Report acceptance establishes sufficient diagnosis/design evidence;
+it never establishes that the original implementation acceptance has been satisfied.
+
 ## Rules that bind you
 
 - This is the Afactory kernel. Read `AGENTS.md`, `CONTEXT.md` and the ADRs under `docs/adr/`

@@ -82,8 +82,8 @@
 "path" = ".af/task-packages/issue-internal/design"
 
 ["packages"."issue-internal/designer"]
-"version" = "1.0.0"
-"digest" = "sha256:2fc8af4351e86c63906f22b0d0ca936f0cf5ca7d5c132492f8c7578a235a324e"
+"version" = "1.0.1"
+"digest" = "sha256:af9ffb8b75cf1e5d48062bbb169838e4e92447c5878103c176d43402a682b946"
 "path" = ".af/task-packages/issue-internal/designer"
 
 ["packages"."issue-internal/evaluator"]
@@ -107,8 +107,8 @@
 "path" = ".af/task-packages/issue-internal/implementer"
 
 ["packages"."issue-internal/investigator"]
-"version" = "1.0.0"
-"digest" = "sha256:87e1577d9e9dcdb0c44d57cf947c63a1bb0593c7e22be16aefe49d2ef02bf0b5"
+"version" = "1.0.1"
+"digest" = "sha256:c47a00a07404dd3c020cf5e04548e0a55d1b2bece2f2e595442e7d6e46060c1c"
 "path" = ".af/task-packages/issue-internal/investigator"
 
 ["packages"."issue-internal/kimi"]
@@ -132,8 +132,8 @@
 "path" = ".af/task-packages/issue-internal/report"
 
 ["packages"."issue-internal/report-verifier"]
-"version" = "1.0.0"
-"digest" = "sha256:c05af8da093b9f391073ccab6809c96cbe37cde8f8897ad0f6b488c84bd8d081"
+"version" = "1.0.1"
+"digest" = "sha256:ce1b36231be6ca8144951741cff981ae2013a628d26ef1cff36d9a5dee561e00"
 "path" = ".af/task-packages/issue-internal/report-verifier"
 
 ["packages"."issue-internal/researched-implementer"]

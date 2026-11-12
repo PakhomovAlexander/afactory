@@ -22,8 +22,13 @@ def pin(pipeline, kind='implement'):
                          'source_content_digest': 'sha256:' + '2' * 64, 'authority_id': 'sha256:' + '3' * 64,
                          'max_tokens': 1000, 'bindings': None,
                          'document': {'schema': 'af.task-file/1', 'task_id': 'placeholder', 'kind': kind,
-                                      'goal': 'Bounded issue fixture', 'base': {'commit': '1' * 40}, 'pipeline': {'name': pipeline, 'fallback': 'refuse'},
+                                      'goal': 'Bounded issue fixture', 'requirements': {'acceptance': ['exact']}, 'base': {'commit': '1' * 40}, 'pipeline': {'name': pipeline, 'fallback': 'refuse'},
                                       'limits': {'tokens': 1000, 'wall_ms': 1000}}}}
+
+
+def research_requirements(goal='Bounded issue fixture', requirements=None):
+    return {'acceptance': ['diagnose or design; do not claim implementation'],
+            'original_issue': w.original_issue(goal, requirements or {'acceptance': ['exact']})}
 
 
 def check_selection(name, value):
@@ -48,6 +53,8 @@ def pilot(name):
         inputs = {'source': {'snapshot_id': source},
                   'requirements': {'artifact_type': 'af/Requirements@1', 'artifact_ids': [task + '-requirements']}}
         artifacts[task + '-requirements'] = {'type': 'af/Requirements@1', 'payload': {'specification': {'acceptance': ['exact']}}}
+        if task == 'research':
+            artifacts[task + '-requirements']['payload']['specification'] = research_requirements('issue goal')
         artifacts[task + '-revision'] = {'type': 'af/TaskRevision@1', 'payload': {
             'task_id': task, 'goal': 'issue goal' if task != 'research' else 'research goal',
             'inputs': inputs, 'provenance': {'input_artifact_ids': []}}}
@@ -106,6 +113,7 @@ class Workflows(unittest.TestCase):
             pins = ([pin(research, 'report')] if research else []) + [pin(name), pin(w.catalog()['verification'], 'verification')]
             if research:
                 pins[0]['template']['document']['goal'] = 'Distinct research question'
+                pins[0]['template']['document']['requirements'] = research_requirements()
             composed = w.composition(name, pins, FACTS)['definitions']['issue-workflow']
             self.assertEqual(composed['authority']['grants'], [])
             self.assertEqual(composed['authority']['decision_owners'], [])
@@ -121,6 +129,47 @@ class Workflows(unittest.TestCase):
                 pins[0]['template']['source_content_digest'] = 'sha256:' + '4' * 64
                 with self.assertRaises(ValueError):
                     w.composition(name, pins, FACTS)
+
+    def test_research_and_design_require_the_actual_implementation_contract(self):
+        for name in ('bugfix/research-fix-codex', 'impl/design-codex'):
+            stage = w.selection(name)['research_pipeline']
+            for change in ('missing', 'empty', 'goal', 'acceptance', 'type', 'extra', 'top-acceptance'):
+                pins = [pin(stage, 'report'), pin(name), pin(w.catalog()['verification'], 'verification')]
+                report = pins[0]['template']['document']
+                report['goal'] = 'A distinct stage objective'
+                report['requirements'] = research_requirements()
+                contract = report['requirements']['original_issue']
+                if change == 'missing':
+                    del report['requirements']['original_issue']
+                elif change == 'empty':
+                    contract['requirements'] = {}
+                elif change == 'goal':
+                    contract['goal'] = 'Another issue on the same source'
+                elif change == 'acceptance':
+                    contract['requirements']['acceptance'] = ['unrelated']
+                elif change == 'type':
+                    contract['requirements']['extra'] = True
+                    for p in pins[1:]:
+                        p['template']['document']['requirements']['extra'] = 1
+                elif change == 'extra':
+                    contract['label'] = 'same shared URL'
+                else:
+                    contract['acceptance'] = [{'id': 'other', 'text': 'unrelated'}]
+                with self.subTest(selection=name, change=change), self.assertRaises(ValueError):
+                    w.composition(name, pins, FACTS)
+
+    def test_examples_share_one_concrete_issue_but_distinct_stage_acceptance(self):
+        root = ROOT / 'fixtures/issue-workflows'
+        implementation = w.read(root / 'research-fix.json')
+        expected = w.original_issue(implementation['goal'], implementation['requirements'])
+        for name in ('diagnose', 'design'):
+            stage = w.read(root / (name + '.json'))
+            w.check_research_issue(stage['requirements'], expected)
+            self.assertNotEqual(stage['goal'], expected['goal'])
+            self.assertNotEqual(stage['requirements']['acceptance'], expected['requirements']['acceptance'])
+        for name in ('known-fix', 'verify'):
+            task = w.read(root / (name + '.json'))
+            self.assertEqual(w.original_issue(task['goal'], task['requirements']), expected)
 
     def test_composition_refuses_json_type_substitution(self):
         pins = [pin('bugfix/default-codex'), pin(w.catalog()['verification'], 'verification')]
@@ -243,6 +292,31 @@ class Workflows(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'omits required research producer'):
                         reconcile(bad)
                     del values['unrelated'], artifacts['unrelated-revision']
+                    # These are accepted, same-source, same-Pipeline native-shaped records.
+                    # Change only their recorded business contract, retaining every binding.
+                    target = artifacts['research-requirements']['payload']
+                    saved = copy.deepcopy(target['specification'])
+                    for wrong in ({'acceptance': ['stage only']},
+                                  research_requirements('unrelated issue'),
+                                  research_requirements('issue goal', {'acceptance': ['unrelated']})):
+                        target['specification'] = wrong
+                        with self.assertRaisesRegex(ValueError, 'original issue contract'):
+                            reconcile()
+                    target['specification'] = saved
+                    # Optional native TaskAcceptance items are also part of the business
+                    # contract; the Report stage still has its own completion acceptance.
+                    items = [{'id': 'issue', 'text': 'exact original behavior'}]
+                    artifacts['acceptance'] = {'type': 'af/TaskAcceptance@1', 'payload':
+                                               {'schema': 'af.task-acceptance/1', 'items': items}}
+                    for task in manifest['tasks'] + ['verify']:
+                        artifacts[task + '-revision']['payload']['provenance']['input_artifact_ids'].append('acceptance')
+                    with self.assertRaisesRegex(ValueError, 'original issue contract'):
+                        reconcile()
+                    target['specification']['original_issue']['acceptance'] = items
+                    self.assertEqual(reconcile()['chain_chargeable_tokens'], result['chain_chargeable_tokens'])
+                    target['specification']['original_issue']['acceptance'] = None
+                    for task in manifest['tasks'] + ['verify']:
+                        artifacts[task + '-revision']['payload']['provenance']['input_artifact_ids'].remove('acceptance')
                     inputs = values['research']['plan']['inputs']
                     saved_source = inputs['source']; inputs['source'] = {'snapshot_id': 'source'}
                     with self.assertRaises(ValueError):

@@ -186,8 +186,6 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
     let plan_document = |mut task: Value, id: &str, evidence: bool| {
         let file = temp.path().join(format!("{id}.json"));
         task["task_id"] = json!(id);
-        task["goal"] = json!("Resolve one bounded issue against the pinned source");
-        task["requirements"] = json!({"acceptance": ["preserve exact issue behavior"]});
         if evidence {
             task["inputs"] = json!({"research_report":{"task":report_task,"port":"report"}});
         }
@@ -208,7 +206,7 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
             .output()
             .unwrap()
     };
-    // Exercise the shipped documents with only identity, goal and accepted evidence replaced.
+    // Exercise the shipped documents with only Task identity and accepted evidence replaced.
     for (i, file) in [
         "known-fix.json",
         "research-fix.json",
@@ -225,7 +223,7 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         assert!(o.status.success(), "{file}: {}", text(&o));
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
         assert_eq!(v["attempts"], 0);
-        if matches!(file, "known-fix.json" | "research-fix.json" | "verify.json") {
+        if matches!(file, "research-fix.json" | "verify.json") {
             let mut missing = task.clone();
             missing.as_object_mut().unwrap().remove("facts");
             let o = plan_document(missing, &format!("example-missing-facts-{i}"), evidence);
@@ -329,7 +327,10 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
             }
         }
         let checked = probe
-            .args(["-I", "-c", r#"
+            .args([
+                "-I",
+                "-c",
+                r#"
 import importlib.util, json, pathlib, subprocess, sys
 spec = importlib.util.spec_from_file_location('workflow', sys.argv[1])
 w = importlib.util.module_from_spec(spec)
@@ -338,7 +339,9 @@ state, repo, af, file, name = sys.argv[2:]
 v = w.read(file)
 r = w.recorded(state, v['revision_id'], 'af/TaskRevision@1')
 assert r['inputs'] == v['plan']['inputs']
-assert json.loads(w.native_issue(state, r))[:2] == ['Resolve one bounded issue against the pinned source', {'acceptance': ['preserve exact issue behavior']}]
+document = w.read(pathlib.Path(repo) / 'fixtures/issue-workflows/known-fix.json')
+contract = w.original_issue(document['goal'], document['requirements'])
+assert w.native_original_issue(state, r) == contract
 snapshot, origin = w.source_origin(state, r['inputs']['source']['snapshot_id'])
 assert origin['kind'] == 'captured'
 commit = subprocess.check_output(['git', '-C', repo, 'rev-parse', 'HEAD']).decode().strip()
@@ -369,7 +372,8 @@ else:
         pass
     else:
         raise AssertionError('accepted unrelated report Pipeline')
-"#])
+"#,
+            ])
             .arg(workspace().join("scripts/issue-workflows.py"))
             .arg(&state)
             .arg(&repo)
@@ -455,6 +459,99 @@ else:
         } else {
             let graph = v["graph"].to_string();
             assert!(graph.contains("report_accept") && graph.contains("report_check"));
+            for node in ["author", "verify"] {
+                assert_eq!(
+                    v["graph"]["nodes"][format!("root.nodes.{node}")]["inputs"]["requirements"]["port"],
+                    "requirements"
+                );
+            }
+            // Inspect actual native revisions, including negative documents which native
+            // Report planning legitimately admits but the issue-workflow relationship refuses.
+            let mut inspections = vec![v.clone()];
+            for case in ["missing", "goal", "acceptance", "empty"] {
+                let mut task = example(if name.ends_with("design") {
+                    "design.json"
+                } else {
+                    "diagnose.json"
+                });
+                match case {
+                    "missing" => {
+                        task["requirements"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("original_issue");
+                    }
+                    "goal" => {
+                        task["requirements"]["original_issue"]["goal"] = json!("another issue")
+                    }
+                    "acceptance" => {
+                        task["requirements"]["original_issue"]["requirements"]["acceptance"] =
+                            json!(["another acceptance"])
+                    }
+                    "empty" => task["requirements"]["original_issue"]["requirements"] = json!({}),
+                    _ => unreachable!(),
+                }
+                let o = plan_document(task, &format!("stage-{i}-{case}"), false);
+                assert!(o.status.success(), "{name} {case}: {}", text(&o));
+                inspections.push(serde_json::from_slice(&o.stdout).unwrap());
+            }
+            // Run the hermetic starter Report on this exact already-recorded Snapshot.
+            // Separate captures can have distinct Snapshot identities; bind, do not infer.
+            let mut unrelated: Value =
+                serde_json::from_slice(&std::fs::read(repo.join("report.json")).unwrap()).unwrap();
+            unrelated["task_id"] = json!(format!("unrelated-report-{i}"));
+            unrelated["inputs"]["source"] =
+                json!({"artifact": v["plan"]["inputs"]["source"]["artifact_ids"][0]});
+            unrelated["requirements"] = json!({"original_issue": {
+                "goal": "another issue on the exact same source",
+                "requirements": {"acceptance": ["unrelated acceptance"]}, "acceptance": null
+            }});
+            let file = temp.path().join(format!("unrelated-report-{i}.json"));
+            std::fs::write(&file, serde_json::to_vec(&unrelated).unwrap()).unwrap();
+            let accepted = common::af()
+                .current_dir(&repo)
+                .args(["task", "start", "--execute", "--file"])
+                .arg(file)
+                .args(["--authority", original.trim(), "--json"])
+                .arg("--state")
+                .arg(&state)
+                .output()
+                .unwrap();
+            assert!(accepted.status.success(), "{}", text(&accepted));
+            inspections.push(serde_json::from_slice(&accepted.stdout).unwrap());
+            let file = temp.path().join(format!("stage-records-{i}.json"));
+            std::fs::write(&file, serde_json::to_vec(&inspections).unwrap()).unwrap();
+            let checked = std::process::Command::new("python3")
+                .args([
+                    "-I",
+                    "-c",
+                    r#"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('workflow', sys.argv[1])
+w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)
+state, file, document = sys.argv[2:]
+d = w.read(document)
+contract = w.original_issue(d['goal'], d['requirements'])
+values = w.read(file)
+for i, v in enumerate(values):
+    r = w.recorded(state, v['revision_id'], 'af/TaskRevision@1')
+    assert r['inputs']['source']['snapshot_id'] == values[0]['plan']['inputs']['source']['snapshot_id'], (i, r['inputs']['source'], values[0]['plan']['inputs']['source'])
+    try:
+        w.check_native_research_issue(state, r, contract)
+    except ValueError:
+        assert i > 0, 'valid diagnosis/design contract refused'
+    else:
+        assert i == 0, 'unrelated or missing native issue contract accepted'
+assert values[-1]['result']['acceptance'] == 'satisfied'
+"#,
+                ])
+                .arg(workspace().join("scripts/issue-workflows.py"))
+                .arg(&state)
+                .arg(&file)
+                .arg(repo.join("fixtures/issue-workflows/known-fix.json"))
+                .output()
+                .unwrap();
+            assert!(checked.status.success(), "{name}: {}", text(&checked));
         }
     }
     for (i, name) in [
@@ -535,6 +632,69 @@ else:
             .output()
             .unwrap();
         assert!(output.status.success(), "{}", text(&output));
+        if !choice["research_pipeline"].is_null() {
+            // Even genuine native template pins on the same source cannot substitute a
+            // different issue contract. Re-pin each negative through the native CLI.
+            let valid: Value = serde_json::from_slice(&std::fs::read(&pins[0]).unwrap()).unwrap();
+            for case in ["missing", "goal", "acceptance"] {
+                let mut document = valid["template"]["document"].clone();
+                match case {
+                    "missing" => {
+                        document["requirements"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("original_issue");
+                    }
+                    "goal" => {
+                        document["requirements"]["original_issue"]["goal"] =
+                            json!("unrelated issue")
+                    }
+                    "acceptance" => {
+                        document["requirements"]["original_issue"]["requirements"]["acceptance"] =
+                            json!(["unrelated acceptance"])
+                    }
+                    _ => unreachable!(),
+                }
+                let file = temp.path().join(format!("bad-template-{i}-{case}.json"));
+                std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
+                let pinned = common::af()
+                    .current_dir(&repo)
+                    .env("HOME", &home)
+                    .env("AF_PROVIDERS_FILE", home.join("providers.toml"))
+                    .env("PATH", &path)
+                    .args(["scenario", "template-pin", "--file"])
+                    .arg(file)
+                    .arg("--repo")
+                    .arg(&repo)
+                    .arg("--task-state")
+                    .arg(&state)
+                    .args(["--authority-commit", commit.trim(), "--json"])
+                    .output()
+                    .unwrap();
+                assert!(pinned.status.success(), "{name} {case}: {}", text(&pinned));
+                let bad_pin = temp.path().join(format!("bad-pin-{i}-{case}.json"));
+                std::fs::write(&bad_pin, pinned.stdout).unwrap();
+                let refused = std::process::Command::new("python3")
+                    .arg("-I")
+                    .arg(workspace().join("scripts/issue-workflows.py"))
+                    .args(["compose", name])
+                    .arg(bad_pin)
+                    .args(&pins[1..])
+                    .arg("--routing")
+                    .arg(workspace().join("fixtures/issue-workflows/routing-known.json"))
+                    .output()
+                    .unwrap();
+                assert!(
+                    !refused.status.success(),
+                    "{name} {case}: accepted unrelated issue"
+                );
+                assert!(
+                    text(&refused).contains("original issue contract"),
+                    "{}",
+                    text(&refused)
+                );
+            }
+        }
         let bundle = temp.path().join(format!("bundle-{i}.json"));
         std::fs::write(&bundle, output.stdout).unwrap();
         let policy = temp.path().join(format!("policy-{i}.json"));

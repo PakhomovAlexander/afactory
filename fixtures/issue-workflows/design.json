@@ -17,5 +17,23 @@
       "attempts": 40,
       "wall_ms": 86400000
     }
+  },
+  "requirements": {
+    "original_issue": {
+      "goal": "Refuse composition of an issue workflow when diagnosis or design concerns another issue on the same source.",
+      "requirements": {
+        "acceptance": [
+          "Composition refuses a report stage whose original issue goal differs from the implementation.",
+          "Composition refuses missing issue details or different original acceptance, even with identical source and Pipeline.",
+          "Valid diagnosis and design keep distinct report acceptance and preserve exact final whole-change verification."
+        ]
+      },
+      "acceptance": null
+    },
+    "acceptance": [
+      "Explain how the exact original_issue can be substituted by a same-source report for another issue; cite scripts/issue-workflows.py.",
+      "Design a bounded Requirements contract, author/verifier dataflow, composition and native reconciliation checks, and positive/negative tests.",
+      "Judge report completeness against original_issue without claiming its implementation acceptance is satisfied."
+    ]
   }
 }

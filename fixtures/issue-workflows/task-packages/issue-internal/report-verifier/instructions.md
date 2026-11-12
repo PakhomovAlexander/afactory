@@ -11,6 +11,13 @@ as your working directory, the captured sources and, when the Task bound them, t
 The check receipt already proves every repository citation names a text line of this exact
 Snapshot. It does not prove the cited line says what the report claims: that is your job.
 
+The declared `requirements` input's `payload.specification.original_issue` carries the exact
+original implementation goal, structured requirements and optional acceptance items. Read all
+of it. Evaluate the diagnosis/design against those concrete issue details as well as this
+stage's own acceptance. Reject missing issue details or a report about another issue, even
+on the same source. Report acceptance establishes sufficient diagnosis/design evidence;
+it never establishes that the original implementation acceptance has been satisfied.
+
 ## Rules that bind you
 
 - This is the Afactory kernel. Read `AGENTS.md`, `CONTEXT.md` and the ADRs under `docs/adr/`
