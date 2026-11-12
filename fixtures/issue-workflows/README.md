@@ -17,7 +17,7 @@ python3 -I scripts/issue-workflows.py preview
 |---|---|---|---|
 | `bugfix/light-kimi-terra-sol` | Known cause and narrow deterministic regression | Pi `kimi-coding/k3.1-pro` high | Terra high review; Sol medium evaluation |
 | `bugfix/light-codex` | Same light scope | `gpt-6.1-sol` medium | Terra high review; Astra medium evaluation |
-| `bugfix/default-codex` | Cause understood | `gpt-6.1-sol` medium | Terra high bugs; Astra high correctness; Astra medium evaluation |
+| `bugfix/default-codex` | Cause understood | `gpt-6.1-sol` medium | Terra high bugs; Terra high correctness; Astra medium evaluation |
 | `bugfix/research-fix-codex` | Accepted diagnosis from Sol high, checked independently by Terra high | Default implementer | Default judges |
 | `impl/default-codex` | Requirements understood | Default implementer | Default judges |
 | `impl/light-kimi-codex` | Small specified non-authority requirement with deterministic acceptance | Pi `kimi-coding/k3.1-pro` high | Terra high review; Sol medium evaluation |

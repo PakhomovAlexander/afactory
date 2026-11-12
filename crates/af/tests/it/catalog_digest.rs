@@ -351,10 +351,30 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             ("gpt-6.1-sol", "medium", "implement"),
         ),
         ("issue-internal/kimi", ("k3.1-pro", "high", "implement")),
+        (
+            "issue-internal/kimi-implementer",
+            ("k3.1-pro", "high", "implement"),
+        ),
+        (
+            "issue-internal/kimi-researcher",
+            ("k3.1-pro", "high", "author"),
+        ),
+        (
+            "issue-internal/kimi-challenger",
+            ("k3.1-pro", "high", "verify"),
+        ),
+        (
+            "issue-internal/design-acceptor",
+            ("gpt-6.1-sol", "medium", "verify"),
+        ),
+        (
+            "issue-internal/codex-light-evaluator",
+            ("gpt-6-astra", "medium", "evaluate"),
+        ),
         ("issue-internal/bugs", ("gpt-6.1-terra", "high", "review")),
         (
             "issue-internal/correctness",
-            ("gpt-6-sol", "high", "review"),
+            ("gpt-6.1-terra", "high", "review"),
         ),
         (
             "issue-internal/evaluator",
@@ -362,7 +382,7 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
         ),
         (
             "issue-internal/light-evaluator",
-            ("gpt-6-sol", "medium", "evaluate"),
+            ("gpt-6.1-sol", "medium", "evaluate"),
         ),
         (
             "issue-internal/experiment-evaluator",
@@ -410,7 +430,13 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             std::collections::BTreeSet::from([role.to_owned()]),
             "{name}"
         );
-        let pi = name == "issue-internal/kimi";
+        let pi = matches!(
+            name.as_str(),
+            "issue-internal/kimi"
+                | "issue-internal/kimi-implementer"
+                | "issue-internal/kimi-researcher"
+                | "issue-internal/kimi-challenger"
+        );
         assert_eq!(
             worker.runner,
             TaskWorkerRunner::Model {

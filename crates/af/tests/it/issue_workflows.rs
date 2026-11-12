@@ -300,9 +300,7 @@ fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_da
             let (model, effort) = match role {
                 "implementer" if light && name.contains("kimi") => ("k3.1-pro", "high"),
                 "implementer" => ("gpt-6.1-sol", "medium"),
-                "bugs" => ("gpt-6.1-terra", "high"),
-                "correctness" if light => ("gpt-6.1-terra", "high"),
-                "correctness" => ("gpt-6-astra", "high"),
+                "bugs" | "correctness" => ("gpt-6.1-terra", "high"),
                 "evaluator" if light && name.contains("kimi") => ("gpt-6.1-sol", "medium"),
                 "evaluator" | "measurement_evaluator" => ("gpt-6-astra", "medium"),
                 "author" if name.contains("design") => ("gpt-6-astra", "medium"),
@@ -322,6 +320,19 @@ fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_da
             );
         }
         let graph = &v["graph"];
+        if !light {
+            for role in ["bugs", "correctness"] {
+                let slot = format!("root.slots.{role}");
+                assert_eq!(
+                    graph["slots"][&slot]["worker"],
+                    format!("issue-internal/{role}")
+                );
+                assert_ne!(
+                    bindings[&slot]["execution"]["model"],
+                    bindings["root.slots.implementer"]["execution"]["model"]
+                );
+            }
+        }
         let rendered = graph.to_string();
         assert!(rendered.contains("markdownlint") && rendered.contains("kernel"));
         assert!(
@@ -713,6 +724,20 @@ else:
             assert!(!v["graph"]["outputs"].to_string().contains("snapshot"));
         }
         if name.ends_with("verification") {
+            for (role, model, effort) in [
+                ("bugs", "gpt-6.1-terra", "high"),
+                ("correctness", "gpt-6.1-terra", "high"),
+                ("evaluator", "gpt-6-astra", "medium"),
+            ] {
+                let slot = format!("root.slots.{role}");
+                assert_eq!(
+                    v["graph"]["slots"][&slot]["worker"],
+                    format!("issue-internal/{role}")
+                );
+                let execution = &v["plan"]["bindings"][&slot]["execution"];
+                assert_eq!(execution["model"], model);
+                assert_eq!(execution["effort"], effort);
+            }
             assert!(!v["graph"]["slots"].to_string().contains("implementer"));
         } else {
             let graph = v["graph"].to_string();

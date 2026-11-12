@@ -1,6 +1,6 @@
 "schema" = "af.worker/1"
 "name" = "issue-internal/correctness"
-"version" = "1.0.1"
+"version" = "1.0.2"
 
 ["signature"]
 "effects" = ["read-source"]
@@ -103,5 +103,5 @@
 ["runner"]
 "kind" = "model"
 "provider_kind" = "codex"
-"model" = "gpt-6-astra"
+"model" = "gpt-6.1-terra"
 "effort" = "high"

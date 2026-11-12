@@ -13,7 +13,8 @@ revises the proposed issue-oriented catalog; captured historical authority remai
 ## Options
 
 - Upgrade every Sol judge to Sol6.1: rejected because Sol-written candidates require distinct
-  models for verification. Astra high correctness preserves that independence.
+  models for verification. Terra high bugs and correctness preserve independence from the
+  source writer while retaining separate Workers and prompts.
 - Prompt a verifier to imagine sibling challenges: rejected because missing data must fail closed.
 - Add a combined report/code runtime: rejected; existing Report and Scenario composition suffice.
 - Add two required typed evaluation ports to a final design verifier: selected, with native
@@ -40,7 +41,7 @@ composition and reconciliation preserve original issue/source/producer/accountin
 
 Small known bottlenecks use Kimi research, independent Terra verification, accepted research and
 the existing real release-build experiment graph. Sol medium implements; Terra high bugs and
-Astra high correctness review; Astra medium evaluates the real comparison. The broad uncertain
+Terra high correctness review; Astra medium evaluates the real comparison. The broad uncertain
 research route retains Sol high research. No broader workload or measured improvement is claimed.
 
 New launcher planning/composition reads native token-free Provider catalogs and compares stable

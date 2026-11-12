@@ -624,7 +624,7 @@ describes Sol-written default/research implementation, separate from the Kimi li
 |---|---|---|---|
 | `implementer` | `issue-internal/implementer` | `gpt-6.1-sol` | `medium` |
 | `bugs` | `issue-internal/bugs` | `gpt-6.1-terra` | `high` |
-| `correctness` | `issue-internal/correctness` | `gpt-6-astra` | `high` |
+| `correctness` | `issue-internal/correctness` | `gpt-6.1-terra` | `high` |
 | `evaluator` | `issue-internal/evaluator` | `gpt-6-astra` | `medium` |
 
 Research selections use `issue-internal/researched-implementer`, with the same model and effort

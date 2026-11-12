@@ -126,6 +126,8 @@ class Workflows(unittest.TestCase):
             with mock.patch.object(w, 'available_models', return_value=changed), self.assertRaises(ValueError):
                 w.check_latest_models('af', selection)
         for changed in ([], [m for m in models if m['id'] != 'gpt-6-astra'],
+                        [m for m in models if m['id'] != 'gpt-6.1-terra'],
+                        [dict(m, effort_levels=['medium']) if m['id'] == 'gpt-6.1-terra' else m for m in models],
                         [dict(m, effort_levels=[]) for m in models]):
             with mock.patch.object(w, 'available_models', return_value=changed), self.assertRaises(ValueError):
                 w.check_latest_models('af', 'bugfix/default-codex')
