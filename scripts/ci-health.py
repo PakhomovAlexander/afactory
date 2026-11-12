@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Phase 1 CI evidence: bounded offline observation, deterministic routing, no remote writes.
+"""Phase 1 CI evidence: bounded read-only observation and deterministic report-only routing.
 
 The installed ci_observe_v1 fixture uses this module. No model text controls identity,
 recurrence, completeness or remedy allowance. Contracts are also checked by native Task
-acceptance. This module has no network transport and never runs a remedy.
+acceptance. OfflineGithub remains hermetic; observe-github explicitly selects the production
+GET-only reader. stage-adapter stages an inactive, self-contained ci_observe_v1 executable.
+No path runs a remedy.
 """
 import argparse
 import copy
@@ -24,13 +26,14 @@ DIAGNOSIS = 'af.ci-diagnosis/1'
 SNAPSHOT_TYPE = 'custom/CiHealthSnapshot@1'
 DIAGNOSIS_TYPE = 'custom/CiDiagnosis@1'
 RULE = 'af.ci-fingerprint/1'
+STATE = 'af.ci-health-state/2'
 MAX_BYTES = 65536
 MAX_FAILURES = 100
 MAX_REFERENCES = 20
 MAX_STATE = 4096
 SAFE = 9007199254740991
 CATEGORIES = ('transient', 'product_bug', 'test_bug', 'ci_infra', 'unknown')
-NOTIFICATION = 'af.ci-health-notification/2'
+NOTIFICATION = 'af.ci-health-notification/5'
 FAILURE_FIELDS = ('occurrence_id', 'signature_id', 'workflow_id', 'workflow_file', 'run_id',
                   'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion',
                   'log_artifacts', 'release_blocking')
@@ -74,6 +77,30 @@ def array(item, maximum, minimum=0):
     return {'type': 'array', 'minItems': minimum, 'maxItems': maximum, 'uniqueItems': True, 'items': item}
 
 
+def notification_evidence_schema():
+    ident = {'type': 'string', 'pattern': '^sha256:[0-9a-f]{64}$'}
+    selection = obj({'schema': {'const': 'af.ci-diagnosis-selection/1'},
+        'occurrence_id': ident, 'signature_id': ident,
+        'source_sha': {'type': 'string', 'pattern': '^[0-9a-f]{40}$'}})
+    refusal = obj({'attempt_id': {'type': 'string', 'pattern': '^[A-Za-z0-9]{26}$'},
+                   'diagnostic_id': ident})
+    shape = obj({'schema': {'const': 'af/scenario-ci-notification-evidence@2'},
+        'repository_id': ident, 'settlement_id': ident,
+        'task_id': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'},
+        'plan_id': ident, 'revision_id': ident, 'result_id': ident, 'snapshot_id': ident,
+        'selection': selection, 'category': {'enum': list(CATEGORIES)},
+        'provenance': {'anyOf': [obj({'kind': {'const': 'accepted'}, 'artifact_id': ident}),
+            obj({'kind': {'const': 'deterministic_refusal'}, 'refusals': {
+                'type': 'array', 'minItems': 1, 'maxItems': 20, 'items': refusal}})]},
+        'omitted': {'const': 'details_retained_in_native_settlement'}})
+    return {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+        '$id': 'urn:af:schema:scenario-ci-notification-evidence:2',
+        'title': 'Native CI notification evidence v2',
+        'description': 'Bounded exact references to the full native settlement retained in the Run. '
+            'Receipt result, diagnosis details, accepted envelope and diagnostic prefixes are explicitly '
+            'omitted from transport, never from native storage.', **shape}
+
+
 def schema_documents():
     ident = {'type': 'string', 'pattern': '^sha256:[0-9a-f]{64}$'}
     sha = {'type': 'string', 'pattern': '^[0-9a-f]{40}$'}
@@ -94,6 +121,8 @@ def schema_documents():
                     'nightly_receipt': nullable(obj({'identity': ident, 'conclusion': text(128)})),
                     'complete': {'type': 'boolean'}, 'omissions': array(text(256), 100),
                     'failures': array(failure, MAX_FAILURES)})
+    journal = obj({'schema': {'const': STATE}, 'capture': nullable(obj({
+        'service_digest': ident, 'snapshot': snapshot}))})
     diagnosis = obj({'schema': {'const': DIAGNOSIS}, 'snapshot_id': ident,
                      'source_artifact_ids': array(ident, 1, 1), 'occurrence_id': ident,
                      'signature_id': ident, 'source_sha': sha, 'category': {'enum': list(CATEGORIES)},
@@ -128,16 +157,35 @@ def schema_documents():
         'category': nullable({'enum': list(CATEGORIES)}), 'unselected_occurrences': array(ident,100),
         'unselected_reason': {'enum': [None, 'diagnosis_reservation_exhausted']},
         'deterministic_diagnosis': nullable(diagnosis),
+        'deterministic_results': array(obj({'diagnosis': diagnosis,
+            'row': {'type': 'integer', 'minimum': 1, 'maximum': 7},
+            'intended': {'enum': ['alert_only', 'release_alert', 'infrastructure_alert', 'rerun_intended',
+                'quarantine_evidence_intended', 'repair_intended', 'report_only']}}), MAX_FAILURES),
         'report_only': {'const': True}, 'complete': {'type': 'boolean'}, 'omissions': array(text(256),100)})
-    notification['properties'].update(row={'type': 'integer', 'minimum': 1, 'maximum': 7},
+    notification['properties'].update(repository_id=ident, findings_reference=ident,
+        native_evidence=notification_evidence_schema(), row={'type': 'integer', 'minimum': 1, 'maximum': 7},
         intended={'enum': ['alert_only', 'release_alert', 'infrastructure_alert', 'rerun_intended',
             'quarantine_evidence_intended', 'repair_intended', 'report_only']})
-    return {name + '-v' + str(version) + '.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+    # Findings batch diagnoses in deterministic_results. The selected occurrence's
+    # lifecycle notifications additionally retain their single diagnosis when available.
+    notification['required'].remove('deterministic_diagnosis')
+    notification['required'].remove('repository')
+    # Fixture requests bind the repository through repository_id and a subject digest.
+    # The reader restores the exact repository; lifecycle diagnoses remain required.
+    notification['anyOf'] = [
+        {'properties': {'phase': {'const': 'findings'}}},
+        {'properties': {'phase': {'enum': ['diagnosis', 'remedy-intent', 'outcome']}},
+         'required': ['deterministic_diagnosis']}]
+    documents = {name + '-v' + str(version) + '.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                 '$id': 'urn:af:schema:' + name + ':' + str(version),
                 'title': name.replace('-', ' ').capitalize() + ' v' + str(version), **shape}
             for name, shape in [('ci-health-snapshot', snapshot), ('ci-diagnosis', diagnosis), ('ci-diagnosis-selection', selection),
-                ('ci-signature-state', state), ('ci-observe-service', service), ('ci-health-notification', notification)]
-            for version in [2 if name == 'ci-health-notification' else 1]}
+                ('ci-signature-state', state), ('ci-health-state', journal),
+                ('ci-observe-service', service), ('ci-health-notification', notification)]
+            for version in [5 if name == 'ci-health-notification' else 2 if name == 'ci-health-state' else 1]}
+
+    documents['scenario-ci-notification-evidence-v2.json'] = notification_evidence_schema()
+    return documents
 
 
 _VALIDATOR = None
@@ -155,7 +203,8 @@ def structural(value, name):
         _VALIDATOR = module.Validator()
         for document in schema_documents().values():
             _VALIDATOR.schemas[document['$id']] = document
-    errors = _VALIDATOR.errors(value, 'urn:af:schema:' + name + (':2' if name == 'ci-health-notification' else ':1'))
+    errors = _VALIDATOR.errors(value, 'urn:af:schema:' + name
+        + (':5' if name == 'ci-health-notification' else ':2' if name == 'scenario-ci-notification-evidence' else ':2' if name == 'ci-health-state' else ':1'))
     require(not errors, '; '.join(errors[:4]))
     require(len(canonical(value)) <= (MAX_BYTES if name in ('ci-health-snapshot', 'ci-diagnosis') else 1_048_576), 'CI evidence exceeds byte bound')
 
@@ -303,7 +352,7 @@ def remedy(snapshot, failure, diagnosis, *, exhausted=False, rerun_reserved=Fals
     """One return per ordered row. Phase 1 reports this intent; it never executes it."""
     category = diagnosis.get('category', 'unknown')
     malformed = (failure not in snapshot['failures'] or diagnosis.get('occurrence_id') != failure['occurrence_id']
-                 or diagnosis.get('signature_id') != failure['signature_id'] or diagnosis.get('source_sha') != snapshot['source_sha'])
+                 or diagnosis.get('signature_id') != failure['signature_id'] or diagnosis.get('source_sha') != failure['head_sha'])
     if malformed or not snapshot['complete'] or category not in CATEGORIES or category == 'unknown' or failure['normalized_fingerprint'] is None or exhausted:
         return 1, 'alert_only'
     if failure['release_blocking']:
@@ -330,58 +379,85 @@ class Journal:
                 and self.db.execute('PRAGMA max_page_count=4096').fetchone()[0] <= 4096, 'Observer state byte bound exhausted')
         self.db.execute('CREATE TABLE IF NOT EXISTS metadata (schema TEXT NOT NULL)')
         if not self.db.execute('SELECT schema FROM metadata').fetchall():
-            self.db.execute('INSERT INTO metadata VALUES (?)', ('af.ci-health-state/1',))
-        require(self.db.execute('SELECT schema FROM metadata').fetchall() == [('af.ci-health-state/1',)], 'Unsupported observer state')
+            self.db.execute('INSERT INTO metadata VALUES (?)', (canonical({'schema': STATE, 'capture': None}).decode(),))
+        try:
+            self.metadata()
+        except ValueError:
+            self.db.close()
+            raise
         self.db.execute('CREATE TABLE IF NOT EXISTS signatures (repository TEXT, signature TEXT, document TEXT NOT NULL, PRIMARY KEY(repository,signature))')
         self.db.commit()
 
     def close(self):
         self.db.close()
 
+    def metadata(self):
+        rows = self.db.execute('SELECT schema FROM metadata').fetchall()
+        require(len(rows) == 1, 'Unsupported observer state')
+        try:
+            value = loads(rows[0][0])
+            structural(value, 'ci-health-state')
+            if value['capture'] is not None:
+                validate_snapshot(value['capture']['snapshot'])
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError('Unsupported or malformed observer state') from error
+        return value
+
     def fold(self, repository, job, at):
+        """Fold one job inside observe's transaction, including its capture receipt."""
+        self.db.execute('SAVEPOINT job')
+        try:
+            result = self.fold_job(repository, job, at)
+        except (ValueError, KeyError, TypeError):
+            # An omitted malformed job must not leave expiry or partial state writes.
+            self.db.execute('ROLLBACK TO job')
+            self.db.execute('RELEASE job')
+            raise
+        self.db.execute('RELEASE job')
+        return result
+
+    def fold_job(self, repository, job, at):
         occurrence = occurrence_id(repository, job)
         normalized = fingerprint(job)
         signature = signature_id(repository, job, occurrence, normalized)
         now = instant(at)
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
-            rows = self.db.execute('SELECT repository,signature,document FROM signatures').fetchall()
-            require(len(rows) <= MAX_STATE, 'Observer state bound exhausted')
-            for repo, sig, raw in rows:
-                state = loads(raw)
-                structural(state, 'ci-signature-state')
-                if repo == repository:
-                    require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
-                if now - instant(state['last_seen_at']) >= dt.timedelta(days=14):
-                    self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
-                elif repo == repository and job['conclusion'] == 'success' and any(all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')) and now - instant(scope['last_seen_at']) < dt.timedelta(days=14) for scope in state['scopes']):
-                    self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
-            if job['conclusion'] == 'success':
-                return None
-            raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
-            state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/1', 'scopes': [], 'first_seen_at': at,
-                'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
+        rows = self.db.execute('SELECT repository,signature,document FROM signatures').fetchall()
+        require(len(rows) <= MAX_STATE, 'Observer state bound exhausted')
+        for repo, sig, raw in rows:
+            state = loads(raw)
             structural(state, 'ci-signature-state')
-            require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
-            # Expire individual history too, even when a signature is observed continuously.
-            state['occurrences'] = {key: val for key, val in state['occurrences'].items()
-                                    if now - instant(val['at']) < dt.timedelta(days=14)}
-            if occurrence not in state['occurrences']:
-                require(len(state['occurrences']) < MAX_STATE, 'Signature occurrence bound exhausted')
-                state['occurrences'][occurrence] = {'at': at, 'run': job['run_id'], 'attempt': job['run_attempt']}
-            scope = {key: job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')}
-            state['scopes'] = [s for s in state['scopes'] if now - instant(s['last_seen_at']) < dt.timedelta(days=14)
-                and not all(s[key] == scope[key] for key in scope)]
-            require(len(state['scopes']) < MAX_STATE, 'Signature scope bound exhausted')
-            state['scopes'].append({**scope, 'last_seen_at': at})
-            state.update(first_seen_at=min(v['at'] for v in state['occurrences'].values()), last_seen_at=at)
-            structural(state, 'ci-signature-state')
-            if raw is None:
-                require(self.db.execute('SELECT count(*) FROM signatures').fetchone()[0] < MAX_STATE, 'Observer signature bound exhausted')
-            self.db.execute('INSERT OR REPLACE INTO signatures VALUES (?,?,?)', (repository, signature, canonical(state).decode()))
-            count = len({(v['run'], v['attempt']) for v in state['occurrences'].values()})
-            return {'occurrence_id': occurrence, 'signature_id': signature, 'normalized_fingerprint': normalized,
-                    'first_seen_at': state['first_seen_at'], 'last_seen_at': at, 'occurrence_count': count}
+            if repo == repository:
+                require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
+            if now - instant(state['last_seen_at']) >= dt.timedelta(days=14):
+                self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
+            elif repo == repository and job['conclusion'] == 'success' and any(all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')) and now - instant(scope['last_seen_at']) < dt.timedelta(days=14) for scope in state['scopes']):
+                self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
+        if job['conclusion'] == 'success':
+            return None
+        raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
+        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/1', 'scopes': [], 'first_seen_at': at,
+            'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
+        structural(state, 'ci-signature-state')
+        require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
+        # Expire individual history too, even when a signature is observed continuously.
+        state['occurrences'] = {key: val for key, val in state['occurrences'].items()
+                                if now - instant(val['at']) < dt.timedelta(days=14)}
+        if occurrence not in state['occurrences']:
+            require(len(state['occurrences']) < MAX_STATE, 'Signature occurrence bound exhausted')
+            state['occurrences'][occurrence] = {'at': at, 'run': job['run_id'], 'attempt': job['run_attempt']}
+        scope = {key: job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')}
+        state['scopes'] = [s for s in state['scopes'] if now - instant(s['last_seen_at']) < dt.timedelta(days=14)
+            and not all(s[key] == scope[key] for key in scope)]
+        require(len(state['scopes']) < MAX_STATE, 'Signature scope bound exhausted')
+        state['scopes'].append({**scope, 'last_seen_at': at})
+        state.update(first_seen_at=min(v['at'] for v in state['occurrences'].values()), last_seen_at=at)
+        structural(state, 'ci-signature-state')
+        if raw is None:
+            require(self.db.execute('SELECT count(*) FROM signatures').fetchone()[0] < MAX_STATE, 'Observer signature bound exhausted')
+        self.db.execute('INSERT OR REPLACE INTO signatures VALUES (?,?,?)', (repository, signature, canonical(state).decode()))
+        count = len({(v['run'], v['attempt']) for v in state['occurrences'].values()})
+        return {'occurrence_id': occurrence, 'signature_id': signature, 'normalized_fingerprint': normalized,
+                'first_seen_at': state['first_seen_at'], 'last_seen_at': at, 'occurrence_count': count}
 
 
 class OfflineGithub:
@@ -404,8 +480,9 @@ class OfflineGithub:
 def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr=None):
     """ci_observe_v1 read path. One bounded main capture and optional exact release PR.
 
-    OfflineGithub is the Phase 1 hermetic service transport; no live credential or service
-    installation is provided. All requests are GET and evidence is capped before diagnosis.
+    OfflineGithub is the hermetic service transport. The production reader in
+    ci-health-github.py additionally reads real check runs, job evidence and nightly receipts.
+    All requests are GET and evidence is capped before diagnosis.
     """
     require(isinstance(main_ref, str) and re.fullmatch(r'[A-Za-z0-9_./-]{1,128}', main_ref)
             and '..' not in main_ref, 'Invalid main ref')
@@ -463,7 +540,36 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
     return result
 
 
-def observe(service, journal):
+def observe(service, journal, *, expected_snapshot=None, snapshot_fits=None):
+    """Replay the latest exact capture without folding its occurrences a second time.
+
+    The receipt and all folds commit together. Reuse is bound to the entire bounded service
+    evidence, never just a signature or main SHA. A different capture replaces the receipt;
+    green closure, expiry and cross-head recurrence still run through the same reducer.
+    """
+    require(len(canonical(service)) <= 1_048_576, 'Observation service response exceeds 1 MiB')
+    identity = digest(service)
+    with journal.db:
+        journal.db.execute('BEGIN IMMEDIATE')
+        state = journal.metadata()
+        capture = state['capture']
+        replay = capture is not None and capture['service_digest'] == identity
+        if expected_snapshot is not None and capture is not None and digest(capture['snapshot']) == expected_snapshot:
+            # Also bind successful jobs, which do not appear in snapshot.failures.
+            require(replay, 'Exact snapshot precondition refused')
+        snapshot = capture['snapshot'] if replay else fold_capture(service, journal, snapshot_fits=snapshot_fits)
+        require(snapshot_fits is None or snapshot_fits(snapshot), 'Capture exceeds adapter response bound')
+        require(expected_snapshot is None or digest(snapshot) == expected_snapshot,
+                'Exact snapshot precondition refused')
+        if replay:
+            return snapshot
+        state['capture'] = {'service_digest': identity, 'snapshot': snapshot}
+        structural(state, 'ci-health-state')
+        journal.db.execute('UPDATE metadata SET schema=?', (canonical(state).decode(),))
+        return snapshot
+
+
+def fold_capture(service, journal, *, snapshot_fits=None):
     """Offline adapter/service contract: one exact repository/ref/window capture, capped input.
 
     A missing SHA is refused: it cannot be represented as a healthy or transient snapshot.
@@ -543,12 +649,32 @@ def observe(service, journal):
     snapshot['failures'].sort(key=lambda f: f['occurrence_id'])
     snapshot['omissions'] = list(dict.fromkeys(omissions))[:100]
     snapshot['complete'] = not snapshot['omissions']
-    while len(canonical(snapshot)) > MAX_BYTES and snapshot['failures']:
-        snapshot['failures'].pop()
+    bounds = [(lambda value: len(canonical(value)) <= MAX_BYTES, '64 KiB evidence bound exceeded')]
+    if snapshot_fits is not None:
+        bounds.append((snapshot_fits, '64 KiB adapter response bound exceeded'))
+    for fits, reason in bounds:
+        if fits(snapshot):
+            continue
         snapshot['complete'] = False
-        if '64 KiB evidence bound exceeded' not in snapshot['omissions']:
-            snapshot['omissions'] = snapshot['omissions'][:99] + ['64 KiB evidence bound exceeded']
+        if reason not in snapshot['omissions']:
+            snapshot['omissions'] = snapshot['omissions'][:99] + [reason]
+        while not fits(snapshot) and snapshot['failures']:
+            snapshot['failures'].pop()
+        # Omissions are evidence too: a full Unicode omission list can exceed the
+        # wire bound even after all failures are dropped. Always retain the reason.
+        while not fits(snapshot) and len(snapshot['omissions']) > 1:
+            snapshot['omissions'].pop(0)
+        require(fits(snapshot), reason)
     return validate_snapshot(snapshot)
+
+
+def occurrence_document(snapshot, *, since, nightly_receipt):
+    """Owner reviews and installs these selectors, never executable or credential bytes."""
+    validate_snapshot(snapshot)
+    return {'schema': 'af.ci-observe-occurrence/1', 'snapshot_digest': digest(snapshot),
+            'since': since, 'captured_at': snapshot['captured_at'],
+            'nightly_receipt': str(nightly_receipt),
+            'release_pr': snapshot['release_pr']['number'] if snapshot['release_pr'] else None}
 
 
 def main():
@@ -559,6 +685,30 @@ def main():
     observer = sub.add_parser('observe', help='offline, report-only observation')
     observer.add_argument('--service', required=True, type=Path)
     observer.add_argument('--state', required=True, type=Path)
+    occurrence = sub.add_parser('stage-occurrence', help='stage owner-reviewed daily selectors; no observation or activation')
+    occurrence.add_argument('--snapshot', required=True, type=Path)
+    occurrence.add_argument('--since', required=True)
+    occurrence.add_argument('--nightly-receipt', required=True)
+    occurrence.add_argument('--occurrence-dir', required=True)
+    for command in ('observe-github', 'stage-adapter'):
+        production = sub.add_parser(command, help='explicit read-only GitHub observation' if command == 'observe-github'
+                                    else 'stage an inactive ci_observe_v1 executable; no requests or activation')
+        production.add_argument('--repository', required=True)
+        production.add_argument('--main-ref', required=True)
+        if command == 'observe-github':
+            production.add_argument('--since', required=True)
+            production.add_argument('--captured-at', required=True)
+            production.add_argument('--release-pr', type=int)
+            production.add_argument('--nightly-receipt', required=True)
+        else:
+            production.add_argument('--occurrence-dir', required=True)
+        production.add_argument('--github-token-file')
+        production.add_argument('--state', required=True)
+        production.add_argument('--max-requests', type=int, default=16)
+        production.add_argument('--max-wall-seconds', type=int, default=60)
+        if command == 'stage-adapter':
+            production.add_argument('--destination', required=True)
+            production.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     if args.command == 'schemas':
         for name, schema in schema_documents().items():
@@ -568,7 +718,7 @@ def main():
                 path.write_text(rendered)
             else:
                 require(path.read_text() == rendered, 'CI health schema parity drift: ' + name)
-    else:
+    elif args.command == 'observe':
         with args.service.open('rb') as stream:
             raw = stream.read(1_048_577)
         require(len(raw) <= 1_048_576, 'Observation input bound exceeded')
@@ -577,6 +727,34 @@ def main():
             print(canonical(observe(loads(raw), journal)).decode())
         finally:
             journal.close()
+    else:
+        spec = importlib.util.spec_from_file_location('ci_health_github', ROOT / 'scripts/ci-health-github.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if args.command == 'stage-occurrence':
+            snapshot = loads(module.read_file(args.snapshot, MAX_BYTES, 'Selected snapshot'))
+            module.stage_occurrence(snapshot, since=args.since, nightly_receipt=args.nightly_receipt,
+                                    occurrence_dir=args.occurrence_dir)
+            return
+        options = {key: value for key, value in vars(args).items() if key not in ('command', 'output')}
+        # Validate selectors and bounds during staging without reading state or credentials.
+        module.Github(options['repository'], max_requests=options['max_requests'],
+                      max_wall_seconds=options['max_wall_seconds'])
+        require(re.fullmatch(r'[A-Za-z0-9_./-]{1,128}', options['main_ref']) and '..' not in options['main_ref'], 'Invalid main ref')
+        if args.command == 'observe-github':
+            require(instant(options['since']) <= instant(options['captured_at']), 'Invalid observation window')
+            if options['release_pr'] is not None:
+                module.positive(options['release_pr'])
+        if args.command == 'stage-adapter':
+            require(0 < len(args.destination) <= 256 and '\x00' not in args.destination, 'Invalid observation destination')
+            for name in ('state', 'occurrence_dir', 'github_token_file'):
+                require(options[name] is None or Path(options[name]).is_absolute(), 'Installed observer requires absolute ' + name)
+            program = module.adapter_bytes(options)
+            fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(program)
+        else:
+            print(canonical(module.observe(options)).decode())
 
 
 if __name__ == '__main__':

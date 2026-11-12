@@ -102,6 +102,7 @@
     "af-source-git::it capture::dirty_capture_large_tree_measurement": "perf",
     "af-store cas::tests::bench_put_throughput": "perf",
     "af::it telemetry_bench::unstarted_check_keeps_its_original_disk_refusal_without_empty_runtime_evidence": "e2e",
+    "af-scenario tests::ci_health_near_maximum_snapshot_and_maximal_refusal_diagnostics_complete_native_lifecycle": "e2e",
     "af-scenario tests::ci_health_watchdog_reads_native_journal_without_a_tick_or_a_report": "e2e"
   },
   "hosted_checks": {

@@ -609,6 +609,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   Journal: af/scenario-store@7. Owned file envelope: af/scenario-owned-file@1.
   Admitted structured field records: af/scenario-task-output-field@1.
   Native CI diagnosis settlements: af/scenario-ci-diagnosis@2.
+  Native CI notification transport evidence: af/scenario-ci-notification-evidence@2.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
@@ -618,9 +619,10 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   af/git-workspace-prepared@1 and af/git-workspace-state@2.
   Bounded adapters: af/scenario-adapter-request@4 and af/scenario-adapter-response@1.
   CI health Phase 1: af.ci-health-snapshot/1, af.ci-diagnosis/1, af.ci-diagnosis-selection/1,
-  af.ci-health-notification/2,
-  af.ci-observe-service/1,
-  af.ci-signature-state/1, af.maintenance-watchdog-config/1 and af.maintenance-watchdog-alert/1.
+  af.ci-health-notification/5,
+  af.ci-observe-occurrence/1 and af.ci-observe-service/1,
+  af.ci-signature-state/1, af.ci-health-state/2, af.maintenance-watchdog-config/1 and
+  af.maintenance-watchdog-alert/1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
 

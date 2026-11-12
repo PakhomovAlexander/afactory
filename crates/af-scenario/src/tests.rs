@@ -164,6 +164,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         "scenario-v6.json",
         "ci-diagnosis-v1.json",
         "ci-diagnosis-selection-v1.json",
+        "scenario-ci-diagnosis-v2.json",
         "scenario-task-output-field-v1.json",
         "artifact-envelope-v1.json",
         "task-contracts-v4.json",
@@ -1880,6 +1881,7 @@ pub(super) struct TestHost {
     pub reject_templates: std::sync::atomic::AtomicBool,
     pub charge: Option<(u64, bool)>,
     pub ci_output: Option<Value>,
+    pub ci_settlement: Option<Observation>,
 }
 fn ci_output_envelope(payload: Value) -> Result<af_contracts::ArtifactEnvelope> {
     let mut artifact = af_contracts::ArtifactEnvelope {
@@ -1942,6 +1944,24 @@ impl crate::Host for TestHost {
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<adapter::Settlement> {
         panic!("unexpected native Task dispatch")
+    }
+    fn run_ci_diagnosis(
+        &self,
+        target: &TaskTarget,
+        _: u64,
+        _: &std::sync::atomic::AtomicBool,
+    ) -> Result<adapter::Settlement> {
+        let observation = self
+            .ci_settlement
+            .clone()
+            .ok_or("unexpected native CI dispatch")?;
+        let record = ci_diagnosis::Record::parse(&observation)?;
+        record.target(target)?;
+        Ok(adapter::Settlement::CiDiagnosisDone {
+            outputs: BTreeMap::from([("result".into(), Datum::Observation(observation))]),
+            charged_tokens: record.receipt.charged_tokens,
+            unknown_usage: false,
+        })
     }
     fn task_output(
         &self,
@@ -2089,6 +2109,115 @@ fn ci_health_task_output_field_wire_is_allowlisted_and_malformed_payloads_fail_c
     }
 }
 
+fn ci_notification_transport_retains_exact_references(record: &crate::ci_diagnosis::Record) {
+    let repository = format!("{}/project", "r".repeat(61000));
+    let observation = record.observation(&repository).unwrap();
+    let request = adapter::Request {
+        schema: "af/scenario-adapter-request@4".into(),
+        method: adapter::Method::Reconcile,
+        intent_id: digest(b"notification"),
+        input_digest: digest(b"original typed inputs"),
+        operation: Operation::Notify,
+        destination: "fixture:ci-health".into(),
+        inputs: BTreeMap::from([
+            ("subject".into(), Datum::Text(repository.clone())),
+            ("revision".into(), Datum::Text("a".repeat(40))),
+            ("body".into(), Datum::Text("{}".into())),
+            (
+                "diagnosis_settlement".into(),
+                Datum::Observation(observation.clone()),
+            ),
+        ]),
+    };
+    let original = serde_json::to_vec(&request).unwrap();
+    assert!(original.len() > 65_536);
+    let bytes = adapter::encode_request(&request).unwrap();
+    assert!(bytes.len() <= 65_536);
+    let transport: adapter::Request = serde_json::from_slice(&bytes).unwrap();
+    valid("scenario-adapter-request-v4.json", &transport);
+    let encoded = transport.inputs["diagnosis_settlement"].as_text().unwrap();
+    let evidence: crate::ci_diagnosis::NotificationEvidence =
+        serde_json::from_str(encoded).unwrap();
+    evidence.validate().unwrap();
+    valid("scenario-ci-notification-evidence-v2.json", &evidence);
+    assert_eq!(evidence.settlement_id, hash(record).unwrap());
+    assert_eq!(evidence.repository_id, hash(&repository).unwrap());
+    assert_eq!(evidence.task_id, record.receipt.task_id);
+    assert_eq!(evidence.plan_id, record.receipt.plan_id);
+    assert_eq!(evidence.revision_id, record.receipt.revision_id);
+    assert_eq!(evidence.result_id, record.receipt.result_id);
+    assert_eq!(evidence.snapshot_id, record.snapshot_id);
+    assert_eq!(evidence.selection, record.selection);
+    assert_eq!(evidence.category, record.diagnosis.category);
+    match (&evidence.provenance, &record.provenance) {
+        (
+            ci_diagnosis::NotificationProvenance::Accepted { artifact_id },
+            ci_diagnosis::Provenance::Accepted { output },
+        ) => assert_eq!(artifact_id, &output.artifact_id),
+        (
+            ci_diagnosis::NotificationProvenance::DeterministicRefusal { refusals },
+            ci_diagnosis::Provenance::DeterministicRefusal {
+                refusals: originals,
+            },
+        ) => {
+            assert_eq!(refusals.len(), originals.len());
+            for (reference, original) in refusals.iter().zip(originals) {
+                assert_eq!(reference.attempt_id, original.attempt_id);
+                assert_eq!(reference.diagnostic_id, original.diagnostic_id);
+            }
+        }
+        _ => panic!("provenance changed"),
+    }
+    assert_eq!(evidence.omitted, "details_retained_in_native_settlement");
+    let mut restored = transport.clone();
+    restored
+        .inputs
+        .insert("subject".into(), Datum::Text(repository.clone()));
+    restored.inputs.insert(
+        "diagnosis_settlement".into(),
+        Datum::Observation(observation),
+    );
+    assert_eq!(
+        restored, request,
+        "only subject and settlement transport representations change"
+    );
+    assert_eq!(
+        serde_json::to_vec(&request).unwrap(),
+        original,
+        "the original journal inputs stay exact"
+    );
+    assert_eq!(
+        transport.inputs["subject"],
+        Datum::Text(hash(&repository).unwrap())
+    );
+    let mut foreign = request.clone();
+    foreign
+        .inputs
+        .insert("subject".into(), Datum::Text("foreign/project".into()));
+    assert!(
+        adapter::encode_request(&foreign)
+            .unwrap_err()
+            .contains("subject differs")
+    );
+    for bad in [
+        json!({"schema":"af/scenario-ci-notification-evidence@1","settlement":record}),
+        json!({"schema":"af/scenario-ci-notification-evidence@2"}),
+        json!({"schema":"af/scenario-ci-notification-evidence@2","settlement":record,"extra":true}),
+    ] {
+        assert!(!schema("scenario-ci-notification-evidence-v2.json").is_valid(&bad));
+        assert!(
+            serde_json::from_value::<crate::ci_diagnosis::NotificationEvidence>(bad)
+                .map_or(true, |e| e.validate().is_err())
+        );
+    }
+    let mut ordinary = request;
+    ordinary.operation = Operation::Observe;
+    assert_eq!(
+        adapter::encode_request(&ordinary).unwrap(),
+        serde_json::to_vec(&ordinary).unwrap()
+    );
+}
+
 #[test]
 fn ci_health_native_refusal_schema_keeps_unknown_separate_from_acceptance_and_refuses_forgery() {
     use crate::ci_diagnosis::{Provenance, Record, Refusal, SCHEMA, unknown};
@@ -2121,6 +2250,21 @@ fn ci_health_native_refusal_schema_keeps_unknown_separate_from_acceptance_and_re
         },
     };
     record.validate().unwrap();
+    ci_notification_transport_retains_exact_references(&record);
+    for count in [2, 20] {
+        let mut maximum = record.clone();
+        maximum.provenance = Provenance::DeterministicRefusal {
+            refusals: (0..count)
+                .map(|i| Refusal {
+                    attempt_id: format!("{i:026}"),
+                    diagnostic_id: digest(format!("diagnostic {i}").as_bytes()),
+                    error_prefix: "x".repeat(2048),
+                })
+                .collect(),
+        };
+        maximum.validate().unwrap();
+        ci_notification_transport_retains_exact_references(&maximum);
+    }
     let wire = serde_json::to_value(&record).unwrap();
     let validator = schema("scenario-ci-diagnosis-v2.json");
     assert!(validator.is_valid(&wire));
@@ -2470,6 +2614,7 @@ fn ci_health_native_binding_runtime_routes_one_notification_row_for_each_categor
                         };
                     }
                     valid("scenario-ci-diagnosis-v2.json", &record);
+                    ci_notification_transport_retains_exact_references(&record);
                     Datum::Observation(record.observation("octo/project").unwrap())
                 }
                 Kind::Wait { condition, .. } => Datum::Observation(Observation {
@@ -2624,4 +2769,243 @@ fn ci_health_native_binding_runtime_routes_one_notification_row_for_each_categor
             assert!(bad.validate(&TestHost::default()).is_err(), "{malformed:?}");
         }
     }
+}
+
+#[test]
+fn ci_health_near_maximum_snapshot_and_maximal_refusal_diagnostics_complete_native_lifecycle() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let directory = tempfile::tempdir().unwrap();
+    // Share the real observer, compiler and installed adapter, including its stdin byte bound.
+    let setup = std::process::Command::new("python3").args(["-I", "-c", r#"
+import importlib.util,json,pathlib,sys
+sys.dont_write_bytecode=True
+root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2])
+def load(name,path):
+ spec=importlib.util.spec_from_file_location(name,path); module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+c=load('ci',root/'scripts/ci-health.py'); config=load('config',root/'fixtures/scenarios/maintenance-ci-health/configure.py')
+service=c.loads((root/'fixtures/scenarios/maintenance-ci-health/failing-service.json').read_bytes())
+service['repository']='r'*61000+'/project'
+journal=c.Journal(out/'observer.sqlite')
+try: snapshot=c.observe(service,journal)
+finally: journal.close()
+c.validate_snapshot(snapshot)
+assert snapshot['complete'] and len(c.canonical(snapshot))>62000
+sid=c.digest(snapshot)
+target={'repo':'/fixture/repo','state':'/fixture/state','task_id':'diagnose','plan_id':c.digest('plan'),'revision_id':c.digest('revision'),'max_tokens':24096}
+bundle=config.bundle(snapshot,sid,target,small_repair=True,watch=True)
+(out/'fixture.json').write_bytes(c.canonical({'snapshot':snapshot,'snapshot_id':sid,'bundle':bundle,'inputs':config.scope_inputs(snapshot),'target':target}))
+(out/'service.json').write_bytes(c.canonical({'snapshot':snapshot,'snapshot_id':sid,'scenario_run':'ci-health-fixture','observation_service':service,'merged':False}))
+(out/'adapter').write_bytes(config.adapter_bytes(root))
+"#]).arg(&root).arg(directory.path()).output().unwrap();
+    assert!(
+        setup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let fixture: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("fixture.json")).unwrap())
+            .unwrap();
+    let snapshot: af_contracts::ci_health::Snapshot =
+        serde_json::from_value(fixture["snapshot"].clone()).unwrap();
+    snapshot.validate().unwrap();
+    let target: TaskTarget = serde_json::from_value(fixture["target"].clone()).unwrap();
+    let selection = af_contracts::ci_health::Selection {
+        schema: "af.ci-diagnosis-selection/1".into(),
+        occurrence_id: snapshot.failures[0].occurrence_id.clone(),
+        signature_id: snapshot.failures[0].signature_id.clone(),
+        source_sha: snapshot.failures[0].head_sha.clone(),
+    };
+    let receipt: TaskReceipt = serde_json::from_value(json!({"task_id":target.task_id,
+        "plan_id":target.plan_id,"revision_id":target.revision_id,"result_id":digest(b"result"),
+        "charged_tokens":10,"result":{"task_revision_id":target.revision_id,"execution":"exhausted",
+        "acceptance":"inconclusive","domain_conclusion":"incomplete","outputs":{},"evidence":[],
+        "missing_obligations":["diagnosis"]}}))
+    .unwrap();
+    let record = ci_diagnosis::Record {
+        schema: ci_diagnosis::SCHEMA.into(),
+        receipt,
+        snapshot_id: fixture["snapshot_id"].as_str().unwrap().into(),
+        diagnosis: ci_diagnosis::unknown(fixture["snapshot_id"].as_str().unwrap(), &selection),
+        selection,
+        provenance: ci_diagnosis::Provenance::DeterministicRefusal {
+            refusals: (0..2)
+                .map(|i| ci_diagnosis::Refusal {
+                    attempt_id: format!("{i:026}"),
+                    diagnostic_id: digest(format!("diagnostic {i}").as_bytes()),
+                    error_prefix: format!("{}xx", "\"\n\t".repeat(682)),
+                })
+                .collect(),
+        },
+    };
+    record.validate().unwrap();
+    valid("scenario-ci-diagnosis-v2.json", &record);
+    let observation = record.observation(&snapshot.repository).unwrap();
+    let host = TestHost {
+        ci_settlement: Some(observation),
+        charge: Some((10, false)),
+        ..Default::default()
+    };
+    let executable = directory.path().join("adapter");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let bundle: Bundle = serde_json::from_value(fixture["bundle"].clone()).unwrap();
+    let policy = Policy {
+        schema: "af/scenario-policy@5".into(),
+        adapters: BTreeMap::from([(
+            "ci-health".into(),
+            Adapter {
+                digest: digest(&std::fs::read(&executable).unwrap()),
+                executable,
+                operations: [Operation::Observe, Operation::Notify].into(),
+                destinations: ["fixture:ci-health".into()].into(),
+                max_wall_ms: 30000,
+                max_output_bytes: 65536,
+            },
+        )]),
+        task_plans: bundle.definitions[&bundle.root]
+            .authority
+            .task_plans
+            .clone(),
+        task_templates: Default::default(),
+        performance_publications: Default::default(),
+        decision_keys: Default::default(),
+        file_roots: Default::default(),
+    };
+    let limits = bundle.definitions[&bundle.root].limits.clone();
+    let mut run = Run::new(
+        &host,
+        "ci-health-fixture".into(),
+        Pin::new(&host, bundle, policy.clone()).unwrap(),
+        serde_json::from_value(fixture["inputs"].clone()).unwrap(),
+        limits,
+        START,
+        None,
+    )
+    .unwrap();
+    let mut notification_sizes = Vec::new();
+    for _ in 0..32 {
+        let Some(dispatch) = run.prepare(&host, START).unwrap() else {
+            if !run.status.active() {
+                break;
+            }
+            continue;
+        };
+        if dispatch.inputs.contains_key("diagnosis_settlement") {
+            for method in [Method::Reconcile, Method::Execute] {
+                let request = Request {
+                    schema: "af/scenario-adapter-request@4".into(),
+                    method,
+                    intent_id: dispatch.intent.id.clone(),
+                    input_digest: dispatch.intent.input_digest.clone(),
+                    operation: Operation::Notify,
+                    destination: "fixture:ci-health".into(),
+                    inputs: dispatch.inputs.clone(),
+                };
+                let bytes = adapter::encode_request(&request).unwrap();
+                assert!(bytes.len() <= 65536);
+                notification_sizes.push(bytes.len());
+            }
+        }
+        let settlement = adapter::dispatch(
+            &host,
+            &policy,
+            &dispatch,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let outputs = match settlement {
+            adapter::Settlement::Done(outputs) => outputs,
+            adapter::Settlement::CiDiagnosisDone {
+                outputs,
+                charged_tokens,
+                unknown_usage,
+            } => {
+                assert_eq!((charged_tokens, unknown_usage), (10, false));
+                for charge in run.task_charges.values_mut() {
+                    charge.charged = Some(charged_tokens);
+                }
+                outputs
+            }
+            other => panic!("lifecycle did not complete: {other:?}"),
+        };
+        run.complete(&host, &dispatch.frame, &dispatch.step, outputs)
+            .unwrap();
+        // The full original settlement, including all diagnostic prefixes, must replay.
+        run = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        run.validate(&host).unwrap();
+    }
+    assert_eq!(run.status, Status::Succeeded);
+    assert_eq!(run.dispatches, 6);
+    assert_eq!(notification_sizes.len(), 6);
+    assert_eq!(
+        run.frames["root"]
+            .steps
+            .iter()
+            .find(|step| step.step == "diagnose")
+            .unwrap()
+            .outputs["result"],
+        Datum::Observation(record.observation(&snapshot.repository).unwrap()),
+        "replay retains the full native receipt and both maximum diagnostic prefixes",
+    );
+    let recorded = std::fs::read_to_string(directory.path().join("events")).unwrap();
+    let events: Vec<Value> = recorded
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "ci_observe_v1",
+            "findings",
+            "diagnosis",
+            "remedy-intent",
+            "outcome"
+        ]
+    );
+    for event in &events[2..] {
+        valid("ci-health-notification-v5.json", event);
+        assert_eq!(event["repository"], snapshot.repository);
+        assert_eq!(
+            event["deterministic_diagnosis"],
+            serde_json::to_value(&record.diagnosis).unwrap()
+        );
+        assert_eq!(
+            event["native_evidence"]["settlement_id"],
+            hash(&record).unwrap()
+        );
+        assert_eq!(
+            event["native_evidence"]["result_id"],
+            record.receipt.result_id
+        );
+        for key in ["task_id", "plan_id", "revision_id", "result_id"] {
+            assert_eq!(
+                event["native_evidence"][key],
+                serde_json::to_value(&record.receipt).unwrap()[key]
+            );
+        }
+        if let ci_diagnosis::Provenance::DeterministicRefusal { refusals } = &record.provenance {
+            let references = event["native_evidence"]["provenance"]["refusals"]
+                .as_array()
+                .unwrap();
+            assert_eq!(references.len(), refusals.len());
+            for (reference, original) in references.iter().zip(refusals) {
+                assert_eq!(reference["attempt_id"], original.attempt_id);
+                assert_eq!(reference["diagnostic_id"], original.diagnostic_id);
+            }
+        }
+    }
+    assert_eq!(
+        (events[3]["row"].as_u64(), events[3]["intended"].as_str()),
+        (Some(1), Some("alert_only"))
+    );
+    assert!(run.prepare(&host, START).unwrap().is_none());
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("events")).unwrap(),
+        recorded
+    );
 }

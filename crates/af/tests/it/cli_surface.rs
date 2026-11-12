@@ -2574,13 +2574,15 @@ fn schema_show_prints_every_id_af_help_json_lists() {
         "{listed:?}"
     );
     assert!(listed.len() >= 20, "{listed:?}");
-    // Service contracts retain their established af.NAME/N identities. Check all eight,
+    // Service contracts retain their established af.NAME/N identities. Check all ten,
     // even if a future edit accidentally drops one from both the topic and shipped table.
     for id in [
         "af.ci-diagnosis-selection/1",
         "af.ci-diagnosis/1",
-        "af.ci-health-notification/2",
+        "af.ci-health-notification/5",
         "af.ci-health-snapshot/1",
+        "af.ci-health-state/2",
+        "af.ci-observe-occurrence/1",
         "af.ci-observe-service/1",
         "af.ci-signature-state/1",
         "af.maintenance-watchdog-alert/1",

@@ -1,6 +1,6 @@
 # Daily CI health maintenance
 
-**Status:** Phase 1 has a hermetic implementation and
+**Status:** Phase 1 has an inactive production reader, hermetic acceptance fixtures and
 [operator guide](../ci-health-maintenance.md). Phases 2 and 3 remain proposed; no live authority,
 Ant activation or systemd installation is accepted here.
 
@@ -80,11 +80,35 @@ it never creates accepted diagnosis output. Native `ci_diagnosis_field` category
 projections and boolean `ci_diagnosis_refused` read that recorded settlement. Each remedy
 notification consumes the settlement as well as its category. Refusal selects alert-only, sends
 diagnosis, remedy and outcome, and skips Watch. Findings are sent before diagnosis using
-`af.ci-health-notification/2`: bounded batches retain every observed failure's workflow/run/job
-identity, job name, platform, conclusion, failed head, log references and release-blocking flag.
+`af.ci-health-notification/5`: every phase binds repository identity through a canonical digest
+in `repository_id` and the transport subject, restored by the reader in durable records. Bounded batches retain every
+observed failure's workflow/run/job identity, job name, platform, conclusion, failed head, log
+references and release-blocking flag.
 Each release-blocking occurrence has an explicit immediate `release_alerts` entry even when
-another failure is selected or the diagnosis reservation is exhausted. Plan authority, Task acceptance, reservations,
+another failure is selected or the diagnosis reservation is exhausted. Each batch also carries
+`deterministic_results`: the exact diagnoses and first matching report-only remedy rows and
+intentions for all deterministically classified occurrences. Summaries and results can be batched
+separately; findings omit the repeated single `deterministic_diagnosis` field and inherit their
+repository from the snapshot bound by the native request's subject digest. The reader restores repository identity in
+the durable notification and refuses a conflicting body value. Only the first unresolved
+occurrence reserves a Task; later unresolved occurrences carry deterministic unknowns with an
+exhausted-reservation rationale and alert-only intent. Batching includes these records in the
+existing serialized request bound and preserves the Scenario's dispatch limit. Notification
+versions 1–4 are refused. Plan authority, Task acceptance, reservations,
 accounting and cancellation retain their ordinary native checks.
+
+Notifications that consume a native diagnosis settlement use
+`af/scenario-ci-notification-evidence@2` in the adapter request's text `diagnosis_settlement`
+input. It carries bounded exact Task, result, selection, output and diagnostic references, the
+canonical full-settlement digest and an explicit marker for details retained in the native Run.
+Before encoding, the kernel checks the observation's subject against the notification repository.
+The transport subject carries the canonical repository digest, verified against the adapter's
+pinned snapshot; durable notifications restore the full repository. The original observation stays
+in the Run and intent inputs, and the intent digest continues to bind those original inputs.
+Notification version 5 references previously delivered findings details in lifecycle bodies
+and retains the native evidence projection. The installed reader restores those details; prior
+evidence and notification versions fail closed. Complete serialized requests retain the existing
+65,536-byte bound without copying potentially large receipt results or diagnostic prefixes.
 
 ### Failure identity
 
@@ -104,11 +128,18 @@ State expires after 14 UTC days without an observation. A green conclusion for t
 job, platform and head SHA closes the active signature and resets its transient and repair
 counters. A different head SHA starts a new occurrence but retains cross-occurrence history for 14
 days. These rules, not model judgement, control deduplication and one-open-PR limits.
+Version 2 of the observer journal metadata atomically retains the latest service-evidence digest
+and its exact snapshot with the recurrence folds. Unchanged evidence replays the original
+pre-capture evaluation, including per-job recurrence counts; changed evidence is previewed on a
+private journal copy and must satisfy the exact snapshot condition before any durable update.
+The bounded `af.ci-health-state/2` record replaces version 1 without a migration reader.
 
 ### Remedy precedence
 
-The deterministic classifier handles infrastructure and exact known-transient signatures before
-any diagnosis Task. Every other failing occurrence enters the pinned Task. Exactly the first
+The deterministic classifier handles every occurrence, including infrastructure and exact
+known-transient signatures, before selecting any diagnosis Task. Phase 1 selects the first
+unresolved occurrence for its single Task reservation; only additional unresolved occurrences
+are reported as reservation-exhausted. Exactly the first
 matching row applies; later rows cannot add an effect:
 
 | Order | Condition | Effect |
@@ -129,6 +160,16 @@ A Run proceeds through these steps:
 1. **Observe.** The installed `ci_observe_v1` adapter performs bounded read-only GitHub requests,
    reads the nightly publish receipt and emits the exact health-snapshot artifact. Missing or
    incomplete evidence remains unknown, never healthy.
+   The native Wait binds the selected snapshot content digest in
+   `ci_observe_v1:sha256:<hex>`. Owner-only `af.ci-observe-occurrence/1` selectors provide that
+   occurrence's window, nightly receipt and release PR under one pinned executable and scope;
+   changed evidence at unchanged main refuses the Wait before diagnosis or notifications.
+   Production capture bounds the complete serialized adapter response, including nested JSON
+   escaping and the final newline, before committing the journal. Excess evidence produces an
+   incomplete snapshot with a named omission and retained findings, within the same 64 KiB bound.
+   [The production guide](../ci-health-maintenance.md#production-observation-staged-only)
+   specifies selector staging, signed log-download scope and supported failing-test records.
+
 2. **Diagnose.** Only occurrences reaching the Task from the precedence rules enter diagnosis.
    The Task emits the versioned diagnosis artifact described above.
 3. **Notify findings.** A bounded notification Action sends observations, refusals and intended

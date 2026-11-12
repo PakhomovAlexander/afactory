@@ -79,35 +79,54 @@ def bundle(snapshot, snapshot_id, target, run_id='ci-health-fixture', *, exhaust
     grants = [{'adapter': 'ci-health', 'operation': op, 'destination': destination} for op in ('observe', 'notify')]
     observe, notify = grants
     subject, revision = snapshot['repository'], snapshot['source_sha']
-    context = {'schema': 'af.ci-health-notification/2', 'scenario_run': run_id, 'snapshot_id': snapshot_id,
-               'repository': subject, 'source_sha': revision, 'phase': 'findings', 'report_only': True,
+    # Every phase binds repository identity through a canonical digest at transport.
+    # The adapter restores it in durable records after checking the exact scope.
+    context = {'schema': 'af.ci-health-notification/5', 'scenario_run': run_id, 'snapshot_id': snapshot_id,
+               'source_sha': revision, 'phase': 'findings', 'report_only': True,
                'complete': snapshot['complete'], 'omissions': snapshot['omissions'],
-               'failures': [], 'release_alerts': [],
+               'failures': [], 'release_alerts': [], 'deterministic_results': [],
                'main_ref': main_ref, 'release_selector': concrete['release_selector']['value'],
                'observation_start': concrete['observation_start']['value'],
                'observation_end': snapshot['captured_at'], 'notification': notification}
     wait = lambda condition: {'kind': 'wait', 'grant': observe, 'condition': condition}
     action = {'kind': 'action', 'grant': notify, 'requires_decision': False, 'required_condition': None}
-    selected = snapshot['failures'][0] if snapshot['failures'] else None
-    if selected is not None:
-        context['source_sha'] = selected['head_sha']
     import importlib.util
     root = Path(__file__).resolve().parents[3]
     spec = importlib.util.spec_from_file_location('ci_evidence', root / 'scripts/ci-health.py')
     observer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(observer)
     observer.validate_snapshot(snapshot)
+    context['repository_id'] = observer.digest(subject)
     observer.require(len(known_transients) <= 100 and len(infrastructure) <= 100,
                      'Classifier signature bound exceeded')
-    deterministic, diagnose = (None, False)
+    # Classification is free and applies to the whole observation. Only unresolved
+    # occurrences compete for the one bounded Task reservation, in snapshot order.
+    classified = [(failure, *observer.diagnose(snapshot_id, snapshot, failure,
+        known_transients=known_transients, infrastructure=infrastructure))
+        for failure in snapshot['failures']]
+    unresolved = [item for item in classified if item[2]]
+    selected, deterministic, diagnose = (unresolved or classified or [(None, None, False)])[0]
     if selected is not None:
-        deterministic, diagnose = observer.diagnose(snapshot_id, snapshot, selected,
-            known_transients=known_transients, infrastructure=infrastructure)
-        if exhausted:
+        context['source_sha'] = selected['head_sha']
+        if exhausted and diagnose:
             deterministic = observer.malformed(snapshot_id, snapshot, selected, 'diagnosis reservation bound exhausted')
             diagnose = False
     if diagnose:
         deterministic = None
+    # Preserve every free classification and choose its first matching report-only remedy.
+    # A pending Task's provisional unknown is not a diagnosis. Other unresolved occurrences
+    # receive an explicit exhausted-reservation record, without another Task or dispatch.
+    deterministic_results = {}
+    for failure, diagnosis, needs_task in classified:
+        if needs_task:
+            if failure == selected and diagnose:
+                continue
+            diagnosis = observer.malformed(snapshot_id, snapshot, failure,
+                'diagnosis reservation bound exhausted')
+        row, intended = observer.remedy(snapshot, failure, diagnosis, exhausted=exhausted,
+            rerun_reserved=reserved, small_repair=small_repair, open_pr=open_pr)
+        deterministic_results[failure['occurrence_id']] = {
+            'diagnosis': diagnosis, 'row': row, 'intended': intended}
     eligible = False
     if gate_evidence is not None and selected is not None and diagnose:
         eligible = observer.reviewed_gate_count(gate_evidence['documents'], gate_evidence['inventory'],
@@ -116,36 +135,44 @@ def bundle(snapshot, snapshot_id, target, run_id='ci-health-fixture', *, exhaust
                    signature_id=selected['signature_id'] if selected else None,
                    category=deterministic['category'] if deterministic else None,
                    deterministic_diagnosis=deterministic,
-                   unselected_occurrences=[f['occurrence_id'] for f in snapshot['failures'][1:]],
-                   unselected_reason='diagnosis_reservation_exhausted' if len(snapshot['failures']) > 1 else None)
+                   unselected_occurrences=[f['occurrence_id'] for f, _, _ in unresolved if f != selected],
+                   unselected_reason='diagnosis_reservation_exhausted' if len(unresolved) > 1 else None)
     inputs = {'subject': {'source': 'input', 'port': 'repository'}, 'revision': lit(revision)}
-    steps = [step('observe', wait('ci_observe_v1'), inputs, 'observation')]
+    steps = [step('observe', wait('ci_observe_v1:' + observer.digest(snapshot)), inputs, 'observation')]
     # Send every observed failure before any model work. Each release-blocking occurrence
     # has an explicit alert in this immediate notification, regardless of diagnosis capacity.
     # Batch against the actual adapter request bound, including escaped body text and scope.
     def finding_message(batch):
         unselected = [f['occurrence_id'] for f in batch['failures']
-                      if f['occurrence_id'] != context['occurrence_id']]
-        return {**context, **batch, 'unselected_occurrences': unselected,
+                      if f['occurrence_id'] in context['unselected_occurrences']]
+        # Results can occupy their own batch when scope + summary + diagnosis would not
+        # fit. Scope is already bound by the request's subject digest; repeating a long
+        # repository in every body can exhaust the unchanged dispatch allowance.
+        finding_context = {k: v for k, v in context.items()
+                           if k != 'deterministic_diagnosis'}
+        return {**finding_context, **batch, 'unselected_occurrences': unselected,
                 'unselected_reason': 'diagnosis_reservation_exhausted' if unselected else None,
                 'release_alerts': [f['occurrence_id'] for f in batch['failures'] if f['release_blocking']]}
 
     def finding_request_bytes(batch):
         body = observer.canonical(finding_message(batch)).decode()
         request_inputs = {key: {'type': 'text', 'value': value}
-                          for key, value in {'subject': subject, 'revision': revision, 'body': body}.items()}
+                          for key, value in {'subject': observer.digest(subject), 'revision': revision, 'body': body}.items()}
         # Reconcile is the longer of the two Action methods. Native intent/input digests
         # always have this fixed width; every other byte is the concrete request's value.
         return len(observer.canonical({'schema': 'af/scenario-adapter-request@4',
             'operation': 'notify', 'method': 'reconcile', 'intent_id': 'sha256:' + '0' * 64,
             'input_digest': 'sha256:' + '0' * 64, 'destination': destination, 'inputs': request_inputs}))
 
-    batches = [{'failures': [], 'omissions': []}]
-    for key, items in [('failures', observer.failure_summaries(snapshot)), ('omissions', snapshot['omissions'])]:
+    empty_batch = lambda: {'failures': [], 'omissions': [], 'deterministic_results': []}
+    batches = [empty_batch()]
+    for key, items in [('failures', observer.failure_summaries(snapshot)),
+                      ('deterministic_results', list(deterministic_results.values())),
+                      ('omissions', snapshot['omissions'])]:
         for item in items:
             candidate = {**batches[-1], key: batches[-1][key] + [item]}
             if finding_request_bytes(candidate) > observer.MAX_BYTES:
-                batches.append({'failures': [], 'omissions': []})
+                batches.append(empty_batch())
                 batches[-1][key].append(item)
             else:
                 batches[-1] = candidate
@@ -155,6 +182,8 @@ def bundle(snapshot, snapshot_id, target, run_id='ci-health-fixture', *, exhaust
         body = observer.canonical(message).decode()
         steps.append(step('notify-findings' + (f'-{index + 1}' if index else ''), action,
                           {**inputs, 'body': lit(body)}, 'action'))
+    # Findings already delivered the exact details in bounded batches.
+    context.update(omissions=[], findings_reference=snapshot_id)
     if diagnose:
         steps.append(step('diagnose', {'kind': 'ci_diagnosis', 'target': target}, {}, 'observation'))
     findings = {**inputs}
@@ -199,7 +228,7 @@ def bundle(snapshot, snapshot_id, target, run_id='ci-health-fixture', *, exhaust
             'outputs': {'outcome': 'action'}, 'steps': steps, 'result': {'outcome': previous('report-outcome')},
             'completion': [scope_guard], 'authority': {'task_plans': [target['plan_id']] if diagnose else [],
                 'task_templates': [], 'grants': grants, 'decision_owners': []},
-            'limits': {'max_tokens': 5096, 'max_wall_ms': 172800000, 'max_dispatches': 20}}}}
+            'limits': {'max_tokens': 24096, 'max_wall_ms': 172800000, 'max_dispatches': 20}}}}
 
 
 def adapter_bytes(root):

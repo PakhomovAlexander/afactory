@@ -9,7 +9,7 @@
     "fallback": "refuse"
   },
   "limits": {
-    "tokens": 5096,
+    "tokens": 24096,
     "max_attempts": 2,
     "wall_ms": 1200000,
     "verification": {

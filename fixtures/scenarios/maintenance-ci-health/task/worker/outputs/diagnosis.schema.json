@@ -1,5 +1,6 @@
 {
   "additionalProperties": false,
+  "minProperties": 9,
   "properties": {
     "category": {
       "enum": [
@@ -13,10 +14,10 @@
     "evidence": {
       "items": {
         "additionalProperties": false,
+        "minProperties": 3,
         "properties": {
           "reference": {
             "maxLength": 256,
-            "minLength": 1,
             "pattern": "^[^\\u0000]+$",
             "type": "string"
           },
@@ -29,11 +30,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "snapshot_id",
-          "source_sha",
-          "reference"
-        ],
         "type": "object"
       },
       "maxItems": 20,
@@ -47,7 +43,6 @@
     },
     "rationale": {
       "maxLength": 4096,
-      "minLength": 1,
       "pattern": "^[^\\u0000]+$",
       "type": "string"
     },
@@ -69,25 +64,12 @@
       },
       "maxItems": 1,
       "minItems": 1,
-      "type": "array",
-      "uniqueItems": true
+      "type": "array"
     },
     "source_sha": {
       "pattern": "^[0-9a-f]{40}$",
       "type": "string"
     }
   },
-  "required": [
-    "schema",
-    "snapshot_id",
-    "source_artifact_ids",
-    "occurrence_id",
-    "signature_id",
-    "source_sha",
-    "category",
-    "rationale",
-    "evidence"
-  ],
-  "title": "Ci diagnosis v1",
   "type": "object"
 }

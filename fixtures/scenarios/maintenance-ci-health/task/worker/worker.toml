@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "ci/diagnosis-worker"
-version = "1.0.3"
+version = "1.0.5"
 [signature]
 effects = []
 roles = ["diagnose"]
@@ -9,7 +9,7 @@ retains = { diagnosis = ["snapshot", "requirements"] }
 worker_input_type = "custom/StructuredInput@1"
 worker_output_type = "custom/CiDiagnosis@1"
 [signature.attempt]
-tokens = 1000
+tokens = 20000
 wall_ms = 500000
 [runner]
 kind = "model"

@@ -31,6 +31,59 @@ pub struct Request {
     pub destination: String,
     pub inputs: BTreeMap<String, Datum>,
 }
+pub(crate) fn encode_request(request: &Request) -> Result<Vec<u8>> {
+    let mut transport = None;
+    if request.operation == Operation::Notify {
+        let subject = request
+            .inputs
+            .get("subject")
+            .map(Datum::as_text)
+            .transpose()?;
+        if let Some(Datum::Observation(observation)) = request.inputs.get("diagnosis_settlement")
+            && observation.condition == "ci_diagnosis_settled_v1"
+        {
+            let evidence = crate::ci_diagnosis::NotificationEvidence::from_observation(
+                observation,
+                subject.ok_or("CI notification lacks subject")?,
+            )?;
+            let encoded = serde_json::to_string(&evidence).map_err(|e| e.to_string())?;
+            text(&encoded)?;
+            let transport = transport.get_or_insert_with(|| request.clone());
+            transport
+                .inputs
+                .insert("diagnosis_settlement".into(), Datum::Text(encoded));
+            transport
+                .inputs
+                .insert("subject".into(), Datum::Text(evidence.repository_id));
+        }
+        if let Some(Datum::Text(body)) = request.inputs.get("body")
+            && let Ok(body) = serde_json::from_str::<serde_json::Value>(body)
+            && body["schema"] == "af.ci-health-notification/5"
+            && let Some(repository_id) = body.get("repository_id")
+        {
+            let expected = hash(&subject.ok_or("CI notification lacks subject")?)?;
+            require(
+                repository_id.as_str() == Some(&expected),
+                "CI notification repository binding differs",
+            )?;
+            transport
+                .get_or_insert_with(|| request.clone())
+                .inputs
+                .insert("subject".into(), Datum::Text(expected));
+        }
+    }
+    // Only the transport changes. Intent digests and journal inputs bind the original
+    // repository and complete native observation, including every diagnostic prefix.
+    let bytes =
+        serde_json::to_vec(transport.as_ref().unwrap_or(request)).map_err(|e| e.to_string())?;
+    if transport.is_some() {
+        require(
+            bytes.len() <= 65_536,
+            "CI notification request exceeds adapter bound",
+        )?;
+    }
+    Ok(bytes)
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
@@ -121,7 +174,7 @@ fn call(
             command.env(key, v);
         }
     }
-    let input = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+    let input = encode_request(request)?;
     let capture = af_process::run_supervised_captured_bounded(
         &mut command,
         Some(input),

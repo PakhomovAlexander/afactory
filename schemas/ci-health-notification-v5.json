@@ -1,7 +1,30 @@
 {
-  "$id": "urn:af:schema:ci-health-notification:2",
+  "$id": "urn:af:schema:ci-health-notification:5",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "anyOf": [
+    {
+      "properties": {
+        "phase": {
+          "const": "findings"
+        }
+      }
+    },
+    {
+      "properties": {
+        "phase": {
+          "enum": [
+            "diagnosis",
+            "remedy-intent",
+            "outcome"
+          ]
+        }
+      },
+      "required": [
+        "deterministic_diagnosis"
+      ]
+    }
+  ],
   "properties": {
     "category": {
       "anyOf": [
@@ -121,6 +144,131 @@
         }
       ]
     },
+    "deterministic_results": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosis": {
+            "additionalProperties": false,
+            "properties": {
+              "category": {
+                "enum": [
+                  "transient",
+                  "product_bug",
+                  "test_bug",
+                  "ci_infra",
+                  "unknown"
+                ]
+              },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "reference": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]+$",
+                      "type": "string"
+                    },
+                    "snapshot_id": {
+                      "pattern": "^sha256:[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "source_sha": {
+                      "pattern": "^[0-9a-f]{40}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "snapshot_id",
+                    "source_sha",
+                    "reference"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 20,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "occurrence_id": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "rationale": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]+$",
+                "type": "string"
+              },
+              "schema": {
+                "const": "af.ci-diagnosis/1"
+              },
+              "signature_id": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "snapshot_id": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "source_artifact_ids": {
+                "items": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "source_sha": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema",
+              "snapshot_id",
+              "source_artifact_ids",
+              "occurrence_id",
+              "signature_id",
+              "source_sha",
+              "category",
+              "rationale",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "intended": {
+            "enum": [
+              "alert_only",
+              "release_alert",
+              "infrastructure_alert",
+              "rerun_intended",
+              "quarantine_evidence_intended",
+              "repair_intended",
+              "report_only"
+            ]
+          },
+          "row": {
+            "maximum": 7,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "diagnosis",
+          "row",
+          "intended"
+        ],
+        "type": "object"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
     "failures": {
       "items": {
         "additionalProperties": false,
@@ -220,6 +368,10 @@
       "type": "array",
       "uniqueItems": true
     },
+    "findings_reference": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
     "intended": {
       "enum": [
         "alert_only",
@@ -236,6 +388,157 @@
       "minLength": 1,
       "pattern": "^[^\\u0000]+$",
       "type": "string"
+    },
+    "native_evidence": {
+      "$id": "urn:af:schema:scenario-ci-notification-evidence:2",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Bounded exact references to the full native settlement retained in the Run. Receipt result, diagnosis details, accepted envelope and diagnostic prefixes are explicitly omitted from transport, never from native storage.",
+      "properties": {
+        "category": {
+          "enum": [
+            "transient",
+            "product_bug",
+            "test_bug",
+            "ci_infra",
+            "unknown"
+          ]
+        },
+        "omitted": {
+          "const": "details_retained_in_native_settlement"
+        },
+        "plan_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "accepted"
+                }
+              },
+              "required": [
+                "kind",
+                "artifact_id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "deterministic_refusal"
+                },
+                "refusals": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "attempt_id": {
+                        "pattern": "^[A-Za-z0-9]{26}$",
+                        "type": "string"
+                      },
+                      "diagnostic_id": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "attempt_id",
+                      "diagnostic_id"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 20,
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "refusals"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "repository_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "result_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "revision_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "schema": {
+          "const": "af/scenario-ci-notification-evidence@2"
+        },
+        "selection": {
+          "additionalProperties": false,
+          "properties": {
+            "occurrence_id": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "schema": {
+              "const": "af.ci-diagnosis-selection/1"
+            },
+            "signature_id": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "source_sha": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema",
+            "occurrence_id",
+            "signature_id",
+            "source_sha"
+          ],
+          "type": "object"
+        },
+        "settlement_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "task_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "repository_id",
+        "settlement_id",
+        "task_id",
+        "plan_id",
+        "revision_id",
+        "result_id",
+        "snapshot_id",
+        "selection",
+        "category",
+        "provenance",
+        "omitted"
+      ],
+      "title": "Native CI notification evidence v2",
+      "type": "object"
     },
     "notification": {
       "maxLength": 256,
@@ -305,6 +608,10 @@
       "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
       "type": "string"
     },
+    "repository_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
     "row": {
       "maximum": 7,
       "minimum": 1,
@@ -317,7 +624,7 @@
       "type": "string"
     },
     "schema": {
-      "const": "af.ci-health-notification/2"
+      "const": "af.ci-health-notification/5"
     },
     "signature_id": {
       "anyOf": [
@@ -359,7 +666,6 @@
     "schema",
     "scenario_run",
     "snapshot_id",
-    "repository",
     "main_ref",
     "release_selector",
     "observation_start",
@@ -374,11 +680,11 @@
     "category",
     "unselected_occurrences",
     "unselected_reason",
-    "deterministic_diagnosis",
+    "deterministic_results",
     "report_only",
     "complete",
     "omissions"
   ],
-  "title": "Ci health notification v2",
+  "title": "Ci health notification v5",
   "type": "object"
 }

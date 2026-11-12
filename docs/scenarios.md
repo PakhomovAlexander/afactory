@@ -127,7 +127,13 @@ The [CI health Phase 1 fixture](ci-health-maintenance.md) uses native `ci_diagno
 and their category/signature projections. Native retrieval verifies the exact accepted Task
 output and captured snapshot, or records a separate deterministic unknown from a refused result.
 Its `notify` inputs include `diagnosis_settlement` (observation), `category` and `signature_id`
-(text). Findings, including explicit alerts for every release-blocking failure, precede diagnosis.
+(text). At the adapter boundary, the kernel checks the observation's exact repository subject
+and transports bounded exact settlement references as text in
+`af/scenario-ci-notification-evidence@2`, explicitly naming details retained in the native Run.
+The transport subject binds the repository by its canonical digest; the adapter verifies it against
+its pinned snapshot and restores the exact repository in the notification. The journal and intent
+digest retain the original observation. Findings, including explicit alerts for every
+release-blocking failure, precede diagnosis.
 A refusal sends a deterministic unknown diagnosis, alert-only remedy and outcome, then skips Watch.
 Ordinary accepted Task outputs still support `task_output_field` with the same closed allowlist.
 

@@ -144,7 +144,7 @@ fn ci_health_release_selection_diagnosis_and_evidence_bind_failed_head_and_refus
 }
 
 #[test]
-fn ci_health_notification_v2_requires_actionable_failures_and_explicit_release_alerts() {
+fn ci_health_notification_v5_requires_bounded_deterministic_results_and_refuses_older_versions() {
     let bundle: Value = serde_json::from_slice(
         &std::fs::read(
             workspace_root().join("fixtures/scenarios/maintenance-ci-health/scenario.json"),
@@ -160,21 +160,119 @@ fn ci_health_notification_v2_requires_actionable_failures_and_explicit_release_a
         .unwrap();
     let body: Value =
         serde_json::from_str(step["inputs"]["body"]["value"]["value"].as_str().unwrap()).unwrap();
-    assert_valid("ci-health-notification-v2.json", &body);
+    assert_valid("ci-health-notification-v5.json", &body);
     assert_eq!(body["failures"].as_array().unwrap().len(), 1);
-    for field in ["failures", "release_alerts"] {
+    assert!(
+        body.get("repository").is_none(),
+        "findings bind request subject scope once"
+    );
+    assert!(body.get("deterministic_diagnosis").is_none());
+    for phase in ["diagnosis", "remedy-intent", "outcome"] {
+        let mut lifecycle = body.clone();
+        lifecycle["phase"] = json!(phase);
+        assert!(!validator("ci-health-notification-v5.json").is_valid(&lifecycle));
+        lifecycle["deterministic_diagnosis"] = Value::Null;
+        assert_valid("ci-health-notification-v5.json", &lifecycle);
+        lifecycle["repository"] = json!("octo/project");
+        assert_valid("ci-health-notification-v5.json", &lifecycle);
+        for version in [1, 2, 3, 4] {
+            lifecycle["schema"] = json!(format!("af.ci-health-notification/{version}"));
+            assert!(!validator("ci-health-notification-v5.json").is_valid(&lifecycle));
+        }
+    }
+    for field in ["failures", "release_alerts", "deterministic_results"] {
         let mut missing = body.clone();
         missing.as_object_mut().unwrap().remove(field);
-        assert!(!validator("ci-health-notification-v2.json").is_valid(&missing));
+        assert!(!validator("ci-health-notification-v5.json").is_valid(&missing));
     }
-    let mut old = body;
-    old["schema"] = json!("af.ci-health-notification/1");
-    assert!(!validator("ci-health-notification-v2.json").is_valid(&old));
+    for version in [1, 2, 3, 4] {
+        let mut old = body.clone();
+        old["schema"] = json!(format!("af.ci-health-notification/{version}"));
+        assert!(!validator("ci-health-notification-v5.json").is_valid(&old));
+    }
+    let mut with_result = body;
+    let mut diagnosis = diagnosis(&snapshot());
+    diagnosis["snapshot_id"] = with_result["snapshot_id"].clone();
+    diagnosis["source_artifact_ids"] = json!([with_result["snapshot_id"]]);
+    diagnosis["category"] = json!("ci_infra");
+    with_result["deterministic_results"] =
+        json!([{"diagnosis":diagnosis,"row":3,"intended":"infrastructure_alert"}]);
+    assert_valid("ci-health-notification-v5.json", &with_result);
+    for field in ["diagnosis", "row", "intended"] {
+        let mut missing = with_result.clone();
+        missing["deterministic_results"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(!validator("ci-health-notification-v5.json").is_valid(&missing));
+    }
+    for (field, invalid) in [
+        ("row", json!(0)),
+        ("row", json!(8)),
+        ("intended", json!("rerun_executed")),
+        ("diagnosis", json!({})),
+    ] {
+        let mut bad = with_result.clone();
+        bad["deterministic_results"][0][field] = invalid;
+        assert!(!validator("ci-health-notification-v5.json").is_valid(&bad));
+    }
+    let mut excess = with_result.clone();
+    let results: Vec<Value> = (0..101)
+        .map(|index| {
+            let mut result = with_result["deterministic_results"][0].clone();
+            result["diagnosis"]["occurrence_id"] = json!(format!("sha256:{index:064x}"));
+            result
+        })
+        .collect();
+    excess["deterministic_results"] = json!(&results[..100]);
+    assert_valid("ci-health-notification-v5.json", &excess);
+    excess["deterministic_results"] = json!(results);
+    assert!(!validator("ci-health-notification-v5.json").is_valid(&excess));
 }
 
 #[test]
 fn ci_health_embedded_contracts_preserve_published_constraints_without_remote_resolution_metadata()
 {
+    // Expand the compact package spelling without discarding any validation constraint.
+    // A closed object with N known properties and minProperties=N requires every field.
+    fn expanded(value: &Value) -> Value {
+        match value {
+            Value::Object(original) => {
+                let mut object = original.clone();
+                object.remove("title");
+                if let Some(count) = object.remove("minProperties") {
+                    assert_eq!(object["type"], "object");
+                    assert_eq!(object["additionalProperties"], false);
+                    assert!(!object.contains_key("patternProperties"));
+                    assert!(!object.contains_key("required"));
+                    let properties = object["properties"].as_object().unwrap();
+                    assert_eq!(count.as_u64().unwrap() as usize, properties.len());
+                    object.insert(
+                        "required".into(),
+                        json!(properties.keys().collect::<Vec<_>>()),
+                    );
+                }
+                if let Some(required) = object.get_mut("required") {
+                    required
+                        .as_array_mut()
+                        .unwrap()
+                        .sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                }
+                // '+' already requires nonempty text; a singleton array is always unique.
+                if object.get("pattern") == Some(&json!("^[^\\u0000]+$")) {
+                    assert!(object.get("minLength").is_none_or(|v| *v == json!(1)));
+                    object.insert("minLength".into(), json!(1));
+                }
+                if object.get("maxItems") == Some(&json!(1)) {
+                    assert!(object.get("uniqueItems").is_none_or(|v| *v == json!(true)));
+                    object.insert("uniqueItems".into(), json!(true));
+                }
+                Value::Object(object.into_iter().map(|(k, v)| (k, expanded(&v))).collect())
+            }
+            Value::Array(values) => Value::Array(values.iter().map(expanded).collect()),
+            _ => value.clone(),
+        }
+    }
     let fixture = workspace_root().join("fixtures/scenarios/maintenance-ci-health/task");
     let contract: Value =
         serde_json::from_slice(&std::fs::read(fixture.join("kind/structured.json")).unwrap())
@@ -189,14 +287,18 @@ fn ci_health_embedded_contracts_preserve_published_constraints_without_remote_re
         .unwrap();
         published.as_object_mut().unwrap().remove("$id");
         published.as_object_mut().unwrap().remove("$schema");
-        assert_eq!(contract[direction][port]["schema"], published);
         if direction == "outputs" {
+            assert_eq!(
+                expanded(&contract[direction][port]["schema"]),
+                expanded(&published)
+            );
             let worker: Value = serde_json::from_slice(
                 &std::fs::read(fixture.join("worker/outputs/diagnosis.schema.json")).unwrap(),
             )
             .unwrap();
-            assert_eq!(worker, published);
+            assert_eq!(worker, contract[direction][port]["schema"]);
         } else {
+            assert_eq!(contract[direction][port]["schema"], published);
             let worker: Value = serde_json::from_slice(
                 &std::fs::read(fixture.join("worker/input.schema.json")).unwrap(),
             )

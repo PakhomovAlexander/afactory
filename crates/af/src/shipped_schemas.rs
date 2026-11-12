@@ -36,8 +36,10 @@ macro_rules! service_schema {
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     service_schema!("ci-diagnosis-selection", 1),
     service_schema!("ci-diagnosis", 1),
-    service_schema!("ci-health-notification", 2),
+    service_schema!("ci-health-notification", 5),
     service_schema!("ci-health-snapshot", 1),
+    service_schema!("ci-health-state", 2),
+    service_schema!("ci-observe-occurrence", 1),
     service_schema!("ci-observe-service", 1),
     service_schema!("ci-signature-state", 1),
     service_schema!("maintenance-watchdog-alert", 1),
@@ -76,6 +78,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("scenario-adapter-response", 1),
     schema!("scenario-bundle", 6),
     schema!("scenario-ci-diagnosis", 2),
+    schema!("scenario-ci-notification-evidence", 2),
     schema!("scenario-decision", 1),
     schema!("scenario-evidence-source", 1),
     schema!("scenario-experiment-source-request", 1),
@@ -279,6 +282,14 @@ mod tests {
             "this af ships no schema af.ci-diagnosis/0, only af.ci-diagnosis/1; run af schema \
              show af.ci-diagnosis/1"
         );
+        for version in [1, 2, 3, 4] {
+            assert_eq!(
+                refusal(&format!("af.ci-health-notification/{version}")),
+                format!(
+                    "this af ships no schema af.ci-health-notification/{version}, only af.ci-health-notification/5; run af schema show af.ci-health-notification/5"
+                )
+            );
+        }
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
         assert!(

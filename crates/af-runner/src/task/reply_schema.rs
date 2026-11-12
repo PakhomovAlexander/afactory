@@ -175,11 +175,12 @@ fn project(schema: &Value, depth: usize) -> Option<Value> {
             .unwrap_or_default();
         let mut properties = Map::new();
         if let Some(declared) = schema.get("properties") {
+            let all_required = closed_required(schema);
             for (name, property) in declared.as_object()? {
                 let property = project(property, depth + 1)?;
                 properties.insert(
                     name.clone(),
-                    if required.contains(&name.as_str()) {
+                    if all_required || required.contains(&name.as_str()) {
                         property
                     } else {
                         json!({"anyOf":[property, {"type":"null"}]})
@@ -203,6 +204,19 @@ fn project(schema: &Value, depth: usize) -> Option<Value> {
         return None;
     }
     Some(Value::Object(projected))
+}
+
+/// In a closed object with N declared properties, minProperties=N requires every one.
+fn closed_required(schema: &Map<String, Value>) -> bool {
+    let Some(minimum) = schema.get("minProperties").and_then(Value::as_u64) else {
+        return false;
+    };
+    schema.get("additionalProperties") == Some(&Value::Bool(false))
+        && !schema.contains_key("patternProperties")
+        && schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .is_some_and(|properties| minimum == properties.len() as u64)
 }
 
 /// The reply envelope for a strict native facility (Codex `--output-schema`): the envelope of
@@ -273,7 +287,12 @@ fn strip_optional_nulls(value: &mut Value, schema: &Value, depth: usize) {
             .and_then(Value::as_array)
             .map(|names| names.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        object.retain(|name, field| !field.is_null() || required.contains(&name.as_str()));
+        let all_required = schema.as_object().is_some_and(closed_required);
+        object.retain(|name, field| {
+            !field.is_null()
+                || required.contains(&name.as_str())
+                || all_required && properties.contains_key(name)
+        });
         for (name, field) in object.iter_mut() {
             if let Some(property) = properties.get(name) {
                 strip_optional_nulls(field, property, depth + 1);
@@ -348,6 +367,46 @@ mod tests {
             assert_eq!(strict(&request(schemas)).unwrap(), None);
         }
         assert_eq!(strict(b"a legacy prompt").unwrap(), None);
+    }
+
+    #[test]
+    fn closed_property_count_keeps_required_nullable_fields_and_optional_fields_stay_optional() {
+        let schema = json!({"type":"object","additionalProperties":false,"minProperties":1,
+            "properties":{"nested":{"type":"object","additionalProperties":false,"minProperties":1,
+                "properties":{"value":{"type":["string","null"]}}}}});
+        let input = request(BTreeMap::from([("result".into(), schema.clone())]));
+        let projection = strict(&input).unwrap().unwrap();
+        let payload = &projection["properties"]["outputs"]["properties"]["result"]["items"];
+        assert_eq!(
+            payload["properties"]["nested"]["properties"]["value"],
+            json!({"type":["string","null"]})
+        );
+        let reply =
+            json!({"schema":"af.worker-reply/1","outputs":{"result":[{"nested":{"value":null}}]}});
+        assert_eq!(
+            serde_json::from_slice::<Value>(&normalize_strict_reply(
+                &input,
+                &serde_json::to_vec(&reply).unwrap()
+            ))
+            .unwrap(),
+            reply
+        );
+
+        for change in ["lower-count", "no-count", "pattern-properties"] {
+            let mut optional = schema.clone();
+            match change {
+                "lower-count" => optional["minProperties"] = json!(0),
+                "no-count" => {
+                    optional.as_object_mut().unwrap().remove("minProperties");
+                }
+                _ => optional["patternProperties"] = json!({"^other$":{"type":"string"}}),
+            }
+            let input = request(BTreeMap::from([("result".into(), optional)]));
+            let projection = strict(&input).unwrap().unwrap();
+            let nested = &projection["properties"]["outputs"]["properties"]["result"]["items"]["properties"]
+                ["nested"];
+            assert_eq!(nested["anyOf"][1], json!({"type":"null"}), "{change}");
+        }
     }
 
     #[test]

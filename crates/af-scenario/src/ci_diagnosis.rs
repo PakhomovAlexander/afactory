@@ -5,7 +5,134 @@ use af_contracts::ci_health::{Category, Diagnosis, Evidence, Selection};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: &str = "af/scenario-ci-diagnosis@2";
+pub const NOTIFICATION_EVIDENCE_SCHEMA: &str = "af/scenario-ci-notification-evidence@2";
 const RATIONALE: &str = "Deterministic unknown: native diagnosis Task output was refused";
+
+/// Bounded references to details retained in the original Run and intent inputs.
+/// No receipt/result or diagnostic prose is copied into the adapter request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationEvidence {
+    pub schema: String,
+    pub repository_id: String,
+    pub settlement_id: String,
+    pub task_id: String,
+    pub plan_id: String,
+    pub revision_id: String,
+    pub result_id: String,
+    pub snapshot_id: String,
+    pub selection: Selection,
+    pub category: Category,
+    pub provenance: NotificationProvenance,
+    pub omitted: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotificationProvenance {
+    Accepted { artifact_id: String },
+    DeterministicRefusal { refusals: Vec<NotificationRefusal> },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationRefusal {
+    pub attempt_id: String,
+    pub diagnostic_id: String,
+}
+impl NotificationEvidence {
+    pub fn from_observation(observation: &Observation, subject: &str) -> Result<Self> {
+        require(
+            observation.subject == subject,
+            "CI notification subject differs from native diagnosis settlement",
+        )?;
+        let record = Record::parse(observation)?;
+        let provenance = match &record.provenance {
+            Provenance::Accepted { output } => NotificationProvenance::Accepted {
+                artifact_id: output.artifact_id.clone(),
+            },
+            Provenance::DeterministicRefusal { refusals } => {
+                NotificationProvenance::DeterministicRefusal {
+                    refusals: refusals
+                        .iter()
+                        .map(|r| NotificationRefusal {
+                            attempt_id: r.attempt_id.clone(),
+                            diagnostic_id: r.diagnostic_id.clone(),
+                        })
+                        .collect(),
+                }
+            }
+        };
+        let result = Self {
+            schema: NOTIFICATION_EVIDENCE_SCHEMA.into(),
+            repository_id: hash(&subject)?,
+            settlement_id: hash(&record)?,
+            task_id: record.receipt.task_id,
+            plan_id: record.receipt.plan_id,
+            revision_id: record.receipt.revision_id,
+            result_id: record.receipt.result_id,
+            snapshot_id: record.snapshot_id,
+            selection: record.selection,
+            category: record.diagnosis.category,
+            provenance,
+            omitted: "details_retained_in_native_settlement".into(),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+    pub fn validate(&self) -> Result<()> {
+        require(
+            self.schema == NOTIFICATION_EVIDENCE_SCHEMA
+                && self.omitted == "details_retained_in_native_settlement"
+                && [
+                    &self.repository_id,
+                    &self.settlement_id,
+                    &self.plan_id,
+                    &self.revision_id,
+                    &self.result_id,
+                    &self.snapshot_id,
+                    &self.selection.occurrence_id,
+                    &self.selection.signature_id,
+                ]
+                .iter()
+                .all(|s| af_contracts::is_digest(s)),
+            "Unknown or invalid CI notification evidence",
+        )?;
+        name(&self.task_id)?;
+        // Reuse the diagnosis validator for the exact selected identity and SHA alphabet.
+        unknown(&self.snapshot_id, &self.selection).validate()?;
+        require(
+            self.selection.schema == "af.ci-diagnosis-selection/1",
+            "Unknown CI selection",
+        )?;
+        match &self.provenance {
+            NotificationProvenance::Accepted { artifact_id } => require(
+                af_contracts::is_digest(artifact_id),
+                "Invalid accepted output reference",
+            ),
+            NotificationProvenance::DeterministicRefusal { refusals } => {
+                require(
+                    self.category == Category::Unknown
+                        && !refusals.is_empty()
+                        && refusals.len() <= 20,
+                    "Invalid notification refusal",
+                )?;
+                let mut seen = std::collections::BTreeSet::new();
+                for refusal in refusals {
+                    require(
+                        refusal.attempt_id.len() == 26
+                            && refusal
+                                .attempt_id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric())
+                            && seen.insert(&refusal.attempt_id)
+                            && af_contracts::is_digest(&refusal.diagnostic_id),
+                        "Invalid diagnostic reference",
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

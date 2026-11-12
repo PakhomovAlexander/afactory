@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic independent-watchdog service and durable liveness evidence fixtures."""
 import copy
+import configparser
 from contextlib import closing
 import hashlib
 from functools import lru_cache
@@ -8,6 +9,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -230,6 +232,45 @@ class WatchdogTests(unittest.TestCase):
             executable.write_text('changed executable')
             with self.assertRaisesRegex(ValueError, 'bytes changed'):
                 W.call_notifier(cfg['notifier'], {})
+
+    def test_staged_units_run_independently_with_private_authority_and_after_daily_grace(self):
+        service = configparser.ConfigParser(interpolation=None)
+        service.read(ROOT / 'scripts/maintenance/af-maintenance-watchdog.service')
+        timer = configparser.ConfigParser(interpolation=None)
+        timer.read(ROOT / 'scripts/maintenance/af-maintenance-watchdog.timer')
+        unit, run = service['Unit'], service['Service']
+        self.assertFalse(any(key in unit for key in ('Requires', 'Wants', 'ConditionPathExists')),
+                         'A missing tick or Report must not suppress the independent watchdog')
+        self.assertEqual(run['User'], 'af-maintenance')
+        self.assertEqual(run['Group'], 'af-maintenance')
+        self.assertEqual(run['UMask'], '0077')
+        self.assertEqual(run['StateDirectoryMode'], '0700')
+        self.assertEqual(run['LoadCredential'], 'watchdog-config:/etc/af-maintenance/watchdog.json')
+        self.assertEqual(run['ProtectSystem'], 'strict')
+        self.assertEqual(run['ProtectHome'], 'yes')
+        self.assertEqual(run['NoNewPrivileges'], 'yes')
+        self.assertEqual(run['PrivateTmp'], 'yes')
+        self.assertEqual(run['ReadOnlyPaths'], '/var/lib/af-maintenance/store')
+        self.assertEqual(run['ReadWritePaths'], '/var/lib/af-maintenance-watchdog')
+        command = shlex.split(run['ExecStart'])
+        self.assertEqual(command[:3], ['/usr/bin/python3', '-I', '-B'])
+        self.assertTrue(command[3].endswith('/scripts/af-maintenance-watchdog.py'))
+        self.assertEqual(command[4:], ['--config', '%d/watchdog-config', '--journal',
+            '/var/lib/af-maintenance/store/runs/scenarios.sqlite', '--state',
+            '/var/lib/af-maintenance-watchdog/watchdog.sqlite', '--notify'])
+        self.assertLess(int(run['TimeoutStartSec']), 120)
+        self.assertGreater(int(run['TimeoutStartSec']) * 1000, config()['max_wall_ms'])
+        self.assertEqual(run['KillMode'], 'control-group')
+        self.assertEqual(run['TimeoutStopSec'], '5')
+        self.assertEqual(run['MemoryMax'], '128M')
+        self.assertEqual(run['TasksMax'], '32')
+        self.assertEqual(timer['Timer']['Unit'], 'af-maintenance-watchdog.service')
+        self.assertEqual(timer['Timer']['OnCalendar'], '*-*-* 06:05:00 UTC')
+        self.assertEqual(timer['Timer']['Persistent'], 'true')
+        cfg = config()
+        scheduled = START + (6 * 60 + 5) * 60000
+        self.assertGreater(scheduled, W.due(cfg['zone'], cfg['start_day'], cfg['hour'], cfg['minute']) + W.GRACE)
+        self.assertEqual([a['kind'] for a in W.findings(cfg, world(), scheduled)], ['missed_occurrence'])
 
     def test_versioned_schema_parity(self):
         for name, value in W.schema_documents().items():
