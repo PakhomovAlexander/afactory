@@ -1,0 +1,1 @@
+- Wrap immutable Scenario template help prose so every `af help scenarios` line fits 100 columns.

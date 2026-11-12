@@ -554,14 +554,14 @@ customer authority. Local packages cannot add Pipelines, shadow catalog names, e
 or bypass replacement contracts, default constraints, closure bounds or Provider independence.
 The template retains the sealed native authority identity, repository identity and source content
 digest. Fresh planning and restart restore the captured artifacts through the native compiler,
-without reopening bindings or package paths; moving or deleting them cannot change a pinned template.
-Missing or corrupt captured artifacts fail closed. Pinning retains the complete closure in the
-Task Store through a durable `ScenarioTemplatePinned@1` reference, including before any Task exists
-and after Task collection. This reference lives for the Store lifetime and counts against the machine
-storage budget. Discarding the Store discards its pins; there is no path recapture or migration of
-version 1 templates. Changed packages or bindings require a new template pin and Scenario/policy
-confirmation, with no repeated per-run bindings override. A base, if supplied, must also be an exact commit. Templates cannot
-prefill native inputs, continuations or issue authority.
+without reopening bindings or package paths; moving or deleting them cannot change a pinned
+template. Missing or corrupt captured artifacts fail closed. Pinning retains the complete closure in
+the Task Store through a durable `ScenarioTemplatePinned@1` reference, including before any Task
+exists and after Task collection. This reference lives for the Store lifetime and counts against the
+machine storage budget. Discarding the Store discards its pins; there is no path recapture or
+migration of version 1 templates. Changed packages or bindings require a new template pin and
+Scenario/policy confirmation, with no repeated per-run bindings override. A base, if supplied, must
+also be an exact commit. Templates cannot prefill native inputs, continuations or issue authority.
 
 ```text
 # needs: a reviewed native Task file, committed authority and external Task Store
