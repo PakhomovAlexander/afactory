@@ -295,17 +295,24 @@ def source_origin(state, snapshot_id):
     return snapshot, origin
 
 
+def github_repository(url, kind):
+    match = re.fullmatch(r'https://github.com/([A-Za-z0-9-]+)/([A-Za-z0-9_.-]+)/'
+                         + kind + r'/[1-9][0-9]*', url) if isinstance(url, str) else None
+    if not match or match[2] in ('.', '..'):
+        raise ValueError('invalid GitHub ' + kind + ' identity')
+    return (match[1].lower(), match[2].lower())
+
+
 def reconcile(af, repo, state, manifest):
     """Native checked Task inspections, never imported spend or acceptance assertions."""
     exact(manifest, ('schema', 'issue', 'pull_request', 'source_commit', 'selection', 'tasks'), ('research_tasks', 'verification_task'))
     if manifest['schema'] != 'af.issue-workflow-pilot/1':
         raise ValueError('unknown pilot schema')
     choice = selection(manifest['selection'])
-    if not re.fullmatch(r'https://github.com/[^/]+/[^/]+/issues/[1-9][0-9]*', manifest['issue']):
-        raise ValueError('pilot requires exact issue identity')
+    repository = github_repository(manifest['issue'], 'issues')
     pr = manifest['pull_request']
-    if pr is not None and not re.fullmatch(r'https://github.com/[^/]+/[^/]+/pull/[1-9][0-9]*', pr):
-        raise ValueError('invalid PR identity')
+    if pr is not None and github_repository(pr, 'pull') != repository:
+        raise ValueError('PR repository differs from issue repository')
     if not re.fullmatch(r'[0-9a-f]{40}', manifest['source_commit']):
         raise ValueError('pilot requires exact source commit')
     tasks, research = manifest['tasks'], manifest.get('research_tasks', [])
@@ -342,6 +349,8 @@ def reconcile(af, repo, state, manifest):
         raise ValueError('pilot source commit or repository differs from native origin')
     issue = native_issue(state, original)
     contract = native_original_issue(state, original)
+    if contract['requirements'].get('issue_url') != manifest['issue']:
+        raise ValueError('pilot issue differs from original native requirements.issue_url')
     producers = set()
     for i, task in enumerate(tasks):
         value, revision = values[task], revisions[task]
@@ -401,7 +410,9 @@ def reconcile(af, repo, state, manifest):
                 'chargeable_tokens': values[t]['chargeable_tokens'], 'state': values[t]['state'],
                 'source_snapshot_id': revisions[t]['inputs']['source']['snapshot_id'],
                 'input_bindings': values[t].get('input_bindings')} for t in all_tasks]
-    return {'schema': 'af.issue-workflow-reconciliation/1', 'pilot': manifest, 'tasks': records,
+    return {'schema': 'af.issue-workflow-reconciliation/2', 'pilot': manifest, 'tasks': records,
+            'pull_request_association': 'unverified' if pr is not None else 'absent',
+            'remote_lookup_performed': False,
             'chain_chargeable_tokens': str(sum(int(values[t]['chargeable_tokens']) for t in all_tasks)),
             'unknown_usage_attempts': sum(values[t].get('unknown_usage_attempts', 0) for t in all_tasks),
             'continuation_sources': [(values[t].get('continues') or {}).get('snapshot_id') for t in tasks],

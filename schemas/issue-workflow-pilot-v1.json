@@ -16,7 +16,8 @@
     },
     "issue": {
       "type": "string",
-      "pattern": "^https://github.com/[^/]+/[^/]+/issues/[1-9][0-9]*$"
+      "pattern": "^https://github.com/[A-Za-z0-9-]+/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$",
+      "description": "Must exactly equal issue_url in the original implementation native Requirements specification."
     },
     "pull_request": {
       "anyOf": [
@@ -25,9 +26,10 @@
         },
         {
           "type": "string",
-          "pattern": "^https://github.com/[^/]+/[^/]+/pull/[1-9][0-9]*$"
+          "pattern": "^https://github.com/[A-Za-z0-9-]+/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$"
         }
-      ]
+      ],
+      "description": "Optional operator-declared association, unverified by native evidence. Must name the issue repository (case-insensitive); no remote lookup is performed."
     },
     "source_commit": {
       "type": "string",

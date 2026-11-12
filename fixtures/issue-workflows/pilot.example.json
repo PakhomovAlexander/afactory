@@ -3,9 +3,9 @@
   "issue": "https://github.com/OWNER/REPO/issues/1",
   "pull_request": null,
   "source_commit": "0000000000000000000000000000000000000000",
-  "selection": "bugfix/light-codex",
+  "selection": "bugfix/default-codex",
   "tasks": [
-    "pilot-original"
+    "pilot-known-fix"
   ],
   "verification_task": "pilot-verify",
   "research_tasks": []

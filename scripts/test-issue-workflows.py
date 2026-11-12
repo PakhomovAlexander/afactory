@@ -53,9 +53,9 @@ def pilot(name):
         source = 'repair-source' if task == 'repair' else 'verify-source' if task == 'verify' else 'source'
         inputs = {'source': {'snapshot_id': source},
                   'requirements': {'artifact_type': 'af/Requirements@1', 'artifact_ids': [task + '-requirements']}}
-        artifacts[task + '-requirements'] = {'type': 'af/Requirements@1', 'payload': {'specification': {'acceptance': ['exact']}}}
+        artifacts[task + '-requirements'] = {'type': 'af/Requirements@1', 'payload': {'specification': {'acceptance': ['exact'], 'issue_url': manifest['issue']}}}
         if task == 'research':
-            artifacts[task + '-requirements']['payload']['specification'] = research_requirements('issue goal')
+            artifacts[task + '-requirements']['payload']['specification'] = research_requirements('issue goal', {'acceptance': ['exact'], 'issue_url': manifest['issue']})
         artifacts[task + '-revision'] = {'type': 'af/TaskRevision@1', 'payload': {
             'task_id': task, 'goal': 'issue goal' if task != 'research' else 'research goal',
             'inputs': inputs, 'provenance': {'input_artifact_ids': []}}}
@@ -258,6 +258,7 @@ class Workflows(unittest.TestCase):
         root = ROOT / 'fixtures/issue-workflows'
         implementation = w.read(root / 'research-fix.json')
         expected = w.original_issue(implementation['goal'], implementation['requirements'])
+        self.assertEqual(expected['requirements']['issue_url'], w.read(root / 'pilot.example.json')['issue'])
         for name in ('diagnose', 'design'):
             stage = w.read(root / (name + '.json'))
             w.check_research_issue(stage['requirements'], expected)
@@ -343,6 +344,17 @@ class Workflows(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 w.composition('bugfix/default-codex', pins, FACTS)
 
+    def test_github_identity_requires_canonical_url_paths(self):
+        self.assertEqual(w.github_repository('https://github.com/Owner/Repo/issues/1', 'issues'),
+                         ('owner', 'repo'))
+        for value in (None, 1, 'https://github.com/o/r/issues/0',
+                      'https://github.com/o/r/issues/1#other',
+                      'https://github.com/o/r/issues/1?x=1',
+                      'https://github.com/o/r/pull/1', 'https://example.com/o/r/issues/1',
+                      'https://github.com/o/../issues/1', 'https://github.com/o/r?q/issues/1'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                w.github_repository(value, 'issues')
+
     def test_reconciliation_native_provenance_and_cumulative_accounting(self):
         # The native integration test separately proves these metadata paths against real CAS.
         for name, choice in w.catalog()['selections'].items():
@@ -360,6 +372,24 @@ class Workflows(unittest.TestCase):
                 self.assertEqual(result['chain_chargeable_tokens'], '40' if choice['research_pipeline'] else '30')
                 self.assertEqual(result['unknown_usage_attempts'], 2 if choice['research_pipeline'] else 1)
                 self.assertFalse(result['quality_or_savings_claim'])
+                self.assertEqual(result['schema'], 'af.issue-workflow-reconciliation/2')
+                self.assertEqual(result['pull_request_association'], 'absent')
+                self.assertFalse(result['remote_lookup_performed'])
+                linked = dict(manifest, pull_request='https://github.com/O/R/pull/2')
+                linked_result = reconcile(linked)
+                self.assertEqual(linked_result['pull_request_association'], 'unverified')
+                self.assertFalse(linked_result['remote_lookup_performed'])
+                for issue_url in ('https://github.com/o/r/issues/2', 'https://github.com/o/other/issues/1'):
+                    with self.assertRaisesRegex(ValueError, 'original native requirements.issue_url'):
+                        reconcile(dict(manifest, issue=issue_url))
+                for pr in ('https://github.com/o/other/pull/2', 'https://github.com/other/r/pull/2'):
+                    with self.assertRaisesRegex(ValueError, 'PR repository differs'):
+                        reconcile(dict(manifest, pull_request=pr))
+                original_requirements = artifacts['original-requirements']['payload']['specification']
+                saved_url = original_requirements.pop('issue_url')
+                with self.assertRaisesRegex(ValueError, 'original native requirements.issue_url'):
+                    reconcile()
+                original_requirements['issue_url'] = saved_url
                 self.assertEqual(len(result['tasks']), len(values))
                 # Independent verification may accept a candidate its author did not verify;
                 # native source binding carries that exact unsatisfied result, not acceptance.
@@ -394,7 +424,9 @@ class Workflows(unittest.TestCase):
                     saved = copy.deepcopy(target['specification'])
                     for wrong in ({'acceptance': ['stage only']},
                                   research_requirements('unrelated issue'),
-                                  research_requirements('issue goal', {'acceptance': ['unrelated']})):
+                                  research_requirements('issue goal', {'acceptance': ['unrelated']}),
+                                  research_requirements('issue goal', {'acceptance': ['exact'],
+                                                        'issue_url': 'https://github.com/o/r/issues/2'})):
                         target['specification'] = wrong
                         with self.assertRaisesRegex(ValueError, 'original issue contract'):
                             reconcile()

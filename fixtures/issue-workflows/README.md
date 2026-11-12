@@ -103,12 +103,16 @@ approval. Report operators do not run inside an implementation profile.
 
 Copy example Task files to a private directory. Set implementation and final verification to
 identical `goal`, `requirements`, `acceptance` and `issue` values (including absence).
+For pilot reconciliation, set `requirements.issue_url` to the exact GitHub issue URL in the
+pilot manifest. This structured field is captured in native `af/Requirements@1`; a top-level
+Task `issue` or manifest URL alone cannot establish the binding. Local Tasks and composition
+may omit `requirements.issue_url`, but those Tasks cannot be reconciled as linked pilots.
 `requirements.acceptance` must contain the original issue's nonempty acceptance criteria.
 Research/design keeps its own stage goal and acceptance: it judges report completeness, never
 claims to have implemented the fix. Its `requirements.original_issue` must contain exactly
 `goal`, `requirements` and `acceptance`, copied from the implementation's actual fields
 (use JSON `null` for omitted top-level `acceptance`). This includes all original structured
-requirements, not a shared URL or label. Do not wrap an unrelated goal in a common identity.
+requirements, including `issue_url` when present, alongside the full goal and acceptance. Do not wrap an unrelated goal in a common identity.
 Both report pipelines send this same native `af/Requirements@1` to their author and independent
 verifier; their staged prompts require checking the report against the embedded issue details.
 The five shipped examples describe the concrete same-source issue-contract substitution defect;
@@ -209,7 +213,8 @@ and exact reproduction requirements in `diagnose.json`, and compose research-fix
 report is a failed pilot, not permission to implement a guessed cause. Design-first uses the same
 bounded recipe with interface/authority invariants and adversarial design verification.
 
-Copy `pilot.example.json`, replace its synthetic issue/source/Task identities, and record the PR
+Copy `pilot.example.json`, replace its synthetic issue/source/Task identities consistently with
+the implementation requirements and embedded research/design `original_issue`, and record the PR
 URL only after an operator publishes separately. Put the original implementation and any repair
 in `tasks`, research Task IDs in `research_tasks`, and final shared verification in
 `verification_task`. Reconcile read-only:
@@ -232,8 +237,14 @@ It refuses accepted reports about another issue, even on the same source and Pip
 acceptance never substitutes for implementation acceptance. All required charges
 are counted once. Routes without research refuse research declarations. Final verification
 must bind the last candidate, retain the original Base and preserve the original goal and
-structured requirements/acceptance. Missing native metadata fails closed. Issue/PR links remain
-operator metadata; reconciliation does not authenticate remote issue state. The absence of
+structured requirements/acceptance. Missing native metadata fails closed. The manifest issue must exactly match
+`specification.issue_url` in the original implementation's native Requirements. A declared PR
+must name the same GitHub owner/repository as the issue (case-insensitive). The script's
+`af.issue-workflow-reconciliation/2` output labels `pull_request_association` as `unverified`
+(or `absent` for a null PR) and records `remote_lookup_performed: false`. Native evidence does
+not establish the external PR's existence, contents, issue linkage or relation to the candidate;
+reconciliation does not look up GitHub or authenticate remote issue state. The pilot manifest
+shape and native runtime schemas are unchanged. The absence of
 final verification is reported explicitly; reconciliation alone is not an acceptance receipt.
 Do not infer live quality, economic savings or throughput from deterministic planning tests.
 

@@ -219,6 +219,13 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         default["selection"]["assessment"]["decision"]["pipeline"],
         "bugfix/default-codex"
     );
+    let mut unlinked = example("known-fix.json");
+    unlinked["requirements"]
+        .as_object_mut()
+        .unwrap()
+        .remove("issue_url");
+    let unlinked = plan_document(unlinked, "unlinked-local", false);
+    assert!(unlinked.status.success(), "{}", text(&unlinked));
     // Exercise the shipped documents with only Task identity and accepted evidence replaced.
     for (i, file) in [
         "known-fix.json",
@@ -428,12 +435,29 @@ assert origin['kind'] == 'captured'
 commit = subprocess.check_output(['git', '-C', repo, 'rev-parse', 'HEAD']).decode().strip()
 assert origin['source_revision'] == commit
 if not w.selection(name)['research_pipeline']:
-    m = {'schema': 'af.issue-workflow-pilot/1', 'issue': 'https://github.com/o/r/issues/1',
+    m = {'schema': 'af.issue-workflow-pilot/1', 'issue': document['requirements']['issue_url'],
          'pull_request': None, 'source_commit': commit, 'selection': name, 'tasks': [v['task_id']]}
     result = w.reconcile(af, repo, state, m)
     assert result['chain_chargeable_tokens'] == v['chargeable_tokens']
     assert result['tasks'][0]['source_snapshot_id'] == r['inputs']['source']['snapshot_id']
-    for field, wrong in [('source_commit', '0' * 40), ('selection', 'impl/design-codex')]:
+    assert result['pull_request_association'] == 'absent'
+    assert result['remote_lookup_performed'] is False
+    linked = dict(m, pull_request='https://github.com/owner/repo/pull/2')
+    linked_result = w.reconcile(af, repo, state, linked)
+    assert linked_result['pull_request_association'] == 'unverified'
+    assert linked_result['remote_lookup_performed'] is False
+    unlinked = dict(m, tasks=['unlinked-local'])
+    try:
+        w.reconcile(af, repo, state, unlinked)
+    except ValueError as error:
+        assert 'original native requirements.issue_url' in str(error), str(error)
+    else:
+        raise AssertionError('accepted unlinked local Task as a pilot')
+    for field, wrong in [('source_commit', '0' * 40), ('selection', 'impl/design-codex'),
+                         ('issue', 'https://github.com/OWNER/REPO/issues/2'),
+                         ('issue', 'https://github.com/other/repo/issues/1'),
+                         ('pull_request', 'https://github.com/OWNER/elsewhere/pull/2'),
+                         ('pull_request', 'https://github.com/other/REPO/pull/2')]:
         bad = dict(m); bad[field] = wrong
         try:
             w.reconcile(af, repo, state, bad)
@@ -658,7 +682,7 @@ else:
             // Inspect actual native revisions, including negative documents which native
             // Report planning legitimately admits but the issue-workflow relationship refuses.
             let mut inspections = vec![v.clone()];
-            for case in ["missing", "goal", "acceptance", "empty"] {
+            for case in ["missing", "goal", "acceptance", "empty", "issue-url"] {
                 let mut task = example(if name.ends_with("design") {
                     "design.json"
                 } else {
@@ -679,6 +703,10 @@ else:
                             json!(["another acceptance"])
                     }
                     "empty" => task["requirements"]["original_issue"]["requirements"] = json!({}),
+                    "issue-url" => {
+                        task["requirements"]["original_issue"]["requirements"]["issue_url"] =
+                            json!("https://github.com/OWNER/REPO/issues/2")
+                    }
                     _ => unreachable!(),
                 }
                 let o = plan_document(task, &format!("stage-{i}-{case}"), false);
@@ -1160,6 +1188,15 @@ fn pilot_manifest_schema_matches_fixture_and_refuses_unknown_or_lost_identity() 
         let mut bad = value.clone();
         bad.as_object_mut().unwrap().remove(key);
         assert!(!validator.is_valid(&bad), "missing {key}");
+    }
+    for url in [
+        "https://github.com/o/r/issues/1?x=1",
+        "https://github.com/o/../issues/1",
+        "https://github.com/o/r/issues/1#other",
+    ] {
+        let mut bad = value.clone();
+        bad["issue"] = json!(url);
+        assert!(!validator.is_valid(&bad), "invalid issue {url}");
     }
     let mut bad = value.clone();
     bad["selection"] = json!("default/implementation");

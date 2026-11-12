@@ -27,6 +27,7 @@
       "Composition refuses a report stage whose original issue goal differs from the implementation.",
       "Composition refuses missing issue details or different original acceptance, even with identical source and Pipeline.",
       "Valid diagnosis and design keep distinct report acceptance and preserve exact final whole-change verification."
-    ]
+    ],
+    "issue_url": "https://github.com/OWNER/REPO/issues/1"
   }
 }
