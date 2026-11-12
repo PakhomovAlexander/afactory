@@ -125,6 +125,11 @@ pub(crate) fn check() -> Result<(), String> {
     }
 }
 
+/// Wait without busy polling; the existing signal watcher wakes foreground observers/drivers.
+pub(crate) fn wait(duration: std::time::Duration) {
+    let _ = CHANGED.wait_timeout_while(state(), duration, |state| state.signal.is_none());
+}
+
 /// Name the common Task this command runs, so an interrupt can say how to resume it.
 pub(crate) fn note_task(id: &str) {
     state().task = Some(id.to_owned());

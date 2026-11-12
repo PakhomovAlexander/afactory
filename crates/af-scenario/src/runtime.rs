@@ -32,17 +32,7 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
     let _lock = store.lock_run(id)?;
     loop {
         let at = clock.map_or_else(now, Ok)?;
-        let prepared = store.update(|world| {
-            let run = world.runs.get_mut(id).ok_or("Scenario Run not found")?;
-            require(at >= run.updated_unix_ms, "Run clock moved backwards")?;
-            match run.prepare(at) {
-                Ok(dispatch) => Ok(dispatch),
-                Err(why) => {
-                    run.fail(why);
-                    Ok(None)
-                }
-            }
-        })?;
+        let prepared = store.update(|world| crate::retention::prepare_run(world, id, at))?;
         let run = store
             .read()?
             .runs
@@ -207,7 +197,8 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     .ok_or("Task was not reserved")?;
                 charge.charged = Some(actual);
                 charge.unknown_usage = unknown_usage;
-                charge_breached = actual > charge.maximum || run.tokens()? > run.token_allowance();
+                charge_breached =
+                    actual > charge.maximum || run.tokens()? > u128::from(run.token_allowance());
             }
             match result {
                 Ok(Settlement::Done(ref outputs))
@@ -455,7 +446,9 @@ fn reconcile_native_charges(store: &Store, id: &str, at: u64) -> Result<()> {
             breached |= actual > charge.maximum;
         }
         run.updated_unix_ms = run.updated_unix_ms.max(at);
-        if (breached || run.tokens()? > run.token_allowance()) && run.status != Status::Cancelled {
+        if (breached || run.tokens()? > u128::from(run.token_allowance()))
+            && run.status != Status::Cancelled
+        {
             run.fail(
                 "Task exceeded its Scenario token reservation; exact recovered charge retained"
                     .into(),
@@ -494,11 +487,12 @@ pub struct Tick {
 pub fn tick(store: &Store, now: u64, clock: Option<u64>) -> Result<Tick> {
     reconcile_pending(store, now)?;
     let (started, refused) = store.update(|world| {
-        Ok(crate::schedule::tick_all_with_roadmaps(
+        Ok(crate::schedule::tick_all_with_capacity(
             store.host.as_ref(),
             &mut world.ants,
             &mut world.runs,
             &mut world.roadmaps,
+            Some(&world.run_capacity),
             now,
         ))
     })?;

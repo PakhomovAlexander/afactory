@@ -215,9 +215,11 @@ impl Run {
             fresh_tasks: BTreeMap::new(),
         })
     }
-    pub fn tokens(&self) -> Result<u64> {
-        self.task_charges.values().try_fold(0_u64, |n, c| {
-            n.checked_add(c.committed())
+    /// Exact committed usage (recorded charges plus unresolved reservations).
+    /// Native overruns can exceed u64 across Tasks; durable individual charges stay u64.
+    pub fn tokens(&self) -> Result<u128> {
+        self.task_charges.values().try_fold(0_u128, |n, c| {
+            n.checked_add(u128::from(c.committed()))
                 .ok_or_else(|| "Scenario accounting overflow".into())
         })
     }
@@ -226,11 +228,11 @@ impl Run {
             .as_ref()
             .map_or(self.limits.max_tokens, |c| c.allowance)
     }
-    pub fn accounted_tokens(&self) -> Result<u64> {
+    pub fn accounted_tokens(&self) -> Result<u128> {
         let used = self.tokens()?;
         Ok(
             if self.goal_claim.is_some() && self.task_charges.values().any(TaskCharge::uncertain) {
-                used.max(self.token_allowance())
+                used.max(u128::from(self.token_allowance()))
             } else {
                 used
             },
@@ -261,7 +263,7 @@ impl Run {
                     .checked_add(self.limits.max_wall_ms)
                     .is_some_and(|n| n <= af_contracts::json::SAFE_INTEGER_MAX as u64)
                 && self.dispatches <= self.limits.max_dispatches
-                && (self.tokens()? <= self.token_allowance()
+                && (self.tokens()? <= u128::from(self.token_allowance())
                     || matches!(self.status, Status::Failed | Status::Cancelled)),
             "Corrupt Run limits, time or accounting",
         )?;
@@ -1024,8 +1026,8 @@ impl Run {
         if !self.task_charges.contains_key(&key) {
             require(
                 self.tokens()?
-                    .checked_add(maximum)
-                    .is_some_and(|n| n <= self.token_allowance()),
+                    .checked_add(u128::from(maximum))
+                    .is_some_and(|n| n <= u128::from(self.token_allowance())),
                 "Scenario token allowance exhausted",
             )?;
             // Check every containing Scenario's own allowance; root accounting is shared once.
@@ -1035,15 +1037,17 @@ impl Run {
                         .task_charges
                         .values()
                         .filter(|c| c.step.starts_with(&format!("{frame_path}/")))
-                        .try_fold(0_u64, |n, c| {
-                            n.checked_add(c.committed())
+                        .try_fold(0_u128, |n, c| {
+                            n.checked_add(u128::from(c.committed()))
                                 .ok_or("Child accounting overflow")
                         })?;
                     require(
-                        used.checked_add(maximum).is_some_and(|n| {
-                            n <= self.pin.bundle.definitions[&frame.scenario]
-                                .limits
-                                .max_tokens
+                        used.checked_add(u128::from(maximum)).is_some_and(|n| {
+                            n <= u128::from(
+                                self.pin.bundle.definitions[&frame.scenario]
+                                    .limits
+                                    .max_tokens,
+                            )
                         }),
                         "Child token allowance exhausted",
                     )?;

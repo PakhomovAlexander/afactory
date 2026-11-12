@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-roadmap:3",
+  "title": "scenario-roadmap v3",
+  "description": "Goal roadmap planning and complete-loop admission. Semantic validation also checks identity, dependency, immutable history and accounting rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "identity",
+    "revisions",
+    "progress"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-roadmap@3"
+    },
+    "id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/name"
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "revisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Revision"
+      }
+    },
+    "progress": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario-roadmap:3#/$defs/Progress"
+      }
+    }
+  },
+  "$defs": {
+    "Progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reason",
+        "captured_goal",
+        "reserved_tokens",
+        "actual_tokens",
+        "task_charges",
+        "task_receipts",
+        "artifacts",
+        "completed_work",
+        "claim"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "active",
+            "completed",
+            "deferred",
+            "blocked"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "[^\\s]"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "captured_goal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "actual_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,38})$",
+          "maxLength": 39,
+          "description": "Exact canonical u128 actual charges; native validation enforces the u128 bound and charge sum."
+        },
+        "task_receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Reference"
+          }
+        },
+        "completed_work": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "[^\\s]"
+          }
+        },
+        "task_charges": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/TaskCharge"
+          }
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:5#/$defs/Claim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

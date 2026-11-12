@@ -1,5 +1,5 @@
 {
-  "schema": "af/ant@5",
+  "schema": "af/ant@6",
   "id": "issue-fix-example",
   "scenario": {
     "schema": "af/scenario-bundle@5",
@@ -448,7 +448,8 @@
     "timezone": "Europe/Berlin",
     "hour": 9,
     "minute": 0,
-    "start_unix_ms": 1793577600000
+    "start_unix_ms": 1793577600000,
+    "kind": "daily"
   },
   "owner": "owner",
   "notification": "local:owner",

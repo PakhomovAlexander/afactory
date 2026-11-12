@@ -1,0 +1,101 @@
+{
+  "schema": "af/scenario-bundle@5",
+  "root": "library",
+  "definitions": {
+    "library": {
+      "schema": "af/scenario@5",
+      "inputs": {},
+      "outputs": {
+        "report": "text",
+        "empty": "text"
+      },
+      "steps": [
+        {
+          "id": "inert",
+          "inputs": {
+            "file": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "unused"
+              }
+            },
+            "content": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "unused"
+              }
+            }
+          },
+          "outputs": {
+            "result": "owned_file"
+          },
+          "when": {
+            "source": "literal",
+            "value": {
+              "type": "boolean",
+              "value": false
+            }
+          },
+          "max_attempts": 1,
+          "timeout_ms": 1000,
+          "on_timeout": "fail",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "builtin",
+              "operation": "write_owned_file",
+              "destination": "/private/tmp/af-result-fixture-unused"
+            },
+            "requires_decision": false,
+            "required_condition": null
+          }
+        }
+      ],
+      "result": {
+        "report": {
+          "source": "literal",
+          "value": {
+            "type": "text",
+            "value": "{\"schema\": \"af/result-document@1\", \"observed_unix_ms\": 1700000000000, \"stale_after_ms\": 60000, \"blocks\": [{\"kind\": \"markdown\", \"content\": \"## Reading inventory\\n\\n**Author-authored Markdown**, preserved intentionally.\"}, {\"kind\": \"table\", \"title\": \"Books\", \"columns\": [\"Title\", \"Copies\", \"Tags\"], \"rows\": [[\"A & B <examples>\", 3, [\"science\", \"history\"]], [\"Line one\\nLine two\", 0, {\"status\": \"ordered\"}]]}]}"
+          }
+        },
+        "empty": {
+          "source": "literal",
+          "value": {
+            "type": "text",
+            "value": "{\"schema\": \"af/result-document@1\", \"observed_unix_ms\": 1700000000000, \"stale_after_ms\": 60000, \"blocks\": [{\"kind\": \"table\", \"title\": \"Empty result\", \"columns\": [\"Item\"], \"rows\": []}]}"
+          }
+        }
+      },
+      "completion": [
+        {
+          "source": "literal",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "authority": {
+        "task_plans": [],
+        "task_templates": [],
+        "grants": [
+          {
+            "adapter": "builtin",
+            "operation": "write_owned_file",
+            "destination": "/private/tmp/af-result-fixture-unused"
+          }
+        ],
+        "decision_owners": []
+      },
+      "limits": {
+        "max_tokens": 0,
+        "max_wall_ms": 10000,
+        "max_dispatches": 4
+      },
+      "admission": null
+    }
+  }
+}

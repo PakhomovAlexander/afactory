@@ -73,7 +73,7 @@ impl Response {
         )
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Settlement {
     Done(BTreeMap<String, Datum>),
     TaskDone {

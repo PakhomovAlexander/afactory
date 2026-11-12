@@ -143,7 +143,7 @@
         "charged_tokens": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 18446744073709551615
         },
         "result": {
           "$ref": "urn:af:schema:task-contracts:4#/$defs/taskResult"
@@ -1622,7 +1622,7 @@
             {
               "type": "integer",
               "minimum": 0,
-              "maximum": 9007199254740991
+              "maximum": 18446744073709551615
             },
             {
               "type": "null"
@@ -1954,7 +1954,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant@5"
+          "const": "af/ant@6"
         },
         "id": {
           "$ref": "urn:af:schema:scenario:5#/$defs/name"
@@ -1972,7 +1972,7 @@
           }
         },
         "schedule": {
-          "$ref": "urn:af:schema:scenario:5#/$defs/Daily"
+          "$ref": "urn:af:schema:scenario:5#/$defs/Schedule"
         },
         "owner": {
           "$ref": "urn:af:schema:scenario:5#/$defs/name"
@@ -1997,7 +1997,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-pin@5"
+          "const": "af/ant-pin@6"
         },
         "definition": {
           "$ref": "urn:af:schema:scenario:5#/$defs/Ant"
@@ -2131,6 +2131,18 @@
             "kind",
             "reason"
           ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_capacity"
+            }
+          }
         }
       ]
     },
@@ -2141,7 +2153,9 @@
         "id",
         "local_day",
         "due_unix_ms",
-        "outcome"
+        "outcome",
+        "through_index",
+        "admitted_unix_ms"
       ],
       "properties": {
         "id": {
@@ -2157,6 +2171,15 @@
         },
         "outcome": {
           "$ref": "urn:af:schema:scenario:5#/$defs/OccurrenceOutcome"
+        },
+        "through_index": {
+          "type": "integer",
+          "minimum": -1
+        },
+        "admitted_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
         }
       }
     },
@@ -2170,11 +2193,12 @@
         "changes",
         "next_day",
         "last_tick_unix_ms",
-        "occurrences"
+        "occurrences",
+        "retention"
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-state@5"
+          "const": "af/ant-state@7"
         },
         "pin": {
           "$ref": "urn:af:schema:scenario:5#/$defs/AntPin"
@@ -2215,6 +2239,9 @@
           "items": {
             "$ref": "urn:af:schema:scenario:5#/$defs/Occurrence"
           }
+        },
+        "retention": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/Retention"
         }
       }
     },
@@ -2359,7 +2386,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-list@5"
+          "const": "af/ant-list@7"
         },
         "ants": {
           "type": "object",
@@ -2385,7 +2412,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-tick@5"
+          "const": "af/ant-tick@6"
         },
         "now_unix_ms": {
           "type": "integer",
@@ -2616,6 +2643,346 @@
         "evidence_destination",
         "repository_id"
       ]
+    },
+    "Schedule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "timezone",
+            "hour",
+            "minute",
+            "start_unix_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "daily"
+            },
+            "timezone": {
+              "$ref": "urn:af:schema:scenario:5#/$defs/text"
+            },
+            "hour": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 23
+            },
+            "minute": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 59
+            },
+            "start_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "seconds",
+            "start_unix_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "interval"
+            },
+            "seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "start_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            }
+          }
+        }
+      ]
+    },
+    "AntInspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "pin",
+        "state",
+        "changes",
+        "next_day",
+        "last_tick_unix_ms",
+        "occurrences",
+        "scheduler",
+        "next_due_unix_ms",
+        "active_run",
+        "last_lateness_ms",
+        "next_due_error",
+        "retention"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-inspection@2"
+        },
+        "pin": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/AntPin"
+        },
+        "state": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/Enabled"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "$ref": "urn:af:schema:scenario:5#/$defs/Enabled"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "minItems": 1
+        },
+        "next_day": {
+          "type": "integer"
+        },
+        "last_tick_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/Occurrence"
+          }
+        },
+        "scheduler": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "running",
+            "started_unix_ms",
+            "heartbeat_unix_ms",
+            "stop_requested",
+            "error"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/ant-scheduler@1"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "started_unix_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8640000000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "heartbeat_unix_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8640000000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stop_requested": {
+              "type": "boolean"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "next_due_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_run": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:5#/$defs/name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_lateness_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_due_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retention": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/Retention"
+        }
+      }
+    },
+    "ChargeBucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settled_unix_ms",
+        "tokens"
+      ],
+      "properties": {
+        "settled_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        "tokens": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,38}$"
+        }
+      }
+    },
+    "Retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcomes",
+        "terminal_runs",
+        "charged_tokens",
+        "through_index",
+        "provenance",
+        "rolling_charges",
+        "mode_changes"
+      ],
+      "properties": {
+        "outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "started": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_busy": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_missed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_paused": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_disabled": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_budget": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_missing_time": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_roadmap": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_capacity": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "terminal_runs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "charged_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,38})$"
+        },
+        "through_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provenance": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+        },
+        "rolling_charges": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/ChargeBucket"
+          }
+        },
+        "mode_changes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
     }
   }
 }

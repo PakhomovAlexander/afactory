@@ -124,11 +124,11 @@ fn publication() -> (Bundle, Policy) {
 pub fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@5".into(),
+        schema: "af/ant@6".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
-        schedule: Daily {
+        schedule: Schedule::Daily {
             timezone: timezone.into(),
             hour,
             minute,
@@ -164,6 +164,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         "scenario-v5.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
+        "scenario-roadmap-v3.json",
     ] {
         let value: Value = serde_json::from_slice(&std::fs::read(dir.join(file)).unwrap()).unwrap();
         let id = value["$id"].as_str().unwrap().to_owned();
@@ -251,20 +252,23 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         ("scenario-policy-v5.json", json!(policy)),
         ("scenario-pin-v5.json", json!(pin)),
         ("scenario-run-v5.json", json!(run)),
-        ("ant-v5.json", json!(ant.pin.definition)),
-        ("ant-pin-v5.json", json!(ant.pin)),
-        ("ant-state-v5.json", json!(ant)),
+        ("ant-v6.json", json!(ant.pin.definition)),
+        ("ant-pin-v6.json", json!(ant.pin)),
+        ("ant-state-v7.json", json!(ant)),
         (
             "scenario-list-v5.json",
             json!({"schema":"af/scenario-list@5","runs":{"run":run}}),
         ),
         (
-            "ant-list-v5.json",
-            json!({"schema":"af/ant-list@5","ants":{"daily":ant}}),
+            "ant-list-v7.json",
+            json!({"schema":"af/ant-list@7","ants":{"daily":{
+                "schema":"af/ant-inspection@2", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
+                "scheduler":{"schema":"af/ant-scheduler@1","running":false,"started_unix_ms":null,"heartbeat_unix_ms":null,"stop_requested":false,"error":null},"next_due_unix_ms":START,"next_due_error":null,"active_run":null,"last_lateness_ms":null
+            }}}),
         ),
         (
-            "ant-tick-v5.json",
-            json!({"schema":"af/ant-tick@5","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v6.json",
+            json!({"schema":"af/ant-tick@6","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
@@ -883,7 +887,9 @@ fn pinned_iana_dst_gap_is_skipped_and_fold_has_only_one_occurrence() {
     let mut runs = BTreeMap::new();
     // 2026-03-29: 02:30 does not exist. 2026-10-25: 02:30 repeats.
     for (start, gap) in [(1_774_742_400_000_u64, true), (1_792_886_400_000, false)] {
-        ant.pin.definition.schedule.start_unix_ms = start;
+        if let Schedule::Daily { start_unix_ms, .. } = &mut ant.pin.definition.schedule {
+            *start_unix_ms = start;
+        }
         ant.pin.revision = hash(&(&ant.pin.definition, &ant.pin.scenario, &ant.pin.zone)).unwrap();
         ant = AntState::new(ant.pin.clone(), start).unwrap();
         ant.change(AntMode::Enabled, start).unwrap();
@@ -1136,6 +1142,11 @@ fn per_run_and_rolling_budgets_reserve_waiting_work_and_release_only_after_windo
     assert!(run.prepare(START + 12 * 3_600_000).unwrap().is_some());
     assert_eq!(run.tokens().unwrap(), 100);
     run.fail("fixture definitive Task failure; reservation retained".into());
+    // A definitive, settled failure has a known native charge. Unknown usage is
+    // covered separately and must never expire merely because the window elapsed.
+    run.task_charges
+        .values_mut()
+        .for_each(|c| c.charged = Some(100));
     ant.tick(
         &TestHost::default(),
         START + DAY + 12 * 3_600_000,
@@ -1206,7 +1217,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v6.json", &world);
+    valid("scenario-store-v9.json", &world);
 }
 
 #[test]
@@ -1508,7 +1519,9 @@ fn one_refused_timezone_horizon_does_not_block_other_ant_occurrences() {
     let now = day + 12 * 3_600_000;
     let mut healthy_definition = ant("UTC", 12, 0).pin.definition;
     healthy_definition.id = "healthy".into();
-    healthy_definition.schedule.start_unix_ms = day;
+    if let Schedule::Daily { start_unix_ms, .. } = &mut healthy_definition.schedule {
+        *start_unix_ms = day;
+    }
     let (_, policy) = simple();
     let mut healthy = AntState::new(
         AntPin::new(&TestHost::default(), healthy_definition, policy).unwrap(),
@@ -1550,7 +1563,9 @@ fn corrupt_timezone_offsets_and_calendar_cursors_are_refused_without_overflow() 
 #[test]
 fn negative_offset_schedule_at_epoch_skips_only_instants_before_its_start() {
     let mut binding = ant("-03:00", 9, 0).pin.definition;
-    binding.schedule.start_unix_ms = 1;
+    if let Schedule::Daily { start_unix_ms, .. } = &mut binding.schedule {
+        *start_unix_ms = 1;
+    }
     binding.id = "epoch".into();
     let (_, policy) = simple();
     let mut ant = AntState::new(
@@ -1822,8 +1837,12 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
 /// native work here is a test failure, rather than a call into the operator's machine state.
 #[derive(Default)]
 pub(super) struct TestHost {
+    pub planned_tasks: Option<std::sync::Mutex<Vec<TaskTarget>>>,
     pub reject_templates: std::sync::atomic::AtomicBool,
     pub charge: Option<(u64, bool)>,
+    pub task_settlement: Option<super::adapter::Settlement>,
+    pub task_settlements: BTreeMap<String, Result<super::adapter::Settlement>>,
+    pub task_charges: BTreeMap<String, (u64, bool)>,
 }
 impl crate::Host for TestHost {
     fn validate_template(&self, _: &Value, _: Option<&Value>, _: u64) -> Result<()> {
@@ -1855,20 +1874,59 @@ impl crate::Host for TestHost {
     }
     fn plan_template(
         &self,
-        _: &template::Template,
-        _: Value,
+        template: &template::Template,
+        document: Value,
         _: bool,
         _: &BTreeMap<String, (TaskReceipt, String)>,
     ) -> Result<TaskTarget> {
-        panic!("unexpected native planning")
+        let tasks = self
+            .planned_tasks
+            .as_ref()
+            .expect("unexpected native planning");
+        let target = TaskTarget {
+            repo: template.repo.clone(),
+            state: template.state.clone(),
+            task_id: document["task_id"].as_str().unwrap().into(),
+            plan_id: digest(b"plan"),
+            revision_id: digest(b"revision"),
+            max_tokens: template.max_tokens,
+        };
+        tasks.lock().unwrap().push(target.clone());
+        Ok(target)
     }
     fn run_task(
         &self,
-        _: &TaskTarget,
+        target: &TaskTarget,
         _: u64,
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<adapter::Settlement> {
-        panic!("unexpected native Task dispatch")
+        if let Some(tasks) = &self.planned_tasks {
+            if tasks.lock().unwrap().len() == 1 {
+                let receipt: TaskReceipt = serde_json::from_value(serde_json::json!({
+                    "task_id":target.task_id, "plan_id":target.plan_id,
+                    "revision_id":target.revision_id, "result_id":digest(b"first-result"),
+                    "charged_tokens":17,
+                    "result":{"task_revision_id":target.revision_id,"execution":"completed",
+                        "acceptance":"satisfied","domain_conclusion":"verified",
+                        "outputs":{"report":{"artifact_ids":[digest(b"report")],
+                            "artifact_type":"af/Test@1","cardinality":"one"}},
+                        "evidence":[digest(b"native-evidence")],"missing_obligations":[]}
+                }))
+                .unwrap();
+                return Ok(adapter::Settlement::TaskDone {
+                    outputs: BTreeMap::from([("result".into(), Datum::Task(receipt))]),
+                    unknown_usage: self.charge.is_some_and(|(_, unknown)| unknown),
+                });
+            }
+            return Err("Native response lost".into());
+        }
+        if let Some(result) = self.task_settlements.get(&target.task_id) {
+            return result.clone();
+        }
+        Ok(self
+            .task_settlement
+            .clone()
+            .unwrap_or_else(|| panic!("unexpected native Task dispatch")))
     }
     fn active_task_run(&self, _: &TaskTarget) -> Option<u64> {
         panic!("unexpected native active run lookup")
@@ -1876,8 +1934,12 @@ impl crate::Host for TestHost {
     fn cancel_task_run(&self, _: &TaskTarget, _: u64) -> Result<()> {
         panic!("unexpected native cancellation")
     }
-    fn task_charge(&self, _: &TaskTarget) -> Result<Option<(u64, bool)>> {
-        Ok(self.charge)
+    fn task_charge(&self, target: &TaskTarget) -> Result<Option<(u64, bool)>> {
+        Ok(self
+            .task_charges
+            .get(&target.task_id)
+            .copied()
+            .or(self.charge))
     }
     fn validate_performance_proof(
         &self,
