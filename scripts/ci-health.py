@@ -637,13 +637,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     seen = {}
     green_events = []
     closed_all = set()
-    def current_id(job):
-        try:
-            return occurrence_id(repository, job)
-        except (ValueError, KeyError, TypeError):
-            return None
-    current_occurrences = {identity for job in jobs if isinstance(job, dict)
-                           if (identity := current_id(job)) is not None}
+    admitted_occurrences = set()
     def order(item):
         index, job = item
         if not isinstance(job, dict):
@@ -696,17 +690,19 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             failure.update(folded, log_artifacts=list(dict.fromkeys(refs)), release_blocking=bool(job.get('release_blocking', False)))
             structural({**snapshot, 'failures': [failure]}, 'ci-health-snapshot')
             snapshot['failures'].append(failure)
+            admitted_occurrences.add(occurrence)
         except (ValueError, KeyError, TypeError) as error:
             omissions.append('malformed job ' + str(index) + ': ' + str(error)[:160])
     now = instant(at)
     retained_previous = 0
-    current_heads = {service['source_sha']}
-    if service.get('release_pr') is not None:
-        current_heads.add(service['release_pr']['head_sha'])
+    previous_release = previous_capture['snapshot']['release_pr'] if previous_capture else None
+    current_release = service.get('release_pr')
     for previous in previous_failures:
+        release_superseded = (previous_release is not None and current_release is not None
+                              and previous_release['head_sha'] != current_release['head_sha'])
         if ((previous['signature_id'], previous['head_sha']) in closed_all
-                or previous['occurrence_id'] in seen or previous['occurrence_id'] in current_occurrences
-                or previous['head_sha'] not in current_heads
+                or previous['occurrence_id'] in admitted_occurrences or release_superseded
+                or (previous_release is None and previous['head_sha'] != service['source_sha'])
                 or now - instant(previous['last_seen_at']) >= dt.timedelta(days=14)):
             continue
         # Retain exact unresolved evidence without advancing its observation time or resurrecting

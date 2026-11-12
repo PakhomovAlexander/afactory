@@ -778,6 +778,28 @@ class EvidenceTests(unittest.TestCase):
         self.journal.db.execute('DROP TRIGGER refuse_receipt')
         self.assertEqual(self.observe(), captured)
 
+    def test_malformed_replacement_and_unavailable_release_lookup_do_not_supersede_failure(self):
+        raw = service()
+        valid = copy.deepcopy(raw['jobs'][0])
+        valid.update(completed_at='2026-11-09T03:20:00Z', release_blocking=True)
+        raw['release_pr'] = {'number': 7, 'head_sha': valid['head_sha']}
+        self.observe(dict(raw, jobs=[valid]))
+        malformed = copy.deepcopy(valid)
+        malformed['completed_at'] = 'invalid'
+        observed = self.observe(dict(raw, jobs=[malformed]))
+        self.assertFalse(observed['complete'])
+        self.assertEqual([f['job_id'] for f in observed['failures']], [valid['job_id']])
+        self.assertTrue(observed['failures'][0]['release_blocking'])
+        raw['nightly_receipt']['conclusion'] = 'success'
+        empty = self.observe(dict(raw, jobs=[]))
+        self.assertEqual([f['job_id'] for f in empty['failures']], [valid['job_id']])
+        self.assertTrue(empty['failures'][0]['release_blocking'])
+        # A failed PR lookup is unavailable evidence, not intentional release removal.
+        del raw['release_pr']
+        unavailable = self.observe(dict(raw, jobs=[]))
+        self.assertEqual([f['job_id'] for f in unavailable['failures']], [valid['job_id']])
+        self.assertTrue(unavailable['failures'][0]['release_blocking'])
+
     def test_green_closure_preserves_other_heads_recurrence_and_release_alerts(self):
         raw = service()
         main = copy.deepcopy(raw['jobs'][0])
