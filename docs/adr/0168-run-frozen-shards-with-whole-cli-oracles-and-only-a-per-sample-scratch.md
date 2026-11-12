@@ -1,6 +1,6 @@
 # ADR-0168: Run frozen shards with whole-CLI oracles and only a per-sample scratch
 
-**Status:** accepted (2026-10-19); decisions 5, 6, 7 and 10 amended by
+**Status:** accepted (2026-10-19); benchmark renewal coverage restored by [renewal workloads](2026-11-11-preserve-renewal-performance-workloads.md); decisions 5, 6, 7 and 10 amended by
 [ADR-0169](0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md)
 (one machine lock, side-written seeds, the Campaign fixture and executable states). Package p3b of the
 [continuous performance laboratory](../design/continuous-performance.md), with the closeout of

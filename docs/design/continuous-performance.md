@@ -164,6 +164,7 @@ cannot be silently omitted or downgraded when a run fails.
 | Authority library | Current-plan check and first `TaskRuntime::new`; two-node graphs at both large package sizes, fresh valid leases | Quick, nightly |
 | CLI Task | Start without execution; separately run RootInputs plus check(`true`), with the check proved executed | Quick, nightly, release |
 | CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event native Task fixtures | Quick, nightly, release |
+| CLI wait | Real two-second timeout over small and artifact-heavy Tasks, 100/10,000 events and zero/100 historical Tasks; total CPU, wall and RSS | Nightly |
 | Persistence diagnostic | Real filesystem CAS write/read and state append/read, with declared flush semantics and logical bytes | Advisory nightly/manual |
 
 Issue #255's reported 11.044 CPU seconds is historical motivation, not a current
@@ -323,7 +324,11 @@ Optional metrics carry an unavailable reason; required missing metrics fail the 
 
 ## 7. What makes a regression or a pass
 
-The primary metric is wall time. Each critical case instance has exactly one primary
+The default primary metric is wall time. `cli_task_wait` instead uses `total_cpu_ms`, user plus
+system CPU from one reaped-child rusage record over the whole CLI lifetime, with wall and RSS
+reported separately. Its timeout clock starts after the initial Task open; final status is also
+part of the measured process lifetime. The [wait investigation procedure](../measurements/task-wait-validation-reuse.md)
+describes its fixtures and comparison commands. Each critical case instance has exactly one primary
 metric with a reviewed relative tolerance `r` and strictly positive absolute tolerance
 `a`. Initial wall-time policy is `r = 0.05`, `a = 1 ms`; any different case value must
 be explicit in the registry and calibrated. This floor prevents tiny absolute changes

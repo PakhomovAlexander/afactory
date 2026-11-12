@@ -21,11 +21,11 @@
 //! into a *different* state than it committed, silently.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
@@ -40,7 +40,162 @@ thread_local! {
     /// Verification is per-object, but scratch is per worker thread. Source trees commonly have
     /// files smaller than this buffer, so zeroing a new 64 KiB array per object can exceed the
     /// actual content traffic by several times.
+    static READ_TRACES: RefCell<Vec<ReadTrace>> = const { RefCell::new(Vec::new()) };
     static VERIFY_SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0_u8; STREAM_BUFFER_BYTES]);
+}
+
+// Trace only this thread's reads of this CAS. Nested projections contribute to their
+// parent's closure; other threads and other Stores cannot supply authority for it.
+struct ReadTrace {
+    cas: usize,
+    ids: BTreeSet<String>,
+}
+struct ReadTraceGuard;
+impl Drop for ReadTraceGuard {
+    fn drop(&mut self) {
+        READ_TRACES.with(|traces| {
+            traces.borrow_mut().pop();
+        });
+    }
+}
+
+// The issue_255_large wire envelope is 5.6 MB but its numeric-byte JSON array alone
+// occupies about 192 MiB as ordered Values after trimming array capacity. Bound decoded
+// memory while retaining that real workload.
+const VALIDATED_CACHE_BYTES: usize = 256 * 1024 * 1024;
+const VALIDATED_CACHE_ENTRIES: usize = 128;
+
+struct ValidatedArtifact {
+    fingerprint: String,
+    envelope: Arc<af_contracts::ArtifactEnvelope>,
+    weight: usize,
+}
+#[derive(Default)]
+struct ValidatedArtifacts {
+    entries: BTreeMap<String, ValidatedArtifact>,
+    order: VecDeque<String>,
+    bytes: usize,
+}
+impl ValidatedArtifacts {
+    fn remove(&mut self, id: &str) {
+        if let Some(old) = self.entries.remove(id) {
+            self.bytes -= old.weight;
+            self.order.retain(|key| key != id);
+        }
+    }
+    fn get(&mut self, id: &str, fingerprint: &str) -> Option<Arc<af_contracts::ArtifactEnvelope>> {
+        if let Some(entry) = self.entries.get(id) {
+            if entry.fingerprint == fingerprint {
+                return Some(Arc::clone(&entry.envelope));
+            }
+        }
+        self.remove(id);
+        None
+    }
+    fn insert(
+        &mut self,
+        id: &str,
+        fingerprint: String,
+        envelope: Arc<af_contracts::ArtifactEnvelope>,
+    ) {
+        self.remove(id);
+        // Account for decoded allocations, not just wire bytes. Even small JSON objects
+        // allocate map buckets; charge 1 KiB per member, plus allocator/page
+        // slop for strings and arrays. Dense objects can exceed the memo and bypass it.
+        let producer_bytes = match &envelope.producer {
+            af_contracts::Producer::Attempt {
+                run_id,
+                node_id,
+                attempt_id,
+            } => string_weight(run_id) + string_weight(node_id) + string_weight(attempt_id),
+            af_contracts::Producer::KernelOperation {
+                run_id,
+                node_id,
+                operation_id,
+            } => {
+                string_weight(run_id)
+                    + node_id.as_ref().map_or(0, string_weight)
+                    + string_weight(operation_id)
+            }
+        };
+        let weight = value_weight(&envelope.payload)
+            .saturating_add(producer_bytes)
+            .saturating_add(string_weight(&envelope.artifact_type))
+            .saturating_add(
+                envelope
+                    .subject_snapshot_id
+                    .as_ref()
+                    .map_or(0, String::capacity),
+            )
+            .saturating_add(
+                envelope
+                    .input_artifacts
+                    .iter()
+                    .map(|s| s.capacity() + 64)
+                    .sum::<usize>(),
+            )
+            .saturating_add(4096);
+        if weight > VALIDATED_CACHE_BYTES {
+            return;
+        }
+        while self.entries.len() >= VALIDATED_CACHE_ENTRIES
+            || self.bytes + weight > VALIDATED_CACHE_BYTES
+        {
+            let oldest = self.order.front().expect("nonempty bounded cache").clone();
+            self.remove(&oldest);
+        }
+        self.order.push_back(id.to_owned());
+        self.bytes += weight;
+        self.entries.insert(
+            id.to_owned(),
+            ValidatedArtifact {
+                fingerprint,
+                envelope,
+                weight,
+            },
+        );
+    }
+}
+fn string_weight(text: &String) -> usize {
+    text.capacity().saturating_add(4096)
+}
+
+// A parsed byte array can reserve the next power-of-two number of 72-byte ordered Values.
+// Trim that spare allocation once on a validated miss, before sharing immutable decoded data.
+fn compact_arrays(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for value in items.iter_mut() {
+                compact_arrays(value);
+            }
+            items.shrink_to_fit();
+        }
+        Value::Object(fields) => {
+            for value in fields.values_mut() {
+                compact_arrays(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn value_weight(value: &Value) -> usize {
+    match value {
+        Value::String(text) => string_weight(text),
+        Value::Array(items) => items.iter().fold(
+            items
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Value>())
+                .saturating_add(4096),
+            |size, value| size.saturating_add(value_weight(value)),
+        ),
+        Value::Object(fields) => fields.iter().fold(0usize, |size, (key, value)| {
+            size.saturating_add(1024)
+                .saturating_add(string_weight(key))
+                .saturating_add(value_weight(value))
+        }),
+        _ => 0,
+    }
 }
 
 fn with_verify_scratch<T>(f: impl FnOnce(&mut [u8]) -> Result<T, CasError>) -> Result<T, CasError> {
@@ -145,6 +300,7 @@ pub struct Cas {
     /// Objects whose bytes and publication chain this process has already synced. CAS objects
     /// are immutable, so repeated references need neither another hash pass nor another fsync.
     durable: Mutex<BTreeSet<PathBuf>>,
+    validated: Mutex<ValidatedArtifacts>,
 }
 
 impl Cas {
@@ -183,6 +339,7 @@ impl Cas {
             verify_only: false,
             pending: Mutex::new(BTreeSet::new()),
             durable: Mutex::new(BTreeSet::new()),
+            validated: Mutex::new(ValidatedArtifacts::default()),
         }
     }
 
@@ -482,13 +639,10 @@ impl Cas {
         canonical::validate_envelope(&envelope).map_err(|error| {
             CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })?;
-        let value = serde_json::to_value(&envelope).map_err(|error| {
-            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-        })?;
-        af_contracts::json::admit(&value).map_err(|error| {
-            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-        })?;
-        let bytes = canonical::canonicalize(&value)?;
+        // The payload already passed numeric admission; every other envelope field is a
+        // string, string list or string-only Producer. Borrow it directly instead of cloning
+        // the payload into a second Value and walking the same numeric domain again.
+        let bytes = canonical::canonicalize_envelope(&envelope)?;
         if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
             return Err(artifact_envelope_too_large(bytes.len() as u64));
         }
@@ -572,57 +726,182 @@ impl Cas {
     /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
     pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
         let _span = af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::CasGet);
-        let bytes = self.read_bounded_bytes(digest, max_bytes)?;
+        let bytes = self
+            .read_bounded_bytes(digest, max_bytes)
+            .inspect_err(|_| {
+                self.validated.lock().expect("cas validated").remove(digest);
+            })?;
         // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
-        verify_object_bytes(digest, &bytes)?;
+        let fingerprint = canonical::blob_content_id(&bytes);
+        let checked = if fingerprint == digest
+            || self
+                .validated
+                .lock()
+                .expect("cas validated")
+                .get(digest, &fingerprint)
+                .is_some()
+        {
+            Ok(())
+        } else {
+            decode_artifact_bytes(digest, &bytes).map(|mut envelope| {
+                compact_arrays(&mut envelope.payload);
+                self.validated.lock().expect("cas validated").insert(
+                    digest,
+                    fingerprint,
+                    Arc::new(envelope),
+                );
+            })
+        };
+        self.finish_read(digest, checked)?;
         Ok(bytes)
     }
 
-    /// Read and validate a typed envelope in one pass. Both domain-separated identities,
-    /// canonical stored bytes and the requested artifact ID are checked on every call.
-    /// Returning the decoded envelope avoids repeating this work at the caller boundary.
+    /// Read and validate a typed envelope. Owned callers retain their API; projection readers
+    /// can share immutable decoded data through [`Cas::get_artifact_shared`].
     pub fn get_artifact(&self, digest: &str) -> Result<af_contracts::ArtifactEnvelope, CasError> {
-        let _span = af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::CasGetArtifact);
-        let bytes = self.read_bounded_bytes(digest, MAX_ARTIFACT_ENVELOPE_BYTES)?;
-        decode_artifact_bytes(digest, &bytes)
+        self.get_artifact_shared(digest)
+            .map(|envelope| (*envelope).clone())
     }
 
-    /// Verify mixed raw/typed evidence without decoding raw transcript JSON. Only a valid
-    /// artifact-domain identity can produce a typed envelope; a blob's `type` key grants none.
-    /// Both paths use one opened file and bounded memory (8 MiB for typed control records).
+    /// Reuse fully validated decoding only after hashing the current file's complete raw
+    /// bytes. Metadata is never an integrity key. A miss decodes the same open handle, then
+    /// checks that the bytes decoded still have the observed fingerprint.
+    pub fn get_artifact_shared(
+        &self,
+        digest: &str,
+    ) -> Result<Arc<af_contracts::ArtifactEnvelope>, CasError> {
+        let _span = af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::CasGetArtifact);
+        let result = (|| {
+            let mut opened = self.open_for_verified_read(digest)?;
+            if opened.len() > MAX_ARTIFACT_ENVELOPE_BYTES {
+                return Err(CasError::Io(std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    format!(
+                        "CAS object {digest} is {} bytes; limit is {MAX_ARTIFACT_ENVELOPE_BYTES}",
+                        opened.len()
+                    ),
+                )));
+            }
+            let (fingerprint, size) = self.fingerprint(&mut opened)?;
+            self.decode_opened(&mut opened, fingerprint, size)
+        })();
+        self.finish_read(digest, result)
+    }
+
+    /// Mixed raw/typed evidence retains the content-domain distinction. A raw JSON blob
+    /// never gains artifact authority, even when it spells an envelope.
     pub fn get_optional_artifact(
         &self,
         digest: &str,
     ) -> Result<Option<af_contracts::ArtifactEnvelope>, CasError> {
-        let mut opened = self.open_for_verified_read(digest)?;
-        let (actual, size) = with_verify_scratch(|buffer| {
-            canonical::blob_content_id_reader_with_buffer(&mut opened.file, buffer)
-                .map_err(CasError::Io)
+        self.get_optional_artifact_shared(digest)
+            .map(|value| value.map(|envelope| (*envelope).clone()))
+    }
+
+    /// Shared form of [`Cas::get_optional_artifact`], with the same fresh raw-byte checks.
+    pub fn get_optional_artifact_shared(
+        &self,
+        digest: &str,
+    ) -> Result<Option<Arc<af_contracts::ArtifactEnvelope>>, CasError> {
+        let result = (|| {
+            let mut opened = self.open_for_verified_read(digest)?;
+            let (fingerprint, size) = self.fingerprint(&mut opened)?;
+            if fingerprint == digest {
+                return Ok(None);
+            }
+            self.decode_opened(&mut opened, fingerprint, size).map(Some)
+        })();
+        self.finish_read(digest, result)
+    }
+
+    fn fingerprint(&self, opened: &mut OpenedCasObject) -> Result<(String, u64), CasError> {
+        let result = with_verify_scratch(|buffer| {
+            // Metadata frames the read, never establishes integrity. One extra byte detects
+            // growth without letting a concurrently appended file make a typed read unbounded.
+            let bounded = Read::by_ref(&mut opened.file).take(opened.stored_len.saturating_add(1));
+            canonical::blob_content_id_reader_with_buffer(bounded, buffer).map_err(CasError::Io)
         })?;
-        if size != opened.stored_len {
+        if result.1 != opened.stored_len {
             return Err(CasError::Corrupt {
-                digest: digest.into(),
+                digest: opened.digest.clone(),
             });
         }
-        if actual == digest {
-            return Ok(None);
-        }
+        Ok(result)
+    }
+
+    fn decode_opened(
+        &self,
+        opened: &mut OpenedCasObject,
+        fingerprint: String,
+        size: u64,
+    ) -> Result<Arc<af_contracts::ArtifactEnvelope>, CasError> {
         if size > MAX_ARTIFACT_ENVELOPE_BYTES {
             return Err(CasError::Corrupt {
-                digest: digest.into(),
+                digest: opened.digest.clone(),
             });
+        }
+        if let Some(envelope) = self
+            .validated
+            .lock()
+            .expect("cas validated")
+            .get(&opened.digest, &fingerprint)
+        {
+            return Ok(envelope);
         }
         opened.file.rewind()?;
         let mut bytes = Vec::with_capacity(size as usize);
         Read::by_ref(&mut opened.file)
             .take(size + 1)
             .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 != size {
+        if bytes.len() as u64 != size || canonical::blob_content_id(&bytes) != fingerprint {
             return Err(CasError::Corrupt {
-                digest: digest.into(),
+                digest: opened.digest.clone(),
             });
         }
-        decode_artifact_bytes(digest, &bytes).map(Some)
+        let mut envelope = decode_artifact_bytes(&opened.digest, &bytes)?;
+        compact_arrays(&mut envelope.payload);
+        let envelope = Arc::new(envelope);
+        self.validated.lock().expect("cas validated").insert(
+            &opened.digest,
+            fingerprint,
+            Arc::clone(&envelope),
+        );
+        Ok(envelope)
+    }
+
+    fn finish_read<T>(&self, digest: &str, result: Result<T, CasError>) -> Result<T, CasError> {
+        match &result {
+            Ok(_) => READ_TRACES.with(|traces| {
+                for trace in traces
+                    .borrow_mut()
+                    .iter_mut()
+                    .filter(|trace| trace.cas == self as *const Self as usize)
+                {
+                    trace.ids.insert(digest.to_owned());
+                }
+            }),
+            Err(_) => self.validated.lock().expect("cas validated").remove(digest),
+        }
+        result
+    }
+
+    /// Record successful integrity-checked reads made by `read` on this thread and CAS.
+    /// The returned IDs are an observation closure, never a durable integrity assertion:
+    /// callers must verify them again before reusing a derived observation.
+    pub fn track_reads<T>(&self, read: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
+        READ_TRACES.with(|traces| {
+            traces.borrow_mut().push(ReadTrace {
+                cas: self as *const Self as usize,
+                ids: BTreeSet::new(),
+            })
+        });
+        let guard = ReadTraceGuard;
+        let result = read();
+        let ids = READ_TRACES.with(|traces| {
+            std::mem::take(&mut traces.borrow_mut().last_mut().expect("read trace").ids)
+        });
+        drop(guard);
+        (result, ids)
     }
 
     /// Private unverified read; only the verifying public methods may expose its bytes.
@@ -764,17 +1043,15 @@ impl Cas {
 
     /// Stream and verify an object without retaining its bytes.
     pub fn verify(&self, digest: &str) -> Result<u64, CasError> {
-        if !valid_digest(digest) {
-            return Err(CasError::InvalidDigest(digest.to_string()));
-        }
-        let path = self.path_for(digest);
-        let mut file = fs::File::open(&path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => CasError::NotFound {
-                digest: digest.to_string(),
-            },
-            _ => CasError::Io(error),
-        })?;
-        with_verify_scratch(|buffer| Self::verify_seekable(digest, &mut file, buffer))
+        let result = (|| {
+            let mut opened = self.open_for_verified_read(digest)?;
+            let (fingerprint, size) = self.fingerprint(&mut opened)?;
+            if fingerprint != digest {
+                self.decode_opened(&mut opened, fingerprint, size)?;
+            }
+            Ok(size)
+        })();
+        self.finish_read(digest, result)
     }
 
     /// Verify an object and schedule its bytes and directory entries for the next publication
@@ -990,7 +1267,7 @@ fn decode_artifact_bytes(
     let value: Value = serde_json::from_slice(bytes).map_err(|_| CasError::Corrupt {
         digest: digest.to_string(),
     })?;
-    if canonical::canonicalize(&value).ok().as_deref() != Some(bytes) {
+    if canonical::is_canonical(&value, bytes).ok() != Some(true) {
         return Err(CasError::Corrupt {
             digest: digest.to_string(),
         });
@@ -1078,6 +1355,160 @@ fn sync_concurrently<'p>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cached_probe(cas: &Cas, value: Value) -> String {
+        cas.put_artifact(
+            "af/CacheProbe@1",
+            af_contracts::Producer::KernelOperation {
+                run_id: "cache-probe".into(),
+                node_id: None,
+                operation_id: "read@1".into(),
+            },
+            vec![],
+            None,
+            value,
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn validated_cache_reuses_decoding_but_rejects_in_place_replacement_deletion_and_corruption() {
+        let (_dir, cas) = cas();
+        let id = cached_probe(&cas, serde_json::json!({"value": "first"}));
+        let original = fs::read(cas.path_for(&id)).unwrap();
+        let first = cas.get_artifact_shared(&id).unwrap();
+        let second = cas.get_artifact_shared(&id).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        cas.verify(&id).unwrap();
+        assert!(Arc::ptr_eq(&first, &cas.get_artifact_shared(&id).unwrap()));
+        for damage in ["in_place", "replace", "delete", "noncanonical"] {
+            let path = cas.path_for(&id);
+            let mut damaged = original.clone();
+            let offset = damaged
+                .windows(5)
+                .position(|window| window == b"first")
+                .unwrap();
+            damaged[offset..offset + 5].copy_from_slice(b"other");
+            match damage {
+                "delete" => fs::remove_file(&path).unwrap(),
+                "replace" => {
+                    let mut replacement =
+                        tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+                    replacement.write_all(&damaged).unwrap();
+                    replacement.persist(&path).unwrap();
+                }
+                "noncanonical" => {
+                    fs::write(&path, serde_json::to_vec_pretty(&*first).unwrap()).unwrap()
+                }
+                _ => {
+                    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+                    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+                    file.write_all(&damaged).unwrap();
+                    file.set_times(fs::FileTimes::new().set_modified(modified))
+                        .unwrap();
+                    assert_eq!(fs::metadata(&path).unwrap().len(), original.len() as u64);
+                }
+            }
+            assert!(cas.verify(&id).is_err(), "{damage}");
+            assert!(cas.get_artifact_shared(&id).is_err(), "{damage}");
+            assert!(cas.get_optional_artifact(&id).is_err(), "{damage}");
+            assert!(!cas.validated.lock().unwrap().entries.contains_key(&id));
+            fs::write(&path, &original).unwrap();
+            assert_eq!(*cas.get_artifact_shared(&id).unwrap(), *first);
+        }
+    }
+
+    #[test]
+    fn fingerprint_refuses_growth_after_open_without_reading_an_unbounded_tail() {
+        let (_dir, cas) = cas();
+        let id = cached_probe(&cas, serde_json::json!({"value": "bounded"}));
+        cas.get_artifact_shared(&id).unwrap();
+        let mut opened = cas.open_for_verified_read(&id).unwrap();
+        let length = opened.len();
+        let mut appending = fs::OpenOptions::new()
+            .append(true)
+            .open(cas.path_for(&id))
+            .unwrap();
+        appending
+            .write_all(&vec![b' '; STREAM_BUFFER_BYTES * 2])
+            .unwrap();
+        assert!(matches!(
+            cas.fingerprint(&mut opened),
+            Err(CasError::Corrupt { .. })
+        ));
+        assert_eq!(opened.file.stream_position().unwrap(), length + 1);
+        assert!(cas.get_artifact_shared(&id).is_err());
+        assert!(!cas.validated.lock().unwrap().entries.contains_key(&id));
+    }
+
+    #[test]
+    fn validated_cache_bounds_entries_and_decoded_memory_and_is_thread_safe() {
+        let (_dir, cas) = cas();
+        let first_id = cached_probe(&cas, serde_json::json!({"number": 0}));
+        cas.get_artifact_shared(&first_id).unwrap();
+        for number in 1..=VALIDATED_CACHE_ENTRIES {
+            let id = cached_probe(&cas, serde_json::json!({"number": number}));
+            cas.get_artifact_shared(&id).unwrap();
+        }
+        {
+            let cache = cas.validated.lock().unwrap();
+            assert_eq!(cache.entries.len(), VALIDATED_CACHE_ENTRIES);
+            assert!(!cache.entries.contains_key(&first_id));
+            assert!(cache.bytes <= VALIDATED_CACHE_BYTES);
+        }
+        // Exercise the byte ceiling without publishing a huge wire fixture or allocating
+        // a whole limit's worth of live data. Each cache entry retains its own Arc charge.
+        let large = Arc::new(af_contracts::ArtifactEnvelope {
+            payload: serde_json::json!({"dense": (0..10_000).map(|n| (n.to_string(), Value::Null)).collect::<serde_json::Map<_, _>>()}),
+            ..(*cas.get_artifact_shared(&first_id).unwrap()).clone()
+        });
+        let mut cache = ValidatedArtifacts::default();
+        for number in 0..32 {
+            cache.insert(
+                &format!("id-{number}"),
+                "fingerprint".into(),
+                Arc::clone(&large),
+            );
+            assert!(cache.bytes <= VALIDATED_CACHE_BYTES);
+        }
+        assert!(!cache.entries.is_empty());
+        assert!(cache.entries.len() < 32);
+        let expected = cas.get_artifact_shared(&first_id).unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let expected = &expected;
+                let cas = &cas;
+                let id = &first_id;
+                scope.spawn(move || {
+                    for _ in 0..4 {
+                        assert!(Arc::ptr_eq(expected, &cas.get_artifact_shared(id).unwrap()));
+                        cas.verify(id).unwrap();
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn read_traces_are_nested_cas_scoped_and_unwind_safe() {
+        let (_left_dir, left) = cas();
+        let (_right_dir, right) = cas();
+        let a = left.put(b"a").unwrap();
+        let b = right.put(b"b").unwrap();
+        let (((), inner), outer) = left.track_reads(|| {
+            left.track_reads(|| {
+                left.verify(&a).unwrap();
+                right.get(&b).unwrap();
+            })
+        });
+        assert_eq!(inner, BTreeSet::from([a.clone()]));
+        assert_eq!(outer, inner);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            left.track_reads(|| panic!("probe"))
+        }));
+        assert!(READ_TRACES.with(|traces| traces.borrow().is_empty()));
+    }
 
     /// Another writer publishes the object between this call's existence check and its move:
     /// the publication keeps that writer's directory entry (the same inode), verifies its bytes

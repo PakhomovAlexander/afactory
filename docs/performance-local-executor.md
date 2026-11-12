@@ -585,7 +585,7 @@ the operator's to run, not something this change ran.
    `TAG` is `v0.14.0-rc.1`. `comparison-launch` retains the frozen plan and queues the
    partitions and the telemetry original; nothing runs until `comparison-run`, since the
    timers are stopped. Before it, check that the retained plan is the whole nightly family
-   (33 case instances, 31 judged and 2 exploratory, 2932 scheduled slots in 8 shards: the 2852
+   (39 case instances, 37 judged and 2 exploratory, 3436 scheduled slots in 8 shards: the 3356
    of the tier's 4 shards and the health sentinels of 4 more), that it froze the declared 45
    sampling and 120 run minutes, that the declaration partitions its shards into
    `[[0, 1], [2, 3], [4, 5], [6, 7]]` where every later partition reuses the first one's
@@ -612,7 +612,7 @@ the operator's to run, not something this change ran.
             sum(case["exploratory"] for case in cases),
             sum(len(schedule.expected_slots(plan, shard["index"])) for shard in plan["shards"]))
    print("plan: tier, environment, shards, instances, judged, exploratory, slots =", found)
-   assert found == ("nightly", "linux_x86_64_musl_claw", 8, 33, 31, 2, 2932), found
+   assert found == ("nightly", "linux_x86_64_musl_claw", 8, 39, 37, 2, 3436), found
    windows = (plan["limits"]["shard_sampling_minutes"], plan["limits"]["run_total_minutes"])
    parts = [item["shards"] for item in doc["partitions"]]
    print("windows: sampling, run total minutes =", windows, "partitions =", parts)
@@ -663,7 +663,7 @@ nothing here was executed by the change that documents it. `CLI` stands for
 measured run showed its shards do not fit their window, and
 configure the CPU-profile tools and `observer = "host_perf"` as above. The comparison
 measures the configured tier's family, not a fixed one: the full release comparison of the
-whole nightly family (33 case instances, 8 serial shards, the 12 manual telemetry runs) uses the
+whole nightly family (39 case instances, 8 serial shards, the 12 manual telemetry runs) uses the
 configuration and checks of [Validate an exact candidate producer](#validate-an-exact-candidate-producer)
 steps 3 and 5, on its own fresh journal.
 

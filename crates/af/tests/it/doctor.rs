@@ -135,22 +135,57 @@ fn git(dir: &Path, args: &[&str]) {
 
 #[test]
 fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
+    clean_host(false);
+}
+
+#[test]
+fn a_clean_host_with_codex_available_names_codex_setup_and_writes_nothing() {
+    clean_host(true);
+}
+
+fn clean_host(codex_available: bool) {
     let machine = Machine::new();
     let work = machine.path("work");
-    // The clean machine has required tools and no Provider CLI, independently of the
-    // driving harness or the developer's PATH.
-    let tools = machine.path("clean-tools");
-    std::fs::create_dir_all(&tools).unwrap();
-    std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
+    // Only fixture programs are discoverable: the developer's Provider CLIs and package
+    // managers must not choose this test's hint or probe a real authentication context.
+    let bin = machine.path("tools-path");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
     for tool in ["curl", "minisign"] {
-        use std::os::unix::fs::PermissionsExt;
-        let path = tools.join(tool);
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = bin.join(tool);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    let kind = if codex_available {
+        use std::os::unix::fs::PermissionsExt as _;
+        let codex = bin.join("codex");
+        std::fs::write(
+            &codex,
+            crate::provider_cli::with_help(
+                "codex",
+                r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.163.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Not logged in' >&2
+  exit 1
+fi
+exit 64
+"#,
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        "codex"
+    } else {
+        "claude"
+    };
     let before = machine.snapshot();
 
-    let text = machine.doctor(&work, &[], Some(tools.as_os_str()));
+    let text = machine.doctor(&work, &[], Some(bin.as_os_str()));
     assert_eq!(
         text.status.code(),
         Some(0),
@@ -180,7 +215,7 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
         "{shown}"
     );
 
-    let json = machine.doctor(&work, &["--json"], Some(tools.as_os_str()));
+    let json = machine.doctor(&work, &["--json"], Some(bin.as_os_str()));
     assert_eq!(json.status.code(), Some(0), "{}", err(&json));
     let document = document(&json);
     let ids: Vec<&str> = document["checks"]
@@ -222,9 +257,9 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
     let providers = check(&document, "providers");
     assert_eq!(providers["fix"], serde_json::Value::Null, "{document}");
     assert!(
-        providers["hint"].as_str().unwrap().ends_with(
-            "at a private terminal: af provider setup claude-main --kind claude --login"
-        ),
+        providers["hint"].as_str().unwrap().ends_with(&format!(
+            "at a private terminal: af provider setup {kind}-main --kind {kind} --login"
+        )),
         "{document}"
     );
     // $SHELL is unset: the fix names the SHELL placeholder, the hint its choices.

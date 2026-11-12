@@ -282,7 +282,7 @@ pub const CONTRACTS: &[Contract] = &[
     ),
     library(
         "persistence_fs",
-        "persistence_fs_v1",
+        "persistence_fs_v3",
         "persistence_round_trip",
         &[(
             "operation",
@@ -298,6 +298,20 @@ pub const CONTRACTS: &[Contract] = &[
         "cli_state_fixture_v1",
         "cli_state_fixture",
         &[("state", Domain::Fixture(&["cli_state_10000"]))],
+        FRESH_STORE,
+    ),
+    library(
+        "cli_wait_original_fixture",
+        "cli_wait_original_fixture_v1",
+        "cli_wait_original_fixture",
+        &[("state", Domain::Fixture(&["cli_state_10000"]))],
+        FRESH_STORE,
+    ),
+    library(
+        "cli_wait_fixture",
+        "cli_wait_fixture_v1",
+        "cli_wait_fixture",
+        &[("state", Domain::Fixture(crate::fixtures::WAIT_STATES))],
         FRESH_STORE,
     ),
     library(

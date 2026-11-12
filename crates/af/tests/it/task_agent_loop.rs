@@ -1461,7 +1461,14 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         0,
         Some("task-status-v2.json"),
     );
-    let waited = af(&repo, &state, &["task", "wait", task, "--timeout", "1"]);
+    // Both readers observe the same live prefix independently. Running their existing
+    // one-second observations together leaves the Task's unchanged wall for its resume.
+    let (waited, partial) = std::thread::scope(|scope| {
+        let waited = scope.spawn(|| af(&repo, &state, &["task", "wait", task, "--timeout", "1"]));
+        let partial =
+            scope.spawn(|| af(&repo, &state, &["task", "events", task, "--timeout", "1"]));
+        (waited.join().unwrap(), partial.join().unwrap())
+    });
     assert_eq!(waited.status.code(), Some(124), "{}", err(&waited));
     assert!(
         err(&waited).contains("still runs after"),
@@ -1469,7 +1476,6 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         err(&waited)
     );
     // The stream so far: every recorded event, no terminal record, and the --after that goes on.
-    let partial = af(&repo, &state, &["task", "events", task, "--timeout", "1"]);
     assert_eq!(partial.status.code(), Some(124), "{}", err(&partial));
     let so_far = event_lines(&out(&partial), 0);
     assert!(
@@ -1524,11 +1530,34 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     assert!(alive(pid), "a refusal signals nothing");
     std::fs::write(&record_path, record).unwrap();
 
+    // Reuse the notifier wait already exercised below as a concurrent reader of the live
+    // prefix. No extra af process is needed to prove it follows the cancellation commit.
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task", "wait", task, "--notify", "--bell", "--json", "--state",
+        ])
+        .arg(&state)
+        .env("PATH", "/a-notifier-that-does-not-exist")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    let mut waiting = std::io::BufReader::new(waiter.0.as_mut().unwrap().stderr.take().unwrap());
+    let mut first = String::new();
+    std::io::BufRead::read_line(&mut waiting, &mut first).unwrap();
+    assert!(first.contains("is running; waiting"), "{first}");
     let cancelled = document(
         &af(&repo, &state, &["task", "cancel", task, "--json"]),
         0,
         Some("task-cancelled-v2.json"),
     );
+    let mut notified = waiter.0.take().unwrap().wait_with_output().unwrap();
+    notified.stderr.extend_from_slice(first.as_bytes());
+    std::io::Read::read_to_end(&mut waiting, &mut notified.stderr).unwrap();
+    let waited = document(&notified, 4, Some("task-status-v2.json"));
+    assert_eq!(waited["state"]["cause"], "host_cancelled", "{waited}");
     assert_eq!(cancelled["request"]["pid"], pid);
     assert_eq!(
         cancelled["state"],
@@ -1543,103 +1572,130 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let shown = expect(&af(&repo, &state, &["task", "show", task]), 0);
-    assert!(
-        shown.starts_with(&format!(
-            "Task {task}: abandoned/cancelled/host_cancelled\n"
-        )),
-        "{shown}"
-    );
-    assert!(shown.contains("cancelled: run 1 by "), "{shown}");
-    assert!(
-        shown.ends_with(&format!(
-            "next: af task run {task} --state {}\n",
-            state.display()
-        )),
-        "{shown}"
-    );
-    // The follower saw the cancel: every event from 0, then the one terminal record.
     let stdout = follower.stdout.take().unwrap();
     let followed = bounded_follower(follower, stdout, Duration::from_secs(60));
     leftovers
         .0
         .retain(|recorded| recorded.pid() != i32::try_from(follower_pid).unwrap());
-    assert_eq!(followed.status.code(), Some(4), "{}", err(&followed));
-    let lines = event_lines(&out(&followed), 0);
-    let terminal = lines.last().unwrap();
-    assert_eq!(terminal["record"], "terminal", "{}", out(&followed));
-    assert_eq!(terminal["exit_code"], 4);
-    assert_eq!(terminal["state"]["outcome"], "cancelled");
-    assert_eq!(
-        terminal["state"]["next_action"],
-        format!("af task run {task} --state {}", state.display())
-    );
-    let followed_last = terminal["last_sequence"].as_u64().unwrap();
-    assert_eq!(lines[lines.len() - 2]["sequence"], followed_last);
-    // Read again from the start, the stream is the follower's, then what the stopped run
-    // recorded after it, under the same state.
-    let whole = af(&repo, &state, &["task", "events", task]);
-    assert_eq!(whole.status.code(), Some(4), "{}", err(&whole));
-    let whole = event_lines(&out(&whole), 0);
-    let whole_terminal = whole.last().unwrap();
-    assert_eq!(whole_terminal["state"], terminal["state"]);
-    assert_eq!(&whole[..lines.len() - 1], &lines[..lines.len() - 1]);
-    let last = whole_terminal["last_sequence"].as_u64().unwrap();
-    // Reconnecting with the last sequence it read, a follower gets only the rest.
-    let rest = af(
-        &repo,
-        &state,
-        &["task", "events", task, "--after", &seen.to_string()],
-    );
-    assert_eq!(rest.status.code(), Some(4), "{}", err(&rest));
-    let rest_lines = event_lines(&out(&rest), seen + 1);
-    assert_eq!(
-        &rest_lines[..],
-        &whole[usize::try_from(seen).unwrap() + 1..]
-    );
-    let beyond = af(
-        &repo,
-        &state,
-        &["task", "events", task, "--after", &(last + 1).to_string()],
-    );
-    assert_eq!(beyond.status.code(), Some(1), "{}", err(&beyond));
-    assert!(
-        err(&beyond).contains(&format!("so --after {} names none of them", last + 1)),
-        "{}",
-        err(&beyond)
-    );
-    let refusal: Value = serde_json::from_slice(&beyond.stdout).unwrap();
-    schemas::valid(&schemas::validator("error-v2.json"), &refusal);
-    let again = af(&repo, &state, &["task", "cancel", task]);
-    assert_eq!(again.status.code(), Some(1));
-    assert!(err(&again).contains("is not running"), "{}", err(&again));
-    let waited = af(&repo, &state, &["task", "wait", task]);
-    assert_eq!(
-        waited.status.code(),
-        Some(4),
-        "a cancelled Task waits as cancelled"
-    );
-    let notified = crate::common::af()
-        .current_dir(&repo)
-        .args(["task", "wait", task, "--notify", "--bell", "--state"])
-        .arg(&state)
-        .env("PATH", "/a-notifier-that-does-not-exist")
-        .output()
-        .unwrap();
-    assert_eq!(notified.status.code(), Some(4), "{}", err(&notified));
-    assert!(
-        err(&notified).contains("warning: notifier unavailable"),
-        "{}",
-        err(&notified)
-    );
-    assert!(
-        !err(&notified).contains('\u{7}'),
-        "a pipe is not a terminal"
-    );
+    // The writer has stopped. Preserve every settled-state check while independent
+    // readers share its fixed prefix rather than consuming the Task wall serially.
+    let (shown, whole, rest, waited) = std::thread::scope(|scope| {
+        let shown = scope.spawn(|| af(&repo, &state, &["task", "show", task]));
+        let whole = scope.spawn(|| af(&repo, &state, &["task", "events", task]));
+        let rest = scope.spawn(|| {
+            af(
+                &repo,
+                &state,
+                &["task", "events", task, "--after", &seen.to_string()],
+            )
+        });
+        let waited = scope.spawn(|| af(&repo, &state, &["task", "wait", task]));
+        (
+            shown.join().unwrap(),
+            whole.join().unwrap(),
+            rest.join().unwrap(),
+            waited.join().unwrap(),
+        )
+    });
+    let captured_terminal: Value =
+        serde_json::from_str(out(&whole).lines().last().unwrap()).unwrap();
+    let captured_last = captured_terminal["last_sequence"].as_u64().unwrap();
+    let (beyond, again) = std::thread::scope(|scope| {
+        let beyond = scope.spawn(|| {
+            af(
+                &repo,
+                &state,
+                &[
+                    "task",
+                    "events",
+                    task,
+                    "--after",
+                    &(captured_last + 1).to_string(),
+                ],
+            )
+        });
+        let again = scope.spawn(|| af(&repo, &state, &["task", "cancel", task]));
+        (beyond.join().unwrap(), again.join().unwrap())
+    });
+    // Every canceled-state reader has finished before resuming. Validate their captured
+    // output concurrently with the foreground run, keeping schema assertions off its
+    // admission path. The scoped thread is joined even on a panic.
+    let (resumed, last) = std::thread::scope(|scope| {
+        std::fs::write(&resume, b"").unwrap();
+        let resumed = scope.spawn(|| af(&repo, &state, &["task", "run", task]));
+        let shown = expect(&shown, 0);
+        assert!(
+            shown.starts_with(&format!(
+                "Task {task}: abandoned/cancelled/host_cancelled\n"
+            )),
+            "{shown}"
+        );
+        assert!(shown.contains("cancelled: run 1 by "), "{shown}");
+        assert!(
+            shown.ends_with(&format!(
+                "next: af task run {task} --state {}\n",
+                state.display()
+            )),
+            "{shown}"
+        );
+        // The follower saw the cancel: every event from 0, then the one terminal record.
+        assert_eq!(followed.status.code(), Some(4), "{}", err(&followed));
+        let lines = event_lines(&out(&followed), 0);
+        let terminal = lines.last().unwrap();
+        assert_eq!(terminal["record"], "terminal", "{}", out(&followed));
+        assert_eq!(terminal["exit_code"], 4);
+        assert_eq!(terminal["state"]["outcome"], "cancelled");
+        assert_eq!(
+            terminal["state"]["next_action"],
+            format!("af task run {task} --state {}", state.display())
+        );
+        let followed_last = terminal["last_sequence"].as_u64().unwrap();
+        assert_eq!(lines[lines.len() - 2]["sequence"], followed_last);
+        // Read again from the start, the stream is the follower's, then what the stopped run
+        // recorded after it, under the same state.
+        assert_eq!(whole.status.code(), Some(4), "{}", err(&whole));
+        let whole = event_lines(&out(&whole), 0);
+        let whole_terminal = whole.last().unwrap();
+        assert_eq!(whole_terminal["state"], terminal["state"]);
+        assert_eq!(&whole[..lines.len() - 1], &lines[..lines.len() - 1]);
+        let last = whole_terminal["last_sequence"].as_u64().unwrap();
+        assert_eq!(last, captured_last);
+        // Reconnecting with the last sequence it read, a follower gets only the rest.
+        assert_eq!(rest.status.code(), Some(4), "{}", err(&rest));
+        let rest_lines = event_lines(&out(&rest), seen + 1);
+        assert_eq!(
+            &rest_lines[..],
+            &whole[usize::try_from(seen).unwrap() + 1..]
+        );
+        assert_eq!(beyond.status.code(), Some(1), "{}", err(&beyond));
+        assert!(
+            err(&beyond).contains(&format!("so --after {} names none of them", last + 1)),
+            "{}",
+            err(&beyond)
+        );
+        let refusal: Value = serde_json::from_slice(&beyond.stdout).unwrap();
+        schemas::valid(&schemas::validator("error-v2.json"), &refusal);
+        assert_eq!(again.status.code(), Some(1));
+        assert!(err(&again).contains("is not running"), "{}", err(&again));
+        assert_eq!(
+            waited.status.code(),
+            Some(4),
+            "a cancelled Task waits as cancelled"
+        );
+        assert_eq!(notified.status.code(), Some(4), "{}", err(&notified));
+        assert!(
+            err(&notified).contains("warning: notifier unavailable"),
+            "{}",
+            err(&notified)
+        );
+        assert!(
+            !err(&notified).contains('\u{7}'),
+            "a pipe is not a terminal"
+        );
 
-    // A foreground run resumes it, with its progress on stderr and its state last.
-    std::fs::write(&resume, b"").unwrap();
-    let resumed = af(&repo, &state, &["task", "run", task]);
+        (resumed.join().unwrap(), last)
+    });
+    // The foreground run prints its progress on stderr and its state last.
     let stderr = err(&resumed);
     assert_eq!(
         resumed.status.code(),
@@ -1837,6 +1893,480 @@ fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
         "no terminal record:\n{}",
         out(&followed)
     );
+}
+
+/// An unchanged SQLite prefix must not hide an in-place CAS mutation from a running waiter.
+/// The first diagnostic is the handoff: the waiter has fully opened the Task before mutation.
+#[test]
+fn an_unchanged_wait_rechecks_artifact_bytes_before_its_next_observation() {
+    use std::io::{BufRead, Read, Seek, Write};
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(root.path(), "pagination");
+    let task = task_interrupt::TASK;
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
+        0,
+    );
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let lease = store
+        .take_task_lease(&cas, task, "wait-integrity", 60_000)
+        .unwrap();
+    let projection = store.task_projection(&cas, task).unwrap().unwrap();
+    let sequence = projection.next_sequence;
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--json", "--state"])
+        .arg(&state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    let mut diagnostic = std::io::BufReader::new(waiter.0.as_mut().unwrap().stderr.take().unwrap());
+    let mut first = String::new();
+    diagnostic.read_line(&mut first).unwrap();
+    assert!(first.contains("is running; waiting"), "{first}");
+    let hex = projection.revision_id.strip_prefix("sha256:").unwrap();
+    let path = state.join("cas/objects").join(&hex[..2]).join(&hex[2..]);
+    let mut object = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let old_times = object.metadata().unwrap();
+    let mut byte = [0];
+    object.read_exact(&mut byte).unwrap();
+    object.rewind().unwrap();
+    object.write_all(&[byte[0] ^ 1]).unwrap();
+    object
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(old_times.accessed().unwrap())
+                .set_modified(old_times.modified().unwrap()),
+        )
+        .unwrap();
+    // No event, lease or metadata timestamp signals the change.
+    assert_eq!(
+        store
+            .len(&af_store::store::task::task_run_id(task).unwrap())
+            .unwrap(),
+        sequence
+    );
+    let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let mut rest = String::new();
+    diagnostic.read_to_string(&mut rest).unwrap();
+    assert!(
+        rest.contains("CAS object") || rest.contains("cas object"),
+        "{rest}"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("af/error@2"));
+    // The writer capability remains untouched; restore its bytes before releasing it.
+    object.rewind().unwrap();
+    object.write_all(&byte).unwrap();
+    store.release_task_lease(&cas, &lease).unwrap();
+}
+
+/// Stop the source-built waiter inside a real dependent read, finish its Task through the
+/// ordinary CLI on another connection, then let the expired wait make its return decision.
+/// The numbered view barriers also force a reconstruction before completing the refreshed view.
+fn completion_inside_wait_observation(point: &str, refreshed: bool, initially_running: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    task_gc::start(&repo, &state, "gc-older.json");
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-newer.json"]),
+        0,
+    );
+    let task = "gc-newer";
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let plan_id = store
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap()
+        .plan_id
+        .unwrap();
+    let mut lease = initially_running.then(|| {
+        store
+            .take_task_lease(&cas, task, "observation-fixture", 60_000)
+            .unwrap()
+    });
+    let barriers = root.path().join("observation-barriers");
+    let final_barrier = barriers.join(point);
+    std::fs::create_dir_all(&final_barrier).unwrap();
+    if refreshed {
+        std::fs::create_dir_all(barriers.join("view-1")).unwrap();
+    }
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--timeout", "1", "--json", "--state"])
+        .arg(&state)
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    let mut await_read = |barrier: &Path| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !barrier.join("ready").exists() {
+            if waiter.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+                panic!(
+                    "waiter exited before {}: {}\n{}",
+                    barrier.display(),
+                    out(&output),
+                    err(&output)
+                );
+            }
+            assert!(Instant::now() < until, "no read at {}", barrier.display());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    if refreshed {
+        let first = barriers.join("view-1");
+        await_read(&first);
+        store
+            .release_task_lease(&cas, lease.as_ref().unwrap())
+            .unwrap();
+        lease = Some(
+            store
+                .take_task_lease(&cas, task, "refreshed-fixture", 60_000)
+                .unwrap(),
+        );
+        std::fs::write(first.join("proceed"), []).unwrap();
+    }
+    await_read(&final_barrier);
+    if point.starts_with("view-") {
+        // The CLI's minimum timeout is one second. The waiter started its timer before
+        // announcing this read; keep it inside construction until that timeout has expired.
+        // The barrier, rather than this elapsed-time wait, places completion inside the read.
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    if let Some(lease) = &lease {
+        store.release_task_lease(&cas, lease).unwrap();
+    }
+    // No synthetic result or authority stub: the normal fixture Workers, check and acceptance
+    // finish while the waiter is still inside view construction or the indexed history read.
+    expect(
+        &af(
+            &repo,
+            &state,
+            &["task", "run", task, "--confirm-plan", &plan_id],
+        ),
+        0,
+    );
+    std::fs::write(final_barrier.join("proceed"), []).unwrap();
+    let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+    let waited = document(&output, 0, Some("task-status-v2.json"));
+    assert_eq!(waited["state"]["phase"], "finished", "{waited}");
+    assert!(
+        !err(&output).contains("still runs after"),
+        "{}",
+        err(&output)
+    );
+    let current = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        Some("task-status-v2.json"),
+    );
+    assert_eq!(
+        waited, current,
+        "the exit and complete document must share one observation"
+    );
+    assert!(waited["last_gate"].as_str().is_some(), "{waited}");
+}
+
+#[test]
+fn an_expired_wait_observes_completion_during_its_initial_view() {
+    completion_inside_wait_observation("view-1", false, true);
+}
+
+#[test]
+fn an_expired_wait_observes_completion_during_its_refreshed_view() {
+    completion_inside_wait_observation("view-2", true, true);
+}
+
+#[test]
+fn an_expired_wait_observes_completion_during_final_gate_history_read() {
+    completion_inside_wait_observation("gate-history-1", false, true);
+}
+
+#[test]
+fn a_settled_wait_rechecks_completion_during_final_gate_history_read() {
+    completion_inside_wait_observation("gate-history-1", false, false);
+}
+
+/// A real history writer commits after the indexed cursor has established its snapshot.
+/// Neither an absent bound nor an older, nonwinning bound causes this writer to be replayed
+/// in the stale document. Only the discovery observation can detect its new winning check.
+fn winning_history_inside_wait_discovery(previously_matching: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    let ready = root.path().join("evaluator-ready");
+    let proceed = root.path().join("evaluator-proceed");
+    std::fs::write(&proceed, []).unwrap();
+    let package = repo.join(".af/task-packages/fixture");
+    let evaluator = package.join("evaluator/worker.py");
+    let original = std::fs::read_to_string(&evaluator).unwrap();
+    let marker = "request=json.load(sys.stdin)\n";
+    assert_eq!(original.matches(marker).count(), 1);
+    let hold = format!(
+        "{marker}import os,pathlib,time\nready=pathlib.Path({ready:?})\nproceed=pathlib.Path({proceed:?})\nif not proceed.exists():\n    parent=os.getppid()\n    ready.touch()\n    while not proceed.exists():\n        if os.getppid()!=parent:\n            sys.exit(1)\n        time.sleep(0.01)\n",
+        ready = ready.to_str().unwrap(),
+        proceed = proceed.to_str().unwrap(),
+    );
+    std::fs::write(&evaluator, original.replacen(marker, &hold, 1)).unwrap();
+    let mut pipeline: toml::Value =
+        toml::from_str(&std::fs::read_to_string(package.join("plain/pipeline.toml")).unwrap())
+            .unwrap();
+    pipeline["name"] = "fixture/history".into();
+    // Four ordinary Attempts (implement, two checks, evaluate) and one intentional
+    // evaluator cancellation/recovery. Existing Worker/check deadlines stay unchanged.
+    pipeline["max_attempts"] = 5.into();
+    let nodes = pipeline["nodes"].as_array_mut().unwrap();
+    let mut check = nodes
+        .iter()
+        .find(|node| node["id"].as_str() == Some("check"))
+        .unwrap()
+        .clone();
+    check["id"] = "check-new".into();
+    check["operator"]["checks"] =
+        toml::Value::Array(vec!["pagination".into(), "zz-history-new".into()]);
+    // Use the first verified Snapshot as a dependency: the evaluator must settle before
+    // the second check starts. Keep the fixture's existing conditional evaluation intact.
+    check["inputs"]["source"]["node"] = "accept".into();
+    check["inputs"]["source"]["port"] = "snapshot".into();
+    let mut accept = nodes
+        .iter()
+        .find(|node| node["id"].as_str() == Some("accept"))
+        .unwrap()
+        .clone();
+    accept["id"] = "accept-new".into();
+    accept["inputs"]["checks"]["node"] = "check-new".into();
+    nodes.push(check);
+    nodes.push(accept);
+    for port in ["snapshot", "verification"] {
+        pipeline["outputs"][port]["node"] = "accept-new".into();
+    }
+    pipeline["coverage"]["verified"]["node"] = "accept-new".into();
+    std::fs::create_dir(package.join("history")).unwrap();
+    std::fs::write(
+        package.join("history/pipeline.toml"),
+        toml::to_string(&pipeline).unwrap(),
+    )
+    .unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    let mut pin = catalog["packages"]["fixture/plain"].clone();
+    pin["path"] = ".af/task-packages/fixture/history".into();
+    catalog["packages"]
+        .as_table_mut()
+        .unwrap()
+        .insert("fixture/history".into(), pin);
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    let policy_path = repo.join(".af/code-policy.toml");
+    let mut policy: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+    let mut check = policy["checks"]["pagination"].clone();
+    check["name"] = "zz-history-new".into();
+    // The original mandatory pagination check remains in both verification receipts. This
+    // extra named measurement distinguishes the new winner from the plain Task's history.
+    check["required"] = false.into();
+    policy["checks"]
+        .as_table_mut()
+        .unwrap()
+        .insert("zz-history-new".into(), check);
+    std::fs::write(policy_path, toml::to_string(&policy).unwrap()).unwrap();
+    let task = "gc-newer";
+    let mut file: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("gc-newer.json")).unwrap()).unwrap();
+    file["pipeline"]["name"] = "fixture/history".into();
+    file["limits"]["max_attempts"] = 5.into();
+    file["limits"]["verification"]["attempts"] = 4.into();
+    file["limits"]["verification"]["wall_ms"] = 20000.into();
+    std::fs::write(
+        repo.join("gc-newer.json"),
+        serde_json::to_vec(&file).unwrap(),
+    )
+    .unwrap();
+    file["task_id"] = "history-race".into();
+    std::fs::write(
+        repo.join("history-race.json"),
+        serde_json::to_vec(&file).unwrap(),
+    )
+    .unwrap();
+    pin_and_commit(&repo, "history discovery race fixture");
+
+    expect(
+        &af(
+            &repo,
+            &state,
+            &["task", "plan", "--file", "history-race.json"],
+        ),
+        0,
+    );
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let history_plan = store
+        .task_projection(&cas, "history-race")
+        .unwrap()
+        .unwrap()
+        .plan_id
+        .unwrap();
+    if previously_matching {
+        std::fs::remove_file(&proceed).unwrap();
+        let writer = crate::common::af()
+            .current_dir(&repo)
+            .args([
+                "task",
+                "run",
+                "history-race",
+                "--confirm-plan",
+                &history_plan,
+                "--state",
+            ])
+            .arg(&state)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut writer = task_interrupt::ChildGuard(Some(writer));
+        await_observation_read(&mut writer, &ready);
+        expect(&af(&repo, &state, &["task", "cancel", "history-race"]), 0);
+        let cancelled = writer.0.take().unwrap().wait_with_output().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(cancelled.status.signal(), Some(nix::libc::SIGTERM));
+        assert!(err(&cancelled).contains("interrupted by SIGTERM"));
+        std::fs::write(&proceed, []).unwrap();
+    }
+    task_gc::start(&repo, &state, "gc-older.json");
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-newer.json"]),
+        0,
+    );
+    let lease = store
+        .take_task_lease(&cas, task, "history-observer", 60_000)
+        .unwrap();
+    let before = store
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap()
+        .next_sequence;
+    let baseline = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        None,
+    );
+    assert!(
+        baseline["last_gate"]
+            .as_str()
+            .unwrap()
+            .starts_with("pagination:"),
+        "{baseline}"
+    );
+    let barriers = root.path().join("history-barriers");
+    let barrier = barriers.join("gate-history-1");
+    std::fs::create_dir_all(&barrier).unwrap();
+    let waiter = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--timeout", "1", "--json", "--state"])
+        .arg(&state)
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut waiter = task_interrupt::ChildGuard(Some(waiter));
+    await_observation_read(&mut waiter, &barrier.join("ready"));
+    // This is a new, normally executed check on another Task, not a CAS rewrite or a lease
+    // change on the waited Task. The discovery cursor is still live at the artifact barrier.
+    expect(
+        &af(
+            &repo,
+            &state,
+            &[
+                "task",
+                "run",
+                "history-race",
+                "--confirm-plan",
+                &history_plan,
+            ],
+        ),
+        0,
+    );
+    assert_eq!(
+        store
+            .task_projection(&cas, task)
+            .unwrap()
+            .unwrap()
+            .next_sequence,
+        before
+    );
+    std::fs::write(barrier.join("proceed"), []).unwrap();
+    let output = waiter.0.take().unwrap().wait_with_output().unwrap();
+    let waited = document(&output, 124, Some("task-status-v2.json"));
+    assert_eq!(
+        waited["state"], baseline["state"],
+        "the waited Task stays running"
+    );
+    assert!(
+        waited["last_gate"]
+            .as_str()
+            .unwrap()
+            .starts_with("zz-history-new:"),
+        "{waited}"
+    );
+    let fresh = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        None,
+    );
+    // This manually held planned Task has no execution clock; even elapsed_ms stays fixed.
+    assert!(waited["elapsed_ms"].is_null());
+    assert_eq!(
+        waited, fresh,
+        "the complete returned document observes the winning history"
+    );
+    assert_eq!(
+        store
+            .task_projection(&cas, task)
+            .unwrap()
+            .unwrap()
+            .next_sequence,
+        before
+    );
+    store.release_task_lease(&cas, &lease).unwrap();
+}
+
+fn await_observation_read(child: &mut task_interrupt::ChildGuard, ready: &Path) {
+    let until = Instant::now() + Duration::from_secs(60);
+    while !ready.exists() {
+        if child.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+            let output = child.0.take().unwrap().wait_with_output().unwrap();
+            panic!(
+                "no read at {}: {}\n{}",
+                ready.display(),
+                out(&output),
+                err(&output)
+            );
+        }
+        assert!(Instant::now() < until, "no read at {}", ready.display());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn an_expired_wait_rechecks_a_previously_nonwinning_history_task_during_discovery() {
+    winning_history_inside_wait_discovery(true);
+}
+
+#[test]
+fn an_expired_wait_rechecks_a_newly_qualifying_history_task_during_discovery() {
+    winning_history_inside_wait_discovery(false);
 }
 
 /// A detached run that is neither holding the Task nor admitted when the window passes is not

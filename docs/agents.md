@@ -119,7 +119,9 @@ claimed to run: exit 4, `admitted: false` and `next_action` `af task status TASK
 survives the shell that started it. Then
 `af task wait TASK_ID --json` blocks until the Task settles and exits with its exit code
 (`--timeout S` gives up with exit 124), and `af task status TASK_ID --json` answers at once;
-both print `af/task-status@2`: the state, the node that runs, the time since the Task's clock
+the timeout starts after the Task is opened, and final status adds to the total command time.
+Waiting still checks artifact integrity and lease expiry when the log is unchanged.
+Both print `af/task-status@2`: the state, the node that runs, the time since the Task's clock
 started, the tokens reserved, charged and remaining, and any unknown usage. When the Store has a
 check span from the same repository and code policy for a check in this plan, status and plan show
 its last recorded duration; with no such history they show no hint. `af task wait --bell` rings

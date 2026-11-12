@@ -16,6 +16,13 @@ from tests.support import ROOT, read
 
 FIXTURES = os.path.join(ROOT, "fixtures/performance/schema")
 SCHEMAS = os.path.join(ROOT, "schemas")
+# Kernel Scenario publication schemas share this prefix but have their own typed readers and
+# parity coverage in scenario/performance.rs and scenario_performance.rs. Require their exact
+# inventory too; never admit arbitrary extra performance schemas into laboratory parity.
+PUBLICATION_SCHEMAS = {
+    "performance-pr-content-v1.json", "performance-pr-proof-request-v1.json",
+    "performance-pr-proof-v1.json", "performance-publication-activation-v1.json",
+}
 TOML_CONTRACTS = ("suite", "activation", "adapters", "cli", "diagnostics", "telemetry-lab",
                   "telemetry-collector", "nightly-config")
 # These share a filename prefix with the laboratory, but are Scenario publication contracts.

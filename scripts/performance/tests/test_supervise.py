@@ -1468,6 +1468,25 @@ class OptionalMetrics(TempDir):
         self.assertNotIn("setup_ms", metrics)
         self.assertEqual(unavailable, {})
 
+    def test_waiter_reports_total_cpu_wall_and_rss_without_overlapping_usage(self):
+        result = fixture("supervisor-result/valid-namespace.json")
+        result["timing"]["child_wall_ns"] = "2000000000"
+        metrics, unavailable = supervise.optional_metrics(
+            result, ["total_cpu_ms", "wall_ms", "user_cpu_ms", "system_cpu_ms", "wait4_maxrss_bytes"])
+        self.assertEqual(metrics["total_cpu_ms"], {"value": "6.521", "unit": "ms"})
+        self.assertEqual(metrics["wall_ms"], {"value": "2000", "unit": "ms"})
+        self.assertEqual(metrics["wait4_maxrss_bytes"], {"value": "1531904", "unit": "bytes"})
+        self.assertEqual(unavailable, {})
+        result["rusage"] = None
+        result["rusage_unavailable"] = "not reaped"
+        metrics, unavailable = supervise.optional_metrics(result, ["total_cpu_ms", "wall_ms"])
+        self.assertEqual(metrics, {"wall_ms": {"value": "2000", "unit": "ms"}})
+        self.assertIn("not reaped", unavailable["total_cpu_ms"])
+        result["timing"]["child_wall_ns"] = None
+        metrics, unavailable = supervise.optional_metrics(result, ["wall_ms"])
+        self.assertEqual(metrics, {})
+        self.assertIn("not observed", unavailable["wall_ms"])
+
     def test_missing_sources_are_unavailable_with_reasons_never_zero(self):
         result = fixture("supervisor-result/valid-trusted-local.json")
         result["rusage"] = None
