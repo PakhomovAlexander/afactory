@@ -625,6 +625,9 @@ class EvidenceTests(unittest.TestCase):
             snapshot = self.observe(missing)
             self.assertFalse(snapshot['complete'])
             self.assertTrue(snapshot['omissions'])
+        self.journal.close()
+        self.journal = C.Journal(Path(self.temp.name) / 'observer-malformed.sqlite')
+        self.addCleanup(self.journal.close)
         for key in ('run_attempt', 'head_sha', 'job_id'):
             malformed = service()
             del malformed['jobs'][0][key]
@@ -696,9 +699,10 @@ class EvidenceTests(unittest.TestCase):
         raw['jobs'][0]['job_id'] += 1
         self.assertEqual(self.observe(raw)['failures'][0]['occurrence_count'], 1)
         raw['jobs'][0]['run_attempt'] += 1
-        self.assertEqual(self.observe(raw)['failures'][0]['occurrence_count'], 2)
+        observed = self.observe(raw)
+        self.assertEqual(next(f for f in observed['failures'] if f['run_attempt'] == 2)['occurrence_count'], 2)
         raw['jobs'][0].update(head_sha='b' * 40, run_id=300)
-        changed = self.observe(raw)['failures'][0]
+        changed = next(f for f in self.observe(raw)['failures'] if f['run_id'] == 300)
         self.assertEqual(changed['signature_id'], first['signature_id'])
         self.assertEqual(changed['occurrence_count'], 3)
         raw['jobs'][0]['conclusion'] = 'success'
@@ -781,6 +785,7 @@ class EvidenceTests(unittest.TestCase):
         release = copy.deepcopy(main)
         release.update(head_sha='b' * 40, job_id=404, run_attempt=2,
                        completed_at='2026-11-09T02:00:00Z', release_blocking=True)
+        raw['release_pr'] = {'number': 7, 'head_sha': 'b' * 40}
         self.observe(dict(raw, jobs=[main, release]))
         success = copy.deepcopy(main)
         success.update(conclusion='success', job_id=405, run_attempt=3,
@@ -794,6 +799,48 @@ class EvidenceTests(unittest.TestCase):
         observed = self.observe(dict(raw, jobs=[release]))
         self.assertEqual(observed['failures'][0]['occurrence_count'], 3)
         self.assertTrue(observed['failures'][0]['release_blocking'])
+
+    def test_unresolved_failures_survive_incomplete_captures_but_expire_and_follow_head_selectors(self):
+        raw = service()
+        failure = copy.deepcopy(raw['jobs'][0])
+        failure.update(completed_at='2026-11-09T03:20:00Z', release_blocking=True)
+        self.observe(dict(raw, jobs=[failure]))
+        unavailable = self.observe(dict(raw, jobs=[]))
+        self.assertFalse(unavailable['complete'])
+        self.assertEqual([f['job_id'] for f in unavailable['failures']], [failure['job_id']])
+        success = copy.deepcopy(failure)
+        success.update(conclusion='success', job_id=202, completed_at='2026-11-09T03:10:00Z')
+        older = self.observe(dict(raw, jobs=[success]))
+        self.assertFalse(older['complete'])
+        self.assertEqual([f['job_id'] for f in older['failures']], [failure['job_id']])
+        success['completed_at'] = '2026-11-09T03:30:00Z'
+        raw['nightly_receipt']['conclusion'] = 'success'
+        closed = self.observe(dict(raw, jobs=[success]))
+        self.assertEqual(closed['failures'], [])
+        self.assertTrue(closed['complete'], closed['omissions'])
+
+        # Expiry and head advancement never resurrect retained evidence.
+        raw['captured_at'] = '2026-11-30T04:00:00Z'
+        raw['nightly_receipt']['conclusion'] = 'success'
+        expired = self.observe(dict(raw, jobs=[success]))
+        self.assertEqual(expired['failures'], [])
+        self.assertTrue(expired['complete'], expired['omissions'])
+        raw['captured_at'] = '2026-11-10T04:00:00Z'
+        raw['source_sha'] = 'd' * 40
+        superseded = self.observe(dict(raw, jobs=[success]))
+        self.assertEqual(superseded['failures'], [])
+        self.assertTrue(superseded['complete'], superseded['omissions'])
+
+    def test_malformed_non_object_jobs_are_isolated_before_sorting(self):
+        raw = service()
+        valid = copy.deepcopy(raw['jobs'][0])
+        valid['release_blocking'] = True
+        for jobs in ([valid, None, 'text', []], [None, 'text', [], valid]):
+            observed = self.observe(dict(raw, jobs=jobs))
+            self.assertFalse(observed['complete'])
+            failure, = observed['failures']
+            self.assertEqual(failure['job_id'], valid['job_id'])
+            self.assertTrue(failure['release_blocking'])
 
     def test_two_later_successes_cannot_restore_an_already_closed_failure(self):
         raw = service()

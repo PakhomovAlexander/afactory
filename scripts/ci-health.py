@@ -647,7 +647,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     def order(item):
         index, job = item
         if not isinstance(job, dict):
-            return (0, 0, 0, index)
+            return (at, 0, 0, 0, index)
         completed = job.get('completed_at', at)
         try:
             instant(completed)
@@ -690,14 +690,6 @@ def fold_capture(service, journal, *, snapshot_fits=None):
                 scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
                 snapshot['failures'] = [f for f in snapshot['failures']
                     if not (all(f[key] == job[key] for key in scope) and (f['signature_id'], f['head_sha']) in closed)]
-                for previous in previous_failures:
-                    if ((previous['signature_id'], previous['head_sha']) not in closed_all
-                            and previous['occurrence_id'] not in seen and previous['occurrence_id'] not in current_occurrences):
-                        retained = dict(previous)
-                        retained['last_seen_at'] = at
-                        structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
-                        snapshot['failures'].append(retained)
-                        seen[retained['occurrence_id']] = retained['conclusion']
                 green_events.append((job, closed))
                 continue
             failure = {key: job[key] for key in ('workflow_id', 'workflow_file', 'run_id', 'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion')}
@@ -706,6 +698,26 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             snapshot['failures'].append(failure)
         except (ValueError, KeyError, TypeError) as error:
             omissions.append('malformed job ' + str(index) + ': ' + str(error)[:160])
+    now = instant(at)
+    retained_previous = 0
+    current_heads = {service['source_sha']}
+    if service.get('release_pr') is not None:
+        current_heads.add(service['release_pr']['head_sha'])
+    for previous in previous_failures:
+        if ((previous['signature_id'], previous['head_sha']) in closed_all
+                or previous['occurrence_id'] in seen or previous['occurrence_id'] in current_occurrences
+                or previous['head_sha'] not in current_heads
+                or now - instant(previous['last_seen_at']) >= dt.timedelta(days=14)):
+            continue
+        # Retain exact unresolved evidence without advancing its observation time or resurrecting
+        # an expired/superseded release. Current evidence for the same occurrence takes precedence.
+        retained = dict(previous)
+        structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
+        snapshot['failures'].append(retained)
+        seen[retained['occurrence_id']] = retained['conclusion']
+        retained_previous += 1
+    if retained_previous:
+        omissions.append('unresolved previous failure evidence retained without demonstrated green closure')
     for success, closed in green_events:
         scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
         if any(all(f[key] == success[key] for key in scope) and (f['signature_id'], f['head_sha']) not in closed
