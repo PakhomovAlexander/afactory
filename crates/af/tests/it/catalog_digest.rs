@@ -487,8 +487,12 @@ fn selected_light_workers() -> (
         toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
     let package = |name: &str| root.join(catalog["packages"][name]["path"].as_str().unwrap());
+    let config: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/af.toml")).unwrap()).unwrap();
+    let selected = config["task"]["defaults"]["pipeline"].as_str().unwrap();
+    assert_eq!(selected, "bugfix/light-kimi-terra-sol");
     let pipeline = af_pipeline_config::task::parse_task_pipeline(
-        &std::fs::read_to_string(package("bugfix/light-codex").join("pipeline.toml")).unwrap(),
+        &std::fs::read_to_string(package(selected).join("pipeline.toml")).unwrap(),
     )
     .unwrap();
     let workers = LIGHT_ROLES
@@ -537,18 +541,26 @@ fn validate_small_issue_rubrics(
         else {
             return Err(format!("{slot_name}: must select a model Worker"));
         };
-        let (expected_model, expected_effort) = match role {
-            "implement" => ("gpt-6.1-sol", "medium"),
-            "review" => ("gpt-6.1-terra", "high"),
-            "evaluate" => ("gpt-6-sol", "medium"),
+        let (expected_provider, expected_model, expected_effort) = match role {
+            "implement" => ("pi", "k3.1-pro", "high"),
+            "review" => ("codex", "gpt-6.1-terra", "high"),
+            "evaluate" => ("codex", "gpt-6.1-sol", "medium"),
             _ => unreachable!(),
         };
-        if provider_kind != "codex" || model != expected_model || effort != expected_effort {
+        if provider_kind != expected_provider
+            || model != expected_model
+            || effort != expected_effort
+        {
             return Err(format!(
-                "{slot_name}: expected codex {expected_model}/{expected_effort}, got {provider_kind} {model}/{effort}"
+                "{slot_name}: expected {expected_provider} {expected_model}/{expected_effort}, got {provider_kind} {model}/{effort}"
             ));
         }
-        expected.push(format!("{label}: `{model}` {effort}"));
+        let display_model = if provider_kind == "pi" {
+            format!("Pi `kimi-coding/{model}`")
+        } else {
+            format!("`{model}`")
+        };
+        expected.push(format!("{label}: {display_model} {effort}"));
     }
     let expected = expected.join("; ");
     for path in [
@@ -604,6 +616,31 @@ fn small_issue_rubric_audit_rejects_slot_and_worker_role_mutations_independently
     let (pipeline, workers) = selected_light_workers();
     validate_small_issue_rubrics(&pipeline, &workers).unwrap();
     for (slot_name, role, _) in LIGHT_ROLES {
+        for field in ["provider", "model", "effort"] {
+            let mut wrong_workers = workers.clone();
+            let worker = wrong_workers
+                .get_mut(&pipeline.slots[slot_name].worker)
+                .unwrap();
+            let af_pipeline_config::task::catalog::TaskWorkerRunner::Model {
+                provider_kind,
+                model,
+                effort,
+            } = &mut worker.runner
+            else {
+                unreachable!()
+            };
+            match field {
+                "provider" => *provider_kind = "wrong-provider".into(),
+                "model" => *model = "wrong-model".into(),
+                "effort" => *effort = "wrong-effort".into(),
+                _ => unreachable!(),
+            }
+            let error = validate_small_issue_rubrics(&pipeline, &wrong_workers).unwrap_err();
+            assert!(
+                error.starts_with(&format!("{slot_name}: expected ")),
+                "{field}: {error}"
+            );
+        }
         let wrong_role = if role == "implement" {
             "review"
         } else {
@@ -961,6 +998,7 @@ fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
         [
             "issue-internal/bugs",
             "issue-internal/correctness",
+            "issue-internal/codex-light-evaluator",
             "issue-internal/evaluator",
             "issue-internal/light-evaluator"
         ]

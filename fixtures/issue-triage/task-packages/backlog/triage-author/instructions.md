@@ -76,10 +76,10 @@ produces `needs-info`, never an invented size.
 
 | Size | Test, in order | Default pipeline | Model and reviewers |
 |---|---|---|---|
-| `XL` | Needs a design document and owner decisions before any code. | `design` (`impl/design-codex`) | Astra medium design independently checked by Terra high; no implementation Task until the design is accepted |
-| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` (`impl/design-codex`) | A workstream: accepted Astra medium design independently checked by Terra high before the first implementing Task, then `default` per Task |
-| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`bugfix/default-codex` or `impl/default-codex`) | GPT-6.1 Sol medium implementer; GPT-6.1 Terra high bugs and GPT-6 Sol high correctness reviewers; GPT-6 Astra medium evaluator. Every bound result is required for closure |
-| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`bugfix/light-codex`) | Implementer: `gpt-6.1-sol` medium; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6-sol` medium |
+| `XL` | Needs a design document and owner decisions before any code. | `design` (`design/astra-kimi`) | Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium; no implementation Task until the design is accepted |
+| `L` | Changes a contract, schema version, budget or sandbox boundary, or needs several Tasks. | `design` (`design/astra-kimi`) | A workstream: accepted Astra medium design challenged independently by Terra high and Kimi high, accepted by Sol medium before the first implementing Task, then `default` per Task |
+| `M` | Everything understood well enough to implement that is not `L` or `S`: two or three crates, a new fixture or test class, an additive field under an existing document version, a new or amended ADR that records a bounded change. | `default` (`bugfix/default-codex` or `impl/default-codex`) | GPT-6.1 Sol medium implementer; GPT-6.1 Terra high bugs and correctness reviewers; GPT-6 Astra medium evaluator. Every bound result is required for closure |
+| `S` | All of: one module; repro present or derivable from the evidence; no schema, contract or budget change; no new fixture or test class; no ADR. | `light` (`bugfix/light-kimi-terra-sol`) | Implementer: Pi `kimi-coding/k3.1-pro` high; correctness reviewer: `gpt-6.1-terra` high; evaluator: `gpt-6.1-sol` medium |
 
 Two rules the check enforces mechanically (§6.3):
 
