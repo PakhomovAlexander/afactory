@@ -294,7 +294,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
-        "af/task-findings@2",
+        "af/task-findings@3",
         "af/task-inspection@20",
         "af/task-report@3",
         "af/findings-sarif@1",
@@ -1546,7 +1546,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--round <N>",
                 "--format <FORMAT>",
-                "af/task-findings@2",
+                "af/task-findings@3",
                 "agent_prompt",
                 "not reviewed",
                 "SARIF 2.1.0",
@@ -1800,7 +1800,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for document in [
-        "af/task-findings@2",
+        "af/task-findings@3",
         "af/task-diff@1",
         "af/task-materialized@1",
         "af/task-status@2",

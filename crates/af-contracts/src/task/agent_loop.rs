@@ -14,7 +14,7 @@ use super::usage::DecimalU128;
 use super::{is_name, require};
 use crate::is_digest;
 
-pub const TASK_FINDINGS_V2: &str = "af/task-findings@2";
+pub const TASK_FINDINGS_V3: &str = "af/task-findings@3";
 pub const TASK_MATERIALIZED_V1: &str = "af/task-materialized@1";
 pub const TASK_DIFF_V1: &str = "af/task-diff@1";
 pub const TASK_STATUS_V2: &str = "af/task-status@2";
@@ -40,18 +40,18 @@ fn schema_is(actual: &str, expected: &str) -> Result<(), String> {
 }
 
 /// `af task findings ID --json`: the findings of one review round of a Task, per reviewer, and
-/// the evaluator's verdict. `round` is null when the Task recorded no review round, and
+/// the exact recorded Demand Set and the evaluator's verdict. `round` is null when the Task recorded no review round, and
 /// `evaluation` when no evaluator recorded a verdict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskFindingsV2 {
+pub struct TaskFindingsV3 {
     pub schema: String,
     pub task_id: String,
     pub state: TaskStateV1,
     /// How many review rounds the Task recorded.
     pub rounds: u64,
     #[serde(deserialize_with = "Option::deserialize")]
-    pub round: Option<TaskFindingsRoundV2>,
+    pub round: Option<TaskFindingsRoundV3>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub evaluation: Option<TaskFindingsEvaluationV1>,
 }
@@ -62,7 +62,7 @@ pub struct TaskFindingsV2 {
 /// a verification record proved fixed on its Snapshot (ADR-0248).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskFindingsRoundV2 {
+pub struct TaskFindingsRoundV3 {
     pub index: u64,
     pub round: u32,
     pub snapshot_id: String,
@@ -71,6 +71,11 @@ pub struct TaskFindingsRoundV2 {
     /// are each reviewer's recorded reports, not gathered evidence (ADR-0034).
     pub complete: bool,
     pub missing_reviewers: Vec<String>,
+    /// Exact recorded Demand Set, null when the round did not reduce demands.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub demand_set_id: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub demand_set: Option<crate::demand::DemandSetV1>,
     pub counts: TaskFindingCountsV1,
     pub reviewers: Vec<TaskReviewerFindingsV2>,
     /// Per reviewer and per path: reviewed, not run (and why), or outside the round.
@@ -134,9 +139,9 @@ pub struct TaskFindingsEvaluationV1 {
     pub reason: String,
 }
 
-impl TaskFindingsV2 {
+impl TaskFindingsV3 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_FINDINGS_V2)?;
+        schema_is(&self.schema, TASK_FINDINGS_V3)?;
         require(is_name(&self.task_id), "Findings name an exact Task")?;
         self.state.validate()?;
         if let Some(round) = &self.round {
@@ -148,6 +153,19 @@ impl TaskFindingsV2 {
                 is_digest(&round.snapshot_id),
                 "A findings round names the exact Snapshot it reviewed",
             )?;
+            require(
+                round.complete == round.demand_set_id.is_some()
+                    && round.complete == round.demand_set.is_some()
+                    && round.demand_set_id.as_deref().is_none_or(is_digest),
+                "A complete round names its exact Demand Set; an incomplete round has none",
+            )?;
+            if let Some(set) = &round.demand_set {
+                set.validate()?;
+                require(
+                    set.round == round.round,
+                    "Demand Set belongs to the selected round",
+                )?;
+            }
             let mut counts = TaskFindingCountsV1::default();
             round.coverage.validate()?;
             require(
@@ -809,19 +827,34 @@ mod tests {
         }
     }
 
+    fn af_contracts_demand_set() -> crate::demand::DemandSetV1 {
+        crate::demand::DemandSetV1 {
+            subject_id: id('b'),
+            round: 1,
+            prior_demand_set_id: id('c'),
+            reducer_version: crate::demand::DEMAND_REDUCER_VERSION.into(),
+            selected_demand_artifact_ids: vec![],
+            satisfaction_artifact_ids: vec![],
+            waiver_artifact_ids: vec![],
+            demands: vec![],
+        }
+    }
+
     #[test]
     fn a_round_counts_its_reviewers_findings_by_severity() {
-        let mut document = TaskFindingsV2 {
-            schema: TASK_FINDINGS_V2.into(),
+        let mut document = TaskFindingsV3 {
+            schema: TASK_FINDINGS_V3.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,
-            round: Some(TaskFindingsRoundV2 {
+            round: Some(TaskFindingsRoundV3 {
                 index: 1,
                 round: 1,
                 snapshot_id: id('2'),
                 conclusion: crate::task::review::ReviewConclusionV1::Pass,
                 complete: true,
+                demand_set_id: Some(id('a')),
+                demand_set: Some(af_contracts_demand_set()),
                 missing_reviewers: vec![],
                 counts: TaskFindingCountsV1 {
                     blocker: 0,

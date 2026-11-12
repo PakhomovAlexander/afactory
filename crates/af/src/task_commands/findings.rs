@@ -1,7 +1,7 @@
 //! `af task findings` (ADR-0211): the review findings of a Task's last (or Nth) review round,
 //! per reviewer — each with its severity, confidence, title, location, the quoted evidence and
 //! the proposed fix — then the evaluator's verdict and its reason. Text is grouped by severity;
-//! `--json` prints one `af/task-findings@2` document, whose findings each carry the prompt an
+//! `--json` prints one `af/task-findings@3` document, whose findings each carry the prompt an
 //! agent that will fix them needs and whose round says what it covered (ADR-0248); `--format
 //! sarif` prints the same findings as SARIF 2.1.0. Read-only: it reads what `af task report`
 //! reads, the Task's recorded rounds, their Subjects, Finding Sets, reviewer results and repair
@@ -337,21 +337,21 @@ fn evaluation(
     verdict(cas, &node, &id).map(Some)
 }
 
-pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskFindingsV2, String> {
+pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskFindingsV3, String> {
     selected_document(opened, wanted, false).map(|(document, _)| document)
 }
 
 pub(super) fn ledger_document(
     opened: &OpenedTask,
     wanted: Option<u64>,
-) -> Result<TaskFindingsV2, String> {
+) -> Result<TaskFindingsV3, String> {
     ledger_selection(opened, wanted).map(|(document, _)| document)
 }
 
 pub(super) fn ledger_selection(
     opened: &OpenedTask,
     wanted: Option<u64>,
-) -> Result<(TaskFindingsV2, Option<String>), String> {
+) -> Result<(TaskFindingsV3, Option<String>), String> {
     selected_document(opened, wanted, true)
 }
 
@@ -359,7 +359,7 @@ fn selected_document(
     opened: &OpenedTask,
     wanted: Option<u64>,
     ledger: bool,
-) -> Result<(TaskFindingsV2, Option<String>), String> {
+) -> Result<(TaskFindingsV3, Option<String>), String> {
     let task = &opened.task;
     let id = &task.task_id;
     let (_, view) = opened.view()?;
@@ -402,7 +402,21 @@ fn selected_document(
                 }
             }
             let subject = round_subject(&opened.cas, round)?;
-            Some(TaskFindingsRoundV2 {
+            let demand_set = match &round.demand_set_id {
+                Some(id) => {
+                    let set: af_contracts::demand::DemandSetV1 =
+                        artifact(&opened.cas, id, af_contracts::contract::DEMAND_SET_V1)?;
+                    set.validate()?;
+                    if set.subject_id != round.subject_id || set.round != round.round {
+                        return Err(
+                            "Demand Set does not belong to the selected review round".into()
+                        );
+                    }
+                    Some(set)
+                }
+                None => None,
+            };
+            Some(TaskFindingsRoundV3 {
                 index,
                 round: round.round,
                 snapshot_id: round.snapshot_id.clone(),
@@ -410,6 +424,8 @@ fn selected_document(
                 complete: round.finding_set_id.is_some(),
                 missing_reviewers: round.missing_reviewers.iter().cloned().collect(),
                 counts,
+                demand_set_id: round.demand_set_id.clone(),
+                demand_set,
                 coverage: round_coverage(id, &subject, &reviewers),
                 verified_fixed: verified_fixed(&opened.cas, round, &subject)?,
                 reviewers,
@@ -431,8 +447,8 @@ fn selected_document(
             }
         }
     };
-    let document = TaskFindingsV2 {
-        schema: TASK_FINDINGS_V2.into(),
+    let document = TaskFindingsV3 {
+        schema: TASK_FINDINGS_V3.into(),
         task_id: id.clone(),
         state: view.state,
         rounds: count,
@@ -507,9 +523,21 @@ fn coverage_line(coverage: &handoff::CoverageV1) -> String {
     parts.join("; ")
 }
 
+/// Escape terminal controls and line boundaries without changing printable shell syntax.
+fn demand_text(value: &str) -> String {
+    let mut text = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\'' | '"' | '\\' => text.push(ch),
+            _ => text.extend(ch.escape_debug()),
+        }
+    }
+    text
+}
+
 /// The text: the round and its reviewers, the findings grouped by severity (blocker first),
 /// the evaluator's verdict, and the next command last.
-pub(super) fn lines(document: &TaskFindingsV2) -> Vec<String> {
+pub(super) fn lines(document: &TaskFindingsV3) -> Vec<String> {
     let id = &document.task_id;
     let mut lines = Vec::new();
     let conclusion = |conclusion| {
@@ -560,6 +588,66 @@ pub(super) fn lines(document: &TaskFindingsV2) -> Vec<String> {
                     "  verified fixed: {} by {} on {}",
                     fixed.finding_id, fixed.record_id, fixed.snapshot_id
                 ));
+            }
+            match (&round.demand_set_id, &round.demand_set) {
+                (Some(id), Some(set)) => {
+                    lines.push(format!("  demand set: {id}"));
+                    if set.demands.is_empty() {
+                        lines.push("  demands: none recorded".into());
+                    } else {
+                        lines.push(String::new());
+                        lines.push("demands (recorded state; not an acceptance verdict)".into());
+                        for demand in &set.demands {
+                            let requirement = match demand.requirement {
+                                af_contracts::demand::DemandRequirement::Required => "required",
+                                af_contracts::demand::DemandRequirement::Advisory => "advisory",
+                            };
+                            let status = match demand.status {
+                                af_contracts::demand::DemandStatus::Open => "open",
+                                af_contracts::demand::DemandStatus::Satisfied => "satisfied",
+                                af_contracts::demand::DemandStatus::Stale => "stale",
+                                af_contracts::demand::DemandStatus::Waived => "waived",
+                            };
+                            lines.push(format!(
+                                "  [{}] {}: {requirement}, {status}",
+                                demand_text(&demand.source),
+                                demand.demand_id
+                            ));
+                            lines.push(format!("    claim: {}", demand_text(&demand.claim)));
+                            lines.push(format!("    why: {}", demand_text(&demand.why)));
+                            if demand.suggested_method.contains('\n') {
+                                lines.push("    method:".into());
+                                for line in demand.suggested_method.split('\n') {
+                                    // Every recorded line stays inside the method's indentation.
+                                    lines.push(format!("      {}", demand_text(line)));
+                                }
+                            } else {
+                                lines.push(format!(
+                                    "    method: {}",
+                                    demand_text(&demand.suggested_method)
+                                ));
+                            }
+                            lines.push(format!("    subject: {}", demand.subject_id));
+                            for (name, ids) in [
+                                ("evidence", &demand.evidence_ids),
+                                ("satisfaction", &demand.satisfaction_ids),
+                                ("waiver", &demand.waiver_ids),
+                            ] {
+                                lines.push(format!(
+                                    "    {name}: {}",
+                                    if ids.is_empty() {
+                                        "none recorded".into()
+                                    } else {
+                                        ids.join(", ")
+                                    }
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    lines.push("  demands: unavailable (round did not record a Demand Set)".into())
+                }
             }
             for severity in [Severity::Blocker, Severity::Major, Severity::Minor] {
                 let found: Vec<(&str, &TaskFindingV2)> = round
@@ -635,7 +723,7 @@ pub(super) fn lines(document: &TaskFindingsV2) -> Vec<String> {
 }
 
 /// The document as one SARIF 2.1.0 log (ADR-0248).
-pub(super) fn sarif(document: &TaskFindingsV2) -> crate::sarif::SarifRun<'_> {
+pub(super) fn sarif(document: &TaskFindingsV3) -> crate::sarif::SarifRun<'_> {
     let round = document.round.as_ref();
     crate::sarif::SarifRun {
         owner: ("task_id", &document.task_id),
@@ -720,7 +808,7 @@ mod tests {
 
     /// A reviewed round: `bugs` reported two findings; `correctness` answered, or, with
     /// `missing`, recorded no result.
-    fn document(missing: bool) -> TaskFindingsV2 {
+    fn document(missing: bool) -> TaskFindingsV3 {
         let reviewers = vec![
             TaskReviewerFindingsV2 {
                 reviewer: "bugs".into(),
@@ -746,12 +834,12 @@ mod tests {
             round: 1,
             change_scope: None,
         };
-        TaskFindingsV2 {
-            schema: TASK_FINDINGS_V2.into(),
+        TaskFindingsV3 {
+            schema: TASK_FINDINGS_V3.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,
-            round: Some(TaskFindingsRoundV2 {
+            round: Some(TaskFindingsRoundV3 {
                 index: 1,
                 round: 1,
                 snapshot_id: id('2'),
@@ -761,6 +849,17 @@ mod tests {
                     af_contracts::task::review::ReviewConclusionV1::Pass
                 },
                 complete: !missing,
+                demand_set_id: (!missing).then(|| id('a')),
+                demand_set: (!missing).then(|| af_contracts::demand::DemandSetV1 {
+                    subject_id: id('b'),
+                    round: 1,
+                    prior_demand_set_id: id('c'),
+                    reducer_version: af_contracts::demand::DEMAND_REDUCER_VERSION.into(),
+                    selected_demand_artifact_ids: vec![],
+                    satisfaction_artifact_ids: vec![],
+                    waiver_artifact_ids: vec![],
+                    demands: vec![],
+                }),
                 missing_reviewers: if missing {
                     vec!["correctness".into()]
                 } else {
@@ -782,6 +881,94 @@ mod tests {
                 reason: "Verified on the sealed source".into(),
             }),
         }
+    }
+
+    #[test]
+    fn demands_preserve_required_advisory_and_recorded_states_without_acceptance() {
+        use af_contracts::demand::{DemandRequirement, DemandSetEntryV1, DemandStatus};
+        let mut inspected = document(false);
+        let round = inspected.round.as_mut().unwrap();
+        round.conclusion = af_contracts::task::review::ReviewConclusionV1::ChangesRequested;
+        round.counts = TaskFindingCountsV1::default();
+        for reviewer in &mut round.reviewers {
+            reviewer.findings.clear();
+        }
+        for (key, requirement, status) in [
+            ('1', DemandRequirement::Required, DemandStatus::Open),
+            ('2', DemandRequirement::Required, DemandStatus::Satisfied),
+            ('3', DemandRequirement::Advisory, DemandStatus::Open),
+            ('4', DemandRequirement::Required, DemandStatus::Stale),
+            ('5', DemandRequirement::Required, DemandStatus::Waived),
+        ] {
+            round
+                .demand_set
+                .as_mut()
+                .unwrap()
+                .demands
+                .push(DemandSetEntryV1 {
+                    demand_id: id(key),
+                    claim: "Paired benchmark succeeds with 87 tests at ≤ 10 µs".into(),
+                    why: "Compare both Snapshots: 基準と候補".into(),
+                    suggested_method: "Run base and head\nmeasure --limit '≤ 10 µs'\n# literal \\n\t\u{1b}[31m\r\u{202e}".into(),
+                    source: "correctness".into(),
+                    requirement,
+                    status,
+                    subject_id: id('b'),
+                    evidence_ids: vec![id('d')],
+                    satisfaction_ids: vec![id('e')],
+                    waiver_ids: vec![id('f')],
+                });
+        }
+        inspected.validate().unwrap();
+        let text = lines(&inspected).join("\n");
+        for needle in [
+            "changes_requested",
+            "correctness: no findings",
+            "required, open",
+            "required, satisfied",
+            "advisory, open",
+            "required, stale",
+            "required, waived",
+            "claim: Paired benchmark succeeds with 87 tests at ≤ 10 µs",
+            "why: Compare both Snapshots: 基準と候補",
+            "    method:\n      Run base and head\n      measure --limit '≤ 10 µs'\n",
+            r"      # literal \n\t\u{1b}[31m\r\u{202e}",
+            "not an acceptance verdict",
+            "evaluator (evaluate): passed",
+        ] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        for key in ['1', '2', '3', '4', '5', 'a', 'b', 'd', 'e', 'f'] {
+            assert!(text.contains(&id(key)), "missing identity {key}: {text}");
+        }
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains('\u{202e}'));
+        let json = serde_json::to_string(&inspected).unwrap();
+        let decoded: TaskFindingsV3 = serde_json::from_str(&json).unwrap();
+        let demands = |doc: &TaskFindingsV3| {
+            doc.round
+                .as_ref()
+                .unwrap()
+                .demand_set
+                .as_ref()
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(demands(&decoded), demands(&inspected));
+        let empty = lines(&document(false)).join("\n");
+        assert!(empty.contains("demands: none recorded"));
+        let absent = lines(&document(true)).join("\n");
+        assert!(absent.contains("demands: unavailable"));
+    }
+
+    #[test]
+    fn demand_text_preserves_shell_syntax_and_escapes_row_and_terminal_controls() {
+        let command = r#"measure --limit '10 ms' --path "a\b" --pattern \n"#;
+        assert_eq!(demand_text(command), command);
+        assert_eq!(
+            demand_text("next: forged\n\r\t\u{1b}[31m\u{202e}"),
+            r"next: forged\n\r\t\u{1b}[31m\u{202e}"
+        );
     }
 
     #[test]

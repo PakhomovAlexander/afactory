@@ -182,8 +182,8 @@
   },
   {
    "path": "fixtures/performance/cli.toml",
-   "sha256": "sha256:900f6ea6e5adb86d7abcf277bcc382b6f086f92e37a00007a6f9fa9162a6d1b8",
-   "size": 41246
+   "sha256": "sha256:103c1dc83429982a2afea20db1c8ff45cf88c9ebe9262a32b9e35e2d0510a172",
+   "size": 41345
   },
   {
    "path": "fixtures/performance/cli/campaign-roots/repo/.af/af.lock",
@@ -4031,7 +4031,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:9e067e6787e36ce8d7e7ac4d1b6e91e6d4382d16228dafc83f470b135ec2ee53",
+ "harness_digest": "sha256:81c7874c3ca0c83f5885ef63260ba5dd2f3c7fc61436974b632cb91404321566",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

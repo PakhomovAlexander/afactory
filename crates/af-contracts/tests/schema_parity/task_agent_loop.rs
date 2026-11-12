@@ -1,4 +1,4 @@
-//! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@2`,
+//! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@3`,
 //! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@2`, `af/task-detached@3`,
 //! `af/task-cancelled@2`, the lines of `af task events` (`af/task-event@2`), the `runs/` records
 //! `af/task-run-process@1` and `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a
@@ -156,17 +156,19 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
             handoff::VerifiedBy::Task,
         ),
     };
-    let document = TaskFindingsV2 {
-        schema: TASK_FINDINGS_V2.into(),
+    let document = TaskFindingsV3 {
+        schema: TASK_FINDINGS_V3.into(),
         task_id: "chain-base".into(),
         state: verified(),
         rounds: 1,
-        round: Some(TaskFindingsRoundV2 {
+        round: Some(TaskFindingsRoundV3 {
             index: 1,
             round: 1,
             snapshot_id: id('2'),
             conclusion: af_contracts::task::review::ReviewConclusionV1::Pass,
             complete: true,
+            demand_set_id: Some(id('a')),
+            demand_set: Some(af_contracts_demand_set()),
             missing_reviewers: vec![],
             counts: TaskFindingCountsV1 {
                 blocker: 0,
@@ -200,9 +202,9 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
         }),
     };
     both(
-        "task-findings-v2.json",
+        "task-findings-v3.json",
         &document,
-        TaskFindingsV2::validate,
+        TaskFindingsV3::validate,
         vec![
             (
                 Box::new(|v: &mut Value| {
@@ -275,38 +277,83 @@ fn findings_name_each_reviewers_findings_and_the_evaluators_verdict() {
                 "a missing field instead of null",
             ),
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-findings@1")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-findings@2")),
                 "the previous version",
             ),
         ],
     );
-    let none = TaskFindingsV2 {
+    // All canonical Demand states remain evidence, independently of the round's verdict.
+    for (requirement, status) in [
+        ("required", "open"),
+        ("required", "satisfied"),
+        ("advisory", "open"),
+        ("required", "stale"),
+        ("required", "waived"),
+    ] {
+        let mut value = serde_json::to_value(&document).unwrap();
+        value["round"]["demand_set"]["demands"] = json!([{
+            "demand_id": id('d'), "claim": "87 tests on base and head", "why": "Paired measurement",
+            "suggested_method": "Run the paired benchmark", "source": "correctness",
+            "requirement": requirement, "status": status, "subject_id": id('b'),
+            "evidence_ids": [id('e')], "satisfaction_ids": [], "waiver_ids": []
+        }]);
+        assert_valid("task-findings-v3.json", &value);
+        serde_json::from_value::<TaskFindingsV3>(value.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        for (field, bad) in [
+            ("status", json!("accepted")),
+            ("requirement", json!("optional")),
+            ("demand_id", json!("missing")),
+            ("claim", json!("")),
+        ] {
+            let mut invalid = value.clone();
+            invalid["round"]["demand_set"]["demands"][0][field] = bad;
+            assert_invalid("task-findings-v3.json", &invalid, "invalid Demand");
+            assert!(
+                serde_json::from_value::<TaskFindingsV3>(invalid)
+                    .map(|v| v.validate().is_err())
+                    .unwrap_or(true)
+            );
+        }
+    }
+    let mut incomplete = serde_json::to_value(&document).unwrap();
+    incomplete["round"]["complete"] = json!(false);
+    incomplete["round"]["demand_set_id"] = Value::Null;
+    incomplete["round"]["demand_set"] = Value::Null;
+    assert_valid("task-findings-v3.json", &incomplete);
+    serde_json::from_value::<TaskFindingsV3>(incomplete)
+        .unwrap()
+        .validate()
+        .unwrap();
+    let none = TaskFindingsV3 {
         rounds: 0,
         round: None,
         evaluation: None,
         ..document
     };
     none.validate().unwrap();
-    let ledger = af_contracts::task::review_ledger::ReviewLedgerV2 {
-        schema: af_contracts::task::review_ledger::REVIEW_LEDGER_V2.into(),
+    let ledger = af_contracts::task::review_ledger::ReviewLedgerV3 {
+        schema: af_contracts::task::review_ledger::REVIEW_LEDGER_V3.into(),
         inspection: none.clone(),
         finding_set: None,
         reports: BTreeMap::new(),
     };
     ledger.validate().unwrap();
     let value = serde_json::to_value(&ledger).unwrap();
-    assert_valid("review-ledger-v2.json", &value);
+    assert_valid("review-ledger-v3.json", &value);
     let mut retired = value;
-    retired["schema"] = json!("af/review-ledger@1");
-    assert_invalid("review-ledger-v2.json", &retired, "retired ledger identity");
+    retired["schema"] = json!("af/review-ledger@2");
+    assert_invalid("review-ledger-v3.json", &retired, "retired ledger identity");
     assert!(
-        serde_json::from_value::<af_contracts::task::review_ledger::ReviewLedgerV2>(retired)
+        serde_json::from_value::<af_contracts::task::review_ledger::ReviewLedgerV3>(retired)
             .unwrap()
             .validate()
             .is_err()
     );
     assert_valid(
-        "task-findings-v2.json",
+        "task-findings-v3.json",
         &serde_json::to_value(&none).unwrap(),
     );
 }
@@ -690,4 +737,17 @@ fn event_stream_lines_are_closed() {
             "a verified Task that exits as cancelled",
         )],
     );
+}
+
+fn af_contracts_demand_set() -> af_contracts::demand::DemandSetV1 {
+    af_contracts::demand::DemandSetV1 {
+        subject_id: id('b'),
+        round: 1,
+        prior_demand_set_id: id('c'),
+        reducer_version: af_contracts::demand::DEMAND_REDUCER_VERSION.into(),
+        selected_demand_artifact_ids: vec![],
+        satisfaction_artifact_ids: vec![],
+        waiver_artifact_ids: vec![],
+        demands: vec![],
+    }
 }

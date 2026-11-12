@@ -43,18 +43,21 @@ impl Fixture {
                     .replace("af/ReviewInput@1", "af/ReviewInput@2"),
             )
             .unwrap();
-            let method = if compatible || name == "correctness" {
+            let method = if position == "demand_only" {
+                "Measure scaling\nmeasure --limit '10 ms' --path \"a\\b\"\nnext: forged\u{1b}[31m"
+            } else if compatible || name == "correctness" {
                 "Measure scaling"
             } else {
                 "Measure memory"
             };
+            let method = serde_json::to_string(method).unwrap();
             std::fs::write(package.join("worker.py"), format!(r#"import json,sys
 r=json.load(sys.stdin)
 a=r['inputs']['assignment'][0]['payload']
 reports=[]
-if not a['findings'] and '{name}'=='correctness':
+if not a['findings'] and '{name}'=='correctness' and '{position}'!='demand_only':
  reports=[{{'severity':'major','file':'lib.rs','line':i,'title':'Claim '+str(i),'body':'Original immutable claim '+str(i),'fix':'Implement the required behavior','confidence':0.9}} for i in (1,2)]
-stage={{'reports':reports,'benchmark_demands':[{{'claim':'Runtime is bounded','why':'Large inputs matter','suggested_method':'{method}'}}], 'dispositions':[{{'finding_id':f['finding_id'],'position':'{position}','reason':'The original claim persists'}} for f in a['findings']]}}
+stage={{'reports':reports,'benchmark_demands':[{{'claim':'Runtime is bounded','why':'Large inputs matter','suggested_method':{method}}}], 'dispositions':[{{'finding_id':f['finding_id'],'position':'{position}','reason':'The original claim persists'}} for f in a['findings']]}}
 print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}))
 "#)).unwrap();
             if missing && name == "bugs" {
@@ -1111,8 +1114,8 @@ fn native_ledger_keeps_original_unresolved_findings_after_not_reproduced_and_dis
         assert_eq!(context["review"]["round"], 2);
         let (code, value) = f.invoke(&["review", "ledger", "ledger-later"]);
         assert_eq!(code, 0, "{value:#}");
-        crate::schemas::valid(&crate::schemas::validator("review-ledger-v2.json"), &value);
-        let typed: af_contracts::task::review_ledger::ReviewLedgerV2 =
+        crate::schemas::valid(&crate::schemas::validator("review-ledger-v3.json"), &value);
+        let typed: af_contracts::task::review_ledger::ReviewLedgerV3 =
             serde_json::from_value(value.clone()).unwrap();
         typed.validate().unwrap();
         let mut incomplete = typed.clone();
@@ -1152,7 +1155,7 @@ fn native_ledger_keeps_original_unresolved_findings_after_not_reproduced_and_dis
             wrong_severity.validate().is_err(),
             "Ledger counts must retain canonical severity"
         );
-        assert_eq!(value["schema"], "af/review-ledger@2");
+        assert_eq!(value["schema"], "af/review-ledger@3");
         assert_eq!(
             value["inspection"]["round"]["counts"],
             json!({"blocker":0,"major":2,"minor":0})
@@ -1241,4 +1244,64 @@ fn native_ledger_keeps_original_unresolved_findings_after_not_reproduced_and_dis
         let (_, selected) = f.invoke(&["review", "ledger", "review-cli", "--round", "1"]);
         assert_eq!(selected["finding_set"]["payload"], original["finding_set"]);
     }
+}
+
+/// Issue #785: an exact recorded required Demand explains changes_requested even without Findings.
+#[test]
+fn task_findings_exposes_required_demands_without_ordinary_findings() {
+    let f = Fixture::configured(true, false, "demand_only");
+    let context = f.context("review-cli");
+    let (code, findings) = f.invoke(&["task", "findings", "review-cli"]);
+    assert_eq!(code, 0, "{findings:#}");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-findings-v3.json"),
+        &findings,
+    );
+    let round = &findings["round"];
+    assert_eq!(round["conclusion"], "changes_requested");
+    assert_eq!(round["counts"], json!({"blocker":0,"major":0,"minor":0}));
+    assert_eq!(round["demand_set_id"], context["review"]["demand_set_id"]);
+    assert_eq!(round["demand_set"], context["demand_set"]);
+    assert!(
+        !round["demand_set"]["demands"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        round["demand_set"]["demands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["status"] == "open" && d["requirement"] == "required")
+    );
+    let output = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["task", "findings", "review-cli", "--state"])
+        .arg(&f.state)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    for needle in [
+        "changes_requested",
+        "no findings",
+        "required, open",
+        "Runtime is bounded",
+        "Large inputs matter",
+        "    method:\n      Measure scaling\n      measure --limit '10 ms' --path \"a\\b\"\n",
+        r"      next: forged\u{1b}[31m",
+    ] {
+        assert!(text.contains(needle), "{text}");
+    }
+    for demand in context["demand_set"]["demands"].as_array().unwrap() {
+        assert!(
+            text.contains(demand["demand_id"].as_str().unwrap()),
+            "{text}"
+        );
+    }
+    assert!(!text.contains("\nnext: forged"), "{text}");
+    assert!(!text.contains('\u{1b}'), "{text}");
+    // Reading never mutates the round or its obligations.
+    assert_eq!(f.context("review-cli"), context);
 }

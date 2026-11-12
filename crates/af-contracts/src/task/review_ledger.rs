@@ -1,16 +1,16 @@
 //! Complete selected native Ledger inspection; the Round report view remains separate.
-use super::{agent_loop::TaskFindingsV2, require};
+use super::{agent_loop::TaskFindingsV3, require};
 use crate::{ArtifactEnvelope, FindingSetV1};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const REVIEW_LEDGER_V2: &str = "af/review-ledger@2";
+pub const REVIEW_LEDGER_V3: &str = "af/review-ledger@3";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReviewLedgerV2 {
+pub struct ReviewLedgerV3 {
     pub schema: String,
-    pub inspection: TaskFindingsV2,
+    pub inspection: TaskFindingsV3,
     /// Null for an incomplete Round. Recorded sibling results never become a partial Ledger.
     #[serde(deserialize_with = "Option::deserialize")]
     pub finding_set: Option<ArtifactEnvelope>,
@@ -18,11 +18,11 @@ pub struct ReviewLedgerV2 {
     /// and original Snapshot. Current reviewer coverage does not replace claim provenance.
     pub reports: BTreeMap<String, ArtifactEnvelope>,
 }
-impl ReviewLedgerV2 {
+impl ReviewLedgerV3 {
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == REVIEW_LEDGER_V2,
-            "Expected af/review-ledger@2",
+            self.schema == REVIEW_LEDGER_V3,
+            "Expected af/review-ledger@3",
         )?;
         self.inspection.validate()?;
         let Some(frame) = &self.finding_set else {

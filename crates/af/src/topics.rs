@@ -581,7 +581,7 @@ Native Review commands use current Task and Ledger documents:
 
   af review inspect TASK_ID --json    af/task-inspection@20
   af review show TASK_ID --json       af/task-inspection@20
-  af review ledger TASK_ID --json     af/review-ledger@2
+  af review ledger TASK_ID --json     af/review-ledger@3
   af review ledger TASK_ID --format sarif   SARIF 2.1.0, af/findings-sarif@1
   af review report TASK_ID --json     af/task-report@3
   af review decision-context ID --json    af/review-decision-context@1
@@ -627,8 +627,8 @@ The Task documents, each named by its `schema`:
   af task list --attention --json      af/task-attention@1: seven groups by what each Task
                                        waits for, each Task its af/task-list-entry@4
   af task report --json                af/task-report@3
-  af task findings --json              af/task-findings@2, each finding with its agent_prompt,
-                                       the round with its coverage and verified_fixed
+  af task findings --json              af/task-findings@3, each finding with its agent_prompt,
+                                       the round with coverage, verified_fixed and its Demand Set
   af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
@@ -644,7 +644,7 @@ The Task documents, each named by its `schema`:
                                        planning_diagnostic.required_limits and .reserves
 
 af/task-inspection@20, af/task-collected-inspection@3, af/task-checks@3, each
-af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
+af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@3,
 af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
 af/task-event@2 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
 selectors the command was given (a report, pasted into a pull request, names no Store path); the
