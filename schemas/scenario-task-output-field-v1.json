@@ -20,7 +20,7 @@
       "const": "af/scenario-task-output-field@1"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "plan_id": {
       "type": "string",
@@ -35,7 +35,7 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "port": {
-      "$ref": "urn:af:schema:task-contracts:3#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
     },
     "artifact_id": {
       "type": "string",

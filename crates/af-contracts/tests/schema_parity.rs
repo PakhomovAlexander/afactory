@@ -22,7 +22,7 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 271] = [
+const SCHEMAS: [&str; 245] = [
     "ci-health-snapshot-v1.json",
     "ci-health-state-v2.json",
     "scenario-task-output-field-v1.json",
