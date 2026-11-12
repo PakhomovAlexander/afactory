@@ -98,6 +98,8 @@ def pilot(name):
     return manifest, values, artifacts
 
 
+REAL_CAPTURED_CATALOG = w.captured_catalog
+
 FACTS = w.read(ROOT / 'fixtures/issue-workflows/routing-known.json')
 
 
@@ -106,6 +108,60 @@ class Workflows(unittest.TestCase):
         patcher = mock.patch.object(w, 'captured_catalog')
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def test_installed_and_captured_authority_pin_both_real_policies(self):
+        staged = w.STAGED
+        for kind in ('code', 'report'):
+            self.assertEqual((staged / ('approved-' + kind + '-policy.toml')).read_bytes(),
+                             (ROOT / ('.af/' + kind + '-policy.toml')).read_bytes())
+        files = {'task-catalog.toml': 'replacement-catalog.toml',
+                 'code-policy.toml': 'approved-code-policy.toml',
+                 'report-policy.toml': 'approved-report-policy.toml'}
+        def capture(args, **kwargs):
+            file = args[-1].split(':.af/')[1]
+            return mock.Mock(stdout=(staged / files[file]).read_bytes())
+        # This test deliberately calls the real production guard, unlike generic Scenario fixtures.
+        with mock.patch.object(w.subprocess, 'run', side_effect=capture):
+            REAL_CAPTURED_CATALOG(pin('bugfix/default-codex')['template'])
+        for file in files:
+            def changed(args, **kwargs):
+                result = capture(args, **kwargs)
+                if args[-1].endswith('/' + file):
+                    result.stdout = b'changed'
+                return result
+            with self.subTest(file=file), mock.patch.object(w.subprocess, 'run', side_effect=changed):
+                with self.assertRaises(ValueError):
+                    REAL_CAPTURED_CATALOG(pin('bugfix/default-codex')['template'])
+
+    def test_effective_policy_identity_review_binding_and_local_execution(self):
+        revision = {'authority': {'policy_id': 'authority'}}
+        for kind in ('code', 'report'):
+            authority = {kind + '_policy_id': w.approved_policy_id(kind)}
+            value = {'revision_id': 'revision', 'plan': {'authority': {'policy_id': 'authority'}},
+                     'selection': {'assessment': {'decision': {'pipeline':
+                         'issue-internal/report' if kind == 'report' else 'bugfix/default-codex'}}},
+                     'graph': {'nodes': {}}}
+            def recorded(state, identity, artifact_type=None):
+                return revision if identity == 'revision' else authority
+            with mock.patch.object(w, 'recorded', side_effect=recorded):
+                w.validate_policy(value, '/state')
+                authority[kind + '_policy_id'] = 'wrong'
+                with self.assertRaisesRegex(ValueError, 'policy identity'):
+                    w.validate_policy(value, '/state')
+                authority[kind + '_policy_id'] = w.approved_policy_id(kind)
+                value['graph']['nodes']['gate'] = {'operator': {'operator': {'remote_checks': ['kernel']}}}
+                with self.assertRaisesRegex(ValueError, 'locally'):
+                    w.validate_policy(value, '/state')
+                value['graph']['nodes'] = {}
+                value['plan']['authority']['policy_id'] = 'forged'
+                with self.assertRaisesRegex(ValueError, 'native revision'):
+                    w.validate_policy(value, '/state')
+                value['plan']['authority']['policy_id'] = 'authority'
+        authority = {'code_policy_id': w.approved_policy_id('code'), 'review_policy_id': 'review'}
+        value['selection']['assessment']['decision']['pipeline'] = 'bugfix/default-codex'
+        with mock.patch.object(w, 'recorded', side_effect=[revision, authority, {}, {'check_policy_id': 'wrong'}]):
+            with self.assertRaisesRegex(ValueError, 'Review check policy'):
+                w.validate_policy(value, '/state')
 
     def test_all_seven_are_composed_from_native_tasks_with_no_actions(self):
         for name, selection in w.catalog()['selections'].items():
@@ -256,7 +312,7 @@ class Workflows(unittest.TestCase):
                     with mock.patch.object(w, 'invoke', side_effect=lambda *a: values[a[-1]]), \
                          mock.patch.object(w, 'recorded', side_effect=lambda state, identity, kind=None:
                                            artifacts[identity]['payload'] if kind else artifacts[identity]), \
-                         mock.patch.object(w, 'validate_plan', side_effect=lambda n, v:
+                         mock.patch.object(w, 'validate_plan', side_effect=lambda n, v, state:
                                            check_selection(n, v)), \
                          mock.patch.object(w.subprocess, 'run', return_value=mock.Mock(stdout=b'root\n')):
                         return w.reconcile('af', '/project', '/state', m)

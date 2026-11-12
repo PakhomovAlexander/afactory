@@ -76,16 +76,20 @@ def route(name, facts):
         raise ValueError('unknown bug cause requires research-fix')
 
 
-def validate_plan(name, value):
+def validate_plan(name, value, state):
     """Compare effective native bindings with the exact staged Worker definitions and pins."""
-    selection(name)
+    internal = {catalog()['verification']} | {s['research_pipeline'] for s in catalog()['selections'].values()}
+    if name not in internal:
+        selection(name)
     native = toml(STAGED / 'replacement-catalog.toml')
     plan, graph = value['plan'], value['graph']
+    validate_policy(value, state)
     if value['selection']['assessment']['decision'] != {'kind': 'selected', 'pipeline': name}:
         raise ValueError('native selection differs')
     definition = toml(STAGED / 'task-packages' / name / 'pipeline.toml')
-    expected_slots = {'root.slots.' + slot for slot in definition['slots']}
-    if set(plan.get('bindings', {})) != expected_slots or set(graph['slots']) != expected_slots:
+    expected_slots = {'root.slots.' + slot: declared['worker']
+                      for slot, declared in definition['slots'].items()}
+    if set(plan.get('bindings', {})) != set(expected_slots) or set(graph['slots']) != set(expected_slots):
         raise ValueError('missing or extra effective roles')
     required_packages = set()
     def closure(package):
@@ -101,10 +105,17 @@ def validate_plan(name, value):
                 if node['operator']['op'] == 'call':
                     closure(node['operator']['pipeline'])
     closure(name)
+    # Native compilation also retains the exact catalog-selected Task-kind package.
+    for kind in definition['accepts']['kinds']:
+        if kind in native.get('kinds', {}):
+            closure(native['kinds'][kind])
     if set(plan['dependencies']) != required_packages:
-        raise ValueError('missing or extra Pipeline dependencies')
+        raise ValueError('missing or extra Pipeline dependencies: expected ' + repr(sorted(required_packages))
+                         + '; actual ' + repr(sorted(plan['dependencies'])))
     for slot, bound in plan['bindings'].items():
         worker = graph['slots'][slot]['worker']
+        if worker != expected_slots[slot]:
+            raise ValueError('effective Worker differs from declared role: ' + slot)
         if worker not in native['providers']:
             raise ValueError('unapproved effective Worker')
         pin = native['packages'][worker]
@@ -307,7 +318,7 @@ def reconcile(af, repo, state, manifest):
     producers = set()
     for i, task in enumerate(tasks):
         value, revision = values[task], revisions[task]
-        validate_plan(manifest['selection'], value)
+        validate_plan(manifest['selection'], value, state)
         if native_issue(state, revision) != issue:
             raise ValueError('continuation changes original issue requirements')
         if i:
@@ -336,7 +347,7 @@ def reconcile(af, repo, state, manifest):
             if (report_origin != origin or report_revision['inputs']['source']['snapshot_id'] != original_source):
                 raise ValueError('research source differs from original implementation')
             check_native_research_issue(state, report_revision, contract)
-            check_stage(report, choice['research_pipeline'])
+            check_stage(report, choice['research_pipeline'], state)
             check_output(binding, report, revision['inputs']['research_report'], 'report', 'af/Document@1')
         elif binding or 'research_report' in revision['inputs']:
             raise ValueError('this route has no research stage')
@@ -345,7 +356,7 @@ def reconcile(af, repo, state, manifest):
     if manifest.get('verification_task'):
         task = manifest['verification_task']
         value, revision = values[task], revisions[task]
-        check_stage(value, catalog()['verification'])
+        check_stage(value, catalog()['verification'], state)
         if native_issue(state, revision) != issue:
             raise ValueError('final verification changes original issue requirements')
         binding = (value.get('input_bindings') or {}).get('bindings', {}).get('source', {})
@@ -370,7 +381,8 @@ def reconcile(af, repo, state, manifest):
             'final_verification_recorded': bool(manifest.get('verification_task')), 'quality_or_savings_claim': False}
 
 
-def check_stage(value, pipeline):
+def check_stage(value, pipeline, state):
+    validate_plan(pipeline, value, state)
     if (value['selection']['assessment']['decision'] != {'kind': 'selected', 'pipeline': pipeline}
             or pipeline not in value['plan']['dependencies'] or value.get('continues')
             or value.get('result', {}).get('acceptance') != 'satisfied'
@@ -395,14 +407,60 @@ def check_output(binding, producer, input_port, port, artifact_type):
         raise ValueError('stage output does not match exact recorded input binding')
 
 
+def approved_policy_id(kind):
+    # capture_policy serializes the native typed policy before CAS hashing. These are
+    # its BTreeSet fields; native tests assert parity against actual captured authority.
+    policy = toml(STAGED / ('approved-' + kind + '-policy.toml'))
+    if kind == 'code':
+        for key in ('components', 'checks'):
+            policy['rust_toolchain'][key] = sorted(policy['rust_toolchain'][key])
+    else:
+        policy['required_sections'] = sorted(policy['required_sections'])
+    return kernel_contracts.kernel_digest(kernel_contracts.KERNEL_CONTENT_DOMAIN, policy, 'policy')
+
+
+def validate_policy(value, state):
+    policy_id = value['plan']['authority']['policy_id']
+    revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
+    if revision['authority']['policy_id'] != policy_id:
+        raise ValueError('effective policy authority differs from native revision')
+    authority = recorded(state, policy_id)
+    pipeline = value['selection']['assessment']['decision']['pipeline']
+    kind = 'report' if pipeline in ('issue-internal/report', 'issue-internal/design') else 'code'
+    expected = approved_policy_id(kind)
+    if authority.get(kind + '_policy_id') != expected:
+        raise ValueError('effective approved ' + kind + ' policy identity differs')
+    recorded(state, expected)  # Require the exact native policy bytes, not only an asserted ID.
+    if kind == 'code' and authority.get('review_policy_id'):
+        review = recorded(state, authority['review_policy_id'])
+        if review['check_policy_id'] != expected:
+            raise ValueError('effective Review check policy identity differs')
+    for node in value['graph']['nodes'].values():
+        operator = node['operator'].get('operator', {})
+        if operator.get('remote_checks'):
+            raise ValueError('approved checks must run locally')
+
+
+def installed_authority(repo):
+    if toml(Path(repo) / '.af/task-catalog.toml') != toml(STAGED / 'replacement-catalog.toml'):
+        raise ValueError('install and review the exact replacement catalog before planning')
+    for kind in ('code', 'report'):
+        if (Path(repo) / ('.af/' + kind + '-policy.toml')).read_bytes() != (STAGED / ('approved-' + kind + '-policy.toml')).read_bytes():
+            raise ValueError('installed approved ' + kind + ' policy bytes differ')
+
+
 def captured_catalog(template):
     commit = template['authority_commit']
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('template requires exact source commit')
-    result = subprocess.run(['git', '-C', template['repo'], 'show', commit + ':.af/task-catalog.toml'],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=True)
-    if len(result.stdout) > LIMIT or tomli.loads(result.stdout.decode()) != toml(STAGED / 'replacement-catalog.toml'):
-        raise ValueError('pinned source does not install the exact versioned replacement catalog')
+    files = {'task-catalog.toml': 'replacement-catalog.toml',
+             'code-policy.toml': 'approved-code-policy.toml',
+             'report-policy.toml': 'approved-report-policy.toml'}
+    for installed, staged in files.items():
+        result = subprocess.run(['git', '-C', template['repo'], 'show', commit + ':.af/' + installed],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=True)
+        if len(result.stdout) > LIMIT or result.stdout != (STAGED / staged).read_bytes():
+            raise ValueError('pinned source does not install approved authority: ' + installed)
 
 
 def composition(name, pins, facts):
@@ -487,7 +545,9 @@ def main():
     if args.command == 'preview':
         result = catalog()
     elif args.command == 'check-plan':
-        result = validate_plan(args.selection, read(args.inspection))
+        if args.state is None:
+            parser.error('--state is required to check captured native policy authority')
+        result = validate_plan(args.selection, read(args.inspection), args.state)
     elif args.command == 'compose':
         result = composition(args.selection, [read(p) for p in args.pins], read(args.routing))
     elif args.state is None:
@@ -497,9 +557,7 @@ def main():
     elif args.command == 'reconcile':
         result = reconcile(args.af, args.repo, args.state, read(args.manifest))
     else:
-        installed = toml(args.repo / '.af/task-catalog.toml')
-        if installed != toml(STAGED / 'replacement-catalog.toml'):
-            raise ValueError('install and review the exact replacement catalog before planning')
+        installed_authority(args.repo)
         route(args.selection, read(args.routing))
         if selection(args.selection)['research_pipeline']:
             raise ValueError('research/design requires native Scenario composition; plan its internal Report Task and use compose')
@@ -516,7 +574,7 @@ def main():
             if any(p not in ('codex-personal', 'pi-personal') for p in local.get('providers', {}).values()):
                 raise ValueError('personal aliases required')
             extra = ['--bindings', str(args.bindings)]
-        result = validate_plan(args.selection, invoke(args.af, args.repo, args.state, 'plan', '--file', str(args.file), *extra))
+        result = validate_plan(args.selection, invoke(args.af, args.repo, args.state, 'plan', '--file', str(args.file), *extra), args.state)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

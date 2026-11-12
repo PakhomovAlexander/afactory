@@ -62,7 +62,10 @@ Store to discover other machines or hidden paths.
 After verification and review, the operator:
 
 1. Copies `task-packages/` to `.af/task-packages/`, replacing the catalog and settings from the
-   two `replacement-*.toml` files. Keeps the existing code/report policies and required gates.
+   two `replacement-*.toml` files. Installs `approved-code-policy.toml` and
+   `approved-report-policy.toml` byte for byte as `.af/code-policy.toml` and
+   `.af/report-policy.toml`. These versioned files preserve the current local kernel command,
+   required Markdown check, bounds and measurement definitions; review and commit them together.
 2. Removes the old selectable package entries by replacing the catalog, rather than merging old
    choices back. Removes superseded slot overrides and workstream pipeline names from local
    bindings; only personal account aliases remain. No captured Task is edited, replanned,
@@ -72,7 +75,11 @@ After verification and review, the operator:
    plans the selected bounded pilot, checks its effective roles, and commits reviewed authority.
    Preserves the old exact authority commit for already captured Tasks.
 
-The launcher `plan` refuses an installed catalog that differs from replacement authority, and
+The launcher `plan` refuses an installed catalog or policy file that differs from staged authority.
+`compose` checks those exact files at every pinned authority commit. `plan`, `check-plan` and
+reconciliation follow the native captured authority in the Store and check the effective code or
+report policy identity, including Review's check policy, and refuse remote check selection. Missing
+Store metadata fails closed. The launcher also
 refuses local slot/package overrides and nonpersonal aliases. Native direct planning is a lower
 level operator interface; it does not enforce the launcher's routing attestations. Never claim
 that docs or labels enforce scope on a caller bypassing this interface.
@@ -126,7 +133,7 @@ python3 -I scripts/issue-workflows.py compose bugfix/research-fix-codex \
 For design use `design.json` with `issue-internal/design` and select `impl/design-codex` in the
 implementation Task. Performance uses `issue-internal/report` research and selects
 `perf/research-experiment-codex`. Simple selections take only code and shared verification pins.
-`compose` checks routing facts and the catalog at the pinned Git commit. It refuses missing
+`compose` checks routing facts and the exact catalog and approved policies at the pinned Git commit. It refuses missing
 stages, missing or differing original research/design issue contracts, differing implementation
 and verification goals or structured requirements/acceptance, differing source
 commits/Stores, substituted pipelines and
@@ -171,7 +178,7 @@ validate the exact effective plan before authorizing it:
 
 ```sh
 af task explain TASK_ID --repo /project --state /private/tasks --json > /private/pilot/inspection.json
-python3 -I scripts/issue-workflows.py check-plan bugfix/light-codex /private/pilot/inspection.json
+python3 -I scripts/issue-workflows.py --state /private/tasks check-plan bugfix/default-codex /private/pilot/inspection.json
 af task run TASK_ID --repo /project --state /private/tasks --confirm-plan EXACT_PLAN_ID
 ```
 
@@ -185,7 +192,8 @@ as described above; retain all child Task accounting. This committed entry point
 `step.py` and `mk_task.py` selection logic.
 
 Use native composition for final independent verification, and for every staged selection.
-`check-plan SELECTION inspection.json` checks effective role/model/effort/Provider and the exact
+`--state STORE check-plan SELECTION inspection.json` checks each declared role’s exact Worker,
+effective model/effort/Provider, approved policy identity and the exact
 native package closure from `af task explain TASK --json`. It validates data; it does not
 approve execution. Native gates and exact-plan confirmation remain mandatory.
 

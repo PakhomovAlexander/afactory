@@ -37,7 +37,10 @@ fn install(repo: &Path) {
         &repo.join(".af/task-packages"),
     );
     for policy in ["code-policy.toml", "report-policy.toml"] {
-        std::fs::copy(root.join(".af").join(policy), repo.join(".af").join(policy)).unwrap();
+        copy_private_catalog(
+            &staged.join(format!("approved-{policy}")),
+            &repo.join(".af").join(policy),
+        );
     }
     copy_private_catalog(
         &staged.join("replacement-catalog.toml"),
@@ -337,6 +340,45 @@ w = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(w)
 state, repo, af, file, name = sys.argv[2:]
 v = w.read(file)
+# Assert parity of staged TOML normalization with the kernel's typed captured policy.
+w.validate_policy(v, state)
+import copy
+from unittest import mock
+real_recorded = w.recorded
+authority_id = v['plan']['authority']['policy_id']
+authority = real_recorded(state, authority_id)
+for key in ('code_policy_id', 'review_policy_id'):
+    altered = copy.deepcopy(authority)
+    if key == 'code_policy_id':
+        altered[key] = w.approved_policy_id('report')
+        target = authority_id
+    else:
+        target = authority[key]
+        altered = copy.deepcopy(real_recorded(state, target))
+        altered['check_policy_id'] = w.approved_policy_id('report')
+    def recorded(state, identity, kind=None):
+        return altered if identity == target else real_recorded(state, identity, kind)
+    with mock.patch.object(w, 'recorded', side_effect=recorded):
+        try:
+            w.validate_policy(v, state)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('accepted forged effective ' + key)
+remote = copy.deepcopy(v)
+for node in remote['graph']['nodes'].values():
+    operator = node['operator'].get('operator', {})
+    if operator.get('op') == 'check':
+        operator['remote_checks'] = ['kernel']
+        break
+else:
+    raise AssertionError('missing native check operator')
+try:
+    w.validate_policy(remote, state)
+except ValueError:
+    pass
+else:
+    raise AssertionError('accepted remote check substitution')
 r = w.recorded(state, v['revision_id'], 'af/TaskRevision@1')
 assert r['inputs'] == v['plan']['inputs']
 document = w.read(pathlib.Path(repo) / 'fixtures/issue-workflows/known-fix.json')
@@ -367,7 +409,7 @@ else:
     # The hermetic starter Report has different authority/Pipeline; acceptance alone
     # cannot substitute it for this route's required report/design producer.
     try:
-        w.check_stage(report, w.selection(name)['research_pipeline'])
+        w.check_stage(report, w.selection(name)['research_pipeline'], state)
     except ValueError:
         pass
     else:
@@ -388,11 +430,45 @@ else:
         let checked = std::process::Command::new("python3")
             .arg("-I")
             .arg(workspace().join("scripts/issue-workflows.py"))
+            .arg("--state")
+            .arg(&state)
             .args(["check-plan", name])
             .arg(&inspection)
             .output()
             .unwrap();
         assert!(checked.status.success(), "{name}: {}", text(&checked));
+        if name == "bugfix/default-codex" {
+            for swap in [false, true] {
+                let mut altered = v.clone();
+                let bugs = "root.slots.bugs";
+                let correctness = "root.slots.correctness";
+                altered["graph"]["slots"][bugs] = v["graph"]["slots"][correctness].clone();
+                altered["plan"]["bindings"][bugs] = v["plan"]["bindings"][correctness].clone();
+                if swap {
+                    altered["graph"]["slots"][correctness] = v["graph"]["slots"][bugs].clone();
+                    altered["plan"]["bindings"][correctness] = v["plan"]["bindings"][bugs].clone();
+                }
+                std::fs::write(&inspection, serde_json::to_vec(&altered).unwrap()).unwrap();
+                let checked = std::process::Command::new("python3")
+                    .arg("-I")
+                    .arg(workspace().join("scripts/issue-workflows.py"))
+                    .arg("--state")
+                    .arg(&state)
+                    .args(["check-plan", name])
+                    .arg(&inspection)
+                    .output()
+                    .unwrap();
+                assert!(
+                    !checked.status.success(),
+                    "approved role substitution must refuse"
+                );
+                assert!(
+                    text(&checked).contains("declared role"),
+                    "{}",
+                    text(&checked)
+                );
+            }
+        }
         if i == 0 {
             for field in ["model", "effort", "provider"] {
                 let mut altered = v.clone();
@@ -406,6 +482,8 @@ else:
                 let checked = std::process::Command::new("python3")
                     .arg("-I")
                     .arg(workspace().join("scripts/issue-workflows.py"))
+                    .arg("--state")
+                    .arg(&state)
                     .args(["check-plan", name])
                     .arg(&inspection)
                     .output()
@@ -421,6 +499,8 @@ else:
             let checked = std::process::Command::new("python3")
                 .arg("-I")
                 .arg(workspace().join("scripts/issue-workflows.py"))
+                .arg("--state")
+                .arg(&state)
                 .args(["check-plan", name])
                 .arg(&inspection)
                 .output()
@@ -454,6 +534,18 @@ else:
         let o = plan(name, &format!("stage-{i}"), false);
         assert!(o.status.success(), "{name}: {}", text(&o));
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        let file = temp.path().join(format!("stage-plan-{i}.json"));
+        std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+        let checked = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(workspace().join("scripts/issue-workflows.py"))
+            .arg("--state")
+            .arg(&state)
+            .args(["check-plan", name])
+            .arg(file)
+            .output()
+            .unwrap();
+        assert!(checked.status.success(), "{name}: {}", text(&checked));
         if name.ends_with("verification") {
             assert!(!v["graph"]["slots"].to_string().contains("implementer"));
         } else {
@@ -732,6 +824,150 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
         .unwrap();
     assert!(!refused.status.success());
     assert!(text(&refused).contains("only a recorded Task"));
+    // Same catalog, changed real policy: native planning may admit it, but every launcher
+    // path must refuse it. Only this private repository is changed; no gate is executed.
+    let policy_file = repo.join(".af/code-policy.toml");
+    let approved_bytes = std::fs::read(&policy_file).unwrap();
+    let approved: toml::Value =
+        toml::from_str(std::str::from_utf8(&approved_bytes).unwrap()).unwrap();
+    let catalog_bytes = std::fs::read(repo.join(".af/task-catalog.toml")).unwrap();
+    for (i, case) in ["command", "removed", "remote"].into_iter().enumerate() {
+        let mut changed = approved.clone();
+        match case {
+            "command" => {
+                changed["checks"]["kernel"]["command"]["program"] =
+                    toml::Value::String("/usr/bin/true".into());
+                changed["checks"]["kernel"]["command"]["args"] = toml::Value::Array(vec![]);
+            }
+            "removed" => {
+                changed["checks"]
+                    .as_table_mut()
+                    .unwrap()
+                    .remove("markdownlint");
+            }
+            "remote" => {
+                changed["checks"]["kernel"]["remote"]["workflow"] =
+                    toml::Value::String(".github/workflows/other.yml".into());
+            }
+            _ => unreachable!(),
+        }
+        std::fs::write(&policy_file, toml::to_string(&changed).unwrap()).unwrap();
+        git(&repo, &["add", ".af/code-policy.toml"]);
+        git(
+            &repo,
+            &["commit", "-qm", "negative same-catalog policy fixture"],
+        );
+        assert_eq!(
+            std::fs::read(repo.join(".af/task-catalog.toml")).unwrap(),
+            catalog_bytes
+        );
+        let changed_commit = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let changed_commit = String::from_utf8(changed_commit.stdout).unwrap();
+        if case == "command" {
+            let mut pins = Vec::new();
+            for (j, file) in ["known-fix.json", "verify.json"].into_iter().enumerate() {
+                let mut document = example(file);
+                document["base"] = json!({"commit": changed_commit.trim()});
+                let file = temp
+                    .path()
+                    .join(format!("changed-policy-template-{j}.json"));
+                std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
+                let pinned = common::af()
+                    .current_dir(&repo)
+                    .env("HOME", &home)
+                    .env("AF_PROVIDERS_FILE", home.join("providers.toml"))
+                    .env("PATH", &path)
+                    .args(["scenario", "template-pin", "--file"])
+                    .arg(file)
+                    .arg("--repo")
+                    .arg(&repo)
+                    .arg("--task-state")
+                    .arg(&state)
+                    .args(["--authority-commit", changed_commit.trim(), "--json"])
+                    .output()
+                    .unwrap();
+                assert!(pinned.status.success(), "{}", text(&pinned));
+                let file = temp.path().join(format!("changed-policy-pin-{j}.json"));
+                std::fs::write(&file, pinned.stdout).unwrap();
+                pins.push(file);
+            }
+            let composed = std::process::Command::new("python3")
+                .arg("-I")
+                .arg(workspace().join("scripts/issue-workflows.py"))
+                .args(["compose", "bugfix/default-codex"])
+                .args(pins)
+                .arg("--routing")
+                .arg(workspace().join("fixtures/issue-workflows/routing-known.json"))
+                .output()
+                .unwrap();
+            assert!(
+                !composed.status.success(),
+                "changed policy composition must refuse"
+            );
+            assert!(
+                text(&composed).contains("code-policy.toml"),
+                "{}",
+                text(&composed)
+            );
+        }
+        let o = plan("bugfix/default-codex", &format!("policy-{i}"), false);
+        if o.status.success() {
+            let inspection = temp.path().join(format!("policy-inspection-{i}.json"));
+            std::fs::write(&inspection, o.stdout).unwrap();
+            let checked = std::process::Command::new("python3")
+                .arg("-I")
+                .arg(workspace().join("scripts/issue-workflows.py"))
+                .arg("--state")
+                .arg(&state)
+                .args(["check-plan", "bugfix/default-codex"])
+                .arg(&inspection)
+                .output()
+                .unwrap();
+            assert!(
+                !checked.status.success(),
+                "{case}: changed policy must refuse"
+            );
+            assert!(
+                text(&checked).contains("policy identity"),
+                "{}",
+                text(&checked)
+            );
+        } else {
+            assert_eq!(case, "removed", "{case}: {}", text(&o));
+        }
+        let checked = std::process::Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                r#"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('w', sys.argv[1])
+w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)
+repo, commit = sys.argv[2:]
+for check in (lambda: w.installed_authority(repo),
+              lambda: w.captured_catalog({'repo': repo, 'authority_commit': commit})):
+    try:
+        check()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('accepted changed policy under unchanged catalog')
+"#,
+            ])
+            .arg(workspace().join("scripts/issue-workflows.py"))
+            .arg(&repo)
+            .arg(changed_commit.trim())
+            .output()
+            .unwrap();
+        assert!(checked.status.success(), "{case}: {}", text(&checked));
+    }
+    std::fs::write(&policy_file, approved_bytes).unwrap();
+    git(&repo, &["add", ".af/code-policy.toml"]);
+    git(&repo, &["commit", "-qm", "restore approved fixture policy"]);
     // Delete actual comparison evidence in copied fixture authority, then re-pin that copy.
     // No gate assertion, model contract, production authority or historical Task is relaxed.
     let trial = repo.join(".af/task-packages/issue-internal/experiment-trial/pipeline.toml");
