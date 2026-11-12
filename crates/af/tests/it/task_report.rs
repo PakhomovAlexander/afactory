@@ -1202,13 +1202,13 @@ fn a_task_kind_package_maps_another_business_kind_to_the_report_profile() {
 }
 
 /// A consuming project chooses its own package, Worker, node and dependency names.
-/// Compile and execute the real captured graph with one and three prior evaluations.
+/// Compile and execute the real captured graph with zero, one and three prior evaluations.
 #[test]
 fn customer_report_dependencies_follow_typed_contracts_and_graph_producers() {
     use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1, ValueRefV1};
     use af_pipeline_config::task::catalog::TaskWorkerManifest;
 
-    for count in [1, 3] {
+    for (count, omit_retention) in [(0, false), (1, false), (3, false), (3, true)] {
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = starter(root.path());
         let pipeline_path = package(&repo, "builtin/report").join("pipeline.toml");
@@ -1262,6 +1262,14 @@ fn customer_report_dependencies_follow_typed_contracts_and_graph_producers() {
                 json!(REPORT_EVALUATION_V1);
             schema["required"].as_array_mut().unwrap().push(json!(name));
         }
+        if omit_retention {
+            worker
+                .signature
+                .retains
+                .get_mut("result")
+                .unwrap()
+                .remove("security_audit");
+        }
         // Only the final Worker requires dependencies; prior reviewers keep the original contract.
         let final_path = repo.join(".af/packages/customer-council");
         task_cli::copy_tree(&worker_path, &final_path);
@@ -1312,8 +1320,68 @@ fn customer_report_dependencies_follow_typed_contracts_and_graph_producers() {
         task["limits"]["verification"]["wall_ms"] = json!(150000);
         std::fs::write(task_path, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
         repin_and_commit(&repo);
+        if omit_retention {
+            let refused = af(
+                &repo,
+                &[
+                    "task",
+                    "start",
+                    "--file",
+                    "report.json",
+                    "--execute",
+                    "--state",
+                    state.to_str().unwrap(),
+                    "--json",
+                ],
+            );
+            assert!(!refused.status.success(), "{}", text(&refused));
+            assert!(
+                text(&refused).contains("must retain evaluation dependency security_audit"),
+                "{}",
+                text(&refused)
+            );
+            continue;
+        }
         let done = start(&repo, &state, 0);
         assert_eq!(done["result"]["acceptance"], "satisfied");
         assert_eq!(done["attempts"], 3 + count);
+        let cas = Cas::open_existing(state.join("cas")).unwrap();
+        let (verification, _) = receipts(&cas, &done);
+        let evaluation_id = verification.evaluation_id.as_deref().unwrap();
+        let accepted = cas
+            .get_json(
+                done["result"]["outputs"]["verification"]["artifact_ids"][0]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            accepted["input_artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| id == evaluation_id)
+        );
+        let evaluation = cas.get_json(evaluation_id).unwrap();
+        let invocation = context(&cas, &done, "root.nodes.verify");
+        for name in names.into_iter().take(count) {
+            let id = invocation["invocation"]["inputs"][name]["artifact_ids"][0]
+                .as_str()
+                .unwrap();
+            assert!(
+                evaluation["input_artifacts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == id),
+                "accepted final evaluation lost {name}: {evaluation}"
+            );
+            let prior = cas.get_json(id).unwrap();
+            assert_eq!(prior["type"], REPORT_EVALUATION_V1);
+            assert_eq!(
+                prior["producer"]["node_id"],
+                format!("root.nodes.customer_{name}")
+            );
+        }
     }
 }
