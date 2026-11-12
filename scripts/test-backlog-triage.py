@@ -1095,6 +1095,15 @@ class SourceAssembly(Fixture):
         self.assertEqual([p['number'] for p in json.loads(bundle['sources']['pulls']['text'])], [1, 2])
 
 
+class PermissionEnvironment(unittest.TestCase):
+    def test_public_root_refusal_fixture_survives_a_restrictive_umask(self):
+        result = subprocess.run(
+            [sys.executable, '-I', __file__,
+             'StateAndAdmission.test_journal_rejects_symlink_public_root_and_duplicate_json'],
+            umask=0o077, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class StateAndAdmission(Fixture):
     def test_claim_precedes_planning_and_reservation_precedes_admission(self):
         self.queue()
@@ -1131,6 +1140,9 @@ class StateAndAdmission(Fixture):
             R.strict_json('{"schema":1,"schema":2}')
         public = self.root / 'public'
         public.mkdir(mode=0o755)
+        # mkdir's mode is filtered by umask; this refusal requires an actually public root.
+        public.chmod(0o755)
+        self.assertEqual(public.stat().st_mode & 0o777, 0o755)
         with self.assertRaises(R.Refused):
             R.safe_root(public)
         linked = self.root / 'link'

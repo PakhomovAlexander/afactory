@@ -17,9 +17,10 @@ use serde_json::Value;
 /// af's capability check with a page declaring every option af passes (ADR-0146).
 fn fake_provider(root: &Path, name: &str, script: &str) -> PathBuf {
     let bin = root.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     let path = bin.join(name);
-    std::fs::write(&path, crate::provider_cli::with_help(name, script)).unwrap();
+    crate::common::provider_fixture_fs::write(&path, crate::provider_cli::with_help(name, script))
+        .unwrap();
     let mut permissions = std::fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).unwrap();
@@ -116,8 +117,8 @@ exit 64
 /// `--login` never creates a directory, and status never probes one without a marker.
 fn logged_out_claude(root: &Path) -> (PathBuf, PathBuf) {
     let auth = root.join("claude-auth");
-    std::fs::create_dir(&auth).unwrap();
-    std::fs::write(auth.join(".claude.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join(".claude.json"), "{}").unwrap();
     let bin = fake_provider(root, "claude", LOGGED_OUT_CLAUDE);
     (auth, bin)
 }
@@ -144,7 +145,7 @@ fn borrowed(args: &[String]) -> Vec<&str> {
 /// the operator asked for one.
 #[test]
 fn non_interactive_setup_never_starts_a_login_child() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
     let args = claude_setup(&auth, &["--login"]);
 
@@ -181,7 +182,7 @@ fn non_interactive_setup_never_starts_a_login_child() {
 /// Without the opt-in there is no login either, and the next action names `--login` explicitly.
 #[test]
 fn setup_requires_an_explicit_opt_in_before_any_login() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
     let args = claude_setup(&auth, &["--json"]);
 
@@ -206,7 +207,7 @@ fn setup_requires_an_explicit_opt_in_before_any_login() {
 /// untrue, so clap refuses the combination before any Provider process is started.
 #[test]
 fn setup_refuses_json_with_interactive_login() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
     let args = claude_setup(&auth, &["--login", "--json"]);
 
@@ -227,9 +228,9 @@ fn setup_refuses_json_with_interactive_login() {
 /// An already-authenticated context is registrable without any login process at all.
 #[test]
 fn an_authenticated_context_registers_without_a_login() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
-    std::fs::write(auth.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("logged-in"), "").unwrap();
     let args = claude_setup(&auth, &["--json"]);
 
     let output = af(root.path(), &bin, &borrowed(&args));
@@ -263,9 +264,9 @@ fn an_authenticated_context_registers_without_a_login() {
 /// The documents describe states, never the account behind them or what the Provider printed.
 #[test]
 fn documents_redact_identity_and_provider_output() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
-    std::fs::write(auth.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("logged-in"), "").unwrap();
     let args = claude_setup(&auth, &["--json"]);
 
     let setup = af(root.path(), &bin, &borrowed(&args));
@@ -310,10 +311,10 @@ fn documents_redact_identity_and_provider_output() {
 /// Every documented exit condition, from one place, with its stdout/stderr placement.
 #[test]
 fn documented_exit_conditions_are_stable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let home = root.path();
     let authenticated = home.join("codex-auth");
-    std::fs::create_dir(&authenticated).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&authenticated).unwrap();
     let bin = fake_provider(
         home,
         "codex",
@@ -378,8 +379,8 @@ exit 64
 
     // 6 — the Provider CLI answered, and its answer was not a usable login.
     let broken = home.join("codex-broken");
-    std::fs::create_dir(&broken).unwrap();
-    std::fs::write(broken.join("broken"), "").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&broken).unwrap();
+    crate::common::provider_fixture_fs::write(broken.join("broken"), "").unwrap();
     let failed = af(
         home,
         &bin,
@@ -401,7 +402,7 @@ exit 64
 
     // 4 — no Provider CLI at all, so there is nothing to verify and nothing to log in to.
     let empty = home.join("empty-bin");
-    std::fs::create_dir(&empty).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&empty).unwrap();
     let absent = home.join("codex-missing");
     let missing = af(
         home,
@@ -428,7 +429,7 @@ exit 64
     assert_eq!(code(&usage), 2, "{}", err(&usage));
 
     // 3 — a context that needs a login, with no opt-in.
-    let second = tempfile::tempdir().unwrap();
+    let second = crate::common::provider_fixture_fs::tempdir().unwrap();
     let (claude_auth, claude_bin) = logged_out_claude(second.path());
     let args = claude_setup(&claude_auth, &[]);
     let human = af(second.path(), &claude_bin, &borrowed(&args));
@@ -447,10 +448,10 @@ exit 64
 /// never sends.
 #[test]
 fn status_keeps_authentication_when_optional_usage_is_unavailable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
-    std::fs::create_dir(&auth).unwrap();
-    std::fs::write(auth.join("config.toml"), "").unwrap();
+    crate::common::provider_fixture_fs::create_dir(&auth).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("config.toml"), "").unwrap();
     let bin = fake_provider(
         root.path(),
         "codex",
@@ -538,9 +539,9 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         "google-vertex",
         "team-compatible",
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         let work = root.path().join("work");
-        std::fs::create_dir(&work).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&work).unwrap();
         let auth = root.path().join("auth");
         let (sdk, path, state) = crate::fake_models::install_pi(
             root.path(),
@@ -556,27 +557,28 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             data["backend"] = serde_json::json!(backend);
             data["model"] = serde_json::json!("sdk-code");
             data["api"] = serde_json::json!("openai-completions");
-            std::fs::write(&state, serde_json::to_vec(&data).unwrap()).unwrap();
+            crate::common::provider_fixture_fs::write(&state, serde_json::to_vec(&data).unwrap())
+                .unwrap();
             let credential = if backend == "google-vertex" {
                 serde_json::json!({})
             } else {
                 serde_json::json!({(backend):{"type":"api_key","key":"SYNTHETIC_API_SECRET"}})
             };
-            std::fs::write(
+            crate::common::provider_fixture_fs::write(
                 auth.join("auth.json"),
                 serde_json::to_vec(&credential).unwrap(),
             )
             .unwrap();
             if backend == "google-vertex" {
                 let context = auth.join("af-context.json");
-                std::fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
+                crate::common::provider_fixture_fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
                 std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o600)).unwrap();
             }
         }
         if backend == "team-compatible" {
             let config = auth.join("models.json");
             let models = (0..70).map(|index| serde_json::json!({"id":format!("~vendor/model-{index}"),"reasoning":true})).collect::<Vec<_>>();
-            std::fs::write(&config,serde_json::to_vec(&serde_json::json!({"providers":{(backend):{"api":"openai-completions","baseUrl":"https://custom.invalid/v1","models":models}}})).unwrap()).unwrap();
+            crate::common::provider_fixture_fs::write(&config,serde_json::to_vec(&serde_json::json!({"providers":{(backend):{"api":"openai-completions","baseUrl":"https://custom.invalid/v1","models":models}}})).unwrap()).unwrap();
             std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         let invoke = |args: &[&str]| {
@@ -816,7 +818,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
         "af-directory",
         "git-configured-toplevel",
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         // Toplevel discovery must preserve shell characters and a trailing newline literally.
         let repository = root.path().join(if marker == "git-configured-toplevel" {
             "repository ' $(literal)\n"
@@ -824,7 +826,7 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             "repository"
         });
         let work = repository.join("nested/cwd");
-        std::fs::create_dir_all(&work).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&work).unwrap();
         let auth = root.path().join("auth");
         let (sdk, external_path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
         let invoke = |path: &std::ffi::OsStr, args: &[&str]| {
@@ -855,10 +857,14 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
             "--json",
         ];
         match marker {
-            "git-directory" => std::fs::create_dir(repository.join(".git")).unwrap(),
-            "git-worktree-file" => {
-                std::fs::write(repository.join(".git"), "gitdir: /synthetic/worktree\n").unwrap()
+            "git-directory" => {
+                crate::common::provider_fixture_fs::create_dir(repository.join(".git")).unwrap()
             }
+            "git-worktree-file" => crate::common::provider_fixture_fs::write(
+                repository.join(".git"),
+                "gitdir: /synthetic/worktree\n",
+            )
+            .unwrap(),
             "git-configured-toplevel" => {
                 // Git's worktree root can be above its .git marker. The sibling bin has
                 // no .git/.af ancestor, so only the invocation repository lookup refuses it.
@@ -876,17 +882,17 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
                     assert!(output.status.success(), "{}", err(&output));
                 }
             }
-            _ => std::fs::create_dir(repository.join(".af")).unwrap(),
+            _ => crate::common::provider_fixture_fs::create_dir(repository.join(".af")).unwrap(),
         }
         // The same nested CWD permits a legitimate external SDK/Node installation.
         let setup = invoke(external_path.as_ref(), &setup_args);
         assert!(setup.status.success(), "{}", err(&setup));
         let bin = repository.join("bin");
-        std::fs::create_dir(&bin).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
         std::os::unix::fs::symlink(Path::new(&external_path).join("git"), bin.join("git")).unwrap();
         let trap = bin.join("node");
         let executed = root.path().join("node-executed");
-        std::fs::write(
+        crate::common::provider_fixture_fs::write(
             &trap,
             format!("#!/bin/sh\n: > '{}'\nexit 99\n", executed.display()),
         )
@@ -949,18 +955,18 @@ fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
 
 #[test]
 fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_versions() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let auth = root.path().join("auth");
     let (_, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
     let agent = root.path().join("agent");
     let install = agent.join("install");
     let release = install.join("releases/1.4.0");
-    std::fs::create_dir_all(release.parent().unwrap()).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(release.parent().unwrap()).unwrap();
     std::fs::rename(root.path().join("installed"), &release).unwrap();
     let launcher = agent.join("bin/pi");
-    std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     let marker = root.path().join("launcher-executed");
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         &launcher,
         format!("#!/bin/sh\n: > '{}'\nexit 99\n", marker.display()),
     )
@@ -1001,9 +1007,9 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
         assert!(!marker.exists());
     };
     // The full malformed-version table runs in-process in providers::pi::tests.
-    std::fs::write(&current, "../1.4.0").unwrap();
+    crate::common::provider_fixture_fs::write(&current, "../1.4.0").unwrap();
     refused(setup());
-    std::fs::write(&current, "1.4.0\n").unwrap();
+    crate::common::provider_fixture_fs::write(&current, "1.4.0\n").unwrap();
     let saved_version = root.path().join("saved-version");
     std::fs::rename(&current, &saved_version).unwrap();
     std::os::unix::fs::symlink(&saved_version, &current).unwrap();
@@ -1035,9 +1041,9 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
 
 #[test]
 fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_conflict() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let work = root.path().join("work");
-    std::fs::create_dir(&work).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&work).unwrap();
     let auth = root.path().join("auth");
     let (sdk, path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
     let setup = |id: &str, json: bool| {
@@ -1068,7 +1074,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
             .unwrap()
     };
     let credential = std::fs::read(auth.join("auth.json")).unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         auth.join("auth.json"),
         r#"{"openai-codex":{"type":"api_key","key":"RAW_AUTH_MUST_NOT_ESCAPE"}}"#,
     )
@@ -1107,7 +1113,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
     for json in [true, false] {
         check(&setup("pi-one", json), 3, "human_action_required", json);
     }
-    std::fs::write(auth.join("auth.json"), credential).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("auth.json"), credential).unwrap();
     assert_eq!(code(&setup("pi-one", true)), 0);
     let repeated = setup("pi-one", true);
     assert_eq!(code(&repeated), 0);
@@ -1118,7 +1124,11 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
         check(&setup("pi-two", json), 5, "registry_conflict", json);
     }
     let registry = root.path().join("providers.toml");
-    std::fs::write(&registry, "RAW_REGISTRY_MUST_NOT_ESCAPE invalid TOML").unwrap();
+    crate::common::provider_fixture_fs::write(
+        &registry,
+        "RAW_REGISTRY_MUST_NOT_ESCAPE invalid TOML",
+    )
+    .unwrap();
     let refused = setup("pi-one", true);
     check(&refused, 3, "human_action_required", true);
     assert!(!out(&refused).contains("RAW_REGISTRY_MUST_NOT_ESCAPE"));
@@ -1131,9 +1141,9 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
 
 #[test]
 fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invented_identity() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let work = root.path().join("work");
-    std::fs::create_dir(&work).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&work).unwrap();
     let auth = root.path().join("auth");
     let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
     let auth = auth.to_str().unwrap();
@@ -1220,9 +1230,9 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
     use std::time::Duration;
 
     for backend in ["kimi-coding", "openai-codex"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
         let work = root.path().join("work");
-        std::fs::create_dir(&work).unwrap();
+        crate::common::provider_fixture_fs::create_dir(&work).unwrap();
         let auth = root.path().join("auth");
         let (sdk, path, state) = crate::fake_models::install_pi(
             root.path(),
@@ -1540,7 +1550,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
             ]
         };
         for (name, events, expected, charge) in cases {
-            std::fs::write(
+            crate::common::provider_fixture_fs::write(
                 &state,
                 serde_json::to_vec(&json!({"backend":backend,"mode":"budget",
                 "inferences":2,"continueAfterNativeError":true,"providerEvents":events}))
@@ -1649,7 +1659,7 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                 valid_events.push(native_event);
             }
             for native_event in valid_events {
-                std::fs::write(
+                crate::common::provider_fixture_fs::write(
                     &state,
                     serde_json::to_vec(&json!({"backend":backend,"mode":"budget",
                 "inferences":2,"providerEvents":[native_event]}))

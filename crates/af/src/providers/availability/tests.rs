@@ -24,7 +24,7 @@ fn expiry_diagnostics_use_exact_utc_calendar_dates_and_enable_action() {
 
 #[test]
 fn aggregate_byte_limit_bounds_long_ids_before_atomic_publication() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let path = root.path().join("state.json");
     let now = UNIX_EPOCH + Duration::from_secs(100);
     let id = "p".repeat(1024);
@@ -39,7 +39,7 @@ fn aggregate_byte_limit_bounds_long_ids_before_atomic_publication() {
     let mut oversized_read = original;
     oversized_read.resize(MAX_REGISTRY_BYTES as usize + 1, b' ');
     assert!(State::parse(&oversized_read).is_err());
-    fs::write(&path, &oversized_read).unwrap();
+    crate::providers::fixture_fs::write(&path, &oversized_read).unwrap();
     assert!(until_at(&path, &id, now).is_err());
 }
 
@@ -77,7 +77,7 @@ fn duration_is_positive_bounded_and_checked() {
 
 #[test]
 fn expiry_is_exact_across_reads_and_enable_is_immediate() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let path = root.path().join("state.json");
     let now = UNIX_EPOCH + Duration::new(100, 123456789);
     let expiry = update(&path, "example", Some(Duration::from_secs(172800)), || now)
@@ -101,7 +101,7 @@ fn expiry_is_exact_across_reads_and_enable_is_immediate() {
 
 #[test]
 fn concurrent_updates_preserve_each_other_and_readers_see_whole_files() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let path = root.path().join("private/state.json");
     let now = UNIX_EPOCH + Duration::from_secs(100);
     thread::scope(|scope| {
@@ -139,7 +139,7 @@ fn concurrent_updates_preserve_each_other_and_readers_see_whole_files() {
 
 #[test]
 fn concurrent_orphan_cleanup_preserves_a_new_disable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let path = root.path().join("state.json");
     let now = UNIX_EPOCH + Duration::from_secs(100);
     for i in 0..16 {
@@ -167,7 +167,7 @@ fn concurrent_orphan_cleanup_preserves_a_new_disable() {
 
 #[test]
 fn malformed_unsafe_and_unknown_state_fail_closed_without_replacement() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let path = root.path().join("state.json");
     let now = UNIX_EPOCH + Duration::from_secs(100);
     for text in [
@@ -179,7 +179,7 @@ fn malformed_unsafe_and_unknown_state_fail_closed_without_replacement() {
         r#"{"schema":"af.provider-disables/1","providers":[{"id":"../x","expires_at":{"unix_seconds":100,"nanoseconds":0}}]}"#,
         r#"{"schema":"af.provider-disables/1","providers":[{"id":"x","expires_at":{"unix_seconds":100,"nanoseconds":0}},{"id":"x","expires_at":{"unix_seconds":101,"nanoseconds":0}}]}"#,
     ] {
-        fs::write(&path, text).unwrap();
+        crate::providers::fixture_fs::write(&path, text).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(until_at(&path, "x", now).is_err(), "{text}");
         assert!(update(&path, "x", None, || now).is_err(), "{text}");
@@ -187,7 +187,7 @@ fn malformed_unsafe_and_unknown_state_fail_closed_without_replacement() {
     }
     fs::remove_file(&path).unwrap();
     let other = root.path().join("other");
-    fs::write(&other, "untouched").unwrap();
+    crate::providers::fixture_fs::write(&other, "untouched").unwrap();
     std::os::unix::fs::symlink(&other, &path).unwrap();
     assert!(update(&path, "x", None, || now).is_err());
     assert_eq!(fs::read_to_string(&other).unwrap(), "untouched");
@@ -195,7 +195,7 @@ fn malformed_unsafe_and_unknown_state_fail_closed_without_replacement() {
     fs::hard_link(&other, &path).unwrap();
     assert!(update(&path, "x", None, || now).is_err());
     fs::remove_file(&path).unwrap();
-    fs::create_dir(&path).unwrap();
+    crate::providers::fixture_fs::create_dir(&path).unwrap();
     assert!(until_at(&path, "x", now).is_err());
 }
 
@@ -230,11 +230,11 @@ fn published_state_fixture_round_trips_the_closed_rust_shape() {
 
 #[test]
 fn unsafe_lock_directory_and_timestamp_overflow_refuse_without_publication() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let path = root.path().join("state.json");
     let lock = root.path().join("state.json.lock");
     let other = root.path().join("other");
-    fs::write(&other, "untouched").unwrap();
+    crate::providers::fixture_fs::write(&other, "untouched").unwrap();
     let now = UNIX_EPOCH + Duration::from_secs(100);
     std::os::unix::fs::symlink(&other, &lock).unwrap();
     assert!(update(&path, "x", None, || now).is_err());
@@ -267,11 +267,11 @@ fn unsafe_lock_directory_and_timestamp_overflow_refuse_without_publication() {
 
 #[test]
 fn replaced_directory_never_turns_an_absent_read_into_permission_to_call() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::providers::fixture_fs::tempdir().unwrap();
     let parent = root.path().join("private");
     create_private_directory_tree(&parent, LABEL, true).unwrap();
     let directory = bind_directory(&parent, LABEL).unwrap();
     fs::rename(&parent, root.path().join("previous")).unwrap();
-    fs::create_dir(&parent).unwrap();
+    crate::providers::fixture_fs::create_dir(&parent).unwrap();
     assert!(read(&parent.join("state.json"), &directory).is_err());
 }

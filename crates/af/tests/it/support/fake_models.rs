@@ -93,8 +93,8 @@ pub fn install(kind: &str, bin: &Path, auth: &Path) {
 }
 
 fn install_from(kind: &str, bin: &Path, auth: &Path, catalogs: &Path) {
-    std::fs::create_dir_all(bin).unwrap();
-    std::fs::create_dir_all(auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(auth).unwrap();
     std::fs::set_permissions(auth, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (script, files): (&str, &[&str]) = match kind {
         "claude" => (
@@ -112,16 +112,20 @@ fn install_from(kind: &str, bin: &Path, auth: &Path, catalogs: &Path) {
         std::fs::set_permissions(installed, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     let program = bin.join(kind);
-    std::fs::write(&program, crate::provider_cli::with_help(kind, script)).unwrap();
+    crate::common::provider_fixture_fs::write(
+        &program,
+        crate::provider_cli::with_help(kind, script),
+    )
+    .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 #[test]
 fn reinstalling_catalogs_from_read_only_fixtures_keeps_owned_copies_writable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
     let catalogs = root.path().join("catalogs");
     let bin = root.path().join("bin");
-    std::fs::create_dir(&catalogs).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&catalogs).unwrap();
     for (kind, files) in [
         (
             "claude",
@@ -134,7 +138,11 @@ fn reinstalling_catalogs_from_read_only_fixtures_keeps_owned_copies_writable() {
     ] {
         for file in files {
             let source = catalogs.join(file);
-            std::fs::write(&source, std::fs::read(fixtures().join(file)).unwrap()).unwrap();
+            crate::common::provider_fixture_fs::write(
+                &source,
+                std::fs::read(fixtures().join(file)).unwrap(),
+            )
+            .unwrap();
             std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
         }
         let auth = root.path().join(format!("{kind}-auth"));
@@ -186,19 +194,19 @@ pub(crate) fn install_pi(
 ) -> (PathBuf, std::ffi::OsString, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let sdk = root.join("installed/node_modules/@earendil-works/pi-coding-agent");
-    std::fs::create_dir_all(sdk.join("dist/core")).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(sdk.join("dist/core")).unwrap();
     let fixture = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("fixtures/pi-sdk");
     let state = root.join("pi-fixture.json");
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         &state,
         serde_json::to_vec(&serde_json::json!({"mode":mode.strip_prefix("kimi-").unwrap_or(mode),"backend":if mode.starts_with("kimi-") { "kimi-coding" } else { "openai-codex" },"auth":auth.join("auth.json")}))
             .unwrap(),
     )
     .unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         sdk.join("package.json"),
         r#"{"name":"@earendil-works/pi-coding-agent","version":"1.4.0","type":"module"}"#,
     )
@@ -206,39 +214,39 @@ pub(crate) fn install_pi(
     let script = std::fs::read_to_string(fixture.join("index.mjs"))
         .unwrap()
         .replace("AF_FIXTURE_STATE", &serde_json::to_string(&state).unwrap());
-    std::fs::write(sdk.join("dist/index.js"), script).unwrap();
+    crate::common::provider_fixture_fs::write(sdk.join("dist/index.js"), script).unwrap();
     std::fs::copy(
         fixture.join("auth-storage.mjs"),
         sdk.join("dist/core/auth-storage.js"),
     )
     .unwrap();
     let ai = sdk.parent().unwrap().join("pi-ai");
-    std::fs::create_dir_all(ai.join("dist")).unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::create_dir_all(ai.join("dist")).unwrap();
+    crate::common::provider_fixture_fs::write(
         ai.join("package.json"),
         r#"{"type":"module","name":"@earendil-works/pi-ai","version":"1.4.0"}"#,
     )
     .unwrap();
     let core = sdk.parent().unwrap().join("pi-agent-core");
-    std::fs::create_dir_all(&core).unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::create_dir_all(&core).unwrap();
+    crate::common::provider_fixture_fs::write(
         core.join("package.json"),
         r#"{"name":"@earendil-works/pi-agent-core","version":"1.4.0"}"#,
     )
     .unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         ai.join("dist/models.js"),
         "export const getSupportedThinkingLevels = () => ['high'];\n",
     )
     .unwrap();
-    std::fs::create_dir_all(auth).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(auth).unwrap();
     std::fs::set_permissions(auth, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(auth.join("auth.json"),r#"{"openai-codex":{"type":"oauth","accountId":"synthetic-account","access":"e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJzeW50aGV0aWMtYWNjb3VudCJ9fQ.synthetic","refresh":"SYNTHETIC_REFRESH","expires":9999999999999}}"#).unwrap();
+    crate::common::provider_fixture_fs::write(auth.join("auth.json"),r#"{"openai-codex":{"type":"oauth","accountId":"synthetic-account","access":"e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJzeW50aGV0aWMtYWNjb3VudCJ9fQ.synthetic","refresh":"SYNTHETIC_REFRESH","expires":9999999999999}}"#).unwrap();
     if mode.starts_with("kimi-") {
-        std::fs::write(auth.join("auth.json"), r#"{"kimi-coding":{"type":"oauth","access":"SYNTHETIC_KIMI_ACCESS","refresh":"SYNTHETIC_KIMI_REFRESH","expires":9999999999999}}"#).unwrap();
+        crate::common::provider_fixture_fs::write(auth.join("auth.json"), r#"{"kimi-coding":{"type":"oauth","access":"SYNTHETIC_KIMI_ACCESS","refresh":"SYNTHETIC_KIMI_REFRESH","expires":9999999999999}}"#).unwrap();
     }
     let bin = root.join("pi-bin");
-    std::fs::create_dir(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir(&bin).unwrap();
     for name in ["node", "git", "python3"] {
         let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())
             .map(|p| p.join(name))
@@ -252,7 +260,11 @@ pub(crate) fn install_pi(
             // separately exercises that boundary. This only runs AF's host with synthetic SDK/auth.
             let quoted = executable.to_str().unwrap().replace('\'', "'\\''");
             let launcher = bin.join(name);
-            std::fs::write(&launcher, format!("#!/bin/sh\nexec '{quoted}' \"$@\"\n")).unwrap();
+            crate::common::provider_fixture_fs::write(
+                &launcher,
+                format!("#!/bin/sh\nexec '{quoted}' \"$@\"\n"),
+            )
+            .unwrap();
             std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
         } else {
             std::os::unix::fs::symlink(executable, bin.join(name)).unwrap();
