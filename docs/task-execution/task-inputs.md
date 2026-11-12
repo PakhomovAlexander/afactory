@@ -345,19 +345,26 @@ Tests:
 
 ## Accepted performance research
 
-The installed `bugfix/default-codex` Pipeline has no `research_report` root port.
-`bugfix/research-fix-codex`, `perf/research-kimi-codex` and `perf/research-experiment-codex` require
-`research_report` (`af/Document@1`, one, unbound) and forward it to the researched implementer.
-The internal `issue-internal/report`, `issue-internal/kimi-report` and `design/astra-kimi` Pipelines accept the same port
-optionally and forward it to their author and verifier through their closed Worker contracts
-and input schemas.
-Scenario admission additionally checks the accepted research Task's exact result and original
-source, and refuses an envelope larger than 32 KiB. Native context receipts retain the same
-artifact ID throughout candidate construction and final reporting; no text is pasted into an
-acceptance boolean. See [Performance Scenarios](../performance-scenarios.md).
+`research_report` is a native `af/Document@1` input port when a consuming project declares it,
+not a port every Afactory Pipeline or Worker has. The project's captured Pipeline and closed
+Worker contracts and input schemas determine its presence, cardinality, optionality, binding and
+forwarding. Inspect that project's actual catalog and the selected Task's compiled plan with
+`af task plan` and `af task explain`; do not infer a contract from another project's package,
+Pipeline, Worker or model names.
 
-`impl/default-codex` additionally accepts optional accepted design evidence on `research_report`.
-The launcher composes `design/astra-kimi` -> implementation -> shared verification and checks
-original issue identity. Design itself ends at report acceptance: Sol medium reads the original
-Astra design and both independent Terra/Kimi challenges through the versioned
-`af/DesignAcceptanceInput@1` Worker contract. Missing or failed challenges cannot reach acceptance.
+When a Scenario composes research with a later Task, admission checks the completed accepted
+predecessor's exact result and original source and refuses missing, rejected, changed-source or
+oversized evidence. The research Document envelope remains bounded to 32 KiB. Native context and
+provenance receipts retain the same artifact ID throughout candidate construction and final
+reporting; no text is pasted into an acceptance boolean.
+
+A selected Worker contract may also require prior `af/ReportEvaluation@1` inputs before report
+acceptance. Their types, producers, count and independence rules are those the actual contract
+declares, not generic fixed models or counts. A required evaluation that is absent, failed,
+inconclusive, duplicate or stale cannot satisfy that dependency or reach acceptance.
+
+For one consuming project's nine-route example, including its operator-owned Pipeline and model
+selections and its research, design, implementation and verification composition, see
+[Issue-oriented operator Pipelines](../../fixtures/issue-workflows/README.md). That runbook is an
+example owned by that consumer, not a set of generic AF defaults. See also
+[Performance Scenarios](../performance-scenarios.md).

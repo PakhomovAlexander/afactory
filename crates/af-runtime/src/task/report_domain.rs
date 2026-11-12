@@ -130,34 +130,22 @@ fn author_contract(contract: &PipelineContractV1) -> bool {
 }
 
 /// Whether `contract` is an admissible report verifier: it declares `requirements`,
-/// `document`, `checks` and `source`, optionally `sources`, `comparison`, `measurements` and `research_report`, and
-/// one evaluation bound to the source Snapshot.
+/// `document`, `checks` and `source`, optionally the standard Worker inputs,
+/// any required source-bound prior evaluations, and one evaluation output.
 fn verifier_contract(contract: &PipelineContractV1) -> bool {
     let mut inputs = worker_inputs();
     inputs.insert("document", same_source(DOCUMENT_V1, false));
     inputs.insert("checks", same_source(REPORT_CHECK_RECEIPT_V1, false));
-    let challenge_ports = ["terra_challenge", "kimi_challenge"];
-    let design = challenge_ports
-        .iter()
-        .any(|name| contract.inputs.contains_key(*name));
-    if design {
-        for name in challenge_ports {
-            inputs.insert(name, same_source(REPORT_EVALUATION_V1, false));
-        }
-        if challenge_ports
-            .iter()
-            .any(|name| !contract.inputs.contains_key(*name))
-        {
-            return false;
-        }
-    }
     ["requirements", "document", "checks", "source"]
         .iter()
         .all(|name| contract.inputs.contains_key(*name))
         && contract
             .inputs
             .iter()
-            .all(|(name, declared)| inputs.get(name.as_str()) == Some(declared))
+            .all(|(name, declared)| match inputs.get(name.as_str()) {
+                Some(expected) => declared == expected,
+                None => *declared == same_source(REPORT_EVALUATION_V1, false),
+            })
         && contract.outputs
             == BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))])
 }
@@ -798,41 +786,51 @@ impl ReportTaskDomain {
             None => {}
         }
         let requirements = input_id(input, "requirements", "af/Requirements@1", None)?;
-        // The graph owns which exact sibling produces each challenge. Required typed ports
-        // prevent dispatch with a missing sibling; recheck the payload and provenance here.
+        // Typed dependencies and their exact producers come from the captured graph.
         let definition = self
             .graph
             .nodes
             .get(&input.node)
             .ok_or("Unknown report verifier")?;
-        if definition.contract.inputs.contains_key("terra_challenge") {
-            let mut seen = BTreeSet::new();
-            for port in ["terra_challenge", "kimi_challenge"] {
-                let id = input_id(
-                    input,
-                    port,
-                    REPORT_EVALUATION_V1,
-                    Some(&checks.source_snapshot_id),
-                )?;
-                if !seen.insert(id) {
-                    return Err("Design challenges must be distinct evaluations".into());
-                }
-                let expected = definition
-                    .inputs
-                    .get(port)
-                    .ok_or("Design challenge has no graph producer")?;
-                let artifact = envelope(cas, id)?;
-                if !matches!(&artifact.producer, Producer::Attempt { node_id, .. } if node_id == &expected.node)
-                    || expected.port != "result"
-                {
-                    return Err("Design challenge differs from its exact graph producer".into());
-                }
-                let evaluation = self.evaluation(cas, input, id)?;
-                if evaluation.requirements_id != requirements
-                    || evaluation.outcome != ReceiptOutcomeV1::Passed
-                {
-                    return Err("Design challenge failed or judged different requirements".into());
-                }
+        let mut seen = BTreeSet::new();
+        for (port, declared) in &definition.contract.inputs {
+            if declared.artifact_type != REPORT_EVALUATION_V1 {
+                continue;
+            }
+            if *declared != same_source(REPORT_EVALUATION_V1, false) {
+                return Err(
+                    "Report evaluation dependency must be required, singular and source-bound"
+                        .into(),
+                );
+            }
+            let id = input_id(
+                input,
+                port,
+                REPORT_EVALUATION_V1,
+                Some(&checks.source_snapshot_id),
+            )?;
+            if !seen.insert(id) {
+                return Err("Report dependencies must be distinct evaluations".into());
+            }
+            let expected = definition
+                .inputs
+                .get(port)
+                .ok_or("Report evaluation dependency has no graph producer")?;
+            let artifact = envelope(cas, id)?;
+            if !matches!(&artifact.producer, Producer::Attempt { node_id, .. } if node_id == &expected.node)
+                || expected.port != "result"
+            {
+                return Err(
+                    "Report evaluation dependency differs from its exact graph producer".into(),
+                );
+            }
+            let evaluation = self.evaluation(cas, input, id)?;
+            if evaluation.requirements_id != requirements
+                || evaluation.outcome != ReceiptOutcomeV1::Passed
+            {
+                return Err(
+                    "Report evaluation dependency failed or judged different requirements".into(),
+                );
             }
         }
         Ok(checks)

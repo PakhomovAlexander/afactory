@@ -326,24 +326,22 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
         outputs: BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]),
     };
     assert!(verifier_contract(&verifier));
-    let mut design = verifier.clone();
-    design.inputs.insert(
-        "terra_challenge".into(),
-        same_source(REPORT_EVALUATION_V1, false),
-    );
-    assert!(
-        !verifier_contract(&design),
-        "a single challenge is not a design acceptance contract"
-    );
-    design.inputs.insert(
-        "kimi_challenge".into(),
-        same_source(REPORT_EVALUATION_V1, false),
-    );
-    assert!(verifier_contract(&design));
-    for port in ["terra_challenge", "kimi_challenge"] {
-        let mut optional = design.clone();
-        optional.inputs.get_mut(port).unwrap().optional = true;
-        assert!(!verifier_contract(&optional));
+    let mut customer = verifier.clone();
+    for name in ["legal_signoff", "security_audit", "editorial"] {
+        customer
+            .inputs
+            .insert(name.into(), same_source(REPORT_EVALUATION_V1, false));
+        assert!(verifier_contract(&customer));
+        for invalid in [
+            port(REPORT_EVALUATION_V1, false),
+            same_source(REPORT_EVALUATION_V1, true),
+            same_source(DOCUMENT_V1, false),
+            many(REPORT_EVALUATION_V1),
+        ] {
+            let mut bad = customer.clone();
+            bad.inputs.insert(name.into(), invalid);
+            assert!(!verifier_contract(&bad));
+        }
     }
     verifier.inputs.remove("source");
     assert!(!verifier_contract(&verifier));
@@ -484,9 +482,9 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
         assert!(refused.contains("Snapshot"), "{refused}");
     }
 
-    // A final design verifier requires both exact sibling evaluations of the original
+    // A customer verifier requires all declared evaluations of the original
     // document, checks and requirements. Every malformed handoff fails before inference.
-    for role in ["terra_challenger", "kimi_challenger"] {
+    for role in ["legal_reviewer", "security_reviewer", "editor"] {
         let node = domain.graph.nodes["root.nodes.verify"].clone();
         domain
             .graph
@@ -495,8 +493,9 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     }
     let final_node = domain.graph.nodes.get_mut("root.nodes.verify").unwrap();
     for (port, role) in [
-        ("terra_challenge", "terra_challenger"),
-        ("kimi_challenge", "kimi_challenger"),
+        ("legal_signoff", "legal_reviewer"),
+        ("security_audit", "security_reviewer"),
+        ("editorial", "editor"),
     ] {
         final_node
             .contract
@@ -524,7 +523,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
             check_receipt_id: receipt_id.clone(),
             source_snapshot_id: cited.clone(),
             outcome,
-            summary: "Independent design challenge".into(),
+            summary: "Independent customer evaluation".into(),
         };
         let inputs = final_input
             .inputs
@@ -543,33 +542,114 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
             .0;
         one(id, REPORT_EVALUATION_V1, Some(&cited))
     };
-    let terra = challenge("terra_challenger", ReceiptOutcomeV1::Passed, false);
-    let kimi = challenge("kimi_challenger", ReceiptOutcomeV1::Passed, false);
+    let legal = challenge("legal_reviewer", ReceiptOutcomeV1::Passed, false);
+    let security = challenge("security_reviewer", ReceiptOutcomeV1::Passed, false);
     let mut final_input = final_input.clone();
     final_input
         .inputs
-        .insert("terra_challenge".into(), terra.clone());
+        .insert("legal_signoff".into(), legal.clone());
     assert!(
         domain.admit_verifier(&cas, &final_input).is_err(),
-        "missing Kimi challenge"
+        "missing declared security evaluation"
     );
     final_input
         .inputs
-        .insert("kimi_challenge".into(), kimi.clone());
+        .insert("security_audit".into(), security.clone());
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    final_input.inputs.insert(
+        "editorial".into(),
+        challenge("editor", ReceiptOutcomeV1::Passed, false),
+    );
     assert!(domain.admit_verifier(&cas, &final_input).is_ok());
+    // A result from the right node on the wrong graph port is still refused.
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .get_mut("editorial")
+        .unwrap()
+        .port = "other".into();
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .get_mut("editorial")
+        .unwrap()
+        .port = "result".into();
     for bad in [
-        terra,
-        challenge("kimi_challenger", ReceiptOutcomeV1::Failed, false),
-        challenge("kimi_challenger", ReceiptOutcomeV1::Inconclusive, false),
-        challenge("kimi_challenger", ReceiptOutcomeV1::Passed, true),
+        legal,
+        challenge("security_reviewer", ReceiptOutcomeV1::Failed, false),
+        challenge("security_reviewer", ReceiptOutcomeV1::Inconclusive, false),
+        challenge("security_reviewer", ReceiptOutcomeV1::Passed, true),
         challenge("verify", ReceiptOutcomeV1::Passed, false),
     ] {
-        final_input.inputs.insert("kimi_challenge".into(), bad);
+        final_input.inputs.insert("security_audit".into(), bad);
         assert!(domain.admit_verifier(&cas, &final_input).is_err());
     }
-    let mut stale = kimi;
+    for field in [
+        "document_id",
+        "sources_id",
+        "check_receipt_id",
+        "source_snapshot_id",
+    ] {
+        let original = envelope(&cas, &security.artifact_ids[0]).unwrap();
+        let mut payload = serde_json::to_value(
+            read::<ReportEvaluationV1>(
+                &cas,
+                &security.artifact_ids[0],
+                REPORT_EVALUATION_V1,
+                Some(&cited),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        payload[field] = json!(plan_id);
+        let id = cas
+            .put_artifact(
+                REPORT_EVALUATION_V1,
+                original.producer,
+                original.input_artifacts,
+                Some(cited.clone()),
+                payload,
+            )
+            .unwrap()
+            .0;
+        final_input.inputs.insert(
+            "security_audit".into(),
+            one(id, REPORT_EVALUATION_V1, Some(&cited)),
+        );
+        assert!(
+            domain.admit_verifier(&cas, &final_input).is_err(),
+            "{field}"
+        );
+    }
+    final_input
+        .inputs
+        .insert("security_audit".into(), security.clone());
+    let address = domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .remove("editorial")
+        .unwrap();
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .insert("editorial".into(), address);
+    let mut stale = security.clone();
     stale.snapshot_id = Some(foreign.clone());
-    final_input.inputs.insert("kimi_challenge".into(), stale);
+    final_input.inputs.insert("security_audit".into(), stale);
     assert!(domain.admit_verifier(&cas, &final_input).is_err());
 }
 

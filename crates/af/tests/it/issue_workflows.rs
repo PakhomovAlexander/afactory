@@ -1538,7 +1538,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_inp
         .output()
         .unwrap();
     assert!(
-        text(&explain).contains("Design challenge failed"),
+        text(&explain).contains("Report evaluation dependency failed"),
         "{}",
         text(&explain)
     );

@@ -439,7 +439,8 @@ dependencies are available-only, and Worker caches never supply Gate evidence. S
 
   version = 2
   [project]        name = \"myrepo\"      min_af = \"0.7\"
-  [task.defaults]  pipeline = \"bugfix/light-kimi-terra-sol\"
+  # Illustrative project configuration; your project chooses the Pipeline.
+  [task.defaults]  pipeline = \"team/implementation\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy, the `[storage]`
@@ -759,29 +760,28 @@ Project defaults: what a Task file omits comes from `[task.defaults]` of `.af/af
 committed Authority Snapshot: `limits` (tokens, max_attempts, wall_ms and the verification
 reserve), `pipeline` and its `fallback`. A field the Task file names wins whole; the default
 Pipeline applies only to a Task of a kind it accepts. `af task plan` prints on stderr what came
-from the defaults (`defaults: limits (...), pipeline bugfix/light-kimi-terra-sol (fallback
+from the defaults (`defaults: limits (...), pipeline team/implementation (fallback
 refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the plan is refused.
 
   [task.defaults]
-  pipeline = \"bugfix/light-kimi-terra-sol\"
+  pipeline = \"team/implementation\"
   fallback = \"refuse\"
   [task.defaults.limits]
-  tokens = 8000000
-  max_attempts = 16
-  wall_ms = 43200000
+  tokens = 100000
+  max_attempts = 6
+  wall_ms = 600000
   [task.defaults.limits.verification]
-  tokens = 2000000
-  attempts = 9
-  wall_ms = 18000000
+  tokens = 40000
+  attempts = 2
+  wall_ms = 240000
 
-Afactory's operator catalog offers bugfix/light-kimi-terra-sol, bugfix/light-codex,
-bugfix/default-codex, bugfix/research-fix-codex, impl/default-codex, impl/light-kimi-codex,
-design/astra-kimi, perf/research-kimi-codex and perf/research-experiment-codex. Code routes end
-with shared read-only issue-internal/verification. Diagnosis Report Tasks precede implementation.
-design/astra-kimi produces accepted reusable evidence after independent Terra and Kimi challenges
-and Sol final acceptance. Performance runs research, baseline, implementation, internal code
-Review, measurement, Comparison and measurement acceptance before whole-change verification.
-Other projects define their own catalog; inspect captured selections before choosing a Pipeline.
+These configuration values are illustrative, not global defaults or budgets. Effective defaults,
+Worker bindings and Pipelines come from the consuming project's captured `.af/` settings and
+catalog, under its exact authority. Projects choose their own packages and resource limits.
+Use `af config show --origin` to inspect configuration layers, then
+`af task plan --file task.json --json` to inspect the captured effective plan without execution.
+Use `af task explain TASK_ID --tree` for its compiled graph and bindings. `af catalog test --help`
+describes checking a project's declared catalog contracts; it does not select an operator catalog.
 
 Context: each `context` entry names a file of the Task's source tree, with an optional
 `#section`. The Worker's requirements end with a \"Read first\" list naming the Snapshot the

@@ -4,14 +4,7 @@
 //! `af onboard --help` written for a person with the agent notes last, and figures in units in
 //! human text, the raw figure only under `--json`.
 
-use std::path::PathBuf;
 use std::process::Output;
-
-fn workspace() -> PathBuf {
-    std::env::var_os("AF_WORKSPACE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
 
 fn af(args: &[&str]) -> Output {
     crate::common::af()
@@ -380,24 +373,32 @@ fn json_help_names_the_documents_that_carry_a_state() {
 }
 
 #[test]
-fn task_default_help_uses_the_installed_operator_selection() {
+fn task_help_separates_product_from_consuming_project_policy() {
     for topic in ["config", "task-file"] {
         let help = out(&af(&["help", topic]));
-        assert!(help.contains("bugfix/light-kimi-terra-sol"), "{help}");
-        assert!(!help.contains("kernel/implementation-reviewed"), "{help}");
+        assert!(
+            help.contains("Illustrative") || help.contains("illustrative"),
+            "{help}"
+        );
+        for owner in [
+            "kimi",
+            "Terra",
+            "astra",
+            "issue-internal",
+            "8000000",
+            "43200000",
+        ] {
+            assert!(!help.contains(owner), "{owner}: {help}");
+        }
         if topic == "task-file" {
-            let root = workspace();
-            let catalog: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(root.join("fixtures/issue-workflows/selections.json")).unwrap(),
-            )
-            .unwrap();
-            for selection in catalog["selections"].as_object().unwrap().keys() {
-                assert!(help.contains(selection), "missing {selection}: {help}");
+            for guidance in [
+                "consuming project's captured",
+                "af task plan --file task.json --json",
+                "af task explain TASK_ID --tree",
+                "af catalog test --help",
+            ] {
+                assert!(help.contains(guidance), "{help}");
             }
-            assert!(
-                help.contains(catalog["verification"].as_str().unwrap()),
-                "{help}"
-            );
         }
     }
 }
