@@ -11,6 +11,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'performance'))
 from perflab._vendor import tomli
+from perflab import contracts as kernel_contracts
 
 ROOT = Path(__file__).resolve().parent.parent
 STAGED = ROOT / 'fixtures/issue-workflows'
@@ -161,6 +162,70 @@ def migration(af, repo, state):
             'bindings_policy': 'providers only; codex-personal and pi-personal; never rewrite captured Tasks'}
 
 
+def recorded(state, identity, kind=None):
+    """Read the native Store's addressed bytes, checking both envelope domains.
+
+    The CLI exposes checked inspections, not arbitrary metadata export. Follow only IDs
+    from those inspections using the same CAS layout and canonicalizer as backlog-triage.
+    Missing metadata is a refusal, never an asserted manifest fallback.
+    """
+    if not isinstance(identity, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
+        raise ValueError('native evidence requires an exact artifact identity')
+    hex_id = identity[7:]
+    path = Path(state) / 'cas/objects' / hex_id[:2] / hex_id[2:]
+    with path.open('rb') as stream:
+        data = stream.read(LIMIT + 1)
+    if len(data) > LIMIT:
+        raise ValueError('native evidence exceeds 4 MiB')
+    value = json.loads(data)
+    if kind is None and kernel_contracts.kernel_blob_id(data) == identity:
+        return value
+    if not isinstance(value, dict) or value.get('artifact_id') != identity:
+        raise ValueError('native artifact identity differs')
+    content = kernel_contracts.kernel_digest(kernel_contracts.KERNEL_CONTENT_DOMAIN, value['payload'], 'payload')
+    artifact = kernel_contracts.kernel_digest(kernel_contracts.KERNEL_ARTIFACT_DOMAIN,
+                    {k: v for k, v in value.items() if k != 'artifact_id'}, 'envelope')
+    canonical = []
+    kernel_contracts._kernel_canonical(value, canonical, 'envelope')
+    if (content != value.get('content_id') or artifact != identity or b''.join(canonical) != data
+            or (kind is not None and value.get('type') != kind)):
+        raise ValueError('native artifact bytes or type differ')
+    return value['payload'] if kind is not None else value
+
+
+def issue_identity(document):
+    # Pipeline strategy/kind describe the stage, not the issue. Both the original goal
+    # and all structured business requirements/acceptance must remain byte-for-byte equal.
+    return json.dumps({k: document.get(k) for k in ('goal', 'requirements', 'acceptance', 'issue')},
+                      sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+
+
+def native_issue(state, revision):
+    requirements = revision['inputs']['requirements']
+    if requirements['artifact_type'] != 'af/Requirements@1' or len(requirements['artifact_ids']) != 1:
+        raise ValueError('missing exact native issue requirements')
+    payload = recorded(state, requirements['artifact_ids'][0], 'af/Requirements@1')
+    acceptance = []
+    for identity in revision['provenance']['input_artifact_ids']:
+        value = recorded(state, identity)
+        if value.get('type') == 'af/TaskAcceptance@1':
+            acceptance.append(value['payload'])
+    if len(acceptance) > 1:
+        raise ValueError('ambiguous native acceptance')
+    return json.dumps([revision['goal'], payload.get('specification'), acceptance],
+                      sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+
+
+def source_origin(state, snapshot_id):
+    snapshot = recorded(state, snapshot_id)
+    if snapshot.get('schema') != 'af.task-snapshot/1':
+        raise ValueError('missing native source Snapshot')
+    origin = recorded(state, snapshot['origin_id'])
+    if origin.get('schema') != 'af.task-source-origin/3':
+        raise ValueError('missing native source origin')
+    return snapshot, origin
+
+
 def reconcile(af, repo, state, manifest):
     """Native checked Task inspections, never imported spend or acceptance assertions."""
     exact(manifest, ('schema', 'issue', 'pull_request', 'source_commit', 'selection', 'tasks'), ('research_tasks', 'verification_task'))
@@ -174,51 +239,127 @@ def reconcile(af, repo, state, manifest):
         raise ValueError('invalid PR identity')
     if not re.fullmatch(r'[0-9a-f]{40}', manifest['source_commit']):
         raise ValueError('pilot requires exact source commit')
-    if not isinstance(manifest['tasks'], list) or any(not isinstance(t, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', t) for t in manifest['tasks']):
-        raise ValueError('Task identities must be native names')
-    if not manifest['tasks'] or len(manifest['tasks']) > 64 or len(set(manifest['tasks'])) != len(manifest['tasks']):
-        raise ValueError('pilot requires a unique bounded cumulative Task chain')
-    snapshots, records, total, unknown = [], [], 0, 0
-    auxiliary = manifest.get('research_tasks', []) + ([manifest['verification_task']] if manifest.get('verification_task') else [])
-    if len(auxiliary) > 16 or len(set(manifest['tasks'] + auxiliary)) != len(manifest['tasks'] + auxiliary):
-        raise ValueError('all stage Task identities must be unique and bounded')
-    for i, task in enumerate(manifest['tasks']):
+    tasks, research = manifest['tasks'], manifest.get('research_tasks', [])
+    if not isinstance(tasks, list) or not isinstance(research, list):
+        raise ValueError('pilot stages must be Task lists')
+    if 'verification_task' in manifest and not manifest['verification_task']:
+        raise ValueError('verification Task identity must be nonempty')
+    auxiliary = research + ([manifest['verification_task']] if manifest.get('verification_task') else [])
+    all_tasks = tasks + auxiliary
+    if (not tasks or len(tasks) > 64 or len(auxiliary) > 16 or len(set(all_tasks)) != len(all_tasks)
+            or any(not isinstance(t, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', t) for t in all_tasks)):
+        raise ValueError('all stage Task identities must be unique and bounded native names')
+    if choice['light'] and len(tasks) > 2:
+        raise ValueError('light permits one implementation and at most one bounded repair')
+    if not choice['research_pipeline'] and research:
+        raise ValueError('this route has no research stage')
+    values, revisions = {}, {}
+    for task in all_tasks:
         value = invoke(af, repo, state, 'explain', task)
         if value.get('schema') != 'af/task-inspection@20' or value['task_id'] != task:
             raise ValueError('native Task identity differs')
-        if i and value.get('continues', {}).get('task_id') != manifest['tasks'][i - 1]:
-            raise ValueError('pilot omits or changes cumulative continuation ancestry')
-        if not i and value.get('continues'):
+        revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
+        if revision['task_id'] != task or revision['inputs'] != value['plan']['inputs']:
+            raise ValueError('native revision/plan inputs differ')
+        values[task], revisions[task] = value, revision
+    original = revisions[tasks[0]]
+    original_source = original['inputs']['source']['snapshot_id']
+    _, origin = source_origin(state, original_source)
+    roots = subprocess.run(['git', '-C', str(repo), 'rev-list', '--max-parents=0', 'HEAD'],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    repository_id = ','.join(sorted(set(roots.stdout.decode().split())))
+    if (origin.get('kind') != 'captured' or origin.get('source_revision') != manifest['source_commit']
+            or origin.get('repository_id') != repository_id or not repository_id):
+        raise ValueError('pilot source commit or repository differs from native origin')
+    issue = native_issue(state, original)
+    producers = set()
+    for i, task in enumerate(tasks):
+        value, revision = values[task], revisions[task]
+        validate_plan(manifest['selection'], value)
+        if native_issue(state, revision) != issue:
+            raise ValueError('continuation changes original issue requirements')
+        if i:
+            previous = tasks[i - 1]
+            continued = value.get('continues') or {}
+            _, current_origin = source_origin(state, revision['inputs']['source']['snapshot_id'])
+            bound = current_origin.get('bound_from', {})
+            if (continued.get('task_id') != previous or current_origin.get('repository_id') != repository_id
+                    or bound.get('snapshot_id') != continued.get('snapshot_id')
+                    or bound.get('task', {}).get('task_id') != previous
+                    or bound.get('task', {}).get('task_revision_id') != values[previous]['revision_id']):
+                raise ValueError('pilot omits or changes cumulative continuation ancestry')
+        elif value.get('continues'):
             raise ValueError('pilot must include original Task, not only last delta')
-        total += int(value['chargeable_tokens'])
-        unknown += value.get('unknown_usage_attempts', 0)
-        records.append({'task_id': task, 'revision_id': value['revision_id'], 'plan_id': value['plan_id'],
-                        'chargeable_tokens': value['chargeable_tokens'], 'state': value['state'],
-                        'source_snapshot_id': value.get('plan', {}).get('inputs', {}).get('source', {}).get('snapshot_id'),
-                        'input_bindings': value.get('input_bindings')})
-        snapshots.append(value.get('continues', {}).get('snapshot_id'))
-    for task in auxiliary:
-        value = invoke(af, repo, state, 'explain', task)
-        if value.get('schema') != 'af/task-inspection@20' or value['task_id'] != task:
-            raise ValueError('native stage Task identity differs')
-        if value.get('result', {}).get('acceptance') != 'satisfied':
-            raise ValueError('stage Task is not independently accepted')
-        if task == manifest.get('verification_task'):
-            bound = value.get('input_bindings', {}).get('bindings', {}).get('source', {}).get('task', {})
-            if bound.get('task_id') != manifest['tasks'][-1]:
-                raise ValueError('final verification does not bind the final whole candidate')
-        total += int(value['chargeable_tokens'])
-        unknown += value.get('unknown_usage_attempts', 0)
-        records.append({'task_id': task, 'revision_id': value['revision_id'], 'plan_id': value['plan_id'],
-                        'chargeable_tokens': value['chargeable_tokens'], 'state': value['state'],
-                        'source_snapshot_id': value.get('plan', {}).get('inputs', {}).get('source', {}).get('snapshot_id'),
-                        'input_bindings': value.get('input_bindings')})
-    if choice['light'] and len(manifest['tasks']) > 2:
-        raise ValueError('light permits one implementation and at most one bounded repair')
+        binding = (value.get('input_bindings') or {}).get('bindings', {}).get('research_report')
+        if choice['research_pipeline']:
+            if not binding or binding.get('also') or not binding.get('task'):
+                raise ValueError('missing exact research producer binding')
+            producer = binding['task']['task_id']
+            producers.add(producer)
+            if producer not in research:
+                raise ValueError('pilot omits required research producer and charges')
+            report = values[producer]
+            report_revision = revisions[producer]
+            _, report_origin = source_origin(state, report_revision['inputs']['source']['snapshot_id'])
+            if (report_origin != origin or report_revision['inputs']['source']['snapshot_id'] != original_source):
+                raise ValueError('research source differs from original implementation')
+            check_stage(report, choice['research_pipeline'])
+            check_output(binding, report, revision['inputs']['research_report'], 'report', 'af/Document@1')
+        elif binding or 'research_report' in revision['inputs']:
+            raise ValueError('this route has no research stage')
+    if producers != set(research):
+        raise ValueError('unrelated research Task declared')
+    if manifest.get('verification_task'):
+        task = manifest['verification_task']
+        value, revision = values[task], revisions[task]
+        check_stage(value, catalog()['verification'])
+        if native_issue(state, revision) != issue:
+            raise ValueError('final verification changes original issue requirements')
+        binding = (value.get('input_bindings') or {}).get('bindings', {}).get('source', {})
+        if binding.get('task', {}).get('task_id') != tasks[-1]:
+            raise ValueError('final verification does not bind the final whole candidate')
+        check_output(binding, values[tasks[-1]], revision['inputs']['source'], 'snapshot', 'af/SourceTree@1')
+        bases = [recorded(state, identity) for identity in revision['provenance']['input_artifact_ids']]
+        bases = [v['payload'] for v in bases if v.get('type') == 'af/TaskBase@1']
+        if len(bases) != 1 or bases[0]['commit'] != manifest['source_commit']:
+            raise ValueError('verification must retain original whole-change Base')
+        _, base_origin = source_origin(state, bases[0]['snapshot_id'])
+        if base_origin != origin:
+            raise ValueError('verification Base source differs')
+    records = [{'task_id': t, 'revision_id': values[t]['revision_id'], 'plan_id': values[t]['plan_id'],
+                'chargeable_tokens': values[t]['chargeable_tokens'], 'state': values[t]['state'],
+                'source_snapshot_id': revisions[t]['inputs']['source']['snapshot_id'],
+                'input_bindings': values[t].get('input_bindings')} for t in all_tasks]
     return {'schema': 'af.issue-workflow-reconciliation/1', 'pilot': manifest, 'tasks': records,
-            'chain_chargeable_tokens': str(total), 'unknown_usage_attempts': unknown,
-            'continuation_sources': snapshots, 'final_verification_recorded': bool(manifest.get('verification_task')),
-            'quality_or_savings_claim': False}
+            'chain_chargeable_tokens': str(sum(int(values[t]['chargeable_tokens']) for t in all_tasks)),
+            'unknown_usage_attempts': sum(values[t].get('unknown_usage_attempts', 0) for t in all_tasks),
+            'continuation_sources': [(values[t].get('continues') or {}).get('snapshot_id') for t in tasks],
+            'final_verification_recorded': bool(manifest.get('verification_task')), 'quality_or_savings_claim': False}
+
+
+def check_stage(value, pipeline):
+    if (value['selection']['assessment']['decision'] != {'kind': 'selected', 'pipeline': pipeline}
+            or pipeline not in value['plan']['dependencies'] or value.get('continues')
+            or value.get('result', {}).get('acceptance') != 'satisfied'
+            or value['result'].get('execution') != 'completed'):
+        raise ValueError('stage Pipeline or independent acceptance differs')
+
+
+def check_output(binding, producer, input_port, port, artifact_type):
+    ref = binding.get('task') or {}
+    output = producer['result']['outputs'].get(port, {})
+    if (binding.get('also') or ref.get('task_revision_id') != producer['revision_id']
+            or ref.get('result_id') != producer['phase'].get('result_id')
+            or ref.get('port') != port or ref.get('acceptance') != producer['result']['acceptance']
+            or (port == 'report' and ref.get('acceptance') != 'satisfied')
+            or output.get('artifact_type') != artifact_type
+            or output.get('artifact_ids') != [binding.get('artifact_id')]
+            or input_port.get('artifact_type') != artifact_type
+            or input_port.get('artifact_ids') != [binding.get('resolved_artifact_id', binding.get('artifact_id'))]
+            or (port == 'snapshot' and (not output.get('snapshot_id')
+                or binding.get('snapshot_id') != output['snapshot_id']
+                or input_port.get('snapshot_id') != binding.get('rerooted_snapshot_id', binding.get('snapshot_id'))))):
+        raise ValueError('stage output does not match exact recorded input binding')
 
 
 def captured_catalog(template):
@@ -263,6 +404,8 @@ def composition(name, pins, facts):
             raise ValueError('stage templates require personal accounts')
         templates.append(template)
         identities.append(pin['template_id'])
+    if issue_identity(templates[-2]['document']) != issue_identity(templates[-1]['document']):
+        raise ValueError('verification must preserve exact original issue goal, requirements and acceptance')
     steps = []
     for index, (template, pipeline) in enumerate(zip(templates, expected)):
         stage = 'research' if research and index == 0 else 'verify' if index == len(expected) - 1 else 'implement'

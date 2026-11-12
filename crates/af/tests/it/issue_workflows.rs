@@ -187,6 +187,7 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
         let file = temp.path().join(format!("{id}.json"));
         task["task_id"] = json!(id);
         task["goal"] = json!("Resolve one bounded issue against the pinned source");
+        task["requirements"] = json!({"acceptance": ["preserve exact issue behavior"]});
         if evidence {
             task["inputs"] = json!({"research_report":{"task":report_task,"port":"report"}});
         }
@@ -316,6 +317,68 @@ fn catalog_contracts_and_all_seven_native_plans_preserve_roles_gates_and_stage_d
                 rendered.contains("\"op\":\"measure\"") && rendered.contains("\"op\":\"compare\"")
             );
         }
+        // Follow real checked inspection IDs into the native Store. This proves the script
+        // reads actual revision, Requirements, Snapshot and origin shapes, not invented fields.
+        let native_inspection = temp.path().join(format!("native-{i}.json"));
+        std::fs::write(&native_inspection, serde_json::to_vec(&v).unwrap()).unwrap();
+        let isolated = common::af();
+        let mut probe = std::process::Command::new("python3");
+        for (key, value) in isolated.get_envs() {
+            if let Some(value) = value {
+                probe.env(key, value);
+            }
+        }
+        let checked = probe
+            .args(["-I", "-c", r#"
+import importlib.util, json, pathlib, subprocess, sys
+spec = importlib.util.spec_from_file_location('workflow', sys.argv[1])
+w = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(w)
+state, repo, af, file, name = sys.argv[2:]
+v = w.read(file)
+r = w.recorded(state, v['revision_id'], 'af/TaskRevision@1')
+assert r['inputs'] == v['plan']['inputs']
+assert json.loads(w.native_issue(state, r))[:2] == ['Resolve one bounded issue against the pinned source', {'acceptance': ['preserve exact issue behavior']}]
+snapshot, origin = w.source_origin(state, r['inputs']['source']['snapshot_id'])
+assert origin['kind'] == 'captured'
+commit = subprocess.check_output(['git', '-C', repo, 'rev-parse', 'HEAD']).decode().strip()
+assert origin['source_revision'] == commit
+if not w.selection(name)['research_pipeline']:
+    m = {'schema': 'af.issue-workflow-pilot/1', 'issue': 'https://github.com/o/r/issues/1',
+         'pull_request': None, 'source_commit': commit, 'selection': name, 'tasks': [v['task_id']]}
+    result = w.reconcile(af, repo, state, m)
+    assert result['chain_chargeable_tokens'] == v['chargeable_tokens']
+    assert result['tasks'][0]['source_snapshot_id'] == r['inputs']['source']['snapshot_id']
+    for field, wrong in [('source_commit', '0' * 40), ('selection', 'impl/design-codex')]:
+        bad = dict(m); bad[field] = wrong
+        try:
+            w.reconcile(af, repo, state, bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('accepted wrong ' + field)
+else:
+    binding = v['input_bindings']['bindings']['research_report']
+    report = w.invoke(af, repo, state, 'explain', binding['task']['task_id'])
+    w.check_output(binding, report, r['inputs']['research_report'], 'report', 'af/Document@1')
+    # The hermetic starter Report has different authority/Pipeline; acceptance alone
+    # cannot substitute it for this route's required report/design producer.
+    try:
+        w.check_stage(report, w.selection(name)['research_pipeline'])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('accepted unrelated report Pipeline')
+"#])
+            .arg(workspace().join("scripts/issue-workflows.py"))
+            .arg(&state)
+            .arg(&repo)
+            .arg(isolated.get_program())
+            .arg(&native_inspection)
+            .arg(name)
+            .output()
+            .unwrap();
+        assert!(checked.status.success(), "{name}: {}", text(&checked));
         let inspection = temp.path().join("inspection.json");
         std::fs::write(&inspection, serde_json::to_vec(&v).unwrap()).unwrap();
         let checked = std::process::Command::new("python3")

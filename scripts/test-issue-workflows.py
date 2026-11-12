@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Hermetic issue Workflow routing, composition, history and plan refusal tests."""
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -25,6 +26,71 @@ def pin(pipeline, kind='implement'):
                                       'limits': {'tokens': 1000, 'wall_ms': 1000}}}}
 
 
+def check_selection(name, value):
+    if value['selection']['assessment']['decision'] != {'kind': 'selected', 'pipeline': name}:
+        raise ValueError('wrong selection')
+
+
+def pilot(name):
+    choice = w.selection(name)
+    manifest = {'schema': 'af.issue-workflow-pilot/1', 'issue': 'https://github.com/o/r/issues/1',
+                'pull_request': None, 'source_commit': '1' * 40, 'selection': name,
+                'tasks': ['original', 'repair'], 'verification_task': 'verify',
+                'research_tasks': ['research'] if choice['research_pipeline'] else []}
+    origin = {'schema': 'af.task-source-origin/3', 'kind': 'captured', 'repository_id': 'root',
+              'source_revision': '1' * 40, 'content_digest': 'digest'}
+    artifacts = {'origin': origin, 'source': {'schema': 'af.task-snapshot/1', 'origin_id': 'origin'}}
+    values = {}
+    for task in ['original', 'repair', 'verify'] + manifest['research_tasks']:
+        pipeline = (w.catalog()['verification'] if task == 'verify' else choice['research_pipeline']
+                    if task == 'research' else name)
+        source = 'repair-source' if task == 'repair' else 'verify-source' if task == 'verify' else 'source'
+        inputs = {'source': {'snapshot_id': source},
+                  'requirements': {'artifact_type': 'af/Requirements@1', 'artifact_ids': [task + '-requirements']}}
+        artifacts[task + '-requirements'] = {'type': 'af/Requirements@1', 'payload': {'specification': {'acceptance': ['exact']}}}
+        artifacts[task + '-revision'] = {'type': 'af/TaskRevision@1', 'payload': {
+            'task_id': task, 'goal': 'issue goal' if task != 'research' else 'research goal',
+            'inputs': inputs, 'provenance': {'input_artifact_ids': []}}}
+        values[task] = {'schema': 'af/task-inspection@20', 'task_id': task, 'revision_id': task + '-revision',
+                        'plan_id': 'plan-' + task, 'chargeable_tokens': '10', 'state': {},
+                        'unknown_usage_attempts': 1 if task in ('repair', 'research') else 0,
+                        'selection': {'assessment': {'decision': {'kind': 'selected', 'pipeline': pipeline}}},
+                        'plan': {'inputs': inputs, 'dependencies': {pipeline: {}}},
+                        'phase': {'kind': 'finished', 'result_id': task + '-result'},
+                        'result': {'acceptance': 'satisfied', 'execution': 'completed', 'outputs': {
+                            'report': {'artifact_type': 'af/Document@1', 'artifact_ids': [task + '-report']},
+                            'snapshot': {'artifact_type': 'af/SourceTree@1', 'artifact_ids': [task + '-tree'], 'snapshot_id': task + '-candidate'}}}}
+    def bind(consumer, producer, port, root):
+        output = copy.deepcopy(values[producer]['result']['outputs'][port])
+        inputs = values[consumer]['plan']['inputs']
+        inputs[root] = output
+        binding = {'artifact_id': output['artifact_ids'][0], 'task': {
+            'task_id': producer, 'task_revision_id': producer + '-revision', 'result_id': producer + '-result',
+            'port': port, 'acceptance': 'satisfied'}}
+        if port == 'snapshot':
+            binding['snapshot_id'] = output['snapshot_id']
+        values[consumer].setdefault('input_bindings', {'bindings': {}})['bindings'][root] = binding
+    if choice['research_pipeline']:
+        for task in manifest['tasks']:
+            bind(task, 'research', 'report', 'research_report')
+        artifacts['research-origin'] = copy.deepcopy(origin)
+        artifacts['source']['origin_id'] = 'research-origin'
+        # Keep the original origin independently available for wrong-repository tests.
+        values['original']['plan']['inputs']['source']['snapshot_id'] = 'original-source'
+        artifacts['original-source'] = {'schema': 'af.task-snapshot/1', 'origin_id': 'origin'}
+        # Native sources must be the same Snapshot, not merely equal origins.
+        values['research']['plan']['inputs']['source']['snapshot_id'] = 'original-source'
+    artifacts['repair-source'] = {'schema': 'af.task-snapshot/1', 'origin_id': 'repair-origin'}
+    artifacts['repair-origin'] = {'schema': 'af.task-source-origin/3', 'kind': 'bound', 'repository_id': 'root',
+                                  'bound_from': {'snapshot_id': 'original-candidate', 'task': {
+                                      'task_id': 'original', 'task_revision_id': 'original-revision'}}}
+    values['repair']['continues'] = {'task_id': 'original', 'snapshot_id': 'original-candidate'}
+    bind('verify', 'repair', 'snapshot', 'source')
+    artifacts['base'] = {'type': 'af/TaskBase@1', 'payload': {'commit': '1' * 40, 'snapshot_id': 'source' if not choice['research_pipeline'] else 'original-source'}}
+    artifacts['verify-revision']['payload']['provenance']['input_artifact_ids'] = ['base']
+    return manifest, values, artifacts
+
+
 FACTS = w.read(ROOT / 'fixtures/issue-workflows/routing-known.json')
 
 
@@ -38,6 +104,8 @@ class Workflows(unittest.TestCase):
         for name, selection in w.catalog()['selections'].items():
             research = selection['research_pipeline']
             pins = ([pin(research, 'report')] if research else []) + [pin(name), pin(w.catalog()['verification'], 'verification')]
+            if research:
+                pins[0]['template']['document']['goal'] = 'Distinct research question'
             composed = w.composition(name, pins, FACTS)['definitions']['issue-workflow']
             self.assertEqual(composed['authority']['grants'], [])
             self.assertEqual(composed['authority']['decision_owners'], [])
@@ -53,6 +121,13 @@ class Workflows(unittest.TestCase):
                 pins[0]['template']['source_content_digest'] = 'sha256:' + '4' * 64
                 with self.assertRaises(ValueError):
                     w.composition(name, pins, FACTS)
+
+    def test_composition_refuses_json_type_substitution(self):
+        pins = [pin('bugfix/default-codex'), pin(w.catalog()['verification'], 'verification')]
+        pins[0]['template']['document']['requirements'] = {'required': 1}
+        pins[1]['template']['document']['requirements'] = {'required': True}
+        with self.assertRaises(ValueError):
+            w.composition('bugfix/default-codex', pins, FACTS)
 
     def test_shipped_task_examples_supply_their_pipeline_required_facts(self):
         examples = ROOT / 'fixtures/issue-workflows'
@@ -114,24 +189,100 @@ class Workflows(unittest.TestCase):
         self.assertEqual(value['preserve_tasks'], ['active', 'historical'])
         self.assertEqual(value['remove_packages'], ['default/implementation', 'kernel/report'])
 
-    def test_reconcile_sums_each_task_once_retains_unknown_and_refuses_incomplete_chain(self):
-        manifest = {'schema': 'af.issue-workflow-pilot/1', 'issue': 'https://github.com/o/r/issues/1',
-                    'pull_request': None, 'source_commit': '1' * 40,
-                    'selection': 'bugfix/light-codex', 'tasks': ['original', 'repair']}
-        def inspection(task):
-            return {'schema': 'af/task-inspection@20', 'task_id': task, 'revision_id': 'revision-' + task,
-                    'plan_id': 'plan-' + task, 'chargeable_tokens': '10', 'state': {},
-                    **({'continues': {'task_id': 'original', 'snapshot_id': 'snapshot'}, 'unknown_usage_attempts': 1} if task == 'repair' else {})}
-        with mock.patch.object(w, 'invoke', side_effect=lambda *a: inspection(a[-1])):
-            value = w.reconcile('af', '/project', '/state', manifest)
-            self.assertEqual(value['chain_chargeable_tokens'], '20')
-            self.assertEqual(value['unknown_usage_attempts'], 1)
-            manifest['tasks'] = ['repair']
-            with self.assertRaises(ValueError):
-                w.reconcile('af', '/project', '/state', manifest)
-        manifest['tasks'] = ['original', 'original']
-        with self.assertRaises(ValueError):
-            w.reconcile('af', '/project', '/state', manifest)
+    def test_composition_requires_exact_goal_requirements_acceptance_and_issue(self):
+        for field, value in [('goal', 'another issue'), ('requirements', {'acceptance': ['weaker']}),
+                             ('acceptance', [{'id': 'a', 'text': 'different'}]),
+                             ('issue', {'url': 'https://github.com/o/r/issues/2'})]:
+            pins = [pin('bugfix/default-codex'), pin(w.catalog()['verification'], 'verification')]
+            pins[-1]['template']['document'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                w.composition('bugfix/default-codex', pins, FACTS)
+
+    def test_reconciliation_native_provenance_and_cumulative_accounting(self):
+        # The native integration test separately proves these metadata paths against real CAS.
+        for name, choice in w.catalog()['selections'].items():
+            with self.subTest(selection=name):
+                manifest, values, artifacts = pilot(name)
+                def reconcile(m=manifest):
+                    with mock.patch.object(w, 'invoke', side_effect=lambda *a: values[a[-1]]), \
+                         mock.patch.object(w, 'recorded', side_effect=lambda state, identity, kind=None:
+                                           artifacts[identity]['payload'] if kind else artifacts[identity]), \
+                         mock.patch.object(w, 'validate_plan', side_effect=lambda n, v:
+                                           check_selection(n, v)), \
+                         mock.patch.object(w.subprocess, 'run', return_value=mock.Mock(stdout=b'root\n')):
+                        return w.reconcile('af', '/project', '/state', m)
+                result = reconcile()
+                self.assertEqual(result['chain_chargeable_tokens'], '40' if choice['research_pipeline'] else '30')
+                self.assertEqual(result['unknown_usage_attempts'], 2 if choice['research_pipeline'] else 1)
+                self.assertFalse(result['quality_or_savings_claim'])
+                self.assertEqual(len(result['tasks']), len(values))
+                # Independent verification may accept a candidate its author did not verify;
+                # native source binding carries that exact unsatisfied result, not acceptance.
+                values['repair']['result']['acceptance'] = 'unsatisfied'
+                ref = values['verify']['input_bindings']['bindings']['source']['task']
+                ref['acceptance'] = 'unsatisfied'
+                self.assertEqual(reconcile()['chain_chargeable_tokens'], result['chain_chargeable_tokens'])
+                values['repair']['result']['acceptance'] = ref['acceptance'] = 'satisfied'
+                for edit in [lambda m: m.update(source_commit='2' * 40),
+                             lambda m: m.update(selection='impl/default-codex' if name != 'impl/default-codex' else 'bugfix/default-codex'),
+                             lambda m: m.update(tasks=['repair']),
+                             lambda m: m.update(tasks=['original', 'original']),
+                             lambda m: m.update(research_tasks=['unrelated']),
+                             lambda m: m.update(research_tasks=['research', 'research'])]:
+                    bad = copy.deepcopy(manifest); edit(bad)
+                    with self.assertRaises((ValueError, KeyError)):
+                        reconcile(bad)
+                if choice['research_pipeline']:
+                    # A fully accepted, same-Pipeline/same-source Task still cannot replace
+                    # the actual producer named by the implementation's native binding.
+                    values['unrelated'] = copy.deepcopy(values['research'])
+                    values['unrelated'].update(task_id='unrelated', revision_id='unrelated-revision')
+                    artifacts['unrelated-revision'] = copy.deepcopy(artifacts['research-revision'])
+                    artifacts['unrelated-revision']['payload']['task_id'] = 'unrelated'
+                    bad = copy.deepcopy(manifest); bad['research_tasks'] = ['unrelated']
+                    with self.assertRaisesRegex(ValueError, 'omits required research producer'):
+                        reconcile(bad)
+                    del values['unrelated'], artifacts['unrelated-revision']
+                    inputs = values['research']['plan']['inputs']
+                    saved_source = inputs['source']; inputs['source'] = {'snapshot_id': 'source'}
+                    with self.assertRaises(ValueError):
+                        reconcile()
+                    inputs['source'] = saved_source
+                mutations = [('verify-requirements', 'payload', 'specification', {'acceptance': ['weaker']}),
+                             ('verify-revision', 'payload', 'goal', 'another goal'),
+                             ('origin', None, 'repository_id', 'wrong-repo')]
+                if choice['research_pipeline']:
+                    bad = copy.deepcopy(manifest); bad['research_tasks'] = []
+                    with self.assertRaises(ValueError):
+                        reconcile(bad)
+
+                for identity, nested, field, changed in mutations:
+                    target = artifacts[identity][nested] if nested else artifacts[identity]
+                    old = target[field]; target[field] = changed
+                    with self.assertRaises(ValueError):
+                        reconcile()
+                    target[field] = old
+                # Fail closed on unavailable checked metadata.
+                saved = artifacts.pop('origin')
+                with self.assertRaises(KeyError):
+                    reconcile()
+                artifacts['origin'] = saved
+                # Wrong selected Pipeline, output revision, result, artifact or source binding.
+                targets = [(values['verify']['selection']['assessment']['decision'], 'pipeline', 'other'),
+                           (values['verify']['input_bindings']['bindings']['source']['task'], 'result_id', 'wrong'),
+                           (values['verify']['input_bindings']['bindings']['source'], 'snapshot_id', 'wrong'),
+                           (artifacts['repair-origin']['bound_from']['task'], 'task_revision_id', 'wrong')]
+                if choice['research_pipeline']:
+                    ref = values['original']['input_bindings']['bindings']['research_report']['task']
+                    targets += [(ref, 'task_revision_id', 'wrong'), (ref, 'result_id', 'wrong'),
+                                (ref, 'port', 'snapshot'),
+                                (values['original']['input_bindings']['bindings']['research_report'], 'artifact_id', 'wrong-report'),
+                                (values['research']['selection']['assessment']['decision'], 'pipeline', 'other')]
+                for target, field, changed in targets:
+                    old = target[field]; target[field] = changed
+                    with self.assertRaises(ValueError):
+                        reconcile()
+                    target[field] = old
 
     def test_compose_refuses_nonpersonal_or_slot_replacement_bindings(self):
         p = pin('bugfix/default-codex')

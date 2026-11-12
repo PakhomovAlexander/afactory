@@ -94,8 +94,9 @@ Implementation consumes the accepted Document on its declared Worker port and re
 artifact ID in candidate/report provenance. Research prose carries evidence, not execution
 approval. Report operators do not run inside an implementation profile.
 
-Copy example Task files to a private directory, replace their goals with exact issue acceptance,
-and set the verification Task's `base.commit` to the original source commit. Pin each stage from
+Copy example Task files to a private directory. Set implementation and final verification to
+identical `goal`, `requirements`, `acceptance` and `issue` values (including absence); research
+may have its own goal. Copy the original issue acceptance exactly into both stages, and set the verification Task's `base.commit` to the original source commit. Pin each stage from
 that **same committed source** with `af scenario template-pin`. For example:
 
 ```sh
@@ -115,7 +116,8 @@ For design use `design.json` with `issue-internal/design` and select `impl/desig
 implementation Task. Performance uses `issue-internal/report` research and selects
 `perf/research-experiment-codex`. Simple selections take only code and shared verification pins.
 `compose` checks routing facts and the catalog at the pinned Git commit. It refuses missing
-stages, differing source commits/Stores, substituted pipelines and
+stages, differing issue goals or structured requirements/acceptance, differing source
+commits/Stores, substituted pipelines and
 nonpersonal bindings. Each stage retains its own native authority ID; profiles legitimately
 capture different authority objects on the same commit.
 
@@ -199,9 +201,15 @@ python3 -I scripts/issue-workflows.py --af /absolute/path/to/candidate/af \
 
 Reconciliation reads native checked inspections, retains plan/revision/source bindings, sums each
 Task's cumulative charge once, refuses skipped continuation ancestry and preserves unknown usage
-separately. The manifest's source commit and issue/PR links are declared operator metadata;
-reconciliation does not authenticate remote issue state or infer that the declared commit is a
-Snapshot's Git origin. Native Scenario admission owns exact source enforcement. The absence of
+separately. It reads content-checked native CAS metadata named by inspections: the original
+Snapshot origin must name the manifest commit and the invoking repository's exact native
+repository identity (sorted root commits). Every implementation must select the declared
+Pipeline. Recorded `research_report` bindings require exactly their accepted report/design
+producers, original source and report output/revision/result identities; all required charges
+are counted once. Routes without research refuse research declarations. Final verification
+must bind the last candidate, retain the original Base and preserve the original goal and
+structured requirements/acceptance. Missing native metadata fails closed. Issue/PR links remain
+operator metadata; reconciliation does not authenticate remote issue state. The absence of
 final verification is reported explicitly; reconciliation alone is not an acceptance receipt.
 Do not infer live quality, economic savings or throughput from deterministic planning tests.
 
