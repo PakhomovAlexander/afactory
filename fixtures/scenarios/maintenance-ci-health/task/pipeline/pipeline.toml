@@ -1,4 +1,4 @@
-schema = "af.pipeline/4"
+schema = "af.pipeline/6"
 name = "ci/diagnosis-pipeline"
 version = "1.0.0"
 max_attempts = 8
