@@ -259,9 +259,21 @@ mod tests {
             }
             assert!(validate_diagnosis(&cas, &value, &bad).is_err(), "{change}");
         }
-        let mut bad = value.clone();
-        bad["signature_id"] = serde_json::json!(hash(&"foreign").unwrap());
-        assert!(validate_diagnosis(&cas, &bad, &inputs).is_err());
+        for (field, reason) in [
+            ("occurrence_id", "foreign occurrence"),
+            ("signature_id", "foreign signature"),
+        ] {
+            let mut bad = value.clone();
+            bad[field] = serde_json::json!(hash(&"foreign").unwrap());
+            assert!(validate_diagnosis(&cas, &bad, &inputs).is_err(), "{reason}");
+        }
+        let mut foreign_evidence = value.clone();
+        foreign_evidence["evidence"][0]["snapshot_id"] =
+            serde_json::json!(hash(&"foreign evidence").unwrap());
+        assert!(validate_diagnosis(&cas, &foreign_evidence, &inputs).is_err());
+        let mut empty_evidence = value.clone();
+        empty_evidence["evidence"] = serde_json::json!([]);
+        assert!(validate_diagnosis(&cas, &empty_evidence, &inputs).is_err());
         let mut wrong_revision = value.clone();
         wrong_revision["source_sha"] = serde_json::json!(snapshot.source_sha);
         wrong_revision["evidence"][0]["source_sha"] = serde_json::json!(snapshot.source_sha);

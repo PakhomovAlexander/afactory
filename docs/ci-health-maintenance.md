@@ -38,7 +38,11 @@ an occurrence-only signature and stays unknown.
 The private observer journal folds distinct run attempts transactionally. Re-observing an attempt,
 including a replacement job ID on that attempt, does not increase recurrence. A different head
 retains 14 days of history. A green observation for an active workflow/job/platform/head closes
-the signature and resets its counters. Signature and scope history expire after 14 UTC days.
+the signature and resets its counters only when its selected attempt demonstrably completed after
+the retained failure. Run IDs and API order are not completion evidence. Older successes and equal
+or missing timestamps cannot close a failure; the observation is incomplete and the failure and
+its release alert remain. Unfinished sibling checks and runs add bounded omissions without
+suppressing independently completed failures. Signature and scope history expire after 14 UTC days.
 The journal's `af.ci-health-state/2` metadata retains only the latest capture's complete service
 digest and exact snapshot. Its receipt commits atomically with the capture's recurrence folds.
 Identical evidence replays that snapshot, preserving each job's original count even when one

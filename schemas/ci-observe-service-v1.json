@@ -11,6 +11,10 @@
       "items": {
         "additionalProperties": false,
         "properties": {
+          "completed_at": {
+            "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+            "type": "string"
+          },
           "conclusion": {
             "enum": [
               "success",

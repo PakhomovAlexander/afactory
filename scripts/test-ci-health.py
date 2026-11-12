@@ -701,6 +701,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(changed['signature_id'], first['signature_id'])
         self.assertEqual(changed['occurrence_count'], 3)
         raw['jobs'][0]['conclusion'] = 'success'
+        raw['jobs'][0]['completed_at'] = '2026-11-09T05:00:00Z'
         self.assertEqual(self.observe(raw)['failures'], [])
         raw['jobs'][0]['conclusion'] = 'failure'
         self.assertEqual(self.observe(raw)['failures'][0]['occurrence_count'], 1)
@@ -771,7 +772,8 @@ class EvidenceTests(unittest.TestCase):
     def test_green_closure_is_order_independent_within_a_capture_and_conflicts_are_unknown(self):
         raw = service()
         passed = copy.deepcopy(raw['jobs'][0])
-        passed.update(conclusion='success', run_attempt=2, job_id=202)
+        passed.update(conclusion='success', run_attempt=2, job_id=202,
+                      completed_at='2026-11-09T05:00:00Z')
         raw['nightly_receipt']['conclusion'] = 'success'
         for jobs in ([raw['jobs'][0], passed], [passed, raw['jobs'][0]]):
             observed = self.observe(dict(raw, jobs=jobs))
@@ -959,6 +961,38 @@ def production_routes():
             routes[prefix + f'check-runs/{check}/annotations?per_page=100'] = []
             routes[prefix + f'actions/jobs/{job}/logs'] = (200, b'2026-11-09T03:01:00Z error: assertion x == y\n')
     return routes
+
+
+def add_production_job(routes, sha, run, attempt, job, conclusion, started, updated,
+                       name='validate', labels=None):
+    """Add one exact check/run/job triple with its own attempt completion interval."""
+    prefix = 'repos/octo/project/'
+    check = job + 1000
+    checks = routes[prefix + f'commits/{sha}/check-runs?filter=latest&per_page=100']
+    checks['check_runs'].append({'id': check, 'head_sha': sha, 'name': name,
+        'status': 'completed', 'conclusion': conclusion, 'output': {'annotations_count': 0}})
+    checks['total_count'] = len(checks['check_runs'])
+    runs = routes[prefix + f'actions/runs?head_sha={sha}&per_page=100']['workflow_runs']
+    if not any(item['id'] == run for item in runs):
+        runs.append({'id': run, 'workflow_id': 1, 'run_attempt': attempt, 'head_sha': sha,
+            'status': 'completed', 'path': '.github/workflows/validate.yml', 'created_at': started,
+            'repository': {'full_name': 'octo/project'}})
+        routes[prefix + f'actions/runs?head_sha={sha}&per_page=100']['total_count'] = len(runs)
+    routes[prefix + f'actions/runs/{run}/attempts/{attempt}'] = {
+        'id': run, 'workflow_id': 1, 'run_attempt': attempt, 'head_sha': sha,
+        'status': 'completed', 'path': '.github/workflows/validate.yml', 'created_at': started,
+        'run_started_at': started, 'updated_at': updated,
+        'repository': {'full_name': 'octo/project'}}
+    route = prefix + f'actions/runs/{run}/attempts/{attempt}/jobs?per_page=100'
+    jobs = routes.setdefault(route, {'total_count': 0, 'jobs': []})
+    jobs['jobs'].append({'id': job, 'name': name, 'status': 'completed', 'conclusion': conclusion,
+        'run_id': run, 'run_attempt': attempt, 'head_sha': sha,
+        'labels': labels or ['ubuntu-latest'],
+        'check_run_url': f'https://api.github.com/{prefix}check-runs/{check}'})
+    jobs['total_count'] = len(jobs['jobs'])
+    if conclusion == 'failure':
+        routes[prefix + f'check-runs/{check}/annotations?per_page=100'] = []
+        routes[prefix + f'actions/jobs/{job}/logs'] = (200, b'2026-11-09T03:31:00Z error: assertion x == y\n')
 
 
 def near_limit_routes(fingerprint='核"\\' * 675):
@@ -1820,6 +1854,67 @@ class ProductionTests(unittest.TestCase):
         # A token path is staged verbatim without reading it or copying any secret bytes.
         missing = {**self.staged_options(), 'github_token_file': str(self.root / 'not-installed-credential')}
         self.assertIn(missing['github_token_file'].encode(), self.P.adapter_bytes(missing))
+
+    def test_green_closure_uses_attempt_completion_order_not_run_ids(self):
+        state = str(self.root / 'temporal.sqlite')
+        routes = production_routes()
+        prefix = 'repos/octo/project/'
+        # The lower-ID rerun fails later. A higher-ID success completed earlier must not close it.
+        selected = prefix + 'actions/runs/301/attempts/2'
+        routes[selected]['updated_at'] = '2026-11-09T03:31:00Z'
+        add_production_job(routes, 'd' * 40, 302, 1, 404, 'success',
+                           '2026-11-09T03:00:00Z', '2026-11-09T03:01:00Z',
+                           labels=['macos-14', 'ARM64'])
+        routes[prefix + 'actions/runs?head_sha=' + 'd' * 40 + '&per_page=100']['workflow_runs'].reverse()
+        snapshot = self.P.observe({**self.options, 'state': state}, opener=Transport(routes))
+        failure, = snapshot['failures']
+        self.assertEqual((failure['run_id'], failure['run_attempt'], failure['job_id']), (301, 2, 403))
+        self.assertTrue(failure['release_blocking'])
+
+        # Re-observing only the older success cannot erase the retained failure or recurrence.
+        successful = production_routes()
+        for key in list(successful):
+            if any(part in key for part in ('/301/', '/302/', 'jobs/403', 'jobs/404')):
+                successful.pop(key)
+        runs_key = prefix + 'actions/runs?head_sha=' + 'd' * 40 + '&per_page=100'
+        successful[runs_key]['workflow_runs'] = [run for run in successful[runs_key]['workflow_runs'] if run['id'] == 302]
+        checks_key = prefix + 'commits/' + 'd' * 40 + '/check-runs?filter=latest&per_page=100'
+        successful[checks_key]['check_runs'] = [check for check in successful[checks_key]['check_runs'] if check['id'] == 1404]
+        successful[checks_key]['total_count'] = 1
+        add_production_job(successful, 'd' * 40, 302, 1, 404, 'success',
+                           '2026-11-09T03:00:00Z', '2026-11-09T03:01:00Z',
+                           labels=['macos-14', 'ARM64'])
+        # Remove the duplicate triple inserted by the convenience initializer above.
+        successful[runs_key]['workflow_runs'] = successful[runs_key]['workflow_runs'][:1]
+        successful[prefix + 'actions/runs/302/attempts/1/jobs?per_page=100']['jobs'] = successful[prefix + 'actions/runs/302/attempts/1/jobs?per_page=100']['jobs'][:1]
+        successful[prefix + 'actions/runs/302/attempts/1/jobs?per_page=100']['total_count'] = 1
+        successful[checks_key]['check_runs'] = successful[checks_key]['check_runs'][:1]
+        snapshot = self.P.observe({**self.options, 'state': state}, opener=Transport(successful))
+        self.assertEqual([f['job_id'] for f in snapshot['failures']], [403])
+        self.assertFalse(snapshot['complete'])
+        self.assertTrue(any('green closure' in reason for reason in snapshot['omissions']))
+
+    def test_unfinished_siblings_retain_completed_release_failure_and_alert(self):
+        routes = production_routes()
+        prefix = 'repos/octo/project/'
+        checks_key = prefix + 'commits/' + 'd' * 40 + '/check-runs?filter=latest&per_page=100'
+        routes[checks_key]['check_runs'].append({'id': 1999, 'head_sha': 'd' * 40,
+            'name': 'still-running', 'status': 'in_progress', 'conclusion': None,
+            'output': {'annotations_count': 0}})
+        routes[checks_key]['total_count'] += 1
+        runs_key = prefix + 'actions/runs?head_sha=' + 'd' * 40 + '&per_page=100'
+        routes[runs_key]['workflow_runs'].append({'id': 1998, 'workflow_id': 1,
+            'run_attempt': 1, 'head_sha': 'd' * 40, 'status': 'in_progress',
+            'path': '.github/workflows/validate.yml', 'created_at': '2026-11-09T03:20:00Z',
+            'repository': {'full_name': 'octo/project'}})
+        routes[runs_key]['total_count'] += 1
+        snapshot = self.P.observe(self.options, opener=Transport(routes))
+        self.assertFalse(snapshot['complete'])
+        self.assertTrue(any('unfinished check-run' in reason for reason in snapshot['omissions']))
+        self.assertTrue(any('unfinished workflow run' in reason for reason in snapshot['omissions']))
+        failure, = snapshot['failures']
+        self.assertEqual(failure['job_id'], 403)
+        self.assertTrue(failure['release_blocking'])
 
 
 if __name__ == '__main__':

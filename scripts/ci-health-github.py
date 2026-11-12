@@ -361,18 +361,23 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
             by_id = {}
             for check in checks:
                 check_id = positive(check['id'])
-                C.require(check_id not in by_id and check['head_sha'] == sha
-                          and check['status'] == 'completed'
-                          and check['conclusion'] in (*BENIGN, *FAILED), 'Malformed or unfinished check-run evidence')
+                if check.get('status') != 'completed' or check.get('conclusion') not in (*BENIGN, *FAILED):
+                    omit('unfinished check-run evidence for job ' + str(check_id))
+                    continue
+                C.require(check_id not in by_id and check['head_sha'] == sha,
+                          'Malformed check-run evidence')
                 by_id[check_id] = check
             runs = page(github.get(prefix + 'actions/runs?head_sha=' + sha + '&per_page=100'), 'workflow_runs')
             C.require(runs, 'Run evidence absent')
             matched = set()
             for run in runs:
                 run_id, attempt, workflow = [positive(run[key]) for key in ('id', 'run_attempt', 'workflow_id')]
+                if run.get('status') != 'completed':
+                    omit('unfinished workflow run ' + str(run_id))
+                    continue
                 C.require(run['head_sha'] == sha, 'Run head mismatch')
                 created = C.instant(run['created_at'])
-                C.require(run['status'] == 'completed' and run['repository']['full_name'] == github.repository
+                C.require(run['repository']['full_name'] == github.repository
                           and isinstance(run['path'], str)
                           and len(run['path'].split('@', 1)[0]) <= 512
                           and re.fullmatch(r'\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml', run['path'].split('@', 1)[0]),
@@ -416,6 +421,7 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                         observation = {'workflow_id': workflow, 'workflow_file': run['path'].split('@', 1)[0],
                             'run_id': run_id, 'run_attempt': attempt, 'job_id': job_id, 'job_name': job['name'],
                             'platform': platform, 'head_sha': sha, 'conclusion': job['conclusion'],
+                            'completed_at': selected['updated_at'],
                             'failing_tests': [], 'error_lines': [], 'log_artifacts': [], 'release_blocking': blocking}
                         ident = C.occurrence_id(github.repository, observation)
                         C.require(ident not in seen, 'Duplicate job attempt evidence')
@@ -471,13 +477,14 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                         result['jobs'].append(observation)
                     except (ValueError, KeyError, TypeError):
                         omit('malformed or unavailable job evidence')
-            C.require(all(c['conclusion'] in BENIGN or ident in matched for ident, c in by_id.items()),
-                      'Failed check lacks exact workflow/job evidence')
+            for ident, check in by_id.items():
+                if check['conclusion'] not in BENIGN and ident not in matched:
+                    omit('Failed check lacks exact workflow/job evidence for job ' + str(ident))
         except (ValueError, KeyError, TypeError):
             omit('incomplete or malformed checks/runs/jobs for head ' + sha)
-    # API list order is not evidence. Match the reducer's order so the capture receipt
-    # binds the same service document when GitHub reorders otherwise identical runs.
-    result['jobs'].sort(key=lambda job: (job['run_id'], job['run_attempt'], job['job_id']))
+    # API list order and run IDs are not completion order. Green closure uses only the
+    # selected attempt's own completion timestamp; ties remain ambiguous and cannot erase failures.
+    result['jobs'].sort(key=lambda job: (job['completed_at'], job['run_id'], job['run_attempt'], job['job_id']))
     return result
 
 

@@ -126,7 +126,10 @@ The observer persists signature state keyed by repository and signature ID. Recu
 distinct `occurrence_id`s on distinct run attempts; retries of one attempt do not increment it.
 State expires after 14 UTC days without an observation. A green conclusion for the same workflow,
 job, platform and head SHA closes the active signature and resets its transient and repair
-counters. A different head SHA starts a new occurrence but retains cross-occurrence history for 14
+counters only when its selected attempt demonstrably completed after the failure. Older,
+equal or missing completion timestamps cannot establish closure and leave the observation
+incomplete, retaining the failure and any release alert. Unfinished sibling checks and runs
+add omissions without discarding independently collected failed jobs. A different head SHA starts a new occurrence but retains cross-occurrence history for 14
 days. These rules, not model judgement, control deduplication and one-open-PR limits.
 Version 2 of the observer journal metadata atomically retains the latest service-evidence digest
 and its exact snapshot with the recurrence folds. Unchanged evidence replays the original

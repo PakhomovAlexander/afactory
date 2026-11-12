@@ -41,7 +41,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     service_schema!("ci-health-state", 2),
     service_schema!("ci-observe-occurrence", 1),
     service_schema!("ci-observe-service", 1),
-    service_schema!("ci-signature-state", 1),
+    service_schema!("ci-signature-state", 2),
     service_schema!("maintenance-watchdog-alert", 1),
     service_schema!("maintenance-watchdog-config", 1),
     schema!("ant-list", 6),

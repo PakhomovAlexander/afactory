@@ -130,8 +130,9 @@ def schema_documents():
                          'source_sha': sha, 'reference': text(256)}), 20, 1)})
     selection = obj({'schema': {'const': 'af.ci-diagnosis-selection/1'}, 'occurrence_id': ident,
                      'signature_id': ident, 'source_sha': sha})
-    scope = obj({'workflow_id': positive, 'job_name': text(256), 'platform': text(128), 'head_sha': sha, 'last_seen_at': timestamp})
-    state = obj({'schema': {'const': 'af.ci-signature-state/1'}, 'scopes': array(scope, MAX_STATE),
+    scope = obj({'workflow_id': positive, 'job_name': text(256), 'platform': text(128), 'head_sha': sha,
+                 'last_seen_at': timestamp, 'completed_at': timestamp})
+    state = obj({'schema': {'const': 'af.ci-signature-state/2'}, 'scopes': array(scope, MAX_STATE),
         'first_seen_at': timestamp, 'last_seen_at': timestamp,
         'occurrences': {'type': 'object', 'maxProperties': MAX_STATE,
             'propertyNames': ident, 'additionalProperties': obj({'at': timestamp, 'run': positive, 'attempt': positive})},
@@ -146,6 +147,9 @@ def schema_documents():
         'captured_at': timestamp, 'source_sha': sha, 'release_pr': snapshot['properties']['release_pr'],
         'nightly_receipt': snapshot['properties']['nightly_receipt'], 'omissions': array(text(256),100),
         'jobs': {'type': 'array', 'maxItems':100, 'items': service_job}})
+    # Execution time is optional only in older/offline observations. A success without it
+    # cannot close a later failure; production observations always carry it.
+    service_job['properties']['completed_at'] = timestamp
     notification = obj({'schema': {'const': NOTIFICATION},
         'scenario_run': text(128), 'snapshot_id': ident, 'repository': snapshot['properties']['repository'],
         'main_ref': text(128), 'release_selector': text(128), 'observation_start': timestamp,
@@ -182,7 +186,7 @@ def schema_documents():
             for name, shape in [('ci-health-snapshot', snapshot), ('ci-diagnosis', diagnosis), ('ci-diagnosis-selection', selection),
                 ('ci-signature-state', state), ('ci-health-state', journal),
                 ('ci-observe-service', service), ('ci-health-notification', notification)]
-            for version in [5 if name == 'ci-health-notification' else 2 if name == 'ci-health-state' else 1]}
+            for version in [5 if name == 'ci-health-notification' else 2 if name in ('ci-health-state', 'ci-signature-state') else 1]}
 
     documents['scenario-ci-notification-evidence-v2.json'] = notification_evidence_schema()
     return documents
@@ -204,7 +208,7 @@ def structural(value, name):
         for document in schema_documents().values():
             _VALIDATOR.schemas[document['$id']] = document
     errors = _VALIDATOR.errors(value, 'urn:af:schema:' + name
-        + (':5' if name == 'ci-health-notification' else ':2' if name == 'scenario-ci-notification-evidence' else ':2' if name == 'ci-health-state' else ':1'))
+        + (':5' if name == 'ci-health-notification' else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state', 'ci-signature-state') else ':1'))
     require(not errors, '; '.join(errors[:4]))
     require(len(canonical(value)) <= (MAX_BYTES if name in ('ci-health-snapshot', 'ci-diagnosis') else 1_048_576), 'CI evidence exceeds byte bound')
 
@@ -423,6 +427,11 @@ class Journal:
         now = instant(at)
         rows = self.db.execute('SELECT repository,signature,document FROM signatures').fetchall()
         require(len(rows) <= MAX_STATE, 'Observer state bound exhausted')
+        completed = job.get('completed_at')
+        if completed is not None:
+            completed = instant(completed)
+        closed = False
+        matched = False
         for repo, sig, raw in rows:
             state = loads(raw)
             structural(state, 'ci-signature-state')
@@ -430,12 +439,20 @@ class Journal:
                 require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
             if now - instant(state['last_seen_at']) >= dt.timedelta(days=14):
                 self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
-            elif repo == repository and job['conclusion'] == 'success' and any(all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')) and now - instant(scope['last_seen_at']) < dt.timedelta(days=14) for scope in state['scopes']):
-                self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
+            elif repo == repository and job['conclusion'] == 'success':
+                for scope in state['scopes']:
+                    if all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')):
+                        matched = True
+                        if (completed is not None and completed > instant(scope['completed_at'])
+                                and now - instant(scope['last_seen_at']) < dt.timedelta(days=14)):
+                            self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
+                            closed = True
         if job['conclusion'] == 'success':
-            return None
+            # None means either a demonstrated closure or no prior matching failure. False
+            # means a prior failure remains but its green timing is absent, equal or older.
+            return False if matched and not closed else None
         raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
-        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/1', 'scopes': [], 'first_seen_at': at,
+        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/2', 'scopes': [], 'first_seen_at': at,
             'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
         structural(state, 'ci-signature-state')
         require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
@@ -446,10 +463,16 @@ class Journal:
             require(len(state['occurrences']) < MAX_STATE, 'Signature occurrence bound exhausted')
             state['occurrences'][occurrence] = {'at': at, 'run': job['run_id'], 'attempt': job['run_attempt']}
         scope = {key: job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')}
+        previous_completion = max((instant(s['completed_at']) for s in state['scopes']
+            if all(s[key] == scope[key] for key in scope)), default=None)
         state['scopes'] = [s for s in state['scopes'] if now - instant(s['last_seen_at']) < dt.timedelta(days=14)
             and not all(s[key] == scope[key] for key in scope)]
         require(len(state['scopes']) < MAX_STATE, 'Signature scope bound exhausted')
-        state['scopes'].append({**scope, 'last_seen_at': at})
+        event_completion = completed or now
+        if previous_completion is not None:
+            event_completion = max(event_completion, previous_completion)
+        state['scopes'].append({**scope, 'last_seen_at': at,
+            'completed_at': event_completion.strftime('%Y-%m-%dT%H:%M:%SZ')})
         state.update(first_seen_at=min(v['at'] for v in state['occurrences'].values()), last_seen_at=at)
         structural(state, 'ci-signature-state')
         if raw is None:
@@ -599,13 +622,17 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     # Malformed enclosing evidence must not reset recurrence before the final refusal.
     # Missing receipts remain representable as named omissions below.
     structural({**snapshot, 'omissions': omissions[:100]}, 'ci-health-snapshot')
+    previous_capture = journal.metadata().get('capture')
+    previous_failures = previous_capture['snapshot']['failures'] if previous_capture else []
     seen = {}
     def order(item):
         index, job = item
         if not isinstance(job, dict):
             return (0, 0, 0, index)
+        completed = job.get('completed_at', at)
+        instant(completed)
         keys = [job.get(k, 0) for k in ('run_id', 'run_attempt', 'job_id')]
-        return (*[v if type(v) is int else 0 for v in keys], index)
+        return (completed, *[v if type(v) is int else 0 for v in keys], index)
     for index, job in sorted(enumerate(jobs), key=order):
         try:
             # Validate before touching recurrence state, including green closure evidence.
@@ -637,6 +664,17 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             if folded is None:
                 scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
                 snapshot['failures'] = [f for f in snapshot['failures'] if not all(f[key] == job[key] for key in scope)]
+                continue
+            if folded is False:
+                omissions.append('green closure is absent, older than the failure or has ambiguous timing for job ' + str(index))
+                scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
+                for previous in previous_failures:
+                    if all(previous[key] == job[key] for key in scope) and previous['occurrence_id'] not in seen:
+                        retained = dict(previous)
+                        retained['last_seen_at'] = at
+                        structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
+                        snapshot['failures'].append(retained)
+                        seen[retained['occurrence_id']] = retained['conclusion']
                 continue
             failure = {key: job[key] for key in ('workflow_id', 'workflow_file', 'run_id', 'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion')}
             failure.update(folded, log_artifacts=list(dict.fromkeys(refs)), release_blocking=bool(job.get('release_blocking', False)))
