@@ -1200,3 +1200,120 @@ fn a_task_kind_package_maps_another_business_kind_to_the_report_profile() {
         REPORT_VERIFICATION_V1
     );
 }
+
+/// A consuming project chooses its own package, Worker, node and dependency names.
+/// Compile and execute the real captured graph with one and three prior evaluations.
+#[test]
+fn customer_report_dependencies_follow_typed_contracts_and_graph_producers() {
+    use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1, ValueRefV1};
+    use af_pipeline_config::task::catalog::TaskWorkerManifest;
+
+    for count in [1, 3] {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = starter(root.path());
+        let pipeline_path = package(&repo, "builtin/report").join("pipeline.toml");
+        let mut pipeline: PipelineDefinition =
+            toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
+        let worker_path = package(&repo, "builtin/report-verifier");
+        let mut worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(worker_path.join("worker.toml")).unwrap())
+                .unwrap();
+        let mut schema: Value =
+            serde_json::from_slice(&std::fs::read(worker_path.join("input.schema.json")).unwrap())
+                .unwrap();
+        let template = pipeline
+            .nodes
+            .iter()
+            .find(|n| n.id == "verify")
+            .unwrap()
+            .clone();
+        let mut final_node = template.clone();
+        let names = ["legal_signoff", "security_audit", "editorial"];
+        for name in names.into_iter().take(count) {
+            let mut prior = template.clone();
+            prior.id = format!("customer_{name}");
+            let slot_name = prior.id.clone();
+            prior.operator = TaskOperatorV1::Verify {
+                slot: slot_name.clone(),
+            };
+            pipeline
+                .slots
+                .insert(slot_name, pipeline.slots["verifier"].clone());
+            final_node.inputs.insert(
+                name.into(),
+                ValueRefV1::Node {
+                    node: prior.id.clone(),
+                    port: "result".into(),
+                },
+            );
+            pipeline.nodes.push(prior);
+            worker.signature.contract.inputs.insert(
+                name.into(),
+                worker.signature.contract.outputs["result"].clone(),
+            );
+            worker
+                .signature
+                .retains
+                .get_mut("result")
+                .unwrap()
+                .insert(name.into());
+            schema["properties"][name] = schema["properties"]["checks"].clone();
+            schema["properties"][name]["items"]["properties"]["artifact_type"]["const"] =
+                json!(REPORT_EVALUATION_V1);
+            schema["required"].as_array_mut().unwrap().push(json!(name));
+        }
+        // Only the final Worker requires dependencies; prior reviewers keep the original contract.
+        let final_path = repo.join(".af/packages/customer-council");
+        task_cli::copy_tree(&worker_path, &final_path);
+        worker.name = "customer/council".into();
+        std::fs::write(
+            final_path.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            final_path.join("input.schema.json"),
+            serde_json::to_vec_pretty(&schema).unwrap(),
+        )
+        .unwrap();
+        pipeline.slots.get_mut("verifier").unwrap().worker = worker.name.clone();
+        *pipeline
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == "verify")
+            .unwrap() = final_node;
+        pipeline.name = "customer/compliance".into();
+        pipeline.max_attempts += (count * 2) as u32;
+        std::fs::write(&pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
+        let catalog_path = repo.join(".af/task-catalog.toml");
+        let mut catalog: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        let pin = catalog["packages"]
+            .as_table_mut()
+            .unwrap()
+            .remove("builtin/report")
+            .unwrap();
+        catalog["packages"]
+            .as_table_mut()
+            .unwrap()
+            .insert(pipeline.name.clone(), pin);
+        let mut pin = catalog["packages"]["builtin/report-verifier"].clone();
+        pin["path"] = toml::Value::String(".af/packages/customer-council".into());
+        catalog["packages"]
+            .as_table_mut()
+            .unwrap()
+            .insert(worker.name, pin);
+        std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        let task_path = repo.join("report.json");
+        let mut task: Value = serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
+        task["pipeline"]["name"] = json!(pipeline.name);
+        task["limits"]["max_attempts"] = json!(3 + count * 2);
+        task["limits"]["verification"]["attempts"] = json!(2 + count * 2);
+        task["limits"]["verification"]["wall_ms"] = json!(150000);
+        std::fs::write(task_path, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+        repin_and_commit(&repo);
+        let done = start(&repo, &state, 0);
+        assert_eq!(done["result"]["acceptance"], "satisfied");
+        assert_eq!(done["attempts"], 3 + count);
+    }
+}
