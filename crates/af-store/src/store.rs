@@ -669,6 +669,7 @@ impl EventStore {
                 !matches!(
                     event.event_type,
                     EventType::SourceCapturedV1
+                        | EventType::ScenarioTemplatePinnedV1
                         | EventType::CheckCompletedV1
                         | EventType::ProjectRegisteredV1
                         | EventType::WorkspaceRegisteredV1

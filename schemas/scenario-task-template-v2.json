@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-task-template:1",
-  "title": "scenario-task-template v1",
+  "$id": "urn:af:schema:scenario-task-template:2",
+  "title": "scenario-task-template v2",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af/scenario-task-template@1"
+      "const": "af/scenario-task-template@2"
     },
     "repo": {
       "$ref": "urn:af:schema:scenario:5#/$defs/path"

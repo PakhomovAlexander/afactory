@@ -15,7 +15,7 @@
           "operation": {
             "kind": "fresh_task",
             "template": {
-              "schema": "af/scenario-task-template@1",
+              "schema": "af/scenario-task-template@2",
               "repo": "/replace/project",
               "state": "/replace/private-tasks",
               "authority_commit": "0000000000000000000000000000000000000000",
@@ -78,7 +78,7 @@
       "authority": {
         "task_plans": [],
         "task_templates": [
-          "sha256:bb5497ca9740e2aefda2f348b1cc946dae0b1b3aa0195a64e1c1ad82831e8124"
+          "sha256:b14a234ba118302ec58f2d7d1e3d0929d4a7dcdbce0d0a259363823bdc19d259"
         ],
         "grants": [],
         "decision_owners": []

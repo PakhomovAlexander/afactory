@@ -148,7 +148,7 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
         /// Exact 40-character commit supplying the template's source and Task authority
         #[arg(long)]
         authority_commit: String,
-        /// Native slots and Provider bindings; local package paths are refused
+        /// Native bindings; captures pinned local Workers relative to this file once
         #[arg(long)]
         bindings: Option<PathBuf>,
         #[command(flatten)]
@@ -665,14 +665,11 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 task_state,
                 authority_commit,
                 store::definition(&file)?,
-                bindings
-                    .as_ref()
-                    .map(|p| store::definition(p))
-                    .transpose()?,
+                bindings.as_deref(),
             )?;
             let id = template.id()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-template-pin@1","template_id":id,"template":template}),
+                &serde_json::json!({"schema":"af/scenario-template-pin@2","template_id":id,"template":template}),
                 &inspect,
             )
         }

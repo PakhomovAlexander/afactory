@@ -1516,8 +1516,8 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
             commit.trim(),
         ],
     );
-    valid("scenario-template-pin-v1.json", &pinned);
-    valid("scenario-task-template-v1.json", &pinned["template"]);
+    valid("scenario-template-pin-v2.json", &pinned);
+    valid("scenario-task-template-v2.json", &pinned["template"]);
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
     policy["task_templates"] = json!([pinned["template_id"]]);
     write(&f.policy, &policy);
@@ -2976,4 +2976,258 @@ fn native_authored_markdown_watch_uses_recorded_observation_and_never_drives_wor
             .unwrap()
             .contains("Unsupported presentation shape")
     );
+}
+
+#[test]
+fn template_local_workers_are_captured_once_retained_and_restored_after_deletion() {
+    use af_pipeline_config::task::catalog::TaskWorkerManifest;
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let root = f._root.path().join("task-fixture");
+    std::fs::create_dir(&root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let commit = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+    document["verification"] = json!("evaluation");
+    let file = f.machine.join("template.json");
+    write(&file, &document);
+    let mut pins = Vec::new();
+    let mut workers = Vec::new();
+    for developer in ["alice", "bob"] {
+        let local = f.machine.join(developer);
+        let package = local.join("worker");
+        crate::task_cli::copy_tree(
+            &f.repo.join(".af/task-packages/fixture/implementer"),
+            &package,
+        );
+        let mut worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+        worker.name = format!("local/{developer}");
+        worker.signature.attempt.as_mut().unwrap().wall_ms =
+            if developer == "alice" { 4500 } else { 4800 };
+        std::fs::write(
+            package.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        let digest = af_pipeline_config::lock::package_digest(&worker.name, &package).unwrap();
+        let bindings = local.join("bindings.toml");
+        let definition = json!({"schema":"af.task-bindings/1", "packages":{worker.name.clone():{"version":"1.0.0","digest":digest,"path":"worker"}},"slots":{"root.slots.implementer":worker.name}});
+        std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+        let args = [
+            "scenario",
+            "template-pin",
+            "--file",
+            file.to_str().unwrap(),
+            "--repo",
+            f.repo.to_str().unwrap(),
+            "--task-state",
+            task_state.to_str().unwrap(),
+            "--authority-commit",
+            commit.trim(),
+            "--bindings",
+            bindings.to_str().unwrap(),
+        ];
+        let pinned = cli(&f.repo, &f.state, &args);
+        valid("scenario-template-pin-v2.json", &pinned);
+        assert_eq!(pinned, cli(&f.repo, &f.state, &args));
+        for (field, bad) in [
+            ("path", json!("../worker")),
+            ("digest", json!(format!("sha256:{}", "0".repeat(64)))),
+            ("version", json!("9.9.9")),
+        ] {
+            let mut wrong = definition.clone();
+            wrong["packages"][&worker.name][field] = bad;
+            std::fs::write(&bindings, toml::to_string(&wrong).unwrap()).unwrap();
+            assert!(
+                !output(&f.repo, &f.state, &args).status.success(),
+                "{field}"
+            );
+        }
+        let mut shadow = definition.clone();
+        shadow["packages"] = json!({"fixture/implementer":definition["packages"][&worker.name]});
+        std::fs::write(&bindings, toml::to_string(&shadow).unwrap()).unwrap();
+        assert!(!output(&f.repo, &f.state, &args).status.success());
+        std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+        let oversized = package.join("oversized");
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(16 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(!output(&f.repo, &f.state, &args).status.success());
+        std::fs::remove_file(&oversized).unwrap();
+        if developer == "alice" {
+            let pipeline = local.join("pipeline");
+            crate::task_cli::copy_tree(
+                &f.repo.join(".af/task-packages/fixture/implementation"),
+                &pipeline,
+            );
+            let manifest_path = pipeline.join("pipeline.toml");
+            let mut manifest: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+            manifest["name"] = toml::Value::String("local/pipeline".into());
+            std::fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+            let digest =
+                af_pipeline_config::lock::package_digest("local/pipeline", &pipeline).unwrap();
+            let mut wrong = definition.clone();
+            wrong["packages"]["local/pipeline"] = json!({"path":"pipeline","version":manifest["version"].as_str().unwrap(),"digest":digest});
+            std::fs::write(&bindings, toml::to_string(&wrong).unwrap()).unwrap();
+            let refused = output(&f.repo, &f.state, &args);
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stdout).contains("Worker packages only"),
+                "{}",
+                String::from_utf8_lossy(&refused.stdout)
+            );
+        }
+        std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+        let moved = local.join("moved");
+        std::fs::rename(&package, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &package).unwrap();
+        assert!(!output(&f.repo, &f.state, &args).status.success());
+        std::fs::remove_file(&package).unwrap();
+        // No fresh Task has been planned: retention must start at pinning, not dispatch.
+        cli(
+            &f.repo,
+            &task_state,
+            &["task", "gc", "--older-than", "0", "--keep", "0", "--apply"],
+        );
+        let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+        let authority = cas
+            .get_json(pinned["template"]["authority_id"].as_str().unwrap())
+            .unwrap();
+        assert!(
+            authority["packages"]["fixture/implementer"].is_object(),
+            "constraining default retained"
+        );
+        assert_eq!(
+            authority["slot_workers"]["root.slots.implementer"],
+            worker.name
+        );
+        let captured = authority["packages"][&worker.name]["artifact_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        cas.get_json(&captured).unwrap();
+        std::fs::write(
+            moved.join("worker.py"),
+            "raise Exception('mutable bytes must not execute')",
+        )
+        .unwrap();
+        std::fs::write(&bindings, "invalid after capture").unwrap();
+        std::fs::remove_dir_all(&local).unwrap();
+        pins.push(pinned);
+        workers.push(captured);
+    }
+    assert_ne!(pins[0]["template_id"], pins[1]["template_id"]);
+    assert_ne!(workers[0], workers[1]);
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!(
+        pins.iter()
+            .map(|p| p["template_id"].clone())
+            .collect::<Vec<_>>()
+    );
+    write(&f.policy, &policy);
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    let main = &mut bundle["definitions"]["main"];
+    main["authority"]["task_templates"] = policy["task_templates"].clone();
+    main["steps"] = json!(
+        pins.iter()
+            .enumerate()
+            .map(|(i, p)| step(
+                &format!("customer-{i}"),
+                json!({"kind":"fresh_task","template":p["template"],"bindings":{}}),
+                json!({}),
+                "task"
+            ))
+            .collect::<Vec<_>>()
+    );
+    write(&f.bundle, &bundle);
+    let done = f.start("captured-customers");
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(done["fresh_tasks"].as_object().unwrap().len(), 2);
+    for (index, pin) in pins.iter().enumerate() {
+        let receipt = &done["frames"]["root"]["steps"][index]["outputs"]["result"]["value"];
+        let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+        let revision = cas
+            .get_artifact(receipt["revision_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            revision.payload["authority"]["policy_id"],
+            pin["template"]["authority_id"]
+        );
+    }
+    assert_eq!(
+        cli(
+            &f.repo,
+            &f.state,
+            &["scenario", "resume", "captured-customers"]
+        ),
+        done
+    );
+    cli(
+        &f.repo,
+        &task_state,
+        &["task", "gc", "--older-than", "0", "--keep", "0", "--apply"],
+    );
+    let again = f.start("fresh-after-collection");
+    assert_eq!(again["status"], "succeeded", "{again}");
+    // Corrupt and missing captured package bytes both fail without consulting deleted paths.
+    let digest = workers[0].strip_prefix("sha256:").unwrap();
+    let object = task_state
+        .join("cas/objects")
+        .join(&digest[..2])
+        .join(&digest[2..]);
+    let bytes = std::fs::read(&object).unwrap();
+    std::fs::write(&object, b"corrupt captured package").unwrap();
+    for run in ["corrupt-package", "missing-package"] {
+        let failed = f.start(run);
+        assert_eq!(failed["status"], "failed", "{failed}");
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+        std::fs::remove_file(&object).ok();
+    }
+    std::fs::write(&object, bytes).unwrap();
+    // Even a newly authorized template cannot substitute missing native authority,
+    // a different committed source, or Provider mappings absent from its sealed closure.
+    for (field, replacement) in [
+        ("authority_id", json!(format!("sha256:{}", "f".repeat(64)))),
+        (
+            "source_content_digest",
+            json!(format!("sha256:{}", "f".repeat(64))),
+        ),
+        ("repository_id", json!("another-repository")),
+        ("authority_commit", json!("0".repeat(40))),
+        (
+            "bindings",
+            json!({"schema":"af.task-bindings/1","packages":{},"slots":{},"providers":{"local/alice":"substituted"}}),
+        ),
+    ] {
+        let mut template = pins[0]["template"].clone();
+        template[field] = replacement;
+        let id = af_scenario::contract::hash(&template).unwrap();
+        policy["task_templates"] = json!([id]);
+        write(&f.policy, &policy);
+        bundle["definitions"]["main"]["authority"]["task_templates"] = json!([id]);
+        bundle["definitions"]["main"]["steps"] = json!([step(
+            "changed",
+            json!({"kind":"fresh_task","template":template,"bindings":{}}),
+            json!({}),
+            "task"
+        )]);
+        write(&f.bundle, &bundle);
+        let failed = f.start(&format!("changed-{field}"));
+        assert_eq!(failed["status"], "failed", "{field}: {failed}");
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+    }
+    let mut old = pins[0]["template"].clone();
+    old["schema"] = json!("af/scenario-task-template@1");
+    assert!(!crate::schemas::validator("scenario-task-template-v2.json").is_valid(&old));
 }

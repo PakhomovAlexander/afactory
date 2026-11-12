@@ -44,7 +44,7 @@ def main():
         kind = step["operation"]["kind"]
         if kind == "fresh_task":
             pin = pins[step["id"]]
-            if pin["schema"] != "af/scenario-template-pin@1":
+            if pin["schema"] != "af/scenario-template-pin@2":
                 raise ValueError("expected native template-pin envelope")
             if pin["template"]["max_tokens"] > step["operation"]["template"]["max_tokens"]:
                 raise ValueError("native package allowance exceeds the reviewed example reservation")

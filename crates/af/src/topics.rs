@@ -608,7 +608,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   af/ant@6; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
-  Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
+  Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
   Journal: af/scenario-store@9. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.

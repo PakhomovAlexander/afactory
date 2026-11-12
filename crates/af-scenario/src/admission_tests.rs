@@ -24,7 +24,7 @@ pub(super) fn fixture() -> (Roadmap, Pin) {
     let roadmap = Roadmap::new(Revision::new(None, p).unwrap()).unwrap();
     let (mut bundle, mut policy) = simple();
     let template = template::Template {
-        schema: "af/scenario-task-template@1".into(),
+        schema: "af/scenario-task-template@2".into(),
         repo: "/repo".into(),
         state: "/task-state".into(),
         authority_commit: "a".repeat(40),
@@ -470,7 +470,10 @@ fn shipped_fresh_task_example_has_narrow_digest_grants_and_versioned_schema_pari
     else {
         unreachable!()
     };
-    valid("scenario-task-template-v1.json", template);
+    valid("scenario-task-template-v2.json", template);
+    let mut retired = template.clone();
+    retired.schema = "af/scenario-task-template@1".into();
+    assert!(retired.validate(&TestHost::default()).is_err());
     let mut wrong = pin.clone();
     wrong.policy.task_templates.clear();
     assert!(wrong.validate(&TestHost::default()).is_err());

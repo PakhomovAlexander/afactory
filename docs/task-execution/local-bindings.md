@@ -69,6 +69,14 @@ its replacement. Resume recompiles those captured bytes and settings; it does no
 local file again. The integration fixture runs Alice and Bob against the same Pipeline,
 changes their local files after planning, and verifies both captured executions.
 
+Scenario `template-pin --bindings FILE` uses this same bounded capture from the original file
+location. Its version 2 template seals the full native authority closure in the Task Store.
+Fresh Tasks and restarts restore that closure without reading local paths, even after the
+bindings and package directories are deleted. Committed customer Pipelines and policy remain
+anchored to the exact authority commit; local additions remain Workers only. A new binding
+requires a new template pin and Scenario/policy confirmation. See
+[Fresh Task templates](../scenarios.md#fresh-task-templates).
+
 ## Report evaluation dependencies
 
 Report verifiers may declare any number of prior `af/ReportEvaluation@1` inputs with

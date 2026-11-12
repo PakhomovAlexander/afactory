@@ -63,7 +63,7 @@ def step(name, operation, inputs, port, timeout=604800000):
 def bundle(pin, destination, title, body, owner="owner", adapter="workspace", repairs=2):
     if type(repairs) is not int or not 0 <= repairs <= 2:
         raise ValueError("impl permits zero, one or two bounded implementation repairs")
-    if pin["schema"] != "af/scenario-template-pin@1" or re.fullmatch(r"sha256:[0-9a-f]{64}", pin["template_id"]) is None:
+    if pin["schema"] != "af/scenario-template-pin@2" or re.fullmatch(r"sha256:[0-9a-f]{64}", pin["template_id"]) is None:
         raise ValueError("expected exact native template-pin receipt")
     template = copy.deepcopy(pin["template"])
     doc = template["document"]

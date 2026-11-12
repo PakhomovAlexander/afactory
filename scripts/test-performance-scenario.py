@@ -844,7 +844,7 @@ class Evidence(unittest.TestCase):
             root = pathlib.Path(directory)
             bundle = json.loads((ROOT / "fixtures/scenarios/performance-candidate.json").read_text())
             stages = bundle["definitions"]["performance"]["steps"]
-            pins = {s["id"]: dict(schema="af/scenario-template-pin@1", template=s["operation"]["template"],
+            pins = {s["id"]: dict(schema="af/scenario-template-pin@2", template=s["operation"]["template"],
                 template_id=canonical_digest(s["operation"]["template"])) for s in stages if s["operation"]["kind"] == "fresh_task"}
             for name, doc in (("pins.json", pins), ("launcher.json", dict(schema="af.perf-scenario-launcher/1",
                     executable="/opt/af-perf/scenario-adapter", digest=D)),

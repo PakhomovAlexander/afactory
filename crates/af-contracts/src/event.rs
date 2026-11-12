@@ -51,6 +51,8 @@ pub enum EventType {
     PolicyTimeAdvancedV1,
     #[serde(rename = "SourceCaptured@1")]
     SourceCapturedV1,
+    #[serde(rename = "ScenarioTemplatePinned@1")]
+    ScenarioTemplatePinnedV1,
     #[serde(rename = "ProjectRegistered@1")]
     ProjectRegisteredV1,
     #[serde(rename = "WorkspaceRegistered@1")]
@@ -68,7 +70,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::TaskTransitionV6,
         Self::TaskExecutionStartedV1,
         Self::TaskGateRetriedV1,
@@ -90,6 +92,7 @@ impl EventType {
         Self::GenerationAdvancedV1,
         Self::PolicyTimeAdvancedV1,
         Self::SourceCapturedV1,
+        Self::ScenarioTemplatePinnedV1,
         Self::ProjectRegisteredV1,
         Self::WorkspaceRegisteredV1,
         Self::WorkspaceRemovedV1,
@@ -122,6 +125,7 @@ impl EventType {
             Self::GenerationAdvancedV1 => "GenerationAdvanced@1",
             Self::PolicyTimeAdvancedV1 => "PolicyTimeAdvanced@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
+            Self::ScenarioTemplatePinnedV1 => "ScenarioTemplatePinned@1",
             Self::ProjectRegisteredV1 => "ProjectRegistered@1",
             Self::WorkspaceRegisteredV1 => "WorkspaceRegistered@1",
             Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
@@ -155,6 +159,7 @@ impl EventType {
             Self::GenerationAdvancedV1 => ("GenerationAdvanced", 1),
             Self::PolicyTimeAdvancedV1 => ("PolicyTimeAdvanced", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
+            Self::ScenarioTemplatePinnedV1 => ("ScenarioTemplatePinned", 1),
             Self::ProjectRegisteredV1 => ("ProjectRegistered", 1),
             Self::WorkspaceRegisteredV1 => ("WorkspaceRegistered", 1),
             Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
@@ -229,6 +234,7 @@ impl std::str::FromStr for EventType {
             "GenerationAdvanced@1" => Ok(Self::GenerationAdvancedV1),
             "PolicyTimeAdvanced@1" => Ok(Self::PolicyTimeAdvancedV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
+            "ScenarioTemplatePinned@1" => Ok(Self::ScenarioTemplatePinnedV1),
             "ProjectRegistered@1" => Ok(Self::ProjectRegisteredV1),
             "WorkspaceRegistered@1" => Ok(Self::WorkspaceRegisteredV1),
             "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
@@ -412,7 +418,8 @@ pub fn validate_event_payload(
             }
             Ok(())
         }
-        EventType::DemandRecordedV1
+        EventType::ScenarioTemplatePinnedV1
+        | EventType::DemandRecordedV1
         | EventType::DemandWaivedV1
         | EventType::EvidenceAddedV1
         | EventType::EvidenceReuseAdmittedV1

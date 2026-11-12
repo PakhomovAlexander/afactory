@@ -542,16 +542,25 @@ the native foreground scheduler requires explicit invocation.
 
 ## Fresh Task templates
 
-`af scenario template-pin` captures an `af/scenario-task-template@1` and its digest in an
-`af/scenario-template-pin@1` envelope. It is token-free and writes only native Task Store capture
+`af scenario template-pin` captures an `af/scenario-task-template@2` and its digest in an
+`af/scenario-template-pin@2` envelope. It is token-free and writes only native Task Store capture
 artifacts; it creates no Task or Scenario Run. Supply a native Task file with explicit pipeline,
 strategy and all limits, an exact 40-character authority commit and an external Task Store.
 Implementation files also declare verification; other kinds retain their captured native acceptance.
 Pipeline fallback must be `refuse`; generated/default plan selection is unauthorized.
-An optional native bindings file may pin slots and Providers, but may not supply local package
-paths. Source files, catalog packages, pipelines, policies and Worker settings come from the exact
-committed authority; the template retains their native authority identity, repository identity
-and source content digest. A base, if supplied, must also be an exact commit. Templates cannot
+An optional `--bindings FILE` captures slots, Provider aliases and exactly pinned local Worker
+packages relative to the original bindings file directory. Pipelines and policies remain committed
+customer authority. Local packages cannot add Pipelines, shadow catalog names, escape that directory
+or bypass replacement contracts, default constraints, closure bounds or Provider independence.
+The template retains the sealed native authority identity, repository identity and source content
+digest. Fresh planning and restart restore the captured artifacts through the native compiler,
+without reopening bindings or package paths; moving or deleting them cannot change a pinned template.
+Missing or corrupt captured artifacts fail closed. Pinning retains the complete closure in the
+Task Store through a durable `ScenarioTemplatePinned@1` reference, including before any Task exists
+and after Task collection. This reference lives for the Store lifetime and counts against the machine
+storage budget. Discarding the Store discards its pins; there is no path recapture or migration of
+version 1 templates. Changed packages or bindings require a new template pin and Scenario/policy
+confirmation, with no repeated per-run bindings override. A base, if supplied, must also be an exact commit. Templates cannot
 prefill native inputs, continuations or issue authority.
 
 ```text

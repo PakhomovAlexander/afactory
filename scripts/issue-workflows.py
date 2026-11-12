@@ -701,7 +701,7 @@ def composition(name, pins, facts):
     source = None
     for pin, pipeline in zip(pins, expected):
         exact(pin, ('schema', 'template_id', 'template'))
-        if pin['schema'] != 'af/scenario-template-pin@1' or not re.fullmatch(r'sha256:[0-9a-f]{64}', pin['template_id']):
+        if pin['schema'] != 'af/scenario-template-pin@2' or not re.fullmatch(r'sha256:[0-9a-f]{64}', pin['template_id']):
             raise ValueError('expected exact native template-pin receipt')
         template = pin['template']
         captured_catalog(template)
