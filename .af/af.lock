@@ -25,7 +25,7 @@ version = "1.0.1"
 digest = "sha256:67f14e56a7f043894dd940af89cc42316797693f6d15da29bdda4c77c4e84e97"
 
 [workers.design-sol]
-version = "1.0.1"
+version = "1.0.2"
 digest = "sha256:7faec5b6e3dc462db3e7b8491900996f826cc5ad3f769097ad891232b53885f4"
 
 [workers.performance]
