@@ -80,3 +80,12 @@ remains valid. Each dependency must appear in the Worker's `signature.retains` e
 output admission checks that the result envelope retains its exact input artifact ID, so the
 accepted report evidence preserves every declared prior evaluation in its lineage.
 The consuming package owns its dependency count and independence bindings.
+
+## Afactory operator catalog migration
+
+Afactory's staged [issue-oriented catalog](../../fixtures/issue-workflows/README.md) owns its
+nine public selections, exact role definitions and pins. Its launcher admits only personal
+account aliases in local bindings; it refuses slot/package replacements for these selections.
+This consuming policy leaves the generic native binding capability above available to other
+projects. Use the read-only migration inventory before changing machine-local workstream
+choices; do not rewrite the captured bindings or package bytes of historical Tasks.

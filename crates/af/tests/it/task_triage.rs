@@ -19,12 +19,12 @@ const STAGED: &str = "fixtures/issue-triage";
 const PACKAGES: [(&str, Option<&str>); 4] = [
     ("backlog/triage-kind", None),
     ("backlog/triage", None),
-    ("backlog/triage-author", Some("codex-main")),
-    ("backlog/triage-verifier", Some("codex-main")),
+    ("backlog/triage-author", Some("codex-personal")),
+    ("backlog/triage-verifier", Some("codex-personal")),
 ];
 
-/// Perform the install steps of `fixtures/issue-triage/README.md` on `repo`'s `.af/`, or, where
-/// a human has already taken a step there, verify that what they installed is what is staged.
+/// Install the staged authority into this disposable consuming repository, independently of
+/// the operator installation (which may still be awaiting root activation).
 /// Every staged pin is the digest of the staged bytes.
 fn install_issue_triage(repo: &Path) {
     let staged: toml::Value =
@@ -50,20 +50,20 @@ fn install_issue_triage(repo: &Path) {
             "{name}: the staged pin is the staged bytes"
         );
         let path = format!(".af/task-packages/{name}");
-        if !repo.join(&path).is_dir() {
-            task_cli::copy_tree(&repo.join(pin["path"].as_str().unwrap()), &repo.join(&path));
+        if repo.join(&path).exists() {
+            std::fs::remove_dir_all(repo.join(&path)).unwrap();
         }
+        task_cli::copy_tree(&repo.join(pin["path"].as_str().unwrap()), &repo.join(&path));
+        assert_eq!(
+            pin["digest"].as_str().unwrap(),
+            af_pipeline_config::lock::package_digest(name, &repo.join(&path)).unwrap(),
+            "{name}: installed fixture must match staged bytes"
+        );
         pin["path"] = toml::Value::String(path);
-        let packages = catalog["packages"].as_table_mut().unwrap();
-        match packages.get(name) {
-            Some(installed) => assert_eq!(
-                installed["digest"], pin["digest"],
-                "{name}: the committed pin is the staged package"
-            ),
-            None => {
-                packages.insert(name.into(), pin);
-            }
-        }
+        catalog["packages"]
+            .as_table_mut()
+            .unwrap()
+            .insert(name.into(), pin);
         if let Some(provider) = provider {
             catalog["providers"]
                 .as_table_mut()

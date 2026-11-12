@@ -1,4 +1,4 @@
-# Remote twins of this repository's pipelines
+# Generic remote twin fixtures
 
 The pipelines that run this repository's `kernel` check through a gate pull request instead of on
 the planning machine
@@ -14,12 +14,14 @@ here because a Task Worker may not write `.af/`; installing them is a reviewed h
 | `kernel/verification-reviewed-remote` | `kernel/verification-reviewed` | name; calls `kernel/review-code-remote`, which owns its check node |
 
 Every other byte is the original's, versions included: `markdownlint` still runs on the planning
-machine, first. The originals stay installed: a Task file names the local or the remote pipeline,
-and there is no per-machine switch.
+machine, first. Local originals live in the explicit
+[native catalog contract authority](../../native-catalog-contracts/README.md), independently of
+the installed operator catalog. These generic fixture identities are not operator selections.
+A Task file names the local or the remote pipeline; there is no per-machine switch.
 
-## Install
+## Install in a disposable fixture
 
-1. Append [`code-policy-remote.toml`](code-policy-remote.toml) to `.af/code-policy.toml`. This
+1. Copy the native catalog contract authority into the disposable repository's `.af/`. Append [`code-policy-remote.toml`](code-policy-remote.toml) to `.af/code-policy.toml`. This
    declares `[checks.kernel.remote]` and changes the code policy's identity; re-pin any Worker
    package whose `[signature.evidence]` names the old policy digest.
 2. Copy `task-packages/kernel/gate-bench-remote`, `task-packages/kernel/review-code-remote`,
@@ -31,7 +33,7 @@ and there is no per-machine switch.
 
 Installing twice changes nothing: the policy already declares the table, the copies are the same
 bytes, and every pin is present. `crates/af/tests/it/task_remote_checks.rs` checks that each twin
-is its original with only the differences above, performs these steps twice on a copy of `.af/`,
+is its original with only the differences above, performs these steps twice on that explicit fixture authority,
 and plans each root twin with zero Attempts against this repository's policy plus the `remote`
 table, expecting `publish-gate` and the mapped `github:` destination in every plan.
 

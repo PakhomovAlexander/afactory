@@ -1,0 +1,33 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "pilot-research-fix",
+  "kind": "implement",
+  "goal": "Refuse composition of an issue workflow when diagnosis or design concerns another issue on the same source.",
+  "pipeline": {
+    "name": "bugfix/research-fix-codex",
+    "fallback": "refuse"
+  },
+  "strategy": "reviewed",
+  "facts": {
+    "standard": true
+  },
+  "limits": {
+    "tokens": 16000000,
+    "max_attempts": 64,
+    "wall_ms": 172800000,
+    "verification": {
+      "tokens": 8000000,
+      "attempts": 40,
+      "wall_ms": 86400000
+    }
+  },
+  "verification": "review",
+  "requirements": {
+    "acceptance": [
+      "Composition refuses a report stage whose original issue goal differs from the implementation.",
+      "Composition refuses missing issue details or different original acceptance, even with identical source and Pipeline.",
+      "Valid diagnosis and design keep distinct report acceptance and preserve exact final whole-change verification."
+    ],
+    "issue_url": "https://github.com/OWNER/REPO/issues/1"
+  }
+}

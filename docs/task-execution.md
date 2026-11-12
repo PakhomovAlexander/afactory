@@ -11,18 +11,21 @@ walkthroughs; the decisions themselves are
 See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
 expanded tree, Claude/Codex workflow and the automation boundary.
 
-Beside the `kernel/*` and `warm/*` Pipelines, this repository's catalog pins its default Task
-pipeline, `default/implementation` and, for a `verification` Task, `default/verification`:
-one implementing iteration, two bound reviewers whose findings count (bugs, which the catalog's
-policy marks advisory, and correctness), one advisory reviewer for gate time and quality, and an
-independent evaluator ([the default pipeline](tasks.md#the-default-pipeline),
-[ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)). For small, local
-changes it also pins the light default pipeline, `default-light/implementation` and
-`default-light/verification`: one implementing iteration at medium effort, the correctness
-reviewer, which also owns concrete functional defects, and the independent evaluator, with no
-bug-bounty or gate-time reviewer
-([the light default pipeline](tasks.md#the-light-default-pipeline),
-[ADR-0262](adr/0262-offer-a-light-default-pipeline-for-small-changes.md)).
+This repository's operator catalog defaults to `bugfix/light-kimi-terra-sol`. Its nine selections are
+`bugfix/light-kimi-terra-sol`, `bugfix/light-codex`, `bugfix/default-codex`,
+`bugfix/research-fix-codex`, `impl/default-codex`, `impl/light-kimi-codex`, `design/astra-kimi`,
+`perf/research-kimi-codex` and `perf/research-experiment-codex`. Every code route ends with the shared read-only
+`issue-internal/verification` Pipeline over the whole candidate. Diagnosis uses an independently accepted Report before implementation. Design-only
+`design/astra-kimi` ends at accepted reusable evidence after both independent challenges; a later
+`impl/default-codex` may consume it through the accepted-evidence path. The performance route runs research,
+baseline measurement, implementation, internal code Review, candidate measurement, Comparison
+and measurement acceptance, then final whole-change verification. Earlier checks can stop the
+flow; absent measurements never establish improvement.
+
+See the [operator catalog](../fixtures/issue-workflows/README.md) for roles, routing and native
+composition, and the [default](tasks.md#the-default-pipeline) and
+[light](tasks.md#the-light-default-pipeline) guides for bounds. Generic onboarding and explicit
+contract fixtures have their own catalog identities; they do not add installed operator choices.
 
 The trusted `.af/code-policy.toml` sets `check_wall_ms`, the whole check Attempt's wall.
 Without `check_process_wall_ms`, positive values through `5400000` (90 minutes) are admitted.

@@ -899,7 +899,8 @@ class Staged(unittest.TestCase):
         precedence = design[design.index('Class definitions:'):design.index('`triage/` states:')].strip()
         rubric = design[design.index('The rubric is what makes'):design.index('## 6. The triage pipeline')].strip()
         for worker in ('triage-author', 'triage-verifier'):
-            text = (STAGED / 'task-packages' / 'backlog' / worker / 'instructions.md').read_text(encoding='utf-8')
+            # Current operator prompts track the active rubric; generic historical fixtures stay pinned.
+            text = (ROOT / 'fixtures/issue-workflows/task-packages/backlog' / worker / 'instructions.md').read_text(encoding='utf-8')
             with self.subTest(worker):
                 self.assertIn(precedence, text)
                 self.assertIn(rubric, text)
