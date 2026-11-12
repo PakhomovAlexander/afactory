@@ -72,8 +72,8 @@
 "path" = ".af/task-packages/issue-internal/bugs"
 
 ["packages"."issue-internal/correctness"]
-"version" = "1.0.0"
-"digest" = "sha256:2e102125fc787ea73e81f30cee5c695c075a77b5385a5f63408be34715b351db"
+"version" = "1.0.1"
+"digest" = "sha256:d560bb015b980a3705b5eb3a1b5355e3ec0b1ea13f041183322b388579631d3d"
 "path" = ".af/task-packages/issue-internal/correctness"
 
 ["packages"."issue-internal/design"]
