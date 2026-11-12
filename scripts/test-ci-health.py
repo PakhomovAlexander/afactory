@@ -795,6 +795,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual([f['job_id'] for f in empty['failures']], [valid['job_id']])
         self.assertTrue(empty['failures'][0]['release_blocking'])
         # A failed PR lookup is unavailable evidence, not intentional release removal.
+        raw['release_unavailable'] = True
         del raw['release_pr']
         unavailable = self.observe(dict(raw, jobs=[]))
         self.assertEqual([f['job_id'] for f in unavailable['failures']], [valid['job_id']])
@@ -821,6 +822,41 @@ class EvidenceTests(unittest.TestCase):
         for _ in range(2):
             observed = self.observe(dict(raw, jobs=[]))
             self.assertEqual([f['head_sha'] for f in observed['failures']], ['a' * 40])
+
+    def test_retained_failures_enforce_count_bound_and_current_release_selection(self):
+        raw = service()
+        template = copy.deepcopy(raw['jobs'][0])
+        first = []
+        for index in range(60):
+            job = copy.deepcopy(template)
+            job.update(job_id=1000 + index, error_lines=['error: test ' + str(index)],
+                       completed_at='2026-11-09T01:00:00Z')
+            first.append(job)
+        self.observe(dict(raw, jobs=first))
+        second = []
+        for index in range(41):
+            job = copy.deepcopy(template)
+            job.update(job_id=2000 + index, run_attempt=2,
+                       error_lines=['error: new ' + str(index)], completed_at='2026-11-09T02:00:00Z')
+            second.append(job)
+        observed = self.observe(dict(raw, jobs=second))
+        self.assertLessEqual(len(observed['failures']), 100)
+        self.assertFalse(observed['complete'])
+        self.assertTrue(any('count bound' in reason for reason in observed['omissions']))
+        self.assertEqual(self.observe(dict(raw, jobs=second)), observed)
+
+        main = copy.deepcopy(template)
+        main.update(head_sha='a' * 40, release_blocking=False, completed_at='2026-11-09T01:00:00Z')
+        raw['release_pr'] = {'number': 7, 'head_sha': 'a' * 40}
+        self.observe(dict(raw, jobs=[main]))
+        promoted = self.observe(dict(raw, jobs=[]))
+        self.assertTrue(promoted['failures'][0]['release_blocking'])
+        del raw['release_pr']
+        demoted = self.observe(dict(raw, jobs=[]))
+        self.assertFalse(demoted['failures'][0]['release_blocking'])
+        raw['release_unavailable'] = True
+        unavailable = self.observe(dict(raw, jobs=[]))
+        self.assertFalse(unavailable['failures'][0]['release_blocking'])
 
     def test_green_closure_preserves_other_heads_recurrence_and_release_alerts(self):
         raw = service()
@@ -909,6 +945,7 @@ class EvidenceTests(unittest.TestCase):
         second.update(completed_at='2026-11-09T03:00:00Z', job_id=404, run_attempt=2,
                       failing_tests=['test:two'], error_lines=['error: different failing test'], release_blocking=True)
         raw['jobs'] = [first, second]
+        raw['release_unavailable'] = True
         self.observe(raw)
         success = copy.deepcopy(first)
         success.update(conclusion='success', run_attempt=3, job_id=405,

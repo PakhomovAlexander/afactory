@@ -162,6 +162,9 @@
       "type": "array",
       "uniqueItems": true
     },
+    "release_unavailable": {
+      "type": "boolean"
+    },
     "release_pr": {
       "anyOf": [
         {

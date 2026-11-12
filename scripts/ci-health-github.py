@@ -352,6 +352,7 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
             result['release_pr'] = {'number': release_pr, 'head_sha': pr['head']['sha']}
             heads[pr['head']['sha']] = True
         except (ValueError, KeyError, TypeError):
+            result['release_unavailable'] = True
             omit('release PR evidence unavailable or malformed')
     seen = set()
     for sha, blocking in heads.items():

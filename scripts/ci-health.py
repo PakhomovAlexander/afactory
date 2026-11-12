@@ -150,6 +150,7 @@ def schema_documents():
     # Execution time is optional only in older/offline observations. A success without it
     # cannot close a later failure; production observations always carry it.
     service_job['properties']['completed_at'] = timestamp
+    service['properties']['release_unavailable'] = {'type': 'boolean'}
     notification = obj({'schema': {'const': NOTIFICATION},
         'scenario_run': text(128), 'snapshot_id': ident, 'repository': snapshot['properties']['repository'],
         'main_ref': text(128), 'release_selector': text(128), 'observation_start': timestamp,
@@ -712,6 +713,10 @@ def fold_capture(service, journal, *, snapshot_fits=None):
         # Retain exact unresolved evidence without advancing its observation time or resurrecting
         # an expired/superseded release. Current evidence for the same occurrence takes precedence.
         retained = dict(previous)
+        if current_release is not None:
+            retained['release_blocking'] = retained['head_sha'] == current_release['head_sha']
+        elif not service.get('release_unavailable', False):
+            retained['release_blocking'] = False
         structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
         snapshot['failures'].append(retained)
         seen[retained['occurrence_id']] = retained['conclusion']
@@ -728,7 +733,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     snapshot['failures'].sort(key=lambda f: f['occurrence_id'])
     snapshot['omissions'] = list(dict.fromkeys(omissions))[:100]
     snapshot['complete'] = not snapshot['omissions']
-    bounds = [(lambda value: len(canonical(value)) <= MAX_BYTES, '64 KiB evidence bound exceeded')]
+    bounds = [(lambda value: len(value['failures']) <= MAX_FAILURES, 'failure count bound exceeded'),
+              (lambda value: len(canonical(value)) <= MAX_BYTES, '64 KiB evidence bound exceeded')]
     if snapshot_fits is not None:
         bounds.append((snapshot_fits, '64 KiB adapter response bound exceeded'))
     for fits, reason in bounds:
