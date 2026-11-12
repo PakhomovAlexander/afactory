@@ -249,17 +249,31 @@ class Workflows(unittest.TestCase):
         del manifest['verification_task']
         artifacts['original-requirements']['payload']['specification'] = research_requirements(
             'issue goal', {'acceptance': ['exact'], 'issue_url': manifest['issue']})
-        def reconcile():
+        def reconcile(m=manifest):
             with mock.patch.object(w, 'invoke', side_effect=lambda *a: values[a[-1]]), \
                  mock.patch.object(w, 'recorded', side_effect=lambda state, identity, kind=None:
                                    artifacts[identity]['payload'] if kind else artifacts[identity]), \
                  mock.patch.object(w, 'validate_plan', side_effect=lambda n, v, state: check_selection(n, v)), \
                  mock.patch.object(w.subprocess, 'check_output', return_value=b'root\n'):
-                return w.reconcile('af', '/project', '/state', manifest)
+                return w.reconcile('af', '/project', '/state', m)
+        # Native inspections omit a zero unknown-usage count; reconciliation must do the same
+        # defaulting as the ordinary implementation branch without losing nonzero accounting.
+        del values['original']['unknown_usage_attempts']
         result = reconcile()
+        self.assertEqual(result['unknown_usage_attempts'], 0)
         self.assertEqual(result['chain_chargeable_tokens'], '10')
         self.assertFalse(result['final_verification_recorded'])
         self.assertEqual(result['tasks'][0]['revision_id'], 'original-revision')
+        values['original']['unknown_usage_attempts'] = 7
+        self.assertEqual(reconcile()['unknown_usage_attempts'], 7)
+        with self.assertRaisesRegex(ValueError, 'original native requirements.issue_url'):
+            reconcile(dict(manifest, issue='https://github.com/o/r/issues/2'))
+        decision = values['original']['selection']['assessment']['decision']
+        selected = decision['pipeline']
+        decision['pipeline'] = 'other'
+        with self.assertRaisesRegex(ValueError, 'wrong selection'):
+            reconcile()
+        decision['pipeline'] = selected
         for field, bad in [('acceptance', 'unsatisfied'), ('execution', 'failed')]:
             original = values['original']['result'][field]
             values['original']['result'][field] = bad
