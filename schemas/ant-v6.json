@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant:5",
-  "title": "ant v5",
+  "$id": "urn:af:schema:ant:6",
+  "title": "ant v6",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -17,34 +17,34 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant@5"
+      "const": "af/ant@6"
     },
     "id": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/name"
+      "$ref": "urn:af:schema:scenario:6#/$defs/name"
     },
     "scenario": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/Bundle"
+      "$ref": "urn:af:schema:scenario:6#/$defs/Bundle"
     },
     "inputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/Datum"
+        "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
       }
     },
     "schedule": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/Daily"
+      "$ref": "urn:af:schema:scenario:6#/$defs/Daily"
     },
     "owner": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/name"
+      "$ref": "urn:af:schema:scenario:6#/$defs/name"
     },
     "notification": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/text"
+      "$ref": "urn:af:schema:scenario:6#/$defs/text"
     },
     "execution": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/Execution"
+      "$ref": "urn:af:schema:scenario:6#/$defs/Execution"
     }
   }
 }

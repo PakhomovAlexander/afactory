@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-ci-diagnosis:2",
+  "title": "Native CI diagnosis settlement v2",
+  "description": "A native observation, never an accepted Task output for a refused result. Exact identities, deterministic unknown and diagnostic content identities require semantic validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receipt",
+    "snapshot_id",
+    "selection",
+    "diagnosis",
+    "provenance"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-ci-diagnosis@2"
+    },
+    "receipt": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+    },
+    "selection": {
+      "$ref": "urn:af:schema:ci-diagnosis-selection:1"
+    },
+    "diagnosis": {
+      "$ref": "urn:af:schema:ci-diagnosis:1"
+    },
+    "provenance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "output"
+          ],
+          "properties": {
+            "kind": {
+              "const": "accepted"
+            },
+            "output": {
+              "$ref": "urn:af:schema:scenario-task-output-field:1"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "refusals"
+          ],
+          "properties": {
+            "kind": {
+              "const": "deterministic_refusal"
+            },
+            "refusals": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "attempt_id",
+                  "diagnostic_id",
+                  "error_prefix"
+                ],
+                "properties": {
+                  "attempt_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9]{26}$"
+                  },
+                  "diagnostic_id": {
+                    "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+                  },
+                  "error_prefix": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "pattern": "^[^\\u0000]+$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

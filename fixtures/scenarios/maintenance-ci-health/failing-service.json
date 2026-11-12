@@ -1,0 +1,33 @@
+{
+  "schema": "af.ci-observe-service/1",
+  "repository": "octo/project",
+  "captured_at": "2026-11-09T04:00:00Z",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "release_pr": null,
+  "nightly_receipt": {
+    "identity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "conclusion": "failed"
+  },
+  "omissions": [],
+  "jobs": [
+    {
+      "workflow_id": 1,
+      "workflow_file": ".github/workflows/validate.yml",
+      "run_id": 101,
+      "run_attempt": 1,
+      "job_id": 201,
+      "job_name": "functional",
+      "platform": "linux",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "conclusion": "failure",
+      "failing_tests": [
+        "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes"
+      ],
+      "error_lines": [],
+      "log_artifacts": [
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      ],
+      "release_blocking": false
+    }
+  ]
+}

@@ -244,8 +244,21 @@ pub enum Projection {
     WorkspaceReceipt,
     TaskConclusion,
     TaskResultId,
-    TaskOutputId { port: String },
-    TaskOutputSnapshot { port: String },
+    TaskOutputId {
+        port: String,
+    },
+    TaskOutputField {
+        port: String,
+        schema: String,
+        field: String,
+    },
+    TaskOutputSnapshot {
+        port: String,
+    },
+    CiDiagnosisField {
+        field: String,
+    },
+    CiDiagnosisRefused,
     ObservationSatisfied,
     ChecksState,
     DecisionApproved,
@@ -253,6 +266,14 @@ pub enum Projection {
 impl Projection {
     fn types(&self) -> Result<(Port, Port)> {
         Ok(match self {
+            Self::CiDiagnosisField { field } => {
+                require(
+                    matches!(field.as_str(), "category" | "signature_id"),
+                    "Unsupported CI diagnosis settlement field",
+                )?;
+                (Port::Observation, Port::Text)
+            }
+            Self::CiDiagnosisRefused => (Port::Observation, Port::Boolean),
             Self::ActionIntent
             | Self::WorkspaceSubject
             | Self::WorkspaceRevision
@@ -263,13 +284,87 @@ impl Projection {
                 name(port)?;
                 (Port::Task, Port::Text)
             }
+            Self::TaskOutputField {
+                port,
+                schema,
+                field,
+            } => {
+                name(port)?;
+                require(
+                    schema == af_contracts::ci_health::DIAGNOSIS_SCHEMA
+                        && ["category", "signature_id"].contains(&field.as_str()),
+                    "Unsupported Task output field projection",
+                )?;
+                (Port::Task, Port::Text)
+            }
             Self::ChecksState => (Port::Observation, Port::Text),
             Self::ObservationSatisfied => (Port::Observation, Port::Boolean),
             Self::DecisionApproved => (Port::Decision, Port::Boolean),
         })
     }
+    /// Only the native Host may supply an accepted output payload. No generic JSON path.
+    pub fn task_field(&self, receipt: &TaskReceipt, payload: serde_json::Value) -> Result<Datum> {
+        self.types()?;
+        let Self::TaskOutputField { port, field, .. } = self else {
+            return Err("Not a Task output field projection".into());
+        };
+        Datum::Task(receipt.clone()).validate()?;
+        let validation = receipt
+            .result
+            .outputs
+            .get("validation")
+            .ok_or("Task field projection requires structural validation")?;
+        require(
+            receipt.result.domain_conclusion == "structurally_validated"
+                && validation.artifact_type
+                    == af_contracts::task::structured::STRUCTURED_VALIDATION_V1
+                && validation.cardinality == af_contracts::PortCardinality::One
+                && validation.artifact_ids.len() == 1
+                && validation.snapshot_id.is_none()
+                && receipt.result.evidence == validation.artifact_ids.iter().cloned().collect(),
+            "Task field projection requires exact kernel structural acceptance evidence",
+        )?;
+        let output = receipt
+            .result
+            .outputs
+            .get(port)
+            .ok_or("Task output port absent")?;
+        require(
+            output.artifact_type == af_contracts::ci_health::DIAGNOSIS_TYPE
+                && output.cardinality == af_contracts::PortCardinality::One
+                && output.artifact_ids.len() == 1
+                && output.snapshot_id.is_none(),
+            "Task field projection requires one exact diagnosis artifact",
+        )?;
+        let diagnosis: af_contracts::ci_health::Diagnosis = serde_json::from_value(payload.clone())
+            .map_err(|e| format!("Malformed diagnosis projection: {e}"))?;
+        diagnosis.validate()?;
+        let value = payload
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Task output field missing or non-scalar")?;
+        Ok(Datum::Text(value.to_owned()))
+    }
     pub fn apply(&self, value: Datum) -> Result<Datum> {
         Ok(match (self, value) {
+            (Self::CiDiagnosisField { field }, Datum::Observation(o)) => {
+                self.types()?;
+                let record = crate::ci_diagnosis::Record::parse(&o)?;
+                let payload = serde_json::to_value(record.diagnosis).map_err(|e| e.to_string())?;
+                Datum::Text(
+                    payload[field]
+                        .as_str()
+                        .ok_or("Missing CI diagnosis field")?
+                        .into(),
+                )
+            }
+            (Self::CiDiagnosisRefused, Datum::Observation(o)) => {
+                let record = crate::ci_diagnosis::Record::parse(&o)?;
+                Datum::Boolean(matches!(
+                    record.provenance,
+                    crate::ci_diagnosis::Provenance::DeterministicRefusal { .. }
+                ))
+            }
             (Self::WorkspaceSubject, Datum::Action(a)) => {
                 Datum::Text(super::workspace::Prepared::parse(&a)?.subject()?)
             }
@@ -471,6 +566,9 @@ pub enum Kind {
     Task {
         target: TaskTarget,
     },
+    CiDiagnosis {
+        target: TaskTarget,
+    },
     Scenario {
         scenario: String,
     },
@@ -565,7 +663,7 @@ fn decision_origin(
 impl Bundle {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-bundle@5"
+            self.schema == "af/scenario-bundle@6"
                 && !self.definitions.is_empty()
                 && self.definitions.len() <= 64,
             "Unsupported or oversized Scenario bundle",
@@ -585,10 +683,9 @@ impl Bundle {
         for (id, definition) in &self.definitions {
             if self.definitions[&self.root].admission.is_some() {
                 require(
-                    definition
-                        .steps
-                        .iter()
-                        .all(|s| !matches!(s.operation, Kind::Task { .. })),
+                    definition.steps.iter().all(|s| {
+                        !matches!(s.operation, Kind::Task { .. } | Kind::CiDiagnosis { .. })
+                    }),
                     "Roadmap loop Tasks must be fresh template invocations throughout the bundle",
                 )?;
             }
@@ -709,7 +806,7 @@ impl Bundle {
 impl Scenario {
     fn validate(&self, bundle: &Bundle, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario@5"
+            self.schema == "af/scenario@6"
                 && !self.outputs.is_empty()
                 && self.outputs.len() <= 32
                 && self.inputs.len() <= 32
@@ -813,7 +910,7 @@ impl Scenario {
                     }
                     output = Port::Task;
                 }
-                Kind::Task { target } => {
+                Kind::Task { target } | Kind::CiDiagnosis { target } => {
                     name(&target.task_id)?;
                     require(
                         self.authority.task_plans.contains(&target.plan_id),
@@ -827,7 +924,15 @@ impl Scenario {
                             && target.max_tokens <= self.limits.max_tokens,
                         "Invalid pinned Task target or budget",
                     )?;
-                    output = Port::Task;
+                    output = if matches!(step.operation, Kind::CiDiagnosis { .. }) {
+                        require(
+                            step.max_attempts == 1,
+                            "CI diagnosis settlement permits one dispatch attempt",
+                        )?;
+                        Port::Observation
+                    } else {
+                        Port::Task
+                    };
                 }
                 Kind::Scenario { scenario } => {
                     let child = bundle
@@ -941,6 +1046,21 @@ impl Scenario {
                             expected.insert("body".into(), Port::Text);
                             output = Port::Action;
                         }
+                    }
+                    if grant.operation == Operation::Notify && step.inputs.contains_key("diagnosis")
+                    {
+                        // Phase 1 remedies are notifications, consuming acceptance evidence
+                        // as well as scalar projections; a literal cannot forge this receipt.
+                        expected.insert("diagnosis".into(), Port::Task);
+                        expected.insert("category".into(), Port::Text);
+                        expected.insert("signature_id".into(), Port::Text);
+                    }
+                    if grant.operation == Operation::Notify
+                        && step.inputs.contains_key("diagnosis_settlement")
+                    {
+                        expected.insert("diagnosis_settlement".into(), Port::Observation);
+                        expected.insert("category".into(), Port::Text);
+                        expected.insert("signature_id".into(), Port::Text);
                     }
                     if *requires_decision {
                         expected.insert("decision".into(), Port::Decision);
@@ -1134,7 +1254,7 @@ impl Policy {
                 )?;
             }
             for step in &def.steps {
-                if let Kind::Task { target } = &step.operation {
+                if let Kind::Task { target } | Kind::CiDiagnosis { target } = &step.operation {
                     require(
                         self.task_plans.contains(&target.plan_id),
                         "Task plan not authorized by machine policy",
@@ -1165,7 +1285,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@5".into(),
+            schema: "af/scenario-pin@6".into(),
             bundle,
             policy,
             revision,

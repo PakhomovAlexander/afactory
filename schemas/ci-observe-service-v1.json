@@ -1,0 +1,211 @@
+{
+  "$id": "urn:af:schema:ci-observe-service:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "captured_at": {
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "type": "string"
+    },
+    "jobs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "conclusion": {
+            "enum": [
+              "success",
+              "failure",
+              "timed_out",
+              "cancelled",
+              "startup_failure",
+              "action_required"
+            ]
+          },
+          "error_lines": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]+$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "failing_tests": {
+            "items": {
+              "maxLength": 2042,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]+$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "job_id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "job_name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "log_artifacts": {
+            "items": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "platform": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "release_blocking": {
+            "type": "boolean"
+          },
+          "run_attempt": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workflow_file": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "workflow_id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workflow_id",
+          "workflow_file",
+          "run_id",
+          "run_attempt",
+          "job_id",
+          "job_name",
+          "platform",
+          "head_sha",
+          "conclusion",
+          "failing_tests",
+          "error_lines",
+          "log_artifacts",
+          "release_blocking"
+        ],
+        "type": "object"
+      },
+      "maxItems": 100,
+      "type": "array"
+    },
+    "nightly_receipt": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conclusion": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\u0000]+$",
+              "type": "string"
+            },
+            "identity": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "identity",
+            "conclusion"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "omissions": {
+      "items": {
+        "maxLength": 256,
+        "minLength": 1,
+        "pattern": "^[^\\u0000]+$",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "release_pr": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "head_sha": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            "number": {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "number",
+            "head_sha"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "repository": {
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "af.ci-observe-service/1"
+    },
+    "source_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "captured_at",
+    "source_sha",
+    "release_pr",
+    "nightly_receipt",
+    "omissions",
+    "jobs"
+  ],
+  "title": "Ci observe service v1",
+  "type": "object"
+}

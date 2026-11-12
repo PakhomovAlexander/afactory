@@ -85,7 +85,7 @@ fn settle_failed(store: &Store, id: &str, at: u64, charge: Option<u64>) {
     store
         .update(|w| {
             let r = w.runs.get_mut(id).unwrap();
-            r.prepare(at)?;
+            r.prepare(&TestHost::default(), at)?;
             r.task_charges.values_mut().next().unwrap().charged = charge;
             r.updated_unix_ms = at;
             r.fail("Recorded native Task failure".into());
@@ -135,7 +135,7 @@ fn concurrent_manual_admission_reserves_complete_loops_once_and_restart_keeps_cl
         .unwrap()
         .unwrap();
     assert_eq!(again, *c);
-    valid("scenario-store-v6.json", &store.read().unwrap());
+    valid("scenario-store-v7.json", &store.read().unwrap());
 }
 #[test]
 fn unknown_charge_and_midnight_never_release_a_complete_loop_or_enable_a_revision_reset() {
@@ -315,8 +315,8 @@ fn same_labels_in_distinct_stores_cannot_reuse_claims_or_roadmap_pins() {
 fn lost_planning_response_reuses_intent_identity_and_refuses_changed_plan_or_template_authority() {
     let (_roadmap, pin) = fixture();
     let mut r = run(&pin, "lost-response", START);
-    let first = r.prepare(START).unwrap().unwrap();
-    let second = r.prepare(START).unwrap().unwrap();
+    let first = r.prepare(&TestHost::default(), START).unwrap().unwrap();
+    let second = r.prepare(&TestHost::default(), START).unwrap().unwrap();
     assert_eq!(first.intent, second.intent);
     assert_eq!(
         template::task_id(&first.intent.id),
@@ -361,7 +361,7 @@ fn lost_planning_response_reuses_intent_identity_and_refuses_changed_plan_or_tem
     child.task_templates.insert(digest(b"other-template"));
     assert!(!child.within(&pin.bundle.definitions["main"].authority));
     let mut other = run(&pin, "same-label", START);
-    let other = other.prepare(START).unwrap().unwrap();
+    let other = other.prepare(&TestHost::default(), START).unwrap().unwrap();
     assert_ne!(first.intent.id, other.intent.id);
 }
 
@@ -397,13 +397,13 @@ fn only_accepted_native_completion_advances_dependencies_and_symmetric_conflicts
     );
     // This is the coordinator's typed native settlement boundary, exercised without a model.
     store.update(|w| {
-        let r=w.runs.get_mut("first").unwrap();let d=r.prepare(START)?.unwrap();
+        let r=w.runs.get_mut("first").unwrap();let d=r.prepare(&TestHost::default(), START)?.unwrap();
         let target=TaskTarget {repo:"/repo".into(),state:"/task-state".into(),task_id:template::task_id(&d.intent.id),plan_id:digest(b"plan"),revision_id:digest(b"revision"),max_tokens:20};
         r.fresh_tasks.insert(d.intent.id.clone(),target.clone());
         let key=template::charge_key(&d)?;r.task_charges.get_mut(&key).unwrap().charged=Some(17);
         let result=serde_json::from_value(serde_json::json!({"task_revision_id":target.revision_id,"execution":"completed","acceptance":"satisfied","domain_conclusion":"verified","outputs":{"report":{"artifact_type":"af/Report@1","cardinality":"one","artifact_ids":[digest(b"native report")]}},"evidence":[digest(b"native acceptance evidence")],"missing_obligations":[]})).unwrap();
         let receipt=TaskReceipt {task_id:target.task_id,plan_id:target.plan_id,revision_id:target.revision_id,result_id:digest(b"native result"),charged_tokens:17,result};
-        r.complete("root","review",BTreeMap::from([("result".into(),Datum::Task(receipt))]))?;r.prepare(START)?;Ok(())
+        r.complete(&TestHost::default(),"root","review",BTreeMap::from([("result".into(),Datum::Task(receipt))]))?;r.prepare(&TestHost::default(), START)?;Ok(())
     }).unwrap();
     let completed = store.read().unwrap();
     let progress = &completed.roadmaps["performance"].progress["store-replay"];
@@ -432,7 +432,7 @@ fn native_unknown_usage_retains_known_tokens_and_the_remaining_loop_after_termin
     store
         .update(|w| {
             let r = w.runs.get_mut("unknown-native").unwrap();
-            r.prepare(START + 1)?;
+            r.prepare(&TestHost::default(), START + 1)?;
             let c = r.task_charges.values_mut().next().unwrap();
             c.charged = Some(17);
             c.unknown_usage = true;
@@ -464,8 +464,8 @@ fn shipped_fresh_task_example_has_narrow_digest_grants_and_versioned_schema_pari
         .task_templates
         .clone();
     let pin = Pin::new(&TestHost::default(), bundle.clone(), policy).unwrap();
-    valid("scenario-bundle-v5.json", &bundle);
-    valid("scenario-pin-v5.json", &pin);
+    valid("scenario-bundle-v6.json", &bundle);
+    valid("scenario-pin-v6.json", &pin);
     let Kind::FreshTask { template, .. } = &bundle.definitions[&bundle.root].steps[0].operation
     else {
         unreachable!()
@@ -577,8 +577,8 @@ fn a_new_revision_cannot_admit_a_duplicate_active_partition_under_a_new_goal_id(
     store
         .update(|w| {
             let r = w.runs.get_mut("active").unwrap();
-            let first = r.prepare(START + DAY)?.unwrap();
-            let again = r.prepare(START + DAY)?.unwrap();
+            let first = r.prepare(&TestHost::default(), START + DAY)?.unwrap();
+            let again = r.prepare(&TestHost::default(), START + DAY)?.unwrap();
             require(first.intent.id == again.intent.id, "Changed intent")?;
             Ok(())
         })
@@ -606,7 +606,7 @@ fn complete_loop_reservation_includes_nested_fresh_tasks_and_refuses_hidden_exac
     store
         .update(|w| {
             let run = w.runs.get_mut("nested").unwrap();
-            let dispatch = run.prepare(START)?.unwrap();
+            let dispatch = run.prepare(&TestHost::default(), START)?.unwrap();
             require(
                 dispatch.frame == "root/review",
                 "Fresh child did not retain its frame",

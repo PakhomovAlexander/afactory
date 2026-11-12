@@ -1,0 +1,34 @@
+# Staged definition only. No installer or activation is part of Phase 1.
+# Independent of Ant tick and Scenario Report: it reads the journal even if neither ran.
+# The reviewed configuration pins the expected 04:00 UTC daily occurrence, grace, Ant,
+# writer release and notifier. It is delivered privately, never as Scenario input.
+[Unit]
+Description=AF maintenance: independently report missed or failed daily occurrences
+
+[Service]
+Type=oneshot
+User=af-maintenance
+Group=af-maintenance
+UMask=0077
+StateDirectory=af-maintenance-watchdog
+StateDirectoryMode=0700
+LoadCredential=watchdog-config:/etc/af-maintenance/watchdog.json
+# If the pinned scoped notifier needs a token, stage its separate read-only credential:
+# LoadCredential=maintenance-notify-token:/etc/af-maintenance/notify-token
+# The notifier reads %d/maintenance-notify-token itself; no token value enters argv or logs.
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -I -B /opt/af-maintenance/control/scripts/af-maintenance-watchdog.py --config %d/watchdog-config --journal /var/lib/af-maintenance/store/runs/scenarios.sqlite --state /var/lib/af-maintenance-watchdog/watchdog.sqlite --notify
+TimeoutStartSec=75
+TimeoutStopSec=5
+KillMode=control-group
+MemoryMax=128M
+TasksMax=32
+LimitNOFILE=128
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/af-maintenance/store
+ReadWritePaths=/var/lib/af-maintenance-watchdog

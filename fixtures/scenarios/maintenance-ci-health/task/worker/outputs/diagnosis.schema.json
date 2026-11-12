@@ -1,0 +1,75 @@
+{
+  "additionalProperties": false,
+  "minProperties": 9,
+  "properties": {
+    "category": {
+      "enum": [
+        "transient",
+        "product_bug",
+        "test_bug",
+        "ci_infra",
+        "unknown"
+      ]
+    },
+    "evidence": {
+      "items": {
+        "additionalProperties": false,
+        "minProperties": 3,
+        "properties": {
+          "reference": {
+            "maxLength": 256,
+            "pattern": "^[^\\u0000]+$",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "occurrence_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "rationale": {
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "af.ci-diagnosis/1"
+    },
+    "signature_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source_artifact_ids": {
+      "items": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "type": "array"
+    },
+    "source_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}

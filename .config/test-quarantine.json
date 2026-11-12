@@ -1,6 +1,23 @@
 {
   "schema": "af.test-quarantine/1",
   "tests": {
+    "af-source-git::it capture::an_index_change_alone_invalidates_a_pass": {
+      "evidence": [
+        "light-459-verify-2",
+        "light-466-q1-2",
+        "light-466-q3-1",
+        "nightly-build-2",
+        "nightly-executor-2",
+        "nightly-publish-2",
+        "nightly-report-1",
+        "nightly-train-verify-2",
+        "self-channel-3",
+        "self-channel-verify-2"
+      ],
+      "expires": "2026-11-15",
+      "since": "2026-11-01",
+      "state": "flaky"
+    },
     "af::it common::recorded::tests::a_process_started_after_its_marker_is_never_the_marker_s": {
       "evidence": [
         "light-393-1",
@@ -10,6 +27,18 @@
       "expires": "2026-11-15",
       "since": "2026-11-01",
       "state": "flaky"
+    },
+    "af::it scenario::performance::shipped_performance_loop_delivers_research_and_publishes_verified_improvement_with_recovery": {
+      "evidence": [
+        "ci-health-phase1-acceptance",
+        "ci-health-phase1-green",
+        "ci-health-phase1-release-head",
+        "ci-health-phase1-validate6",
+        "ci-health-phase1-verified"
+      ],
+      "expires": "2026-11-24",
+      "since": "2026-11-10",
+      "state": "quarantined"
     },
     "af::it tui::a_command_line_hands_the_terminal_to_af_task_show_and_enter_returns": {
       "evidence": [
@@ -34,23 +63,6 @@
       "evidence": [
         "light-466-q2-1",
         "light-466-q4-1"
-      ],
-      "expires": "2026-11-15",
-      "since": "2026-11-01",
-      "state": "flaky"
-    },
-    "af-source-git::it capture::an_index_change_alone_invalidates_a_pass": {
-      "evidence": [
-        "light-459-verify-2",
-        "light-466-q1-2",
-        "light-466-q3-1",
-        "nightly-build-2",
-        "nightly-executor-2",
-        "nightly-publish-2",
-        "nightly-report-1",
-        "nightly-train-verify-2",
-        "self-channel-3",
-        "self-channel-verify-2"
       ],
       "expires": "2026-11-15",
       "since": "2026-11-01",

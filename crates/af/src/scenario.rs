@@ -500,7 +500,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         ScenarioCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-list@5","runs":world.runs}),
+                &serde_json::json!({"schema":"af/scenario-list@6","runs":world.runs}),
                 &inspect,
             )
         }
@@ -600,7 +600,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
         AntCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@5","ants":world.ants}),
+                &serde_json::json!({"schema":"af/ant-list@6","ants":world.ants}),
                 &inspect,
             )
         }
@@ -617,7 +617,7 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 runs: results,
             } = runtime::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@5","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@6","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }

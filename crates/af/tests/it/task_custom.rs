@@ -16,6 +16,8 @@ fn write(path: &Path, value: &Value) {
 }
 impl Fixture {
     fn new() -> Self {
+        // Task and Scenario state, machine policy and installed adapters must all live outside
+        // the Git checkout (including its target directory) under current native authority.
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = crate::task_cli::fixture_named(root.path(), "acceptance");
         crate::task_cli::copy_tree(
@@ -144,6 +146,9 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
             .current_dir(&self.repo)
             .env("PATH", &self.path)
             .env("AF_PROVIDERS_FILE", self.root.path().join("providers.toml"))
+            // Disposable fixture roots live on small tmpfs volumes; storage-budget behavior is
+            // covered by its own integration tests, not by every custom-Task fixture.
+            .env("AF_STORAGE__MIN_FREE_BYTES", "0B")
             .args(args)
             .args(["--state", self.state.to_str().unwrap(), "--json"])
             .output()
@@ -659,7 +664,7 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     )
     .unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-bundle-v5.json"),
+        &crate::schemas::validator("scenario-bundle-v6.json"),
         &bundle,
     );
     bundle["definitions"]["triage"]["steps"][0]["operation"]["target"] = json!({"repo":f.repo,"state":f.state,"task_id":"triage-one","plan_id":planned["plan_id"],"revision_id":planned["revision_id"],"max_tokens":150000});
@@ -943,4 +948,1563 @@ fn accounting(
         .execution
         .unwrap()
         .attempt_accounting()
+}
+
+impl Fixture {
+    fn ci_health_release(main_failure: bool) -> Self {
+        let home = crate::common::private_home_env()
+            .into_iter()
+            .find(|(name, _)| *name == "HOME")
+            .unwrap()
+            .1;
+        let scratch = tempfile::tempdir_in(home).unwrap();
+        let source = crate::task_report::workspace();
+        let output = std::process::Command::new("python3")
+            .args(["-I", "-c", r#"
+import importlib.util,json,pathlib,sys
+sys.dont_write_bytecode=True
+root=pathlib.Path(sys.argv[1]); scratch=pathlib.Path(sys.argv[2])
+spec=importlib.util.spec_from_file_location('ci',root/'scripts/ci-health.py')
+c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+fixture=root/'fixtures/scenarios/maintenance-ci-health'
+github=json.loads((fixture/'release-github-service.json').read_text())
+if sys.argv[3]=='false':
+    github['routes']['repos/octo/project/actions/runs/101/attempts/1/jobs?per_page=100']['jobs'][0]['conclusion']='success'
+raw=json.loads((fixture/'failing-service.json').read_text())
+service=c.collect(c.OfflineGithub(github['repository'],github['routes'],github['max_requests']),
+    captured_at=raw['captured_at'],main_ref=github['main_ref'],since=github['since'],
+    nightly_receipt=raw['nightly_receipt'],release_pr=7)
+journal=c.Journal(scratch/'observer.sqlite')
+try: snapshot=c.observe(service,journal)
+finally: journal.close()
+(scratch/'snapshot.json').write_bytes(c.canonical(snapshot))
+print(json.dumps({'observation_service':service,'github_service':github}))
+"#])
+            .arg(&source)
+            .arg(scratch.path())
+            .arg(main_failure.to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", text(&output));
+        let f = Self::ci_health_from_snapshot(&scratch.path().join("snapshot.json"));
+        std::fs::write(f.root.path().join("ci-service.json"), output.stdout).unwrap();
+        f
+    }
+    fn ci_health() -> Self {
+        Self::ci_health_from_snapshot(
+            &crate::task_report::workspace()
+                .join("fixtures/scenarios/maintenance-ci-health/snapshot.json"),
+        )
+    }
+    fn ci_health_from_snapshot(snapshot_path: &Path) -> Self {
+        let f = Self::new();
+        let source =
+            crate::task_report::workspace().join("fixtures/scenarios/maintenance-ci-health");
+        crate::task_cli::copy_tree(&source.join("task"), &f.repo.join("ci-health"));
+        let snapshot_bytes = std::fs::read(snapshot_path).unwrap();
+        // A Gate seals this source read-only. Copy its exact bytes into a new disposable
+        // fixture file without inheriting the source's mode: these tests mutate the snapshot.
+        std::fs::write(f.repo.join("ci-health/snapshot.json"), &snapshot_bytes).unwrap();
+        let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
+        let task_path = f.repo.join("ci-health/task.json");
+        let mut task: Value = serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
+        task["requirements"] = json!({"schema":"af.ci-diagnosis-selection/1","occurrence_id":snapshot["failures"][0]["occurrence_id"],
+            "signature_id":snapshot["failures"][0]["signature_id"],"source_sha":snapshot["failures"][0]["head_sha"]});
+        write(&task_path, &task);
+        let path = f.repo.join(".af/task-catalog.toml");
+        let mut catalog: Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for part in ["kind", "worker", "pipeline"] {
+            let name = format!("ci/diagnosis-{part}");
+            let package = format!("ci-health/{part}");
+            let manifest: Value = toml::from_str(
+                &std::fs::read_to_string(f.repo.join(&package).join(format!("{part}.toml")))
+                    .unwrap(),
+            )
+            .unwrap();
+            catalog["packages"][&name] = json!({"version":manifest["version"],"path":package,
+                "digest":af_pipeline_config::lock::package_digest(&name,&f.repo.join(package)).unwrap()});
+        }
+        catalog["kinds"]["ci-diagnosis"] = json!("ci/diagnosis-kind");
+        catalog["providers"]["ci/diagnosis-worker"] = json!("codex-personal");
+        std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
+        git(&f.repo, &["add", "-A"]);
+        git(
+            &f.repo,
+            &["commit", "-qm", "hermetic CI diagnosis contract"],
+        );
+        let program = f.root.path().join("bin/codex");
+        let original = std::fs::read_to_string(&program).unwrap();
+        let branch = r#"if 'snapshot' in r['inputs']:
+  v=r['inputs']['snapshot'][0]; s=v['payload']; sid=v['artifact_id']
+  selected=r['inputs']['requirements'][0]['payload']['specification']
+  failure=next(f for f in s['failures'] if f['occurrence_id']==selected['occurrence_id'])
+  assert selected['source_sha']==failure['head_sha']
+  category={'ci-transient':'transient','ci-test':'test_bug','ci-infra':'ci_infra','ci-unknown':'unknown'}.get(mode,'product_bug')
+  value={'schema':'af.ci-diagnosis/1','snapshot_id':sid,'source_artifact_ids':[sid],
+    'occurrence_id':failure['occurrence_id'],'signature_id':failure['signature_id'],'source_sha':selected['source_sha'],
+    'category':category,'rationale':'Hermetic exact assertion evidence','evidence':[{'snapshot_id':sid,
+    'source_sha':selected['source_sha'],'reference':'snapshot'}]};port='diagnosis'
+  if mode=='ci-main-revision':
+    value['source_sha']=s['source_sha'];value['evidence'][0]['source_sha']=s['source_sha']
+  if mode=='ci-foreign-signature':value['signature_id']='sha256:'+'f'*64
+  if mode=='ci-foreign-occurrence':value['occurrence_id']='sha256:'+'f'*64
+  if mode=='ci-foreign-evidence':value['evidence'][0]['reference']='sha256:'+'f'*64
+  if mode=='ci-malformed-evidence':value['evidence']=[]
+ elif 'issue' in r['inputs']:"#;
+        assert!(original.contains("if 'issue' in r['inputs']:"));
+        std::fs::write(
+            program,
+            original.replace("if 'issue' in r['inputs']:", branch),
+        )
+        .unwrap();
+        f
+    }
+    fn ci_plan(&self) -> Value {
+        self.ok(&[
+            "task",
+            "plan",
+            "--file",
+            "ci-health/task.json",
+            "--input-json",
+            "snapshot=snapshot.json",
+        ])
+    }
+    fn ci_scenario(&self, planned: &Value, snapshot: &Value, options: &Value) -> (Value, PathBuf) {
+        let revision = af_store::Cas::open(self.state.join("cas"))
+            .unwrap()
+            .get_artifact(planned["revision_id"].as_str().unwrap())
+            .unwrap();
+        let snapshot_id = revision.payload["inputs"]["snapshot"]["artifact_ids"][0]
+            .as_str()
+            .unwrap();
+        let captured = af_store::Cas::open(self.state.join("cas"))
+            .unwrap()
+            .get_artifact(snapshot_id)
+            .unwrap();
+        assert_eq!(
+            captured.payload, *snapshot,
+            "Fixture observation must be the exact typed Task input artifact"
+        );
+        let machine = self.root.path().join("ci-machine");
+        std::fs::create_dir(&machine).unwrap();
+        std::fs::set_permissions(&machine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let source =
+            crate::task_report::workspace().join("fixtures/scenarios/maintenance-ci-health");
+        let adapter = machine.join("adapter");
+        let production = self.root.path().join("ci-production-adapter");
+        let installed = if production.is_file() {
+            std::fs::read(production).unwrap()
+        } else {
+            let output = std::process::Command::new("python3").args(["-I", "-c",
+                "import importlib.util,sys,pathlib;s=importlib.util.spec_from_file_location('config',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);sys.stdout.buffer.write(m.adapter_bytes(pathlib.Path(sys.argv[2])))"])
+                .arg(source.join("configure.py")).arg(crate::task_report::workspace()).output().unwrap();
+            assert!(output.status.success(), "{}", text(&output));
+            output.stdout
+        };
+        std::fs::write(&adapter, installed).unwrap();
+        std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut observation_service: Value =
+            serde_json::from_slice(&std::fs::read(source.join("failing-service.json")).unwrap())
+                .unwrap();
+        observation_service["omissions"] = snapshot["omissions"].clone();
+        let custom_service = self.root.path().join("ci-service.json");
+        let mut service = if custom_service.is_file() {
+            serde_json::from_slice::<Value>(&std::fs::read(custom_service).unwrap()).unwrap()
+        } else {
+            json!({"observation_service":observation_service,
+                "github_service":serde_json::from_slice::<Value>(&std::fs::read(source.join("github-service.json")).unwrap()).unwrap()})
+        };
+        service["snapshot"] = snapshot.clone();
+        service["snapshot_id"] = json!(snapshot_id);
+        service["scenario_run"] = json!("ci-health-fixture");
+        service["merged"] = json!(false);
+        write(&machine.join("service.json"), &service);
+        let settings = self.root.path().join("ci-settings.json");
+        write(
+            &settings,
+            &json!({"snapshot":snapshot,"snapshot_id":snapshot_id,
+            "target":{"repo":self.repo,"state":self.state,"task_id":"ci-diagnose-one",
+                "plan_id":planned["plan_id"],"revision_id":planned["revision_id"],"max_tokens":24096},"options":options}),
+        );
+        let output=std::process::Command::new("python3").args(["-I","-c",
+            "import importlib.util,json,sys; s=importlib.util.spec_from_file_location('config',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);v=json.load(open(sys.argv[2]));print(json.dumps({'bundle':m.bundle(v['snapshot'],v['snapshot_id'],v['target'],**v['options']),'inputs':m.scope_inputs(v['snapshot'])}))"])
+            .arg(source.join("configure.py")).arg(settings).output().unwrap();
+        assert!(output.status.success(), "{}", text(&output));
+        let rendered: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let bundle = rendered["bundle"].clone();
+        crate::schemas::valid(
+            &crate::schemas::validator("scenario-bundle-v6.json"),
+            &bundle,
+        );
+        let path = self.root.path().join("ci-scenario.json");
+        write(&path, &bundle);
+        let policy = self.root.path().join("ci-policy.json");
+        use sha2::Digest;
+        let digest = format!(
+            "sha256:{}",
+            af_contracts::hex::encode(&sha2::Sha256::digest(std::fs::read(&adapter).unwrap()))
+        );
+        write(
+            &policy,
+            &json!({"schema":"af/scenario-policy@5","adapters":{"ci-health":{
+            "executable":adapter,"digest":digest,"operations":["observe","notify"],"destinations":["fixture:ci-health"],
+            "max_wall_ms":30000,"max_output_bytes":65536}},"task_plans":bundle["definitions"]["maintenance-ci-health"]["authority"]["task_plans"],
+            "task_templates":[],"decision_keys":{},"file_roots":[]}),
+        );
+        std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let inputs = self.root.path().join("ci-inputs.json");
+        write(&inputs, &rendered["inputs"]);
+        let checked = self.ok(&[
+            "scenario",
+            "validate",
+            "--file",
+            path.to_str().unwrap(),
+            "--authority",
+            policy.to_str().unwrap(),
+        ]);
+        let mut started = self.ok(&[
+            "scenario",
+            "start",
+            "ci-health-fixture",
+            "--file",
+            path.to_str().unwrap(),
+            "--inputs",
+            inputs.to_str().unwrap(),
+            "--authority",
+            policy.to_str().unwrap(),
+            "--confirm-pin",
+            checked["revision"].as_str().unwrap(),
+            "--execute",
+        ]);
+        // Current native Task steps may return an active Task wait instead of completing inline.
+        // Drive only those waits; condition and merge waits belong to the individual assertions.
+        let mut task_started = false;
+        for _ in 0..16 {
+            if started["status"] == "waiting" && started["waiting"]["kind"] == "task" {
+                if !task_started {
+                    // Current native Scenarios consume an explicitly started Task; they do not
+                    // approve and execute its generated plan inline. Run only on a real Task wait,
+                    // then resume the Scenario with that recorded accepted or refused result.
+                    let _ = self.cli(&[
+                        "task",
+                        "run",
+                        "ci-diagnose-one",
+                        "--confirm-plan",
+                        planned["plan_id"].as_str().unwrap(),
+                    ]);
+                    task_started = true;
+                }
+                started = self.ok(&["scenario", "resume", "ci-health-fixture"]);
+            } else {
+                break;
+            }
+        }
+        (started, machine)
+    }
+}
+
+#[test]
+fn ci_health_minimum_budget_plans_and_refuses_one_less_token_or_attempt_before_admission() {
+    let f = Fixture::ci_health();
+    let path = f.repo.join("ci-health/task.json");
+    let task: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(task["limits"]["tokens"], 24096);
+    assert_eq!(task["limits"]["max_attempts"], 2);
+    f.ci_plan();
+    for (tokens, attempts) in [(24095, 2), (24096, 1)] {
+        let mut insufficient = task.clone();
+        insufficient["task_id"] = json!(format!("ci-under-{tokens}-{attempts}"));
+        insufficient["limits"]["tokens"] = json!(tokens);
+        insufficient["limits"]["max_attempts"] = json!(attempts);
+        write(&path, &insufficient);
+        let output = f.cli(&[
+            "task",
+            "plan",
+            "--file",
+            "ci-health/task.json",
+            "--input-json",
+            "snapshot=snapshot.json",
+        ]);
+        assert!(!output.status.success(), "{}", text(&output));
+        let diagnostic = text(&output);
+        assert!(diagnostic.contains("tokens >= 24096"), "{diagnostic}");
+        assert!(diagnostic.contains("max_attempts >= 2"), "{diagnostic}");
+    }
+    assert!(
+        f.calls().is_empty(),
+        "Planning must not dispatch a Provider"
+    );
+}
+
+#[test]
+fn ci_health_maximum_complete_snapshot_reaches_worker_and_returns_accepted_selected_diagnosis() {
+    let f = Fixture::ci_health_from_snapshot(
+        &crate::task_report::workspace()
+            .join("fixtures/scenarios/maintenance-ci-health/max-snapshot.json"),
+    );
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    assert_eq!(snapshot["complete"], true);
+    assert_eq!(snapshot["failures"].as_array().unwrap().len(), 100);
+    assert_eq!(serde_json::to_vec(&snapshot).unwrap().len(), 65_536);
+    let selected = &snapshot["failures"][0];
+    let planned = f.ci_plan();
+    let done = f.ok(&[
+        "task",
+        "run",
+        "ci-diagnose-one",
+        "--confirm-plan",
+        planned["plan_id"].as_str().unwrap(),
+    ]);
+    assert_eq!(done["result"]["execution"], "completed", "{done:#}");
+    assert_eq!(done["result"]["acceptance"], "satisfied", "{done:#}");
+    assert_eq!(f.calls(), "admission\nworker\n");
+    let requests = std::fs::read_to_string(f.auth.join("requests")).unwrap();
+    assert_eq!(requests.lines().count(), 1);
+    let request: Value = serde_json::from_str(requests.lines().next().unwrap()).unwrap();
+    assert_eq!(request["inputs"]["snapshot"][0]["payload"], snapshot);
+    assert_eq!(
+        request["inputs"]["requirements"][0]["payload"]["specification"]["occurrence_id"],
+        selected["occurrence_id"]
+    );
+    assert_eq!(serde_json::to_vec(&request).unwrap().len(), 67_614);
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    let id = done["result"]["outputs"]["diagnosis"]["artifact_ids"][0]
+        .as_str()
+        .unwrap();
+    let diagnosis = cas.get_artifact(id).unwrap().payload;
+    assert_eq!(diagnosis["occurrence_id"], selected["occurrence_id"]);
+    assert_eq!(diagnosis["signature_id"], selected["signature_id"]);
+    assert_eq!(diagnosis["source_sha"], selected["head_sha"]);
+    assert_eq!(
+        diagnosis["snapshot_id"],
+        request["inputs"]["snapshot"][0]["artifact_id"]
+    );
+    let rows = accounting(&f, "ci-diagnose-one");
+    assert_eq!(rows.len(), 2);
+    let worker = rows
+        .iter()
+        .find(|r| r.reservation.node.ends_with(".work"))
+        .unwrap();
+    assert_eq!(worker.reservation.tokens, 20_000);
+    assert_eq!(
+        rows.iter().map(|r| r.reservation.tokens).sum::<u64>(),
+        24_096
+    );
+    assert!(rows.iter().all(|r| r.charged_tokens == 5
+        && r.unknown_usage.is_none()
+        && r.settled_unix_ms.is_some()));
+    let calls = f.calls();
+    f.ok(&["task", "run", "ci-diagnose-one"]);
+    assert_eq!(f.calls(), calls, "Accepted Task replay dispatches nothing");
+}
+
+#[test]
+fn ci_health_distinct_release_head_reaches_task_selection_and_evidence_and_main_is_refused() {
+    for (mode, accepted) in [("good", true), ("ci-main-revision", false)] {
+        let f = Fixture::ci_health_release(false);
+        std::fs::write(f.auth.join("mode"), mode).unwrap();
+        let snapshot: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+                .unwrap();
+        let failure = &snapshot["failures"][0];
+        assert_ne!(snapshot["source_sha"], failure["head_sha"]);
+        assert_eq!(failure["release_blocking"], true);
+        if accepted {
+            let path = f.repo.join("ci-health/task.json");
+            let mut task: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            task["requirements"]["source_sha"] = snapshot["source_sha"].clone();
+            write(&path, &task);
+            let refused = f.cli(&[
+                "task",
+                "plan",
+                "--file",
+                "ci-health/task.json",
+                "--input-json",
+                "snapshot=snapshot.json",
+            ]);
+            assert!(!refused.status.success(), "{}", text(&refused));
+            assert!(
+                text(&refused)
+                    .contains("CI diagnosis selection does not name an exact snapshot occurrence"),
+                "{}",
+                text(&refused)
+            );
+            assert!(f.calls().is_empty());
+            task["requirements"]["source_sha"] = failure["head_sha"].clone();
+            write(&path, &task);
+        }
+        let planned = f.ci_plan();
+        let (run, machine) = f.ci_scenario(&planned, &snapshot, &json!({}));
+        assert_eq!(run["status"], "succeeded", "{mode}: {run:#}");
+        let step = run["frames"]["root"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["step"] == "diagnose")
+            .unwrap();
+        let record: Value = serde_json::from_str(
+            step["outputs"]["result"]["value"]["evidence"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["selection"]["source_sha"], failure["head_sha"]);
+        assert_eq!(record["diagnosis"]["source_sha"], failure["head_sha"]);
+        assert_eq!(
+            record["diagnosis"]["evidence"][0]["source_sha"],
+            failure["head_sha"]
+        );
+        assert_eq!(
+            step["outputs"]["result"]["value"]["revision"],
+            failure["head_sha"]
+        );
+        assert_eq!(
+            record["provenance"]["kind"],
+            if accepted {
+                "accepted"
+            } else {
+                "deterministic_refusal"
+            },
+            "{mode}: {record:#}"
+        );
+        assert_eq!(
+            record["receipt"]["result"]["acceptance"] == "satisfied",
+            accepted
+        );
+        if !accepted {
+            assert!(
+                record["provenance"]["refusals"][0]["error_prefix"]
+                    .as_str()
+                    .unwrap()
+                    .contains("CI diagnosis source mismatch")
+            );
+        }
+        let request: Value = serde_json::from_str(
+            std::fs::read_to_string(f.auth.join("requests"))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            request["inputs"]["requirements"][0]["payload"]["specification"]["source_sha"],
+            failure["head_sha"]
+        );
+        let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events[1]["phase"], "findings");
+        assert_eq!(
+            events[1]["release_alerts"],
+            json!([failure["occurrence_id"]])
+        );
+        assert_eq!(events[1]["source_sha"], failure["head_sha"]);
+        assert_eq!(f.calls(), "admission\nworker\n");
+    }
+}
+
+#[test]
+fn ci_health_native_reports_deterministic_remedy_and_settles_only_first_unresolved_occurrence() {
+    for (classifier, known_index) in [
+        ("known_transients", 0),
+        ("infrastructure", 0),
+        ("infrastructure", 1),
+    ] {
+        let f = Fixture::ci_health_release(true);
+        let snapshot: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+                .unwrap();
+        let failures = snapshot["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_ne!(failures[0]["signature_id"], failures[1]["signature_id"]);
+        let known = &failures[known_index];
+        let selected = &failures[1 - known_index];
+        let path = f.repo.join("ci-health/task.json");
+        let mut task: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for field in ["occurrence_id", "signature_id"] {
+            task["requirements"][field] = selected[field].clone();
+        }
+        task["requirements"]["source_sha"] = selected["head_sha"].clone();
+        write(&path, &task);
+        let planned = f.ci_plan();
+        let (run, machine) = f.ci_scenario(
+            &planned,
+            &snapshot,
+            &json!({classifier:[known["signature_id"]]}),
+        );
+        assert_eq!(run["status"], "succeeded", "{classifier}: {run:#}");
+        assert_eq!(f.calls(), "admission\nworker\n");
+        let steps = run["frames"]["root"]["steps"].as_array().unwrap();
+        let diagnosis = steps.iter().find(|s| s["step"] == "diagnose").unwrap();
+        let settlement: Value = serde_json::from_str(
+            diagnosis["outputs"]["result"]["value"]["evidence"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settlement["selection"]["occurrence_id"],
+            selected["occurrence_id"]
+        );
+        assert_eq!(
+            settlement["diagnosis"]["occurrence_id"],
+            selected["occurrence_id"]
+        );
+        assert_eq!(settlement["diagnosis"]["source_sha"], selected["head_sha"]);
+        assert_eq!(settlement["provenance"]["kind"], "accepted");
+        assert_eq!(settlement["receipt"]["result"]["execution"], "completed");
+        assert_eq!(settlement["receipt"]["result"]["acceptance"], "satisfied");
+        let request: Value = serde_json::from_str(
+            std::fs::read_to_string(f.auth.join("requests"))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            request["inputs"]["requirements"][0]["payload"]["specification"]["occurrence_id"],
+            selected["occurrence_id"]
+        );
+        assert_eq!(request["inputs"]["snapshot"][0]["payload"], snapshot);
+        assert!(serde_json::to_vec(&request).unwrap().len().div_ceil(4) <= 20_000);
+        let rows = accounting(&f, "ci-diagnose-one");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|a| a.charged_tokens == 5
+            && a.unknown_usage.is_none()
+            && a.settled_unix_ms.is_some()));
+        let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e["phase"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "ci_observe_v1",
+                "findings",
+                "diagnosis",
+                "remedy-intent",
+                "outcome"
+            ]
+        );
+        assert_eq!(events[1]["failures"].as_array().unwrap().len(), 2);
+        assert_eq!(events[1]["unselected_occurrences"], json!([]));
+        assert!(events[1]["unselected_reason"].is_null());
+        crate::schemas::valid(
+            &crate::schemas::validator("ci-health-notification-v5.json"),
+            &events[1],
+        );
+        let results = events[1]["deterministic_results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        let diagnosis = &results[0]["diagnosis"];
+        let category = if classifier == "infrastructure" {
+            "ci_infra"
+        } else {
+            "transient"
+        };
+        assert_eq!(diagnosis["category"], category);
+        assert_eq!(diagnosis["occurrence_id"], known["occurrence_id"]);
+        assert_eq!(diagnosis["signature_id"], known["signature_id"]);
+        assert_eq!(diagnosis["source_sha"], known["head_sha"]);
+        assert_eq!(diagnosis["snapshot_id"], events[1]["snapshot_id"]);
+        assert_eq!(
+            diagnosis["source_artifact_ids"],
+            json!([events[1]["snapshot_id"]])
+        );
+        let typed: af_contracts::ci_health::Diagnosis =
+            serde_json::from_value(diagnosis.clone()).unwrap();
+        typed
+            .validate_against(
+                events[1]["snapshot_id"].as_str().unwrap(),
+                &serde_json::from_value(snapshot.clone()).unwrap(),
+            )
+            .unwrap();
+        let (row, intended) = if known["release_blocking"] == true {
+            (2, "release_alert")
+        } else if classifier == "infrastructure" {
+            (3, "infrastructure_alert")
+        } else {
+            (4, "rerun_intended")
+        };
+        assert_eq!(results[0]["row"], row);
+        assert_eq!(results[0]["intended"], intended);
+        assert_eq!(events[1]["report_only"], true);
+        assert_eq!(events[2]["occurrence_id"], selected["occurrence_id"]);
+        assert_eq!(events[2]["category"], "product_bug");
+        assert_eq!(events[3]["occurrence_id"], selected["occurrence_id"]);
+        assert_eq!(
+            events[3]["row"],
+            if selected["release_blocking"] == true {
+                2
+            } else {
+                7
+            }
+        );
+        assert_eq!(
+            events[3]["intended"],
+            if selected["release_blocking"] == true {
+                "release_alert"
+            } else {
+                "report_only"
+            }
+        );
+        let calls = f.calls();
+        assert_eq!(f.ok(&["scenario", "resume", "ci-health-fixture"]), run);
+        assert_eq!(f.calls(), calls);
+    }
+}
+
+#[test]
+fn ci_health_native_reports_every_deterministic_diagnosis_and_first_remedy_without_a_task() {
+    let f = Fixture::ci_health_release(true);
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    let failures = snapshot["failures"].as_array().unwrap();
+    let planned = f.ci_plan();
+    let (run, machine) = f.ci_scenario(
+        &planned,
+        &snapshot,
+        &json!({"infrastructure":[failures[0]["signature_id"],failures[1]["signature_id"]],
+            "known_transients":[failures[1]["signature_id"]],"small_repair":true}),
+    );
+    assert_eq!(run["status"], "succeeded", "{run:#}");
+    assert!(
+        f.calls().is_empty(),
+        "All classifications must bypass the Provider"
+    );
+    assert_eq!(run["dispatches"], 4);
+    assert!(
+        run["frames"]["root"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["step"] != "diagnose")
+    );
+    let recorded = std::fs::read_to_string(machine.join("events")).unwrap();
+    let events: Vec<Value> = recorded
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["ci_observe_v1", "findings", "remedy-intent", "outcome"]
+    );
+    let findings = &events[1];
+    crate::schemas::valid(
+        &crate::schemas::validator("ci-health-notification-v5.json"),
+        findings,
+    );
+    assert_eq!(findings["unselected_occurrences"], json!([]));
+    let results = findings["deterministic_results"].as_array().unwrap();
+    assert_eq!(results.len(), failures.len());
+    for (result, failure) in results.iter().zip(failures) {
+        let diagnosis = &result["diagnosis"];
+        assert_eq!(
+            diagnosis["category"], "ci_infra",
+            "infrastructure precedes overlapping transient classification"
+        );
+        assert_eq!(diagnosis["occurrence_id"], failure["occurrence_id"]);
+        assert_eq!(diagnosis["signature_id"], failure["signature_id"]);
+        assert_eq!(diagnosis["source_sha"], failure["head_sha"]);
+        let typed: af_contracts::ci_health::Diagnosis =
+            serde_json::from_value(diagnosis.clone()).unwrap();
+        typed
+            .validate_against(
+                findings["snapshot_id"].as_str().unwrap(),
+                &serde_json::from_value(snapshot.clone()).unwrap(),
+            )
+            .unwrap();
+        let (row, intended) = if failure["release_blocking"] == true {
+            (2, "release_alert")
+        } else {
+            (3, "infrastructure_alert")
+        };
+        assert_eq!(result["row"], row);
+        assert_eq!(result["intended"], intended);
+    }
+    assert_eq!(
+        findings["release_alerts"],
+        json!([failures[1]["occurrence_id"]])
+    );
+    assert_eq!(findings["report_only"], true);
+    assert_eq!(f.ok(&["scenario", "resume", "ci-health-fixture"]), run);
+    assert_eq!(
+        std::fs::read_to_string(machine.join("events")).unwrap(),
+        recorded
+    );
+    assert!(f.calls().is_empty());
+}
+
+#[test]
+fn ci_health_large_scope_completes_native_findings_diagnosis_remedy_and_outcome() {
+    let home = crate::common::private_home_env()
+        .into_iter()
+        .find(|(name, _)| *name == "HOME")
+        .unwrap()
+        .1;
+    let scratch = tempfile::tempdir_in(home).unwrap();
+    let output = std::process::Command::new("python3")
+        .args(["-I", "-c", r#"
+import importlib.util,json,pathlib,sys
+sys.dont_write_bytecode=True
+root=pathlib.Path(sys.argv[1]); directory=pathlib.Path(sys.argv[2])
+spec=importlib.util.spec_from_file_location('ci',root/'scripts/ci-health.py')
+c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+service=json.loads((root/'fixtures/scenarios/maintenance-ci-health/failing-service.json').read_text())
+service['repository']='r'*40000+'/project'
+journal=c.Journal(directory/'observer.sqlite')
+try: snapshot=c.observe(service,journal)
+finally: journal.close()
+c.validate_snapshot(snapshot)
+assert snapshot['complete'] and len(snapshot['failures'])==1
+(directory/'snapshot.json').write_bytes(c.canonical(snapshot))
+print(json.dumps({'observation_service':service}))
+"#])
+        .arg(crate::task_report::workspace())
+        .arg(scratch.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    // Exercise both deterministic and native Task settlement paths through the installed
+    // adapter. Its unchanged 65,536-byte input bound checks the real serialized requests.
+    for deterministic in [true, false] {
+        let f = Fixture::ci_health_from_snapshot(&scratch.path().join("snapshot.json"));
+        std::fs::write(f.root.path().join("ci-service.json"), &output.stdout).unwrap();
+        let snapshot: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+                .unwrap();
+        crate::schemas::valid(
+            &crate::schemas::validator("ci-health-snapshot-v1.json"),
+            &snapshot,
+        );
+        assert!(serde_json::to_vec(&snapshot).unwrap().len() < 65536);
+        assert_eq!(snapshot["repository"].as_str().unwrap().len(), 40008);
+        let failure = &snapshot["failures"][0];
+        let options = if deterministic {
+            json!({"infrastructure":[failure["signature_id"]]})
+        } else {
+            json!({"small_repair":true})
+        };
+        let planned = f.ci_plan();
+        let (run, machine) = f.ci_scenario(&planned, &snapshot, &options);
+        assert_eq!(run["status"], "succeeded", "{run:#}");
+        let recorded = std::fs::read_to_string(machine.join("events")).unwrap();
+        let events: Vec<Value> = recorded
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let expected = if deterministic {
+            vec!["ci_observe_v1", "findings", "remedy-intent", "outcome"]
+        } else {
+            vec![
+                "ci_observe_v1",
+                "findings",
+                "diagnosis",
+                "remedy-intent",
+                "outcome",
+            ]
+        };
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e["phase"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(run["dispatches"], if deterministic { 4 } else { 6 });
+        let findings = &events[1];
+        assert_eq!(findings["failures"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            findings["failures"][0]["occurrence_id"],
+            failure["occurrence_id"]
+        );
+        assert_eq!(
+            findings["deterministic_results"].as_array().unwrap().len(),
+            usize::from(deterministic)
+        );
+        for event in &events[1..] {
+            crate::schemas::valid(
+                &crate::schemas::validator("ci-health-notification-v5.json"),
+                event,
+            );
+            for key in ["repository", "source_sha"] {
+                assert_eq!(event[key], snapshot[key]);
+            }
+            for key in ["occurrence_id", "signature_id"] {
+                assert_eq!(event[key], failure[key]);
+            }
+            assert_eq!(event["snapshot_id"], findings["snapshot_id"]);
+            assert_eq!(event["scenario_run"], "ci-health-fixture");
+            assert_eq!(event["report_only"], true);
+        }
+        let remedy = &events[events.len() - 2];
+        assert_eq!(remedy["row"], if deterministic { 3 } else { 6 });
+        assert_eq!(
+            remedy["intended"],
+            if deterministic {
+                "infrastructure_alert"
+            } else {
+                "repair_intended"
+            }
+        );
+        assert_eq!(
+            remedy["category"],
+            if deterministic {
+                "ci_infra"
+            } else {
+                "product_bug"
+            }
+        );
+        if deterministic {
+            let diagnosis: af_contracts::ci_health::Diagnosis =
+                serde_json::from_value(remedy["deterministic_diagnosis"].clone()).unwrap();
+            diagnosis
+                .validate_against(
+                    findings["snapshot_id"].as_str().unwrap(),
+                    &serde_json::from_value(snapshot).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(
+                findings["deterministic_results"][0]["diagnosis"],
+                remedy["deterministic_diagnosis"]
+            );
+        }
+        let calls = f.calls();
+        assert_eq!(calls.is_empty(), deterministic);
+        assert_eq!(f.ok(&["scenario", "resume", "ci-health-fixture"]), run);
+        assert_eq!(
+            std::fs::read_to_string(machine.join("events")).unwrap(),
+            recorded
+        );
+        assert_eq!(f.calls(), calls);
+    }
+}
+
+#[test]
+fn ci_health_installed_production_adapter_bounds_wire_evidence_and_scenario_reports_retained_findings()
+ {
+    let home = crate::common::private_home_env()
+        .into_iter()
+        .find(|(name, _)| *name == "HOME")
+        .unwrap()
+        .1;
+    let scratch = tempfile::tempdir_in(home).unwrap();
+    let output = std::process::Command::new("python3")
+        .args(["-I", "-c", r#"
+import importlib.util,pathlib,sys
+sys.dont_write_bytecode=True
+root=pathlib.Path(sys.argv[1]); directory=pathlib.Path(sys.argv[2])
+spec=importlib.util.spec_from_file_location('ci_test',root/'scripts/test-ci-health.py')
+t=importlib.util.module_from_spec(spec);sys.modules[spec.name]=t;spec.loader.exec_module(t)
+t.ProductionTests.setUpClass(); case=t.ProductionTests(); case.setUp()
+options={**case.options,'state':str(directory/'observer.sqlite'),'max_requests':32}
+receipt=directory/'publish.json'; receipt.write_bytes(case.receipt.read_bytes())
+options['nightly_receipt']=str(receipt)
+routes=t.near_limit_routes(); snapshot=case.P.observe(options,opener=t.Transport(routes))
+assert not snapshot['complete'] and snapshot['failures']
+assert '64 KiB adapter response bound exceeded' in snapshot['omissions']
+(directory/'snapshot.json').write_bytes(t.C.canonical(snapshot))
+occurrences=directory/'occurrences'; occurrences.mkdir(mode=0o700)
+case.P.stage_occurrence(snapshot,since=options['since'],nightly_receipt=receipt,occurrence_dir=occurrences)
+staged={k:v for k,v in options.items() if k not in ('since','captured_at','nightly_receipt','release_pr')}
+staged.update(occurrence_dir=str(occurrences),destination='fixture:ci-health')
+spec=importlib.util.spec_from_file_location('ci_config',t.FIXTURE/'configure.py')
+compiler=importlib.util.module_from_spec(spec);spec.loader.exec_module(compiler)
+program=t.hermetic_production_adapter(case.P,staged,routes,compiler.adapter_bytes(root))
+(directory/'adapter').write_bytes(program)
+case.doCleanups()
+"#])
+        .arg(crate::task_report::workspace())
+        .arg(scratch.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    let f = Fixture::ci_health_from_snapshot(&scratch.path().join("snapshot.json"));
+    std::fs::copy(
+        scratch.path().join("adapter"),
+        f.root.path().join("ci-production-adapter"),
+    )
+    .unwrap();
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    let planned = f.ci_plan();
+    let (run, machine) = f.ci_scenario(&planned, &snapshot, &json!({}));
+    assert_eq!(run["status"], "succeeded", "{run:#}");
+    assert!(
+        f.calls().is_empty(),
+        "Incomplete evidence cannot dispatch a Provider"
+    );
+    let observe = &run["frames"]["root"]["steps"][0]["outputs"]["result"]["value"];
+    assert_eq!(observe["satisfied"], true);
+    let captured: Value = serde_json::from_str(observe["evidence"].as_str().unwrap()).unwrap();
+    assert_eq!(captured, snapshot);
+    crate::schemas::valid(
+        &crate::schemas::validator("ci-health-snapshot-v1.json"),
+        &captured,
+    );
+    assert_eq!(captured["complete"], false);
+    assert!(
+        captured["omissions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("64 KiB adapter response bound exceeded"))
+    );
+    let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let findings: Vec<&Value> = events.iter().filter(|e| e["phase"] == "findings").collect();
+    assert!(!findings.is_empty());
+    let retained: Vec<&Value> = findings
+        .iter()
+        .flat_map(|e| e["failures"].as_array().unwrap())
+        .collect();
+    assert_eq!(
+        retained.len(),
+        captured["failures"].as_array().unwrap().len()
+    );
+    assert!(!retained.is_empty());
+    for (actual, expected) in retained
+        .iter()
+        .zip(captured["failures"].as_array().unwrap())
+    {
+        for key in [
+            "occurrence_id",
+            "head_sha",
+            "job_name",
+            "log_artifacts",
+            "release_blocking",
+        ] {
+            assert_eq!(actual[key], expected[key], "{key}");
+        }
+    }
+    let alerts: Vec<&Value> = findings
+        .iter()
+        .flat_map(|e| e["release_alerts"].as_array().unwrap())
+        .collect();
+    assert_eq!(
+        alerts,
+        retained
+            .iter()
+            .map(|f| &f["occurrence_id"])
+            .collect::<Vec<_>>()
+    );
+    for event in &events {
+        crate::schemas::valid(
+            &crate::schemas::validator("ci-health-notification-v5.json"),
+            event,
+        );
+    }
+    assert_eq!(events.last().unwrap()["phase"], "outcome");
+    assert_eq!(f.ok(&["scenario", "resume", "ci-health-fixture"]), run);
+}
+
+#[test]
+fn ci_health_native_findings_alert_unselected_release_failure_even_when_diagnosis_is_exhausted() {
+    let f = Fixture::ci_health_release(true);
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    let failures = snapshot["failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 2);
+    assert_eq!(failures[0]["release_blocking"], false);
+    assert_eq!(failures[1]["release_blocking"], true);
+    let planned = f.ci_plan();
+    let (run, machine) = f.ci_scenario(&planned, &snapshot, &json!({"exhausted":true}));
+    assert_eq!(run["status"], "succeeded", "{run:#}");
+    assert!(
+        f.calls().is_empty(),
+        "An exhausted reservation must not invoke a Provider"
+    );
+    let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events[1]["phase"], "findings");
+    let findings = &events[1];
+    crate::schemas::valid(
+        &crate::schemas::validator("ci-health-notification-v5.json"),
+        findings,
+    );
+    assert_eq!(findings["failures"].as_array().unwrap().len(), 2);
+    let release = &findings["failures"][1];
+    for key in [
+        "occurrence_id",
+        "signature_id",
+        "workflow_id",
+        "workflow_file",
+        "run_id",
+        "run_attempt",
+        "job_id",
+        "job_name",
+        "platform",
+        "conclusion",
+        "head_sha",
+        "log_artifacts",
+        "release_blocking",
+    ] {
+        assert_eq!(release[key], failures[1][key], "{key}");
+    }
+    assert_eq!(
+        findings["release_alerts"],
+        json!([failures[1]["occurrence_id"]])
+    );
+    assert_eq!(
+        findings["unselected_occurrences"],
+        json!([failures[1]["occurrence_id"]])
+    );
+    assert_eq!(
+        findings["unselected_reason"],
+        "diagnosis_reservation_exhausted"
+    );
+    assert_eq!(events[2]["phase"], "remedy-intent");
+    assert_eq!(events[3]["phase"], "outcome");
+    let resumed = f.ok(&["scenario", "resume", "ci-health-fixture"]);
+    assert_eq!(resumed, run);
+    assert_eq!(
+        std::fs::read_to_string(machine.join("events"))
+            .unwrap()
+            .lines()
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn ci_health_native_scenario_notifies_findings_and_first_remedy_before_outcome_and_open_pr_watch() {
+    let f = Fixture::ci_health();
+    std::fs::write(f.auth.join("mode"), "ci-test").unwrap();
+    let plan = f.ci_plan();
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    let (run, machine) = f.ci_scenario(
+        &plan,
+        &snapshot,
+        &json!({"gate_evidence":serde_json::from_slice::<Value>(&std::fs::read(crate::task_report::workspace()
+                .join("fixtures/scenarios/maintenance-ci-health/gate-evidence.json")).unwrap()).unwrap(),
+                "small_repair":true,"watch":true}),
+    );
+    assert_eq!(run["status"], "waiting", "{run:#}");
+    assert_eq!(run["waiting"]["kind"], "condition", "{run:#}");
+    assert_eq!(run["waiting"]["step"], "root/watch", "{run:#}");
+    let read_events = || -> Vec<Value> {
+        std::fs::read_to_string(machine.join("events"))
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect()
+    };
+    let events = read_events();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "ci_observe_v1",
+            "findings",
+            "diagnosis",
+            "remedy-intent",
+            "outcome",
+            "merged"
+        ]
+    );
+    assert_eq!(
+        events[3]["row"], 5,
+        "eligible quarantine evidence precedes repair"
+    );
+    assert_eq!(events[3]["intended"], "quarantine_evidence_intended");
+    assert_eq!(run["frames"]["root"]["steps"].as_array().unwrap().iter()
+        .filter(|s|s["step"].as_str().unwrap().starts_with("remedy-") && s["skipped"].is_null()).count(),1);
+    for event in &events[1..5] {
+        assert_eq!(event["scenario_run"], "ci-health-fixture");
+        assert!(af_contracts::is_digest(
+            event["snapshot_id"].as_str().unwrap()
+        ));
+        assert_eq!(event["report_only"], true);
+    }
+    let calls = f.calls();
+    let resumed = f.ok(&["scenario", "resume", "ci-health-fixture"]);
+    assert_eq!(resumed["status"], "waiting");
+    assert_eq!(
+        f.calls(),
+        calls,
+        "Watch/resume must not redispatch diagnosis"
+    );
+    assert_eq!(
+        read_events().len(),
+        events.len() + 1,
+        "only the bounded merge observation repeats"
+    );
+    let mut service: Value =
+        serde_json::from_slice(&std::fs::read(machine.join("service.json")).unwrap()).unwrap();
+    service["merged"] = json!(true);
+    write(&machine.join("service.json"), &service);
+    let done = f.ok(&["scenario", "resume", "ci-health-fixture"]);
+    assert_eq!(done["status"], "succeeded");
+    assert_eq!(
+        f.calls(),
+        calls,
+        "Merged Watch must not redispatch diagnosis"
+    );
+    let mut expected_events = events.clone();
+    expected_events.extend([json!({"phase":"merged"}), json!({"phase":"merged"})]);
+    assert_eq!(
+        read_events(),
+        expected_events,
+        "Each resume adds exactly one merge observation, preserving all pre-Watch notifications"
+    );
+    let before = run["frames"]["root"]["steps"].as_array().unwrap();
+    let after = done["frames"]["root"]["steps"].as_array().unwrap();
+    assert_eq!(before.len(), after.len());
+    assert_eq!(
+        &after[..after.len() - 1],
+        &before[..before.len() - 1],
+        "Every pre-Watch step retains its exact progress, intents and outputs"
+    );
+    let watch_before = before.last().unwrap();
+    let watch_after = after.last().unwrap();
+    assert_eq!(watch_after["step"], "watch");
+    assert_eq!(watch_before["intents"].as_array().unwrap().len(), 1);
+    assert_eq!(watch_after["intents"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        watch_after["intents"][0]["id"], watch_before["intents"][0]["id"],
+        "Watch observations reconcile the same durable intent"
+    );
+    assert_eq!(
+        done["dispatches"].as_u64().unwrap(),
+        run["dispatches"].as_u64().unwrap().checked_add(2).unwrap(),
+        "The unsatisfied and merged observations each consume one dispatch while reusing the Wait intent"
+    );
+}
+
+#[test]
+fn ci_health_refused_diagnosis_records_deterministic_unknown_and_notifies_without_remedy_or_watch()
+{
+    for mode in [
+        "ci-foreign-evidence",
+        "ci-malformed-evidence",
+        "ci-foreign-signature",
+        "ci-foreign-occurrence",
+    ] {
+        let f = Fixture::ci_health();
+        std::fs::write(f.auth.join("mode"), mode).unwrap();
+        let plan = f.ci_plan();
+        let snapshot: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+                .unwrap();
+        // Even explicitly requested fixture repair/Watch paths must lose to the refusal.
+        let (run, machine) =
+            f.ci_scenario(&plan, &snapshot, &json!({"small_repair":true,"watch":true}));
+        assert_eq!(run["status"], "succeeded", "{mode}: {run:#}");
+        let steps = run["frames"]["root"]["steps"].as_array().unwrap();
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| s["skipped"].is_null())
+                .map(|s| s["step"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "observe",
+                "notify-findings",
+                "diagnose",
+                "notify-diagnosis",
+                "remedy-1",
+                "report-outcome"
+            ],
+            "only observation, diagnosis and report-only notifications execute"
+        );
+        assert_eq!(
+            run["dispatches"], 6,
+            "no retry or additional effect dispatch"
+        );
+        let diagnosis = steps.iter().find(|s| s["step"] == "diagnose").unwrap();
+        assert_eq!(diagnosis["outputs"]["result"]["type"], "observation");
+        let observation = &diagnosis["outputs"]["result"]["value"];
+        let record: Value =
+            serde_json::from_str(observation["evidence"].as_str().unwrap()).unwrap();
+        crate::schemas::valid(
+            &crate::schemas::validator("scenario-ci-diagnosis-v2.json"),
+            &record,
+        );
+        assert_eq!(record["provenance"]["kind"], "deterministic_refusal");
+        assert_eq!(record["diagnosis"]["category"], "unknown");
+        assert_eq!(
+            record["diagnosis"]["rationale"],
+            "Deterministic unknown: native diagnosis Task output was refused"
+        );
+        assert_ne!(record["receipt"]["result"]["acceptance"], "satisfied");
+        assert!(
+            record["receipt"]["result"]["outputs"]
+                .get("validation")
+                .is_none()
+        );
+        assert_eq!(record["receipt"]["plan_id"], plan["plan_id"]);
+        assert_eq!(record["receipt"]["revision_id"], plan["revision_id"]);
+        assert_eq!(record["diagnosis"]["snapshot_id"], record["snapshot_id"]);
+        assert_eq!(
+            record["diagnosis"]["source_artifact_ids"],
+            json!([record["snapshot_id"]])
+        );
+        for key in ["occurrence_id", "signature_id"] {
+            assert_eq!(record["diagnosis"][key], snapshot["failures"][0][key]);
+            assert_eq!(record["selection"][key], record["diagnosis"][key]);
+        }
+        assert_eq!(record["diagnosis"]["source_sha"], snapshot["source_sha"]);
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let native_result = cas
+            .get_artifact(record["receipt"]["result_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            native_result.payload, record["receipt"]["result"],
+            "original refusal receipt retained"
+        );
+        let worker = accounting(&f, "ci-diagnose-one")
+            .into_iter()
+            .find(|a| a.reservation.node.ends_with(".work"))
+            .unwrap();
+        let refusals = record["provenance"]["refusals"].as_array().unwrap();
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(refusals[0]["attempt_id"], worker.attempt_id);
+        assert_eq!(
+            worker.attempt_id.len(),
+            26,
+            "native Attempt identity retained"
+        );
+        assert!(!af_contracts::is_digest(&worker.attempt_id));
+        assert!(
+            record["receipt"]["result"]["outputs"]
+                .get("diagnosis")
+                .is_none()
+        );
+        let diagnostic = cas
+            .get_json(refusals[0]["diagnostic_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            refusals[0]["error_prefix"],
+            diagnostic["error"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .take(2048)
+                .collect::<String>()
+        );
+        let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e["phase"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "ci_observe_v1",
+                "findings",
+                "diagnosis",
+                "remedy-intent",
+                "outcome"
+            ]
+        );
+        assert!(events[1]["category"].is_null());
+        assert!(events[1]["deterministic_diagnosis"].is_null());
+        assert_eq!(
+            events[1]["failures"][0]["occurrence_id"],
+            snapshot["failures"][0]["occurrence_id"]
+        );
+        for event in &events[2..] {
+            assert_eq!(event["category"], "unknown");
+            assert_eq!(event["deterministic_diagnosis"], record["diagnosis"]);
+            assert_eq!(event["snapshot_id"], record["snapshot_id"]);
+            assert_eq!(event["report_only"], true);
+        }
+        assert_eq!(events[3]["row"], 1);
+        assert_eq!(events[3]["intended"], "alert_only");
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| s["step"].as_str().unwrap().starts_with("remedy-")
+                    && s["skipped"].is_null())
+                .count(),
+            1
+        );
+        assert!(steps.iter().find(|s| s["step"] == "watch").unwrap()["skipped"].is_string());
+        assert_eq!(
+            f.calls(),
+            "admission\nworker\n",
+            "no repair or second diagnosis"
+        );
+        assert_eq!(run["task_charges"].as_object().unwrap().len(), 1);
+        let charged: u64 = accounting(&f, "ci-diagnose-one")
+            .iter()
+            .map(|a| u64::try_from(a.charged_tokens).unwrap())
+            .sum();
+        assert_eq!(record["receipt"]["charged_tokens"], charged);
+        assert_eq!(
+            run["task_charges"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()["charged"],
+            charged
+        );
+        let resumed = f.ok(&["scenario", "resume", "ci-health-fixture"]);
+        assert_eq!(resumed, run, "terminal replay retains exact native refusal");
+        assert_eq!(f.calls(), "admission\nworker\n");
+        assert_eq!(
+            std::fs::read_to_string(machine.join("events"))
+                .unwrap()
+                .lines()
+                .count(),
+            5
+        );
+    }
+}
+
+#[test]
+fn ci_health_native_acceptance_refuses_foreign_diagnosis_evidence_and_identity() {
+    for (mode, reason) in [
+        (
+            "ci-foreign-signature",
+            "CI diagnosis references evidence outside selected snapshot occurrence",
+        ),
+        (
+            "ci-foreign-occurrence",
+            "CI diagnosis occurrence absent from snapshot",
+        ),
+        (
+            "ci-foreign-evidence",
+            "CI diagnosis references evidence outside selected snapshot occurrence",
+        ),
+    ] {
+        let f = Fixture::ci_health();
+        std::fs::write(f.auth.join("mode"), mode).unwrap();
+        let planned = f.ci_plan();
+        let run = f.cli(&[
+            "task",
+            "run",
+            "ci-diagnose-one",
+            "--confirm-plan",
+            planned["plan_id"].as_str().unwrap(),
+        ]);
+        let shown: Value = serde_json::from_slice(&run.stdout).unwrap();
+        assert!(
+            shown["result"].is_object(),
+            "{mode}: diagnosis must execute before its refusal is checked: {}",
+            text(&run)
+        );
+        assert_ne!(
+            shown["result"]["acceptance"], "satisfied",
+            "{mode}: {shown:#}"
+        );
+        assert!(!run.status.success(), "{mode}: {}", text(&run));
+        assert!(shown["result"]["outputs"].get("validation").is_none());
+        assert_eq!(f.calls(), "admission\nworker\n", "{mode}: {shown:#}");
+        let rows = accounting(&f, "ci-diagnose-one");
+        let worker = rows
+            .iter()
+            .find(|r| r.reservation.node.ends_with(".work"))
+            .unwrap();
+        let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
+            diagnostic_id, ..
+        }) = &worker.result
+        else {
+            panic!("Foreign CI evidence must be refused at Worker admission: {mode}");
+        };
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let diagnostic = cas.get_json(diagnostic_id).unwrap();
+        assert!(
+            diagnostic["error"].as_str().unwrap().contains(reason),
+            "{mode}: {diagnostic:#}"
+        );
+        assert_eq!(worker.charged_tokens, 5);
+    }
+}
+
+#[test]
+fn ci_health_incomplete_snapshot_reports_without_a_task_remedy_or_watch() {
+    let f = Fixture::ci_health();
+    let mut snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    snapshot["complete"] = json!(false);
+    snapshot["omissions"] = json!(["fixture unreadable logs"]);
+    write(&f.repo.join("ci-health/snapshot.json"), &snapshot);
+    let plan = f.ci_plan();
+    let (run, machine) = f.ci_scenario(&plan, &snapshot, &json!({}));
+    assert_eq!(run["status"], "succeeded", "{run:#}");
+    assert!(
+        !f.calls().contains("worker"),
+        "No diagnosis model for incomplete evidence"
+    );
+    let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["ci_observe_v1", "findings", "remedy-intent", "outcome"]
+    );
+    assert!(run["task_charges"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn ci_health_same_main_changed_job_evidence_stops_before_diagnosis_and_notifications() {
+    let f = Fixture::ci_health();
+    let plan = f.ci_plan();
+    let snapshot: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ci-health/snapshot.json")).unwrap())
+            .unwrap();
+    let source = crate::task_report::workspace().join("fixtures/scenarios/maintenance-ci-health");
+    let mut github: Value =
+        serde_json::from_slice(&std::fs::read(source.join("github-service.json")).unwrap())
+            .unwrap();
+    let job = &mut github["routes"]["repos/octo/project/actions/runs/101/attempts/1/jobs?per_page=100"]
+        ["jobs"][0];
+    job["failing_tests"] = json!(["a_different_failed_test"]);
+    assert_eq!(
+        github["routes"]["repos/octo/project/commits/main"]["sha"],
+        snapshot["source_sha"]
+    );
+    write(
+        &f.root.path().join("ci-service.json"),
+        &json!({"observation_service":serde_json::from_slice::<Value>(
+            &std::fs::read(source.join("failing-service.json")).unwrap()).unwrap(),
+            "github_service":github}),
+    );
+    let (run, machine) = f.ci_scenario(&plan, &snapshot, &json!({}));
+    assert_eq!(run["status"], "failed", "{run:#}");
+    assert!(run["task_charges"].as_object().unwrap().is_empty());
+    assert!(
+        f.calls().is_empty(),
+        "No Provider admission or diagnosis for stale evidence"
+    );
+    let events: Vec<Value> = std::fs::read_to_string(machine.join("events"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events, vec![json!({"phase":"ci_observe_v1"})]);
+}
+
+#[test]
+fn ci_health_malformed_snapshot_identity_is_refused_before_provider_admission() {
+    let f = Fixture::ci_health();
+    let path = f.repo.join("ci-health/snapshot.json");
+    let mut snapshot: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    snapshot["failures"][0]["run_attempt"] = json!(2);
+    write(&path, &snapshot);
+    let output = f.cli(&[
+        "task",
+        "plan",
+        "--file",
+        "ci-health/task.json",
+        "--input-json",
+        "snapshot=snapshot.json",
+    ]);
+    assert!(!output.status.success(), "{}", text(&output));
+    assert!(
+        text(&output).contains("CI occurrence or signature identity mismatch"),
+        "{}",
+        text(&output)
+    );
+    assert!(
+        f.calls().is_empty(),
+        "Malformed snapshot must not spend Provider tokens"
+    );
+}
+
+#[test]
+fn ci_health_fixture_catalog_pins_the_exact_native_package_digest_output() {
+    let root = crate::task_report::workspace();
+    let fixture = root.join("fixtures/scenarios/maintenance-ci-health/task");
+    let catalog: Value =
+        toml::from_str(&std::fs::read_to_string(fixture.join("catalog.toml")).unwrap()).unwrap();
+    for part in ["kind", "pipeline", "worker"] {
+        let name = format!("ci/diagnosis-{part}");
+        let path = root.join(catalog["packages"][&name]["path"].as_str().unwrap());
+        let output = crate::common::af()
+            .current_dir(&root)
+            .args(["catalog", "digest"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", text(&output));
+        let digest = String::from_utf8(output.stdout).unwrap();
+        println!("{name}: {}", digest.trim());
+        assert_eq!(
+            digest.trim(),
+            catalog["packages"][&name]["digest"].as_str().unwrap()
+        );
+        assert_eq!(
+            digest.trim(),
+            af_pipeline_config::lock::package_digest(&name, &path).unwrap()
+        );
+    }
+    assert_eq!(catalog["kinds"]["ci-diagnosis"], "ci/diagnosis-kind");
+}
+
+#[test]
+fn ci_health_fixture_allows_snapshot_mutation_from_a_sealed_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = af_store::Cas::open(directory.path().join("cas")).unwrap();
+    let bytes = std::fs::read(
+        crate::task_report::workspace()
+            .join("fixtures/scenarios/maintenance-ci-health/snapshot.json"),
+    )
+    .unwrap();
+    let manifest = af_source_git::Manifest::new(vec![af_source_git::Entry {
+        path: "snapshot.json".into(),
+        kind: af_source_git::EntryKind::File,
+        content: cas.put(&bytes).unwrap(),
+        size: bytes.len() as u64,
+    }])
+    .unwrap();
+    let sandbox =
+        af_sandbox::Sandbox::materialize(&manifest, &cas, af_sandbox::Mode::ReadOnly).unwrap();
+    let source = sandbox.root().join("snapshot.json");
+    let original_mode = std::fs::metadata(&source).unwrap().permissions().mode();
+    assert_eq!(original_mode & 0o777, 0o444);
+
+    let fixture = Fixture::ci_health_from_snapshot(&source);
+    let copy = fixture.repo.join("ci-health/snapshot.json");
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes);
+    assert_ne!(
+        std::fs::metadata(&copy).unwrap().permissions().mode() & 0o200,
+        0
+    );
+    let mut snapshot: Value = serde_json::from_slice(&bytes).unwrap();
+    snapshot["complete"] = json!(false);
+    write(&copy, &snapshot);
+    assert_ne!(std::fs::read(copy).unwrap(), bytes);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(
+        std::fs::metadata(source).unwrap().permissions().mode(),
+        original_mode
+    );
+    assert!(sandbox.seal().unwrap().unchanged());
+    assert!(fixture.calls().is_empty());
 }

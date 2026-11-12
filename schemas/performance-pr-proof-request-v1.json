@@ -17,23 +17,23 @@
       "const": "af/performance-pr-proof-request@1"
     },
     "candidate": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
     },
     "verification": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
     },
     "report": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
     },
     "evidence": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/Observation"
+      "$ref": "urn:af:schema:scenario:6#/$defs/Observation"
     },
     "source_commit": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
     "source_content_digest": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     }
   },
   "title": "performance-pr-proof-request v1"

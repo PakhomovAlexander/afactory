@@ -1,0 +1,13 @@
+# Staged definition only. Review the expected Ant's pinned timezone/time before installation.
+# 04:00 UTC daily occurrence + two hours of grace + five minutes for durable receipts.
+# No dependency on Ant tick, nightly success or a Scenario notification can suppress this check.
+[Unit]
+Description=Check AF maintenance liveness after the daily occurrence grace
+
+[Timer]
+OnCalendar=*-*-* 06:05:00 UTC
+Persistent=true
+Unit=af-maintenance-watchdog.service
+
+[Install]
+WantedBy=timers.target

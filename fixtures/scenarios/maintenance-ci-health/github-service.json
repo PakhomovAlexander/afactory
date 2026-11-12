@@ -1,0 +1,43 @@
+{
+  "repository": "octo/project",
+  "max_requests": 16,
+  "routes": {
+    "repos/octo/project/commits/main": {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "repos/octo/project/actions/runs?head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&per_page=100": {
+      "total_count": 1,
+      "workflow_runs": [
+        {
+          "id": 101,
+          "workflow_id": 1,
+          "path": ".github/workflows/validate.yml",
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "run_attempt": 1,
+          "status": "completed",
+          "created_at": "2026-11-09T03:00:00Z"
+        }
+      ]
+    },
+    "repos/octo/project/actions/runs/101/attempts/1/jobs?per_page=100": {
+      "total_count": 1,
+      "jobs": [
+        {
+          "id": 201,
+          "name": "functional",
+          "platform": "linux",
+          "conclusion": "failure",
+          "failing_tests": [
+            "ci_health::ci_health_current_contracts_roundtrip_and_refuse_missing_malformed_and_old_shapes"
+          ],
+          "error_lines": [],
+          "log_artifacts": [
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        }
+      ]
+    }
+  },
+  "main_ref": "main",
+  "since": "2026-11-08T04:00:00Z"
+}

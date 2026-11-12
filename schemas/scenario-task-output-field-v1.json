@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-task-output-field:1",
+  "title": "Kernel-recorded admitted Scenario Task output v1",
+  "description": "Written only at native Task completion into that Task step's intent evidence. Receipt, output and payload identity also require semantic validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "plan_id",
+    "revision_id",
+    "result_id",
+    "port",
+    "artifact_id",
+    "artifact"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-task-output-field@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "result_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "port": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
+    },
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "allOf": [
+        {
+          "$ref": "urn:review-kernel:schema:artifact-envelope:1"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "custom/CiDiagnosis@1"
+            },
+            "payload": {
+              "$ref": "urn:af:schema:ci-diagnosis:1"
+            }
+          },
+          "not": {
+            "required": [
+              "subject_snapshot_id"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
