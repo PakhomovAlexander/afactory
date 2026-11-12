@@ -18,7 +18,7 @@ Gates, Provider admissions and Workers.
 | `af review run --file FILE` | Capture and execute native Review under one Task allowance |
 | `af review inspect ID` | Common Task explanation, graph, bindings, limits and history |
 | `af review show ID` | Common Task state and check visibility |
-| `af review ledger ID --json` | `af/review-ledger@2`, complete canonical Findings and original Report provenance, including missing reviewer coverage |
+| `af review ledger ID --json` | `af/review-ledger@3`, complete canonical Findings and original Report provenance, including missing reviewer coverage |
 | `af review report ID --json` | `af/task-report@3`, exact cumulative Task accounting |
 | `af review resume ID --confirm-plan PLAN_ID` | Resume the original common Task plan |
 | `af review continue ID --from PRIOR_ID` | New native Task plan with exact prior Review history and Base |

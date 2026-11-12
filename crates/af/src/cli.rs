@@ -669,7 +669,7 @@ pub(crate) enum ReviewCommand {
         /// Select a recorded Review Round (default: latest)
         round: Option<u64>,
         #[arg(long, value_enum, default_value = "text", conflicts_with = "json")]
-        /// Ledger output format (JSON: af/review-ledger@2)
+        /// Ledger output format (JSON: af/review-ledger@3)
         format: FindingsFormatArg,
         #[command(flatten)]
         inspect: TaskInspectArgs,
@@ -779,7 +779,7 @@ pub(crate) enum ReviewCommand {
     },
 }
 
-/// What `af task findings` prints: text, its `af/task-findings@2` document, or SARIF 2.1.0.
+/// What `af task findings` prints: text, its `af/task-findings@3` document, or SARIF 2.1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum FindingsFormatArg {
     Text,
@@ -1750,10 +1750,11 @@ command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
 with the state it reached. The round's coverage says which reviewers ran and which paths \
 they read: a reviewer that did not run shows `not reviewed`, never `no findings`.\n\n--json \
-(the same as --format json) prints one `af/task-findings@2` document: each finding carries an \
+(the same as --format json) prints one `af/task-findings@3` document: each finding carries an \
 `agent_prompt` (its location, evidence, the requested change and how verification will judge \
 it), the round its `coverage` and the findings a fix verification record proved fixed on its \
-Snapshot. --format sarif prints the same findings as one SARIF 2.1.0 log. --json cannot be \
+Snapshot. Text and JSON also expose the exact Demand Set with recorded states and methods.\n\n\
+--format sarif prints the findings as one SARIF 2.1.0 log. --json cannot be \
 combined with --format. Exits 0 once it read the Store.\n\nNever: dispatches a Worker, \
 contacts a Provider or writes the Store.",
         after_long_help = "Examples:\n  \

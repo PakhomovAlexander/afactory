@@ -162,12 +162,20 @@ command of each Task in a group that needs you, or tell the person which ones wa
 
 ## 4. Read the findings
 
-`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@2`
+`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@3`
 document: per reviewer, each finding with its severity, confidence, title, file and line, the
 quoted evidence and the proposed fix, the round's counts by severity, and the evaluator's
 verdict on that round with its reason. `--round N` reads an earlier round, with its own
 verdict. A Task that recorded no review round has `round: null`, and its `state` says how far
 it got. After `reviewer_findings` this is the command `next_action` names.
+
+The round also carries `demand_set_id` and the exact `demand_set`: every required or advisory
+Demand, its recorded state, claim, reason, suggested method, Subject and Evidence, satisfaction
+and waiver IDs. Text prints these separately from ordinary findings. Both fields are null when
+no Demand Set was recorded; an empty set means no recorded demands. Neither zero findings nor
+an evaluator pass discharges an open required Demand or proves Task acceptance.
+Suggested methods preserve printable quotes and backslashes; multiline methods use indented
+lines. Terminal controls are shown as escape sequences, and JSON retains the original text.
 
 Hand a finding to the agent that will fix it through its `agent_prompt`: the location on the
 reviewed Snapshot, the evidence, the requested change, how verification will judge the fix, and
@@ -184,7 +192,7 @@ verified fixed only when the round's `verified_fixed` names it with its verifica
 `af task findings TASK_ID --format sarif` prints the same findings as one SARIF 2.1.0 log for
 code-scanning tools. `af review ledger TASK_ID --format sarif` selects the complete canonical
 Finding Set, including unresolved earlier claims with their current statuses and original Report
-provenance. Its JSON format is `af/review-ledger@2`; `af task findings` remains the current-Round
+provenance. Its JSON format is `af/review-ledger@3`; `af task findings` remains the current-Round
 report view.
 
 ## 5. Look at the change

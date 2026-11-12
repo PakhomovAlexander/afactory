@@ -1,8 +1,8 @@
 //! Native Ledger inspection reads the complete selected Finding Set, never the report filter.
 use super::*;
-use af_contracts::task::review_ledger::{REVIEW_LEDGER_V2, ReviewLedgerV2};
+use af_contracts::task::review_ledger::{REVIEW_LEDGER_V3, ReviewLedgerV3};
 
-fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<ReviewLedgerV2, String> {
+fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<ReviewLedgerV3, String> {
     let (inspection, selected) = findings::ledger_selection(opened, wanted)?;
     let mut finding_set = None;
     let mut reports = BTreeMap::new();
@@ -20,8 +20,8 @@ fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<ReviewLedgerV2, 
         }
         finding_set = Some(frame);
     }
-    let ledger = ReviewLedgerV2 {
-        schema: REVIEW_LEDGER_V2.into(),
+    let ledger = ReviewLedgerV3 {
+        schema: REVIEW_LEDGER_V3.into(),
         inspection,
         finding_set,
         reports,

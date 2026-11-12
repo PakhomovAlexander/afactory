@@ -7,7 +7,7 @@ history, selected Review Rounds, execution outputs and recovery evidence. There 
 Store and one cumulative allowance. A missing accounting observation remains absent or unknown;
 report snapshots are never added together as independent spend.
 
-`af review ledger TASK_ID --json` prints `af/review-ledger@2`: the complete selected canonical
+`af review ledger TASK_ID --json` prints `af/review-ledger@3`: the complete selected canonical
 Finding Set envelope, original Report envelopes keyed by exact ID, and an `inspection` view
 with current Finding statuses, severity counts and reviewer coverage. Reports retain their
 original producer and Snapshot; the inspection's reviewer result IDs describe current Round

@@ -338,7 +338,7 @@ fn ids_elided(text: &str) -> String {
 }
 
 /// Item 1: per reviewer each finding with its severity, confidence, title, location, evidence
-/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@2` under
+/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@3` under
 /// `--json`; a Task without a review round says so with its state; a round it did not record is
 /// refused by its number.
 #[test]
@@ -390,6 +390,8 @@ Task chain-base: finished/verified; review round 1 of 1 (pass) on sha256:…
   bugs: 1 major, 1 minor
   correctness: no findings
   coverage: every reviewer ran (2 reviewers); 4 paths reviewed
+  demand set: sha256:…
+  demands: none recorded
 
 major
   [bugs] Reject negative offset, confidence 0.99, open
@@ -417,9 +419,9 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let value = document(
         &af(&repo, &state, &["task", "findings", "chain-base", "--json"]),
         0,
-        Some("task-findings-v2.json"),
+        Some("task-findings-v3.json"),
     );
-    assert_eq!(value["schema"], "af/task-findings@2");
+    assert_eq!(value["schema"], "af/task-findings@3");
     assert_eq!(value["rounds"], 1);
     let round = &value["round"];
     assert_eq!(
@@ -484,7 +486,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     // Item 4: nothing is verified fixed without a verification record.
     assert_eq!(round["verified_fixed"], serde_json::json!([]));
     assert_eq!(value["evaluation"]["outcome"], "passed");
-    let typed: af_contracts::task::agent_loop::TaskFindingsV2 =
+    let typed: af_contracts::task::agent_loop::TaskFindingsV3 =
         serde_json::from_value(value.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(
@@ -566,7 +568,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let none = document(
         &af(&repo, &state, &["task", "findings", "gc-older", "--json"]),
         0,
-        Some("task-findings-v2.json"),
+        Some("task-findings-v3.json"),
     );
     assert_eq!(
         (none["rounds"].clone(), none["round"].clone()),

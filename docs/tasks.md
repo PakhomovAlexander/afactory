@@ -526,8 +526,8 @@ and when the plan's approval or deadline has passed or the limits leave no room.
 severity, confidence, title, location, the quoted evidence and the proposed fix, grouped by
 severity, then the evaluator's verdict on that round (the one the Task log recorded after it)
 and its reason; `--round N` reads an earlier round with its own verdict, and `--json` prints
-`af/task-findings@2`, whose findings each carry an `agent_prompt` and whose round says what it
-covered: a reviewer that did not run shows as `not reviewed`, never as `no findings`.
+`af/task-findings@3`, whose round carries its exact Demand Set and whose findings each carry
+an `agent_prompt`. The round says what it covered: a reviewer that did not run shows as `not reviewed`, never as `no findings`.
 `--format sarif` prints the same findings as SARIF 2.1.0
 ([ADR-0248](adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)). `af task diff ID` prints the candidate's change against the
 Task's source as the unified diff `git diff` prints for the same trees, without touching any

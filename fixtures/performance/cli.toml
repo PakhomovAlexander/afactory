@@ -760,16 +760,16 @@ argv = ["{af}", "review", "ledger", "perf-review", "--state", "{scratch}/seed/na
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },
-  { kind = "json_equals", path = "schema", value = "af/task-findings@2" },
-  { kind = "json_equals", path = "task_id", value = "perf-review" },
-  { kind = "json_equals", path = "rounds", value = 1 },
-  { kind = "json_equals", path = "round.reviewers.0.reviewer", value = "bugs" },
-  { kind = "json_equals", path = "round.reviewers.1.reviewer", value = "correctness" },
-  { kind = "json_equals", path = "round.counts.minor", value = 100 },
-  { kind = "json_equals", path = "round.counts.major", value = 0 },
-  { kind = "json_equals", path = "round.counts.blocker", value = 0 },
-  { kind = "json_count", path = "round.reviewers.1.findings", value = 100 },
-  { kind = "json_enumerates", path = "round.reviewers.1.findings", first = 1, last = 100, where = { title = "Fixture finding {n}", status = "open", severity = "minor", file = "src/fixture.txt" }, numbered = ["line"], distinct = ["finding_id"] },
+  { kind = "json_equals", path = "schema", value = "af/review-ledger@3" },
+  { kind = "json_equals", path = "inspection.task_id", value = "perf-review" },
+  { kind = "json_equals", path = "inspection.rounds", value = 1 },
+  { kind = "json_equals", path = "inspection.round.reviewers.0.reviewer", value = "bugs" },
+  { kind = "json_equals", path = "inspection.round.reviewers.1.reviewer", value = "correctness" },
+  { kind = "json_equals", path = "inspection.round.counts.minor", value = 100 },
+  { kind = "json_equals", path = "inspection.round.counts.major", value = 0 },
+  { kind = "json_equals", path = "inspection.round.counts.blocker", value = 0 },
+  { kind = "json_count", path = "inspection.round.reviewers.1.findings", value = 100 },
+  { kind = "json_enumerates", path = "inspection.round.reviewers.1.findings", first = 1, last = 100, where = { title = "Fixture finding {n}", status = "open", severity = "minor", file = "src/fixture.txt" }, numbered = ["line"], distinct = ["finding_id"] },
 ]
 description = "Read all 10,000 native Task events and enumerate the 100 exact current Review Findings."
 

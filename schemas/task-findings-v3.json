@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-findings:2",
-  "title": "Task findings af/task-findings@2",
-  "$comment": "What `af task findings ID --json` prints (ADR-0211, ADR-0248): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings — severity, confidence, title, location, quoted evidence, proposed fix and the agent prompt that hands the finding to the agent that will fix it — its counts by severity, what the round covered per reviewer and per path, the findings a verification record proved fixed on its Snapshot, and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
+  "$id": "urn:af:schema:task-findings:3",
+  "title": "Task findings af/task-findings@3",
+  "$comment": "What `af task findings ID --json` prints (ADR-0211, ADR-0248): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings \u2014 severity, confidence, title, location, quoted evidence, proposed fix and the agent prompt that hands the finding to the agent that will fix it \u2014 its counts by severity, what the round covered per reviewer and per path, the findings a verification record proved fixed on its Snapshot, the exact recorded Demand Set with its artifact ID (both null if unavailable), and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,7 +15,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-findings@2"
+      "const": "af/task-findings@3"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:4#/$defs/name"
@@ -229,7 +229,9 @@
         "counts",
         "reviewers",
         "coverage",
-        "verified_fixed"
+        "verified_fixed",
+        "demand_set_id",
+        "demand_set"
       ],
       "properties": {
         "index": {
@@ -279,6 +281,26 @@
           "items": {
             "$ref": "#/$defs/verified_fix"
           }
+        },
+        "demand_set_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "demand_set": {
+          "anyOf": [
+            {
+              "$ref": "urn:review-kernel:schema:demand-set:1"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
