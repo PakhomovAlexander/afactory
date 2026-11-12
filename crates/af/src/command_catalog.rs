@@ -265,6 +265,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
         },
     ),
     ("af scenario show", READS),
+    ("af scenario output", writes(&[(Files, Some("--output"))])),
     ("af scenario list", READS),
     (
         "af scenario resume",
@@ -290,6 +291,21 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af ant validate", READS),
     ("af ant add", writes(&[(Store, None)])),
     ("af ant show", READS),
+    ("af ant output", writes(&[(Files, Some("--output"))])),
+    ("af ant scheduler status", READS),
+    ("af ant scheduler stop", writes(&[(Store, None)])),
+    (
+        "af ant scheduler run",
+        Effects {
+            tokens: Tokens::Charges(None),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[],
+        },
+    ),
     ("af ant list", READS),
     ("af ant enable", writes(&[(Store, None)])),
     ("af ant pause", writes(&[(Store, None)])),

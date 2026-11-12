@@ -46,6 +46,13 @@ policy. It retains progress, child frames, dispatch intents and receipts across 
 Its completion evidence is separate from a Task's acceptance and a PR's checks. Waiting remains
 active and consumes elapsed time; cancellation stops future dispatch and never means rollback.
 
+**Ant retention**:
+Native Store compaction expires eligible old Ant receipts and completed bodies, preserving recent
+receipts, the latest producer, open work, exact cumulative accounting, conservative rolling buckets,
+and cursor/provenance summaries. Pruned body evidence is unavailable. Run byte leases protect
+settlement and reconciliation before new dispatch/admission; see the
+[retention decision](docs/adr/2026-11-11-bound-native-ant-retention-and-settlement-capacity.md).
+
 **Performance publication**:
 The opt-in `publish_performance_pr_v1` Scenario Action uses pinned standing owner machine scope
 for one accepted, independently verified, positively measured candidate. It creates a deterministic
@@ -56,10 +63,12 @@ retain their own authority. See the
 
 **Ant**:
 An accountable owner's scheduled binding of a Scenario pin and typed inputs, with an explicit
-pinned daily timezone, notification route, overlap and missed-occurrence policies and per-run and
+pinned daily timezone or fixed-rate integral-second interval, notification route, overlap and missed-occurrence policies and per-run and
 rolling spending limits. Every admitted occurrence starts one Scenario Run; every skipped
 occurrence has a durable reason. Pause and disable stop future launches, separately from Run
-cancellation. `af ant tick` admits occurrences locally; no persistent scheduler is installed.
+cancellation. `af ant tick` admits occurrences locally; explicit `af ant scheduler run` drives them in the
+foreground under one Store lease, with stop/status controls and no installed service. Named native
+text outputs may carry author-defined Markdown/table documents; read-only watch never drives work.
 
 **Scenario Roadmap**:
 A durable, bounded optimization plan partitioned by product component, target metric or

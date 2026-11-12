@@ -35,7 +35,7 @@ if request["method"] == "observe":
             "revision": current["revision"],
             "condition": condition,
             "satisfied": current.get(condition, False),
-            "evidence": "service revision " + current["revision"],
+            "evidence": current.get("evidence", "service revision " + current["revision"]),
         },
     )
 elif request["method"] == "reconcile":

@@ -313,7 +313,7 @@ them. A new evidence selection also requires a reviewed launcher and Scenario pi
    /private/perf/manual/policy.json --json`. Add it with `--confirm-pin REVISION`; add registers
    it disabled. The operator's separate `af ant enable performance-native` authorizes future
    occurrences. Review the inert `af-performance-ant.service.in`/timer before Linux systemd
-   installation. No Mac scheduler is supplied. Overlap and missed occurrences skip; no catch-up
+   installation. No Mac service is installed; native foreground scheduling requires explicit invocation. Overlap and missed occurrences skip; no catch-up
    burst or duplicate complete goal is launched. A completed manual goal is not recycled: this
    one-goal example subsequently skips roadmap admission until the owner reviews genuinely new
    eligible goal scope and updates the pin.

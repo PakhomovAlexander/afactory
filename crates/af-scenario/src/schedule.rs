@@ -1,4 +1,4 @@
-//! Deterministic daily scheduling with pinned timezone transitions and unique local dates.
+//! Deterministic fixed-rate intervals and daily schedules with pinned timezone transitions.
 use super::contract::*;
 use super::state::Run;
 use serde::{Deserialize, Serialize};
@@ -215,13 +215,61 @@ impl Zone {
     }
 }
 
+/// Explicit schedule generation; interval indexes never use a timezone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Daily {
-    pub timezone: String,
-    pub hour: u8,
-    pub minute: u8,
-    pub start_unix_ms: u64,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Schedule {
+    Daily {
+        timezone: String,
+        hour: u8,
+        minute: u8,
+        start_unix_ms: u64,
+    },
+    Interval {
+        seconds: u64,
+        start_unix_ms: u64,
+    },
+}
+impl Schedule {
+    pub fn start(&self) -> u64 {
+        match self {
+            Self::Daily { start_unix_ms, .. } | Self::Interval { start_unix_ms, .. } => {
+                *start_unix_ms
+            }
+        }
+    }
+    pub fn timezone(&self) -> &str {
+        match self {
+            Self::Daily { timezone, .. } => timezone,
+            Self::Interval { .. } => "UTC",
+        }
+    }
+    fn valid(&self) -> bool {
+        self.start() > 0
+            && self.start() <= MAX_TIME
+            && match self {
+                Self::Daily { hour, minute, .. } => *hour < 24 && *minute < 60,
+                Self::Interval { seconds, .. } => {
+                    *seconds > 0 && *seconds <= af_contracts::json::SAFE_INTEGER_MAX as u64
+                }
+            }
+    }
+    fn due(&self, zone: &Zone, index: i64) -> Result<(u64, bool)> {
+        match self {
+            Self::Daily { hour, minute, .. } => {
+                let (seconds, gap) = zone.occurrence(index, *hour, *minute)?;
+                Ok((seconds.max(0) as u64 * 1000, gap))
+            }
+            Self::Interval {
+                seconds,
+                start_unix_ms,
+            } => {
+                require(index >= 0, "Invalid interval ordinal")?;
+                let at = u128::from(*start_unix_ms) + index as u128 * u128::from(*seconds) * 1000;
+                Ok((u64::try_from(at).unwrap_or(u64::MAX), false))
+            }
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -245,14 +293,14 @@ pub struct Ant {
     pub id: String,
     pub scenario: Bundle,
     pub inputs: BTreeMap<String, Datum>,
-    pub schedule: Daily,
+    pub schedule: Schedule,
     pub owner: String,
     pub notification: String,
     pub execution: Execution,
 }
 impl Ant {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
-        require(self.schema == "af/ant@5", "Unsupported Ant version")?;
+        require(self.schema == "af/ant@6", "Unsupported Ant version")?;
         name(&self.id)?;
         name(&self.owner)?;
         text(&self.notification)?;
@@ -269,10 +317,7 @@ impl Ant {
             "Ant cannot manufacture receipts",
         )?;
         require(
-            self.schedule.hour < 24
-                && self.schedule.minute < 60
-                && self.schedule.start_unix_ms > 0
-                && self.schedule.start_unix_ms <= MAX_TIME
+            self.schedule.valid()
                 && self.execution.lateness_ms < DAY as u64 * 1000
                 && self.execution.rolling_window_ms > 0
                 && self.execution.rolling_window_ms <= MAX_TIME
@@ -295,10 +340,10 @@ impl AntPin {
     pub fn new(host: &dyn crate::Host, definition: Ant, policy: Policy) -> Result<Self> {
         definition.validate(host)?;
         let scenario = Pin::new(host, definition.scenario.clone(), policy)?;
-        let zone = Zone::load(&definition.schedule.timezone)?;
+        let zone = Zone::load(definition.schedule.timezone())?;
         let revision = hash(&(&definition, &scenario, &zone))?;
         Ok(Self {
-            schema: "af/ant-pin@5".into(),
+            schema: "af/ant-pin@6".into(),
             definition,
             scenario,
             zone,
@@ -310,9 +355,9 @@ impl AntPin {
         self.scenario.validate(host)?;
         self.zone.validate()?;
         require(
-            self.schema == "af/ant-pin@5"
+            self.schema == "af/ant-pin@6"
                 && self.definition.scenario == self.scenario.bundle
-                && self.definition.schedule.timezone == self.zone.name
+                && self.definition.schedule.timezone() == self.zone.name
                 && self.revision == hash(&(&self.definition, &self.scenario, &self.zone))?,
             "Corrupt Ant pin",
         )
@@ -337,6 +382,7 @@ pub enum OccurrenceOutcome {
     SkippedPaused,
     SkippedDisabled,
     SkippedBudget,
+    SkippedCapacity,
     SkippedMissingTime,
     SkippedRoadmap {
         reason: String,
@@ -347,6 +393,9 @@ pub enum OccurrenceOutcome {
 pub struct Occurrence {
     pub id: String,
     pub local_day: i64,
+    /// Inclusive last skipped index; equal to local_day for ordinary receipts.
+    pub through_index: i64,
+    pub admitted_unix_ms: u64,
     pub due_unix_ms: u64,
     pub outcome: OccurrenceOutcome,
 }
@@ -360,28 +409,31 @@ pub struct AntState {
     pub next_day: i64,
     pub last_tick_unix_ms: u64,
     pub occurrences: Vec<Occurrence>,
+    pub retention: crate::retention::Retention,
 }
 impl AntState {
     pub fn new(pin: AntPin, now: u64) -> Result<Self> {
-        let next_day = pin.zone.local_day(
-            i64::try_from(pin.definition.schedule.start_unix_ms / 1000)
-                .map_err(|e| e.to_string())?,
-        )?;
+        let next_day = match &pin.definition.schedule {
+            Schedule::Interval { .. } => 0,
+            schedule => pin.zone.local_day((schedule.start() / 1000) as i64)?,
+        };
         Ok(Self {
-            schema: "af/ant-state@5".into(),
+            schema: "af/ant-state@7".into(),
             pin,
             state: AntMode::Disabled,
             changes: vec![(now, AntMode::Disabled)],
             next_day,
             last_tick_unix_ms: now,
             occurrences: Vec::new(),
+            retention: crate::retention::Retention::new(),
         })
     }
     pub fn validate(&self, host: &dyn crate::Host, runs: &BTreeMap<String, Run>) -> Result<()> {
         self.pin.validate(host)?;
+        self.retention.validate(self.next_day)?;
         require(
-            self.schema == "af/ant-state@5"
-                && (-1..=100_001).contains(&self.next_day)
+            self.schema == "af/ant-state@7"
+                && self.cursor_valid()
                 && self.last_tick_unix_ms > 0
                 && self.last_tick_unix_ms <= MAX_TIME
                 && self.changes.iter().all(|(t, _)| *t > 0 && *t <= MAX_TIME)
@@ -391,14 +443,34 @@ impl AntState {
                 && self
                     .occurrences
                     .windows(2)
-                    .all(|w| w[0].local_day < w[1].local_day),
+                    .all(|w| w[0].through_index < w[1].local_day),
             "Corrupt Ant state",
         )?;
         let mut active = 0;
         for o in &self.occurrences {
             require(
                 o.id == self.occurrence_id(o.local_day)?
-                    && o.local_day < self.next_day
+                    && o.local_day <= o.through_index
+                    && (o.local_day == o.through_index
+                        || (matches!(self.pin.definition.schedule, Schedule::Interval { .. })
+                            && matches!(o.outcome, OccurrenceOutcome::SkippedMissed)))
+                    && self
+                        .pin
+                        .definition
+                        .schedule
+                        .due(&self.pin.zone, o.through_index)?
+                        .0
+                        <= o.admitted_unix_ms
+                    && o.through_index < self.next_day
+                    && o.admitted_unix_ms >= o.due_unix_ms
+                    && o.admitted_unix_ms <= self.last_tick_unix_ms
+                    && o.due_unix_ms
+                        == self
+                            .pin
+                            .definition
+                            .schedule
+                            .due(&self.pin.zone, o.local_day)?
+                            .0
                     && o.due_unix_ms <= self.last_tick_unix_ms,
                 "Corrupt occurrence identity or cursor",
             )?;
@@ -415,6 +487,7 @@ impl AntState {
                             o.id.strip_prefix("sha256:")
                                 .ok_or("Invalid occurrence ID")?
                         )
+                        && run.created_unix_ms == o.admitted_unix_ms
                         && run.ant.as_deref() == Some(&self.pin.definition.id)
                         && run.pin == self.pin.scenario
                         && run.limits == self.pin.definition.execution.per_run
@@ -427,6 +500,21 @@ impl AntState {
             }
         }
         require(active <= 1, "Overlapping Ant Runs")
+    }
+    fn cursor_valid(&self) -> bool {
+        match self.pin.definition.schedule {
+            Schedule::Daily { .. } => (-1..=100_001).contains(&self.next_day),
+            Schedule::Interval { .. } => (0..=MAX_TIME as i64 / 1000 + 1).contains(&self.next_day),
+        }
+    }
+    pub fn next_due_unix_ms(&self) -> Result<Option<u64>> {
+        let at = self
+            .pin
+            .definition
+            .schedule
+            .due(&self.pin.zone, self.next_day)?
+            .0;
+        Ok((at <= MAX_TIME).then_some(at))
     }
     fn occurrence_id(&self, day: i64) -> Result<String> {
         hash(&(&self.pin.definition.id, &self.pin.revision, day))
@@ -447,7 +535,7 @@ impl AntState {
         now: u64,
         runs: &mut BTreeMap<String, Run>,
     ) -> Result<Vec<String>> {
-        self.tick_roadmaps(host, now, runs, &mut BTreeMap::new())
+        self.tick_roadmaps(host, now, runs, &mut BTreeMap::new(), None, 0)
     }
     fn tick_roadmaps(
         &mut self,
@@ -455,11 +543,10 @@ impl AntState {
         now: u64,
         runs: &mut BTreeMap<String, Run>,
         roadmaps: &mut BTreeMap<String, super::roadmap::Roadmap>,
+        capacity: Option<&BTreeMap<String, u64>>,
+        metadata: u64,
     ) -> Result<Vec<String>> {
-        require(
-            (-1..=100_001).contains(&self.next_day),
-            "Corrupt Ant calendar cursor",
-        )?;
+        require(self.cursor_valid(), "Corrupt Ant calendar cursor")?;
         require(
             now >= self.last_tick_unix_ms
                 && now <= MAX_TIME
@@ -467,31 +554,47 @@ impl AntState {
             "Ant tick clock moved backwards or exceeds the calendar bound",
         )?;
         let schedule = &self.pin.definition.schedule;
-        let day_now = self.pin.zone.local_day((now / 1000) as i64)?;
+        require(schedule.valid(), "Invalid interval or daily schedule")?;
+        let day_now = match schedule {
+            Schedule::Daily { .. } => self.pin.zone.local_day((now / 1000) as i64)?,
+            Schedule::Interval {
+                seconds,
+                start_unix_ms,
+            } => {
+                if now < *start_unix_ms {
+                    self.last_tick_unix_ms = now;
+                    return Ok(Vec::new());
+                }
+                ((now - start_unix_ms) as u128 / (u128::from(*seconds) * 1000)) as i64
+            }
+        };
         require(
-            day_now - self.next_day < 4096,
+            matches!(schedule, Schedule::Interval { .. }) || day_now - self.next_day < 4096,
             "More than 4096 missed daily occurrences; tick through bounded intermediate times",
         )?;
         let mut started = Vec::new();
+        // Compact arbitrarily long interval downtime into one durable skipped range. Never
+        // replay a burst, even if lateness policy would admit an older index.
+        if matches!(schedule, Schedule::Interval { .. }) && self.next_day < day_now {
+            let index = self.next_day;
+            self.occurrences.push(Occurrence {
+                id: self.occurrence_id(index)?,
+                local_day: index,
+                through_index: day_now - 1,
+                due_unix_ms: schedule.due(&self.pin.zone, index)?.0,
+                admitted_unix_ms: now,
+                outcome: OccurrenceOutcome::SkippedMissed,
+            });
+            self.next_day = day_now;
+        }
         while self.next_day <= day_now {
             let day = self.next_day;
-            let (seconds, gap) = self
-                .pin
-                .zone
-                .occurrence(day, schedule.hour, schedule.minute)?;
-            if seconds < 0 {
-                self.next_day += 1;
-                continue;
-            }
-            let at = u64::try_from(seconds)
-                .map_err(|_| "Schedule predates Unix epoch")?
-                .checked_mul(1000)
-                .ok_or("Occurrence time overflow")?;
+            let (at, gap) = schedule.due(&self.pin.zone, day)?;
             if at > now {
                 break;
             }
             self.next_day += 1;
-            if at < schedule.start_unix_ms {
+            if at < schedule.start() {
                 continue;
             }
             let id = self.occurrence_id(day)?;
@@ -507,29 +610,38 @@ impl AntState {
                 }
                 _ => false,
             });
-            let used = self.occurrences.iter().try_fold(0_u64, |used, o| {
-                let charge = match &o.outcome {
-                    OccurrenceOutcome::Started {
-                        run_id,
-                        reserved_tokens,
-                    } => match runs.get(run_id) {
-                        Some(r) if !r.status.active() => {
-                            if r.updated_unix_ms
-                                > now
-                                    .saturating_sub(self.pin.definition.execution.rolling_window_ms)
-                            {
-                                r.accounted_tokens()?
-                            } else {
-                                0
+            let used = self.occurrences.iter().try_fold(
+                self.retention
+                    .rolling(now, self.pin.definition.execution.rolling_window_ms)?,
+                |used, o| {
+                    let charge = match &o.outcome {
+                        OccurrenceOutcome::Started {
+                            run_id,
+                            reserved_tokens,
+                        } => match runs.get(run_id) {
+                            Some(r) if !r.status.active() => {
+                                if r.task_charges
+                                    .values()
+                                    .any(crate::state::TaskCharge::uncertain)
+                                    || r.updated_unix_ms
+                                        > now.saturating_sub(
+                                            self.pin.definition.execution.rolling_window_ms,
+                                        )
+                                {
+                                    u64::try_from(r.accounted_tokens()?).unwrap_or(u64::MAX)
+                                } else {
+                                    0
+                                }
                             }
-                        }
-                        _ => *reserved_tokens,
-                    },
-                    _ => 0,
-                };
-                used.checked_add(charge)
-                    .ok_or_else(|| "Ant rolling accounting overflow".to_string())
-            })?;
+                            _ => *reserved_tokens,
+                        },
+                        _ => 0,
+                    };
+                    // Only the admission comparison saturates; native Run charges and
+                    // retired decimal totals remain exact, including reconciled overruns.
+                    Ok::<u64, String>(used.saturating_add(charge))
+                },
+            )?;
             // Preserve historical due-time and missed dispositions. An otherwise eligible
             // occurrence stays suppressed by any pause/disable before its first tick, even
             // when enabled again before that tick. The clock guard bounds all changes by now.
@@ -554,9 +666,8 @@ impl AntState {
                 OccurrenceOutcome::SkippedDisabled
             } else if active {
                 OccurrenceOutcome::SkippedBusy
-            } else if used
-                .checked_add(self.pin.definition.execution.per_run.max_tokens)
-                .is_none_or(|n| n > self.pin.definition.execution.rolling_tokens)
+            } else if used.saturating_add(self.pin.definition.execution.per_run.max_tokens)
+                > self.pin.definition.execution.rolling_tokens
             {
                 OccurrenceOutcome::SkippedBudget
             } else {
@@ -574,6 +685,7 @@ impl AntState {
                     now,
                     Some(self.pin.definition.id.clone()),
                 )?;
+                let old_admission = roadmaps.clone();
                 let admitted = if let Some(admission) = run.pin.bundle.definitions
                     [&run.pin.bundle.root]
                     .admission
@@ -587,7 +699,10 @@ impl AntState {
                 } else {
                     true
                 };
-                if admitted {
+                if !crate::retention::admission_fits(runs, &run, capacity, metadata)? {
+                    *roadmaps = old_admission;
+                    OccurrenceOutcome::SkippedCapacity
+                } else if admitted {
                     runs.insert(run_id.clone(), run);
                     started.push(run_id.clone());
                     OccurrenceOutcome::Started {
@@ -601,6 +716,8 @@ impl AntState {
             self.occurrences.push(Occurrence {
                 id,
                 local_day: day,
+                through_index: day,
+                admitted_unix_ms: now,
                 due_unix_ms: at,
                 outcome,
             });
@@ -628,13 +745,26 @@ pub fn tick_all_with_roadmaps(
     roadmaps: &mut BTreeMap<String, super::roadmap::Roadmap>,
     now: u64,
 ) -> (Vec<String>, BTreeMap<String, String>) {
+    tick_all_with_capacity(host, ants, runs, roadmaps, None, now)
+}
+pub fn tick_all_with_capacity(
+    host: &dyn crate::Host,
+    ants: &mut BTreeMap<String, AntState>,
+    runs: &mut BTreeMap<String, Run>,
+    roadmaps: &mut BTreeMap<String, super::roadmap::Roadmap>,
+    capacity: Option<&BTreeMap<String, u64>>,
+    now: u64,
+) -> (Vec<String>, BTreeMap<String, String>) {
+    const ADMISSION_METADATA_FAILURE: u64 = MAX_BYTES;
+    let metadata = serde_json::to_vec(&(&ants, &roadmaps, &capacity))
+        .map_or(ADMISSION_METADATA_FAILURE, |b| b.len() as u64 + 4096);
     let mut started = Vec::new();
     let mut refused = BTreeMap::new();
     for (id, ant) in ants {
         let before: std::collections::BTreeSet<String> = runs.keys().cloned().collect();
         let mut candidate = ant.clone();
         let old_roadmaps = roadmaps.clone();
-        match candidate.tick_roadmaps(host, now, runs, roadmaps) {
+        match candidate.tick_roadmaps(host, now, runs, roadmaps, capacity, metadata) {
             Ok(ids) => {
                 *ant = candidate;
                 started.extend(ids);

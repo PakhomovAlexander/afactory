@@ -1120,7 +1120,13 @@ fn runs_task_work(command: &cli::Command) -> bool {
             scenario::ScenarioCommand::Start { execute: true, .. }
                 | scenario::ScenarioCommand::Resume { .. }
         ),
-        cli::Command::Ant { command } => matches!(command, scenario::AntCommand::Tick { .. }),
+        cli::Command::Ant { command } => matches!(
+            command,
+            scenario::AntCommand::Tick { .. }
+                | scenario::AntCommand::Scheduler {
+                    command: scenario::SchedulerCommand::Run { .. }
+                }
+        ),
         _ => false,
     }
 }
@@ -1184,6 +1190,14 @@ fn collects_after_run(command: &cli::Command) -> bool {
 
 fn needs_interrupt_handling(command: &cli::Command) -> bool {
     runs_task_work(command)
+        || matches!(
+            command,
+            cli::Command::Ant {
+                command: scenario::AntCommand::Output { .. }
+            } | cli::Command::Scenario {
+                command: scenario::ScenarioCommand::Output { .. }
+            }
+        )
         || matches!(
             command,
             cli::Command::Provider {

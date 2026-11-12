@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant-list:5",
-  "title": "ant-list v5",
+  "$id": "urn:af:schema:ant-list:7",
+  "title": "ant-list v7",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -11,7 +11,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant-list@5"
+      "const": "af/ant-list@7"
     },
     "ants": {
       "type": "object",
@@ -19,7 +19,7 @@
         "$ref": "urn:af:schema:scenario:5#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/AntState"
+        "$ref": "urn:af:schema:scenario:5#/$defs/AntInspection"
       }
     }
   }

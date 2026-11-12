@@ -135,7 +135,7 @@ fn concurrent_manual_admission_reserves_complete_loops_once_and_restart_keeps_cl
         .unwrap()
         .unwrap();
     assert_eq!(again, *c);
-    valid("scenario-store-v6.json", &store.read().unwrap());
+    valid("scenario-store-v9.json", &store.read().unwrap());
 }
 #[test]
 fn unknown_charge_and_midnight_never_release_a_complete_loop_or_enable_a_revision_reset() {
@@ -633,4 +633,161 @@ fn complete_loop_reservation_includes_nested_fresh_tasks_and_refuses_hidden_exac
     child.authority.task_plans.insert(target.plan_id.clone());
     child.steps[0].operation = Kind::Task { target };
     assert!(invalid.validate(&TestHost::default()).is_err());
+}
+
+#[test]
+fn goal_claimed_recovered_overrun_persists_replays_and_refuses_admission() {
+    for unknown_first in [false, true] {
+        let (roadmap, pin) = fixture();
+        let mut bundle = pin.bundle;
+        let root = bundle.definitions.get_mut("main").unwrap();
+        let mut second = root.steps[0].clone();
+        second.id = "second".into();
+        root.steps.push(second);
+        let pin = Pin::new(&TestHost::default(), bundle, pin.policy).unwrap();
+        let (dir, mut store) = store(roadmap);
+        store.host = Arc::new(TestHost {
+            planned_tasks: Some(std::sync::Mutex::new(Vec::new())),
+            charge: Some((17, unknown_first)),
+            ..TestHost::default()
+        });
+        admit(&store, &pin, "overrun", START);
+        let lost = runtime::resume(&store, "overrun", Some(START)).unwrap();
+        assert_eq!(lost.status, Status::Failed);
+        assert_eq!(lost.dispatches, 2);
+        let first = &lost.frames["root"].steps[0].intents[0].id;
+        let second = &lost.frames["root"].steps[1].intents[0].id;
+        let first_target = &lost.fresh_tasks[first];
+        let second_target = &lost.fresh_tasks[second];
+        assert_eq!(
+            lost.task_charges
+                .values()
+                .filter(|c| c.charged.is_none())
+                .count(),
+            1
+        );
+        store.host = Arc::new(TestHost {
+            task_charges: BTreeMap::from([
+                (first_target.task_id.clone(), (17, unknown_first)),
+                (second_target.task_id.clone(), (u64::MAX, false)),
+            ]),
+            ..TestHost::default()
+        });
+        runtime::reconcile_pending(&store, START + 1).unwrap();
+        let replay = Store::isolated(&dir.path().join("state")).unwrap();
+        let world = replay.read().unwrap();
+        let run = &world.runs["overrun"];
+        let exact = u128::from(u64::MAX) + 17;
+        assert_eq!(
+            run.tokens().unwrap(),
+            exact + if unknown_first { 3 } else { 0 }
+        );
+        assert_eq!(run.status, Status::Failed);
+        assert_eq!(run.fresh_tasks, lost.fresh_tasks);
+        assert_eq!(run.dispatches, 2);
+        let recovered_charge = run
+            .task_charges
+            .values()
+            .find(|c| c.step == "root/second")
+            .unwrap();
+        assert_eq!(recovered_charge.charged, Some(u64::MAX));
+        assert_eq!(recovered_charge.reserved(), 0);
+        let first_charge = run
+            .task_charges
+            .values()
+            .find(|c| c.step == "root/review")
+            .unwrap();
+        assert_eq!(first_charge.charged, Some(17));
+        assert_eq!(first_charge.unknown_usage, unknown_first);
+        assert_eq!(first_charge.reserved(), if unknown_first { 3 } else { 0 });
+        assert_eq!(run.frames, lost.frames);
+        let progress = &world.roadmaps["performance"].progress["store-replay"];
+        assert_eq!(progress.actual_tokens, exact);
+        assert_eq!(
+            serde_json::to_value(progress).unwrap()["actual_tokens"],
+            "18446744073709551632"
+        );
+        assert_eq!(progress.reserved_tokens, if unknown_first { 3 } else { 0 });
+        assert_eq!(
+            progress.claim.as_ref().unwrap().settled_unix_ms.is_none(),
+            unknown_first
+        );
+        assert_eq!(progress.task_receipts.len(), 1);
+        valid("scenario-store-v9.json", &world);
+        valid("scenario-roadmap-v3.json", &world.roadmaps["performance"]);
+        // Expired budget windows cannot erase cumulative roadmap spend or revise it away.
+        let refused = admit(&replay, &pin, "later", START + 3 * DAY);
+        assert!(refused.goal_claim.is_none());
+        assert_eq!(refused.dispatches, 0);
+        assert!(refused.task_charges.is_empty());
+        let roadmap = &replay.read().unwrap().roadmaps["performance"];
+        let mut proposal = roadmap.head().proposal.clone();
+        proposal.horizon.end_unix_ms += DAY;
+        assert!(roadmap.plan(proposal).is_err());
+        // Ant admission and retention share the same durable native goal provenance.
+        let mut ant = super::tests::ant("UTC", 0, 0);
+        ant.pin.definition.scenario = pin.bundle.clone();
+        ant.pin =
+            AntPin::new(&TestHost::default(), ant.pin.definition, pin.policy.clone()).unwrap();
+        replay
+            .update(|w| {
+                w.ants.insert("daily".into(), ant);
+                Ok(())
+            })
+            .unwrap();
+        let at = START + 4 * DAY;
+        let result = runtime::tick(&replay, at, Some(at)).unwrap();
+        assert!(result.started.is_empty());
+        assert!(result.refused.is_empty());
+        let final_world = Store::isolated(&dir.path().join("state"))
+            .unwrap()
+            .read()
+            .unwrap();
+        assert!(matches!(
+            final_world.ants["daily"]
+                .occurrences
+                .last()
+                .unwrap()
+                .outcome,
+            OccurrenceOutcome::SkippedRoadmap { .. }
+        ));
+        assert_eq!(final_world.runs["overrun"], *run);
+        assert!(retention::protected(&final_world.runs["overrun"]));
+        assert_eq!(
+            final_world.roadmaps["performance"].progress["store-replay"],
+            *progress
+        );
+    }
+}
+
+#[test]
+fn single_goal_charge_above_safe_integer_replays_and_releases_only_its_reservation() {
+    let (roadmap, pin) = fixture();
+    let (dir, mut store) = store(roadmap);
+    store.host = Arc::new(TestHost {
+        planned_tasks: Some(std::sync::Mutex::new(Vec::new())),
+        charge: Some((17, true)),
+        ..TestHost::default()
+    });
+    admit(&store, &pin, "single", START);
+    let known = runtime::resume(&store, "single", Some(START)).unwrap();
+    let task_id = known.fresh_tasks.values().next().unwrap().task_id.clone();
+    let recovered = af_contracts::json::SAFE_INTEGER_MAX as u64 + 1;
+    store.host = Arc::new(TestHost {
+        task_charges: BTreeMap::from([(task_id, (recovered, false))]),
+        ..TestHost::default()
+    });
+    runtime::reconcile_pending(&store, START + 1).unwrap();
+    let replay = Store::isolated(&dir.path().join("state")).unwrap();
+    let world = replay.read().unwrap();
+    let progress = &world.roadmaps["performance"].progress["store-replay"];
+    assert_eq!(progress.actual_tokens, u128::from(recovered));
+    assert_eq!(progress.reserved_tokens, 0);
+    assert!(progress.claim.as_ref().unwrap().settled_unix_ms.is_some());
+    assert_eq!(world.runs["single"].status, Status::Failed);
+    valid("scenario-store-v9.json", &world);
+    valid("scenario-roadmap-v3.json", &world.roadmaps["performance"]);
+    let refused = admit(&replay, &pin, "blocked", START + 2);
+    assert!(refused.goal_claim.is_none());
+    assert_eq!(refused.dispatches, 0);
 }
