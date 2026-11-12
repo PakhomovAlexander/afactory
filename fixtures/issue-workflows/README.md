@@ -200,6 +200,10 @@ python3 -I scripts/issue-workflows.py --af /absolute/path/to/candidate/af \
   --file /private/pilot/known-fix.json --routing /private/pilot/routing-known.json
 ```
 
+Direct `plan design/astra-kimi` validates `requirements.original_issue` before native planning,
+using the same structural rules as composition and reconciliation: exactly `goal`, `requirements`
+and `acceptance`, with a nonempty goal and nonempty string items in `requirements.acceptance`.
+
 Save the plan response, inspect the Task with the same binary, repository and Store, and
 validate the exact effective plan before authorizing it:
 

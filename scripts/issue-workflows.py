@@ -365,12 +365,17 @@ def original_issue(goal, requirements, acceptance=None):
     return {'goal': goal, 'requirements': requirements, 'acceptance': acceptance}
 
 
-def check_research_issue(requirements, original):
+def research_issue(requirements):
     contract = requirements.get('original_issue') if isinstance(requirements, dict) else None
     if not isinstance(contract, dict):
         raise ValueError('research/design requires exact original issue contract')
     exact(contract, ('goal', 'requirements', 'acceptance'))
     original_issue(**contract)
+    return contract
+
+
+def check_research_issue(requirements, original):
+    contract = research_issue(requirements)
     # JSON equality retains types (True is not the integer 1).
     if json.dumps(contract, sort_keys=True) != json.dumps(original, sort_keys=True):
         raise ValueError('research/design original issue contract differs from implementation')
@@ -798,6 +803,8 @@ def main():
             raise ValueError('Task file must select exact Pipeline with fallback refuse')
         if task.get('continue') and selection(args.selection)['light']:
             raise ValueError('light repair requires a reconciled bounded chain; use default or a new reviewed pilot')
+        if args.selection == 'design/astra-kimi':
+            research_issue(task.get('requirements'))
         extra = []
         if args.bindings:
             local = toml(args.bindings)

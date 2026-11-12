@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Hermetic issue Workflow routing, composition, history and plan refusal tests."""
+import contextlib
 import copy
+import io
 import importlib.util
 import json
 from pathlib import Path
@@ -102,6 +104,70 @@ def pilot(name):
 REAL_CAPTURED_CATALOG = w.captured_catalog
 
 FACTS = dict(w.read(ROOT / 'fixtures/issue-workflows/routing-known.json'), specified_requirements=True, deterministic_acceptance=True, known_bottleneck=True, measured_reproduction=True)
+
+
+class DirectPlanning(unittest.TestCase):
+    def plan(self, task):
+        with tempfile.TemporaryDirectory() as directory:
+            task_file = Path(directory) / 'task.json'
+            routing_file = Path(directory) / 'routing.json'
+            task_file.write_text(json.dumps(task))
+            routing_file.write_text(json.dumps(FACTS))
+            output = io.StringIO()
+            with mock.patch.object(sys, 'argv', ['issue-workflows.py', '--state', '/private/state',
+                                                'plan', task['pipeline']['name'], '--file', str(task_file),
+                                                '--routing', str(routing_file)]), \
+                 mock.patch.object(w, 'installed_authority'), \
+                 mock.patch.object(w, 'check_latest_models'), \
+                 mock.patch.object(w, 'validate_plan', side_effect=lambda name, value, state: value), \
+                 contextlib.redirect_stdout(output):
+                w.main()
+            return json.loads(output.getvalue())
+
+    def test_direct_design_refuses_missing_or_malformed_original_issue_before_native_planning(self):
+        task = pin('design/astra-kimi', 'report')['template']['document']
+        valid = research_requirements()
+        invalid = [{}, None, [], dict(valid, original_issue=None), dict(valid, original_issue=[])]
+        for field in ('goal', 'requirements', 'acceptance'):
+            requirements = copy.deepcopy(valid)
+            del requirements['original_issue'][field]
+            invalid.append(requirements)
+        for field, value in [('goal', ''), ('goal', 7), ('requirements', []),
+                             ('requirements', {}), ('requirements', {'acceptance': []}),
+                             ('requirements', {'acceptance': 'exact'}),
+                             ('requirements', {'acceptance': ['']}),
+                             ('requirements', {'acceptance': [False]})]:
+            requirements = copy.deepcopy(valid)
+            requirements['original_issue'][field] = value
+            invalid.append(requirements)
+        requirements = copy.deepcopy(valid)
+        requirements['original_issue']['extra'] = 'unknown'
+        invalid.append(requirements)
+        for requirements in invalid:
+            with self.subTest(requirements=requirements), mock.patch.object(w, 'invoke', return_value={}) as invoke:
+                task['requirements'] = requirements
+                with self.assertRaisesRegex(ValueError, 'original issue|manifest fields'):
+                    self.plan(task)
+                invoke.assert_not_called()
+        del task['requirements']
+        with mock.patch.object(w, 'invoke', return_value={}) as invoke, \
+             self.assertRaisesRegex(ValueError, 'original issue'):
+            self.plan(task)
+        invoke.assert_not_called()
+
+    def test_direct_design_with_original_issue_still_plans(self):
+        task = pin('design/astra-kimi', 'report')['template']['document']
+        task['requirements'] = research_requirements()
+        with mock.patch.object(w, 'invoke', return_value={'plan_id': 'native-plan'}) as invoke:
+            self.assertEqual(self.plan(task), {'plan_id': 'native-plan'})
+        self.assertEqual(invoke.call_count, 1)
+        self.assertEqual(invoke.call_args.args[3:5], ('plan', '--file'))
+
+    def test_other_direct_plans_do_not_require_original_issue(self):
+        task = pin('bugfix/default-codex')['template']['document']
+        with mock.patch.object(w, 'invoke', return_value={'plan_id': 'native-plan'}) as invoke:
+            self.assertEqual(self.plan(task), {'plan_id': 'native-plan'})
+        self.assertEqual(invoke.call_count, 1)
 
 
 class Workflows(unittest.TestCase):

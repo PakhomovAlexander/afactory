@@ -33,7 +33,7 @@ def definitions():
                              'design review first'),
         ('size/XL', 'EE366A', 'Needs a design document and owner decisions before any code'),
         ('pipeline/light', '36EEA8', 'bugfix/light-kimi-terra-sol: Kimi high; Terra high review; Sol medium evaluation'),
-        ('pipeline/default', '9BE07A', 'bugfix/default-codex: Sol medium; Terra bugs; Astra correctness; '
+        ('pipeline/default', '9BE07A', 'bugfix/default-codex: Sol medium; Terra high bugs/correctness; '
                                        'Astra medium evaluation'),
         ('pipeline/design', 'F0B429', 'design/astra-kimi: Astra design, independent Terra/Kimi challenges, Sol acceptance'),
         ('pipeline/hand', '999999', 'A config edit, doc line or GitHub action; no model Task'),
