@@ -457,7 +457,8 @@ class Journal:
                                             (repo, sig, canonical(state).decode()))
                         else:
                             self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
-                        closed_signatures.add((sig, job['head_sha']))
+                        closed_signatures.add((sig, scope['workflow_id'], scope['job_name'],
+                                               scope['platform'], scope['head_sha']))
         if job['conclusion'] == 'success':
             # Closure is per signature, never per job scope. Every other failure is retained.
             return sorted(closed_signatures)
@@ -686,7 +687,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
                 closed_all.update(closed)
                 scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
                 snapshot['failures'] = [f for f in snapshot['failures']
-                    if not (all(f[key] == job[key] for key in scope) and (f['signature_id'], f['head_sha']) in closed)]
+                    if not (all(f[key] == job[key] for key in scope)
+                            and (f['signature_id'], f['workflow_id'], f['job_name'], f['platform'], f['head_sha']) in closed)]
                 green_events.append((job, closed))
                 continue
             failure = {key: job[key] for key in ('workflow_id', 'workflow_file', 'run_id', 'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion')}
@@ -711,7 +713,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             # Only an unchanged, non-release main head may be advanced by main itself.
             superseded = (previous_release is None and previous['head_sha'] != service['source_sha']
                           and not service.get('release_unavailable', False))
-        if ((previous['signature_id'], previous['head_sha']) in closed_all
+        if ((previous['signature_id'], previous['workflow_id'], previous['job_name'],
+             previous['platform'], previous['head_sha']) in closed_all
                 or previous['occurrence_id'] in admitted_occurrences or superseded
                 or now - instant(previous['last_seen_at']) >= dt.timedelta(days=14)):
             continue
@@ -730,7 +733,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
         omissions.append('unresolved previous failure evidence retained without demonstrated green closure')
     for success, closed in green_events:
         scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
-        if any(all(f[key] == success[key] for key in scope) and (f['signature_id'], f['head_sha']) not in closed
+        if any(all(f[key] == success[key] for key in scope)
+               and (f['signature_id'], f['workflow_id'], f['job_name'], f['platform'], f['head_sha']) not in closed
                for f in snapshot['failures']):
             omissions.append('green closure is absent, older than another failure or has ambiguous timing')
     if service.get('nightly_receipt', {}) is not None and service.get('nightly_receipt', {}).get('conclusion') in ('failure', 'failed') and not snapshot['failures']:

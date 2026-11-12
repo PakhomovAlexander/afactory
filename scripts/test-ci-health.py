@@ -939,6 +939,25 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(failure['job_id'], valid['job_id'])
             self.assertTrue(failure['release_blocking'])
 
+    def test_green_closure_is_scoped_by_workflow_id_not_just_signature(self):
+        raw = service()
+        first = copy.deepcopy(raw['jobs'][0])
+        first.update(completed_at='2026-11-09T01:00:00Z', release_blocking=True)
+        second = copy.deepcopy(first)
+        second.update(workflow_id=2, job_id=404, run_attempt=2,
+                      completed_at='2026-11-09T03:00:00Z', release_blocking=True)
+        self.observe(dict(raw, jobs=[first, second]))
+        success = copy.deepcopy(first)
+        success.update(conclusion='success', job_id=405, run_attempt=3,
+                       completed_at='2026-11-09T02:00:00Z')
+        raw['release_unavailable'] = True
+        observed = self.observe(dict(raw, jobs=[success]))
+        self.assertFalse(observed['complete'])
+        failure, = observed['failures']
+        self.assertEqual(failure['workflow_id'], 2)
+        self.assertTrue(failure['release_blocking'])
+        self.assertEqual(self.observe(dict(raw, jobs=[success])), observed)
+
     def test_two_later_successes_cannot_restore_an_already_closed_failure(self):
         raw = service()
         raw['nightly_receipt']['conclusion'] = 'success'
