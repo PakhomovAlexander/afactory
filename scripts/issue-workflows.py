@@ -172,13 +172,8 @@ def migration(af, repo, state):
             'bindings_policy': 'providers only; codex-personal and pi-personal; never rewrite captured Tasks'}
 
 
-def recorded(state, identity, kind=None):
-    """Read the native Store's addressed bytes, checking both envelope domains.
-
-    The CLI exposes checked inspections, not arbitrary metadata export. Follow only IDs
-    from those inspections using the same CAS layout and canonicalizer as backlog-triage.
-    Missing metadata is a refusal, never an asserted manifest fallback.
-    """
+def recorded_bytes(state, identity, *, blob=True):
+    """Read bounded, content-addressed native bytes, including raw catalog TOML."""
     if not isinstance(identity, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', identity):
         raise ValueError('native evidence requires an exact artifact identity')
     hex_id = identity[7:]
@@ -187,6 +182,19 @@ def recorded(state, identity, kind=None):
         data = stream.read(LIMIT + 1)
     if len(data) > LIMIT:
         raise ValueError('native evidence exceeds 4 MiB')
+    if blob and kernel_contracts.kernel_blob_id(data) != identity:
+        raise ValueError('native blob identity differs')
+    return data
+
+
+def recorded(state, identity, kind=None):
+    """Read the native Store's addressed bytes, checking both envelope domains.
+
+    The CLI exposes checked inspections, not arbitrary metadata export. Follow only IDs
+    from those inspections using the same CAS layout and canonicalizer as backlog-triage.
+    Missing metadata is a refusal, never an asserted manifest fallback.
+    """
+    data = recorded_bytes(state, identity, blob=False)
     value = json.loads(data)
     if kind is None and kernel_contracts.kernel_blob_id(data) == identity:
         return value
@@ -457,6 +465,16 @@ def approved_policy_id(kind):
     return kernel_contracts.kernel_digest(kernel_contracts.KERNEL_CONTENT_DOMAIN, policy, 'policy')
 
 
+def approved_review_policy():
+    # capture_authority maps ReviewSettings to ReviewTaskPolicy (/2). Generation is
+    # a catalog selector, not a persisted policy field; all acceptance fields remain.
+    review = dict(toml(STAGED / 'replacement-catalog.toml')['review'])
+    if review.pop('generation', None) not in (None, 2):
+        raise ValueError('unsupported staged Review generation')
+    review.setdefault('allow_targeted_repairs', False)
+    return dict(review, schema='af.review-task-policy/2', check_policy_id=approved_policy_id('code'))
+
+
 def validate_policy(value, state):
     policy_id = value['plan']['authority']['policy_id']
     revision = recorded(state, value['revision_id'], 'af/TaskRevision@1')
@@ -466,13 +484,29 @@ def validate_policy(value, state):
     pipeline = value['selection']['assessment']['decision']['pipeline']
     kind = 'report' if pipeline in ('issue-internal/report', 'issue-internal/design') else 'code'
     expected = approved_policy_id(kind)
-    if authority.get(kind + '_policy_id') != expected:
-        raise ValueError('effective approved ' + kind + ' policy identity differs')
-    recorded(state, expected)  # Require the exact native policy bytes, not only an asserted ID.
-    if kind == 'code' and authority.get('review_policy_id'):
-        review = recorded(state, authority['review_policy_id'])
-        if review['check_policy_id'] != expected:
-            raise ValueError('effective Review check policy identity differs')
+    # catalog_id is the hash of raw captured TOML, not a parsed JSON projection.
+    catalog_bytes = (STAGED / 'replacement-catalog.toml').read_bytes()
+    catalog_id = kernel_contracts.kernel_blob_id(catalog_bytes)
+    if authority.get('catalog_id') != catalog_id:
+        raise ValueError('effective approved catalog identity differs')
+    if recorded_bytes(state, catalog_id) != catalog_bytes:
+        raise ValueError('effective approved catalog bytes differ')
+    policies = {kind + '_policy_id': expected}
+    if kind == 'code':
+        review = approved_review_policy()
+        policies['review_policy_id'] = kernel_contracts.kernel_digest(
+            kernel_contracts.KERNEL_CONTENT_DOMAIN, review, 'Review policy')
+    # Native Report authority omits code/Review policies. Explicit nulls or extra
+    # domain policies cannot stand in for an omitted native Option.
+    actual = {key: authority[key] for key in
+              ('code_policy_id', 'document_policy_id', 'report_policy_id', 'review_policy_id')
+              if key in authority}
+    if canonical(actual) != canonical(policies):
+        raise ValueError('effective approved ' + kind + '/Review policy identity differs')
+    for key, identity in policies.items():
+        policy = recorded(state, identity)  # Authenticate bytes as well as the asserted identity.
+        if key == 'review_policy_id' and canonical(policy) != canonical(review):
+            raise ValueError('effective approved Review policy differs')
     for node in value['graph']['nodes'].values():
         operator = node['operator'].get('operator', {})
         if operator.get('remote_checks'):
@@ -480,7 +514,7 @@ def validate_policy(value, state):
 
 
 def installed_authority(repo):
-    if toml(Path(repo) / '.af/task-catalog.toml') != toml(STAGED / 'replacement-catalog.toml'):
+    if (Path(repo) / '.af/task-catalog.toml').read_bytes() != (STAGED / 'replacement-catalog.toml').read_bytes():
         raise ValueError('install and review the exact replacement catalog before planning')
     if (Path(repo) / '.af/af.toml').read_bytes() != (STAGED / 'replacement-af.toml').read_bytes():
         raise ValueError('installed approved af.toml settings bytes differ')

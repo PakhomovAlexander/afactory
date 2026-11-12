@@ -78,7 +78,11 @@ After verification and review, the operator:
 The launcher `plan` refuses an installed catalog or policy file that differs from staged authority.
 `compose` checks those exact files at every pinned authority commit. `plan`, `check-plan` and
 reconciliation follow the native captured authority in the Store and check the effective code or
-report policy identity, including Review's check policy, and refuse remote check selection. Missing
+report policy identity and the exact captured catalog bytes, and refuse remote check selection.
+Code Tasks must retain the complete native Review policy: severity gate, reviewer requirements,
+clean and maximum rounds, targeted repair setting and check policy. Report Tasks retain their
+native report-only policy authority; missing required policies, explicit nulls and extra domain
+policies are refused. Installed and pinned catalogs must match the staged bytes exactly. Missing
 Store metadata fails closed. The launcher also
 refuses local slot/package overrides and nonpersonal aliases. Native direct planning is a lower
 level operator interface; it does not enforce the launcher's routing attestations. Never claim

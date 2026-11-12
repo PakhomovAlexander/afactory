@@ -175,20 +175,54 @@ class Workflows(unittest.TestCase):
 
     def test_effective_policy_identity_review_binding_and_local_execution(self):
         revision = {'authority': {'policy_id': 'authority'}}
+        catalog_bytes = (w.STAGED / 'replacement-catalog.toml').read_bytes()
+        catalog_id = w.kernel_contracts.kernel_blob_id(catalog_bytes)
+        review = w.approved_review_policy()
+        review_id = w.kernel_contracts.kernel_digest(w.kernel_contracts.KERNEL_CONTENT_DOMAIN,
+                                                    review, 'review')
         for kind in ('code', 'report'):
-            authority = {kind + '_policy_id': w.approved_policy_id(kind)}
+            policies = {kind + '_policy_id': w.approved_policy_id(kind)}
+            if kind == 'code':
+                policies['review_policy_id'] = review_id
+            authority = dict(policies, catalog_id=catalog_id)
             value = {'revision_id': 'revision', 'plan': {'authority': {'policy_id': 'authority'}},
                      'selection': {'assessment': {'decision': {'pipeline':
                          'issue-internal/report' if kind == 'report' else 'bugfix/default-codex'}}},
                      'graph': {'nodes': {}}}
-            def recorded(state, identity, artifact_type=None):
-                return revision if identity == 'revision' else authority
-            with mock.patch.object(w, 'recorded', side_effect=recorded):
+            records = {'revision': revision, 'authority': authority, review_id: review,
+                       w.approved_policy_id(kind): {}}
+            with mock.patch.object(w, 'recorded', side_effect=lambda state, identity, *a: records[identity]), \
+                 mock.patch.object(w, 'recorded_bytes', return_value=catalog_bytes):
                 w.validate_policy(value, '/state')
-                authority[kind + '_policy_id'] = 'wrong'
-                with self.assertRaisesRegex(ValueError, 'policy identity'):
+                # Every policy Option must be exactly present or absent as native capture writes it.
+                for key in ('code_policy_id', 'document_policy_id', 'report_policy_id', 'review_policy_id'):
+                    for substitute in ('absent', None, 'wrong'):
+                        if substitute == 'absent' and key not in policies:
+                            continue
+                        authority.pop(key, None)
+                        if substitute != 'absent':
+                            authority[key] = substitute
+                        with self.subTest(kind=kind, key=key, substitute=substitute), \
+                             self.assertRaisesRegex(ValueError, 'policy identity'):
+                            w.validate_policy(value, '/state')
+                        authority.pop(key, None)
+                        authority.update(policies)
+                for substitute in (None, 'wrong'):
+                    authority['catalog_id'] = substitute
+                    with self.assertRaisesRegex(ValueError, 'catalog identity'):
+                        w.validate_policy(value, '/state')
+                del authority['catalog_id']
+                with self.assertRaisesRegex(ValueError, 'catalog identity'):
                     w.validate_policy(value, '/state')
-                authority[kind + '_policy_id'] = w.approved_policy_id(kind)
+                authority['catalog_id'] = catalog_id
+                if kind == 'code':
+                    for field in review:
+                        altered = dict(review)
+                        altered[field] = None
+                        records[review_id] = altered
+                        with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'Review policy'):
+                            w.validate_policy(value, '/state')
+                    records[review_id] = review
                 value['graph']['nodes']['gate'] = {'operator': {'operator': {'remote_checks': ['kernel']}}}
                 with self.assertRaisesRegex(ValueError, 'locally'):
                     w.validate_policy(value, '/state')
@@ -196,12 +230,18 @@ class Workflows(unittest.TestCase):
                 value['plan']['authority']['policy_id'] = 'forged'
                 with self.assertRaisesRegex(ValueError, 'native revision'):
                     w.validate_policy(value, '/state')
-                value['plan']['authority']['policy_id'] = 'authority'
-        authority = {'code_policy_id': w.approved_policy_id('code'), 'review_policy_id': 'review'}
-        value['selection']['assessment']['decision']['pipeline'] = 'bugfix/default-codex'
-        with mock.patch.object(w, 'recorded', side_effect=[revision, authority, {}, {'check_policy_id': 'wrong'}]):
-            with self.assertRaisesRegex(ValueError, 'Review check policy'):
-                w.validate_policy(value, '/state')
+
+    def test_catalog_blob_requires_exact_addressed_bytes(self):
+        data = (w.STAGED / 'replacement-catalog.toml').read_bytes()
+        identity = w.kernel_contracts.kernel_blob_id(data)
+        with tempfile.TemporaryDirectory() as state:
+            path = Path(state) / 'cas/objects' / identity[7:9] / identity[9:]
+            path.parent.mkdir(parents=True)
+            path.write_bytes(data)
+            self.assertEqual(w.recorded_bytes(state, identity), data)
+            path.write_bytes(data.replace(b'"major"', b'"blocker"'))
+            with self.assertRaisesRegex(ValueError, 'blob identity'):
+                w.recorded_bytes(state, identity)
 
     def test_all_seven_are_composed_from_native_tasks_with_no_actions(self):
         for name, selection in w.catalog()['selections'].items():

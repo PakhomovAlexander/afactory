@@ -950,6 +950,95 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
         .unwrap();
     assert!(!refused.status.success());
     assert!(text(&refused).contains("only a recorded Task"));
+    // Change only the native Review gate, keeping every package and code check byte.
+    // Both inspection admission and reconciliation must reject the actual captured Task.
+    let catalog_file = repo.join(".af/task-catalog.toml");
+    let catalog_bytes = std::fs::read(&catalog_file).unwrap();
+    let code_bytes = std::fs::read(repo.join(".af/code-policy.toml")).unwrap();
+    let weakened = String::from_utf8(catalog_bytes.clone())
+        .unwrap()
+        .replace("\"gate\" = \"major\"", "\"gate\" = \"blocker\"");
+    assert_ne!(weakened.as_bytes(), catalog_bytes);
+    std::fs::write(&catalog_file, weakened).unwrap();
+    git(&repo, &["add", ".af/task-catalog.toml"]);
+    git(&repo, &["commit", "-qm", "negative Review gate fixture"]);
+    assert_eq!(
+        std::fs::read(repo.join(".af/code-policy.toml")).unwrap(),
+        code_bytes
+    );
+    let planned = plan("bugfix/default-codex", "weakened-review-gate", false);
+    assert!(planned.status.success(), "{}", text(&planned));
+    let weak: Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let inspection = temp.path().join("weakened-review-gate.json");
+    std::fs::write(&inspection, planned.stdout).unwrap();
+    let checked = std::process::Command::new("python3")
+        .arg("-I")
+        .arg(workspace().join("scripts/issue-workflows.py"))
+        .arg("--state")
+        .arg(&state)
+        .args(["check-plan", "bugfix/default-codex"])
+        .arg(&inspection)
+        .output()
+        .unwrap();
+    assert!(
+        !checked.status.success(),
+        "weakened Review gate must refuse"
+    );
+    assert!(
+        text(&checked).contains("catalog identity"),
+        "{}",
+        text(&checked)
+    );
+    let commit = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let manifest = temp.path().join("weakened-review-pilot.json");
+    std::fs::write(
+        &manifest,
+        serde_json::to_vec(&json!({
+            "schema": "af.issue-workflow-pilot/1",
+            "issue": example("known-fix.json")["requirements"]["issue_url"],
+            "pull_request": null, "source_commit": commit.trim(),
+            "selection": "bugfix/default-codex", "tasks": [weak["task_id"]]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let isolated = common::af();
+    let mut command = std::process::Command::new("python3");
+    for (key, value) in isolated.get_envs() {
+        if let Some(value) = value {
+            command.env(key, value);
+        }
+    }
+    let checked = command
+        .arg("-I")
+        .arg(workspace().join("scripts/issue-workflows.py"))
+        .arg("--af")
+        .arg(isolated.get_program())
+        .arg("--repo")
+        .arg(&repo)
+        .arg("--state")
+        .arg(&state)
+        .arg("reconcile")
+        .arg(&manifest)
+        .output()
+        .unwrap();
+    assert!(
+        !checked.status.success(),
+        "weakened Review reconciliation must refuse"
+    );
+    assert!(
+        text(&checked).contains("catalog identity"),
+        "{}",
+        text(&checked)
+    );
+    std::fs::write(&catalog_file, &catalog_bytes).unwrap();
+    git(&repo, &["add", ".af/task-catalog.toml"]);
+    git(&repo, &["commit", "-qm", "restore approved Review gate"]);
     // Same catalog, changed real policy: native planning may admit it, but every launcher
     // path must refuse it. Only this private repository is changed; no gate is executed.
     let policy_file = repo.join(".af/code-policy.toml");
