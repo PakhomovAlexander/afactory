@@ -635,6 +635,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     previous_capture = journal.metadata().get('capture')
     previous_failures = (previous_capture['snapshot']['failures']
         if previous_capture and previous_capture['snapshot']['repository'] == repository else [])
+    previous_release_flags = {failure['occurrence_id']: failure['release_blocking']
+                              for failure in previous_failures}
     seen = {}
     green_events = []
     closed_all = set()
@@ -689,6 +691,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
                 continue
             failure = {key: job[key] for key in ('workflow_id', 'workflow_file', 'run_id', 'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion')}
             failure.update(folded, log_artifacts=list(dict.fromkeys(refs)), release_blocking=bool(job.get('release_blocking', False)))
+            if service.get('release_unavailable', False) and previous_release_flags.get(occurrence, False):
+                failure['release_blocking'] = True
             structural({**snapshot, 'failures': [failure]}, 'ci-health-snapshot')
             snapshot['failures'].append(failure)
             admitted_occurrences.add(occurrence)
@@ -705,7 +709,8 @@ def fold_capture(service, journal, *, snapshot_fits=None):
         else:
             # An unavailable release lookup is not evidence that a release was removed.
             # Only an unchanged, non-release main head may be advanced by main itself.
-            superseded = previous_release is None and previous['head_sha'] != service['source_sha']
+            superseded = (previous_release is None and previous['head_sha'] != service['source_sha']
+                          and not service.get('release_unavailable', False))
         if ((previous['signature_id'], previous['head_sha']) in closed_all
                 or previous['occurrence_id'] in admitted_occurrences or superseded
                 or now - instant(previous['last_seen_at']) >= dt.timedelta(days=14)):
