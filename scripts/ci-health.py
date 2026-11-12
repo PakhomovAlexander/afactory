@@ -266,7 +266,8 @@ def validate_snapshot(value):
     require(value['complete'] == (not value['omissions']), 'Completeness must name omissions')
     seen = set()
     for failure in value['failures']:
-        require(failure['occurrence_id'] == occurrence_id(value['repository'], failure), 'Occurrence identity mismatch')
+        require(failure['occurrence_id'] == occurrence_id(value['repository'], failure),
+                f"Occurrence identity mismatch: {failure['occurrence_id']} != {occurrence_id(value['repository'], failure)}")
         require(failure['signature_id'] == signature_id(value['repository'], failure, failure['occurrence_id'], failure['normalized_fingerprint']), 'Signature identity mismatch')
         require(failure['occurrence_id'] not in seen, 'Duplicate occurrence')
         seen.add(failure['occurrence_id'])
@@ -430,6 +431,7 @@ class Journal:
         completed = job.get('completed_at')
         if completed is not None:
             completed = instant(completed)
+            require(completed <= now, 'Job completion outside capture')
         closed_signatures = set()
         for repo, sig, raw in rows:
             state = loads(raw)
@@ -443,8 +445,18 @@ class Journal:
                     if (all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha'))
                             and completed is not None and completed > instant(scope['completed_at'])
                             and now - instant(scope['last_seen_at']) < dt.timedelta(days=14)):
-                        self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
-                        closed_signatures.add(sig)
+                        remaining = [s for s in state['scopes'] if not all(
+                            s[key] == scope[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha'))]
+                        if remaining:
+                            # Other heads retain their active scopes and recurrence history.
+                            state['scopes'] = remaining
+                            state['last_seen_at'] = at
+                            structural(state, 'ci-signature-state')
+                            self.db.execute('INSERT OR REPLACE INTO signatures VALUES (?,?,?)',
+                                            (repo, sig, canonical(state).decode()))
+                        else:
+                            self.db.execute('DELETE FROM signatures WHERE repository=? AND signature=?', (repo, sig))
+                        closed_signatures.add((sig, job['head_sha']))
         if job['conclusion'] == 'success':
             # Closure is per signature, never per job scope. Every other failure is retained.
             return sorted(closed_signatures)
@@ -620,16 +632,28 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     # Missing receipts remain representable as named omissions below.
     structural({**snapshot, 'omissions': omissions[:100]}, 'ci-health-snapshot')
     previous_capture = journal.metadata().get('capture')
-    previous_failures = previous_capture['snapshot']['failures'] if previous_capture else []
+    previous_failures = (previous_capture['snapshot']['failures']
+        if previous_capture and previous_capture['snapshot']['repository'] == repository else [])
     seen = {}
     green_events = []
     closed_all = set()
+    def current_id(job):
+        try:
+            return occurrence_id(repository, job)
+        except (ValueError, KeyError, TypeError):
+            return None
+    current_occurrences = {identity for job in jobs if isinstance(job, dict)
+                           if (identity := current_id(job)) is not None}
     def order(item):
         index, job = item
         if not isinstance(job, dict):
             return (0, 0, 0, index)
         completed = job.get('completed_at', at)
-        instant(completed)
+        try:
+            instant(completed)
+        except (ValueError, TypeError):
+            omissions.append('malformed completion timestamp for job ' + str(index))
+            completed = at
         keys = [job.get(k, 0) for k in ('run_id', 'run_attempt', 'job_id')]
         return (completed, *[v if type(v) is int else 0 for v in keys], index)
     for index, job in sorted(enumerate(jobs), key=order):
@@ -665,10 +689,10 @@ def fold_capture(service, journal, *, snapshot_fits=None):
                 closed_all.update(closed)
                 scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
                 snapshot['failures'] = [f for f in snapshot['failures']
-                    if not (all(f[key] == job[key] for key in scope) and f['signature_id'] in closed)]
+                    if not (all(f[key] == job[key] for key in scope) and (f['signature_id'], f['head_sha']) in closed)]
                 for previous in previous_failures:
-                    if (all(previous[key] == job[key] for key in scope)
-                            and previous['signature_id'] not in closed_all and previous['occurrence_id'] not in seen):
+                    if ((previous['signature_id'], previous['head_sha']) not in closed_all
+                            and previous['occurrence_id'] not in seen and previous['occurrence_id'] not in current_occurrences):
                         retained = dict(previous)
                         retained['last_seen_at'] = at
                         structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
@@ -684,7 +708,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             omissions.append('malformed job ' + str(index) + ': ' + str(error)[:160])
     for success, closed in green_events:
         scope = ('workflow_id', 'job_name', 'platform', 'head_sha')
-        if any(all(f[key] == success[key] for key in scope) and f['signature_id'] not in closed
+        if any(all(f[key] == success[key] for key in scope) and (f['signature_id'], f['head_sha']) not in closed
                for f in snapshot['failures']):
             omissions.append('green closure is absent, older than another failure or has ambiguous timing')
     if service.get('nightly_receipt', {}) is not None and service.get('nightly_receipt', {}).get('conclusion') in ('failure', 'failed') and not snapshot['failures']:

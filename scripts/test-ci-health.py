@@ -690,6 +690,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_repeated_attempts_cross_head_history_expiry_and_green_reset(self):
         raw = service()
+        raw['jobs'][0]['completed_at'] = '2026-11-09T01:00:00Z'
         first = self.observe(raw)['failures'][0]
         self.assertEqual(self.observe(raw)['failures'][0]['occurrence_count'], 1)
         raw['jobs'][0]['job_id'] += 1
@@ -701,9 +702,13 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(changed['signature_id'], first['signature_id'])
         self.assertEqual(changed['occurrence_count'], 3)
         raw['jobs'][0]['conclusion'] = 'success'
-        raw['jobs'][0]['completed_at'] = '2026-11-09T05:00:00Z'
+        raw['jobs'][0]['completed_at'] = '2026-11-09T02:00:00Z'
+        other_head_success = copy.deepcopy(raw['jobs'][0])
+        other_head_success.update(head_sha='a' * 40, job_id=999)
+        raw['jobs'].append(other_head_success)
         self.assertEqual(self.observe(raw)['failures'], [])
         raw['jobs'][0]['conclusion'] = 'failure'
+        raw['jobs'].pop()
         self.assertEqual(self.observe(raw)['failures'][0]['occurrence_count'], 1)
         raw['captured_at'] = '2026-11-24T04:00:00Z'
         expired = self.observe(raw)['failures'][0]
@@ -769,6 +774,27 @@ class EvidenceTests(unittest.TestCase):
         self.journal.db.execute('DROP TRIGGER refuse_receipt')
         self.assertEqual(self.observe(), captured)
 
+    def test_green_closure_preserves_other_heads_recurrence_and_release_alerts(self):
+        raw = service()
+        main = copy.deepcopy(raw['jobs'][0])
+        main.update(head_sha='a' * 40, completed_at='2026-11-09T01:00:00Z')
+        release = copy.deepcopy(main)
+        release.update(head_sha='b' * 40, job_id=404, run_attempt=2,
+                       completed_at='2026-11-09T02:00:00Z', release_blocking=True)
+        self.observe(dict(raw, jobs=[main, release]))
+        success = copy.deepcopy(main)
+        success.update(conclusion='success', job_id=405, run_attempt=3,
+                       completed_at='2026-11-09T03:00:00Z')
+        observed = self.observe(dict(raw, jobs=[success]))
+        self.assertEqual([f['head_sha'] for f in observed['failures']], ['b' * 40])
+        self.assertTrue(observed['failures'][0]['release_blocking'])
+        release['run_attempt'] = 4
+        release['job_id'] = 406
+        release['completed_at'] = '2026-11-09T04:00:00Z'
+        observed = self.observe(dict(raw, jobs=[release]))
+        self.assertEqual(observed['failures'][0]['occurrence_count'], 3)
+        self.assertTrue(observed['failures'][0]['release_blocking'])
+
     def test_two_later_successes_cannot_restore_an_already_closed_failure(self):
         raw = service()
         raw['nightly_receipt']['conclusion'] = 'success'
@@ -812,9 +838,10 @@ class EvidenceTests(unittest.TestCase):
 
     def test_green_closure_is_order_independent_within_a_capture_and_conflicts_are_unknown(self):
         raw = service()
+        raw['jobs'][0]['completed_at'] = '2026-11-09T01:00:00Z'
         passed = copy.deepcopy(raw['jobs'][0])
         passed.update(conclusion='success', run_attempt=2, job_id=202,
-                      completed_at='2026-11-09T05:00:00Z')
+                      completed_at='2026-11-09T02:00:00Z')
         raw['nightly_receipt']['conclusion'] = 'success'
         for jobs in ([raw['jobs'][0], passed], [passed, raw['jobs'][0]]):
             observed = self.observe(dict(raw, jobs=jobs))
@@ -1660,6 +1687,11 @@ class ProductionTests(unittest.TestCase):
         for run_id in (101, 301):
             routes[f'repos/octo/project/actions/runs/{run_id}/attempts/2'].update(
                 run_started_at='2026-11-10T03:00:00Z', updated_at='2026-11-10T03:01:00Z')
+        for job_id in (201, 403):
+            for run_id in (101, 301):
+                for job in routes[f'repos/octo/project/actions/runs/{run_id}/attempts/2/jobs?per_page=100']['jobs']:
+                    if job['id'] == job_id:
+                        job['completed_at'] = '2026-11-10T03:01:00Z'
         # Use another owner-selected release PR, still bound to the pinned repository.
         routes['repos/octo/project/pulls/8'] = {**routes['repos/octo/project/pulls/7'], 'number': 8}
         options = {**self.options, 'since': '2026-11-09T04:00:00Z', 'captured_at': '2026-11-10T04:00:00Z',
@@ -1674,7 +1706,7 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(observed['outcome'], 'done', observed)
         second_snapshot = C.loads(observed['observation']['evidence'])
         self.assertEqual(second_snapshot, expected)
-        self.assertTrue(second_snapshot['complete'])
+        self.assertTrue(second_snapshot['complete'], second_snapshot['omissions'])
         self.assertNotEqual(first_snapshot['captured_at'], second_snapshot['captured_at'])
         self.assertNotEqual(first_snapshot['nightly_receipt']['identity'], second_snapshot['nightly_receipt']['identity'])
         self.assertEqual(second_snapshot['release_pr']['number'], 8)
@@ -1935,6 +1967,27 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual([f['job_id'] for f in snapshot['failures']], [403])
         self.assertFalse(snapshot['complete'])
         self.assertTrue(any('green closure' in reason for reason in snapshot['omissions']))
+
+    def test_malformed_or_future_completion_cannot_abort_or_close_release_failure(self):
+        prefix = 'repos/octo/project/'
+        for invalid in ('not-a-time', '2099-01-01T00:00:00Z'):
+            routes = production_routes()
+            jobs_key = prefix + 'actions/runs/302/attempts/1/jobs?per_page=100'
+            add_production_job(routes, 'd' * 40, 302, 1, 404, 'success',
+                               '2026-11-09T03:00:00Z', '2026-11-09T03:30:00Z',
+                               labels=['macos-14', 'ARM64'])
+            routes[jobs_key]['jobs'][0]['completed_at'] = invalid
+            snapshot = self.P.observe(self.options, opener=Transport(routes))
+            self.assertFalse(snapshot['complete'], invalid)
+            failure, = snapshot['failures']
+            self.assertEqual(failure['job_id'], 403, invalid)
+            self.assertTrue(failure['release_blocking'])
+        routes = production_routes()
+        routes[prefix + 'actions/runs/101/attempts/2/jobs?per_page=100']['jobs'][0]['completed_at'] = 'invalid'
+        routes[prefix + 'actions/runs?head_sha=' + 'd' * 40 + '&per_page=100']['workflow_runs'].reverse()
+        snapshot = self.P.observe(self.options, opener=Transport(routes))
+        self.assertFalse(snapshot['complete'])
+        self.assertEqual(snapshot['failures'][0]['job_id'], 403)
 
     def test_unfinished_attempt_metadata_never_suppresses_failed_siblings(self):
         prefix = 'repos/octo/project/'

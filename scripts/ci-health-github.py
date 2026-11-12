@@ -427,6 +427,15 @@ def collect(github, *, captured_at, main_ref, since, nightly_receipt, release_pr
                             'failing_tests': [], 'error_lines': [], 'log_artifacts': [], 'release_blocking': blocking}
                         completed_at = job.get('completed_at')
                         if completed_at is not None:
+                            try:
+                                completed_instant = C.instant(completed_at)
+                                C.require(started <= completed_instant <= updated
+                                          and completed_instant <= C.instant(captured_at),
+                                          'Job completion outside its attempt interval or capture')
+                            except (ValueError, TypeError):
+                                omit('invalid completion timestamp for job ' + str(job_id))
+                                completed_at = None
+                        if completed_at is not None:
                             observation['completed_at'] = completed_at
                         ident = C.occurrence_id(github.repository, observation)
                         C.require(ident not in seen, 'Duplicate job attempt evidence')
