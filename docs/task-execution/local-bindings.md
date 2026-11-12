@@ -68,3 +68,15 @@ The plan includes the effective package and every default package whose contract
 its replacement. Resume recompiles those captured bytes and settings; it does not read the
 local file again. The integration fixture runs Alice and Bob against the same Pipeline,
 changes their local files after planning, and verifies both captured executions.
+
+## Report evaluation dependencies
+
+Report verifiers may declare any number of prior `af/ReportEvaluation@1` inputs with
+project-chosen names. Each is required, cardinality `one`, and `same_as` the `source` input.
+The captured graph binds each to its exact verifier node's `result` port. Admission requires
+distinct passed evaluations of the same document, sources, checks, Snapshot and requirements;
+missing, stale or substituted evaluations are refused. A verifier with no prior evaluations
+remains valid. Each dependency must appear in the Worker's `signature.retains` entry for `result`;
+output admission checks that the result envelope retains its exact input artifact ID, so the
+accepted report evidence preserves every declared prior evaluation in its lineage.
+The consuming package owns its dependency count and independence bindings.
