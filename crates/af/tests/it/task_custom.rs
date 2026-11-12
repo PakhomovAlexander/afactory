@@ -2098,7 +2098,8 @@ fn ci_health_native_scenario_notifies_findings_and_first_remedy_before_outcome_a
 #[test]
 fn ci_health_refused_diagnosis_records_deterministic_unknown_and_notifies_without_remedy_or_watch()
 {
-    for mode in ["ci-foreign-evidence"] {
+    {
+        let mode = "ci-foreign-evidence";
         let f = Fixture::ci_health();
         std::fs::write(f.auth.join("mode"), mode).unwrap();
         let plan = f.ci_plan();
@@ -2277,10 +2278,11 @@ fn ci_health_refused_diagnosis_records_deterministic_unknown_and_notifies_withou
 
 #[test]
 fn ci_health_native_acceptance_refuses_foreign_diagnosis_evidence_and_identity() {
-    for (mode, reason) in [(
-        "ci-foreign-signature",
-        "CI diagnosis references evidence outside selected snapshot occurrence",
-    )] {
+    {
+        let (mode, reason) = (
+            "ci-foreign-signature",
+            "CI diagnosis references evidence outside selected snapshot occurrence",
+        );
         let f = Fixture::ci_health();
         std::fs::write(f.auth.join("mode"), mode).unwrap();
         let planned = f.ci_plan();
