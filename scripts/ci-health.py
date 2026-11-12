@@ -131,8 +131,9 @@ def schema_documents():
     selection = obj({'schema': {'const': 'af.ci-diagnosis-selection/1'}, 'occurrence_id': ident,
                      'signature_id': ident, 'source_sha': sha})
     scope = obj({'workflow_id': positive, 'job_name': text(256), 'platform': text(128), 'head_sha': sha,
-                 'last_seen_at': timestamp, 'completed_at': timestamp})
-    state = obj({'schema': {'const': 'af.ci-signature-state/2'}, 'scopes': array(scope, MAX_STATE),
+                 'last_seen_at': timestamp, 'completed_at': timestamp,
+                 'completion_unknown': {'type': 'boolean'}})
+    state = obj({'schema': {'const': 'af.ci-signature-state/3'}, 'scopes': array(scope, MAX_STATE),
         'first_seen_at': timestamp, 'last_seen_at': timestamp,
         'occurrences': {'type': 'object', 'maxProperties': MAX_STATE,
             'propertyNames': ident, 'additionalProperties': obj({'at': timestamp, 'run': positive, 'attempt': positive})},
@@ -187,7 +188,7 @@ def schema_documents():
             for name, shape in [('ci-health-snapshot', snapshot), ('ci-diagnosis', diagnosis), ('ci-diagnosis-selection', selection),
                 ('ci-signature-state', state), ('ci-health-state', journal),
                 ('ci-observe-service', service), ('ci-health-notification', notification)]
-            for version in [5 if name == 'ci-health-notification' else 2 if name in ('ci-health-state', 'ci-signature-state') else 1]}
+            for version in [5 if name == 'ci-health-notification' else 3 if name == 'ci-signature-state' else 2 if name == 'ci-health-state' else 1]}
 
     documents['scenario-ci-notification-evidence-v2.json'] = notification_evidence_schema()
     return documents
@@ -209,7 +210,7 @@ def structural(value, name):
         for document in schema_documents().values():
             _VALIDATOR.schemas[document['$id']] = document
     errors = _VALIDATOR.errors(value, 'urn:af:schema:' + name
-        + (':5' if name == 'ci-health-notification' else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state', 'ci-signature-state') else ':1'))
+        + (':5' if name == 'ci-health-notification' else ':3' if name == 'ci-signature-state' else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state') else ':1'))
     require(not errors, '; '.join(errors[:4]))
     require(len(canonical(value)) <= (MAX_BYTES if name in ('ci-health-snapshot', 'ci-diagnosis') else 1_048_576), 'CI evidence exceeds byte bound')
 
@@ -444,6 +445,7 @@ class Journal:
             elif repo == repository and job['conclusion'] == 'success':
                 for scope in state['scopes']:
                     if (all(scope[key] == job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha'))
+                            and not scope['completion_unknown']
                             and completed is not None and completed > instant(scope['completed_at'])
                             and now - instant(scope['last_seen_at']) < dt.timedelta(days=14)):
                         remaining = [s for s in state['scopes'] if not all(
@@ -463,7 +465,7 @@ class Journal:
             # Closure is per signature, never per job scope. Every other failure is retained.
             return sorted(closed_signatures)
         raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
-        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/2', 'scopes': [], 'first_seen_at': at,
+        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/3', 'scopes': [], 'first_seen_at': at,
             'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
         structural(state, 'ci-signature-state')
         require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
@@ -476,14 +478,22 @@ class Journal:
         scope = {key: job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')}
         previous_completion = max((instant(s['completed_at']) for s in state['scopes']
             if all(s[key] == scope[key] for key in scope)), default=None)
+        previous_unknown = any(s['completion_unknown'] for s in state['scopes']
+            if all(s[key] == scope[key] for key in scope))
         state['scopes'] = [s for s in state['scopes'] if now - instant(s['last_seen_at']) < dt.timedelta(days=14)
             and not all(s[key] == scope[key] for key in scope)]
         require(len(state['scopes']) < MAX_STATE, 'Signature scope bound exhausted')
-        event_completion = completed or now
-        if previous_completion is not None:
-            event_completion = max(event_completion, previous_completion)
+        if completed is not None:
+            # Exact recovered evidence replaces a synthetic unknown bound, even when the
+            # unavailable capture had assigned a later timestamp. Measured bounds only increase.
+            event_completion = completed if previous_unknown else max(completed, previous_completion or completed)
+            completion_unknown = False
+        else:
+            event_completion = max(now, previous_completion or now)
+            completion_unknown = True
         state['scopes'].append({**scope, 'last_seen_at': at,
-            'completed_at': event_completion.strftime('%Y-%m-%dT%H:%M:%SZ')})
+            'completed_at': event_completion.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'completion_unknown': completion_unknown})
         state.update(first_seen_at=min(v['at'] for v in state['occurrences'].values()), last_seen_at=at)
         structural(state, 'ci-signature-state')
         if raw is None:

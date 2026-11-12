@@ -958,6 +958,30 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(failure['release_blocking'])
         self.assertEqual(self.observe(dict(raw, jobs=[success])), observed)
 
+    def test_recovered_completion_replaces_synthetic_unknown_and_closes_only_when_proven(self):
+        raw = service()
+        failure = copy.deepcopy(raw['jobs'][0])
+        failure['completed_at'] = None
+        raw['nightly_receipt']['conclusion'] = 'success'
+        self.observe(dict(raw, jobs=[failure]))
+        recovered = copy.deepcopy(failure)
+        recovered['completed_at'] = '2026-11-09T02:00:00Z'
+        success = copy.deepcopy(failure)
+        success.update(conclusion='success', job_id=202, completed_at='2026-11-09T03:00:00Z')
+        raw['jobs'] = [recovered, success]
+        observed = self.observe(raw)
+        self.assertEqual(observed['failures'], [])
+        self.assertTrue(observed['complete'], observed['omissions'])
+
+        self.journal.close()
+        self.journal = C.Journal(Path(self.temp.name) / 'observer-unknown-time.sqlite')
+        self.addCleanup(self.journal.close)
+        self.observe(dict(raw, jobs=[failure]))
+        success['completed_at'] = '2026-11-09T05:00:00Z'
+        observed = self.observe(dict(raw, jobs=[success]))
+        self.assertFalse(observed['complete'])
+        self.assertEqual([f['job_id'] for f in observed['failures']], [failure['job_id']])
+
     def test_two_later_successes_cannot_restore_an_already_closed_failure(self):
         raw = service()
         raw['nightly_receipt']['conclusion'] = 'success'

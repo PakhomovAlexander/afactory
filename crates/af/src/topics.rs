@@ -621,7 +621,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   CI health Phase 1: af.ci-health-snapshot/1, af.ci-diagnosis/1, af.ci-diagnosis-selection/1,
   af.ci-health-notification/5,
   af.ci-observe-occurrence/1 and af.ci-observe-service/1,
-  af.ci-signature-state/2, af.ci-health-state/2, af.maintenance-watchdog-config/1 and
+  af.ci-signature-state/3, af.ci-health-state/2, af.maintenance-watchdog-config/1 and
   af.maintenance-watchdog-alert/1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
   exact bindings, signatures, budgets, lifecycle and transitive identity.
