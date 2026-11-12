@@ -82,8 +82,8 @@
 "path" = ".af/task-packages/issue-internal/codex-light-evaluator"
 
 ["packages"."issue-internal/correctness"]
-"version" = "1.0.1"
-"digest" = "sha256:d560bb015b980a3705b5eb3a1b5355e3ec0b1ea13f041183322b388579631d3d"
+"version" = "1.0.2"
+"digest" = "sha256:de89c6934eeb21005c1f59aa5c5e198d85fc46fce86ed7055114c645c97b7e79"
 "path" = ".af/task-packages/issue-internal/correctness"
 
 ["packages"."issue-internal/design-acceptor"]
