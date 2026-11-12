@@ -85,10 +85,17 @@ private. Successful replies still require successful settlement. See the
 
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
-executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must
-resolve outside every repository's `.git` (directory or worktree marker file) and `.af`
-ancestors, including from nested working directories with absolute PATH entries. Failed Pi setup keeps
-its JSON (or human result) on stdout and prints an AF-authored detail and outcome on stderr.
+executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must be
+installed outside repository-owned paths: an ancestor directory holds `.git` or `.af`, or the
+installation lies beneath the toplevel of the Git repository containing the invocation directory.
+Outside a Git repository, the invocation directory alone never makes an installation
+repository-owned. If the toplevel cannot be determined, the invocation directory is treated as
+outside any Git repository; the ancestor checks still apply. Each setup or probe operation
+discovers the toplevel once, using a canonical, executable system Git at `/usr/bin/git` or
+`/bin/git` with no `.git` or `.af` ancestor. Discovery never executes a Git from PATH, shell
+text or the installation. This includes `.git` directories and worktree marker files, nested
+working directories and absolute PATH entries. Failed Pi setup keeps its JSON (or
+human result) on stdout and prints an AF-authored detail and outcome on stderr.
 
 Pi setup does not start login; `--login` and `af provider auth` remain unavailable for Pi.
 `provider detect` scans Claude/Codex contexts; Pi registration is explicit. Writable Pi

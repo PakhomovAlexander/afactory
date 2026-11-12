@@ -427,7 +427,7 @@ class RequestIdentity(TempDir):
                 request, line = self.recorded(instance_id)
                 self.assertIs(oracle.check_request(self.doc, request), request)
                 extra = {}
-                if request["contract_id"] == "persistence_fs_v1":
+                if request["contract_id"] == "persistence_fs_v3":
                     expected = reference.persistence_logical_bytes(
                         request["parameters"]["operation"])
                     extra = {"logical_bytes": {"value": str(expected or 4096),

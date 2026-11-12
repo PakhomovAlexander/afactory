@@ -1567,7 +1567,7 @@ mod tests {
 
     #[test]
     fn dropping_device_login_reaps_the_owned_native_cli_without_json_requests() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::providers::fixture_fs::tempdir().unwrap();
         let marker = temporary.path().join("unexpected-native-input");
         let script = device_script("read -r unexpected; printf unexpected > \"$1\"; exit 1");
         let mut command = Command::new("/bin/sh");

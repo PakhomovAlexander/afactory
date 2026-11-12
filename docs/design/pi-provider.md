@@ -73,9 +73,16 @@ catalog position. Large SDK catalogs do not require a larger protocol record or 
 SDK. Managed `<agent>/bin/pi` discovery reads `install/current-version` as exactly `1.4.0`,
 then resolves that release's `node_modules/@earendil-works/pi-coding-agent/dist/index.js`.
 It never executes the launcher. Symlinked/malformed version files, unsupported versions and
-release escapes refuse. Node, SDK and admitted provider modules must be installed outside
-repository-owned paths: every ancestor is checked for `.git` and `.af`. Homebrew's `.git`
-ancestor receives no exemption. Existing installation/path boundaries remain binding.
+release escapes refuse. Node and the SDK must be installed outside repository-owned paths:
+an ancestor directory holds `.git` or `.af`, or the installation lies beneath the toplevel of
+the Git repository containing the invocation directory. Outside a Git repository, the invocation
+directory alone never makes an installation repository-owned. If the toplevel cannot be
+determined, the invocation directory is treated as outside any Git repository; the ancestor
+checks still apply. Each setup or probe operation discovers the toplevel once, using a
+canonical, executable system Git at `/usr/bin/git` or `/bin/git` with no `.git` or `.af`
+ancestor. Discovery never executes a Git from PATH, shell text or the installation.
+Admitted provider modules also have every ancestor checked for `.git` and `.af`.
+Homebrew's `.git` ancestor receives no exemption.
 
 ## Explicit credentials and installed provider capabilities
 

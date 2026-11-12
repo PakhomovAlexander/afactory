@@ -89,6 +89,30 @@ fn filed_bytes(cas: &Cas) -> u64 {
 }
 
 #[test]
+fn database_observation_detects_collection_and_its_interrupted_sweep() {
+    let mut f = Fixture::new(false);
+    finished(&mut f, "history", vec![]);
+    let reader = EventStore::open_read_only(&f.path).unwrap();
+    let observed = reader.database_observation().unwrap();
+    let own = f.store.database_observation().unwrap();
+    let stopped = f.store.apply_task_collection(&f.cas, 0, 0, true).unwrap();
+    assert_eq!(stopped.tombstoned, ["history"]);
+    assert!(!stopped.swept);
+    assert!(!reader.database_observation_unchanged(&observed).unwrap());
+    assert!(!f.store.database_observation_unchanged(&own).unwrap());
+    let observed = reader.database_observation().unwrap();
+    assert!(
+        f.store
+            .apply_task_collection(&f.cas, 0, 0, false)
+            .unwrap()
+            .swept
+    );
+    // Completing an already-tombstoned sweep changes no discoverable event row. Its CAS
+    // deletion cannot revive a collected candidate; exact artifact checks remain separate.
+    assert!(reader.database_observation_unchanged(&observed).unwrap());
+}
+
+#[test]
 fn keeping_one_collects_the_older_task_and_sweeps_exactly_what_the_preview_said() {
     let mut f = Fixture::new(false);
     let (older_revision, older_result) = finished(&mut f, "older", vec![]);

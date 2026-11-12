@@ -3855,6 +3855,8 @@ pub(super) struct OpenedTask {
     pub(super) cas: Cas,
     pub(super) store: EventStore,
     pub(super) task: TaskProjection,
+    view_artifacts: std::cell::RefCell<BTreeSet<String>>,
+    view_runs: std::cell::RefCell<BTreeMap<String, u64>>,
 }
 
 pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<OpenedTask, String> {
@@ -3889,6 +3891,8 @@ pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<O
         cas,
         store,
         task,
+        view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
+        view_runs: std::cell::RefCell::new(BTreeMap::new()),
     })
 }
 
@@ -3902,8 +3906,109 @@ impl OpenedTask {
             _ => None,
         };
         let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
-        let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
+        let view = self.track_display(|| {
+            let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled);
+            #[cfg(debug_assertions)]
+            runs::observation_barrier("view")?;
+            view
+        })?;
         Ok((result, view))
+    }
+
+    /// Retain the complete display read closure until the projection changes. If a stream
+    /// advances between display operations, keep its oldest prefix so validation forces a
+    /// reconstruction rather than combining two different observations.
+    fn track_display<T>(&self, read: impl FnOnce() -> T) -> T {
+        let ((value, runs), reads) = self.cas.track_reads(|| self.store.track_replays(read));
+        self.view_artifacts.borrow_mut().extend(reads);
+        let mut observed = self.view_runs.borrow_mut();
+        for (run, count) in runs {
+            observed
+                .entry(run)
+                .and_modify(|old| *old = (*old).min(count))
+                .or_insert(count);
+        }
+        value
+    }
+
+    /// Reuse this projection only after exact byte checks of its full read closure. The
+    /// caller still observes run/cancel files and lease deadlines independently of the log.
+    pub(super) fn refresh_if_changed(&mut self) -> Result<bool, String> {
+        self.refresh_if_changed_with(|cas, id| {
+            cas.verify(id).map(|_| ()).map_err(|e| e.to_string())
+        })
+    }
+
+    fn refresh_if_changed_with(
+        &mut self,
+        mut verify_display: impl FnMut(&Cas, &str) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if self
+            .store
+            .task_observation_unchanged_with(
+                &self.cas,
+                &self.task,
+                &self.view_runs.borrow(),
+                || {
+                    for id in self.view_artifacts.borrow().iter() {
+                        verify_display(&self.cas, id).map_err(af_store::StoreError::Artifact)?;
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(false);
+        }
+        self.reset_observation()?;
+        Ok(true)
+    }
+
+    /// Discovery can observe rows that never cause a replay (or no rows at all). Check its
+    /// database token around the complete artifact/stream verification too. Collection during
+    /// verification discards the document even if a now-unreachable artifact read failed.
+    fn refresh_status_if_changed(
+        &mut self,
+        discovery: &af_store::store::DatabaseObservation,
+    ) -> Result<bool, String> {
+        self.refresh_status_if_changed_with(discovery, |cas, id| {
+            cas.verify(id).map(|_| ()).map_err(|e| e.to_string())
+        })
+    }
+
+    fn refresh_status_if_changed_with(
+        &mut self,
+        discovery: &af_store::store::DatabaseObservation,
+        verify_display: impl FnMut(&Cas, &str) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if self
+            .store
+            .database_observation_unchanged(discovery)
+            .map_err(|e| e.to_string())?
+        {
+            let refreshed = self.refresh_if_changed_with(verify_display);
+            // A changed stream already discarded the document. Its replacement will get
+            // a fresh discovery token; do not project the same Task twice here.
+            if matches!(refreshed, Ok(true)) {
+                return refreshed;
+            }
+            if self
+                .store
+                .database_observation_unchanged(discovery)
+                .map_err(|e| e.to_string())?
+            {
+                return refreshed;
+            }
+        }
+        self.reset_observation()?;
+        Ok(true)
+    }
+
+    fn reset_observation(&mut self) -> Result<(), String> {
+        self.refresh()?;
+        self.view_artifacts.borrow_mut().clear();
+        self.view_runs.borrow_mut().clear();
+        Ok(())
     }
 
     /// Project the Task again from the Store, for a command that watches it change.
@@ -6213,6 +6318,8 @@ pub(crate) fn recorded_findings_lines(state: &Path, id: &str) -> Result<Vec<Stri
         cas,
         store,
         task,
+        view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
+        view_runs: std::cell::RefCell::new(BTreeMap::new()),
     };
     let document = findings::ledger_document(&opened, None)?;
     Ok(if document.rounds == 0 {

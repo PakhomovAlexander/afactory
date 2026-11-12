@@ -60,12 +60,12 @@ struct Machine {
 impl Machine {
     /// A private home, with an empty `~/bin` as the whole `PATH`.
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::common::provider_fixture_fs::tempdir().unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
         let home = root.join("home");
         let bin = home.join("bin");
         for dir in [&home, &bin] {
-            std::fs::create_dir_all(dir).unwrap();
+            crate::common::provider_fixture_fs::create_dir_all(dir).unwrap();
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         Self {
@@ -79,10 +79,10 @@ impl Machine {
     /// `~/relative`, private, holding an empty file per name.
     fn dir(&self, relative: &str, files: &[&str]) -> PathBuf {
         let dir = self.home.join(relative);
-        std::fs::create_dir_all(&dir).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         for file in files {
-            std::fs::write(dir.join(file), "").unwrap();
+            crate::common::provider_fixture_fs::write(dir.join(file), "").unwrap();
         }
         dir
     }
@@ -93,9 +93,9 @@ impl Machine {
     }
 
     fn install_in(&self, dir: &Path, name: &str, script: &str) -> PathBuf {
-        std::fs::create_dir_all(dir).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(dir).unwrap();
         let path = dir.join(name);
-        std::fs::write(&path, script).unwrap();
+        crate::common::provider_fixture_fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
@@ -1452,8 +1452,8 @@ fn apply_leaves_a_login_whose_cli_is_off_path_unregistered_with_the_path_fix() {
 fn an_unreadable_registry_is_unknown_and_refuses_apply() {
     let machine = Machine::new();
     let registry = machine.home.join(".config/af/providers.toml");
-    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
-    std::fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
 
     // Nothing installed, nothing found: the note is still there.
     let empty = machine.af(&["provider", "detect", "--json"]);
@@ -1580,7 +1580,7 @@ fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
     );
 
     let repo = machine.root.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&repo).unwrap();
     for args in [
         ["init", "-q", "-b", "main"].as_slice(),
         [
@@ -1653,7 +1653,7 @@ fn detect_recognizes_the_default_claude_context_that_status_accepts() {
     assert_eq!(row["auth"], "not_probed", "{row}");
     assert_eq!(row["markers"], serde_json::json!([]), "{row}");
 
-    std::fs::write(machine.home.join(".claude.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::write(machine.home.join(".claude.json"), "{}").unwrap();
     let status = machine.af(&["provider", "status", "--json"]);
     let status: Value = serde_json::from_str(out(&status).trim()).unwrap();
     assert_eq!(status["providers"][0]["id"], "claude-ambient", "{status}");

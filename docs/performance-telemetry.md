@@ -443,7 +443,10 @@ that `performance.yml` already uses: no experiment ever runs uncontained in CI.
   default 4,800) covers preparation through cleanup, with 30 seconds reserved for completion.
   The 10 GiB host free-disk floor remains. Only confined, bounded regular binary bytes and
   controller-owned tool identities reach `--output`; the workflow never copies a candidate
-  target path. A failed build publishes nothing and retains bounded scratch for inspection.
+  target path. Admission rehashes the held source after copying and requires the same bytes;
+  unchanged size and timestamps alone cannot hide a mutation. This read shares the existing
+  byte and time bounds. A failed build publishes nothing and retains bounded scratch for
+  inspection.
   Successful teardown of a filesystem the helper prepared precedes publication; existing
   operator-provisioned filesystems are restored to their inventory and left mounted.
 - **Measure.** The measuring job refuses any credential in its checkout or environment. It

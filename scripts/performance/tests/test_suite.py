@@ -31,7 +31,7 @@ class Registry(unittest.TestCase):
         ids = dict((tier, [item["instance_id"] for item in self.suite.instances(tier)])
                    for tier in suite.TIERS)
         self.assertEqual((len(ids["quick"]), len(ids["nightly"]), len(ids["release"])),
-                         (30, 33, 11))
+                         (30, 39, 11))
         for registry in ("empty", "stores_20x10000"):
             for tier in suite.TIERS:
                 self.assertIn("tui_open__registry_" + registry, ids[tier])
@@ -67,7 +67,8 @@ class Registry(unittest.TestCase):
                 if tier in case["tiers"]:
                     self.assertEqual(case["pairs"][tier], 40, case_id)
             self.assertEqual(case["warmup_pairs"], 2)
-            self.assertEqual(case["policy"], "wall_time_default")
+            self.assertEqual(case["policy"],
+                             "waiter_cpu" if case_id == "cli_task_wait" else "wall_time_default")
         policy = self.suite.doc["policies"]["wall_time_default"]
         self.assertEqual((policy["relative_tolerance"], policy["absolute_tolerance"]),
                          ("0.05", "1"))
@@ -124,7 +125,7 @@ class Registry(unittest.TestCase):
         spawning = sorted(key for key, case in doc["cases"].items()
                           if case["requires_linux_containment"])
         self.assertEqual(spawning, ["cli_state_read", "cli_task_run_check", "cli_task_start",
-                                    "source_capture"])
+                                    "cli_task_wait", "source_capture"])
         for key, fixture in doc["fixtures"].items():
             pending = fixture["kind"] in ("cli_state", "cli_task", "cli_registry")
             self.assertEqual(fixture["golden"], "pending_native_oracle" if pending

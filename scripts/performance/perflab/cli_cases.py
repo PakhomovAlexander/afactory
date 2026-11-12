@@ -244,7 +244,10 @@ def side_receipts(git, plan):
 
 def setup_argument(entry, receipts, side, seed_argument):
     """The fifth argument of `cli/setup.sh` for `entry`'s setup: the side's receipt generation
-    for a task-repository setup, which reads no seed; otherwise the seed's path or `-`."""
+    for a task-repository setup; the declared state fixture for waiter_state; otherwise the
+    seed's path or `-`."""
+    if entry["setup"] == "waiter_state":
+        return entry["parameters"]["state"]
     if entry["setup"] in ("task_repository", "task_started"):
         return receipts.get(side, RECEIPTS[1])
     return seed_argument

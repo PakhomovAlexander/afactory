@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn a_native_cli_that_cannot_start_is_reported_as_missing() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let (mut guard_input, _parent_input) = pipes();
         let (_parent_output, mut guard_output) = pipes();
         let result = relay(
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn oversized_stderr_cancels_and_reaps_native_before_returning() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let marker = root.path().join("native-pid");
         let script = format!(
             "import os,time\nopen({:?},'w').write(str(os.getpid()))\nos.write(2,b'POISON'*{})\ntime.sleep(60)",
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn guard_requires_an_already_held_exact_open_file_description() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let owner = lock(root.path());
         assert!(retain_inherited_lock(&owner, &root.path().join("codex-context.lock")).is_err());
         fs2::FileExt::lock_exclusive(&owner).unwrap();
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn owner_eof_reaps_a_native_that_ignores_stdin_before_releasing_the_lock() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let owner = lock(root.path());
         fs2::FileExt::lock_exclusive(&owner).unwrap();
         let inherited = duplicate_cloexec(&owner).unwrap();
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn a_dead_owner_cannot_start_a_native_login() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::providers::fixture_fs::tempdir().unwrap();
         let marker = root.path().join("unexpected-start");
         let (mut guard_input, parent_input) = pipes();
         let (_parent_output, mut guard_output) = pipes();

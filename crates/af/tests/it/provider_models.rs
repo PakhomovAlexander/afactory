@@ -19,7 +19,7 @@ impl Machine {
     /// its fake CLI.
     fn new() -> Self {
         let machine = Self {
-            root: tempfile::tempdir().unwrap(),
+            root: crate::common::provider_fixture_fs::tempdir().unwrap(),
         };
         fake_models::install("claude", &machine.bin(), &machine.auth("claude"));
         fake_models::install("codex", &machine.bin(), &machine.auth("codex"));
@@ -27,7 +27,11 @@ impl Machine {
             {"id": "claude-work", "kind": "claude", "auth_dir": machine.auth("claude")},
             {"id": "codex-main", "kind": "codex", "auth_dir": machine.auth("codex")},
         ]});
-        std::fs::write(machine.registry(), toml::to_string(&registry).unwrap()).unwrap();
+        crate::common::provider_fixture_fs::write(
+            machine.registry(),
+            toml::to_string(&registry).unwrap(),
+        )
+        .unwrap();
         machine
     }
 
@@ -374,7 +378,8 @@ fn resolve_on_the_codex_provider() {
 #[test]
 fn an_unavailable_catalog_exits_7_and_prints_the_static_rules() {
     let machine = Machine::new();
-    std::fs::write(machine.auth("claude").join("catalog-broken"), "").unwrap();
+    crate::common::provider_fixture_fs::write(machine.auth("claude").join("catalog-broken"), "")
+        .unwrap();
     let output = machine.af(&[]);
     assert_eq!(output.status.code(), Some(7), "{}", err(&output));
     let text = out(&output);

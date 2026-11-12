@@ -1,5 +1,5 @@
 {
-  "schema": "af/ant@5",
+  "schema": "af/ant@6",
   "id": "performance-native",
   "scenario": {
     "schema": "af/scenario-bundle@5",
@@ -502,7 +502,8 @@
     "timezone": "UTC",
     "hour": 3,
     "minute": 0,
-    "start_unix_ms": 1793664000000
+    "start_unix_ms": 1793664000000,
+    "kind": "daily"
   },
   "owner": "performance-owner",
   "notification": "local:performance-owner",

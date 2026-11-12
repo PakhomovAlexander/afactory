@@ -617,7 +617,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let ant = f._root.path().join("ant.json");
     write(
         &ant,
-        &json!({"schema":"af/ant@5","id":"daily","scenario":bundle,"inputs":{},"schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
+        &json!({"schema":"af/ant@6","id":"daily","scenario":bundle,"inputs":{},"schedule":{"kind":"daily","timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
     );
     let pin = cli(
         &f.repo,
@@ -685,7 +685,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
         1
     );
     for tick in ticks {
-        valid("ant-tick-v5.json", &tick);
+        valid("ant-tick-v6.json", &tick);
     }
     let shown = cli(&f.repo, &f.state, &["ant", "show", "daily"]);
     assert_eq!(shown["occurrences"].as_array().unwrap().len(), 1);
@@ -718,7 +718,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let expired = cli(&f.repo, &f.state, &["scenario", "show", run_id]);
     assert_eq!(expired["status"], "failed");
     assert!(expired["failure"].as_str().unwrap().contains("deadline"));
-    valid("ant-state-v5.json", &paused);
+    valid("ant-inspection-v2.json", &paused);
 }
 
 #[test]
@@ -1298,9 +1298,9 @@ fn roadmap_cli_restart_revision_confirmation_and_untrusted_progress_refusal() {
     ]
     .concat();
     let first = cli(&repo, &state, &create);
-    valid("scenario-roadmap-v2.json", &first);
+    valid("scenario-roadmap-v3.json", &first);
     assert_eq!(first["progress"]["store-replay"]["state"], "pending");
-    assert_eq!(first["progress"]["store-replay"]["actual_tokens"], 0);
+    assert_eq!(first["progress"]["store-replay"]["actual_tokens"], "0");
     assert_eq!(first["progress"]["store-replay"]["reserved_tokens"], 0);
     assert_eq!(
         first["progress"]["store-replay"]["task_receipts"],
@@ -1352,7 +1352,7 @@ fn roadmap_cli_restart_revision_confirmation_and_untrusted_progress_refusal() {
         "stale revision confirmation fails after restart"
     );
     let list = cli(&repo, &state, &["scenario", "roadmap", "list"]);
-    valid("scenario-roadmap-list-v2.json", &list);
+    valid("scenario-roadmap-list-v3.json", &list);
     assert_eq!(list["roadmaps"]["performance"], revised);
     for (key, value) in [
         ("actual_tokens", json!(2000)),
@@ -2391,4 +2391,589 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
         }
         assert_eq!(evidence_count, repairs);
     }
+}
+
+#[test]
+fn interval_scheduler_executes_real_one_second_occurrences_and_generic_results() {
+    let f = Fixture::bare();
+    for label in ["weather", "library"] {
+        let mut bundle: Value = serde_json::from_slice(
+            &std::fs::read(workspace().join(format!("fixtures/scenarios/results/{label}.json")))
+                .unwrap(),
+        )
+        .unwrap();
+        let grant = grant("write_owned_file", &f.owned);
+        bundle["definitions"][label]["authority"]["grants"] = json!([grant]);
+        bundle["definitions"][label]["steps"][0]["operation"]["grant"] = grant;
+        write(&f.bundle, &bundle);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let ant = f._root.path().join(format!("{label}-ant.json"));
+        write(
+            &ant,
+            &json!({"schema":"af/ant@6","id":label,"scenario":bundle,"inputs":{},"schedule":{"kind":"interval","seconds":1,"start_unix_ms":now},"owner":"owner","notification":"local:fixture","execution":{"overlap":"skip","missed":"skip","lateness_ms":999,"per_run":bundle["definitions"][label]["limits"],"rolling_tokens":0,"rolling_window_ms":10000}}),
+        );
+        let pin = cli(
+            &f.repo,
+            &f.state,
+            &[
+                "ant",
+                "validate",
+                "--file",
+                ant.to_str().unwrap(),
+                "--authority",
+                f.policy.to_str().unwrap(),
+            ],
+        );
+        valid("ant-pin-v6.json", &pin);
+        cli(
+            &f.repo,
+            &f.state,
+            &[
+                "ant",
+                "add",
+                "--file",
+                ant.to_str().unwrap(),
+                "--authority",
+                f.policy.to_str().unwrap(),
+                "--confirm-pin",
+                pin["revision"].as_str().unwrap(),
+            ],
+        );
+        cli(&f.repo, &f.state, &["ant", "enable", label]);
+    }
+    let scheduler = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["ant", "scheduler", "run", "--for-seconds", "4", "--state"])
+        .arg(&f.state)
+        .output()
+        .unwrap();
+    assert!(
+        scheduler.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scheduler.stderr)
+    );
+    for label in ["weather", "library"] {
+        let shown = cli(&f.repo, &f.state, &["ant", "show", label]);
+        valid("ant-inspection-v2.json", &shown);
+        let occurrences = shown["occurrences"].as_array().unwrap();
+        let started: Vec<_> = occurrences
+            .iter()
+            .filter(|o| o["outcome"]["kind"] == "started")
+            .collect();
+        assert!(started.len() >= 3, "{shown}");
+        let unique: std::collections::BTreeSet<_> =
+            started.iter().map(|o| o["id"].as_str().unwrap()).collect();
+        assert_eq!(unique.len(), started.len());
+        for pair in started.windows(2) {
+            assert!(
+                pair[1]["due_unix_ms"].as_u64().unwrap()
+                    >= pair[0]["due_unix_ms"].as_u64().unwrap() + 1000
+            );
+        }
+        for occurrence in started {
+            assert!(
+                occurrence["admitted_unix_ms"].as_u64().unwrap()
+                    >= occurrence["due_unix_ms"].as_u64().unwrap()
+            );
+            let run = cli(
+                &f.repo,
+                &f.state,
+                &[
+                    "scenario",
+                    "show",
+                    occurrence["outcome"]["run_id"].as_str().unwrap(),
+                ],
+            );
+            assert_eq!(run["status"], "succeeded");
+            assert_eq!(run["dispatches"], 0);
+        }
+        let doc = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["ant", "output", label, "--name", "report", "--state"])
+            .arg(&f.state)
+            .output()
+            .unwrap();
+        assert!(
+            doc.status.success(),
+            "{}",
+            String::from_utf8_lossy(&doc.stderr)
+        );
+        let text = String::from_utf8(doc.stdout).unwrap();
+        assert!(text.contains("State: final"));
+        assert!(text.contains("freshness: stale"));
+        assert!(!text.contains('\u{1b}'));
+        assert!(text.contains(if label == "weather" {
+            "| Station | Temperature C | Condition |"
+        } else {
+            "| Title | Copies | Tags |"
+        }));
+        let empty = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["ant", "output", label, "--name", "empty", "--state"])
+            .arg(&f.state)
+            .output()
+            .unwrap();
+        assert!(empty.status.success());
+        assert!(
+            String::from_utf8(empty.stdout)
+                .unwrap()
+                .contains("final_empty")
+        );
+    }
+    let status = cli(&f.repo, &f.state, &["ant", "scheduler", "status"]);
+    assert_eq!(status["running"], false);
+    valid("ant-scheduler-v1.json", &status);
+    assert!(f.owned.read_dir().unwrap().next().is_none());
+}
+
+// Keep every fixture observer/driver owned even when an assertion unwinds.
+struct ResultProcess(Option<std::process::Child>);
+impl ResultProcess {
+    fn id(&self) -> u32 {
+        self.0.as_ref().unwrap().id()
+    }
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let result = self.0.as_mut().unwrap().wait();
+        if result.is_ok() {
+            self.0.take();
+        }
+        result
+    }
+}
+impl Drop for ResultProcess {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+fn result_file_until(path: &Path, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Ok(document) = std::fs::read_to_string(path) {
+            assert!(document.starts_with("<!-- af-result-snapshot begin"));
+            assert!(document.ends_with("-->\n"));
+            assert!(!document.contains('\u{1b}'));
+            if document.contains(needle) {
+                return document;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("watch never published {needle}");
+}
+
+#[test]
+fn markdown_watch_interrupt_is_read_only_atomic_and_retains_active_run() {
+    let f = Fixture::bare();
+    let started = f.start("watch-wait");
+    assert_eq!(started["status"], "waiting");
+    let file = f._root.path().join("latest.md");
+    let mut watch = ResultProcess(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args([
+                "scenario",
+                "output",
+                "watch-wait",
+                "--name",
+                "ok",
+                "--watch",
+                "--interval-seconds",
+                "1",
+                "--output",
+            ])
+            .arg(&file)
+            .arg("--state")
+            .arg(&f.state)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    result_file_until(&file, "unavailable");
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(watch.id() as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    let status = watch.wait().unwrap();
+    assert!(!status.success());
+    let mut driver = ResultProcess(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["ant", "scheduler", "run", "--state"])
+            .arg(&f.state)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while cli(&f.repo, &f.state, &["ant", "scheduler", "status"])["running"] != true {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let duplicate = output(
+        &f.repo,
+        &f.state,
+        &["ant", "scheduler", "run", "--for-seconds", "1"],
+    );
+    assert_eq!(duplicate.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("Scheduler already running"));
+    cli(&f.repo, &f.state, &["ant", "scheduler", "stop"]);
+    assert!(driver.wait().unwrap().success());
+    assert_eq!(
+        cli(&f.repo, &f.state, &["ant", "scheduler", "status"])["running"],
+        false
+    );
+    let after = cli(&f.repo, &f.state, &["scenario", "show", "watch-wait"]);
+    assert_eq!(
+        after, started,
+        "watch must not mutate Run or clear human hold"
+    );
+}
+
+#[test]
+fn fleet_result_example_projects_native_goal_state_clock_and_charged_usage() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = crate::task_cli::fixture_named(root.path(), "pagination");
+    let plan = cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
+    let mut command = std::process::Command::new("python3");
+    command
+        .args(["-I"])
+        .arg(workspace().join("fixtures/scenarios/results/fleet-document.py"))
+        .args(["--af"])
+        .arg(crate::common::af_binary())
+        .args(["--environment", "private-fixture", "--repo"])
+        .arg(&repo)
+        .arg("--task-state")
+        .arg(&state)
+        .args(["--task", "pagination-cli"]);
+    command.envs(crate::common::private_home_env());
+    command.env("AF_SELF_OFFLINE", "1");
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    valid("result-document-v1.json", &document);
+    let row = &document["blocks"][1]["rows"][0];
+    assert_eq!(row[0], "private-fixture");
+    assert_eq!(row[1], json!(state.canonicalize().unwrap()));
+    assert_eq!(row[2], "pagination-cli");
+    assert!(!row[3].as_str().unwrap().is_empty());
+    assert_eq!(row[4]["phase"], "planned");
+    assert_eq!(row[6], "0");
+    assert_eq!(row[7], 0);
+    assert_eq!(row[8]["plan"], plan["plan_id"]);
+    let typed: af_scenario::presentation::Document = serde_json::from_value(document).unwrap();
+    typed.validate().unwrap();
+}
+
+#[test]
+fn recorded_observation_results_are_partial_then_final_and_new_occurrences_change_revision() {
+    let f = Fixture::bare();
+    f.install_service();
+    let observe =
+        json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
+    let result = json!({"source":"step","step":"sample","port":"result"});
+    let inputs = json!({"subject":literal("text",json!("sensor")),"revision":literal("text",json!("head-1"))});
+    let bundle = json!({"schema":"af/scenario-bundle@5","root":"sensor","definitions":{"sensor":{
+        "schema":"af/scenario@5","inputs":{},"outputs":{"report":"observation"},
+        "steps":[step("sample",json!({"kind":"wait","grant":observe,"condition":"sampled"}),inputs.clone(),"observation"),step("finish",json!({"kind":"wait","grant":observe,"condition":"finished"}),inputs,"observation")],
+        "result":{"report":result},"completion":[literal("boolean",json!(true))],
+        "authority":{"task_plans":[],"task_templates":[],"grants":[observe],"decision_owners":[]},
+        "limits":{"max_tokens":0,"max_wall_ms":300000,"max_dispatches":8}}}});
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let document = |value: u64| json!({"schema":"af/result-document@1","observed_unix_ms":now,"stale_after_ms":10000,"blocks":[{"kind":"table","title":"Sensor","columns":["Count"],"rows":[[value]]}]});
+    let observation = |value: u64, finished: bool| json!({"revision":"head-1","sampled":true,"finished":finished,"evidence":document(value).to_string()});
+    write(&f.machine.join("observation.json"), &observation(1, false));
+    let ant = f._root.path().join("sensor-ant.json");
+    write(
+        &ant,
+        &json!({"schema":"af/ant@6","id":"sensor","scenario":bundle,"inputs":{},"schedule":{"kind":"interval","seconds":1,"start_unix_ms":now},"owner":"owner","notification":"local:fixture","execution":{"overlap":"skip","missed":"skip","lateness_ms":999,"per_run":bundle["definitions"]["sensor"]["limits"],"rolling_tokens":0,"rolling_window_ms":10000}}),
+    );
+    let pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "ant",
+            "validate",
+            "--file",
+            ant.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+        ],
+    );
+    cli(
+        &f.repo,
+        &f.state,
+        &[
+            "ant",
+            "add",
+            "--file",
+            ant.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+            "--now",
+            &now.to_string(),
+        ],
+    );
+    cli(
+        &f.repo,
+        &f.state,
+        &["ant", "enable", "sensor", "--now", &now.to_string()],
+    );
+    cli(
+        &f.repo,
+        &f.state,
+        &["ant", "tick", "--now", &now.to_string()],
+    );
+    let read = || {
+        let output = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["ant", "output", "sensor", "--state"])
+            .arg(&f.state)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let partial = read();
+    assert!(partial.contains("State: partial"));
+    assert!(partial.contains("| 1 |"));
+    let file = f._root.path().join("sensor.md");
+    let mut watch = ResultProcess(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["ant", "output", "sensor", "--watch", "--output"])
+            .arg(&file)
+            .arg("--state")
+            .arg(&f.state)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    result_file_until(&file, "| 1 |");
+
+    write(&f.machine.join("observation.json"), &observation(1, true));
+    cli(
+        &f.repo,
+        &f.state,
+        &["ant", "tick", "--now", &(now + 1).to_string()],
+    );
+    let final_view = read();
+    assert!(final_view.contains("State: final"));
+    assert!(final_view.contains("| 1 |"));
+    write(&f.machine.join("observation.json"), &observation(2, false));
+    cli(
+        &f.repo,
+        &f.state,
+        &["ant", "tick", "--now", &(now + 1000).to_string()],
+    );
+    let changed = read();
+    assert!(changed.contains("State: partial"));
+    assert!(changed.contains("| 2 |"));
+    let revision = |s: &str| {
+        s.lines()
+            .find(|s| s.starts_with("Revision:"))
+            .unwrap()
+            .to_string()
+    };
+    assert_ne!(revision(&changed), revision(&partial));
+    let refreshed = result_file_until(&file, "| 2 |");
+    assert_eq!(revision(&refreshed), revision(&changed));
+    // A damaged/missing derived view is a refresh failure, never permission to display the
+    // previous document as current. The authoritative Run remains untouched.
+    let native_before = cli(&f.repo, &f.state, &["ant", "show", "sensor"]);
+    let db = rusqlite::Connection::open(f.state.join("runs/scenarios.sqlite")).unwrap();
+    db.execute(
+        "DELETE FROM result_views WHERE kind='ant' AND label='sensor'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let failed = result_file_until(&file, "Error:");
+    assert!(failed.contains("unavailable"));
+    assert!(!failed.contains("| 2 |"));
+    assert!(failed.contains("Ant: sensor"));
+    assert!(failed.contains("# Output report"));
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(watch.id() as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    assert!(!watch.wait().unwrap().success());
+    assert_eq!(
+        cli(&f.repo, &f.state, &["ant", "show", "sensor"]),
+        native_before
+    );
+}
+
+#[test]
+fn scheduler_fatal_journal_failure_stops_and_keeps_run_and_diagnostic() {
+    let f = Fixture::bare();
+    let before = f.start("journal-wait");
+    assert_eq!(before["status"], "waiting");
+    let db = rusqlite::Connection::open(f.state.join("runs/scenarios.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER fixture_refuse_journal BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT,'fixture journal refusal'); END;").unwrap();
+    drop(db);
+    let mut driver = ResultProcess(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args(["ant", "scheduler", "run", "--state"])
+            .arg(&f.state)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = driver.0.as_mut().unwrap().try_wait().unwrap() {
+            driver.0.take();
+            assert_eq!(status.code(), Some(1));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fatal driver error kept looping"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let status = cli(&f.repo, &f.state, &["ant", "scheduler", "status"]);
+    assert_eq!(status["running"], false);
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .contains("fixture journal refusal")
+    );
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "show", "journal-wait"]),
+        before
+    );
+}
+
+#[test]
+fn native_authored_markdown_watch_uses_recorded_observation_and_never_drives_work() {
+    let f = Fixture::bare();
+    let mut bundle: Value = serde_json::from_slice(
+        &std::fs::read(workspace().join("fixtures/scenarios/results/authored-markdown.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let g = grant("write_owned_file", &f.owned);
+    let definition = &mut bundle["definitions"]["library"];
+    definition["authority"]["grants"] = json!([g]);
+    definition["steps"][0]["operation"]["grant"] = g;
+    // Keep a genuine native Run waiting for a human while observing literal recorded
+    // outputs. The watcher cannot clear this hold or dispatch the later file Action.
+    let baseline: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    definition["steps"] = baseline["definitions"]["main"]["steps"].clone();
+    definition["limits"] = baseline["definitions"]["main"]["limits"].clone();
+    definition["authority"]["decision_owners"] = json!(["owner"]);
+    let observed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    definition["result"]["observed"]["value"]["value"] = json!(observed);
+    write(&f.bundle, &bundle);
+    let started = f.start("authored");
+    assert_eq!(started["status"], "waiting");
+    let raw = std::fs::read_to_string(workspace().join("fixtures/scenarios/results/authored.md"))
+        .unwrap();
+    assert_eq!(
+        started["pin"]["bundle"]["definitions"]["library"]["result"]["report"]["value"]["value"],
+        raw
+    );
+    let file = f._root.path().join("authored.md");
+    let mut watch = ResultProcess(Some(
+        crate::common::af()
+            .current_dir(&f.repo)
+            .args([
+                "scenario",
+                "output",
+                "authored",
+                "--name",
+                "report",
+                "--raw-markdown",
+                "--observed-output",
+                "observed",
+                "--stale-after-ms",
+                "1",
+                "--watch",
+                "--interval-seconds",
+                "1",
+                "--output",
+            ])
+            .arg(&file)
+            .arg("--state")
+            .arg(&f.state)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let initial = result_file_until(&file, "| Rust | 2 |");
+    assert!(initial.contains(&raw));
+    assert!(initial.contains("State: partial"));
+    assert!(initial.contains("freshness: stale"));
+    assert!(initial.contains(&format!("Observed Unix ms: {observed};")));
+    // A later timestamp proves an actual poll occurred; it must not recollect evidence.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let refreshed = result_file_until(&file, "| Rust | 2 |");
+        if refreshed != initial {
+            assert!(refreshed.contains(&raw));
+            assert!(refreshed.contains(&format!("Observed Unix ms: {observed};")));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(watch.id() as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    assert!(!watch.wait().unwrap().success());
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "show", "authored"]),
+        started
+    );
+    assert!(f.owned.read_dir().unwrap().next().is_none());
+    // Without explicit selection it remains a structured-document error, never a
+    // format guess. An absent observation port likewise fails without invented time.
+    let unsupported = crate::common::af()
+        .current_dir(&f.repo)
+        .args([
+            "scenario", "output", "authored", "--name", "report", "--state",
+        ])
+        .arg(&f.state)
+        .output()
+        .unwrap();
+    assert!(!unsupported.status.success());
+    assert!(
+        String::from_utf8(unsupported.stdout)
+            .unwrap()
+            .contains("Unsupported presentation shape")
+    );
 }

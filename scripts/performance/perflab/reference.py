@@ -558,7 +558,7 @@ def golden_entry(doc, instance, contract_id, cache):
         return _entry(instance, contract_id, env.artifact_id, _digest_of(semantic),
                       len(env.bytes), semantic,
                       "graph invariants and reference identities of every captured package")
-    if contract_id == "persistence_fs_v1":
+    if contract_id == "persistence_fs_v3":
         if params["operation"] == "cas_write_read":
             blob = content_id(persistence_blob())
             return _entry(instance, contract_id, blob, blob,
@@ -567,7 +567,7 @@ def golden_entry(doc, instance, contract_id, cache):
         semantic = {"appended": PERSISTENCE_EVENTS, "event_types": ["TaskTransition@6"],
                     "prefix_events": PERSISTENCE_PREFIX_EVENTS}
         return _entry(instance, contract_id, None, _digest_of(semantic), PERSISTENCE_EVENTS,
-                      semantic, "explicit facts of the appended and read-back lease renewals")
+                      semantic, "explicit facts of the appended and read-back production lease renewals (clock-eligible cadence)")
     if contract_id == "sentinel_canonical_v1":
         once = canonical(SENTINEL_VALUE, "sentinel")
         return _entry(instance, contract_id, None, content_id(once * SENTINEL_REPETITIONS),
@@ -649,8 +649,8 @@ def golden_document(doc):
         elif fixture["kind"] == "event_log":
             fixtures[fixture_id] = {
                 "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
-                "relevant_events": "TaskTransition@6 opened, plan proposed, plan admitted, then "
-                                   "production 60000 ms lease renewals"}
+                "relevant_events": "TaskTransition@6 opened, plan proposed, plan admitted, "
+                                   "9997 production 60000 ms lease renewals; clock eligibility in setup"}
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"
                                 % (fixture_id, fixture["kind"]))

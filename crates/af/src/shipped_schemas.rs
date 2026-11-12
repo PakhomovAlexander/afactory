@@ -23,11 +23,13 @@ macro_rules! schema {
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
-    schema!("ant-list", 5),
-    schema!("ant-pin", 5),
-    schema!("ant-state", 5),
-    schema!("ant-tick", 5),
-    schema!("ant", 5),
+    schema!("ant-inspection", 2),
+    schema!("ant-list", 7),
+    schema!("ant-pin", 6),
+    schema!("ant-scheduler", 1),
+    schema!("ant-state", 7),
+    schema!("ant-tick", 6),
+    schema!("ant", 6),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
@@ -51,6 +53,8 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("provider-models", 4),
     schema!("provider-setup", 2),
     schema!("provider-status", 6),
+    schema!("result-document", 1),
+    schema!("result-snapshot", 1),
     schema!("review-decision-context", 1),
     schema!("review-ledger", 2),
     schema!("scenario-adapter-request", 4),
@@ -64,13 +68,13 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("scenario-owned-file", 1),
     schema!("scenario-pin", 5),
     schema!("scenario-policy", 5),
-    schema!("scenario-roadmap-list", 2),
+    schema!("scenario-roadmap-list", 3),
     schema!("scenario-roadmap-proposal", 2),
     schema!("scenario-roadmap-revision", 2),
-    schema!("scenario-roadmap", 2),
+    schema!("scenario-roadmap", 3),
     schema!("scenario-run", 5),
     schema!("scenario-signed-decision", 1),
-    schema!("scenario-store", 6),
+    schema!("scenario-store", 9),
     schema!("scenario-task-template", 1),
     schema!("scenario-template-pin", 1),
     schema!("scenario", 5),
@@ -246,6 +250,6 @@ mod tests {
         assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/ant-list@5  "), "{listing}");
+        assert!(listing.starts_with("af/ant-inspection@2  "), "{listing}");
     }
 }

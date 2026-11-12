@@ -65,7 +65,7 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "scenarios",
-        "Durable Scenarios, bounded adapters and daily Ant scheduling",
+        "Durable Scenarios, Ant schedules and recorded results",
         include_str!("../../../docs/scenarios.md"),
     ),
 ];
@@ -384,7 +384,7 @@ Task       One piece of work with typed inputs, required outputs and limits, run
 Scenario   A typed ordered definition coordinating Tasks, children, actions, decisions and waits.
 Run        One pinned Scenario execution with durable progress and completion evidence.
 Ant        An owner's scheduled Scenario binding, admitted locally by `af ant tick`.
-           `af help scenarios` explains its authority, daily timezone and spending limits.
+           `af help scenarios` explains its authority, interval/daily schedules and spending limits.
 Worker     A packaged reviewer, implementer or evaluator: a model (claude, codex) or a command,
            with its prompt and declared inputs. `af onboard` lists a repository's reviewers.
 Attempt    One execution of one Worker or check, charged against its budget; a failed one is
@@ -600,14 +600,16 @@ Task plan; --authority selects trusted authority independently of source/base se
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
   scenario validate: af/scenario-pin@5; start, show, resume, decide, cancel: af/scenario-run@5.
   scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@5.
-  ant validate: af/ant-pin@5; add, show, enable, pause, disable: af/ant-state@5;
-  ant list: af/ant-list@5; tick: af/ant-tick@5.
+  ant validate: af/ant-pin@6; add, enable, pause, disable: af/ant-state@7;
+  ant show: af/ant-inspection@2; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@7; tick: af/ant-tick@6.
+  Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
   Definitions and machine policy: af/scenario@5, af/scenario-bundle@5, af/scenario-policy@5,
-  af/ant@5; signed envelopes: af/scenario-signed-decision@1.
+  af/ant@6; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
-  af/scenario-roadmap@2 (create, show, revise), af/scenario-roadmap-list@2 (list).
+  af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
   Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
-  Journal: af/scenario-store@6. Owned file envelope: af/scenario-owned-file@1.
+  Journal: af/scenario-store@9. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.

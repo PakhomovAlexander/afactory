@@ -13,6 +13,7 @@ use af_contracts::task::{
     self, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1, TaskWaitingReasonV1,
 };
 use af_contracts::{ArtifactEnvelope, EventType, PortCardinality, RunEvent};
+use rusqlite::OptionalExtension;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -102,7 +103,7 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
         if ids.contains(id) {
             continue;
         }
-        let found = cas.get_optional_artifact(id).ok().flatten();
+        let found = cas.get_optional_artifact_shared(id).ok().flatten();
         let record = found.is_some_and(|e| {
             [
                 TASK_INPUT_BINDINGS_V1,
@@ -399,6 +400,11 @@ pub struct TaskProjection {
     // Exact reference closure of the parsed prefix, including superseded execution evidence.
     // This memo saves parsing only: every object is verified again on the next access.
     artifact_refs: BTreeSet<String>,
+    /// Complete successful CAS read closure of this validated projection, including reads
+    /// reached through domain validation rather than directly spelled event references.
+    observed_artifacts: BTreeSet<String>,
+    /// Exact prefixes replayed while validating this projection, including nested reads.
+    observed_runs: BTreeMap<String, u64>,
     pub execution: Option<execution::TaskExecutionProjection>,
     pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
@@ -485,7 +491,6 @@ fn valid_exact_optimization_result_refinement(
 #[cfg(test)]
 thread_local! {
     static PROJECTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static REVIEW_REPLAY_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -548,9 +553,13 @@ impl WritePermit {
     }
 }
 
-fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, StoreError> {
+fn envelope_shared(
+    cas: &Cas,
+    id: &str,
+    expected: &str,
+) -> Result<std::sync::Arc<ArtifactEnvelope>, StoreError> {
     let envelope = cas
-        .get_artifact(id)
+        .get_artifact_shared(id)
         .map_err(|e| StoreError::Artifact(e.to_string()))?;
     if envelope.artifact_id != id || envelope.artifact_type != expected {
         return Err(conflict(format!("Expected exact {expected} artifact {id}")));
@@ -558,9 +567,13 @@ fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, Sto
     Ok(envelope)
 }
 
+fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, StoreError> {
+    envelope_shared(cas, id, expected).map(|envelope| (*envelope).clone())
+}
+
 fn payload<T: DeserializeOwned>(cas: &Cas, id: &str, expected: &str) -> Result<T, StoreError> {
-    Ok(serde_json::from_value(
-        envelope(cas, id, expected)?.payload,
+    Ok(T::deserialize(
+        &envelope_shared(cas, id, expected)?.payload,
     )?)
 }
 
@@ -618,14 +631,14 @@ fn validate_port_refs(
 ) -> Result<(), StoreError> {
     input.validate().map_err(conflict)?;
     for id in &input.artifact_ids {
-        let value = envelope(cas, id, &input.artifact_type)?;
+        let value = envelope_shared(cas, id, &input.artifact_type)?;
         if !unclaimed && value.subject_snapshot_id != input.snapshot_id {
             return Err(conflict(
                 "Task port Snapshot identity contradicts its artifact envelope",
             ));
         }
         refs.insert(id.clone());
-        refs.extend(value.input_artifacts);
+        refs.extend(value.input_artifacts.iter().cloned());
     }
     refs.extend(input.snapshot_id.iter().cloned());
     Ok(())
@@ -804,7 +817,7 @@ fn references(
                 value.authority.policy_id,
             ]);
             for dep in value.dependencies.values() {
-                let dep_envelope = match cas.get_artifact(&dep.artifact_id) {
+                let dep_envelope = match cas.get_artifact_shared(&dep.artifact_id) {
                     Ok(envelope) => envelope,
                     Err(_) => {
                         // Preserve the original errors for raw content-addressed JSON,
@@ -814,7 +827,7 @@ fn references(
                             .map_err(|e| StoreError::Artifact(e.to_string()))?;
                         let envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
                         validate_envelope(&envelope).map_err(conflict)?;
-                        envelope
+                        std::sync::Arc::new(envelope)
                     }
                 };
                 if dep_envelope.artifact_id != dep.artifact_id
@@ -823,7 +836,7 @@ fn references(
                     return Err(conflict("Plan dependency content disagrees with its lock"));
                 }
                 refs.insert(dep.artifact_id.clone());
-                refs.extend(dep_envelope.input_artifacts);
+                refs.extend(dep_envelope.input_artifacts.iter().cloned());
             }
             for binding in value.bindings.values() {
                 refs.extend([
@@ -1445,6 +1458,100 @@ impl EventStore {
         self.map_tasks(cas, |task| task.task_id)
     }
 
+    /// Visit only recorded execution transitions, through SQLite's partial event index.
+    /// This is a discovery path, not a projection or admission: consumers must validate the
+    /// selected Task before using a record. Lease-only history is never replayed here.
+    /// A checked display must capture `database_observation` before calling this method and
+    /// compare after all dependent reads: returned rows alone cannot fence new matching rows.
+    /// The statement and its read snapshot are dropped before this method returns.
+    pub fn visit_task_execution_history(
+        &self,
+        cas: &Cas,
+        mut visit: impl FnMut(&str, af_contracts::task::execution::TaskExecutionRecordV1),
+    ) -> Result<(), StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT run_id, event_id, sequence, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events WHERE type = 'TaskTransition@6'
+               AND json_extract(payload, '$.change.kind') = 'execution_recorded'
+             ORDER BY run_id, sequence",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                super::StoredEventRow {
+                    event_id: row.get(1)?,
+                    sequence: row.get(2)?,
+                    event_type: row.get(3)?,
+                    occurred_at: row.get(4)?,
+                    node_id: row.get(5)?,
+                    attempt_id: row.get(6)?,
+                    causation_id: row.get(7)?,
+                    correlation_id: row.get(8)?,
+                    artifact_refs: row.get(9)?,
+                    payload: row.get(10)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (run_id, row) = row?;
+            if !run_id.starts_with("task:") || self.run_tombstone(&run_id)?.is_some() {
+                continue;
+            }
+            let event = super::decode_stored_event(&run_id, row)?;
+            let transition = read_task_transition(&event)?;
+            let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+                return Err(conflict("Execution history index returned another change"));
+            };
+            let record: af_contracts::task::execution::TaskExecutionRecordV1 = payload(
+                cas,
+                &record_id,
+                af_contracts::task::execution::TASK_EXECUTION_RECORD_V5,
+            )?;
+            record.validate().map_err(conflict)?;
+            visit(&run_id, record);
+        }
+        Ok(())
+    }
+
+    /// A Task label from its immutable opening, with exact run/revision identity checks.
+    /// It does not claim the rest of the Task is validated.
+    pub fn task_label_for_run(&self, cas: &Cas, run_id: &str) -> Result<String, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT event_id,sequence,type,occurred_at,node_id,attempt_id,
+                    causation_id,correlation_id,artifact_refs,payload
+             FROM events WHERE run_id=?1 AND sequence=0",
+                [run_id],
+                |row| {
+                    Ok(super::StoredEventRow {
+                        event_id: row.get(0)?,
+                        sequence: row.get(1)?,
+                        event_type: row.get(2)?,
+                        occurred_at: row.get(3)?,
+                        node_id: row.get(4)?,
+                        attempt_id: row.get(5)?,
+                        causation_id: row.get(6)?,
+                        correlation_id: row.get(7)?,
+                        artifact_refs: row.get(8)?,
+                        payload: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| conflict("Empty Task stream"))?;
+        let event = super::decode_stored_event(run_id, row)?;
+        let TaskChangeV1::Opened { revision_id, .. } = read_task_transition(&event)?.change else {
+            return Err(conflict("Task stream does not begin with Opened"));
+        };
+        let task = revision(cas, &revision_id)?;
+        if event.sequence != 0 || task_run_id(&task.task_id)? != run_id {
+            return Err(conflict("Task stream identity differs from its revision"));
+        }
+        Ok(task.task_id)
+    }
+
     /// Project each Task once, in label order, and retain only the caller's mapped value.
     /// Every stream still passes full replay and fresh artifact validation. A listing can
     /// consume that checked projection without retaining all Tasks or projecting them again.
@@ -1502,7 +1609,20 @@ impl EventStore {
         task_id: &str,
     ) -> Result<Option<TaskProjection>, StoreError> {
         let _span = af_contracts::perf_trace::span(af_contracts::perf_trace::Phase::TaskProjection);
-        match self.task_projection_uncollected(cas, task_id) {
+        let ((projected, runs), reads) = cas
+            .track_reads(|| self.track_replays(|| self.task_projection_uncollected(cas, task_id)));
+        let projected = projected.map(|state| {
+            state.map(|mut state| {
+                state.observed_artifacts.extend(reads);
+                state.observed_runs.extend(
+                    runs.into_iter()
+                        .filter(|(run, _)| task_run_id(task_id).ok().as_ref() != Some(run)),
+                );
+                *self.task_cache.borrow_mut() = Some(state.clone());
+                state
+            })
+        });
+        match projected {
             // A sweep may have removed this Task's artifacts between the tombstone check and
             // the reads: a Task collected meanwhile is reported as collected, never as corrupt
             // (ADR-0135). Any other missing artifact stays the error it is.
@@ -1515,6 +1635,68 @@ impl EventStore {
             },
             other => other,
         }
+    }
+
+    /// Whether a previously validated projection still observes the same Task prefix.
+    /// Every observed artifact is read and verified anew, even with no SQLite notification.
+    /// The second watermark read catches a writer committing while those checks ran. This
+    /// is an observation only: it grants no lease, admission or publication capability.
+    pub fn task_observation_unchanged(
+        &self,
+        cas: &Cas,
+        task: &TaskProjection,
+    ) -> Result<bool, StoreError> {
+        self.task_observation_unchanged_with(cas, task, &BTreeMap::new(), || Ok(()))
+    }
+
+    /// Verify additional display reads inside the same watermark bracket as the projection.
+    /// The callback must verify every artifact contributing to the reused display. The
+    /// additional display stream prefixes are checked on both sides. The final check runs
+    /// after all of those reads, so a concurrent completion cannot preserve stale status.
+    pub fn task_observation_unchanged_with(
+        &self,
+        cas: &Cas,
+        task: &TaskProjection,
+        display_runs: &BTreeMap<String, u64>,
+        verify_display: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<bool, StoreError> {
+        let run_id = task_run_id(&task.task_id)?;
+        let expected = task.next_sequence.checked_sub(1);
+        if self.latest_run_sequence(&run_id)? != expected
+            || !self.observed_runs_unchanged(task)?
+            || !self.replayed_prefixes_unchanged(display_runs)?
+            || self.task_tombstone(&task.task_id)?.is_some()
+        {
+            return Ok(false);
+        }
+        for id in task.observed_artifacts.union(&task.artifact_refs) {
+            if let Err(error) = cas.verify(id) {
+                if self.task_tombstone(&task.task_id)?.is_some() {
+                    return Ok(false);
+                }
+                return Err(StoreError::Artifact(error.to_string()));
+            }
+        }
+        verify_display()?;
+        Ok(self.latest_run_sequence(&run_id)? == expected
+            && self.observed_runs_unchanged(task)?
+            && self.replayed_prefixes_unchanged(display_runs)?)
+    }
+
+    fn observed_runs_unchanged(&self, task: &TaskProjection) -> Result<bool, StoreError> {
+        self.replayed_prefixes_unchanged(&task.observed_runs)
+    }
+
+    fn replayed_prefixes_unchanged(
+        &self,
+        runs: &BTreeMap<String, u64>,
+    ) -> Result<bool, StoreError> {
+        for (run, count) in runs {
+            if self.latest_run_sequence(run)? != count.checked_sub(1) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn task_projection_uncollected(
@@ -1558,6 +1740,11 @@ impl EventStore {
             .as_ref()
             .filter(|state| through.is_none() && state.task_id == task_id)
             .cloned();
+        if let Some(cached) = &state
+            && !self.observed_runs_unchanged(cached)?
+        {
+            state = None;
+        }
         let mut verified = BTreeSet::new();
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
@@ -1638,6 +1825,7 @@ impl EventStore {
             }
             active_refs.extend(state.recording_recovery_refs(cas)?);
             active_refs.extend(state.artifact_refs.iter().cloned());
+            active_refs.extend(state.observed_artifacts.iter().cloned());
             for id in active_refs {
                 cas.verify(&id)
                     .map_err(|e| StoreError::Artifact(e.to_string()))?;
@@ -1731,6 +1919,8 @@ impl EventStore {
                     recording_report: None,
                     decisions: BTreeMap::new(),
                     artifact_refs: BTreeSet::new(),
+                    observed_artifacts: BTreeSet::new(),
+                    observed_runs: BTreeMap::new(),
                     execution: None,
                     planning: None,
                     deliveries: Vec::new(),
@@ -1750,9 +1940,6 @@ impl EventStore {
         }
         if let Some(state) = &mut state {
             state.artifact_refs = verified;
-        }
-        if through.is_none() {
-            *self.task_cache.borrow_mut() = state.clone();
         }
         Ok(state)
     }

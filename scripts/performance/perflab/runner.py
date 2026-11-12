@@ -443,6 +443,22 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock, be
     return record["path"], cpus, runtime
 
 
+def record_process_primary(record, case, result):
+    """Record the declared process metric from its actual OS source, or a missing reason.
+
+    The child's wall clock is never a substitute for a named CPU or RSS metric.
+    """
+    primary = case["primary_metric"]["key"]
+    measured, unavailable = supervise.optional_metrics(result, [primary])
+    if primary not in measured:
+        return "primary metric %s unavailable: %s" % (
+            primary, unavailable.get(primary, "no measurement source"))
+    record["metrics"][primary] = measured[primary]
+    record["metric_scopes"][primary] = (
+        "child_process_lifetime" if primary == "wall_ms" else "reaped_child_rusage")
+    return None
+
+
 class Shard(object):
     def __init__(self, options, lock_path):
         self.options = options
@@ -996,6 +1012,7 @@ class Shard(object):
         for key, metric in metrics.items():
             record["metrics"][key] = metric
             record["metric_scopes"][key] = ("sample_cgroup" if key == "cgroup_peak_memory_bytes"
+                                            else "child_process_lifetime" if key == "wall_ms"
                                             else "reaped_child_rusage")
         for key, (metric, scope) in (extra or {}).items():
             if key in wanted:
@@ -1267,6 +1284,7 @@ class Shard(object):
             record["oracle"].update(status="passed" if passed else "failed",
                                     observed_digest=observed, detail=why[:1024])
             extra = {}
+            metric_missing = False
             if case["timing"]["boundary"] == "reported_interval":
                 if passed:
                     # The driver's browser_ms is the primary interval; its splash_ms, first
@@ -1278,11 +1296,9 @@ class Shard(object):
                     extra["splash_ms"] = ({"value": format_decimal(splash), "unit": "ms"},
                                           "probe_reported")
             else:
-                wall = result["timing"]["child_wall_ns"]
-                record["metrics"][case["primary_metric"]["key"]] = {
-                    "value": format_decimal(Fraction(int(wall), 1000000)), "unit": "ms"}
-                record["metric_scopes"][case["primary_metric"]["key"]] = \
-                    "child_process_lifetime"
+                missing = record_process_primary(record, case, result)
+                if missing is not None:
+                    metric_missing, passed, why = True, False, missing
             self.record_injection(slot, record, supervised, extra)
             for key, (metric, scope) in extra.items():
                 record["metrics"][key] = metric
@@ -1292,7 +1308,8 @@ class Shard(object):
             else:
                 expected = [rule["value"] for rule in entry["rules"]
                             if rule["kind"] == "exit_code"][0]
-                failure = "nonzero_exit" if returncode != expected else "oracle_mismatch"
+                failure = ("missing_required_metric" if metric_missing else
+                           "nonzero_exit" if returncode != expected else "oracle_mismatch")
                 if failure == "nonzero_exit":
                     record["oracle"]["status"] = "failed"
                 self.fail(record, failure, why, supervised)

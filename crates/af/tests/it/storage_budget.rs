@@ -304,9 +304,9 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             _ => {
                 write(
                     &ant_file,
-                    &json!({"schema":"af/ant@5","id":"daily","scenario":bundle,
+                    &json!({"schema":"af/ant@6","id":"daily","scenario":bundle,
                     "inputs":{"file":{"type":"text","value":id}},
-                    "schedule":{"timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
+                    "schedule":{"kind":"daily","timezone":"UTC","hour":12,"minute":0,"start_unix_ms":due},
                     "owner":"owner","notification":"local:owner","execution":{"overlap":"skip",
                         "missed":"skip","lateness_ms":1000,"per_run":limits,
                         "rolling_tokens":0,"rolling_window_ms":86400000}}),

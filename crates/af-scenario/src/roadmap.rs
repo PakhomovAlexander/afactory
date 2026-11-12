@@ -278,7 +278,8 @@ pub struct Progress {
     pub reason: Option<String>,
     pub captured_goal: Option<String>,
     pub reserved_tokens: u64,
-    pub actual_tokens: u64,
+    #[serde(with = "decimal_tokens")]
+    pub actual_tokens: u128,
     /// Same native reservation/settlement records as Scenario Runs. Keys identify exact
     /// Task Store/revision charges; failed work is charged without manufacturing acceptance.
     pub task_charges: BTreeMap<String, super::state::TaskCharge>,
@@ -324,7 +325,7 @@ impl Progress {
     }
     fn validate(&self, goal: &Goal) -> Result<()> {
         require(
-            self.reserved_tokens <= MAX_TOKENS && self.actual_tokens <= MAX_TOKENS,
+            self.reserved_tokens <= MAX_TOKENS,
             "Invalid roadmap accounting",
         )?;
         if let Some(reason) = &self.reason {
@@ -340,17 +341,15 @@ impl Progress {
             )?;
         }
         let mut reserved = 0_u64;
-        let mut actual = 0_u64;
+        let mut actual = 0_u128;
         for (key, charge) in &self.task_charges {
             require(
-                af_contracts::is_digest(key)
-                    && charge.maximum <= MAX_TOKENS
-                    && charge.charged.is_none_or(|n| n <= MAX_TOKENS),
+                af_contracts::is_digest(key) && charge.maximum <= MAX_TOKENS,
                 "Malformed roadmap Task charge",
             )?;
             text(&charge.step)?;
             actual = actual
-                .checked_add(charge.charged.unwrap_or(0))
+                .checked_add(u128::from(charge.charged.unwrap_or(0)))
                 .ok_or("Roadmap accounting overflow")?;
             reserved = reserved
                 .checked_add(charge.reserved())
@@ -369,7 +368,7 @@ impl Progress {
                         == if claim.settled_unix_ms.is_some() {
                             reserved
                         } else {
-                            goal.loop_tokens.saturating_sub(actual).max(reserved)
+                            unused_allowance(goal.loop_tokens, actual).max(reserved)
                         },
                 "Roadmap accounting differs from complete-loop reservation",
             )?;
@@ -380,7 +379,7 @@ impl Progress {
             )?;
         }
         let mut keys = BTreeSet::new();
-        let mut charged = 0_u64;
+        let mut charged = 0_u128;
         for receipt in &self.task_receipts {
             Datum::Task(receipt.clone()).validate()?;
             require(
@@ -388,7 +387,7 @@ impl Progress {
                 "Duplicate roadmap Task receipt",
             )?;
             charged = charged
-                .checked_add(receipt.charged_tokens)
+                .checked_add(u128::from(receipt.charged_tokens))
                 .ok_or("Roadmap accounting overflow")?;
         }
         require(
@@ -436,7 +435,7 @@ impl Roadmap {
             "New roadmap cannot supply history",
         )?;
         let value = Self {
-            schema: "af/scenario-roadmap@2".into(),
+            schema: "af/scenario-roadmap@3".into(),
             id: revision.proposal.id.clone(),
             identity: execution_id()?,
             progress: revision
@@ -476,13 +475,13 @@ impl Roadmap {
         let committed = self
             .progress
             .values()
-            .try_fold(0_u64, |n, p| {
+            .try_fold(0_u128, |n, p| {
                 n.checked_add(p.actual_tokens)?
-                    .checked_add(p.reserved_tokens)
+                    .checked_add(u128::from(p.reserved_tokens))
             })
             .ok_or("Roadmap accounting overflow")?;
         require(
-            committed <= proposal.max_tokens,
+            committed <= u128::from(proposal.max_tokens),
             "Roadmap budget is below accumulated charges/reservations",
         )
     }
@@ -502,7 +501,7 @@ impl Roadmap {
     }
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-roadmap@2" && af_contracts::is_digest(&self.identity),
+            self.schema == "af/scenario-roadmap@3" && af_contracts::is_digest(&self.identity),
             "Unsupported roadmap or invalid identity",
         )?;
         name(&self.id)?;
@@ -565,9 +564,9 @@ impl Roadmap {
         // revision below committed accounting, but must never make spending disappear.
         self.progress
             .values()
-            .try_fold(0_u64, |n, p| {
+            .try_fold(0_u128, |n, p| {
                 n.checked_add(p.actual_tokens)?
-                    .checked_add(p.reserved_tokens)
+                    .checked_add(u128::from(p.reserved_tokens))
             })
             .ok_or("Roadmap accounting overflow")?;
         Ok(())
@@ -637,16 +636,36 @@ mod tests {
         for (file, value) in [
             ("scenario-roadmap-proposal-v2.json", json!(proposal())),
             ("scenario-roadmap-revision-v2.json", json!(roadmap.head())),
-            ("scenario-roadmap-v2.json", json!(roadmap)),
+            ("scenario-roadmap-v3.json", json!(roadmap)),
             (
-                "scenario-roadmap-list-v2.json",
-                json!({"schema":"af/scenario-roadmap-list@2","roadmaps":{"performance":roadmap}}),
+                "scenario-roadmap-list-v3.json",
+                json!({"schema":"af/scenario-roadmap-list@3","roadmaps":{"performance":roadmap}}),
             ),
         ] {
             valid(file, &value);
             let mut old = value;
             old["schema"] = json!("af/unknown@0");
             assert!(!schema(file).is_valid(&old));
+        }
+        let mut old = json!(roadmap);
+        old["schema"] = json!("af/scenario-roadmap@2");
+        assert!(!schema("scenario-roadmap-v3.json").is_valid(&old));
+        assert!(
+            serde_json::from_value::<Roadmap>(old)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let goal = roadmap.head().proposal.goals[0].id.clone();
+        for invalid in [
+            json!(0),
+            json!("00"),
+            json!("-1"),
+            json!("340282366920938463463374607431768211456"),
+        ] {
+            let mut bad = json!(roadmap);
+            bad["progress"][&goal]["actual_tokens"] = invalid;
+            assert!(serde_json::from_value::<Roadmap>(bad).is_err());
         }
         let replay: Roadmap = serde_json::from_value(json!(roadmap)).unwrap();
         assert_eq!(replay, roadmap);
@@ -792,7 +811,7 @@ mod tests {
             digest: digest(b"report"),
         }];
         completed.validate().unwrap();
-        valid("scenario-roadmap-v2.json", &completed);
+        valid("scenario-roadmap-v3.json", &completed);
         assert!(completed.plan(changed).is_err());
         // A later horizon is future planning; the same goal keeps its evidence and spend.
         let mut future = proposal();
@@ -915,7 +934,7 @@ mod tests {
             initial.revisions[0]
         );
         assert_eq!(replay.roadmaps["performance"].progress, initial.progress);
-        valid("scenario-store-v6.json", &replay);
+        valid("scenario-store-v9.json", &replay);
         assert!(
             store
                 .update(|w| {
@@ -954,13 +973,13 @@ mod tests {
         assert_eq!(store.read().unwrap(), replay);
         // All prior-release Store documents fail closed, rather than defaulting missing history.
         let mut old = json!(replay);
-        old["schema"] = json!("af/scenario-store@1");
-        assert!(!schema("scenario-store-v6.json").is_valid(&old));
+        old["schema"] = json!("af/scenario-store@8");
+        assert!(!schema("scenario-store-v9.json").is_valid(&old));
         let parsed: super::super::store::World = serde_json::from_value(old.clone()).unwrap();
         assert!(parsed.validate(&crate::tests::TestHost::default()).is_err());
         old.as_object_mut().unwrap().remove("roadmaps");
         assert!(serde_json::from_value::<super::super::store::World>(old).is_err());
-        std::fs::write(path.join("runs/scenario-owner"), b"af/scenario-store@1\n").unwrap();
+        std::fs::write(path.join("runs/scenario-owner"), b"af/scenario-store@8\n").unwrap();
         assert!(Store::isolated(&path).is_err());
     }
 }
@@ -1103,18 +1122,18 @@ impl Roadmap {
             } else if goal.loop_tokens > run.limits.max_tokens {
                 Some("Whole optimization loop exceeds per-run allowance; explicitly narrow scope or defer".into())
             } else if total
-                .checked_add(goal.loop_tokens)
-                .is_none_or(|v| v > proposal.max_tokens)
+                .checked_add(u128::from(goal.loop_tokens))
+                .is_none_or(|v| v > u128::from(proposal.max_tokens))
             {
                 Some("Whole optimization loop exceeds roadmap-total allowance".into())
             } else if daily
-                .checked_add(goal.loop_tokens)
-                .is_none_or(|v| v > proposal.daily_tokens)
+                .checked_add(u128::from(goal.loop_tokens))
+                .is_none_or(|v| v > u128::from(proposal.daily_tokens))
             {
                 Some("Whole optimization loop exceeds UTC daily allowance".into())
             } else if rolling
-                .checked_add(goal.loop_tokens)
-                .is_none_or(|v| v > proposal.rolling_tokens)
+                .checked_add(u128::from(goal.loop_tokens))
+                .is_none_or(|v| v > u128::from(proposal.rolling_tokens))
             {
                 Some("Whole optimization loop exceeds rolling allowance".into())
             } else {
@@ -1144,18 +1163,18 @@ impl Roadmap {
         }
         Ok(None)
     }
-    fn committed(&self) -> Result<u64> {
+    fn committed(&self) -> Result<u128> {
         self.progress
             .values()
-            .try_fold(0u64, |n, p| {
+            .try_fold(0u128, |n, p| {
                 n.checked_add(p.actual_tokens)?
-                    .checked_add(p.reserved_tokens)
+                    .checked_add(u128::from(p.reserved_tokens))
             })
             .ok_or("Roadmap accounting overflow".into())
     }
-    fn window_usage(&self, now: u64, day: Option<u64>) -> Result<u64> {
+    fn window_usage(&self, now: u64, day: Option<u64>) -> Result<u128> {
         let window = self.head().proposal.rolling_window_ms;
-        self.progress.values().try_fold(0u64, |n, p| {
+        self.progress.values().try_fold(0u128, |n, p| {
             let charge = match &p.claim {
                 Some(c)
                     if c.settled_unix_ms.is_none()
@@ -1171,7 +1190,7 @@ impl Roadmap {
                         } =>
                 {
                     p.actual_tokens
-                        .checked_add(p.reserved_tokens)
+                        .checked_add(u128::from(p.reserved_tokens))
                         .ok_or("Roadmap charge overflow")?
                 }
                 _ => 0,
@@ -1201,7 +1220,9 @@ impl Roadmap {
             p.actual_tokens = p
                 .task_charges
                 .values()
-                .try_fold(0u64, |n, c| n.checked_add(c.charged.unwrap_or(0)))
+                .try_fold(0u128, |n, c| {
+                    n.checked_add(u128::from(c.charged.unwrap_or(0)))
+                })
                 .ok_or("Roadmap charge overflow")?;
             let unknown = p
                 .task_charges
@@ -1219,9 +1240,7 @@ impl Roadmap {
             p.reserved_tokens = if settled {
                 0
             } else {
-                goal.loop_tokens
-                    .saturating_sub(p.actual_tokens)
-                    .max(unknown)
+                unused_allowance(goal.loop_tokens, p.actual_tokens).max(unknown)
             };
             p.task_receipts.clear();
             let mut seen = BTreeSet::new();
@@ -1250,5 +1269,22 @@ impl Roadmap {
             }
         }
         self.validate()
+    }
+}
+
+// Reservations and configured allowances remain bounded. Only actual recovered charges are wide.
+fn unused_allowance(allowance: u64, actual: u128) -> u64 {
+    u128::from(allowance).saturating_sub(actual) as u64
+}
+
+mod decimal_tokens {
+    use af_contracts::task::usage::DecimalU128;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+        DecimalU128::from(*value).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
+        DecimalU128::deserialize(deserializer).map(DecimalU128::get)
     }
 }

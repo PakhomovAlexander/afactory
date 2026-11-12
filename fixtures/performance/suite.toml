@@ -87,6 +87,11 @@ unit = "ms"
 direction = "lower_is_better"
 description = "Monotonic wall time of the declared timing boundary; the product metric."
 
+[metrics.total_cpu_ms]
+unit = "ms"
+direction = "lower_is_better"
+description = "OS-accounted user plus system CPU of the same reaped child; includes process startup, polling and final status."
+
 [metrics.user_cpu_ms]
 unit = "ms"
 direction = "lower_is_better"
@@ -140,6 +145,13 @@ relative_tolerance = "0.05"
 absolute_tolerance = "1"
 calibration = "initial"
 description = "Initial wall-time policy r = 0.05, a = 1 ms; not a claim that hosted CI resolves 5%."
+
+[policies.waiter_cpu]
+metric = "total_cpu_ms"
+relative_tolerance = "0.05"
+absolute_tolerance = "1"
+calibration = "initial"
+description = "Initial waiter total CPU comparison policy; requires calibration before performance claims."
 
 # Budgets begin pending calibration; a reviewed policy change may enable them. -----------------
 
@@ -681,10 +693,61 @@ policy = "wall_time_default"
 pairs = { quick = 20, nightly = 40 }
 warmup_pairs = 2
 # Its seed writes 10,000 events through the protected writer, one FULL-synchronous transaction
-# each (about 25 s on a local macOS host), once per side and shard; each sample copies it.
+# each, once per side and shard; each sample copies it.
 sample_timeout_seconds = 120
 budgets = []
-probe = { contract_id = "state_projection_v2", repetitions = 1, seed = { case_id = "state_projection_seed", contract_id = "state_projection_seed_v1", parameters = ["log"], description = "The fixture Task's log of exactly 10,000 valid relevant events, written once per side and shard through the side's own protected public writer; each sample projects its private copy through a fresh Store." } }
+probe = { contract_id = "state_projection_v2", repetitions = 1, seed = { case_id = "state_projection_seed", contract_id = "state_projection_seed_v1", parameters = ["log"], description = "The fixture Task's log of open, propose, admit and exactly 9,997 production renewals, written once per side and shard through the side's own protected public writer; each sample projects its private copy through a fresh Store." } }
+
+[fixtures.cli_wait_small_100]
+kind = "cli_state"
+events = 100
+golden = "pending_native_oracle"
+description = "Public-writer running Task: 100 events, small authority, 0 historical Tasks; normal final lease."
+
+[fixtures.cli_wait_small_10000]
+kind = "cli_state"
+events = 10000
+golden = "pending_native_oracle"
+description = "Public-writer running Task: 10000 events, small authority, 0 historical Tasks; normal final lease."
+
+[fixtures.cli_wait_large_10000]
+kind = "cli_state"
+events = 10000
+golden = "pending_native_oracle"
+description = "Public-writer running Task: 10000 events, issue_255_large authority, 0 historical Tasks; normal final lease."
+
+[fixtures.cli_wait_small_history_100]
+kind = "cli_state"
+events = 10000
+golden = "pending_native_oracle"
+description = "Public-writer running Task: 10000 events, small authority, 100 historical Tasks; normal final lease."
+
+[fixtures.cli_wait_large_history_100]
+kind = "cli_state"
+events = 10000
+golden = "pending_native_oracle"
+description = "Public-writer running Task: 10000 events, issue_255_large authority, 100 historical Tasks; normal final lease."
+
+[cases.cli_task_wait]
+family = "cli_task"
+description = "Real af task wait with a two-second timeout across event count, artifact weight and historical Task count."
+kind = "process"
+requires_linux_containment = true
+timing = { boundary = "child_process_lifetime", description = "Whole waiter process, including initial projection, repeated refresh, status rendering and timeout exit." }
+cache = { process = "fresh", store = "fresh", projection = "application_cold", os_page_cache = "warm" }
+oracle = { kind = "cli_state_fields", state = "available", description = "Exit 124 and JSON status for the fixture Task still running; early settlement fails." }
+execution = { state = "supported", pending = "" }
+parameters = { state = { kind = "fixture", values = ["cli_state_10000", "cli_wait_small_100", "cli_wait_small_10000", "cli_wait_large_10000", "cli_wait_small_history_100", "cli_wait_large_history_100"] } }
+tiers = ["nightly"]
+criticality = "critical"
+primary_metric = "total_cpu_ms"
+optional_metrics = ["wall_ms", "user_cpu_ms", "system_cpu_ms", "wait4_maxrss_bytes", "cgroup_peak_memory_bytes"]
+policy = "waiter_cpu"
+pairs = { nightly = 40 }
+warmup_pairs = 2
+sample_timeout_seconds = 120
+budgets = []
+af_environment = { AF_STORAGE__MIN_FREE_BYTES = "268435456" }
 
 [cases.authority_plan_check]
 family = "authority_library"
@@ -796,7 +859,7 @@ family = "persistence"
 description = "Real filesystem CAS write/read and state append/read with declared flush semantics."
 kind = "library"
 requires_linux_containment = false
-timing = { boundary = "library_region", region = "persistence_round_trip", setup_excluded = ["scratch directory creation"], description = "Probe-named region; flush semantics are declared by the probe." }
+timing = { boundary = "library_region", region = "persistence_round_trip", setup_excluded = ["scratch directory creation"], description = "Probe-named region; state_append_read measures 100 production renewals including bounded clock-eligibility reads/waits and ordered replay. v3 cadence is not timing-comparable with v1; per-event FULL flush remains." }
 cache = { process = "fresh", store = "fresh", projection = "not_applicable", os_page_cache = "warm" }
 oracle = { kind = "persistence_round_trip", state = "available", description = "Read-back bytes and logical byte counts match." }
 execution = { state = "supported", pending = "" }
@@ -810,4 +873,4 @@ pairs = { nightly = 40 }
 warmup_pairs = 2
 sample_timeout_seconds = 30
 budgets = []
-probe = { contract_id = "persistence_fs_v1", repetitions = 1 }
+probe = { contract_id = "persistence_fs_v3", repetitions = 1 }

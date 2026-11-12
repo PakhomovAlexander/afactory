@@ -35,6 +35,16 @@ pub(crate) struct Definition {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum ScenarioCommand {
+    /// Render a named recorded result as Markdown; observing never executes work
+    Output {
+        /// Scenario Run or Ant label, according to this command's namespace
+        id: String,
+        #[command(flatten)]
+        view: OutputView,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+
     /// Retrieve one provenance-checked native findings, History Capture or adoption artifact
     #[command(
         override_usage = "af scenario evidence-source <TASK_ID> --artifact-id ID\n                            --repo REPO --task-state STORE [OPTIONS]",
@@ -232,6 +242,22 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum AntCommand {
+    /// Explicit foreground scheduler lifecycle; never installs a service
+    Scheduler {
+        #[command(subcommand)]
+        command: SchedulerCommand,
+    },
+
+    /// Render a named recorded result as Markdown; observing never executes work
+    Output {
+        /// Scenario Run or Ant label, according to this command's namespace
+        id: String,
+        #[command(flatten)]
+        view: OutputView,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+
     /// Validate and pin the definition, machine policy and explicit timezone data
     Validate {
         #[command(flatten)]
@@ -287,6 +313,203 @@ pub(crate) enum AntCommand {
         #[command(flatten)]
         inspect: Inspect,
     },
+}
+#[derive(Debug, Args)]
+pub(crate) struct OutputView {
+    /// Named Scenario result port (required when a Scenario has multiple outputs)
+    #[arg(long)]
+    name: Option<String>,
+    /// Present already-authored text as Markdown (requires recorded observation metadata)
+    #[arg(long, requires_all = ["name", "observed_output", "stale_after_ms"])]
+    raw_markdown: bool,
+    /// Named integer output containing the source observation Unix time in milliseconds
+    #[arg(long, requires = "raw_markdown")]
+    observed_output: Option<String>,
+    /// Freshness lifetime of raw Markdown in milliseconds; never changes observation time
+    #[arg(long, requires = "raw_markdown", value_parser = clap::value_parser!(u64).range(1..=af_scenario::contract::MAX_TIME))]
+    stale_after_ms: Option<u64>,
+    /// Repeated read-only snapshots until interrupted
+    #[arg(long)]
+    watch: bool,
+    /// View polling cadence in integral seconds, independent of schedule/producer cadence
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..=86400))]
+    interval_seconds: u64,
+    /// Atomically replace this Markdown file; otherwise stream bounded Markdown snapshots
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum SchedulerCommand {
+    /// Run in the foreground until stop, SIGINT or SIGTERM; owns one Store lease
+    Run {
+        /// Optional finite lifecycle for private fixtures and supervision
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        for_seconds: Option<u64>,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Request graceful stop after current bounded dispatch; leaves Run state recoverable
+    Stop {
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Inspect the live OS lease and last heartbeat, including a crashed scheduler
+    Status {
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+}
+fn scheduler(command: SchedulerCommand) -> Result<i32> {
+    match command {
+        SchedulerCommand::Status { inspect } => {
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            print(&store.scheduler_status()?, &inspect)
+        }
+        SchedulerCommand::Stop { inspect } => {
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            store.scheduler_stop()?;
+            print(&store.scheduler_status()?, &inspect)
+        }
+        SchedulerCommand::Run {
+            for_seconds,
+            inspect,
+        } => {
+            require(
+                inspect.now.is_none(),
+                "Continuous scheduler requires the real clock",
+            )?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let _lease = store.scheduler_start(runtime::now()?)?;
+            let started = std::time::Instant::now();
+            let mut last_error: Option<String> = None;
+            let mut had_errors = false;
+            loop {
+                if crate::interrupt::received().is_some() {
+                    break;
+                }
+                if for_seconds.is_some_and(|s| started.elapsed().as_secs() >= s) {
+                    break;
+                }
+                let at = runtime::now()?;
+                if store.scheduler_heartbeat(at, last_error.as_deref())? {
+                    break;
+                }
+                let poll = std::time::Instant::now();
+                // Native supervised Task/adapter dispatch retains its existing deadlines,
+                // reconciliation and per-Run locks. Failed ticks are visible, never successes.
+                let error = match runtime::tick(&store, at, None) {
+                    Ok(tick) if tick.refused.is_empty() => None,
+                    Ok(tick) => {
+                        Some(serde_json::to_string(&tick.refused).map_err(|e| e.to_string())?)
+                    }
+                    Err(error) => {
+                        // A global journal/dispatch failure is not a deferred Ant. Keep its
+                        // diagnostic and exit; never hot-loop a full or damaged Store.
+                        store.scheduler_heartbeat(runtime::now()?, Some(&error))?;
+                        return Err(error);
+                    }
+                };
+                if let Some(error) = &error {
+                    had_errors = true;
+                    eprintln!("af scheduler: {error}");
+                }
+                last_error = error.clone();
+                if store.scheduler_heartbeat(runtime::now()?, error.as_deref())? {
+                    break;
+                }
+                crate::interrupt::wait(
+                    std::time::Duration::from_secs(1).saturating_sub(poll.elapsed()),
+                );
+            }
+            Ok(i32::from(had_errors))
+        }
+    }
+}
+fn output(id: &str, is_ant: bool, view: &OutputView, inspect: &Inspect) -> Result<i32> {
+    use af_scenario::presentation::{Snapshot, atomic_write};
+    use std::io::Write;
+    require(
+        !inspect.json,
+        "Output emits Markdown; use show --json for complete underlying native results",
+    )?;
+    require(
+        !view.watch || inspect.now.is_none(),
+        "Watch requires a real render clock",
+    )?;
+    let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+    let mut output_name = view.name.clone();
+    loop {
+        if crate::interrupt::received().is_some() {
+            break;
+        }
+        let now = at(inspect)?;
+        let result = (|| -> Result<Snapshot> {
+            let recorded = store.read_output(is_ant, id)?;
+            let selected = match &view.name {
+                Some(name) => name.as_str(),
+                None if recorded.outputs.len() == 1 => {
+                    recorded.outputs.keys().next().unwrap().as_str()
+                }
+                None => {
+                    return Err(
+                        "Multiple named outputs: select --name; inspect show --json for names"
+                            .into(),
+                    );
+                }
+            };
+            // Observe render time after the indexed read: a concurrent producer can commit
+            // an observation after this refresh began, without its clock being in the future.
+            if view.raw_markdown {
+                recorded.markdown_snapshot(
+                    selected,
+                    view.observed_output
+                        .as_deref()
+                        .ok_or("Missing observation output")?,
+                    view.stale_after_ms.ok_or("Missing freshness bound")?,
+                    at(inspect)?,
+                )
+            } else {
+                recorded.snapshot(selected, at(inspect)?)
+            }
+        })();
+        let failed = result.is_err();
+        if let Ok(snapshot) = &result {
+            output_name = Some(snapshot.output.clone());
+        }
+        let snapshot = result.unwrap_or_else(|error| {
+            let mut snapshot = Snapshot::unavailable(
+                output_name.as_deref().unwrap_or("unselected"),
+                now,
+                Some(error),
+            );
+            if is_ant {
+                snapshot.ant = Some(id.into());
+            } else {
+                snapshot.run = Some(id.into());
+            }
+            snapshot
+        });
+        let markdown = snapshot.markdown()?;
+        if let Some(path) = &view.output {
+            atomic_write(path, &markdown)?;
+        } else {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout
+                .write_all(markdown.as_bytes())
+                .and_then(|()| stdout.flush())
+            {
+                if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    return Ok(0);
+                }
+                return Err(e.to_string());
+            }
+        }
+        if !view.watch {
+            return Ok(if failed { 1 } else { 0 });
+        }
+        crate::interrupt::wait(std::time::Duration::from_secs(view.interval_seconds));
+    }
+    Ok(0)
 }
 fn pin(definition: &Definition) -> Result<Pin> {
     let mut bundle: Bundle = store::definition(&definition.file)?;
@@ -354,6 +577,7 @@ fn at(inspect: &Inspect) -> Result<u64> {
 }
 pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
     match command {
+        ScenarioCommand::Output { id, view, inspect } => output(&id, false, &view, &inspect),
         ScenarioCommand::PerformanceProof {
             file,
             repo,
@@ -569,6 +793,8 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
 }
 pub(crate) fn ant(command: AntCommand) -> Result<i32> {
     match command {
+        AntCommand::Scheduler { command } => scheduler(command),
+        AntCommand::Output { id, view, inspect } => output(&id, true, &view, &inspect),
         AntCommand::Validate {
             definition,
             inspect,
@@ -594,13 +820,28 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
             print(&ant, &inspect)
         }
         AntCommand::Show { ant_id, inspect } => {
-            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
-            print(world.ants.get(&ant_id).ok_or("Ant not found")?, &inspect)
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let world = store.read()?;
+            print(
+                &ant_inspection(
+                    world.ants.get(&ant_id).ok_or("Ant not found")?,
+                    &world,
+                    &store.scheduler_status()?,
+                )?,
+                &inspect,
+            )
         }
         AntCommand::List { inspect } => {
-            let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let world = store.read()?;
+            let scheduler = store.scheduler_status()?;
+            let ants = world
+                .ants
+                .iter()
+                .map(|(id, ant)| Ok((id.clone(), ant_inspection(ant, &world, &scheduler)?)))
+                .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
             print(
-                &serde_json::json!({"schema":"af/ant-list@5","ants":world.ants}),
+                &serde_json::json!({"schema":"af/ant-list@7","ants":ants}),
                 &inspect,
             )
         }
@@ -617,11 +858,36 @@ pub(crate) fn ant(command: AntCommand) -> Result<i32> {
                 runs: results,
             } = runtime::tick(&store, now, inspect.now)?;
             print(
-                &serde_json::json!({"schema":"af/ant-tick@5","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
+                &serde_json::json!({"schema":"af/ant-tick@6","now_unix_ms":now,"started":started,"busy":busy,"refused":refused,"runs":results}),
                 &inspect,
             )
         }
     }
+}
+fn ant_inspection(
+    ant: &AntState,
+    world: &store::World,
+    scheduler: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(ant).map_err(|e| e.to_string())?;
+    value["schema"] = serde_json::json!("af/ant-inspection@2");
+    value["scheduler"] = scheduler.clone();
+    let next_due = ant.next_due_unix_ms();
+    value["next_due_unix_ms"] = serde_json::json!(next_due.as_ref().ok().copied().flatten());
+    value["next_due_error"] = serde_json::json!(next_due.err());
+    value["active_run"] =
+        serde_json::json!(ant.occurrences.iter().rev().find_map(|o| match &o.outcome {
+            OccurrenceOutcome::Started { run_id, .. }
+                if world.runs.get(run_id).is_some_and(|r| r.status.active()) =>
+                Some(run_id),
+            _ => None,
+        }));
+    value["last_lateness_ms"] = serde_json::json!(
+        ant.occurrences
+            .last()
+            .map(|o| o.admitted_unix_ms - o.due_unix_ms)
+    );
+    Ok(value)
 }
 fn change(id: &str, state: AntMode, inspect: &Inspect) -> Result<i32> {
     let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
@@ -762,7 +1028,7 @@ fn roadmap_command(command: RoadmapCommand) -> Result<i32> {
         RoadmapCommand::List { inspect } => {
             let world = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?.read()?;
             print(
-                &serde_json::json!({"schema":"af/scenario-roadmap-list@2","roadmaps":world.roadmaps}),
+                &serde_json::json!({"schema":"af/scenario-roadmap-list@3","roadmaps":world.roadmaps}),
                 &inspect,
             )
         }

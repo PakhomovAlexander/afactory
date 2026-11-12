@@ -36,6 +36,8 @@ if os.environ.get("FAKE_AF_MOVE_MAIN"):
     import subprocess
     subprocess.run(["bash", os.environ["FAKE_AF_MOVE_MAIN"]], check=True)
 open(".af/af.lock", "w").write(fixture.lock(sys.argv[4], os.environ.get("FAKE_AF_WORKER", "1.0.0")))
+if os.environ.get("FAKE_AF_CATALOG"):
+    open(".af/task-catalog.toml", "w").write("# unexpected catalog refresh\n")
 '''
 
 
@@ -122,7 +124,7 @@ class Repository(unittest.TestCase):
                     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
                     'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
                     'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid'}
-        for key in ('FAKE_AF_WORKER', 'FAKE_AF_MOVE_MAIN', 'FAKE_PR_REFUSE', 'FAKE_PR_RACE',
+        for key in ('FAKE_AF_WORKER', 'FAKE_AF_CATALOG', 'FAKE_AF_MOVE_MAIN', 'FAKE_PR_REFUSE', 'FAKE_PR_RACE',
                     'RELEASE_PIN_TOKEN', 'GH_TOKEN'):
             self.env.pop(key, None)
         (bin_dir / 'git').write_text(FAKE_GIT)
@@ -213,6 +215,33 @@ class Repository(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('already pins af 0.2.0', result.stdout)
         self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_catalog_changes_are_retained_and_refused_before_publication(self):
+        catalog = self.repo / '.af/task-catalog.toml'
+        catalog.write_text('# project catalog\n')
+        self.git('add', '.af/task-catalog.toml')
+        self.git('commit', '-qm', 'project catalog')
+        self.remote()
+        self.env['FAKE_AF_CATALOG'] = '1'
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('refresh changed more than .af/af.lock', result.stderr)
+        self.assertEqual(catalog.read_text(), '# unexpected catalog refresh\n')
+        self.assertEqual(self.git('ls-remote', '--heads', 'origin', self.branch), '')
+        self.assertFalse(Path(self.env['FAKE_PR_STATE']).exists())
+
+    def test_existing_branch_catalog_change_is_retained_and_refused(self):
+        self.remote()
+        self.assertEqual(self.pin_release('0.3.0', '--pr').returncode, 0)
+        head = self.remote_head(self.branch)
+        self.env['FAKE_AF_CATALOG'] = '1'
+        result = self.pin_release('0.3.0', '--pr')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('does not match the signed release refresh', result.stderr)
+        self.assertEqual((self.repo / '.af/task-catalog.toml').read_text(),
+                         '# unexpected catalog refresh\n')
+        self.assertEqual(self.remote_head(self.branch), head)
+        self.assertEqual(Path(self.env['FAKE_PR_STATE'] + '.creates').read_text(), '1')
 
 
     def remote(self):

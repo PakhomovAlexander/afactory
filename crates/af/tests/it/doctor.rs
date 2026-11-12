@@ -17,9 +17,9 @@ struct Machine {
 
 impl Machine {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("home")).unwrap();
-        std::fs::create_dir_all(root.path().join("work")).unwrap();
+        let root = crate::common::provider_fixture_fs::tempdir().unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(root.path().join("home")).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(root.path().join("work")).unwrap();
         Machine { root }
     }
 
@@ -91,6 +91,46 @@ impl Machine {
     }
 }
 
+#[test]
+fn clean_host_discovery_does_not_execute_provider_clis_on_the_driving_hosts_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = crate::common::provider_fixture_fs::tempdir().unwrap();
+    let marker = root.path().join("provider-started");
+    for name in ["codex", "claude", "pi"] {
+        let path = root.path().join(name);
+        crate::common::provider_fixture_fs::write(
+            &path,
+            "#!/bin/sh\n: > \"$AF_DOCTOR_PROVIDER_TRAP\"\nexit 99\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut paths = vec![root.path().to_path_buf()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "doctor::a_clean_host_only_warns_says_what_to_do_and_writes_nothing",
+            "--nocapture",
+        ])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("AF_DOCTOR_PROVIDER_TRAP", &marker)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        out(&output),
+        err(&output)
+    );
+    assert!(out(&output).contains("1 passed;"));
+    assert!(
+        !marker.exists(),
+        "the clean fixture must not execute the driving host's Provider CLIs"
+    );
+}
+
 fn out(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -135,22 +175,57 @@ fn git(dir: &Path, args: &[&str]) {
 
 #[test]
 fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
+    clean_host(false);
+}
+
+#[test]
+fn a_clean_host_with_codex_available_names_codex_setup_and_writes_nothing() {
+    clean_host(true);
+}
+
+fn clean_host(codex_available: bool) {
     let machine = Machine::new();
     let work = machine.path("work");
-    // The clean machine has required tools and no Provider CLI, independently of the
-    // driving harness or the developer's PATH.
-    let tools = machine.path("clean-tools");
-    std::fs::create_dir_all(&tools).unwrap();
-    std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
+    // Only fixture programs are discoverable: the developer's Provider CLIs and package
+    // managers must not choose this test's hint or probe a real authentication context.
+    let bin = machine.path("tools-path");
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
     for tool in ["curl", "minisign"] {
-        use std::os::unix::fs::PermissionsExt;
-        let path = tools.join(tool);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = bin.join(tool);
+        crate::common::provider_fixture_fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    let kind = if codex_available {
+        use std::os::unix::fs::PermissionsExt as _;
+        let codex = bin.join("codex");
+        std::fs::write(
+            &codex,
+            crate::provider_cli::with_help(
+                "codex",
+                r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.163.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Not logged in' >&2
+  exit 1
+fi
+exit 64
+"#,
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        "codex"
+    } else {
+        "claude"
+    };
     let before = machine.snapshot();
 
-    let text = machine.doctor(&work, &[], Some(tools.as_os_str()));
+    let text = machine.doctor(&work, &[], Some(bin.as_os_str()));
     assert_eq!(
         text.status.code(),
         Some(0),
@@ -180,7 +255,7 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
         "{shown}"
     );
 
-    let json = machine.doctor(&work, &["--json"], Some(tools.as_os_str()));
+    let json = machine.doctor(&work, &["--json"], Some(bin.as_os_str()));
     assert_eq!(json.status.code(), Some(0), "{}", err(&json));
     let document = document(&json);
     let ids: Vec<&str> = document["checks"]
@@ -222,9 +297,9 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
     let providers = check(&document, "providers");
     assert_eq!(providers["fix"], serde_json::Value::Null, "{document}");
     assert!(
-        providers["hint"].as_str().unwrap().ends_with(
-            "at a private terminal: af provider setup claude-main --kind claude --login"
-        ),
+        providers["hint"].as_str().unwrap().ends_with(&format!(
+            "at a private terminal: af provider setup {kind}-main --kind {kind} --login"
+        )),
         "{document}"
     );
     // $SHELL is unset: the fix names the SHELL placeholder, the hint its choices.
@@ -252,7 +327,7 @@ fn a_missing_tool_fails_with_the_install_line_and_exit_1() {
     let work = machine.path("work");
     // A PATH holding nothing: no git, curl or minisign.
     let empty = machine.path("empty-path");
-    std::fs::create_dir_all(&empty).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&empty).unwrap();
     let before = machine.snapshot();
 
     let json = machine.doctor(&work, &["--json"], Some(empty.as_os_str()));
@@ -290,7 +365,7 @@ fn a_missing_tool_fails_with_the_install_line_and_exit_1() {
 fn a_repository_without_af_is_told_to_onboard() {
     let machine = Machine::new();
     let repo = machine.path("work/repo");
-    std::fs::create_dir_all(&repo).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     let before = machine.snapshot();
 
@@ -361,8 +436,8 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
     let machine = Machine::new();
     let work = machine.path("work");
     let cache = machine.path("home/.cache/af/self/latest.toml");
-    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(
         &cache,
         "schema = \"af/self-check@4\"\nchecked_at_epoch = 1\nattempted_at_epoch = 86400\n\
          last_error = \"reading /releases: No such file or directory\"\nchannel = \"stable\"\n",
@@ -388,7 +463,11 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
         .unwrap()
         .as_secs()
         - 2 * 3600;
-    std::fs::write(&lock, format!("started_at_epoch = {since}\npid = 1\n")).unwrap();
+    crate::common::provider_fixture_fs::write(
+        &lock,
+        format!("started_at_epoch = {since}\npid = 1\n"),
+    )
+    .unwrap();
     let held = std::fs::File::open(&lock).unwrap();
     rustix::fs::flock(&held, rustix::fs::FlockOperation::LockExclusive).unwrap();
     let stalled = document(&machine.doctor(&work, &["--json"], None));
@@ -422,15 +501,15 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     let home = machine.path(
         "home/a-long-gate-like-directory-name-for-path-length-tests/and-one-more-level-of-it",
     );
-    std::fs::create_dir_all(&home).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&home).unwrap();
     let bin = home.join(".local/bin");
     let squeeze = |text: &str| text.split_whitespace().collect::<String>();
     // A PATH with git and no `af`, and one with an `af` link to this binary before it.
     let tools = machine.path("tools-path");
-    std::fs::create_dir_all(&tools).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&tools).unwrap();
     std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
     let linked = machine.path("af-path");
-    std::fs::create_dir_all(&linked).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&linked).unwrap();
     std::os::unix::fs::symlink(crate::common::af_binary(), linked.join("af")).unwrap();
     let with_af = std::env::join_paths([&linked, &tools]).unwrap();
     let version = env!("CARGO_PKG_VERSION");
@@ -738,26 +817,26 @@ fn assert_fixes_are_commands(document: &serde_json::Value) {
 fn every_fix_of_a_machine_where_every_check_fails_is_a_command() {
     let machine = Machine::new();
     let repo = machine.path("work/repo");
-    std::fs::create_dir_all(repo.join(".af")).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(repo.join(".af")).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
-    std::fs::write(repo.join(".af/af.toml"), "version = [\n").unwrap();
+    crate::common::provider_fixture_fs::write(repo.join(".af/af.toml"), "version = [\n").unwrap();
     let config = machine.path("home/.config/af/config.toml");
-    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(&config, "this is = not [valid\n").unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(config.parent().unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(&config, "this is = not [valid\n").unwrap();
     let registry = machine.path("providers.toml");
-    std::fs::write(&registry, "garbage = [\n").unwrap();
+    crate::common::provider_fixture_fs::write(&registry, "garbage = [\n").unwrap();
     // A PATH with git and a package manager, and nothing else af looks for.
     let bin = machine.path("tools-path");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
-    std::fs::write(bin.join("brew"), "#!/bin/sh\nexit 0\n").unwrap();
+    crate::common::provider_fixture_fs::write(bin.join("brew"), "#!/bin/sh\nexit 0\n").unwrap();
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(bin.join("brew"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry_env = registry.to_str().unwrap().to_owned();
     let envs = [("AF_PROVIDERS_FILE", registry_env.as_str())];
     let home = machine.path("home");
     let empty = machine.path("empty-path");
-    std::fs::create_dir_all(&empty).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&empty).unwrap();
     let before = machine.snapshot();
 
     let output = machine.doctor_at(&home, &repo, &["--json"], Some(bin.as_os_str()), &envs);
@@ -968,7 +1047,7 @@ fn onboarded(machine: &Machine) -> PathBuf {
 /// [`onboarded`] with Workers that need a `runner` Provider.
 fn onboarded_with(machine: &Machine, runner: &str) -> PathBuf {
     let repo = machine.path(&format!("work/onboarded-{runner}"));
-    std::fs::create_dir_all(&repo).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     let home = machine.path("home");
     let output = crate::common::af()
@@ -1006,9 +1085,9 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     let home = machine.path("home");
     // git for the repository, a fake brew so no tools fix installs anything.
     let bin = machine.path("tools-path");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
-    std::fs::write(bin.join("brew"), "#!/bin/sh\nexit 0\n").unwrap();
+    crate::common::provider_fixture_fs::write(bin.join("brew"), "#!/bin/sh\nexit 0\n").unwrap();
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(bin.join("brew"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry = machine.path("providers.toml");
@@ -1037,7 +1116,11 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     for file in [".af/af.toml", ".af/af.lock", ".af/task-catalog.toml"] {
         let path = repo.join(file);
         let kept = std::fs::read(&path).unwrap();
-        std::fs::write(&path, [kept.as_slice(), b"\nbroken = [\n"].concat()).unwrap();
+        crate::common::provider_fixture_fs::write(
+            &path,
+            [kept.as_slice(), b"\nbroken = [\n"].concat(),
+        )
+        .unwrap();
         let line = String::from_utf8_lossy(&kept).lines().count() + 2;
         let document = doctor();
         let project = check(&document, "project");
@@ -1063,14 +1146,14 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
         let said = run(&["onboard", "--repo", &canonical(&repo)]);
         assert!(said.contains("unclosed array"), "{file}: {said}");
         run_fixes(&machine, &document, &repo, &bin, &envs, &[path.clone()]);
-        std::fs::write(&path, kept).unwrap();
+        crate::common::provider_fixture_fs::write(&path, kept).unwrap();
     }
 
     // The machine configuration: the update and storage checks name it; the binary's
     // `af self install` waits for it.
     let config = home.join(".config/af/config.toml");
-    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(&config, "[storage]\nmax_bytes = [\n").unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(config.parent().unwrap()).unwrap();
+    crate::common::provider_fixture_fs::write(&config, "[storage]\nmax_bytes = [\n").unwrap();
     let document = doctor();
     for id in ["update", "storage", "binary"] {
         let row = check(&document, id);
@@ -1102,18 +1185,18 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     // --apply`, which the reviewer's missing Provider would offer for the login found here,
     // waits for it.
     let found = home.join(".claude");
-    std::fs::create_dir_all(&found).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&found).unwrap();
     std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(found.join(".credentials.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::write(found.join(".credentials.json"), "{}").unwrap();
     // A login its CLI on PATH reports, which `af provider detect --apply` would register.
-    std::fs::write(found.join("logged-in"), "").unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(found.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(
         bin.join("claude"),
         crate::provider_cli::with_help("claude", CLAUDE),
     )
     .unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
+    crate::common::provider_fixture_fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
     let document = doctor();
     let providers = check(&document, "providers");
     assert_eq!(providers["fix"], serde_json::Value::Null, "{document}");
@@ -1168,7 +1251,7 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     // and registers nothing, so it is no fix either (#331 D5); the hint says why, naming the
     // directory `~/.claude` below HOME whether or not HOME is reached through a symbolic link
     // (macOS's `/var`).
-    std::fs::create_dir_all(&found).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&found).unwrap();
     std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
     let document = doctor();
     for (id, login) in [("project", "claude login"), ("providers", "login")] {
@@ -1198,7 +1281,7 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     // A marker alone is no login: with the Claude CLI on PATH reporting the context logged
     // out, and then with no Claude CLI on PATH, `af provider detect --apply` registers nothing,
     // so it is no fix (#331 UX close-out).
-    std::fs::write(found.join("settings.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::write(found.join("settings.json"), "{}").unwrap();
     let no_fix = |document: &serde_json::Value| {
         for id in ["project", "providers"] {
             assert_eq!(
@@ -1213,7 +1296,7 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     no_fix(&doctor());
     std::fs::rename(machine.path("claude-off-path"), bin.join("claude")).unwrap();
     // Logged in, its CLI on PATH: the command registers it, and the check clears.
-    std::fs::write(found.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(found.join("logged-in"), "").unwrap();
     let document = doctor();
     for id in ["project", "providers"] {
         assert_eq!(
@@ -1255,15 +1338,15 @@ fn a_missing_codex_login_never_denies_an_available_claude_login() {
     let repo = onboarded_with(&machine, "codex");
     let home = machine.path("home");
     let bin = machine.path("tools-path");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
     use std::os::unix::fs::PermissionsExt as _;
     let found = home.join(".claude");
-    std::fs::create_dir_all(&found).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&found).unwrap();
     std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::write(found.join(".credentials.json"), "{}").unwrap();
-    std::fs::write(found.join("logged-in"), "").unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(found.join(".credentials.json"), "{}").unwrap();
+    crate::common::provider_fixture_fs::write(found.join("logged-in"), "").unwrap();
+    crate::common::provider_fixture_fs::write(
         bin.join("claude"),
         crate::provider_cli::with_help("claude", CLAUDE),
     )
@@ -1338,8 +1421,12 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
         std::fs::read(&lock).unwrap(),
         std::fs::read(&pipeline).unwrap(),
     );
-    std::fs::write(&lock, [kept_lock.as_slice(), b"\nbroken = [\n"].concat()).unwrap();
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
+        &lock,
+        [kept_lock.as_slice(), b"\nbroken = [\n"].concat(),
+    )
+    .unwrap();
+    crate::common::provider_fixture_fs::write(
         &pipeline,
         [kept_pipeline.as_slice(), b"\nbroken = [\n"].concat(),
     )
@@ -1361,8 +1448,8 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
     let said = onboard_says();
     assert!(said.contains(&format!("line {line}")), "{said}");
     assert!(said.contains(".af/af.lock"), "{said}");
-    std::fs::write(&lock, &kept_lock).unwrap();
-    std::fs::write(&pipeline, &kept_pipeline).unwrap();
+    crate::common::provider_fixture_fs::write(&lock, &kept_lock).unwrap();
+    crate::common::provider_fixture_fs::write(&pipeline, &kept_pipeline).unwrap();
 
     // A value of the wrong type parses as TOML, and is still located.
     let project = repo.join(".af/af.toml");
@@ -1372,7 +1459,7 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
         .position(|line| line.starts_with("version = "))
         .unwrap()
         + 1;
-    std::fs::write(
+    crate::common::provider_fixture_fs::write(
         &project,
         kept.replacen("version = 2", "version = \"one\"", 1),
     )
@@ -1385,7 +1472,7 @@ fn the_project_row_names_the_file_onboarding_stopped_at() {
         )),
         "{hint}"
     );
-    std::fs::write(&project, kept).unwrap();
+    crate::common::provider_fixture_fs::write(&project, kept).unwrap();
 }
 
 /// #331 D2 and D3, the Worker packages: the hint names the file onboarding stops at because it
@@ -1409,7 +1496,7 @@ fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
         assert!(project["fix"].is_null());
         project["hint"].as_str().unwrap().to_owned()
     };
-    std::fs::write(&manifest, format!("{kept}\nbroken = [\n")).unwrap();
+    crate::common::provider_fixture_fs::write(&manifest, format!("{kept}\nbroken = [\n")).unwrap();
     let said = hint();
     assert!(
         said.contains("task-packages/onboard/correctness/worker.toml"),
@@ -1419,15 +1506,19 @@ fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
         said.contains(&format!("line {}", kept.lines().count() + 2)),
         "{said}"
     );
-    std::fs::write(&manifest, kept.replace("model = ", "unknown_model = ")).unwrap();
+    crate::common::provider_fixture_fs::write(
+        &manifest,
+        kept.replace("model = ", "unknown_model = "),
+    )
+    .unwrap();
     let said = hint();
     assert!(
         said.contains("worker.toml") && said.contains("unknown field"),
         "{said}"
     );
-    std::fs::write(&manifest, &kept).unwrap();
+    crate::common::provider_fixture_fs::write(&manifest, &kept).unwrap();
     let outside = machine.path("outside-secret");
-    std::fs::write(&outside, "secret = [\n").unwrap();
+    crate::common::provider_fixture_fs::write(&outside, "secret = [\n").unwrap();
     std::fs::remove_file(&manifest).unwrap();
     std::os::unix::fs::symlink(&outside, &manifest).unwrap();
     let said = hint();
@@ -1435,7 +1526,7 @@ fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
     assert!(!said.contains("secret ="), "{said}");
     assert_eq!(std::fs::read_to_string(outside).unwrap(), "secret = [\n");
     std::fs::remove_file(&manifest).unwrap();
-    std::fs::write(&manifest, &kept).unwrap();
+    crate::common::provider_fixture_fs::write(&manifest, &kept).unwrap();
     let prompt = repo.join(".af/task-packages/onboard/correctness/instructions.md");
     std::fs::OpenOptions::new()
         .append(true)
@@ -1553,14 +1644,14 @@ fn printed(text: &str, id: &str, label: &str) -> String {
 fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
     let machine = Machine::new();
     let repo = machine.path("work/repo");
-    std::fs::create_dir_all(&repo).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     // This binary at a path wider than either terminal, its name `af`.
     let long = machine.path(&format!(
         "work/{}bin",
         "a-long-download-directory/".repeat(5)
     ));
-    std::fs::create_dir_all(&long).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&long).unwrap();
     let program = long.join("af");
     if std::fs::hard_link(crate::common::af_binary(), &program).is_err() {
         std::fs::copy(crate::common::af_binary(), &program).unwrap();
@@ -1568,7 +1659,7 @@ fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
     let program_text = program.to_str().unwrap().to_owned();
     assert!(program_text.chars().count() > 100);
     let tools = machine.path("tools-path");
-    std::fs::create_dir_all(&tools).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&tools).unwrap();
     std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
     // The default link's directory below HOME, a long fixed directory in it so that the elvish
     // line is wider than 100 columns whatever the temporary root is (`/tmp/.tmpXXXXXX` on
@@ -1647,7 +1738,7 @@ fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
         parses(&install);
 
         // Elvish, the default link present and its directory off PATH.
-        std::fs::create_dir_all(&bin).unwrap();
+        crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(&program, bin.join("af")).unwrap();
         let text = doctor_in_terminal(
             &machine,
@@ -1681,10 +1772,14 @@ fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
 fn the_path_fix_installs_first_when_the_directory_is_on_path_but_empty() {
     let machine = Machine::new();
     let bin = machine.path("home/.local/bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&bin).unwrap();
     let other = machine.path("other-bin");
-    std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(other.join("af"), "#!/bin/sh\necho \"$*\" > \"$0.args\"\n").unwrap();
+    crate::common::provider_fixture_fs::create_dir_all(&other).unwrap();
+    crate::common::provider_fixture_fs::write(
+        other.join("af"),
+        "#!/bin/sh\necho \"$*\" > \"$0.args\"\n",
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(other.join("af"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::env::join_paths([
@@ -1745,7 +1840,7 @@ fn a_release_source_that_is_a_file_offers_no_update_fix() {
     let machine = Machine::new();
     let work = machine.path("work");
     let source = machine.path("releases.txt");
-    std::fs::write(&source, "not a directory\n").unwrap();
+    crate::common::provider_fixture_fs::write(&source, "not a directory\n").unwrap();
     let source_env = source.to_str().unwrap().to_owned();
     let envs = [("AF_RELEASE_SOURCE", source_env.as_str())];
     let home = machine.path("home");

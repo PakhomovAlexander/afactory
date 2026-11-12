@@ -523,6 +523,12 @@ fn cached_plan_dependency_references_revalidate_dependency_and_inputs() {
             } else {
                 format!("event store artifact: cas object does not match its digest: {id}")
             };
+            assert!(
+                f.store
+                    .task_observation_unchanged(&f.cas, &healthy)
+                    .is_err(),
+                "observation {failure}"
+            );
             assert_eq!(
                 f.store
                     .task_projection(&f.cas, "task-1")

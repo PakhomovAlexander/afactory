@@ -72,9 +72,7 @@ pub(crate) const MAX_DEPTH: u32 = 128;
 /// A fresh, private directory for one sandbox or template, named so a later sweep can
 /// attribute it to this process.
 pub(crate) fn tempdir() -> std::io::Result<tempfile::TempDir> {
-    tempfile::Builder::new()
-        .prefix(&format!("{PREFIX}{}-", std::process::id()))
-        .tempdir_in(sandbox_root())
+    private_tempdir(&format!("{PREFIX}{}-", std::process::id()))
 }
 
 /// A fresh, private directory for one Worker Attempt or admission probe that needs a working
@@ -86,9 +84,18 @@ pub fn attempt_directory() -> std::io::Result<tempfile::TempDir> {
 
 /// A fresh, private check runtime directory named `af-check-<pid>-<random>`.
 pub(crate) fn check_tempdir() -> std::io::Result<tempfile::TempDir> {
-    tempfile::Builder::new()
-        .prefix(&format!("{CHECK_PREFIX}{}-", std::process::id()))
-        .tempdir_in(sandbox_root())
+    private_tempdir(&format!("{CHECK_PREFIX}{}-", std::process::id()))
+}
+
+fn private_tempdir(prefix: &str) -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir_in(sandbox_root())
 }
 
 /// Whether `name` is the name af gives a sandbox or a check runtime directory: either prefix,

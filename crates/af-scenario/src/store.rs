@@ -15,15 +15,18 @@ pub struct World {
     pub schema: String,
     pub writer_version: String,
     pub runs: BTreeMap<String, Run>,
+    /// Native journal byte leases, including protected lifecycle/response capacity.
+    pub run_capacity: BTreeMap<String, u64>,
     pub ants: BTreeMap<String, AntState>,
     pub roadmaps: BTreeMap<String, super::roadmap::Roadmap>,
 }
 impl World {
     fn empty() -> Self {
         Self {
-            schema: "af/scenario-store@6".into(),
+            schema: "af/scenario-store@9".into(),
             writer_version: env!("CARGO_PKG_VERSION").into(),
             runs: BTreeMap::new(),
+            run_capacity: BTreeMap::new(),
             ants: BTreeMap::new(),
             roadmaps: BTreeMap::new(),
         }
@@ -61,10 +64,11 @@ impl World {
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-store@6"
+            self.schema == "af/scenario-store@9"
                 && self.writer_version == env!("CARGO_PKG_VERSION"),
             "Scenario Store was written by another release or version",
         )?;
+        crate::retention::validate_capacity(self)?;
         let mut executions = std::collections::BTreeSet::new();
         for (id, run) in &self.runs {
             require(
@@ -248,7 +252,7 @@ impl Store {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
-            tx.execute_batch("CREATE TABLE journal (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL, digest TEXT NOT NULL);").map_err(|e| e.to_string())?;
+            tx.execute_batch("CREATE TABLE result_views (kind TEXT NOT NULL, label TEXT NOT NULL, document TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(kind,label)); CREATE TABLE scheduler (id INTEGER PRIMARY KEY CHECK(id=1), started INTEGER NOT NULL, heartbeat INTEGER NOT NULL, stop INTEGER NOT NULL, error TEXT); CREATE TABLE journal (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL, digest TEXT NOT NULL);").map_err(|e| e.to_string())?;
             let world = World::empty();
             let document = serde_json::to_string(&world).map_err(|e| e.to_string())?;
             tx.execute(
@@ -263,12 +267,12 @@ impl Store {
                 .open(&marker)
                 .map_err(|e| e.to_string())?;
             use std::io::Write;
-            file.write_all(b"af/scenario-store@6\n")
+            file.write_all(b"af/scenario-store@9\n")
                 .and_then(|()| file.sync_all())
                 .map_err(|e| e.to_string())?;
         }
         require(
-            read(&marker, 128)? == b"af/scenario-store@6\n"
+            read(&marker, 128)? == b"af/scenario-store@9\n"
                 && db.is_file()
                 && path.join("events.sqlite").is_file(),
             "Invalid or incomplete Scenario Store; refusing to recreate lost state",
@@ -318,10 +322,14 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         let mut world = Self::load(&tx, self.host.as_ref())?;
+        let pending = crate::retention::pending_intents(&world);
+        let old_runs: std::collections::BTreeSet<_> = world.runs.keys().cloned().collect();
         let old_roadmaps = world.roadmaps.clone();
+        let old_views = Self::views(&world);
         world.reconcile()?;
         let value = action(&mut world)?;
         world.reconcile()?;
+        crate::retention::fit_completed_response(&mut world, &pending)?;
         for (id, old) in &old_roadmaps {
             world
                 .roadmaps
@@ -341,12 +349,35 @@ impl Store {
                 )?;
             }
         }
+        crate::retention::compact(&mut world)?;
+        crate::retention::allocate_new(&mut world, &old_runs)?;
         world.validate(self.host.as_ref())?;
         let document = serde_json::to_string(&world).map_err(|e| e.to_string())?;
         require(
             document.len() as u64 <= MAX_BYTES,
             "Scenario Store record budget exhausted",
         )?;
+        // Expired payloads must disappear from the keyed index in the same transaction.
+        let new_views = Self::views(&world);
+        for (kind, label) in old_views.keys().filter(|key| !new_views.contains_key(*key)) {
+            tx.execute(
+                "DELETE FROM result_views WHERE kind=?1 AND label=?2",
+                rusqlite::params![kind, label],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        for ((kind, label), view) in new_views {
+            if old_views.get(&(kind.clone(), label.clone())) == Some(&view) {
+                continue;
+            }
+            let value = serde_json::to_string(&view).map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT OR REPLACE INTO result_views VALUES (?1,?2,?3,?4)",
+                rusqlite::params![kind, label, value, digest(value.as_bytes())],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.execute(
             "UPDATE journal SET document=?1,digest=?2 WHERE id=1",
             rusqlite::params![document, digest(document.as_bytes())],
@@ -354,6 +385,157 @@ impl Store {
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(value)
+    }
+    fn views(world: &World) -> BTreeMap<(String, String), crate::presentation::Recorded> {
+        use crate::presentation::Recorded;
+        let mut views = BTreeMap::new();
+        let occurrences: BTreeMap<&str, &str> = world
+            .ants
+            .values()
+            .flat_map(|ant| ant.occurrences.iter())
+            .filter_map(|o| match &o.outcome {
+                crate::schedule::OccurrenceOutcome::Started { run_id, .. } => {
+                    Some((run_id.as_str(), o.id.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (id, run) in &world.runs {
+            let occurrence = occurrences.get(id.as_str()).map(|id| (*id).to_string());
+            views.insert(
+                ("run".into(), id.clone()),
+                Recorded::from_run(run, occurrence),
+            );
+        }
+        for (id, ant) in &world.ants {
+            let last = ant.occurrences.iter().rev().find_map(|o| match &o.outcome {
+                crate::schedule::OccurrenceOutcome::Started { run_id, .. } => {
+                    views.get(&("run".into(), run_id.clone())).cloned()
+                }
+                _ => None,
+            });
+            let view = last.unwrap_or_else(|| Recorded {
+                ant: Some(id.clone()),
+                occurrence: None,
+                run: None,
+                active: false,
+                status: "unavailable".into(),
+                error: None,
+                outputs: ant.pin.scenario.bundle.definitions[&ant.pin.scenario.bundle.root]
+                    .outputs
+                    .keys()
+                    .map(|name| (name.clone(), None))
+                    .collect(),
+            });
+            views.insert(("ant".into(), id.clone()), view);
+        }
+        views
+    }
+    /// Fetch one bounded transactionally derived view. Never scan journal history on a poll.
+    pub fn read_output(&self, is_ant: bool, id: &str) -> Result<crate::presentation::Recorded> {
+        let (document, expected): (String, String) = self
+            .connection()?
+            .query_row(
+                "SELECT document,digest FROM result_views WHERE kind=?1 AND label=?2",
+                rusqlite::params![if is_ant { "ant" } else { "run" }, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or("Ant or Scenario Run output unavailable (not found or intentionally pruned by native retention)")?;
+        require(
+            document.len() as u64 <= MAX_BYTES && digest(document.as_bytes()) == expected,
+            "Corrupt output read index",
+        )?;
+        serde_json::from_str(&document).map_err(|e| e.to_string())
+    }
+    fn scheduler_lock(&self, create: bool) -> std::io::Result<File> {
+        af_store::local_fs::private_file_options()
+            .write(true)
+            .create(create)
+            .truncate(false)
+            .open(self.path.join("runs/scheduler.lock"))
+    }
+    pub fn scheduler_start(&self, now: u64) -> Result<RunGuard> {
+        self.scheduler_start_inner(now, || {})
+    }
+    fn scheduler_start_inner(&self, now: u64, acquired: impl FnOnce()) -> Result<RunGuard> {
+        require(
+            now > 0 && now <= MAX_TIME,
+            "Scheduler clock outside the supported range",
+        )?;
+        let held = self.host.hold_store(&self.path)?;
+        // Serialize stop with BOTH lease acquisition and row initialization. A stop
+        // acknowledged before this transaction belongs to the previous generation;
+        // one acknowledged after lease acquisition must survive initialization.
+        let mut connection = self.connection()?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let file = self.scheduler_lock(true).map_err(|e| e.to_string())?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .map_err(|e| format!("Scheduler already running: {e}"))?;
+        acquired();
+        tx.execute(
+            "INSERT OR REPLACE INTO scheduler VALUES (1,?1,?1,0,NULL)",
+            [now as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(RunGuard {
+            _run: file,
+            _store: held,
+        })
+    }
+    pub fn scheduler_heartbeat(&self, now: u64, error: Option<&str>) -> Result<bool> {
+        require(
+            now > 0 && now <= MAX_TIME,
+            "Scheduler clock outside the supported range",
+        )?;
+        let c = self.connection()?;
+        c.execute(
+            "UPDATE scheduler SET heartbeat=?1,error=?2 WHERE id=1",
+            rusqlite::params![now as i64, error],
+        )
+        .map_err(|e| e.to_string())?;
+        c.query_row("SELECT stop FROM scheduler WHERE id=1", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+    pub fn scheduler_stop(&self) -> Result<()> {
+        self.connection()?
+            .execute("UPDATE scheduler SET stop=1 WHERE id=1", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn scheduler_status(&self) -> Result<serde_json::Value> {
+        let running = match self.scheduler_lock(false) {
+            Ok(file) => match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => false,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+                Err(e) => return Err(e.to_string()),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.to_string()),
+        };
+        let row = self
+            .connection()?
+            .query_row(
+                "SELECT started,heartbeat,stop,error FROM scheduler WHERE id=1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, bool>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(
+            serde_json::json!({"schema":"af/ant-scheduler@1","running":running,"started_unix_ms":row.as_ref().map(|r|r.0),"heartbeat_unix_ms":row.as_ref().map(|r|r.1),"stop_requested":row.as_ref().is_some_and(|r|r.2),"error":row.and_then(|r|r.3)}),
+        )
     }
     pub fn lock_run(&self, id: &str) -> Result<RunGuard> {
         self.lock(id, "")
@@ -520,5 +702,79 @@ mod tests {
         );
         host.reject_templates.store(false, Ordering::Relaxed);
         assert!(store.read().unwrap().runs.contains_key("recorded"));
+    }
+}
+
+#[cfg(test)]
+mod scheduler_race_tests {
+    use super::*;
+    use crate::tests::START;
+
+    #[test]
+    fn acknowledged_stop_survives_initialization_on_first_start_and_restart() {
+        for restart in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::isolated(root.path()).unwrap();
+            store
+                .update(|world| {
+                    world
+                        .ants
+                        .insert("daily".into(), crate::tests::ant("UTC", 0, 0));
+                    Ok(())
+                })
+                .unwrap();
+            if restart {
+                let lease = store.scheduler_start(START).unwrap();
+                store.scheduler_stop().unwrap();
+                drop(lease);
+            }
+            let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+            let (initialize_tx, initialize_rx) = std::sync::mpsc::channel();
+            let starter = store.clone();
+            let start = std::thread::spawn(move || {
+                starter
+                    .scheduler_start_inner(START + 1000, || {
+                        acquired_tx.send(()).unwrap();
+                        initialize_rx.recv().unwrap();
+                    })
+                    .unwrap()
+            });
+            acquired_rx.recv().unwrap();
+            // This is exactly the formerly vulnerable window: lease held, row
+            // absent (first start) or still from the previous generation (restart).
+            assert_eq!(store.scheduler_status().unwrap()["running"], true);
+            // An independent writer cannot acknowledge stop in this window.
+            let probe = store.connection().unwrap();
+            probe.busy_timeout(std::time::Duration::ZERO).unwrap();
+            assert!(
+                probe
+                    .execute("UPDATE scheduler SET stop=1 WHERE id=1", [])
+                    .is_err()
+            );
+            let stopper = store.clone();
+            let (requested_tx, requested_rx) = std::sync::mpsc::channel();
+            let stop = std::thread::spawn(move || {
+                requested_tx.send(()).unwrap();
+                stopper.scheduler_stop().unwrap();
+            });
+            requested_rx.recv().unwrap();
+            initialize_tx.send(()).unwrap();
+            let lease = start.join().unwrap();
+            stop.join().unwrap(); // Stop is now acknowledged.
+            // Follow the real driver's heartbeat-before-tick order with an eligible
+            // Ant. Retained stop must prevent that first admission entirely.
+            let stopped = store.scheduler_heartbeat(START + 1000, None).unwrap();
+            if !stopped {
+                crate::runtime::tick(&store, START + 1000, Some(START + 1000)).unwrap();
+            }
+            assert!(stopped);
+            let world = store.read().unwrap();
+            assert!(world.runs.is_empty());
+            assert!(world.ants["daily"].occurrences.is_empty());
+            drop(lease);
+            // A later explicit generation clears the old request.
+            let _lease = store.scheduler_start(START + 2000).unwrap();
+            assert!(!store.scheduler_heartbeat(START + 2000, None).unwrap());
+        }
     }
 }

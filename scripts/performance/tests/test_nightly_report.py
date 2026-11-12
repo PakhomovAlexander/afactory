@@ -518,6 +518,8 @@ class Night(TempDir):
                        core=dict(machine["core"], tier="nightly", shards=4))
         self.executor_config = self.path("executor.toml")
         write(self.executor_config, toml(machine).encode())
+        # Operator authority must stay private even under a group-writable host umask.
+        os.chmod(self.executor_config, 0o600)
         self.config = self.path("nightly.toml")
         self.write_config()
         self.github = FakeGitHub()
@@ -533,6 +535,7 @@ class Night(TempDir):
                "sign_key": self.path("sign.key"), "public_key": self.path("sign.pub"),
                "required_checks": ["check / lint"], "report": values}
         write(self.config, toml(doc).encode())
+        os.chmod(self.config, 0o600)
 
     def night(self, name="nightly-build/valid-built.json"):
         """The night's record and, for a built night, its two archives."""
