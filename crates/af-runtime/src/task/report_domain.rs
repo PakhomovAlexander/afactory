@@ -715,6 +715,28 @@ impl ReportTaskDomain {
         }
         Ok(evaluation)
     }
+    fn verifier_output(&self, cas: &Cas, input: &TaskInvocationV1, id: &str) -> Result<(), String> {
+        let evaluation = self.evaluation(cas, input, id)?;
+        if evaluation.requirements_id != input_id(input, "requirements", "af/Requirements@1", None)?
+        {
+            return Err("Report verifier changed its requirements identity".into());
+        }
+        let artifact = envelope(cas, id)?;
+        for (port, declared) in &self.graph.nodes[&input.node].contract.inputs {
+            if declared.artifact_type == REPORT_EVALUATION_V1 {
+                let dependency = input_id(
+                    input,
+                    port,
+                    REPORT_EVALUATION_V1,
+                    Some(&evaluation.source_snapshot_id),
+                )?;
+                if !artifact.input_artifacts.iter().any(|id| id == dependency) {
+                    return Err("Report verifier lost an exact evaluation dependency".into());
+                }
+            }
+        }
+        Ok(())
+    }
     fn verification(
         &self,
         cas: &Cas,
@@ -1222,6 +1244,24 @@ impl TaskOperatorHost for ReportTaskDomain {
     }
 }
 impl TaskDomain for ReportTaskDomain {
+    fn admit_worker_signature(&self, signature: &OperatorSignature) -> Result<(), String> {
+        if verifier_contract(&signature.contract) {
+            for (port, declared) in &signature.contract.inputs {
+                if declared.artifact_type == REPORT_EVALUATION_V1
+                    && !signature
+                        .retains
+                        .get("result")
+                        .is_some_and(|ports| ports.contains(port))
+                {
+                    return Err(format!(
+                        "Report verifier result must retain evaluation dependency {port}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The report policy, verbatim, after the author's package instructions (ADR-0208): what
     /// its draft is validated against before it is sealed.
     fn worker_instructions(
@@ -1437,12 +1477,7 @@ impl TaskDomain for ReportTaskDomain {
             }
             TaskOperatorV1::Verify { .. } => {
                 let id = output_id("result", REPORT_EVALUATION_V1)?;
-                let evaluation = self.evaluation(cas, input, &id)?;
-                if evaluation.requirements_id
-                    != input_id(input, "requirements", "af/Requirements@1", None)?
-                {
-                    return Err("Report verifier changed its requirements identity".into());
-                }
+                self.verifier_output(cas, input, &id)?;
             }
             TaskOperatorV1::ReportSeal {} => {
                 let actual: DocumentV1 = read(

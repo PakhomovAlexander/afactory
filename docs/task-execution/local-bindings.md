@@ -76,7 +76,10 @@ project-chosen names. Each is required, cardinality `one`, and `same_as` the `so
 The captured graph binds each to its exact verifier node's `result` port. Admission requires
 distinct passed evaluations of the same document, sources, checks, Snapshot and requirements;
 missing, stale or substituted evaluations are refused. A verifier with no prior evaluations
-remains valid. The consuming package owns its dependency count and independence bindings.
+remains valid. Each dependency must appear in the Worker's `signature.retains` entry for `result`;
+output admission checks that the result envelope retains its exact input artifact ID, so the
+accepted report evidence preserves every declared prior evaluation in its lineage.
+The consuming package owns its dependency count and independence bindings.
 
 ## Afactory operator catalog migration
 
