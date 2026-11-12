@@ -698,15 +698,17 @@ sys.exit(99)
         let template = &step["operation"]["template"];
         assert_eq!(template["authority_commit"], p.commit);
         let bindings = &template["bindings"];
-        assert!(bindings.get("packages").is_none());
-        assert_eq!(bindings.as_object().unwrap().len(), 3);
         let document = &template["document"];
         let kind = document["kind"].as_str().unwrap();
+        let binding_file = p.bindings(kind);
+        let mut expected_bindings: Value =
+            serde_json::from_slice(&std::fs::read(&binding_file).unwrap()).unwrap();
+        expected_bindings["packages"] = json!({});
+        assert_eq!(bindings, &expected_bindings, "{stage}");
         if kind == "implement" {
             assert_owner_performance_instruction_contracts(&p.f.repo, document);
         }
         let file = p.f.machine.join(format!("{stage}-template.json"));
-        let binding_file = p.bindings(kind);
         let planned = p.cli(
             &p.task_state,
             &[
