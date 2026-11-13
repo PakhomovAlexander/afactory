@@ -50,17 +50,47 @@ if os.environ.get('FAKE_DELAY'): time.sleep(float(os.environ['FAKE_DELAY']))
 if a[0]=='api':
  endpoint=a[1].replace('{owner}/{repo}','o/r').split('repos/o/r/',1)[1]
  if endpoint=='': out({'full_name':'o/r','permissions':{'push':not d.get('deny')}})
- if endpoint=='actions/secrets': out({'secrets':[{'name':n} for n in ([] if d.get('no_secrets') else (['MINISIGN_SECRET_KEY'] if d.get('no_pin') else ['MINISIGN_SECRET_KEY','RELEASE_PIN_TOKEN']))]})
+ if endpoint.startswith('actions/secrets'):
+  rows=d.get('secret_rows',[{'name':n} for n in ([] if d.get('no_secrets') else (['MINISIGN_SECRET_KEY'] if d.get('no_pin') else ['MINISIGN_SECRET_KEY','RELEASE_PIN_TOKEN']))])
+  page=int(endpoint.split('page=')[-1]);batch=rows[(page-1)*100:page*100]
+  if d.get('secret_duplicate') and page==2: batch=[rows[0]]
+  if d.get('secret_missing_page') and page==2: sys.exit(1)
+  if d.get('secret_partial') and page==1: batch=batch[:30]
+  response={'total_count':len(rows),'secrets':batch}
+  if d.get('secret_missing_total'): response.pop('total_count')
+  if d.get('secret_changing_total') and page==2: response['total_count']+=1
+  out(response)
  if endpoint.startswith('labels'): out([] if d.get('no_label') else [{'name':'release:fast'},{'name':'release:full'}])
  if endpoint.startswith('releases/'):
   out(next(r for r in d['releases'] if str(r['id'])==endpoint.split('/')[1]))
- if endpoint.startswith('releases'): out(d.get('releases',[]))
+ if endpoint.startswith('releases'):
+  rows=d.get('releases',[]);page=int(endpoint.split('page=')[-1]);batch=rows[(page-1)*100:page*100]
+  if d.get('release_missing_page') and page==2: sys.exit(1)
+  if d.get('release_duplicate') and page==2: batch=[rows[0]]
+  if d.get('release_malformed') and page==2: batch=[{'tag_name':'v2.0.0'}]
+  if d.get('release_partial') and page==1: batch=batch[:30]
+  if '--include' in a:
+   print('HTTP/2.0 200 OK')
+   links=[]
+   if not d.get('release_no_link'):
+    if page*100<len(rows): links.append('<https://api.github.com/repos/o/r/releases?per_page=100&page='+str(page+1)+'>; rel="next"')
+    if page>1: links.append('<https://api.github.com/repos/o/r/releases?per_page=100&page='+str(page-1)+'>; rel="prev"')
+    if page*100<len(rows): links.append('<https://api.github.com/repos/o/r/releases?per_page=100&page='+str((len(rows)+99)//100)+'>; rel="last"')
+    if page>1: links.append('<https://api.github.com/repos/o/r/releases?per_page=100&page=1>; rel="first"')
+    if page==2 and d.get('release_omit_later_next'): links=[link for link in links if 'rel="next"' not in link and 'rel="last"' not in link]
+   if links: print('Link: '+', '.join(links))
+   print()
+  if d.get('release_change_after_read'):
+   batch=[dict(row) for row in batch]
+   d['releases'][0]['draft']=not d['releases'][0].get('draft',False)
+   d['release_change_after_read']=False;save()
+  out(batch)
  if endpoint.startswith('rules/branches/main'): out([] if d.get('no_strict') else [{'type':'required_status_checks','ruleset_id':1,'ruleset_source_type':'Repository','parameters':{'strict_required_status_checks_policy':True,'required_status_checks':[{'context':'validation / lint'}]}}])
  if endpoint=='rulesets/1': out({'enforcement':'active','bypass_actors':[{}] if d.get('bypass') else []})
  if endpoint=='actions/workflows/release.yml': out({'id':339974639,'path':'.github/workflows/release.yml'})
  if endpoint=='actions/workflows/ci.yml': out({'id':339965080,'state':'disabled_manually' if d.get('ci_disabled') else 'active','path':'.github/workflows/ci.yml'})
  if endpoint.startswith('actions/artifacts?'):
-  out([{'artifacts':d.get('bundles',[])}])
+  rows=d.get('bundles',[]);out({'total_count':len(rows),'artifacts':rows})
  if endpoint=='actions/runs/1': out({'workflow_id':d.get('bundle_workflow_id',339974639),'head_sha':d['merged'],'path':d.get('bundle_path','.github/workflows/release.yml'),'event':'push'})
  if (endpoint.startswith(('actions/workflows/ci.yml/runs','actions/runs/10','actions/runs/20','git/commits/')) or (endpoint.startswith('actions/artifacts/') and endpoint.endswith('/zip'))):
   import importlib.util,io,zipfile
@@ -164,10 +194,10 @@ if a[:2]==['release','upload']:
  def upload():
   import shutil
   path=Path(a[3]);shutil.copyfile(path,Path(d['assets'])/path.name)
-  d['releases'][0]['assets'].append({'name':path.name})
+  next(r for r in d['releases'] if r['tag_name']==a[2])['assets'].append({'name':path.name})
  effect('upload',upload);sys.exit(0)
 if a[:2]==['release','edit']:
- def publish(): d['releases'][0]['draft']=False
+ def publish(): next(r for r in d['releases'] if r['tag_name']==a[2])['draft']=False
  effect('publish',publish);sys.exit(0)
 if a[:2]==['release','download']:
  def download():
@@ -202,6 +232,7 @@ class ReleaseCLI(unittest.TestCase):
                     'HOME': str(self.base / 'home'), 'TMPDIR': str(self.base / 'tmp')}
         for name in ('dev', 'scripts/dev-release.py', 'scripts/release-contract.py',
                      'scripts/release-contract.json', 'scripts/release-policy.json',
+                     'scripts/release-observation.py',
                      'scripts/changelog-notes.py', 'crates/af/keys/release.pub',
                      'CHANGELOG.md', 'rust-toolchain.toml', '.github/workflows/ci.yml',
                      '.github/workflows/validate.yml', 'scripts/test-classes.py',
@@ -510,7 +541,7 @@ class ReleaseCLI(unittest.TestCase):
         names.append('release-provenance.json')
         (assets / 'SHA256SUMS').write_text(''.join(hashlib.sha256((assets / n).read_bytes()).hexdigest() + '  ' + n + '\n' for n in names))
         (assets / 'SHA256SUMS.minisig').write_text('fixture signature checked by fake minisign')
-        self.data(assets=str(assets), releases=[{'tag_name': 'v0.15.1-rc.4', 'draft': False,
+        self.data(assets=str(assets), releases=[{'id':1, 'tag_name': 'v0.15.1-rc.4', 'draft': False,
                   'html_url': 'https://example.test/release', 'assets': [{'name': n} for n in
                   [*names, 'SHA256SUMS', 'SHA256SUMS.minisig']]}])
 
@@ -757,7 +788,7 @@ class ReleaseCLI(unittest.TestCase):
     def test_resume_refuses_modified_resolver_or_catalog(self):
         self.data(ci_missing=True)
         self.cli('rc')
-        for name in ('scripts/test-classes.py', '.config/test-classes.json'):
+        for name in ('scripts/test-classes.py', '.config/test-classes.json', 'scripts/release-observation.py'):
             path = self.source / name
             original = path.read_text()
             path.write_text(original + '# changed execution authority')
@@ -835,6 +866,185 @@ class ReleaseCLI(unittest.TestCase):
             _, err = process.communicate(timeout=30)
         self.assertEqual(process.returncode, 0, err)
 
+    @staticmethod
+    def old_releases():
+        # These release records deliberately have no surviving tags or branches.
+        return [{'id':100+i, 'tag_name':'v0.1.0-rc.'+str(i+1),
+                 'draft':True, 'assets':[]} for i in range(100)]
+
+    def test_complete_release_reservation_and_secret_names(self):
+        releases = self.old_releases() + [{'id':2, 'tag_name':'v0.15.1-rc.8'}]
+        self.data(releases=releases, release_no_link=False)
+        self.assertIn('version_conflict', self.cli('plan', '--version', '0.15.1-rc.8', ok=False).stderr)
+        self.assertEqual(json.loads(self.cli('plan').stdout)['plan']['version'], '0.15.1-rc.9')
+
+    def test_missing_release_links_refuse_reserved_later_tag(self):
+        self.data(releases=self.old_releases()+[{'id':2, 'tag_name':'v0.15.1-rc.8', 'draft':True}],
+                  release_no_link=True)
+        self.assertIn('full release page lacks next metadata',
+                      self.cli('plan', '--version', '0.15.1-rc.8', ok=False).stderr)
+        self.assertEqual(self.data().get('effects', []), [])
+
+    def test_release_collection_change_refuses_before_any_effect(self):
+        self.data(releases=[{'id':1, 'tag_name':'v0.1.0', 'draft':False}],
+                  release_change_after_read=True)
+        self.assertIn('release collection changed', self.cli('plan', ok=False).stderr)
+        self.assertEqual(self.data().get('effects', []), [])
+
+    def test_exact_full_terminal_release_collection(self):
+        self.data(releases=self.old_releases(), release_no_link=True)
+        self.assertIn('incomplete_observation', self.cli('plan', ok=False).stderr)
+        self.assertEqual(self.data().get('effects', []), [])
+
+    def test_controller_reconciles_publication_on_later_release_page(self):
+        self.cli('rc')
+        self.publish_assets(self.state_value())
+        releases = self.old_releases() + self.data()['releases']
+        self.data(releases=releases, release_no_link=False)
+        self.assertTrue(json.loads(self.cli('resume').stdout)['published'])
+        self.assertEqual(self.data()['effects'].count('merge'), 1)
+
+    def test_stable_omitted_third_release_page_refuses_before_effects(self):
+        rows = [{'id':i, 'tag_name':'v0.1.0-rc.'+str(i+1)} for i in range(300)]
+        rows[-1].update(tag_name='v0.15.1-rc.8', draft=True)
+        self.data(releases=rows, release_omit_later_next=True)
+        # Identical observations on repeated attempts must never authorize planning.
+        for _ in range(2):
+            self.assertIn('contradictory release end',
+                          self.cli('plan', '--version', '0.15.1-rc.8', ok=False).stderr)
+            self.assertEqual(self.data().get('effects', []), [])
+
+    def test_release_observation_refuses_partial_missing_duplicate_and_over_budget(self):
+        for no_link, flag in ((False, 'release_partial'),
+                              (False, 'release_missing_page'), (False, 'release_duplicate'),
+                              (True, 'release_missing_page'), (True, 'release_duplicate'),
+                              (True, 'release_malformed')):
+            with self.subTest(no_link=no_link, flag=flag):
+                self.data(releases=self.old_releases() + [{'id':2, 'tag_name':'v0.15.1-rc.8'}],
+                          release_no_link=no_link, **{flag:True})
+                self.cli('plan', ok=False)
+                self.assertEqual(self.data().get('effects', []), [])
+                self.data(**{flag:False})
+        for rows in ([{'id':1, 'tag_name':'v0.15.1-rc.8'}, {'id':2, 'tag_name':'v0.15.1-rc.8'}],
+                     [{'tag_name':'v0.15.1-rc.8'}],
+                     [{'id':i, 'tag_name':'v0.1.0-rc.'+str(i+1)} for i in range(1001)]):
+            self.data(releases=rows)
+            self.cli('plan', ok=False)
+            self.assertEqual(self.data().get('effects', []), [])
+
+    def test_secret_names_cross_default_and_explicit_page_boundaries(self):
+        for count in (30, 100):
+            self.state = self.base / ('state-secrets-'+str(count))
+            rows = [{'name':'UNRELATED_'+str(i)} for i in range(count)]
+            rows += [{'name':'MINISIGN_SECRET_KEY'}, {'name':'RELEASE_PIN_TOKEN'}]
+            self.data(secret_rows=rows)
+            self.cli('plan')
+            self.assertIn('protected publication runner', self.state_value()['plan']['signing_readiness'])
+        self.assertEqual(self.state_value()['pin']['state'], 'PENDING')
+
+    def test_missing_pin_after_secret_name_boundary_is_independent(self):
+        self.data(secret_rows=[{'name':'UNRELATED_'+str(i)} for i in range(100)] +
+                  [{'name':'MINISIGN_SECRET_KEY'}])
+        self.cli('rc')
+        self.assertEqual(self.state_value()['pin']['state'], 'CREDENTIAL_MISSING')
+        self.assertEqual(self.data()['effects'].count('merge'), 1)
+
+    def test_secret_names_refuse_incomplete_and_duplicate_metadata(self):
+        rows = [{'name':'UNRELATED_'+str(i)} for i in range(100)] + [{'name':'MINISIGN_SECRET_KEY'}]
+        for flag in ('secret_duplicate', 'secret_missing_page', 'secret_partial',
+                     'secret_missing_total', 'secret_changing_total'):
+            with self.subTest(flag=flag):
+                self.data(secret_rows=rows, **{flag:True})
+                self.cli('plan', ok=False)
+                self.assertEqual(self.data().get('effects', []), [])
+                self.data(**{flag:False})
+
+    def test_late_release_recovery_and_different_valid_signature(self):
+        self.cli('rc')
+        state = self.state_value()
+        self.publish_assets(state)
+        self.git('--git-dir', self.remote, 'update-ref', '-d', 'refs/tags/v0.15.1-rc.4')
+        self.git('--git-dir', self.remote, 'update-ref', '-d', 'refs/heads/'+state['plan']['branch'])
+        runner = self.base / 'runner'
+        runner.mkdir()
+        shutil.copytree(self.base / 'assets', runner / 'dist')
+        for name in ('SHA256SUMS', 'SHA256SUMS.minisig'):
+            shutil.move(runner / 'dist' / name, runner / name)
+        (runner / 'install.sh').write_text('fixture installer')
+        (runner / 'notes.md').write_text('reviewed notes')
+        (runner / 'scripts').mkdir()
+        shutil.copyfile(ROOT / 'scripts/release-policy.json', runner / 'scripts/release-policy.json')
+        (runner / 'crates/af/keys').mkdir(parents=True)
+        # Real independent valid signatures for identical sums, using a disposable key.
+        minisign = shutil.which('minisign')
+        self.assertIsNotNone(minisign)
+        (self.bin / 'minisign').unlink()
+        (self.bin / 'minisign').symlink_to(minisign)
+        secret = runner / 'key'
+        public = runner / 'crates/af/keys/release.pub'
+        def sign(*args):
+            subprocess.run([minisign, *map(str, args)], check=True, capture_output=True)
+        sign('-G', '-W', '-s', secret, '-p', public)
+        sums = runner / 'SHA256SUMS'
+        signature = runner / 'SHA256SUMS.minisig'
+        sign('-S', '-s', secret, '-m', sums, '-t', 'original')
+        retained = runner / 'retained'
+        retained.mkdir()
+        shutil.copytree(runner / 'dist', retained / 'dist')
+        for name in ('SHA256SUMS', 'SHA256SUMS.minisig', 'install.sh'):
+            shutil.copyfile(runner / name, retained / name)
+        original = signature.read_bytes()
+        sign('-S', '-s', secret, '-m', sums, '-t', 'different valid signature')
+        self.assertNotEqual(signature.read_bytes(), original)
+        sign('-V', '-m', sums, '-p', public)
+        remote_assets = runner / 'remote'
+        remote_assets.mkdir()
+        shutil.copyfile(signature, remote_assets / signature.name)
+        signature.write_bytes(original)
+        target = {'id':1, 'tag_name':'v0.15.1-rc.4', 'target_commitish':state['candidate'],
+                  'draft':True, 'assets':[{'name':signature.name}]}
+        self.data(releases=self.old_releases()+[target], release_no_link=False, bundles=[], assets=str(remote_assets), effects=[])
+        env = {**self.env, 'GH_REPO':'o/r', 'GITHUB_OUTPUT':str(runner / 'output')}
+        def helper(name):
+            return subprocess.run([sys.executable, '-I', str(ROOT / ('scripts/release-'+name+'.py')),
+                                   target['tag_name'], state['candidate']], cwd=runner, env=env,
+                                  capture_output=True, text=True)
+        rejected = helper('publish')
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('conflicting published asset SHA256SUMS.minisig', rejected.stderr)
+        self.assertNotIn('publish', self.data()['effects'])
+        self.assertNotIn('create-release', self.data()['effects'])
+        self.assertNotEqual((remote_assets / signature.name).read_bytes(), original)
+        # An empty draft on page two still requires original retained bytes.
+        target['assets'] = []
+        self.data(releases=self.old_releases()+[target], effects=[])
+        self.assertIn('original signed bundle unavailable', helper('bundle').stderr)
+        self.assertEqual(signature.read_bytes(), original)
+        for flag in ('release_missing_page', 'release_partial', 'release_duplicate'):
+            self.data(release_no_link=(flag != 'release_partial'), **{flag:True})
+            self.assertNotEqual(helper('bundle').returncode, 0)
+            self.assertNotEqual(helper('publish').returncode, 0)
+            self.assertEqual(self.data()['effects'], [])
+            self.data(**{flag:False})
+        self.data(release_no_link=False)
+        bundle = {'id':5, 'name':'release-signed-'+target['tag_name']+'-'+state['candidate'],
+                  'expired':False, 'workflow_run':{'id':1, 'head_sha':state['candidate']}}
+        self.data(bundles=[{**bundle, 'expired':True}])
+        self.assertIn('expired', helper('bundle').stderr)
+        self.data(bundles=[bundle], bundle_dir=str(retained))
+        signature.write_bytes(b'rebuilt signature')
+        self.assertEqual(helper('bundle').returncode, 0)
+        self.assertEqual(signature.read_bytes(), original)
+        for path in retained.rglob('*'):
+            if path.is_file():
+                self.assertEqual((runner / path.relative_to(retained)).read_bytes(), path.read_bytes())
+        self.assertEqual(helper('publish').returncode, 0)
+        self.assertFalse(self.data()['releases'][-1]['draft'])
+        # No record and no retained artifact is the legitimate first-run path.
+        self.data(releases=[], bundles=[])
+        self.assertEqual(helper('bundle').returncode, 0)
+        self.assertIn('reused=false', (runner / 'output').read_text())
+
     def test_publication_effects_reconcile_without_clobber(self):
         self.cli('rc')
         state = self.state_value()
@@ -868,7 +1078,7 @@ class ReleaseCLI(unittest.TestCase):
                         shutil.copyfile(runner / name, bundle / name)
                     self.data(bundle_path='.github/workflows/release.yml@main' if when == 'after' else '.github/workflows/release.yml', bundle_dir=str(bundle), bundles=[{
                         'name':'release-signed-v0.15.1-rc.4-' + state['candidate'],
-                        'expired':False, 'workflow_run':{'id':1, 'head_sha':state['candidate']}}])
+                        'id':5, 'expired':False, 'workflow_run':{'id':1, 'head_sha':state['candidate']}}])
                     first = subprocess.run(command, cwd=runner, env=env, capture_output=True, text=True)
                     self.assertNotEqual(first.returncode, 0, first.stdout)
                     # Model an entirely new workflow run: archive mtimes/build
@@ -948,6 +1158,255 @@ class ReleaseCLI(unittest.TestCase):
         self.assertFalse(self.state_value()['published'])
         self.git('--git-dir', self.remote, 'update-ref', 'refs/tags/v0.15.1-rc.4', self.initial)
         self.assertIn('tag_collision', self.cli('resume', ok=False).stderr)
+
+
+class MetadataObservation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('observation', ROOT / 'scripts/release-observation.py')
+        cls.observation = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.observation)
+
+    def test_release_headers_and_missing_pages_fail_closed(self):
+        batch = [{'id':i, 'tag_name':'v1.0.0-rc.'+str(i+1)} for i in range(100)]
+        next_link = 'Link: <https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel="next"'
+        for response in ('[]', 'HTTP/2.0 403 Forbidden\n\n[]',
+                         'HTTP/2.0 200 OK\nLink: invalid\n\n[]',
+                         'HTTP/2.0 200 OK\n'+next_link+'\n\n[]',
+                         'HTTP/2.0 200 OK\n'+next_link.replace('page=2', 'page=3')+'\n\n'+json.dumps(batch),
+                         'HTTP/2.0 200 OK\n'+next_link.replace('"next"', '"last"')+'\n\n'+json.dumps(batch)):
+            with self.subTest(response=response[:80]):
+                with self.assertRaises(ValueError):
+                    self.observation.releases(lambda _: response)
+        responses = iter(['HTTP/2.0 200 OK\n'+next_link+'\n\n'+json.dumps(batch),
+                          'HTTP/2.0 200 OK\n\n[]'])
+        with self.assertRaises(ValueError):
+            self.observation.releases(lambda _: next(responses))
+        self.assertEqual(self.observation.releases(lambda _: 'HTTP/2.0 200 OK\r\n\r\n[]'), [])
+
+    @staticmethod
+    def release_response(rows, links=''):
+        return 'HTTP/2.0 200 OK\n' + ('Link: '+links+'\n' if links else '') + '\n' + json.dumps(rows)
+
+    @staticmethod
+    def link(relation, page):
+        return '<https://api.github.com/repos/o/r/releases?per_page=100&page='+str(page)+'>; rel="'+relation+'"'
+
+    def test_stable_300_releases_cannot_hide_reserved_third_page(self):
+        rows = [{'id':i, 'tag_name':'v'+str(i)} for i in range(300)]
+        rows[-1].update(tag_name='reserved', draft=True)
+        calls = []
+        def read(endpoint):
+            page = int(endpoint.split('page=')[-1])
+            calls.append(page)
+            links = ([self.link('next', 2), self.link('last', 3)] if page == 1
+                     else [self.link('prev', 1)] if page == 2
+                     else [self.link('prev', 2), self.link('first', 1)])
+            return self.release_response(rows[(page-1)*100:page*100], ', '.join(links))
+        for _ in range(2):
+            with self.assertRaisesRegex(ValueError, 'contradictory release end'):
+                self.observation.releases(read)
+        self.assertEqual(calls, [1, 2, 1, 2])
+
+    def test_terminal_evidence_matrix(self):
+        for count in (0, 1, 99, 100, 101, 199, 200, 201, 300, 1000):
+            for last in (False, True):
+                for prev in (False, True):
+                    with self.subTest(count=count, last=last, prev=prev):
+                        rows = [{'id':i, 'tag_name':'v'+str(i)} for i in range(count)]
+                        calls = []
+                        def read(endpoint):
+                            page = int(endpoint.split('page=')[-1])
+                            calls.append(page)
+                            links = []
+                            if page*100 < count:
+                                links.append(self.link('next', page+1))
+                            if last:
+                                links.append(self.link('last', max(1, (count+99)//100)))
+                            if page > 1:
+                                links.append(self.link('first', 1))
+                                if prev:
+                                    links.append(self.link('prev', page-1))
+                            return self.release_response(rows[(page-1)*100:page*100], ', '.join(links))
+                        accepted = (count <= 100 or prev) and (count == 0 or count % 100 != 0 or last)
+                        if accepted:
+                            self.assertEqual(self.observation.releases(read), rows)
+                            self.assertEqual(calls, list(range(1, max(1, (count+99)//100)+1))*2)
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'incomplete_observation'):
+                                self.observation.releases(read)
+
+    def test_pagination_relations_refuse_malformed_duplicate_and_contradictory(self):
+        rows = [{'id':i, 'tag_name':'v'+str(i)} for i in range(200)]
+        next_link = self.link('next', 2)
+        for links in ([next_link, 'garbage'], [next_link, next_link],
+                      [next_link, self.link('last', 1)], [self.link('last', 2)],
+                      [next_link, self.link('prev', 1)], [next_link, self.link('first', 2)],
+                      [next_link, self.link('last', 0)],
+                      [next_link, self.link('last', 2).replace('page=2', 'page=2&page=3')],
+                      [next_link, self.link('last', 2).replace('per_page=100', 'per_page=50')]):
+            with self.subTest(links=links):
+                with self.assertRaisesRegex(ValueError, 'incomplete_observation'):
+                    self.observation.releases(lambda _: self.release_response(rows[:100], ', '.join(links)))
+        for first_last, terminal_links in (
+                (3, [self.link('prev', 1)]),  # Premature partial terminal.
+                (3, [self.link('prev', 1), self.link('last', 2)]),
+                (2, [self.link('prev', 1), self.link('last', 1)]),
+                (2, [self.link('prev', 1), self.link('next', 3)]),
+                (2, [self.link('prev', 1), self.link('prev', 1)]),
+                (2, [self.link('prev', 2)]),
+                (2, [self.link('prev', 1), self.link('first', 2)])):
+            with self.subTest(first_last=first_last, terminal_links=terminal_links):
+                responses = iter([self.release_response(rows[:100], next_link+', '+self.link('last', first_last)),
+                                  self.release_response(rows[100:101], ', '.join(terminal_links))])
+                with self.assertRaisesRegex(ValueError, 'incomplete_observation'):
+                    self.observation.releases(lambda _: next(responses))
+
+    def test_missing_metadata_cannot_hide_shifted_reserved_release(self):
+        rows = [{'id':i, 'tag_name':'v1.0.0-rc.'+str(i+1)} for i in range(100)]
+        reserved = {'id':100, 'tag_name':'v2.0.0', 'draft':True}
+        # Reviewer example: delete the first row after page 1, moving reserved
+        # from offset 100 to 99. Page 2 would now be empty.
+        collection = rows + [reserved]
+        calls = []
+        def read(endpoint):
+            calls.append(endpoint)
+            page = int(endpoint.split('page=')[-1])
+            batch = collection[(page-1)*100:page*100]
+            if len(calls) == 1:
+                del collection[0]
+            return self.release_response(batch)
+        with self.assertRaisesRegex(ValueError, 'full release page lacks next metadata'):
+            self.observation.releases(read)
+        self.assertEqual(len(calls), 1)  # Refuse before trusting an empty probe.
+
+    def test_truncated_short_probe_and_empty_page_do_not_prove_completeness(self):
+        rows = [{'id':i, 'tag_name':'v'+str(i)} for i in range(200)]
+        calls = []
+        def read(endpoint):
+            calls.append(endpoint)
+            page = int(endpoint.split('page=')[-1])
+            batch = rows[(page-1)*100:page*100]
+            if page == 2:
+                batch = batch[:1]
+            return self.release_response(batch)
+        with self.assertRaisesRegex(ValueError, 'full release page lacks next metadata'):
+            self.observation.releases(read)
+        self.assertEqual(len(calls), 1)
+        # Even with valid next metadata on page 1, a short terminal response
+        # without its normal prev metadata cannot establish completeness.
+        link = '<https://api.github.com/releases?per_page=100&page=2>; rel="next"'
+        responses = iter([self.release_response(rows[:100], link),
+                          self.release_response(rows[100:101]), self.release_response([])])
+        with self.assertRaisesRegex(ValueError, 'missing release pagination metadata'):
+            self.observation.releases(lambda _: next(responses))
+
+    def test_release_links_never_supply_request_destinations(self):
+        for count in (101, 200, 1000):
+            with self.subTest(count=count):
+                rows = [{'id':i, 'tag_name':'v'+str(i)} for i in range(count)]
+                calls = []
+                def read(endpoint):
+                    calls.append(endpoint)
+                    page = int(endpoint.split('page=')[-1])
+                    links = []
+                    for relation, number in [('next', page+1), ('prev', page-1),
+                                             ('last', (count+99)//100), ('first', 1)]:
+                        if (relation in ('next', 'last') and page*100 < count) or (relation in ('prev', 'first') and page > 1):
+                            links.append('<https://untrusted.invalid/foreign?per_page=100&page='+str(number)+'>; rel="'+relation+'"')
+                    return self.release_response(rows[(page-1)*100:page*100], ', '.join(links))
+                self.assertEqual(self.observation.releases(read), rows)
+                traversal = ['releases?per_page=100&page='+str(i+1) for i in range((count+99)//100)]
+                self.assertEqual(calls, traversal * 2)
+
+    def test_release_reread_detects_changed_collection(self):
+        rows = [{'id':i, 'tag_name':'v'+str(i)} for i in range(101)]
+        for change in ('delete', 'draft', 'tag'):
+            with self.subTest(change=change):
+                collection = [dict(row) for row in rows]
+                calls = []
+                def read(endpoint):
+                    calls.append(endpoint)
+                    page = int(endpoint.split('page=')[-1])
+                    batch = collection[(page-1)*100:page*100]
+                    links = ('<https://api.github.com/releases?per_page=100&page=2>; rel="next"'
+                             if page == 1 else '<https://api.github.com/releases?per_page=100&page=1>; rel="prev"')
+                    response = self.release_response(batch, links)
+                    if len(calls) == 1:
+                        if change == 'delete':
+                            del collection[0]
+                        elif change == 'draft':
+                            collection[0]['draft'] = True
+                        else:
+                            collection[0]['tag_name'] = 'reserved'
+                    return response
+                with self.assertRaisesRegex(ValueError, 'incomplete_observation'):
+                    self.observation.releases(read)
+
+    def test_reread_detects_boundary_shift_with_normal_pagination(self):
+        rows = [{'id':i, 'tag_name':'v'+str(i), 'draft':True} for i in range(202)]
+        calls = []
+        def read(endpoint):
+            calls.append(endpoint)
+            page = int(endpoint.split('page=')[-1])
+            batch = rows[(page-1)*100:page*100]
+            links = []
+            if page*100 < len(rows):
+                links.append('<https://api.github.com/releases?per_page=100&page='+str(page+1)+'>; rel="next"')
+            if page*100 < len(rows):
+                links.append(self.link('last', (len(rows)+99)//100))
+            if page > 1:
+                links += [self.link('prev', page-1), self.link('first', 1)]
+            response = self.release_response(batch, ', '.join(links))
+            if len(calls) == 1:
+                del rows[0]
+            return response
+        with self.assertRaisesRegex(ValueError, 'release collection changed'):
+            self.observation.releases(read)
+        self.assertEqual(len(calls), 6)
+
+    def test_complete_traversal_reread_compares_all_release_fields(self):
+        rows = [{'id':i, 'tag_name':'v'+str(i), 'draft':False} for i in range(101)]
+        calls = []
+        def read(endpoint):
+            calls.append(endpoint)
+            page = int(endpoint.split('page=')[-1])
+            link = '<https://api.github.com/releases?per_page=100&page='+str(2 if page == 1 else 1)+'>; rel="'+('next' if page == 1 else 'prev')+'"'
+            response = self.release_response(rows[(page-1)*100:page*100], link)
+            if len(calls) == 2:
+                rows[-1]['draft'] = True
+            return response
+        with self.assertRaisesRegex(ValueError, 'release collection changed'):
+            self.observation.releases(read)
+        self.assertEqual(len(calls), 4)
+
+    def test_release_traversal_budget(self):
+        calls = []
+        def read(endpoint):
+            calls.append(endpoint)
+            page = int(endpoint.split('page=')[-1])
+            rows = [{'id':page*100+i, 'tag_name':'v'+str(page*100+i)} for i in range(100)]
+            link = '<https://api.github.com/releases?per_page=100&page='+str(page+1)+'>; rel="next"'
+            return self.release_response(rows, link)
+        with self.assertRaisesRegex(ValueError, 'observation_budget'):
+            self.observation.releases(read)
+        self.assertEqual(len(calls), self.observation.MAX_PAGES)
+
+    def test_names_metadata_totals_and_budget(self):
+        for data in ({'secrets':[]}, {'total_count':True, 'secrets':[]},
+                     {'total_count':1, 'secrets':[]}, {'total_count':0, 'secrets':[{'name':'KEY'}]},
+                     {'total_count':1, 'secrets':[{'id':1}]},
+                     {'total_count':2, 'secrets':[{'name':'KEY'}, {'name':'KEY'}]}):
+            with self.subTest(data=data):
+                with self.assertRaises(ValueError):
+                    self.observation.pages(lambda _: data, 'actions/secrets', 'secrets', 'name')
+        def api(endpoint):
+            page = int(endpoint.split('page=')[-1])
+            return {'total_count':1001, 'secrets':[{'name':'KEY_'+str(i)}
+                    for i in range((page-1)*100, page*100)]}
+        with self.assertRaisesRegex(ValueError, 'observation_budget'):
+            self.observation.pages(api, 'actions/secrets', 'secrets', 'name')
 
 
 if __name__ == '__main__':

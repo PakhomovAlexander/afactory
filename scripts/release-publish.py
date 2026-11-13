@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Reconcile one protected runner's draft/assets before publication; never clobber."""
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
@@ -11,6 +12,11 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
+
+_observation_spec = importlib.util.spec_from_file_location(
+    'release_observation', Path(__file__).resolve().with_name('release-observation.py'))
+observation = importlib.util.module_from_spec(_observation_spec)
+_observation_spec.loader.exec_module(observation)
 
 
 def gh(*args):
@@ -44,14 +50,16 @@ def publish(tag, source, files, notes):
         if path.name in expected_archives | {'release-provenance.json'}:
             if hashlib.sha256(path.read_bytes()).hexdigest() != sums.get(path.name):
                 raise ValueError('local signed digest differs: ' + path.name)
-    rows = json.loads(gh('api', 'repos/{owner}/{repo}/releases?per_page=100'))
+    rows = observation.releases(lambda endpoint: gh(
+        'api', 'repos/{owner}/{repo}/' + endpoint, '--include'))
     release = next((row for row in rows if row['tag_name'] == tag), None)
     if release is None:
         flags = ['--prerelease'] if '-rc.' in tag else []
         gh('release', 'create', tag, '--verify-tag', '--target', source,
            '--title', tag, '--notes-file', notes, '--draft', *flags)
         # A lost reply returns failure; next invocation reads the durable draft.
-        rows = json.loads(gh('api', 'repos/{owner}/{repo}/releases?per_page=100'))
+        rows = observation.releases(lambda endpoint: gh(
+            'api', 'repos/{owner}/{repo}/' + endpoint, '--include'))
         release = next(row for row in rows if row['tag_name'] == tag)
     if release['target_commitish'] != source:
         raise ValueError('release target differs from exact publication source')
@@ -65,12 +73,7 @@ def publish(tag, source, files, notes):
                 gh('release', 'download', tag, '--pattern', path.name, '--dir', temporary)
                 downloaded = Path(temporary) / path.name
                 if downloaded.read_bytes() != path.read_bytes():
-                    # Minisign's trusted comment includes a timestamp; a rerun may sign
-                    # identical sums differently. Keep the existing valid signature.
-                    if path.name != 'SHA256SUMS.minisig':
-                        raise ValueError('conflicting published asset ' + path.name)
-                    subprocess.run(['minisign', '-V', '-q', '-m', 'SHA256SUMS',
-                                    '-x', str(downloaded), '-p', 'crates/af/keys/release.pub'], check=True)
+                    raise ValueError('conflicting published asset ' + path.name)
         else:
             if not release['draft']:
                 raise ValueError('published release is incomplete; refuse mutation')

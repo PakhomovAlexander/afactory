@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
 """Restore the original signed asset bundle before any publication retry."""
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import sys
+
+sys.dont_write_bytecode = True
+
+_observation_spec = importlib.util.spec_from_file_location(
+    'release_observation', Path(__file__).resolve().with_name('release-observation.py'))
+observation = importlib.util.module_from_spec(_observation_spec)
+_observation_spec.loader.exec_module(observation)
+
+
+def read(endpoint, include=False):
+    result = subprocess.run(['gh', 'api', 'repos/{owner}/{repo}/' + endpoint,
+                             *(['--include'] if include else [])], capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError('incomplete_observation: GitHub read failed; retry original bundle recovery')
+    return result.stdout
 
 
 def restore(tag, source):
     name = 'release-signed-' + tag + '-' + source
-    pages = json.loads(subprocess.check_output([
-        'gh', 'api', 'repos/{owner}/{repo}/actions/artifacts?name=' + name + '&per_page=100',
-        '--paginate', '--slurp'], text=True))
-    bundles = [a for page in pages for a in page['artifacts'] if a['name'] == name]
+    bundles = observation.pages(lambda endpoint: json.loads(read(endpoint)),
+                                'actions/artifacts?name=' + name, 'artifacts')
+    bundles = [a for a in bundles if a['name'] == name]
+    releases = observation.releases(lambda endpoint: read(endpoint, include=True))
     if not bundles:
-        # Refuse rebuilding after partial publication when its original bundle was
-        # deleted or expired. Never adopt unverified assets from a draft.
-        releases = json.loads(subprocess.check_output([
-            'gh', 'api', 'repos/{owner}/{repo}/releases?per_page=100'], text=True))
-        if any(r['tag_name'] == tag and r['assets'] for r in releases):
+        # Even an empty draft reserves the original signed identity.
+        if any(r['tag_name'] == tag for r in releases):
             raise ValueError('original signed bundle unavailable; restore retained artifact before retry')
         return False
     if len(bundles) != 1 or bundles[0]['expired']:

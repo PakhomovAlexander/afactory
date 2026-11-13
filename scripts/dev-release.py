@@ -25,6 +25,11 @@ SCHEMA = 'af.dev-release-run/2'
 AUTHORIZATION = 'normal-release-pr-check-merge-and-signed-publication-v1'
 DRIVER_DEADLINE = None
 
+_observation_spec = importlib.util.spec_from_file_location(
+    'release_observation', Path(__file__).resolve().with_name('release-observation.py'))
+observation = importlib.util.module_from_spec(_observation_spec)
+_observation_spec.loader.exec_module(observation)
+
 ALLOWED = ('Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'scripts/release-contract.json')
 
 RUN_REQUIRED = ('schema', 'plan', 'identity', 'authorization', 'created', 'updated',
@@ -191,6 +196,13 @@ class Controller:
     def api(self, endpoint):
         return json.loads(run(['gh', 'api', 'repos/' + self.args.repo + '/' + endpoint]))
 
+    def releases(self):
+        try:
+            return observation.releases(lambda endpoint: run(
+                ['gh', 'api', 'repos/' + self.args.repo + '/' + endpoint, '--include']))
+        except ValueError as error:
+            raise Refusal(str(error)) from error
+
     def fetch(self):
         self.git('fetch', '--quiet', '--no-tags', 'origin', '+refs/heads/main:refs/heads/main',
                  '+refs/tags/*:refs/tags/*')
@@ -214,7 +226,8 @@ class Controller:
 
     def preflight(self, source):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
-        for name in ('dev', 'scripts/dev-release.py', 'scripts/release-policy.json', 'rust-toolchain.toml'):
+        for name in ('dev', 'scripts/dev-release.py', 'scripts/release-policy.json',
+                     'scripts/release-observation.py', 'rust-toolchain.toml'):
             if self.blob(source, name) != (ROOT / name).read_text().strip():
                 raise Refusal('authority_source_mismatch: fetched source must contain reviewed ' + name)
         for path, tokens in policy['required_features'].items():
@@ -238,7 +251,10 @@ class Controller:
         if repository['full_name'] != self.args.repo or not repository.get('permissions', {}).get('push'):
             raise Refusal('repository_permission: Contents and Pull requests write required')
         # Presence is observable; secret values are never read or retained.
-        secrets = self.api('actions/secrets').get('secrets', [])
+        try:
+            secrets = observation.pages(self.api, 'actions/secrets', 'secrets', 'name')
+        except ValueError as error:
+            raise Refusal(str(error)) from error
         names = {item['name'] for item in secrets}
         self.pin_readiness = 'PENDING' if 'RELEASE_PIN_TOKEN' in names else 'CREDENTIAL_MISSING'
         missing = {'MINISIGN_SECRET_KEY'} - names
@@ -537,7 +553,7 @@ class Controller:
         current = re.search(r'^version = "([^"]+)"', manifest, re.M)[1]
         base = current.split('-')[0]
         versions = set(self.git('tag', '--list').splitlines())
-        releases = self.api('releases?per_page=100')
+        releases = self.releases()
         versions.update(row['tag_name'] for row in releases)
         numbers = [int(t.rsplit('.', 1)[1]) for t in versions
                    if re.fullmatch('v' + re.escape(base) + r'-rc\.\d+', t)]
@@ -676,6 +692,9 @@ class Controller:
             raise Refusal('authorization: invoke rc once to authorize the exact plan')
         if p['executor'] != digest((ROOT / 'scripts/dev-release.py').read_text()):
             raise Refusal('executor_changed: resume with the exact reviewed controller')
+        helper = 'scripts/release-observation.py'
+        if self.blob(p['source'], helper) != (ROOT / helper).read_text().strip():
+            raise Refusal('authority_source_mismatch: release metadata reader must match captured source')
         tags = self.git('ls-remote', 'origin', 'refs/tags/v' + p['version'])
         if tags:
             prior_pr = self.find_pr() if self.state.get('candidate') else None
@@ -776,7 +795,7 @@ class Controller:
         commit = next((r.split()[0] for r in refs if r.endswith('^{}')), refs[0].split()[0])
         if commit != self.state['merged']:
             raise Refusal('tag_collision: release tag names another commit')
-        releases = self.api('releases?per_page=100')
+        releases = self.releases()
         release = next((r for r in releases if r['tag_name'] == tag), None)
         if release is None or release['draft']:
             self.receipt('publication', 'waiting', next='wait for protected signing/publication runner')

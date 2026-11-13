@@ -91,6 +91,23 @@ because its last command failed. Interrupted unsealed preparation can be reconst
 source in the owned registered worktree. Foreign state is refused. Publication reruns retain matching
 assets and verify an existing signature instead of overwriting assets.
 
+Release inventory requires two matching complete traversals, each bounded to ten pages of
+100 records. Ordered records (including drafts and assets) and pagination links must match;
+a detected change fails closed. Requests use locally constructed page endpoints, never Link
+header destinations. The [GitHub pagination contract](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api)
+provides next/previous/first/last relations, with only a subset present on some pages.
+The observer validates every supplied relation and remembers the advertised last page across
+responses, including when the terminal page omits last. Changing last values, malformed or
+duplicate relations, next beyond the advertised end, and premature termination are refused.
+A full terminal page requires consistent last-page evidence equal to its page number;
+a previous-page link alone cannot prove completeness. A partial terminal page needs no last
+relation unless an earlier page advertised a different end. Later terminal pages also require
+a valid previous-page link. Exactly 100 releases without Link metadata therefore refuse,
+although a consistent last=1 permits a full first terminal page. An empty numbered probe cannot
+prove an earlier response complete. Investigate missing pagination metadata and retry.
+Two matching traversals are observations, not an atomic GitHub snapshot: changes between reads
+that leave identical observations cannot be detected.
+
 Main moving before merge produces `stale_main`: the approved source stays fixed. Review the new
 source and use a separate plan/state directory after investigating any already-published branch/PR;
 there is no automatic rebase. A merged release must have the candidate's exact tree and source
@@ -200,7 +217,12 @@ and [workflow attempts API](https://docs.github.com/en/rest/actions/workflow-job
 Publication saves one immutable signed bundle named by tag and source before its first release
 asset upload. Every rerun restores that bundle, including original provenance and signature,
 then verifies signed digests through the publisher. Bundles are retained for 90 days; expired,
-missing-after-upload or ambiguous bundles require operator recovery of the original artifact.
+missing-after-release-creation (even an empty draft) or ambiguous bundles require operator
+recovery of the original artifact. Every existing asset, including the signature, must match
+the retained bytes exactly; another valid signature is an identity conflict.
 Rebuilt archives never replace partially uploaded bytes. Signed provenance identifies the original
 signing run; a later successful protected publication run may publish that same bundle. Pin-only
-credentials and failures remain independent of readiness.
+credentials and failures remain independent of readiness. Release lookup includes drafts and all
+pages, independently of surviving Git refs, with a 1000-record observation limit. Secret readiness
+reads only names metadata with unique names and complete totals, under the same record limit;
+incomplete or unobservable collections refuse planning or recovery rather than imply absence.
