@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "backlog/triage-verifier"
-version = "1.0.2"
+version = "1.0.3"
 
 [signature]
 effects = ["read-source"]

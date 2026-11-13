@@ -1008,21 +1008,13 @@ fn task_onboard(repo: &Path, registry: &Path, args: &[&str]) -> Output {
 fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     let root = tempfile::tempdir().unwrap();
     let repo = committed_repo(root.path());
-    let source = std::env::var_os("AF_WORKSPACE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .join(".af");
-    let copied = std::process::Command::new("cp")
-        .args(["-R", source.to_str().unwrap(), repo.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(copied.status.success(), "{}", stderr(&copied));
-    // Plan the shipped catalog as published, without rewriting its contracts or pins.
+    // Consume final staged authority; source .af is installed separately by the root operator.
+    crate::issue_workflows::install(&repo);
     let project: toml::Value =
         toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
     assert_eq!(
         project["task"]["defaults"]["pipeline"].as_str(),
-        Some("default/implementation")
+        Some("bugfix/light-kimi-terra-sol")
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["tokens"].as_integer(),
@@ -1048,7 +1040,6 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         project["task"]["defaults"]["limits"]["verification"]["wall_ms"].as_integer(),
         Some(18_000_000)
     );
-    commit(&repo);
     let ticket = root.path().join("short.json");
     std::fs::write(
         &ticket,
@@ -1057,21 +1048,30 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     .unwrap();
     let providers = registry(
         &root.path().join("providers"),
-        &[("codex-main", "codex"), ("claude-main", "claude")],
+        &[("codex-personal", "codex")],
     );
     let bin = root.path().join("bin");
     crate::fake_models::install(
         "codex",
         &bin,
-        &root.path().join("providers/auth-codex-main"),
+        &root.path().join("providers/auth-codex-personal"),
     );
-    crate::fake_models::install(
-        "claude",
-        &bin,
-        &root.path().join("providers/auth-claude-main"),
-    );
+    let pi_auth = root.path().join("pi-auth");
+    let (sdk, pi_path, _) = crate::fake_models::install_pi(root.path(), &pi_auth, "kimi-document");
+    let script = std::fs::read_to_string(&sdk)
+        .unwrap()
+        .replace("id: 'k3'", "id: 'k3.1-pro'");
+    std::fs::write(&sdk, script).unwrap();
+    let mut registry: serde_json::Value =
+        toml::from_str(&std::fs::read_to_string(&providers).unwrap()).unwrap();
+    registry["providers"].as_array_mut().unwrap().push(serde_json::json!({
+        "id":"pi-personal", "kind":"pi", "backend":"kimi-coding", "auth_dir":pi_auth, "sdk_entrypoint":sdk
+    }));
+    std::fs::write(&providers, toml::to_string(&registry).unwrap()).unwrap();
     let path = std::env::join_paths(
-        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        std::iter::once(bin)
+            .chain(std::env::split_paths(&pi_path))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
     let planned = crate::common::af()
@@ -1079,12 +1079,14 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         .args([
             "task",
             "plan",
+            "--json",
             "--file",
             ticket.to_str().unwrap(),
             "--state",
         ])
         .arg(root.path().join("state"))
         .env("AF_PROVIDERS_FILE", providers)
+        .env("AF_PI_HOST_MODULE", &sdk)
         .env("USER", "fixture")
         .env("PATH", path)
         .output()
@@ -1098,26 +1100,57 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     assert!(
         stderr(&planned).contains("limits (tokens 8000000, max_attempts 16, wall_ms 43200000)")
     );
-    assert!(
-        stdout(&planned).contains("default/implementation"),
-        "{}",
-        stdout(&planned)
+    let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(document["attempts"], 0);
+    assert_eq!(
+        document["selection"]["assessment"]["decision"],
+        serde_json::json!({"kind": "selected", "pipeline": "bugfix/light-kimi-terra-sol"})
     );
-    // Every default-pipeline binding is checked against the recorded catalogs: the Codex
-    // fixture lists `gpt-5.6-terra`, which `default/bugs` binds.
-    for worker in [
-        "default/implementer",
-        "default/bugs",
-        "default/correctness",
-        "default/advisor",
-        "default/evaluator",
+    let bindings = document["plan"]["bindings"].as_object().unwrap();
+    assert_eq!(bindings.len(), 3, "{bindings:?}");
+    for (role, package, model, effort, kind, provider) in [
+        (
+            "implementer",
+            "kimi",
+            "k3.1-pro",
+            "high",
+            "pi",
+            "pi-personal",
+        ),
+        (
+            "correctness",
+            "bugs",
+            "gpt-6.1-terra",
+            "high",
+            "codex",
+            "codex-personal",
+        ),
+        (
+            "evaluator",
+            "light-evaluator",
+            "gpt-6.1-sol",
+            "medium",
+            "codex",
+            "codex-personal",
+        ),
     ] {
+        let binding = &bindings[&format!("root.slots.{role}")];
+        assert_eq!(binding["execution"]["provider_kind"], kind);
+        assert_eq!(binding["execution"]["provider"], provider);
+        assert_eq!(binding["execution"]["model"], model);
+        assert_eq!(binding["execution"]["effort"], effort);
         assert!(
-            stderr(&planned).contains(&format!("model {worker} ")),
-            "{worker}: {}",
+            stderr(&planned).contains(&format!(
+                "model issue-internal/{package} {model} {effort}  ok"
+            )),
+            "{role}: {}",
             stderr(&planned)
         );
     }
+    assert_eq!(
+        crate::fake_models::turns(&root.path().join("providers/auth-codex-personal")),
+        ""
+    );
     assert!(
         !stderr(&planned).contains("unverified against the catalog"),
         "{}",

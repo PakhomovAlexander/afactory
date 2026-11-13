@@ -1342,16 +1342,33 @@ fn start_kind(
 /// `af task run NEW --from TASK` derives from the continued Task's captured one.
 fn start_kind_bytes(
     options: StartOptions,
+    bytes: Vec<u8>,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
+    start_kind_bytes_with_authority(options, bytes, expected_kind, presentation, None)
+}
+
+/// Only native Scenario templates supply an already captured authority identity.
+fn start_kind_bytes_with_authority(
+    options: StartOptions,
     mut bytes: Vec<u8>,
     expected_kind: Option<&str>,
     presentation: Presentation,
+    captured_authority: Option<&str>,
 ) -> Result<i32, String> {
     let original = parse_task_file(&options.file, &bytes)?;
     let mut refitted = false;
     // `--fit` plans again at the limits the planner computed; a second refusal can only raise
     // them further (Provider admission is counted once the Workers are bound), so this ends.
     for _ in 0..3 {
-        match start_bytes(options.clone(), bytes.clone(), expected_kind, presentation)? {
+        match start_bytes(
+            options.clone(),
+            bytes.clone(),
+            expected_kind,
+            presentation,
+            captured_authority,
+        )? {
             Started::Code(code) => {
                 if refitted && presentation == Presentation::Print {
                     let fitted = parse_task_file(&options.file, &bytes)?;
@@ -1485,6 +1502,7 @@ fn existing_task(
     options: &StartOptions,
     bytes: &[u8],
     task_id: &str,
+    captured_authority: Option<&str>,
 ) -> Result<Option<Existing>, String> {
     let Some(current) = store
         .task_projection(cas, task_id)
@@ -1511,6 +1529,12 @@ fn existing_task(
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    if let Some(id) = captured_authority {
+        if same_file && current.revision.authority.policy_id == id {
+            return Ok(Some(Existing::Same));
+        }
+        return Err("Recorded fresh Task differs from pinned template authority or file".into());
+    }
     let bindings = options
         .bindings
         .as_deref()
@@ -1607,6 +1631,7 @@ fn start_bytes(
     bytes: Vec<u8>,
     expected_kind: Option<&str>,
     presentation: Presentation,
+    captured_authority: Option<&str>,
 ) -> Result<Started, String> {
     let started = clock()?;
     let mut file = parse_task_file(&options.file, &bytes)?;
@@ -1663,7 +1688,14 @@ fn start_bytes(
     crate::storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    let replace = match existing_task(&cas, &store, &options, &bytes, &file.task_id)? {
+    let replace = match existing_task(
+        &cas,
+        &store,
+        &options,
+        &bytes,
+        &file.task_id,
+        captured_authority,
+    )? {
         None => None,
         Some(Existing::Same) if !options.plan_only => {
             return Err(format!(
@@ -1708,13 +1740,24 @@ fn start_bytes(
             }
         })?;
     let delivery = captured_delivery_policy(&cas, &policy_source.manifest)?;
-    let authority = capture_authority(
-        &cas,
-        &policy_source.manifest,
-        options.bindings.as_deref(),
-        &file.kind,
-        delivery,
-    )?;
+    let authority = if let Some(id) = captured_authority {
+        if options.bindings.is_some() {
+            return Err("Captured authority cannot recapture local bindings".into());
+        }
+        let settings: RunAuthority =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let compiler = restore_compiler(&cas, id, &settings)?;
+        (id.to_owned(), settings, compiler)
+    } else {
+        capture_authority(
+            &cas,
+            &policy_source.manifest,
+            options.bindings.as_deref(),
+            &file.kind,
+            delivery,
+        )?
+    };
     if expected_kind.is_some()
         && selected_profile(&authority.2, &authority.1, &file.kind, file.verification)?
             != TaskKindProfile::Review

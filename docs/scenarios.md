@@ -11,7 +11,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@5`. A bundle (`af/scenario-bundle@5`) names its
+`af/scenario@6`. A bundle (`af/scenario-bundle@6`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -200,7 +200,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Ant scheduling
 
-An `af/ant@6` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@7` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
 notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
@@ -525,7 +525,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@9`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@10`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
@@ -542,17 +542,26 @@ the native foreground scheduler requires explicit invocation.
 
 ## Fresh Task templates
 
-`af scenario template-pin` captures an `af/scenario-task-template@1` and its digest in an
-`af/scenario-template-pin@1` envelope. It is token-free and writes only native Task Store capture
+`af scenario template-pin` captures an `af/scenario-task-template@2` and its digest in an
+`af/scenario-template-pin@2` envelope. It is token-free and writes only native Task Store capture
 artifacts; it creates no Task or Scenario Run. Supply a native Task file with explicit pipeline,
 strategy and all limits, an exact 40-character authority commit and an external Task Store.
 Implementation files also declare verification; other kinds retain their captured native acceptance.
 Pipeline fallback must be `refuse`; generated/default plan selection is unauthorized.
-An optional native bindings file may pin slots and Providers, but may not supply local package
-paths. Source files, catalog packages, pipelines, policies and Worker settings come from the exact
-committed authority; the template retains their native authority identity, repository identity
-and source content digest. A base, if supplied, must also be an exact commit. Templates cannot
-prefill native inputs, continuations or issue authority.
+An optional `--bindings FILE` captures slots, Provider aliases and exactly pinned local Worker
+packages relative to the original bindings file directory. Pipelines and policies remain committed
+customer authority. Local packages cannot add Pipelines, shadow catalog names, escape that directory
+or bypass replacement contracts, default constraints, closure bounds or Provider independence.
+The template retains the sealed native authority identity, repository identity and source content
+digest. Fresh planning and restart restore the captured artifacts through the native compiler,
+without reopening bindings or package paths; moving or deleting them cannot change a pinned
+template. Missing or corrupt captured artifacts fail closed. Pinning retains the complete closure in
+the Task Store through a durable `ScenarioTemplatePinned@1` reference, including before any Task
+exists and after Task collection. This reference lives for the Store lifetime and counts against the
+machine storage budget. Discarding the Store discards its pins; there is no path recapture or
+migration of version 1 templates. Changed packages or bindings require a new template pin and
+Scenario/policy confirmation, with no repeated per-run bindings override. A base, if supplied, must
+also be an exact commit. Templates cannot prefill native inputs, continuations or issue authority.
 
 ```text
 # needs: a reviewed native Task file, committed authority and external Task Store
@@ -631,3 +640,9 @@ extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous 
 `af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
 retrieves one native findings, History Capture or adoption artifact after checking its recorded
 Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.
+
+Fresh Task planning requires the exact durable native template-pin record in the selected Task
+Store before creating a Task. An authorized template digest alone cannot substitute authority from
+another committed source. Scenario/Bundle/Pin/Run/List version 6, Ant/Ant-pin version 7, Ant-state
+and Ant-list version 8, Ant-inspection version 3, Ant-tick version 7 and Store version 10 carry
+the embedded template contract; earlier shapes are refused. Machine policy remains version 5.

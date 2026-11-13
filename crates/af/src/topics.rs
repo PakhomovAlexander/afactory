@@ -439,7 +439,8 @@ dependencies are available-only, and Worker caches never supply Gate evidence. S
 
   version = 2
   [project]        name = \"myrepo\"      min_af = \"0.7\"
-  [task.defaults]  pipeline = \"kernel/implementation-reviewed\"
+  # Illustrative project configuration; your project chooses the Pipeline.
+  [task.defaults]  pipeline = \"team/implementation\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy, the `[storage]`
@@ -597,18 +598,18 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@5; start, show, resume, decide, cancel: af/scenario-run@5.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@5.
-  ant validate: af/ant-pin@6; add, enable, pause, disable: af/ant-state@7;
-  ant show: af/ant-inspection@2; ant scheduler status/stop: af/ant-scheduler@1;
-  ant list: af/ant-list@7; tick: af/ant-tick@6.
+  scenario validate: af/scenario-pin@6; start, show, resume, decide, cancel: af/scenario-run@6.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@6.
+  ant validate: af/ant-pin@7; add, enable, pause, disable: af/ant-state@8;
+  ant show: af/ant-inspection@3; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@8; tick: af/ant-tick@7.
   Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
-  Definitions and machine policy: af/scenario@5, af/scenario-bundle@5, af/scenario-policy@5,
-  af/ant@6; signed envelopes: af/scenario-signed-decision@1.
+  Definitions and machine policy: af/scenario@6, af/scenario-bundle@6, af/scenario-policy@5,
+  af/ant@7; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
-  Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
-  Journal: af/scenario-store@9. Owned file envelope: af/scenario-owned-file@1.
+  Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
+  Journal: af/scenario-store@10. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.
@@ -761,20 +762,28 @@ Project defaults: what a Task file omits comes from `[task.defaults]` of `.af/af
 committed Authority Snapshot: `limits` (tokens, max_attempts, wall_ms and the verification
 reserve), `pipeline` and its `fallback`. A field the Task file names wins whole; the default
 Pipeline applies only to a Task of a kind it accepts. `af task plan` prints on stderr what came
-from the defaults (`defaults: limits (...), pipeline kernel/implementation-reviewed (fallback
+from the defaults (`defaults: limits (...), pipeline team/implementation (fallback
 refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the plan is refused.
 
   [task.defaults]
-  pipeline = \"kernel/implementation-reviewed\"
+  pipeline = \"team/implementation\"
   fallback = \"refuse\"
   [task.defaults.limits]
-  tokens = 6000000
-  max_attempts = 16
-  wall_ms = 10800000
+  tokens = 100000
+  max_attempts = 6
+  wall_ms = 600000
   [task.defaults.limits.verification]
-  tokens = 2000000
-  attempts = 8
-  wall_ms = 3600000
+  tokens = 40000
+  attempts = 2
+  wall_ms = 240000
+
+These configuration values are illustrative, not global defaults or budgets. Effective defaults,
+Worker bindings and Pipelines come from the consuming project's captured `.af/` settings and
+catalog, under its exact authority. Projects choose their own packages and resource limits.
+Use `af config show --origin` to inspect configuration layers, then
+`af task plan --file task.json --json` to inspect the captured effective plan without execution.
+Use `af task explain TASK_ID --tree` for its compiled graph and bindings. `af catalog test --help`
+describes checking a project's declared catalog contracts; it does not select an operator catalog.
 
 Context: each `context` entry names a file of the Task's source tree, with an optional
 `#section`. The Worker's requirements end with a \"Read first\" list naming the Snapshot the

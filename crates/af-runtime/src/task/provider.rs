@@ -483,6 +483,13 @@ impl ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    fn admit_worker_signature(
+        &self,
+        signature: &af_graph::task::OperatorSignature,
+    ) -> Result<(), String> {
+        self.inner.admit_worker_signature(signature)
+    }
+
     fn admit_checks(
         &self,
         cas: &Cas,

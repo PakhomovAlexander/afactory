@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@5",
+  "schema": "af/scenario-bundle@6",
   "root": "performance",
   "definitions": {
     "performance": {
-      "schema": "af/scenario@5",
+      "schema": "af/scenario@6",
       "admission": null,
       "inputs": {},
       "outputs": {
@@ -51,7 +51,7 @@
           "operation": {
             "kind": "fresh_task",
             "template": {
-              "schema": "af/scenario-task-template@1",
+              "schema": "af/scenario-task-template@2",
               "repo": "/replace/project",
               "state": "/replace/private-tasks",
               "authority_commit": "0000000000000000000000000000000000000000",
@@ -107,7 +107,7 @@
           "operation": {
             "kind": "fresh_task",
             "template": {
-              "schema": "af/scenario-task-template@1",
+              "schema": "af/scenario-task-template@2",
               "repo": "/replace/project",
               "state": "/replace/private-tasks",
               "authority_commit": "0000000000000000000000000000000000000000",
@@ -278,7 +278,7 @@
           "operation": {
             "kind": "fresh_task",
             "template": {
-              "schema": "af/scenario-task-template@1",
+              "schema": "af/scenario-task-template@2",
               "repo": "/replace/project",
               "state": "/replace/private-tasks",
               "authority_commit": "0000000000000000000000000000000000000000",
@@ -347,7 +347,7 @@
           "operation": {
             "kind": "fresh_task",
             "template": {
-              "schema": "af/scenario-task-template@1",
+              "schema": "af/scenario-task-template@2",
               "repo": "/replace/project",
               "state": "/replace/private-tasks",
               "authority_commit": "0000000000000000000000000000000000000000",
@@ -467,10 +467,10 @@
       "authority": {
         "task_plans": [],
         "task_templates": [
-          "sha256:2029089b3d2ff03beb82a382c94a5bbded5a11f71cbf15f7469148cd9f05b57a",
-          "sha256:74ea6b49be90cd3603c897b4fb18c0f2096333bde097bf1f1ad4f5386c0ecd8d",
-          "sha256:df70ca2a99233bc53cdd934bde89e7090a5eac34eb19502404d1e5e641e79a7a",
-          "sha256:f80a3b55fc371a14c3237e532a22c02acc1964fff591f91992a9cd4e88d1b00b"
+          "sha256:1f769691114d4f32bc46a733b1bdcc7ee8590c4627570791acae49afde9d77ce",
+          "sha256:b10b1ac20bb40494aea25f17e9d62cd005ebd542656e3c6a597587d32d95ff6b",
+          "sha256:2eda8ec22e1bfd1d01119739c89391618bb7d1ce37e31991f22d299d00414ca2",
+          "sha256:b262d29d2aac863340c152b1fcfd114a53ea350c37fe6196a32fef0853aa015a"
         ],
         "grants": [
           {

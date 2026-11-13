@@ -1,0 +1,2988 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario:6",
+  "title": "scenario v6",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "inputs",
+    "outputs",
+    "steps",
+    "result",
+    "completion",
+    "authority",
+    "limits",
+    "admission"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario@6"
+    },
+    "inputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+      },
+      "maxProperties": 32
+    },
+    "outputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+      },
+      "minProperties": 1,
+      "maxProperties": 32
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Step"
+      },
+      "minItems": 1,
+      "maxItems": 128
+    },
+    "result": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+      }
+    },
+    "completion": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    "authority": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/Authority"
+    },
+    "limits": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+    },
+    "admission": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Admission"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^/",
+      "maxLength": 4096
+    },
+    "Port": {
+      "enum": [
+        "text",
+        "boolean",
+        "integer",
+        "task",
+        "action",
+        "decision",
+        "observation",
+        "owned_file"
+      ]
+    },
+    "TaskReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "plan_id",
+        "revision_id",
+        "result_id",
+        "charged_tokens",
+        "result"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "plan_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "result_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "charged_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "result": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/taskResult"
+        }
+      }
+    },
+    "Operation": {
+      "enum": [
+        "publish_pr",
+        "followup",
+        "notify",
+        "write_owned_file",
+        "cleanup_owned_file",
+        "observe",
+        "experiment_submit_v1",
+        "prepare_candidate_v1",
+        "cleanup_workspace_v1",
+        "publish_performance_pr_v1"
+      ]
+    },
+    "ActionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_id",
+        "operation",
+        "destination",
+        "subject",
+        "revision",
+        "evidence"
+      ],
+      "properties": {
+        "intent_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "operation": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+        },
+        "destination": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "subject": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "evidence": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        }
+      }
+    },
+    "Observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "revision",
+        "condition",
+        "satisfied",
+        "evidence"
+      ],
+      "properties": {
+        "subject": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "condition": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        }
+      }
+    },
+    "OwnedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "file",
+        "digest",
+        "owner",
+        "device",
+        "inode"
+      ],
+      "properties": {
+        "root": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "file": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "owner": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "Datum": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "boolean"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "integer"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "task"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "action"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/ActionReceipt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "decision"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/DecisionReceipt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "observation"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Observation"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "owned_file"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/OwnedFile"
+            }
+          }
+        }
+      ]
+    },
+    "Projection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task_conclusion"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task_result_id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "port"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task_output_id"
+            },
+            "port": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "port"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task_output_snapshot"
+            },
+            "port": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "observation_satisfied"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "decision_approved"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "action_intent"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "workspace_subject"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "workspace_revision"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "workspace_publication"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "workspace_receipt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "checks_state"
+            }
+          }
+        }
+      ]
+    },
+    "Binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "value"
+          ],
+          "properties": {
+            "source": {
+              "const": "literal"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "port"
+          ],
+          "properties": {
+            "source": {
+              "const": "input"
+            },
+            "port": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "step",
+            "port"
+          ],
+          "properties": {
+            "source": {
+              "const": "step"
+            },
+            "step": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            },
+            "port": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "value",
+            "projection"
+          ],
+          "properties": {
+            "source": {
+              "const": "project"
+            },
+            "value": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            },
+            "projection": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Projection"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "left",
+            "right"
+          ],
+          "properties": {
+            "source": {
+              "const": "equals"
+            },
+            "left": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            },
+            "right": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "condition",
+            "when_true",
+            "when_false"
+          ],
+          "properties": {
+            "source": {
+              "const": "select"
+            },
+            "condition": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            },
+            "when_true": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            },
+            "when_false": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            }
+          }
+        }
+      ]
+    },
+    "Limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_tokens",
+        "max_wall_ms",
+        "max_dispatches"
+      ],
+      "properties": {
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        "max_dispatches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "Grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter",
+        "operation",
+        "destination"
+      ],
+      "properties": {
+        "adapter": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "operation": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+        },
+        "destination": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        }
+      }
+    },
+    "Authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_plans",
+        "grants",
+        "decision_owners",
+        "task_templates"
+      ],
+      "properties": {
+        "task_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          },
+          "uniqueItems": true,
+          "maxItems": 256
+        },
+        "grants": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Grant"
+          },
+          "uniqueItems": true
+        },
+        "decision_owners": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "uniqueItems": true
+        },
+        "task_templates": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 256,
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          }
+        }
+      }
+    },
+    "TaskTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "state",
+        "task_id",
+        "plan_id",
+        "revision_id",
+        "max_tokens"
+      ],
+      "properties": {
+        "repo": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "state": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "task_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "plan_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "Kind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "target"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task"
+            },
+            "target": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/TaskTarget"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "scenario"
+          ],
+          "properties": {
+            "kind": {
+              "const": "scenario"
+            },
+            "scenario": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "grant",
+            "requires_decision",
+            "required_condition"
+          ],
+          "properties": {
+            "kind": {
+              "const": "action"
+            },
+            "grant": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Grant"
+            },
+            "requires_decision": {
+              "type": "boolean"
+            },
+            "required_condition": {
+              "anyOf": [
+                {
+                  "$ref": "urn:af:schema:scenario:6#/$defs/text"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "owner"
+          ],
+          "properties": {
+            "kind": {
+              "const": "decision"
+            },
+            "owner": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "grant",
+            "condition"
+          ],
+          "properties": {
+            "kind": {
+              "const": "wait"
+            },
+            "grant": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Grant"
+            },
+            "condition": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "fresh_task"
+            },
+            "template": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Template"
+            },
+            "bindings": {
+              "type": "object",
+              "maxProperties": 32,
+              "additionalProperties": {
+                "$ref": "urn:af:schema:scenario:6#/$defs/Predecessor"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "template",
+            "bindings"
+          ]
+        }
+      ]
+    },
+    "Step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "inputs",
+        "outputs",
+        "when",
+        "max_attempts",
+        "timeout_ms",
+        "on_timeout",
+        "operation"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+          }
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "on_timeout": {
+          "enum": [
+            "fail",
+            "skip"
+          ]
+        },
+        "operation": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Kind"
+        }
+      }
+    },
+    "Scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "inputs",
+        "outputs",
+        "steps",
+        "result",
+        "completion",
+        "authority",
+        "limits",
+        "admission"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario@6"
+        },
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+          },
+          "maxProperties": 32
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+          },
+          "minProperties": 1,
+          "maxProperties": 32
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Step"
+          },
+          "minItems": 1,
+          "maxItems": 128
+        },
+        "result": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+          }
+        },
+        "completion": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "authority": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Authority"
+        },
+        "limits": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+        },
+        "admission": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Admission"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "root",
+        "definitions"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-bundle@6"
+        },
+        "root": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "definitions": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Scenario"
+          },
+          "minProperties": 1,
+          "maxProperties": 64
+        }
+      }
+    },
+    "Adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executable",
+        "digest",
+        "operations",
+        "destinations",
+        "max_wall_ms",
+        "max_output_bytes"
+      ],
+      "properties": {
+        "executable": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "destinations": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "max_wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    "Policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "adapters",
+        "task_plans",
+        "decision_keys",
+        "file_roots",
+        "task_templates"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-policy@5"
+        },
+        "adapters": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Adapter"
+          },
+          "maxProperties": 32
+        },
+        "task_plans": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          },
+          "uniqueItems": true,
+          "maxItems": 256
+        },
+        "decision_keys": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          },
+          "maxProperties": 32
+        },
+        "file_roots": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          },
+          "uniqueItems": true,
+          "maxItems": 32
+        },
+        "task_templates": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 256,
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          }
+        },
+        "performance_publications": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/PerformancePublicationScope"
+          }
+        }
+      }
+    },
+    "Pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "bundle",
+        "policy",
+        "revision",
+        "definitions"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-pin@6"
+        },
+        "bundle": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Bundle"
+        },
+        "policy": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Policy"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "definitions": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          }
+        }
+      }
+    },
+    "DecisionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "run_id",
+        "execution_id",
+        "pin_id",
+        "step",
+        "subject",
+        "revision",
+        "owner",
+        "approve",
+        "expires_unix_ms"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-decision@1"
+        },
+        "run_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "execution_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "pin_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "step": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "subject": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "owner": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "approve": {
+          "type": "boolean"
+        },
+        "expires_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "DecisionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request",
+        "signature"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-signed-decision@1"
+        },
+        "request": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/DecisionRequest"
+        },
+        "signature": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text",
+          "maxLength": 4096
+        }
+      }
+    },
+    "Status": {
+      "enum": [
+        "ready",
+        "running",
+        "waiting",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "Waiting": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "step",
+            "request"
+          ],
+          "properties": {
+            "kind": {
+              "const": "decision"
+            },
+            "step": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            "request": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/DecisionRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "step",
+            "deadline_unix_ms",
+            "evidence"
+          ],
+          "properties": {
+            "kind": {
+              "const": "condition"
+            },
+            "step": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            "deadline_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "evidence": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "step",
+            "intent_id",
+            "diagnostic"
+          ],
+          "properties": {
+            "kind": {
+              "const": "reconcile"
+            },
+            "step": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            "intent_id": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+            },
+            "diagnostic": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "step",
+            "task_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task"
+            },
+            "step": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            "task_id": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            }
+          }
+        }
+      ]
+    },
+    "Intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "input_digest",
+        "phase",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "input_digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "phase": {
+          "enum": [
+            "prepared",
+            "uncertain",
+            "done",
+            "failed"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          }
+        }
+      }
+    },
+    "Progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "started_unix_ms",
+        "deadline_unix_ms",
+        "status",
+        "skipped",
+        "intents",
+        "outputs",
+        "child",
+        "decision",
+        "diagnostic"
+      ],
+      "properties": {
+        "step": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "started_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "deadline_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Status"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "intents": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Intent"
+          },
+          "maxItems": 8
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+          }
+        },
+        "child": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/DecisionReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario",
+        "inputs",
+        "started_unix_ms",
+        "steps",
+        "dispatches",
+        "outputs"
+      ],
+      "properties": {
+        "scenario": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+          }
+        },
+        "started_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Progress"
+          },
+          "maxItems": 128
+        },
+        "dispatches": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "outputs": {
+          "anyOf": [
+            {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              },
+              "additionalProperties": {
+                "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "TaskCharge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum",
+        "charged",
+        "step",
+        "unknown_usage"
+      ],
+      "properties": {
+        "maximum": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "charged": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "step": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "unknown_usage": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ChildCancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "state",
+        "evidence"
+      ],
+      "properties": {
+        "run": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "requested",
+            "confirmed",
+            "unconfirmed"
+          ]
+        },
+        "evidence": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        }
+      }
+    },
+    "Cancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_unix_ms",
+        "reason",
+        "child_requests"
+      ],
+      "properties": {
+        "requested_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "reason": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "child_requests": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/ChildCancellation"
+          }
+        }
+      }
+    },
+    "Run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "id",
+        "execution_id",
+        "pin",
+        "limits",
+        "created_unix_ms",
+        "updated_unix_ms",
+        "status",
+        "waiting",
+        "frames",
+        "task_charges",
+        "dispatches",
+        "failure",
+        "cancellation",
+        "ant",
+        "goal_claim",
+        "fresh_tasks"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-run@6"
+        },
+        "id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "execution_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "pin": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Pin"
+        },
+        "limits": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+        },
+        "created_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "updated_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Status"
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Waiting"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frames": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Frame"
+          }
+        },
+        "task_charges": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/TaskCharge"
+          }
+        },
+        "dispatches": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cancellation": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Cancellation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ant": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_claim": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Claim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fresh_tasks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/TaskTarget"
+          }
+        }
+      }
+    },
+    "Zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "initial_offset",
+        "transitions",
+        "valid_until_unix_seconds"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "initial_offset": {
+          "type": "integer",
+          "minimum": -86400,
+          "maximum": 86400
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer",
+                "minimum": -86400,
+                "maximum": 86400
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "maxItems": 100000
+        },
+        "valid_until_unix_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Daily": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timezone",
+        "hour",
+        "minute",
+        "start_unix_ms"
+      ],
+      "properties": {
+        "timezone": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "hour": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "minute": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "start_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        }
+      }
+    },
+    "Execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overlap",
+        "missed",
+        "lateness_ms",
+        "per_run",
+        "rolling_tokens",
+        "rolling_window_ms"
+      ],
+      "properties": {
+        "overlap": {
+          "const": "skip"
+        },
+        "missed": {
+          "const": "skip"
+        },
+        "lateness_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86399999
+        },
+        "per_run": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+        },
+        "rolling_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "rolling_window_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        }
+      }
+    },
+    "Ant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "id",
+        "scenario",
+        "inputs",
+        "schedule",
+        "owner",
+        "notification",
+        "execution"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant@7"
+        },
+        "id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "scenario": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Bundle"
+        },
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+          }
+        },
+        "schedule": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Schedule"
+        },
+        "owner": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "notification": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "execution": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Execution"
+        }
+      }
+    },
+    "AntPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "definition",
+        "scenario",
+        "zone",
+        "revision"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-pin@7"
+        },
+        "definition": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Ant"
+        },
+        "scenario": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Pin"
+        },
+        "zone": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Zone"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        }
+      }
+    },
+    "Enabled": {
+      "enum": [
+        "enabled",
+        "paused",
+        "disabled"
+      ]
+    },
+    "OccurrenceOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "run_id",
+            "reserved_tokens"
+          ],
+          "properties": {
+            "kind": {
+              "const": "started"
+            },
+            "run_id": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            },
+            "reserved_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_busy"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_missed"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_paused"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_disabled"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_budget"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_missing_time"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "skipped_roadmap"
+            },
+            "reason": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skipped_capacity"
+            }
+          }
+        }
+      ]
+    },
+    "Occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "local_day",
+        "due_unix_ms",
+        "outcome",
+        "through_index",
+        "admitted_unix_ms"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "local_day": {
+          "type": "integer"
+        },
+        "due_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "outcome": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/OccurrenceOutcome"
+        },
+        "through_index": {
+          "type": "integer",
+          "minimum": -1
+        },
+        "admitted_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        }
+      }
+    },
+    "AntState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "pin",
+        "state",
+        "changes",
+        "next_day",
+        "last_tick_unix_ms",
+        "occurrences",
+        "retention"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-state@8"
+        },
+        "pin": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
+        },
+        "state": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "minItems": 1
+        },
+        "next_day": {
+          "type": "integer"
+        },
+        "last_tick_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Occurrence"
+          }
+        },
+        "retention": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Retention"
+        }
+      }
+    },
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "method",
+        "intent_id",
+        "input_digest",
+        "operation",
+        "destination",
+        "inputs"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-adapter-request@4"
+        },
+        "method": {
+          "enum": [
+            "reconcile",
+            "execute",
+            "observe"
+          ]
+        },
+        "intent_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "input_digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "operation": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+        },
+        "destination": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+          }
+        }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "intent_id",
+        "input_digest",
+        "outcome",
+        "evidence",
+        "observation"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-adapter-response@1"
+        },
+        "intent_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "input_digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "outcome": {
+          "enum": [
+            "done",
+            "pending",
+            "absent",
+            "failed"
+          ]
+        },
+        "evidence": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/Observation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "OwnedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "owner",
+        "content"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-owned-file@1"
+        },
+        "owner": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "content": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        }
+      }
+    },
+    "ScenarioList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "runs"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-list@6"
+        },
+        "runs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Run"
+          }
+        }
+      }
+    },
+    "AntList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "ants"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-list@8"
+        },
+        "ants": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/AntState"
+          }
+        }
+      }
+    },
+    "AntTick": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "now_unix_ms",
+        "started",
+        "busy",
+        "refused",
+        "runs"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-tick@7"
+        },
+        "now_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "started": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          }
+        },
+        "busy": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          }
+        },
+        "refused": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          }
+        },
+        "runs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Run"
+          }
+        }
+      }
+    },
+    "Template": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "af/scenario-task-template@2"
+        },
+        "repo": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "state": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "authority_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{40}$"
+        },
+        "repository_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "source_content_digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "authority_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "document": {
+          "type": "object"
+        },
+        "bindings": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "schema",
+        "repo",
+        "state",
+        "authority_commit",
+        "repository_id",
+        "source_content_digest",
+        "authority_id",
+        "document",
+        "bindings",
+        "max_tokens"
+      ]
+    },
+    "Predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "artifact_type": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        }
+      },
+      "required": [
+        "port",
+        "artifact_type"
+      ]
+    },
+    "Admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "roadmap": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "identity": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        }
+      },
+      "required": [
+        "roadmap",
+        "identity",
+        "revision"
+      ]
+    },
+    "Claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "execution_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "revision": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "goal_id": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "started_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "settled_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowance": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "run_id",
+        "execution_id",
+        "revision",
+        "goal_id",
+        "started_unix_ms",
+        "settled_unix_ms",
+        "allowance"
+      ]
+    },
+    "PerformancePublicationScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "repo": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "task_state": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+        },
+        "base": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "branch_prefix": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "source_commit": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "source_content_digest": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "evidence_adapter": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        "evidence_destination": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "repository",
+        "repo",
+        "task_state",
+        "base",
+        "branch_prefix",
+        "source_commit",
+        "source_content_digest",
+        "evidence_adapter",
+        "evidence_destination",
+        "repository_id"
+      ]
+    },
+    "Schedule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "timezone",
+            "hour",
+            "minute",
+            "start_unix_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "daily"
+            },
+            "timezone": {
+              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            },
+            "hour": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 23
+            },
+            "minute": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 59
+            },
+            "start_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "seconds",
+            "start_unix_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "interval"
+            },
+            "seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "start_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            }
+          }
+        }
+      ]
+    },
+    "AntInspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "pin",
+        "state",
+        "changes",
+        "next_day",
+        "last_tick_unix_ms",
+        "occurrences",
+        "scheduler",
+        "next_due_unix_ms",
+        "active_run",
+        "last_lateness_ms",
+        "next_due_error",
+        "retention"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-inspection@3"
+        },
+        "pin": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
+        },
+        "state": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "minItems": 1
+        },
+        "next_day": {
+          "type": "integer"
+        },
+        "last_tick_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "occurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Occurrence"
+          }
+        },
+        "scheduler": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "running",
+            "started_unix_ms",
+            "heartbeat_unix_ms",
+            "stop_requested",
+            "error"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/ant-scheduler@1"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "started_unix_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8640000000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "heartbeat_unix_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8640000000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stop_requested": {
+              "type": "boolean"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "next_due_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_run": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_lateness_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_due_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retention": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/Retention"
+        }
+      }
+    },
+    "ChargeBucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settled_unix_ms",
+        "tokens"
+      ],
+      "properties": {
+        "settled_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        "tokens": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,38}$"
+        }
+      }
+    },
+    "Retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcomes",
+        "terminal_runs",
+        "charged_tokens",
+        "through_index",
+        "provenance",
+        "rolling_charges",
+        "mode_changes"
+      ],
+      "properties": {
+        "outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "started": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_busy": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_missed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_paused": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_disabled": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_budget": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_missing_time": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_roadmap": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "skipped_capacity": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "terminal_runs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "charged_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,38})$"
+        },
+        "through_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provenance": {
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+        },
+        "rolling_charges": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "urn:af:schema:scenario:6#/$defs/ChargeBucket"
+          }
+        },
+        "mode_changes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

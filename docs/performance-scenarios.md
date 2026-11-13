@@ -165,9 +165,12 @@ campaign package plan or an unconditional ADR deliverable. The implementation Wo
 the optional typed
 `research_report` Document in its signature and input schema, retains it on both outputs and
 instructs the Worker to consume its recommendation. The generic Workers, defaults and Pipelines
-remain unchanged. Use the existing local `kernel/implementation-reviewed`,
-`kernel/verification-reviewed` and `kernel/report` Pipelines, with these inert slot/provider-only
-bindings:
+remain unchanged. These inert examples name explicit generic fixture Pipelines
+`kernel/implementation-reviewed`, `kernel/verification-reviewed` and `kernel/report`, with the
+slot/provider-only bindings below. Those identities are not installed operator selections. For
+current operator work use the [issue catalog](../fixtures/issue-workflows/README.md), whose
+performance route composes research, `perf/research-experiment-codex` and shared
+`issue-internal/verification`; the old fixture bindings are not substitutions for that route:
 
 | Stage | Bindings file | Effective Workers |
 | --- | --- | --- |

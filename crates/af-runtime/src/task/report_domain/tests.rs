@@ -326,6 +326,23 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
         outputs: BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]),
     };
     assert!(verifier_contract(&verifier));
+    let mut customer = verifier.clone();
+    for name in ["legal_signoff", "security_audit", "editorial"] {
+        customer
+            .inputs
+            .insert(name.into(), same_source(REPORT_EVALUATION_V1, false));
+        assert!(verifier_contract(&customer));
+        for invalid in [
+            port(REPORT_EVALUATION_V1, false),
+            same_source(REPORT_EVALUATION_V1, true),
+            same_source(DOCUMENT_V1, false),
+            many(REPORT_EVALUATION_V1),
+        ] {
+            let mut bad = customer.clone();
+            bad.inputs.insert(name.into(), invalid);
+            assert!(!verifier_contract(&bad));
+        }
+    }
     verifier.inputs.remove("source");
     assert!(!verifier_contract(&verifier));
     verifier
@@ -341,9 +358,49 @@ fn only_closed_author_and_verifier_contracts_are_admitted() {
 }
 
 #[test]
-fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
+fn verifier_signatures_must_retain_every_declared_evaluation() {
     let (_directory, cas) = store();
     let domain = domain(&cas);
+    let mut signature =
+        report_signatures(&domain.policy_id, &domain.policy).unwrap()["operator/report-check"]
+            .clone();
+    signature.contract = PipelineContractV1 {
+        inputs: BTreeMap::from([
+            ("requirements".into(), port("af/Requirements@1", false)),
+            ("source".into(), port(SOURCE_TREE_V1, false)),
+            ("document".into(), same_source(DOCUMENT_V1, false)),
+            ("checks".into(), same_source(REPORT_CHECK_RECEIPT_V1, false)),
+        ]),
+        outputs: BTreeMap::from([("result".into(), same_source(REPORT_EVALUATION_V1, false))]),
+    };
+    signature.retains.clear();
+    assert!(domain.admit_worker_signature(&signature).is_ok());
+    for name in ["legal_signoff", "security_audit", "editorial"] {
+        signature
+            .contract
+            .inputs
+            .insert(name.into(), same_source(REPORT_EVALUATION_V1, false));
+        let error = domain.admit_worker_signature(&signature).unwrap_err();
+        assert!(error.contains(name), "{error}");
+        signature
+            .retains
+            .entry("result".into())
+            .or_default()
+            .insert(name.into());
+        assert!(domain.admit_worker_signature(&signature).is_ok());
+    }
+    signature
+        .retains
+        .get_mut("result")
+        .unwrap()
+        .remove("legal_signoff");
+    assert!(domain.admit_worker_signature(&signature).is_err());
+}
+
+#[test]
+fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
+    let (_directory, cas) = store();
+    let mut domain = domain(&cas);
     let tree = manifest(&cas, &[("src/lib.rs", EntryKind::File, b"a\nb\n")]);
     let (cited, source) = snapshot(&cas, &tree);
     let other = manifest(&cas, &[("src/lib.rs", EntryKind::File, b"a\nb\nchanged\n")]);
@@ -452,7 +509,7 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
     };
     assert_eq!(
         domain
-            .admit_verifier(&cas, &verify(source, &cited))
+            .admit_verifier(&cas, &verify(source.clone(), &cited))
             .unwrap(),
         receipt
     );
@@ -464,6 +521,238 @@ fn a_verifier_bound_to_another_snapshot_is_refused_at_admission() {
             .unwrap_err();
         assert!(refused.contains("Snapshot"), "{refused}");
     }
+
+    // A customer verifier requires all declared evaluations of the original
+    // document, checks and requirements. Every malformed handoff fails before inference.
+    for role in ["legal_reviewer", "security_reviewer", "editor"] {
+        let node = domain.graph.nodes["root.nodes.verify"].clone();
+        domain
+            .graph
+            .nodes
+            .insert(format!("root.nodes.{role}"), node);
+    }
+    let final_node = domain.graph.nodes.get_mut("root.nodes.verify").unwrap();
+    for (port, role) in [
+        ("legal_signoff", "legal_reviewer"),
+        ("security_audit", "security_reviewer"),
+        ("editorial", "editor"),
+    ] {
+        final_node
+            .contract
+            .inputs
+            .insert(port.into(), same_source(REPORT_EVALUATION_V1, false));
+        final_node.inputs.insert(
+            port.into(),
+            af_graph::task::Address {
+                node: format!("root.nodes.{role}"),
+                port: "result".into(),
+            },
+        );
+    }
+    let final_input = verify(source.clone(), &cited);
+    let challenge = |role: &str, outcome, foreign_requirements: bool| {
+        let requirements_id = if foreign_requirements {
+            plan_id.clone()
+        } else {
+            requirements.clone()
+        };
+        let evaluation = ReportEvaluationV1 {
+            document_id: receipt.document_id.clone(),
+            sources_id: receipt.sources_id.clone(),
+            requirements_id,
+            check_receipt_id: receipt_id.clone(),
+            source_snapshot_id: cited.clone(),
+            outcome,
+            summary: "Independent customer evaluation".into(),
+        };
+        let inputs = final_input
+            .inputs
+            .values()
+            .flat_map(|v| v.artifact_ids.clone())
+            .collect();
+        let id = cas
+            .put_artifact(
+                REPORT_EVALUATION_V1,
+                attempt(&format!("root.nodes.{role}")),
+                inputs,
+                Some(cited.clone()),
+                serde_json::to_value(evaluation).unwrap(),
+            )
+            .unwrap()
+            .0;
+        one(id, REPORT_EVALUATION_V1, Some(&cited))
+    };
+    let legal = challenge("legal_reviewer", ReceiptOutcomeV1::Passed, false);
+    let security = challenge("security_reviewer", ReceiptOutcomeV1::Passed, false);
+    let mut final_input = final_input.clone();
+    final_input
+        .inputs
+        .insert("legal_signoff".into(), legal.clone());
+    assert!(
+        domain.admit_verifier(&cas, &final_input).is_err(),
+        "missing declared security evaluation"
+    );
+    final_input
+        .inputs
+        .insert("security_audit".into(), security.clone());
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    final_input.inputs.insert(
+        "editorial".into(),
+        challenge("editor", ReceiptOutcomeV1::Passed, false),
+    );
+    assert!(domain.admit_verifier(&cas, &final_input).is_ok());
+    // Output admission must retain these exact IDs, not just some passed evaluation
+    // from the expected producer. All other inputs and evaluation payloads stay valid.
+    let final_evaluation = envelope(
+        &cas,
+        &challenge("verify", ReceiptOutcomeV1::Passed, false).artifact_ids[0],
+    )
+    .unwrap();
+    let retained: Vec<_> = final_input
+        .inputs
+        .values()
+        .flat_map(|value| value.artifact_ids.iter().cloned())
+        .collect();
+    let replacement = challenge("security_reviewer", ReceiptOutcomeV1::Passed, false);
+    // Change only the summary to give the substitute a distinct valid artifact identity.
+    let mut substitute = envelope(&cas, &replacement.artifact_ids[0]).unwrap();
+    substitute.payload["summary"] = json!("Another evaluation from the same producer");
+    let substitute_id = cas
+        .put_artifact(
+            REPORT_EVALUATION_V1,
+            substitute.producer,
+            substitute.input_artifacts,
+            Some(cited.clone()),
+            substitute.payload,
+        )
+        .unwrap()
+        .0;
+    assert_ne!(substitute_id, security.artifact_ids[0]);
+    for missing in ["legal_signoff", "security_audit", "editorial"] {
+        for replacement in [None, Some(&substitute_id)] {
+            let omitted = &final_input.inputs[missing].artifact_ids[0];
+            let refs = retained
+                .iter()
+                .filter(|id| *id != omitted)
+                .cloned()
+                .chain(replacement.cloned())
+                .collect();
+            let id = cas
+                .put_artifact(
+                    REPORT_EVALUATION_V1,
+                    final_evaluation.producer.clone(),
+                    refs,
+                    Some(cited.clone()),
+                    final_evaluation.payload.clone(),
+                )
+                .unwrap()
+                .0;
+            let error = domain.verifier_output(&cas, &final_input, &id).unwrap_err();
+            assert!(error.contains("exact evaluation dependency"), "{error}");
+        }
+    }
+    let id = cas
+        .put_artifact(
+            REPORT_EVALUATION_V1,
+            final_evaluation.producer,
+            retained,
+            Some(cited.clone()),
+            final_evaluation.payload,
+        )
+        .unwrap()
+        .0;
+    domain.verifier_output(&cas, &final_input, &id).unwrap();
+
+    // A result from the right node on the wrong graph port is still refused.
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .get_mut("editorial")
+        .unwrap()
+        .port = "other".into();
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .get_mut("editorial")
+        .unwrap()
+        .port = "result".into();
+    for bad in [
+        legal,
+        challenge("security_reviewer", ReceiptOutcomeV1::Failed, false),
+        challenge("security_reviewer", ReceiptOutcomeV1::Inconclusive, false),
+        challenge("security_reviewer", ReceiptOutcomeV1::Passed, true),
+        challenge("verify", ReceiptOutcomeV1::Passed, false),
+    ] {
+        final_input.inputs.insert("security_audit".into(), bad);
+        assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    }
+    for field in [
+        "document_id",
+        "sources_id",
+        "check_receipt_id",
+        "source_snapshot_id",
+    ] {
+        let original = envelope(&cas, &security.artifact_ids[0]).unwrap();
+        let mut payload = serde_json::to_value(
+            read::<ReportEvaluationV1>(
+                &cas,
+                &security.artifact_ids[0],
+                REPORT_EVALUATION_V1,
+                Some(&cited),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        payload[field] = json!(plan_id);
+        let id = cas
+            .put_artifact(
+                REPORT_EVALUATION_V1,
+                original.producer,
+                original.input_artifacts,
+                Some(cited.clone()),
+                payload,
+            )
+            .unwrap()
+            .0;
+        final_input.inputs.insert(
+            "security_audit".into(),
+            one(id, REPORT_EVALUATION_V1, Some(&cited)),
+        );
+        assert!(
+            domain.admit_verifier(&cas, &final_input).is_err(),
+            "{field}"
+        );
+    }
+    final_input
+        .inputs
+        .insert("security_audit".into(), security.clone());
+    let address = domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .remove("editorial")
+        .unwrap();
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
+    domain
+        .graph
+        .nodes
+        .get_mut("root.nodes.verify")
+        .unwrap()
+        .inputs
+        .insert("editorial".into(), address);
+    let mut stale = security.clone();
+    stale.snapshot_id = Some(foreign.clone());
+    final_input.inputs.insert("security_audit".into(), stale);
+    assert!(domain.admit_verifier(&cas, &final_input).is_err());
 }
 
 #[test]

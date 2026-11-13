@@ -3987,3 +3987,30 @@ fn native_check_containment_schema_and_reader_preserve_admission_and_execution()
 
 #[path = "schema_parity/task_wake.rs"]
 mod task_wake;
+
+#[test]
+fn scenario_template_pin_event_has_exact_reference_schema_parity() {
+    for (payload, accepted) in [
+        (
+            json!({"artifact_id":format!("sha256:{}", "a".repeat(64))}),
+            true,
+        ),
+        (json!({"artifact_id":"not-a-digest"}), false),
+        (json!({}), false),
+        (
+            json!({"artifact_id":format!("sha256:{}", "a".repeat(64)),"path":"mutable"}),
+            false,
+        ),
+    ] {
+        let wire = json!({"schema":"review.kernel/RunEvent@3","event_id":"01jd8m4qz9k7v3n2p6r8t0w1xy","run_id":"scenario-template-fixture","sequence":0,"type":"ScenarioTemplatePinned@1","occurred_at":"2026-11-13T00:00:00Z","payload":payload});
+        assert_eq!(validator("run-event-v3.json").is_valid(&wire), accepted);
+        assert_eq!(
+            af_contracts::event::validate_event_payload(
+                EventType::ScenarioTemplatePinnedV1,
+                &payload
+            )
+            .is_ok(),
+            accepted
+        );
+    }
+}

@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:ant-inspection:3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "pin",
+    "state",
+    "changes",
+    "next_day",
+    "last_tick_unix_ms",
+    "occurrences",
+    "scheduler",
+    "next_due_unix_ms",
+    "active_run",
+    "last_lateness_ms",
+    "next_due_error",
+    "retention"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ant-inspection@3"
+    },
+    "pin": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
+    },
+    "state": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          {
+            "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "minItems": 1
+    },
+    "next_day": {
+      "type": "integer"
+    },
+    "last_tick_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "occurrences": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Occurrence"
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "running",
+        "started_unix_ms",
+        "heartbeat_unix_ms",
+        "stop_requested",
+        "error"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/ant-scheduler@1"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "started_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "heartbeat_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_requested": {
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "next_due_unix_ms": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "active_run": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_lateness_ms": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "next_due_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "retention": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/Retention"
+    }
+  },
+  "title": "ant-inspection v3"
+}

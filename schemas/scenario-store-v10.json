@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-store:10",
+  "title": "scenario-store v10",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "writer_version",
+    "runs",
+    "ants",
+    "roadmaps",
+    "run_capacity"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-store@10"
+    },
+    "writer_version": {
+      "$ref": "urn:af:schema:scenario:6#/$defs/text"
+    },
+    "runs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/Run"
+      }
+    },
+    "ants": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/AntState"
+      }
+    },
+    "roadmaps": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario-roadmap:3"
+      }
+    },
+    "run_capacity": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16777216
+      }
+    }
+  }
+}

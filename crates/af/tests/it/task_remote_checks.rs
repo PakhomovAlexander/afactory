@@ -867,12 +867,13 @@ fn tree_bytes(directory: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> 
 #[test]
 fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_repositorys_policy() {
     let workspace = workspace();
+    let fixture_authority = workspace.join("fixtures/native-catalog-contracts/.af");
     // Each twin is its committed original with its own name and `kernel` moved to
     // `remote_checks`; a parent calls the twin of its child. Nothing else differs.
     for (remote, local) in TWINS {
         let original = std::fs::read_to_string(
-            workspace
-                .join(".af/task-packages")
+            fixture_authority
+                .join("task-packages")
                 .join(local)
                 .join("pipeline.toml"),
         )
@@ -893,9 +894,10 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         &std::fs::read_to_string(workspace.join(STAGED).join("catalog-fragment.toml")).unwrap(),
     )
     .unwrap();
-    let committed: toml::Value =
-        toml::from_str(&std::fs::read_to_string(workspace.join(".af/task-catalog.toml")).unwrap())
-            .unwrap();
+    let committed: toml::Value = toml::from_str(
+        &std::fs::read_to_string(fixture_authority.join("task-catalog.toml")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(fragment["packages"].as_table().unwrap().len(), TWINS.len());
     for (remote, local) in TWINS {
         let pin = &fragment["packages"][remote];
@@ -915,9 +917,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let repo = root.join("kernel");
-    task_cli::copy_tree(&workspace.join(".af"), &repo.join(".af"));
-    // The release pin would dispatch to (and install) another `af`; this test runs this one.
-    std::fs::remove_file(repo.join(".af/af.lock")).unwrap();
+    task_cli::copy_tree(&fixture_authority, &repo.join(".af"));
     install_remote_twins(&repo);
     let once = tree_bytes(&repo.join(".af"));
     install_remote_twins(&repo);
@@ -926,9 +926,6 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         once,
         "a second install changes nothing"
     );
-    // The committed packages name the receipt this release no longer reads; the copy takes
-    // ADR-0255's migration.
-    task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "remote twins"]);
