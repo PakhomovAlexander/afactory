@@ -781,6 +781,8 @@ table keeps the Provider's own window labels.
 
 | Symptom | Meaning and action |
 |---|---|
+| exit 1, `cannot inspect configured Providers` | The registry could not be read or validated. Status emits the standard `af/error@2` under `--json`, starts no ambient Provider probes, and does not suggest registering replacement logins. Resolve the reported registry error first. |
+| `the real owner is not visible to af` | A Linux user namespace reports the overflow UID for an ancestor whose owner is absent from its UID map. AF cannot establish ownership, even when that ancestor is read-only in this sandbox. Run AF through the host's authorized execution environment or ask the sandbox operator to expose verifiable ownership. Moving the registry within the same namespace, changing its leaf permissions, or repeating login does not repair this mapping. No UID is implicitly trusted. |
 | exit 3, `human_action_required` | Run the printed `af provider setup … --login` yourself at a private terminal. Never paste the OAuth URL or code anywhere else. |
 | exit 4, `provider_cli_missing` or `installation_failed` | The official CLI is missing, not executable, or cannot start. Run the fix printed on stderr (for npm installs, usually the CLI's own reinstall command), then rerun `af provider status`. |
 | exit 4, `incompatible` | The CLI starts but is too old for af's invocation. Run the upgrade printed on stderr, then rerun `af provider status`. |
