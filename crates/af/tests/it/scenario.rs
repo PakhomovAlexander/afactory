@@ -3210,6 +3210,60 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
             .unwrap()
             .to_owned();
         cas.get_json(&captured).unwrap();
+        if developer == "alice" {
+            std::fs::rename(&moved, &package).unwrap();
+            // Seed an unrooted closure with old mtimes, then repin using exactly those CAS
+            // objects. Timestamp protection alone must not make this test pass.
+            let db = rusqlite::Connection::open(task_state.join("events.sqlite")).unwrap();
+            db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+                .unwrap();
+            let digest = captured.strip_prefix("sha256:").unwrap();
+            let object = task_state
+                .join("cas/objects")
+                .join(&digest[..2])
+                .join(&digest[2..]);
+            let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+            std::fs::File::open(&object)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+            let barriers = f.machine.join("pin-barriers");
+            let barrier = barriers.join("template-captured-1");
+            std::fs::create_dir_all(&barrier).unwrap();
+            let child = crate::common::af()
+                .current_dir(&f.repo)
+                .args(args)
+                .args(["--json", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let started = std::time::Instant::now();
+            while !barrier.join("ready").exists() {
+                assert!(started.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
+            assert!(store.is_empty(&run).unwrap());
+            let mut collector = store.reopen(std::time::Duration::ZERO).unwrap();
+            let refused = collector
+                .apply_task_collection(&cas, 0, 0, false)
+                .unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("Another writer holds the Store"),
+                "{refused}"
+            );
+            std::fs::write(barrier.join("proceed"), []).unwrap();
+            assert_eq!(value(child.wait_with_output().unwrap(), 0), pinned);
+            collector.apply_task_collection(&cas, 0, 0, false).unwrap();
+            cas.get_json(&captured).unwrap();
+            std::fs::rename(&package, &moved).unwrap();
+        }
+
         std::fs::write(
             moved.join("worker.py"),
             "raise Exception('mutable bytes must not execute')",
@@ -3606,6 +3660,32 @@ fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
         rusqlite::params![original.1, original.2, run],
     )
     .unwrap();
+    assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+    // Pin admission must examine the entire stream, including rows replay used to hide.
+    for sequences in [vec![-1], vec![-9], vec![-1, 0], vec![1], vec![0, 2]] {
+        db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+            .unwrap();
+        for sequence in &sequences {
+            db.execute(
+                "INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
+                 VALUES (?1,?2,?3,?4,'2026-11-13T00:00:00Z',?5,?6)",
+                rusqlite::params![run, sequence, format!("corrupt-{sequence}"), original.0, original.2, original.1],
+            ).unwrap();
+        }
+        let snapshot = || {
+            db.prepare("SELECT sequence,event_id,type,payload,artifact_refs FROM events WHERE run_id=?1 ORDER BY sequence")
+                .unwrap().query_map([&run], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)))
+                .unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        let before = snapshot();
+        assert!(
+            !output(&f.repo, &f.state, &args).status.success(),
+            "{sequences:?}"
+        );
+        assert_eq!(snapshot(), before, "refusal must preserve every row");
+    }
+    db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+        .unwrap();
     assert_eq!(cli(&f.repo, &f.state, &args), pinned);
     let mut store = af_store::EventStore::open(task_state.join("events.sqlite")).unwrap();
     store

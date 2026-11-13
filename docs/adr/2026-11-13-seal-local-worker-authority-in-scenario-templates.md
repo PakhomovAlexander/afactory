@@ -34,6 +34,10 @@ and predecessor equality checks remain mandatory. Canonical Provider admission r
 work, and local aliases never establish independence.
 
 A `ScenarioTemplatePinned@1` event references the template in a non-Task stream in its Task Store.
+Capture through durable publication holds the native Store's exclusive SQLite writer lock,
+shared with Task collection. Before committing, pinning restores and validates the captured
+closure and checks the exact one-event durable pin under that lock. Existing rows of any sequence
+prevent insertion; negative, gapped or otherwise corrupt pin histories fail closed without mutation.
 Existing conservative CAS reachability retains the complete closure before the first Task and
 through Task collection. Pins live for the Store lifetime, count against the machine storage
 budget, and are discarded with that Store. Native Tasks also retain their own authority references.
