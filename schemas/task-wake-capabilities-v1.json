@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-capabilities:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "platform",
+    "driver",
+    "pi",
+    "codex",
+    "claude",
+    "native_idempotency",
+    "turn_start_evidence",
+    "report_evidence"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-capabilities@1"
+    },
+    "platform": {
+      "const": "linux"
+    },
+    "driver": {
+      "const": "explicit_finite_foreground"
+    },
+    "pi": {
+      "const": "implemented_original_interactive_follow_up_live_certification_pending"
+    },
+    "codex": {
+      "const": "implemented_existing_cli_queue_live_certification_pending"
+    },
+    "claude": {
+      "const": "unavailable_live_tests_deferred"
+    },
+    "native_idempotency": {
+      "const": false
+    },
+    "turn_start_evidence": {
+      "const": false
+    },
+    "report_evidence": {
+      "const": false
+    }
+  }
+}

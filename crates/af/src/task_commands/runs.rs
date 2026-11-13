@@ -696,8 +696,19 @@ fn notify_completion(id: &str, code: i32) {
 /// hangup, so it outlives the shell that started it; return once it holds the Task and its plan
 /// is admitted, with its pid and its log. A run that is neither within the admission window is
 /// not claimed to run: the command exits 4 and names `af task status ID`.
-pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<i32, String> {
+pub(crate) fn detach(
+    id: &str,
+    inspect: &crate::cli::TaskInspectArgs,
+    wake_route: Option<&Path>,
+) -> Result<i32, String> {
     let opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
+    // Parent commits before creating any child. The child receives neither capability nor
+    // registration flag. An interrupted launch remains intent only; no driver can respawn it.
+    if let Some(grant) = wake_route {
+        super::wake::register(id, inspect, grant, true)?;
+        #[cfg(debug_assertions)]
+        observation_barrier("wake-before-launch")?;
+    }
     let state = opened.state.clone();
     crate::storage::owned::private_dir(&runs_dir(&state))?;
     // The log reserves the run number: created only where no file of it exists.
@@ -721,10 +732,12 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         ))
     })()?;
     let exe = std::env::current_exe().map_err(|e| format!("finding the af binary: {e}"))?;
-    let arguments: Vec<std::ffi::OsString> = std::env::args_os()
-        .skip(1)
-        .filter(|word| word != "--detach")
-        .collect();
+    let arguments = super::wake::child_arguments(std::env::args_os().skip(1));
+    let arguments = if wake_route.is_some() {
+        super::wake::pin_child_store(arguments, &state)
+    } else {
+        arguments
+    };
     let mut command = std::process::Command::new(exe);
     command
         .args(&arguments)
@@ -743,6 +756,10 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
     let mut child = command
         .spawn()
         .map_err(|e| format!("starting the background run of Task {id}: {e}"))?;
+    #[cfg(debug_assertions)]
+    if wake_route.is_some() {
+        observation_barrier("wake-after-launch")?;
+    }
     let pid = child.id();
     let mut opened = opened;
     let since = std::time::Instant::now();

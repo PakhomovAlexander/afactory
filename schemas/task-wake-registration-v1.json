@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:task-wake-registration:1",
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-registration@1"
+    },
+    "subscription": {
+      "$ref": "urn:af:schema:task-wake-subscription:1"
+    },
+    "policy": {
+      "const": "from_opening"
+    },
+    "registered_prefix": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+    },
+    "launch_intent": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "subscription",
+    "policy",
+    "registered_prefix",
+    "launch_intent"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-pi-next:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "session",
+    "message",
+    "delivery_id",
+    "admission",
+    "turn_started",
+    "reported"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-pi-next@1"
+    },
+    "session": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$(?![\\s\\S])"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^AF Task wake metadata[.] Task: "
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "delivery_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "minLength": 71,
+          "maxLength": 71
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "admission": {
+      "const": "unknown_if_packet_returned"
+    },
+    "turn_started": {
+      "type": "null"
+    },
+    "reported": {
+      "type": "null"
+    }
+  }
+}

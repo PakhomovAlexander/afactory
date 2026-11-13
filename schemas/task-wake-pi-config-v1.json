@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-pi-config:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "af",
+    "af_digest",
+    "repo",
+    "state",
+    "route"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-pi-config@1"
+    },
+    "af": {
+      "type": "string",
+      "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+      "maxLength": 4096
+    },
+    "af_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+      "maxLength": 4096
+    },
+    "state": {
+      "type": "string",
+      "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+      "maxLength": 4096
+    },
+    "route": {
+      "type": "string",
+      "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+      "maxLength": 4096
+    }
+  }
+}

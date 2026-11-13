@@ -718,7 +718,7 @@ if mode == 'malformed':
         # Keep the actual wrapper, Make graph and receipt writer. Only expensive payloads
         # are stand-ins; never run a nested real gate from this preflight regression.
         preflight = ['ci-disk', 'adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
-                     'test-time-report', 'provider-auth-host', 'pi-host', 'pr-report', 'pr-lines',
+                     'test-time-report', 'provider-auth-host', 'pi-host', 'task-wake-probes', 'pr-report', 'pr-lines',
                      'test-classes', 'test-catalog', 'workspace-fixtures', 'performance-schemas',
                      'performance-kernel-harness']
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
@@ -742,7 +742,7 @@ if mode == 'malformed':
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
                         'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-scenario-git-workspace.py',
-                        'test-scenario-merge-watch.py', 'test-pi-host.py', 'test-check-pr-report.py',
+                        'test-scenario-merge-watch.py', 'test-pi-host.py', 'test-task-wake-probe.py', 'test-check-pr-report.py',
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
                         'test-performance.py', 'test-workspace-fixtures.py', 'test-workspace-fixture-benchmark.py',
                         'performance/schemas.py', 'performance/cli.py',

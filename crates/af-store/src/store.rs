@@ -37,6 +37,7 @@ impl Drop for ReplayReadsGuard {
 mod attempt_wall;
 pub mod observer;
 pub mod task;
+pub mod wake;
 pub mod writers;
 
 /// Read a non-negative SQLite integer column as `u64`.
@@ -540,6 +541,7 @@ impl EventStore {
         )?;
         // The table only: this release's marker is written with its first appended event.
         conn.execute_batch(writers::CREATE)?;
+        conn.execute_batch(wake::SCHEMA)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -789,7 +791,7 @@ impl EventStore {
         run_id: &str,
         budget: &mut ReplayBudget,
     ) -> Result<Result<Vec<RunEvent>, ReplayCeiling>, StoreError> {
-        match self.replay_bounded(run_id, 0, Some(budget), &mut 0) {
+        match self.replay_bounded(run_id, 0, None, Some(budget), &mut 0) {
             Ok(events) => Ok(Ok(events)),
             Err(Bounded::Ceiling(ceiling)) => Ok(Err(ceiling)),
             Err(Bounded::Store(error)) => Err(error),
@@ -806,7 +808,7 @@ impl EventStore {
         let span = store_span("af.store.read", "replay");
         let mut bytes = 0_u64;
         let replayed = span.in_scope(|| {
-            self.replay_bounded(run_id, first_sequence, None, &mut bytes)
+            self.replay_bounded(run_id, first_sequence, None, None, &mut bytes)
                 .map_err(|bounded| match bounded {
                     Bounded::Store(error) => error,
                     Bounded::Ceiling(ceiling) => StoreError::Conflict(ceiling.to_string()),
@@ -819,10 +821,37 @@ impl EventStore {
         replayed
     }
 
+    /// A bounded inclusive window. Unlike `replay_within`, reaching the row ceiling ends
+    /// a successful page, as does a full byte buffer. Oversized individual rows and gaps
+    /// still refuse the complete page.
+    pub fn replay_window(
+        &self,
+        run_id: &str,
+        first_sequence: u64,
+        max_rows: u64,
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        if !(1..=4096).contains(&max_rows) {
+            return Err(StoreError::Conflict("Invalid replay page size".into()));
+        }
+        let mut budget = ReplayBudget::new(max_rows, 1024 * 1024, 16 * 1024 * 1024);
+        self.replay_bounded(
+            run_id,
+            first_sequence,
+            Some(max_rows),
+            Some(&mut budget),
+            &mut 0,
+        )
+        .map_err(|e| match e {
+            Bounded::Store(error) => error,
+            Bounded::Ceiling(ceiling) => StoreError::Conflict(ceiling.to_string()),
+        })
+    }
+
     fn replay_bounded(
         &self,
         run_id: &str,
         first_sequence: u64,
+        max_rows: Option<u64>,
         mut budget: Option<&mut ReplayBudget>,
         bytes: &mut u64,
     ) -> Result<Vec<RunEvent>, Bounded> {
@@ -832,40 +861,46 @@ impl EventStore {
         let mut stmt = self.conn.prepare(
             "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
                     causation_id, correlation_id, artifact_refs, payload
-             FROM events WHERE run_id = ?1 AND sequence >= ?2 ORDER BY sequence",
+             FROM events WHERE run_id = ?1 AND sequence >= ?2 ORDER BY sequence LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![run_id, first_sequence_sql], |row| {
-            let refs: String = row.get(8)?;
-            let payload: String = row.get(9)?;
-            let sequence: i64 = row.get(1)?;
-            Ok((
-                RunEvent {
-                    event_id: row.get(0)?,
-                    run_id: run_id.to_string(),
-                    sequence: 0,
-                    event_type: row
-                        .get::<_, String>(2)?
-                        .parse::<EventType>()
-                        .map_err(|error| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                2,
-                                rusqlite::types::Type::Text,
-                                Box::new(error),
-                            )
-                        })?,
-                    occurred_at: row.get(3)?,
-                    node_id: row.get(4)?,
-                    attempt_id: row.get(5)?,
-                    causation_id: row.get(6)?,
-                    correlation_id: row.get(7)?,
-                    artifact_refs: Vec::new(),
-                    payload: Value::Null,
-                },
-                sequence,
-                refs,
-                payload,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            params![
+                run_id,
+                first_sequence_sql,
+                max_rows.map_or(-1, |n| n as i64)
+            ],
+            |row| {
+                let refs: String = row.get(8)?;
+                let payload: String = row.get(9)?;
+                let sequence: i64 = row.get(1)?;
+                Ok((
+                    RunEvent {
+                        event_id: row.get(0)?,
+                        run_id: run_id.to_string(),
+                        sequence: 0,
+                        event_type: row.get::<_, String>(2)?.parse::<EventType>().map_err(
+                            |error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    2,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(error),
+                                )
+                            },
+                        )?,
+                        occurred_at: row.get(3)?,
+                        node_id: row.get(4)?,
+                        attempt_id: row.get(5)?,
+                        causation_id: row.get(6)?,
+                        correlation_id: row.get(7)?,
+                        artifact_refs: Vec::new(),
+                        payload: Value::Null,
+                    },
+                    sequence,
+                    refs,
+                    payload,
+                ))
+            },
+        )?;
         let mut out = Vec::new();
         for (expected_sequence, row) in (first_sequence..).zip(rows) {
             // A row that does not parse is refused, never degraded: replaying it as an empty
@@ -874,7 +909,12 @@ impl EventStore {
             let (mut event, raw_sequence, refs, payload) = row.map_err(StoreError::from)?;
             *bytes = bytes.saturating_add(payload.len() as u64);
             if let Some(budget) = budget.as_deref_mut() {
-                budget.charge(refs.len() + payload.len())?;
+                match budget.charge(refs.len() + payload.len()) {
+                    Err(ReplayCeiling::BufferedBytes) if max_rows.is_some() && !out.is_empty() => {
+                        break;
+                    }
+                    other => other?,
+                }
             }
             let sequence = u64::try_from(raw_sequence).map_err(|_| {
                 StoreError::Conflict(format!("negative sequence {raw_sequence} in run {run_id}"))
@@ -901,23 +941,25 @@ impl EventStore {
             )?;
             out.push(event);
         }
-        REPLAY_READS.with(|reads| {
-            for read in reads
-                .borrow_mut()
-                .iter_mut()
-                .filter(|read| read.store == self as *const Self as usize)
-            {
-                let prefix = out
-                    .last()
-                    .map_or(first_sequence, |event| event.sequence + 1);
-                // A writer advancing between two reads invalidates reuse: retain the older
-                // prefix so the final comparison cannot bless a mixed observation.
-                read.prefixes
-                    .entry(run_id.to_owned())
-                    .and_modify(|old| *old = (*old).min(prefix))
-                    .or_insert(prefix);
-            }
-        });
+        if max_rows.is_none() {
+            REPLAY_READS.with(|reads| {
+                for read in reads
+                    .borrow_mut()
+                    .iter_mut()
+                    .filter(|read| read.store == self as *const Self as usize)
+                {
+                    let prefix = out
+                        .last()
+                        .map_or(first_sequence, |event| event.sequence + 1);
+                    // A writer advancing between two reads invalidates reuse: retain the older
+                    // prefix so the final comparison cannot bless a mixed observation.
+                    read.prefixes
+                        .entry(run_id.to_owned())
+                        .and_modify(|old| *old = (*old).min(prefix))
+                        .or_insert(prefix);
+                }
+            });
+        }
         Ok(out)
     }
 
@@ -1376,6 +1418,77 @@ mod tests {
             assert_eq!(ceiling.as_str(), name);
             assert!(ceiling.to_string().contains(name));
         }
+    }
+
+    #[test]
+    fn bounded_windows_progress_without_weakening_row_and_history_validation() {
+        let (_dir, mut store, cas) = fixture();
+        for i in 0..7 {
+            store
+                .append(
+                    "pages",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({"i":i})),
+                )
+                .unwrap();
+        }
+        let (_, trace) = store.track_replays(|| store.replay_window("pages", 0, 3).unwrap());
+        assert!(
+            trace.is_empty(),
+            "partial windows must not claim a current replay watermark"
+        );
+        let mut got = Vec::new();
+        for first in [0, 3, 6] {
+            got.extend(store.replay_window("pages", first, 3).unwrap());
+        }
+        assert_eq!(got, store.replay("pages").unwrap());
+        assert!(store.replay_window("pages", 7, 3).unwrap().is_empty());
+        for rows in [0, 4097, u64::MAX] {
+            assert!(store.replay_window("pages", 0, rows).is_err());
+        }
+        store
+            .conn
+            .execute(
+                "UPDATE events SET event_id='invalid' WHERE run_id='pages' AND sequence=4",
+                [],
+            )
+            .unwrap();
+        assert!(store.replay_window("pages", 3, 3).is_err());
+        store
+            .append(
+                "oversized",
+                &cas,
+                NewEvent::new(
+                    EventType::SourceCapturedV1,
+                    json!({"data":"x".repeat(1024*1024)}),
+                ),
+            )
+            .unwrap();
+        assert!(store.replay_window("oversized", 0, 1).is_err());
+    }
+
+    #[test]
+    fn bounded_window_splits_at_buffer_capacity_instead_of_stranding_the_cursor() {
+        let (_dir, mut store, cas) = fixture();
+        for i in 0..33 {
+            store
+                .append(
+                    "bytes",
+                    &cas,
+                    NewEvent::new(
+                        EventType::SourceCapturedV1,
+                        json!({"i":i,"data":"x".repeat(512*1024)}),
+                    ),
+                )
+                .unwrap();
+        }
+        let first = store.replay_window("bytes", 0, 4096).unwrap();
+        assert!(!first.is_empty() && first.len() < 33);
+        let second = store
+            .replay_window("bytes", first.len() as u64, 4096)
+            .unwrap();
+        assert_eq!(first.len() + second.len(), 33);
+        assert_eq!(second.last().unwrap().sequence, 32);
     }
 
     #[test]

@@ -716,6 +716,7 @@ impl EventStore {
             let state = self
                 .task_projection(cas, &task.task_id)?
                 .ok_or_else(|| conflict("Collected Task disappeared"))?;
+            self.require_wake_extracted(&task.task_id, state.next_sequence - 1)?;
             let epoch = state
                 .epoch
                 .checked_add(1)

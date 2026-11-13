@@ -45,6 +45,8 @@ mod unknown_usage;
 mod usage_observation;
 #[path = "task_runtime/usage_recovery.rs"]
 mod usage_recovery;
+#[path = "task_runtime/wake.rs"]
+mod wake;
 #[path = "task_runtime/wide_usage.rs"]
 mod wide_usage;
 

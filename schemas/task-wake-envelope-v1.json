@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-envelope:1",
+  "$comment": "Foundation metadata only; no authority. Rust additionally validates ordered times, source boundaries and content identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "subscription_id",
+    "delivery_id",
+    "payload_digest",
+    "observation",
+    "expires_unix_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskWakeEnvelope@1"
+    },
+    "subscription_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "payload_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "observation": {
+      "$ref": "urn:af:schema:task-wake-observation:1"
+    },
+    "expires_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

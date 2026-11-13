@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:task-wake-checkpoint:1",
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-checkpoint@1"
+    },
+    "configuration_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "through": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+    },
+    "prior_semantic": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "minLength": 71,
+              "maxLength": 71
+            },
+            {
+              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/state"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "lease_boundary": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+    },
+    "observations": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4096
+    },
+    "observed_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "prefix_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "clock_observed": {
+      "type": "boolean"
+    },
+    "run_facts_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  },
+  "required": [
+    "schema",
+    "configuration_digest",
+    "through",
+    "prior_semantic",
+    "lease_boundary",
+    "observations",
+    "observed_unix_ms",
+    "prefix_digest",
+    "clock_observed",
+    "run_facts_digest"
+  ]
+}

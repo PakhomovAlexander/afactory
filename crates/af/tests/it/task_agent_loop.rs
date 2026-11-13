@@ -21,6 +21,541 @@ fn workspace() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
+fn wake_wait_for_child_record(state: &Path) {
+    let until = Instant::now() + Duration::from_secs(60);
+    while !state.join("runs/gc-older-1.json").exists() {
+        assert!(
+            Instant::now() < until,
+            "detached child did not persist its ordinary run record"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_registration_launch_crashes_immediate_finish_and_codex_queue_are_durable() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let owner = root.path().join("owner");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = owner.canonicalize().unwrap();
+    let binary = owner.join("codex-fixture");
+    let calls = owner.join("native-argv");
+    std::fs::write(
+        &binary,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = owner.join("daemon.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // Match Codex's deployed pathname socket: directory protection, not socket mode,
+    // excludes other users. Exercise grant, pre-detach registration and real peer preflight.
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let grant = owner.join("grant.json");
+    let wake = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(["task", "wake", "--state"])
+            .arg(&state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let route = document(
+        &wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "codex",
+            "--session",
+            "existing-thread",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--socket",
+            socket.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ]),
+        0,
+        None,
+    );
+    assert!(route.get("capability").is_none());
+    let denied = af(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--detach",
+            "--wake-route",
+            "/absent-owner-grant",
+        ],
+    );
+    assert!(!denied.status.success());
+    assert!(
+        !state.join("runs").exists(),
+        "registration refusal launches no run"
+    );
+    let barrier = root.path().join("barriers");
+    let before = barrier.join("wake-before-launch-1");
+    std::fs::create_dir_all(&before).unwrap();
+    let spawn = || {
+        crate::common::af()
+            .current_dir(&repo)
+            .args([
+                "task",
+                "run",
+                "gc-older",
+                "--execute",
+                "--detach",
+                "--json",
+                "--state",
+            ])
+            .arg(&state)
+            .arg("--wake-route")
+            .arg(&grant)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barrier)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let wait_ready = |point: &Path| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !point.join("ready").exists() {
+            assert!(
+                Instant::now() < until,
+                "wake launch barrier did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let mut parent = spawn();
+    wait_ready(&before);
+    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(inspected["subscriptions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        inspected["subscriptions"][0]["registration"]["launch_intent"],
+        true
+    );
+    assert!(!state.join("runs").exists());
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    let before_events = EventStore::open_read_only(state.join("events.sqlite"))
+        .unwrap()
+        .replay(&af_store::store::task::task_run_id("gc-older").unwrap())
+        .unwrap();
+    document(&wake(&["drain"]), 0, None);
+    assert!(
+        !state.join("runs").exists(),
+        "driver must not respawn committed launch intent"
+    );
+    assert!(!calls.exists());
+    assert_eq!(
+        before_events,
+        EventStore::open_read_only(state.join("events.sqlite"))
+            .unwrap()
+            .replay(&af_store::store::task::task_run_id("gc-older").unwrap())
+            .unwrap()
+    );
+    std::fs::remove_dir_all(&before).unwrap();
+    let after = barrier.join("wake-after-launch-1");
+    std::fs::create_dir_all(&after).unwrap();
+    let mut parent = spawn();
+    wait_ready(&after);
+    wake_wait_for_child_record(&state);
+    // Child finishes while the detach parent cannot return. No parent callback extracts it.
+    document(
+        &af(
+            &repo,
+            &state,
+            &["task", "wait", "gc-older", "--timeout", "60", "--json"],
+        ),
+        0,
+        Some("task-status-v2.json"),
+    );
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    document(&wake(&["drain"]), 0, None);
+    let sent = std::fs::read_to_string(&calls).unwrap();
+    let argv: Vec<_> = sent.lines().collect();
+    assert_eq!(
+        &argv[..4],
+        ["queue", "--thread", "existing-thread", "--message"]
+    );
+    assert!(argv[4].starts_with("AF Task wake metadata. Task: gc-older;"));
+    assert!(!argv[4].contains("Implement offset/limit"));
+    assert_eq!(argv[5], "--remote");
+    assert_eq!(argv[6], format!("unix://{}", socket.display()));
+    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(
+        inspected["uncertain_session_fences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let unknown = inspected["deliveries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["state"] == "admission_unknown")
+        .unwrap();
+    assert_eq!(unknown["receipts"].as_array().unwrap().len(), 3);
+    std::fs::remove_file(&calls).unwrap();
+    document(&wake(&["drain"]), 0, None);
+    assert!(
+        !calls.exists(),
+        "lost native response never causes another queue call"
+    );
+    expect(&wake(&["revoke", "--route", grant.to_str().unwrap()]), 0);
+    let denied = af(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--detach",
+            "--wake-route",
+            grant.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !denied.status.success(),
+        "revoked grant refuses detached dispatch"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_original_session_peer_and_endpoint_substitution_refuse_without_native_calls() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let owner = root.path().join("owner");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = owner.canonicalize().unwrap();
+    let binary = owner.join("native-fixture");
+    let sentinel = owner.join("called");
+    std::fs::write(
+        &binary,
+        format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let installed = owner.join("extension.ts");
+    std::fs::write(&installed, "// reviewed stand-in; no native host").unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let wake = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(["task", "wake", "--state"])
+            .arg(&state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let grant = owner.join("pi.json");
+    document(
+        &wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "pi",
+            "--session",
+            "original",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--extension",
+            installed.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ]),
+        0,
+        None,
+    );
+    assert!(
+        !wake(&[
+            "pi-next",
+            "--route",
+            grant.to_str().unwrap(),
+            "--session",
+            "other"
+        ])
+        .status
+        .success()
+    );
+    let wrong_peer = wake(&[
+        "pi-next",
+        "--route",
+        grant.to_str().unwrap(),
+        "--session",
+        "original",
+    ]);
+    assert!(!wrong_peer.status.success());
+    assert!(err(&wrong_peer).contains("peer"));
+    assert!(!sentinel.exists());
+    let endpoint = owner.join("endpoint");
+    std::fs::create_dir(&endpoint).unwrap();
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = endpoint.join("native.sock");
+    // An inert socket inode is sufficient for owner-selected endpoint metadata. This
+    // negative fixture performs no IPC: substitution must refuse before any connection.
+    nix::sys::stat::mknod(
+        &socket,
+        nix::sys::stat::SFlag::S_IFSOCK,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        0,
+    )
+    .unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let grant = owner.join("codex.json");
+    let codex_grant = || {
+        wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "codex",
+            "--session",
+            "thread",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--socket",
+            socket.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ])
+    };
+    // A permissive socket is safe only behind the admitted private directory. Refuse
+    // both readable and writable group/other parents before creating grant authority.
+    for mode in [0o755, 0o770, 0o777] {
+        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(mode)).unwrap();
+        let denied = codex_grant();
+        assert!(!denied.status.success());
+        assert!(err(&denied).contains("owner-private"));
+        assert!(!grant.exists());
+    }
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o700)).unwrap();
+    document(&codex_grant(), 0, None);
+    document(
+        &wake(&["register", "gc-older", "--route", grant.to_str().unwrap()]),
+        0,
+        None,
+    );
+    // Revalidate the parent on route use, not just initial grant installation.
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let denied = wake(&["register", "gc-older", "--route", grant.to_str().unwrap()]);
+    assert!(!denied.status.success());
+    assert!(err(&denied).contains("owner-private"));
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Retain the original socket inode at a different path so the replacement cannot reuse it.
+    let original = endpoint.join("original.sock");
+    std::fs::rename(&socket, &original).unwrap();
+    std::os::unix::fs::symlink(&original, &socket).unwrap();
+    assert!(
+        !wake(&["register", "gc-older", "--route", grant.to_str().unwrap()])
+            .status
+            .success(),
+        "a symlink to the pinned inode is not an admitted canonical endpoint"
+    );
+    std::fs::remove_file(&socket).unwrap();
+    nix::sys::stat::mknod(
+        &socket,
+        nix::sys::stat::SFlag::S_IFSOCK,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        0,
+    )
+    .unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(
+        !wake(&["register", "gc-older", "--route", grant.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert!(!state.join("runs").exists());
+    assert!(!sentinel.exists());
+    let capabilities = document(
+        &wake(&["capabilities"]),
+        0,
+        Some("task-wake-capabilities-v1.json"),
+    );
+    assert_eq!(capabilities["claude"], "unavailable_live_tests_deferred");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_detached_pi_receiver_authenticates_parent_and_replays_without_resend() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let owner = root.path().join("owner");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = owner.canonicalize().unwrap();
+    // A recording host process, never a real Pi host. Copy its small interpreter so the
+    // kernel's parent executable identity has explicit owner installation provenance.
+    let binary = owner.join("interactive-host-standin");
+    std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &binary).unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let installed = owner.join("extension.ts");
+    std::fs::write(&installed, "// recording host fixture; no native calls").unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let grant = owner.join("grant.json");
+    let wake = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(["task", "wake", "--state"])
+            .arg(&state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    document(
+        &wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "pi",
+            "--session",
+            "original",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--extension",
+            installed.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ]),
+        0,
+        None,
+    );
+    let barrier = root.path().join("barriers");
+    let before = barrier.join("wake-before-launch-1");
+    std::fs::create_dir_all(&before).unwrap();
+    let spawn = || {
+        crate::common::af()
+            .current_dir(&repo)
+            .args([
+                "task",
+                "run",
+                "gc-older",
+                "--execute",
+                "--detach",
+                "--state",
+            ])
+            .arg(&state)
+            .arg("--wake-route")
+            .arg(&grant)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barrier)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let ready = |point: &Path| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !point.join("ready").exists() {
+            assert!(
+                Instant::now() < until,
+                "wake launch barrier did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let mut parent = spawn();
+    ready(&before);
+    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(
+        status["subscriptions"][0]["registration"]["launch_intent"],
+        true
+    );
+    assert!(
+        !state.join("runs").exists(),
+        "registration must precede launch"
+    );
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    document(&wake(&["drain"]), 0, None);
+    assert!(
+        !state.join("runs").exists(),
+        "driver cannot respawn launch intent"
+    );
+    std::fs::remove_dir_all(&before).unwrap();
+    let after = barrier.join("wake-after-launch-1");
+    std::fs::create_dir_all(&after).unwrap();
+    let mut parent = spawn();
+    ready(&after);
+    wake_wait_for_child_record(&state);
+    document(
+        &af(
+            &repo,
+            &state,
+            &["task", "wait", "gc-older", "--timeout", "60", "--json"],
+        ),
+        0,
+        Some("task-status-v2.json"),
+    );
+    // The authoritative completion precedes detach returning; lose that parent's response.
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    // No foreground drain after completion: the authenticated hook must catch up itself.
+    let pull = || {
+        let environment = crate::common::af();
+        let mut shell = Command::new(&binary);
+        for (name, value) in environment.get_envs() {
+            if let Some(value) = value {
+                shell.env(name, value);
+            }
+        }
+        // The trailing exit keeps the shell as the authenticated parent, rather than
+        // letting it optimize its final command into exec.
+        shell.current_dir(&repo).arg("-c").arg("\"$1\" task wake --state \"$2\" pi-next --route \"$3\" --session original; result=$?; exit $result")
+            .arg("recording-pi-host").arg(crate::common::af_binary()).arg(&state).arg(&grant).output().unwrap()
+    };
+    let packet = document(&pull(), 0, Some("task-wake-pi-next-v1.json"));
+    assert!(
+        packet["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("AF Task wake metadata. Task: gc-older;")
+    );
+    assert_eq!(packet["session"], "original");
+    assert_eq!(packet["turn_started"], Value::Null);
+    assert_eq!(packet["reported"], Value::Null);
+    // Discard the first return, reopen another authenticated host process: no native retry.
+    let replay = document(&pull(), 0, Some("task-wake-pi-next-v1.json"));
+    assert_eq!(replay["message"], Value::Null);
+    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(status["deliveries"][0]["state"], "admission_unknown");
+    assert_eq!(
+        status["deliveries"][0]["receipts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
 fn af(repo: &Path, state: &Path, args: &[&str]) -> Output {
     crate::common::af()
         .current_dir(repo)

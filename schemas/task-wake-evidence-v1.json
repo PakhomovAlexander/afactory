@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Experimental probe only; byte bounds and cross-record joins are checked by scripts/task-wake-probe.py",
+  "required": [
+    "schema",
+    "run_id",
+    "host",
+    "session_id",
+    "probe_id",
+    "delivery_id",
+    "payload_sha256",
+    "stage",
+    "reason",
+    "reference"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-evidence@1"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "host": {
+      "type": "string",
+      "enum": [
+        "pi",
+        "codex",
+        "claude"
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "probe_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$(?![\\s\\S])"
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "dry_run",
+        "unsupported",
+        "unavailable",
+        "inbox_accepted",
+        "admission_intent",
+        "native_returned",
+        "native_admitted",
+        "admission_unknown",
+        "turn_started",
+        "report_observed"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "offline",
+        "no_original_session_route",
+        "extension_required",
+        "host_unavailable",
+        "persisted",
+        "before_native_call",
+        "no_native_receipt",
+        "lost_ack",
+        "observer_supplied"
+      ]
+    },
+    "reference": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+        }
+      ]
+    }
+  }
+}
