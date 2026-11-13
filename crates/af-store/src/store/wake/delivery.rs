@@ -384,9 +384,94 @@ impl EventStore {
         tx.commit()?;
         Ok(())
     }
-    /// Exactly one native intent per original session. Commit uncertainty BEFORE returning
-    /// to a native caller: process loss, lost pipe bytes and void returns never enable retry.
-    pub fn take_wake_native(
+    /// Find the first live committed packet for this original session, including packets
+    /// not yet claimed for transport. Outbox insertion order is durable across subscriptions
+    /// and restart; receiver insertion order is not delivery order. Call under IMMEDIATE.
+    fn wake_native_head(
+        &self,
+        route: &WakeRouteV1,
+        now: u64,
+    ) -> Result<Option<WakeDeliveryV1>, StoreError> {
+        if self.wake_route(&route.route_id, now)? != *route {
+            return Err(refusal("Route changed"));
+        }
+        self.wake_uncertainty()?;
+        let key = session_key(route)?;
+        if self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM wake_session_fences_v1 WHERE session_key=?1)",
+            [&key],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Ok(None);
+        }
+        let registrations = self.wake_registrations()?;
+        let mut query = self.conn.prepare(
+            "SELECT delivery_id,subscription_id,digest,envelope FROM wake_outbox_v1 ORDER BY rowid LIMIT 4097",
+        )?;
+        let rows = query
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if rows.len() > MAX_ENVELOPES as usize {
+            return Err(refusal("Wake outbox capacity corrupt"));
+        }
+        for (id, subscription_id, digest, text) in rows {
+            let envelope = decode_envelope(text.as_bytes()).map_err(|e| refusal(&e))?;
+            let registration = registrations
+                .iter()
+                .find(|r| r.subscription.subscription_id == subscription_id)
+                .ok_or_else(|| refusal("Unknown outbox subscription"))?;
+            if envelope.delivery_id != id
+                || envelope.subscription_id != subscription_id
+                || envelope.payload_digest != digest
+                || envelope.observation.task != registration.subscription.task
+            {
+                return Err(refusal("Conflicting outbox identity"));
+            }
+            let other = match self.wake_route(&registration.subscription.recipient_ref, now) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if session_key(&other)? != key || envelope.expires_unix_ms <= now {
+                continue;
+            }
+            if self.inspect_wake(&subscription_id)?.closure.is_some() {
+                continue;
+            }
+            // This first packet blocks later packets even before a receiver row exists.
+            if other.route_id != route.route_id {
+                return Ok(None);
+            }
+            let Some(text) = self
+                .conn
+                .query_row(
+                    "SELECT record FROM wake_delivery_v1 WHERE id=?1",
+                    [&id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let record = decode(&text)?;
+            if record.envelope != envelope || record.route_id != other.route_id {
+                return Err(refusal("Conflicting receiver packet"));
+            }
+            return Ok((record.state == WakeDeliveryStateV1::InboxAccepted).then_some(record));
+        }
+        Ok(None)
+    }
+    /// Reserve a due native preflight BEFORE any endpoint contact. The existing bounded
+    /// attempts/claim/deadline fields also own this stage; receipt epochs remain unchanged.
+    /// A crashed reservation consumes its attempt and retains backoff. Competing drivers
+    /// cannot contact the endpoint while its lease or next-attempt deadline is live.
+    pub fn reserve_wake_native(
         &self,
         route: &WakeRouteV1,
         now: u64,
@@ -395,52 +480,99 @@ impl EventStore {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        if self.wake_route(&route.route_id, now)? != *route {
-            return Err(refusal("Route changed"));
-        }
-        // Validate retained fence identities before absence of this session can authorize
-        // a native intent. A damaged tombstone must never look like a missing admission.
-        self.wake_uncertainty()?;
-        let key = session_key(route)?;
-        if tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM wake_session_fences_v1 WHERE session_key=?1)",
-            [&key],
-            |r| r.get::<_, bool>(0),
-        )? {
+        let Some(mut record) = self.wake_native_head(route, now)? else {
+            return Ok(None);
+        };
+        if record.claim_until_unix_ms > now || record.next_attempt_unix_ms > now {
             return Ok(None);
         }
-        let records = self.wake_deliveries()?;
-        // Global receiver insertion order preserves source/subscription order. A pending
-        // earlier transport on this session also prevents overtaking across subscriptions.
-        for mut record in records {
-            let other = match self.wake_route(&record.route_id, now) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            if session_key(&other)? != key || record.envelope.expires_unix_ms <= now {
-                continue;
-            }
-            if self
-                .inspect_wake(&record.envelope.subscription_id)?
-                .closure
-                .is_some()
-            {
-                // A clock rollback cannot reactivate a persisted expiry/closure.
-                continue;
-            }
-            if matches!(
-                record.state,
-                WakeDeliveryStateV1::Pending | WakeDeliveryStateV1::Blocked
-            ) || record.next_attempt_unix_ms > now
-            {
+        if record.attempts >= 8 {
+            record.state = WakeDeliveryStateV1::Blocked;
+            record.reason = Some(WakeDeliveryReasonV1::NativePreflightExhausted);
+            save(&tx, &record)?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        record.attempts += 1;
+        record.claim_until_unix_ms = now.saturating_add(CLAIM_MS);
+        record.next_attempt_unix_ms = record
+            .claim_until_unix_ms
+            .saturating_add((1000u64 << record.attempts).min(300_000));
+        save(&tx, &record)?;
+        tx.commit()?;
+        Ok(Some(record))
+    }
+    /// Exactly one native intent per original session. Pi pulls directly; Codex must
+    /// reserve preflight and authenticate the peer before committing admission intent.
+    pub fn take_wake_native(
+        &self,
+        route: &WakeRouteV1,
+        now: u64,
+    ) -> Result<Option<WakeDeliveryV1>, StoreError> {
+        if route.host != WakeHostV1::Pi {
+            return Err(refusal("Native preflight reservation required"));
+        }
+        self.take_wake_native_inner(route, None, now)
+    }
+    pub fn take_reserved_wake_native(
+        &self,
+        route: &WakeRouteV1,
+        claim: &WakeDeliveryV1,
+        now: u64,
+    ) -> Result<Option<WakeDeliveryV1>, StoreError> {
+        self.take_wake_native_inner(route, Some(claim), now)
+    }
+    /// Revalidate a reserved sender immediately before endpoint contact. This also refuses
+    /// closure/revocation/expiry or a lost lease while preflight was being prepared.
+    pub fn check_reserved_wake_native(
+        &self,
+        route: &WakeRouteV1,
+        claim: &WakeDeliveryV1,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let _tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let Some(record) = self.wake_native_head(route, now)? else {
+            return Ok(false);
+        };
+        Self::check_native_claim(&record, claim, now)?;
+        Ok(true)
+    }
+    fn check_native_claim(
+        record: &WakeDeliveryV1,
+        claim: &WakeDeliveryV1,
+        now: u64,
+    ) -> Result<(), StoreError> {
+        if record.envelope != claim.envelope
+            || record.route_id != claim.route_id
+            || record.epoch != claim.epoch
+            || record.attempts != claim.attempts
+            || record.claim_until_unix_ms != claim.claim_until_unix_ms
+            || record.claim_until_unix_ms <= now
+        {
+            return Err(refusal("Stale native preflight sender"));
+        }
+        Ok(())
+    }
+    fn take_wake_native_inner(
+        &self,
+        route: &WakeRouteV1,
+        claim: Option<&WakeDeliveryV1>,
+        now: u64,
+    ) -> Result<Option<WakeDeliveryV1>, StoreError> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        if let Some(mut record) = self.wake_native_head(route, now)? {
+            if let Some(claim) = claim {
+                Self::check_native_claim(&record, claim, now)?;
+            } else if record.claim_until_unix_ms > now || record.next_attempt_unix_ms > now {
                 return Ok(None);
             }
-            if record.state != WakeDeliveryStateV1::InboxAccepted {
-                continue;
-            }
-            if other.route_id != route.route_id {
-                return Ok(None);
-            }
+            let key = session_key(route)?;
             let intent_id = hash(
                 &json!({"domain":"af/wake-native-intent/1","session":key,"delivery":record.envelope.delivery_id}),
             )?;
@@ -470,6 +602,7 @@ impl EventStore {
                 now,
                 WakeReceiptStageV1::AdmissionUnknown { intent_id },
             )?);
+            record.claim_until_unix_ms = 0;
             record.state = WakeDeliveryStateV1::AdmissionUnknown;
             record.reason = Some(WakeDeliveryReasonV1::NativeAdmissionUncertain);
             save(&tx, &record)?;
@@ -503,30 +636,30 @@ impl EventStore {
     }
     /// Known native preflight failure (before intent) remains retryable within the SAME
     /// persisted allowance. No external result can call this to clear an admission fence.
-    pub fn defer_wake_native(&self, route: &WakeRouteV1, now: u64) -> Result<(), StoreError> {
+    pub fn defer_wake_native(&self, claim: &WakeDeliveryV1, now: u64) -> Result<(), StoreError> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        for mut record in self.wake_deliveries()? {
-            if record.route_id != route.route_id
-                || record.state != WakeDeliveryStateV1::InboxAccepted
-                || record.next_attempt_unix_ms > now
-            {
-                continue;
-            }
-            record.attempts = (record.attempts + 1).min(8);
-            record.next_attempt_unix_ms =
-                now.saturating_add((1000u64 << record.attempts).min(300_000));
-            if record.attempts >= 8 {
-                record.state = WakeDeliveryStateV1::Blocked;
-                record.reason = Some(WakeDeliveryReasonV1::NativePreflightExhausted);
-            } else {
-                record.reason = Some(WakeDeliveryReasonV1::NativePreflightUnavailable);
-            }
-            save(&tx, &record)?;
-            break;
+        let text: String = tx.query_row(
+            "SELECT record FROM wake_delivery_v1 WHERE id=?1",
+            [&claim.envelope.delivery_id],
+            |r| r.get(0),
+        )?;
+        let mut record = decode(&text)?;
+        Self::check_native_claim(&record, claim, now)?;
+        if record.state != WakeDeliveryStateV1::InboxAccepted {
+            return Err(refusal("Native admission already uncertain or blocked"));
         }
+        record.claim_until_unix_ms = 0;
+        record.next_attempt_unix_ms = now.saturating_add((1000u64 << record.attempts).min(300_000));
+        if record.attempts >= 8 {
+            record.state = WakeDeliveryStateV1::Blocked;
+            record.reason = Some(WakeDeliveryReasonV1::NativePreflightExhausted);
+        } else {
+            record.reason = Some(WakeDeliveryReasonV1::NativePreflightUnavailable);
+        }
+        save(&tx, &record)?;
         tx.commit()?;
         Ok(())
     }

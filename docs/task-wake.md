@@ -182,3 +182,19 @@ permitting resend. There are at most 128 active retained subscriptions/routes, 4
 refuses further admission; there is no automatic unsafe reset. The database/WAL, including these
 rows and tombstones, are already measured by AF's machine Store inventory. Whole-Store removal
 is destructive removal of recovery evidence, never successful delivery.
+
+## Native retry and ordering repairs
+
+Codex reserves a due preflight attempt in the Store before contacting the selected endpoint.
+Concurrent drains share the same reservation, finite attempt allowance and persisted backoff;
+restarting the driver cannot reset them. A crashed preflight keeps its thirty-second claim plus
+backoff. Inspect `attempts`, `claim_until_unix_ms`, `next_attempt_unix_ms` and the native preflight
+reason on the retained delivery. Exhaustion blocks further endpoint contact. A known connection
+failure has only inbox acceptance; a possibly submitted native request remains `admission_unknown`.
+
+Native order follows committed outbox insertion across subscriptions for the original session,
+including packets awaiting transport claims. Claiming a later packet first cannot admit it first.
+Pi initially polls while idle; if the same interactive attachment becomes busy before its packet
+returns, it queues that claimed packet through `followUp`. Disconnect or replacement still
+invalidates pending callbacks and preserves uncertainty without automatic resend. These repairs
+have deterministic stand-in coverage; they do not claim final live host certification.

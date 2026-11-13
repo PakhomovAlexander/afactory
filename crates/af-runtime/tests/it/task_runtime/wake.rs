@@ -2082,3 +2082,247 @@ fn wake_traversal_native_expiry_and_collection_do_not_reset_positions_or_admissi
     );
     assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_native_order_includes_unclaimed_outbox_across_subscriptions_and_restart() {
+    use af_contracts::task::wake::delivery::WakeDeliveryStateV1;
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+        .unwrap();
+    let (route, first) = receiver_registration(&f);
+    let mut later_route = route.clone();
+    later_route.installation_id = digest('f');
+    later_route.route_id = af_store::store::wake::delivery::route_identity(&later_route).unwrap();
+    f.store.install_wake_route(&later_route).unwrap();
+    let mut second = first.clone();
+    second.subscription.registration_key = digest('9');
+    second.subscription.recipient_ref = later_route.route_id.clone();
+    second.subscription.configuration_digest =
+        af_runtime::wake::configuration_digest(&second.subscription).unwrap();
+    let second = f.store.register_wake(&f.cas, &second).unwrap();
+    f.store
+        .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
+        .unwrap();
+    let clock = stamp(&f);
+    let mut packets = Vec::new();
+    for registration in [&first, &second] {
+        let id = &registration.subscription.subscription_id;
+        assert!(af_runtime::wake::journal::reconcile(&f.store, &f.cas, id, clock).unwrap());
+        packets.push(f.store.inspect_wake(id).unwrap().envelopes[0].clone());
+    }
+    // Both packets were committed before transport, in A/B order. B's receiver row
+    // is deliberately inserted first, across process restart.
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    let b = f.store.claim_wake(&packets[1], clock).unwrap().unwrap();
+    f.store.accept_wake(&b, clock).unwrap();
+    assert!(
+        f.store
+            .take_wake_native(&later_route, clock)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.store
+            .reserve_wake_native(&later_route, clock)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
+    let a = f.store.claim_wake(&packets[0], clock).unwrap().unwrap();
+    f.store.accept_wake(&a, clock).unwrap();
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    let admitted = f.store.take_wake_native(&route, clock).unwrap().unwrap();
+    assert_eq!(admitted.envelope, packets[0]);
+    assert_eq!(admitted.state, WakeDeliveryStateV1::AdmissionUnknown);
+    assert!(f.store.take_wake_native(&route, clock).unwrap().is_none());
+    assert!(
+        f.store
+            .take_wake_native(&later_route, clock)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.store
+            .reserve_wake_native(&later_route, clock)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.store.wake_deliveries().unwrap()[0].state,
+        WakeDeliveryStateV1::InboxAccepted,
+        "later receiver insertion cannot overtake or clear the earlier uncertainty fence"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_native_preflight_reservation_is_atomic_fenced_and_bounded_across_restart() {
+    use af_contracts::task::wake::delivery::{WakeDeliveryReasonV1, WakeDeliveryStateV1};
+    use af_store::store::wake::delivery::CLAIM_MS;
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+        .unwrap();
+    let (route, registration) = receiver_registration(&f);
+    f.store
+        .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
+        .unwrap();
+    let clock = stamp(&f);
+    let id = &registration.subscription.subscription_id;
+    assert!(af_runtime::wake::journal::reconcile(&f.store, &f.cas, id, clock).unwrap());
+    let envelope = f.store.inspect_wake(id).unwrap().envelopes[0].clone();
+    let claim = f.store.claim_wake(&envelope, clock).unwrap().unwrap();
+    f.store.accept_wake(&claim, clock).unwrap();
+    let path = f._directory.path().join("events.sqlite");
+    let barrier = std::sync::Barrier::new(2);
+    let claims = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    let store = EventStore::open(&path).unwrap();
+                    barrier.wait();
+                    store.reserve_wake_native(&route, clock).unwrap()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        claims.len(),
+        1,
+        "only one competing driver may contact the endpoint"
+    );
+    let old = &claims[0];
+    assert_eq!(
+        old.attempts, 2,
+        "transport and native preflight share the finite allowance"
+    );
+    f.store = EventStore::open(&path).unwrap();
+    assert!(
+        f.store
+            .reserve_wake_native(&route, clock + CLAIM_MS)
+            .unwrap()
+            .is_none(),
+        "process loss retains backoff beyond the preflight claim lease"
+    );
+    let mut clock = old.next_attempt_unix_ms;
+    let replacement = f.store.reserve_wake_native(&route, clock).unwrap().unwrap();
+    assert!(f.store.defer_wake_native(old, clock).is_err());
+    assert!(
+        f.store
+            .take_reserved_wake_native(&route, old, clock)
+            .is_err()
+    );
+    f.store.defer_wake_native(&replacement, clock).unwrap();
+    for attempts in 4..=8 {
+        let retained = f.store.wake_deliveries().unwrap().pop().unwrap();
+        clock = retained.next_attempt_unix_ms;
+        f.store = EventStore::open(&path).unwrap();
+        assert!(
+            f.store
+                .reserve_wake_native(&route, clock - 1)
+                .unwrap()
+                .is_none()
+        );
+        let reservation = f.store.reserve_wake_native(&route, clock).unwrap().unwrap();
+        assert_eq!(reservation.attempts, attempts);
+        assert!(
+            f.store
+                .reserve_wake_native(&route, clock)
+                .unwrap()
+                .is_none()
+        );
+        f.store.defer_wake_native(&reservation, clock).unwrap();
+    }
+    let exhausted = f.store.wake_deliveries().unwrap().pop().unwrap();
+    assert_eq!(exhausted.state, WakeDeliveryStateV1::Blocked);
+    assert_eq!(
+        exhausted.reason,
+        Some(WakeDeliveryReasonV1::NativePreflightExhausted)
+    );
+    f.store = EventStore::open(&path).unwrap();
+    assert!(
+        f.store
+            .reserve_wake_native(&route, exhausted.next_attempt_unix_ms)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.store.wake_uncertainty().unwrap(),
+        json!([]),
+        "known preflight failure creates no native intent or fabricated success"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_native_preflight_rechecks_expiry_closure_and_revocation_before_admission() {
+    use af_contracts::task::wake::delivery::WakeGrantV1;
+    for change in ["lease", "route", "closure", "revocation"] {
+        let mut f = Fixture::new(SUCCESS);
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+            .unwrap();
+        let (route, registration) = receiver_registration(&f);
+        f.store
+            .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
+            .unwrap();
+        let clock = stamp(&f);
+        let id = &registration.subscription.subscription_id;
+        assert!(af_runtime::wake::journal::reconcile(&f.store, &f.cas, id, clock).unwrap());
+        let packet = f.store.inspect_wake(id).unwrap().envelopes[0].clone();
+        let sender = f.store.claim_wake(&packet, clock).unwrap().unwrap();
+        f.store.accept_wake(&sender, clock).unwrap();
+        let reservation = f.store.reserve_wake_native(&route, clock).unwrap().unwrap();
+        assert!(
+            f.store
+                .check_reserved_wake_native(&route, &reservation, clock)
+                .unwrap()
+        );
+        let check_at = match change {
+            "lease" => reservation.claim_until_unix_ms,
+            "route" => route.expires_unix_ms,
+            "closure" => {
+                f.store
+                    .maintain_wakes(registration.subscription.expires_unix_ms)
+                    .unwrap();
+                clock // Persisted expiry remains effective after clock rollback.
+            }
+            "revocation" => {
+                f.store
+                    .revoke_wake_route(
+                        &WakeGrantV1 {
+                            schema: "af/task-wake-grant@1".into(),
+                            route_id: route.route_id.clone(),
+                            capability: digest('c'),
+                        },
+                        clock,
+                    )
+                    .unwrap();
+                clock
+            }
+            _ => unreachable!(),
+        };
+        f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+        assert!(
+            !f.store
+                .check_reserved_wake_native(&route, &reservation, check_at)
+                .unwrap_or(false)
+        );
+        assert!(
+            f.store
+                .take_reserved_wake_native(&route, &reservation, check_at)
+                .unwrap_or(None)
+                .is_none()
+        );
+        assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
+    }
+}

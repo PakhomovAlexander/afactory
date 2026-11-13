@@ -68,9 +68,11 @@ export function validatePacket(value: unknown, session: string): Packet {
 type Host = Pick<ExtensionAPI, 'sendMessage'>;
 export function deliver(pi: Host, ctx: Context, packet: Packet): void {
   validatePacket(packet, ctx.sessionManager.getSessionId());
-  if (ctx.mode !== 'interactive' || !ctx.isIdle()) fail();
+  if (ctx.mode !== 'interactive') fail();
   if (packet.message === null) return;
   // take_wake_native committed its sole native intent before this packet was emitted.
+  // The host may have become busy since polling began. Its supported followUp queue
+  // retains this already claimed packet without steering or starting a parallel turn.
   // Returning void supplies no turn-start/report proof. Any exception is equally uncertain.
   pi.sendMessage({ customType: 'af-task-wake', content: packet.message, display: true,
     details: { delivery_id: packet.delivery_id } }, { triggerTurn: true, deliverAs: 'followUp' });

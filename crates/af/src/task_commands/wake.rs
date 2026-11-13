@@ -363,32 +363,57 @@ fn codex(store: &EventStore, route: &WakeRouteV1, remaining: Duration) -> Result
     if remaining.is_zero() {
         return Err("Wake driver wall limit reached before native admission".into());
     }
-    installation(route)?;
-    check_session_store(route)?;
-    // Authenticate the selected local peer before committing native intent. The queue CLI
-    // reconnects to the same pinned socket; a hostile same-uid owner is outside this boundary.
-    #[cfg(target_os = "linux")]
-    {
-        let socket = rustix::net::socket_with(
-            rustix::net::AddressFamily::UNIX,
-            rustix::net::SocketType::STREAM,
-            rustix::net::SocketFlags::NONBLOCK | rustix::net::SocketFlags::CLOEXEC,
-            None,
-        )
-        .map_err(err)?;
-        let address = rustix::net::SocketAddrUnix::new(
-            route
-                .installation
-                .socket
-                .as_ref()
-                .ok_or("Missing native socket")?,
-        )
-        .map_err(err)?;
-        rustix::net::connect(&socket, &address).map_err(err)?;
-        let credentials = rustix::net::sockopt::socket_peercred(&socket).map_err(err)?;
-        check_native_wake_peer(credentials.uid.as_raw())?;
+    let Some(claim) = store.reserve_wake_native(route, now()).map_err(err)? else {
+        return Ok(());
+    };
+    let preflight = || -> Result<bool, String> {
+        #[cfg(debug_assertions)]
+        runs::observation_barrier("wake-native-preflight")?;
+        if !store
+            .check_reserved_wake_native(route, &claim, now())
+            .map_err(err)?
+        {
+            return Ok(false);
+        }
+        installation(route)?;
+        check_session_store(route)?;
+        // Authenticate the selected local peer before committing native intent. The queue
+        // CLI reconnects to the same pinned socket; hostile same-uid owners are out of scope.
+        #[cfg(target_os = "linux")]
+        {
+            let socket = rustix::net::socket_with(
+                rustix::net::AddressFamily::UNIX,
+                rustix::net::SocketType::STREAM,
+                rustix::net::SocketFlags::NONBLOCK | rustix::net::SocketFlags::CLOEXEC,
+                None,
+            )
+            .map_err(err)?;
+            let address = rustix::net::SocketAddrUnix::new(
+                route
+                    .installation
+                    .socket
+                    .as_ref()
+                    .ok_or("Missing native socket")?,
+            )
+            .map_err(err)?;
+            rustix::net::connect(&socket, &address).map_err(err)?;
+            let credentials = rustix::net::sockopt::socket_peercred(&socket).map_err(err)?;
+            check_native_wake_peer(credentials.uid.as_raw())?;
+        }
+        Ok(true)
+    };
+    match preflight() {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(reason) => {
+            store.defer_wake_native(&claim, now()).map_err(err)?;
+            return Err(reason);
+        }
     }
-    let Some(record) = store.take_wake_native(route, now()).map_err(err)? else {
+    let Some(record) = store
+        .take_reserved_wake_native(route, &claim, now())
+        .map_err(err)?
+    else {
         return Ok(());
     };
     let mut command = codex_queue_command(route, &record.envelope)?;
@@ -727,7 +752,6 @@ pub(crate) fn execute(
                     continue;
                 }
                 if let Err(reason) = codex(&store, &route, wall.saturating_sub(start.elapsed())) {
-                    store.defer_wake_native(&route, now()).map_err(err)?;
                     eprintln!("wake: blocked: {reason}");
                 }
             }

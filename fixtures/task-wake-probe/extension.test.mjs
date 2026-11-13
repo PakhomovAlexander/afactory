@@ -37,7 +37,7 @@ test('production bridge uses original interactive session and followUp only', ()
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0][1], { triggerTurn: true, deliverAs: 'followUp' });
   assert.equal(calls[0][0].details.delivery_id, id);
-  for (const ctx of [context('wrong'), context('original', false), context('original', true, 'rpc')]) {
+  for (const ctx of [context('wrong'), context('original', true, 'rpc')]) {
     assert.throws(() => deliver({ sendMessage() { assert.fail('native authority widened'); } }, ctx, packet));
   }
 });
@@ -139,8 +139,19 @@ function delayedHook(t) {
     sendMessage: (...args) => sends.push(args) });
   const ctx = { ...context(), ui: { notify: (...args) => notices.push(args) } };
   return { ...f, commands, events, pending, timers, sends, notices,
-    connect: () => commands.get('af-wake-connect').handler(f.file, ctx) };
+    ctx, connect: () => commands.get('af-wake-connect').handler(f.file, ctx) };
 }
+test('delayed packet queues followUp when original attachment becomes busy', async t => {
+  const hook = delayedHook(t);
+  await hook.connect();
+  assert.equal(hook.pending.length, 1, 'poll starts while idle');
+  hook.ctx.isIdle = () => false;
+  hook.pending[0](null, JSON.stringify(packet));
+  assert.equal(hook.sends.length, 1, 'claimed packet is queued despite intervening host activity');
+  assert.deepEqual(hook.sends[0][1], { triggerTurn: true, deliverAs: 'followUp' });
+  assert.equal(hook.sends[0][0].details.delivery_id, packet.delivery_id);
+  assert.equal(hook.timers.size, 0, 'native attempt remains uncertain and is never repeated');
+});
 for (const stop of ['disconnect', 'shutdown']) {
   for (const response of ['success', 'error']) {
     test(`delayed ${response} callback has no authority after ${stop}`, async t => {

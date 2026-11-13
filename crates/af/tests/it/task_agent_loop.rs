@@ -2960,6 +2960,11 @@ struct WakeFairFixture {
 #[cfg(target_os = "linux")]
 impl WakeFairFixture {
     fn new(host: &str) -> Self {
+        Self::with_endpoint(host, |path| {
+            std::os::unix::net::UnixListener::bind(path).unwrap()
+        })
+    }
+    fn with_endpoint(host: &str, bind: impl Fn(&Path) -> std::os::unix::net::UnixListener) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = task_gc::fixture(root.path());
@@ -3021,8 +3026,7 @@ impl WakeFairFixture {
             let endpoint;
             if host == "codex" {
                 endpoint = owner.join(format!("{task}.sock"));
-                f._listeners
-                    .push(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
+                f._listeners.push(bind(&endpoint));
                 std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o777))
                     .unwrap();
                 args.extend(["--socket", endpoint.to_str().unwrap()]);
@@ -3284,6 +3288,193 @@ fn wake_cli_one_batch_native_removal_and_replacement_remain_bounded() {
             calls.lines().filter(|s| *s == "queue").count(),
             1,
             "later route progresses: {removal}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wake_non_listening_endpoint(path: &Path) -> std::os::unix::net::UnixListener {
+    let socket = rustix::net::socket(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::STREAM,
+        None,
+    )
+    .unwrap();
+    rustix::net::bind(&socket, &rustix::net::SocketAddrUnix::new(path).unwrap()).unwrap();
+    // Retain the same fd, path and inode when enabling the recording listener later.
+    socket.into()
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_native_preflight_backoff_and_exhaustion_prevent_endpoint_contact() {
+    use af_contracts::task::wake::delivery::{
+        WakeDeliveryReasonV1, WakeDeliveryStateV1, WakeDeliveryV1,
+    };
+    for exhaust in [false, true] {
+        let f = WakeFairFixture::with_endpoint("codex", wake_non_listening_endpoint);
+        f.finish("gc-older");
+        f.fill_inbox();
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let mut expected_attempts = 2;
+        loop {
+            document(&f.wake(&["drain"]), 0, None);
+            let mut record = store.wake_deliveries().unwrap().pop().unwrap();
+            assert_eq!(record.attempts, expected_attempts);
+            assert_eq!(
+                record.receipts.len(),
+                1,
+                "failed connect is pre-admission only"
+            );
+            assert!(record.next_attempt_unix_ms > record.receipts[0].observed_unix_ms);
+            if !exhaust || expected_attempts == 8 {
+                assert_eq!(
+                    record.state,
+                    if exhaust {
+                        WakeDeliveryStateV1::Blocked
+                    } else {
+                        WakeDeliveryStateV1::InboxAccepted
+                    }
+                );
+                assert_eq!(
+                    record.reason,
+                    Some(if exhaust {
+                        WakeDeliveryReasonV1::NativePreflightExhausted
+                    } else {
+                        WakeDeliveryReasonV1::NativePreflightUnavailable
+                    })
+                );
+                if !exhaust {
+                    // Pin a not-due deadline to this subscription's existing finite expiry
+                    // so CLI startup speed cannot decide the endpoint assertion. The Store
+                    // regressions exercise exact generated deadlines with an explicit clock.
+                    record.next_attempt_unix_ms = record.envelope.expires_unix_ms;
+                    let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+                    db.execute(
+                        "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                        rusqlite::params![
+                            serde_json::to_string(&record).unwrap(),
+                            record.envelope.delivery_id
+                        ],
+                    )
+                    .unwrap();
+                }
+                break;
+            }
+            // Deterministic clock seam: advance just the persisted due deadline, preserving
+            // attempts, packet, receipts and fences. No sleep or retry resets the allowance.
+            let mut due: WakeDeliveryV1 = record;
+            due.next_attempt_unix_ms = 0;
+            let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+            db.execute(
+                "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(&due).unwrap(),
+                    due.envelope.delivery_id
+                ],
+            )
+            .unwrap();
+            expected_attempts += 1;
+        }
+        // Make the endpoint available without replacing its pinned inode. Any forbidden
+        // preflight connection will now be observable in this kernel listener's backlog.
+        let listener = &f._listeners[0];
+        rustix::net::listen(listener, 16).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let before = serde_json::to_value(store.wake_deliveries().unwrap()).unwrap();
+        for _ in 0..3 {
+            document(&f.wake(&["drain"]), 0, None);
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "backoff/exhaustion must be checked before endpoint contact, even after restart"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.wake_uncertainty().unwrap(), serde_json::json!([]));
+        assert!(!f.calls.exists(), "no native submission occurred");
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_competing_native_preflight_reserves_before_endpoint_and_fences_restart() {
+    for disposition in ["native", "revoked", "closed"] {
+        let f = WakeFairFixture::new("codex");
+        f.finish("gc-older");
+        f.fill_inbox();
+        let barriers = f._root.path().join("preflight-barriers");
+        let point = barriers.join("wake-native-preflight-1");
+        std::fs::create_dir_all(&point).unwrap();
+        let driver = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "wake", "--state"])
+            .arg(&f.state)
+            .args(["drain"])
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut driver = task_interrupt::ChildGuard(Some(driver));
+        await_observation_read(&mut driver, &point.join("ready"));
+        let listener = &f._listeners[0];
+        listener.set_nonblocking(true).unwrap();
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let reserved = store.wake_deliveries().unwrap().pop().unwrap();
+        assert_eq!(reserved.attempts, 2);
+        assert!(reserved.claim_until_unix_ms > 0);
+        document(&f.wake(&["drain"]), 0, None);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "competing driver has no preflight authority while reservation is live"
+        );
+        if disposition == "revoked" {
+            expect(
+                &f.wake(&["revoke", "--route", f.grants[0].to_str().unwrap()]),
+                0,
+            );
+        } else if disposition == "closed" {
+            store
+                .maintain_wakes(reserved.envelope.expires_unix_ms)
+                .unwrap();
+        }
+        std::fs::write(point.join("proceed"), []).unwrap();
+        expect(&driver.0.take().unwrap().wait_with_output().unwrap(), 0);
+        if disposition != "native" {
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "revocation/closure during preparation must prevent endpoint contact"
+            );
+            assert!(!f.calls.exists());
+            assert_eq!(store.wake_uncertainty().unwrap(), serde_json::json!([]));
+            continue;
+        }
+        let _authenticated_connection = listener.accept().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f.calls)
+                .unwrap()
+                .lines()
+                .filter(|s| *s == "queue")
+                .count(),
+            1
+        );
+        for _ in 0..2 {
+            document(&f.wake(&["drain"]), 0, None);
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "uncertain original-session admission fences endpoint contact as well as native submission"
+            );
+        }
+        assert_eq!(
+            store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+            1
         );
     }
 }
