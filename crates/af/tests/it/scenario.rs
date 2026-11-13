@@ -3094,57 +3094,6 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
                 "{field}"
             );
         }
-        if developer == "alice" {
-            // Capture a real, valid authority with identical local bindings but a different
-            // committed policy. The forged template below will be explicitly machine-admitted.
-            std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
-            let policy_path = f.repo.join(".af/code-policy.toml");
-            let original = std::fs::read_to_string(&policy_path).unwrap();
-            let changed = original.replace("check_wall_ms = 5000", "check_wall_ms = 4000");
-            assert_ne!(changed, original);
-            std::fs::write(&policy_path, changed).unwrap();
-            for command in [
-                vec!["add", ".af/code-policy.toml"],
-                vec!["commit", "-qm", "other template authority"],
-            ] {
-                assert!(
-                    std::process::Command::new("git")
-                        .current_dir(&f.repo)
-                        .args(command)
-                        .status()
-                        .unwrap()
-                        .success()
-                );
-            }
-            let other_commit = std::process::Command::new("git")
-                .current_dir(&f.repo)
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .unwrap();
-            assert!(other_commit.status.success());
-            let other_commit = String::from_utf8(other_commit.stdout).unwrap();
-            let mut other_args = args;
-            other_args[9] = other_commit.trim();
-            let other = cli(&f.repo, &f.state, &other_args);
-            assert_eq!(
-                other["template"]["bindings"],
-                pinned["template"]["bindings"]
-            );
-            assert_ne!(
-                other["template"]["authority_id"],
-                pinned["template"]["authority_id"]
-            );
-            unrelated_authority = Some(other["template"]["authority_id"].clone());
-            // Restore the fixture's source for the successful immutable-reuse cases.
-            assert!(
-                std::process::Command::new("git")
-                    .current_dir(&f.repo)
-                    .args(["reset", "--hard", commit.trim()])
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
         let mut shadow = definition.clone();
         shadow["packages"] = json!({"fixture/implementer":definition["packages"][&worker.name]});
         std::fs::write(&bindings, toml::to_string(&shadow).unwrap()).unwrap();
@@ -3230,6 +3179,21 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
             let barriers = f.machine.join("pin-barriers");
             let barrier = barriers.join("template-captured-1");
             std::fs::create_dir_all(&barrier).unwrap();
+            let planned = cli(
+                &f.repo,
+                &task_state,
+                &["task", "plan", "--file", "ticket.json"],
+            );
+            let mut active = store.reopen(std::time::Duration::from_secs(1)).unwrap();
+            let lease = active
+                .take_task_lease(
+                    &cas,
+                    planned["task_id"].as_str().unwrap(),
+                    "active-writer",
+                    6_000,
+                )
+                .unwrap();
+            let initial_expiry = active.task_lease_state(&lease).unwrap();
             let child = crate::common::af()
                 .current_dir(&f.repo)
                 .args(args)
@@ -3254,13 +3218,135 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
             assert!(
                 refused
                     .to_string()
-                    .contains("Another writer holds the Store"),
+                    .contains("CAS capture/collection reservation"),
                 "{refused}"
             );
+            // Exercise the real heartbeat while capture is deliberately paused. Holding
+            // its shared handle forces renewal through its own bounded-timeout connection.
+            let shared = std::sync::Mutex::new(&mut active);
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let lost = std::sync::atomic::AtomicBool::new(false);
+            af_runtime::task::lease::with_heartbeat_supervised(
+                &shared,
+                &cas,
+                &lease,
+                af_runtime::task::lease::HeartbeatControl {
+                    cancellation: Some(&cancelled),
+                    writer_lost: Some(&lost),
+                    timing: af_runtime::task::lease::LeaseTiming::for_lease(6_000),
+                },
+                || {
+                    let _busy = shared.lock().unwrap();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                    while store.task_lease_state(&lease).unwrap() < initial_expiry + 3_000 {
+                        assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "heartbeat did not renew"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    assert!(!barrier.join("proceed").exists());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
+            assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+            active.release_task_lease(&cas, &lease).unwrap();
+            // No live Task lease or other template now roots this old object. Capture's
+            // reservation alone must still exclude collection until publication completes.
+            let refused = collector
+                .apply_task_collection(&cas, 0, 0, false)
+                .unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("CAS capture/collection reservation"),
+                "{refused}"
+            );
+            assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
             std::fs::write(barrier.join("proceed"), []).unwrap();
             assert_eq!(value(child.wait_with_output().unwrap(), 0), pinned);
             collector.apply_task_collection(&cas, 0, 0, false).unwrap();
             cas.get_json(&captured).unwrap();
+            // A killed capture has no durable authority and leaves no reservation to expire.
+            // Recovery is ordinary collection, followed by an explicit new pin from local bytes.
+            db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+                .unwrap();
+            let barriers = f.machine.join("killed-pin-barriers");
+            let barrier = barriers.join("template-captured-1");
+            std::fs::create_dir_all(&barrier).unwrap();
+            let mut killed = crate::common::af()
+                .current_dir(&f.repo)
+                .args(args)
+                .args(["--json", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let started = std::time::Instant::now();
+            while !barrier.join("ready").exists() {
+                assert!(started.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            killed.kill().unwrap();
+            assert!(!killed.wait().unwrap().success());
+            assert!(store.is_empty(&run).unwrap());
+            collector.apply_task_collection(&cas, 0, 0, false).unwrap();
+            assert!(cas.get_json(&captured).is_err());
+            assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+            // Capture a real, valid authority with identical local bindings but a different
+            // committed policy. The forged template below will be explicitly machine-admitted.
+            std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+            let policy_path = f.repo.join(".af/code-policy.toml");
+            let original = std::fs::read_to_string(&policy_path).unwrap();
+            let changed = original.replace("check_wall_ms = 5000", "check_wall_ms = 4000");
+            assert_ne!(changed, original);
+            std::fs::write(&policy_path, changed).unwrap();
+            for command in [
+                vec!["add", ".af/code-policy.toml"],
+                vec!["commit", "-qm", "other template authority"],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .current_dir(&f.repo)
+                        .args(command)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let other_commit = std::process::Command::new("git")
+                .current_dir(&f.repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            assert!(other_commit.status.success());
+            let other_commit = String::from_utf8(other_commit.stdout).unwrap();
+            let mut other_args = args;
+            other_args[9] = other_commit.trim();
+            let other = cli(&f.repo, &f.state, &other_args);
+            assert_eq!(
+                other["template"]["bindings"],
+                pinned["template"]["bindings"]
+            );
+            assert_ne!(
+                other["template"]["authority_id"],
+                pinned["template"]["authority_id"]
+            );
+            unrelated_authority = Some(other["template"]["authority_id"].clone());
+            // Restore the fixture's source for the successful immutable-reuse cases.
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(&f.repo)
+                    .args(["reset", "--hard", commit.trim()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
             std::fs::rename(&package, &moved).unwrap();
         }
 
@@ -3626,6 +3712,68 @@ fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
         )
         .unwrap();
     let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pinned["template_id"]]);
+    write(&f.policy, &policy);
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    bundle["definitions"]["main"]["authority"]["task_templates"] = policy["task_templates"].clone();
+    bundle["definitions"]["main"]["steps"] = json!([step(
+        "fresh",
+        json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),
+        json!({}),
+        "task"
+    )]);
+    write(&f.bundle, &bundle);
+    assert_eq!(f.start("canonical-pin")["status"], "succeeded");
+    let snapshot = || {
+        db.query_row(
+            "SELECT json_array(run_id,sequence,event_id,type,occurred_at,node_id,attempt_id,causation_id,correlation_id,artifact_refs,payload) FROM events WHERE run_id=?1",
+            [&run],
+            |r| r.get::<_, String>(0),
+        ).unwrap()
+    };
+    for field in [
+        "node_id",
+        "attempt_id",
+        "causation_id",
+        "correlation_id",
+        "occurred_at",
+    ] {
+        let original_row = snapshot();
+        let original_value: Option<String> = db
+            .query_row(
+                &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                [&run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.execute(
+            &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+            rusqlite::params!["2026-11-13T00:00:00Z", run],
+        )
+        .unwrap();
+        let before = snapshot();
+        assert!(
+            !output(&f.repo, &f.state, &args).status.success(),
+            "{field}"
+        );
+        assert_eq!(snapshot(), before, "repin mutated {field}");
+        let failed = f.start(&format!("corrupt-{field}"));
+        assert_eq!(failed["status"], "failed", "{field}: {failed}");
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+        assert!(
+            failed.to_string().contains("durable native pin"),
+            "{failed}"
+        );
+        assert_eq!(snapshot(), before, "planning mutated {field}");
+        db.execute(
+            &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+            rusqlite::params![original_value, run],
+        )
+        .unwrap();
+        assert_eq!(snapshot(), original_row);
+        assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+    }
     let conflicting = cas.put_json(&json!({"not":"the pinned template"})).unwrap();
     let missing = format!("sha256:{}", "f".repeat(64));
     for artifact in [&conflicting, &missing] {

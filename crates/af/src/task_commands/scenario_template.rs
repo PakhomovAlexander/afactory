@@ -116,6 +116,11 @@ fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<()
         .as_str()
         .ok_or("Template pin has no artifact")?;
     if event.event_type != af_contracts::EventType::ScenarioTemplatePinnedV1
+        || event.occurred_at != "1970-01-01T00:00:00Z"
+        || event.node_id.is_some()
+        || event.attempt_id.is_some()
+        || event.causation_id.is_some()
+        || event.correlation_id.is_some()
         || event.payload != json!({"artifact_id":artifact})
         || event.artifact_refs != [artifact]
         || cas.get_json(artifact).map_err(|e| e.to_string())? != expected
@@ -167,7 +172,8 @@ pub(crate) fn pin(
             selected_profile(&compiler, &settings, &file.kind, file.verification)?;
             #[cfg(debug_assertions)]
             runs::observation_barrier("template-captured")?;
-            // Restore from CAS under the collector lock, including reused package objects.
+            // The process-owned CAS reservation excludes collection, including reused old
+            // package objects, without holding SQLite across Git, filesystem or compilation.
             restore_compiler(&cas, &authority, &settings)?;
             template.bindings = settings
                 .local_bindings_id

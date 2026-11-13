@@ -580,8 +580,8 @@ impl EventStore {
             .next())
     }
 
-    /// Capture a Scenario template and publish its sole durable root while holding the same
-    /// writer lock as collection. `capture` must validate the complete captured closure;
+    /// Capture a Scenario template under a process-owned CAS reservation, leaving SQLite
+    /// available for Task heartbeats. `capture` must validate the complete captured closure;
     /// `validate` checks the exact durable pin, including an already existing stream. Any
     /// failure rolls back publication. CAS objects left by a failed capture remain scratch.
     pub fn capture_scenario_template<T>(
@@ -590,17 +590,20 @@ impl EventStore {
         capture: impl FnOnce() -> Result<(String, NewEvent, T), String>,
         validate: impl FnOnce(&Self, &T) -> Result<(), String>,
     ) -> Result<T, String> {
+        let _capture = cas.hold_capture(false).map_err(|e| e.to_string())?;
+        let (run, event, value) = capture()?;
+        if event.event_type != EventType::ScenarioTemplatePinnedV1 {
+            return Err("Template capture requires a Scenario template pin event".into());
+        }
+        // Captured source bytes can leave thousands of pending syncs. The reservation
+        // protects them through this durability barrier without blocking SQLite renewal.
+        self.prepare_event_artifacts(cas, std::slice::from_ref(&event))
+            .map_err(|e| e.to_string())?;
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )
         .map_err(|e| e.to_string())?;
-        let (run, event, value) = capture()?;
-        if event.event_type != EventType::ScenarioTemplatePinnedV1 {
-            return Err("Template capture requires a Scenario template pin event".into());
-        }
-        self.prepare_event_artifacts(cas, std::slice::from_ref(&event))
-            .map_err(|e| e.to_string())?;
         let appended = if self.is_empty(&run).map_err(|e| e.to_string())? {
             insert_events(&tx, cas, &run, &[event], 0).map_err(|e| e.to_string())?
         } else {
@@ -1653,6 +1656,29 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, "incomplete captured closure");
         assert!(store.is_empty("pin").unwrap());
+        // Failure releases the process reservation along with rolling back the root. Native
+        // collection can recover the unpublished objects immediately, with no stale lease.
+        let mut collector = store.reopen(std::time::Duration::ZERO).unwrap();
+        collector.apply_task_collection(&cas, 0, 0, false).unwrap();
+        assert!(cas.get_json(&artifact).is_err());
+    }
+
+    #[test]
+    fn template_capture_refuses_a_collector_before_reading_or_reusing_objects() {
+        let (_dir, store, cas) = fixture();
+        let collection = cas.hold_capture(true).unwrap();
+        let error = store
+            .capture_scenario_template(
+                &cas,
+                || -> Result<(String, NewEvent, ()), String> {
+                    panic!("capture must not start while collection owns the CAS")
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+        assert!(error.contains("CAS capture/collection reservation"));
+        drop(collection);
+        assert!(cas.hold_capture(false).is_ok());
     }
 
     #[test]

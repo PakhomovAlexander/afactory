@@ -34,10 +34,26 @@ and predecessor equality checks remain mandatory. Canonical Provider admission r
 work, and local aliases never establish independence.
 
 A `ScenarioTemplatePinned@1` event references the template in a non-Task stream in its Task Store.
-Capture through durable publication holds the native Store's exclusive SQLite writer lock,
-shared with Task collection. Before committing, pinning restores and validates the captured
-closure and checks the exact one-event durable pin under that lock. Existing rows of any sequence
-prevent insertion; negative, gapped or otherwise corrupt pin histories fail closed without mutation.
+Capture through durable publication holds a native process-owned shared `flock` reservation
+on the existing CAS directory inode. Collection takes the exclusive reservation nonblocking before
+its SQLite transaction and keeps it through tombstones and sweep. Capture takes its reservation
+before reading or reusing any objects. Thus collection either finishes first or refuses before
+capture, including for reused objects older than collection's timestamp cutoff. Neither path waits
+for this reservation while holding SQLite. Shared captures can proceed concurrently, and unrelated
+Task heartbeats retain their ordinary SQLite renewal authority and bounded busy handling.
+
+No fake Task, persistent lease row or timestamp refresh establishes capture liveness. Descriptor
+close, unwind and process death release the reservation; the next native collection reclaims
+unpublished scratch without recovery authority or a stale reservation to expire. No persisted shape
+changes for this exclusion protocol. Extending busy timeouts or protecting only newly written
+objects would leave the heartbeat defect or the reused-object race intact.
+
+Before publishing, pinning restores and validates the complete captured closure under that
+reservation. Only final pin insertion and exact durable-record validation hold SQLite's writer
+lock; Git, filesystem capture and compilation do not. Existing rows of any sequence prevent
+insertion; negative, gapped or otherwise corrupt pin histories fail closed without mutation.
+The sole event must retain the native writer's fixed epoch timestamp and absent node, attempt,
+causation and correlation metadata, as well as its exact type, payload and artifact references.
 Existing conservative CAS reachability retains the complete closure before the first Task and
 through Task collection. Pins live for the Store lifetime, count against the machine storage
 budget, and are discarded with that Store. Native Tasks also retain their own authority references.

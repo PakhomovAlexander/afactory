@@ -703,6 +703,12 @@ impl EventStore {
         only: Option<&BTreeSet<String>>,
         stop_after_tombstones: bool,
     ) -> Result<CollectionOutcome, StoreError> {
+        // Lock ordering is CAS reservation, then SQLite. Refuse immediately while capture
+        // owns any new or reused objects, without blocking an unrelated writer's heartbeat.
+        // Keep exclusion through both tombstones and sweep, including crash recovery calls.
+        let _collection = cas
+            .hold_capture(true)
+            .map_err(|error| StoreError::Artifact(error.to_string()))?;
         let leased = std::time::SystemTime::now();
         let lock = self.store_lease()?;
         let now_unix_ms = now()?;
