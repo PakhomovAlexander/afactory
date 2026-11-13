@@ -66,7 +66,7 @@ perf-control = ["af-runtime/perf-control"]
 perf-calibration = ["af-contracts/perf-calibration", "af-runtime/perf-calibration"]
 
 [dev-dependencies]
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 # A real CommonMark and GFM parser: the human report export is judged by what it renders.
 comrak = { version = "0.55.0", default-features = false }
 # Signs test releases the way the release job signs real ones, so signature verification is

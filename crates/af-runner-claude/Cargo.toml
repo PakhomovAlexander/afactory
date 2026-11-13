@@ -28,7 +28,7 @@ nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 # The Telemetry level fixtures record an Attempt through the write side only (ADR-0153).
 af-telemetry = { path = "../af-telemetry" }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 tempfile = "3.27.0"
 
 [lints]

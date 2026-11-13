@@ -24,7 +24,7 @@ minisign-verify = "0.3.0"
 nix = { version = "0.31.3", default-features = false, features = ["fs", "user"] }
 
 [dev-dependencies]
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 minisign = "0.10.0"
 
 [lints]
