@@ -58,13 +58,13 @@ class SourceCapture(unittest.TestCase):
             baseline_sha="2" * 40, candidate_sha="3" * 40,
             repository=os.path.join(self.path, "source/repository.git"))
         schema = json.loads((ROOT / "schemas/scenario-experiment-source-v1.json").read_text())
-        scenario = json.loads((ROOT / "schemas/scenario-v5.json").read_text())
+        scenario = json.loads((ROOT / "schemas/scenario-v6.json").read_text())
         # The existing subset validator accepts local refs: inline the shipped digest
         # definition without changing any receipt assertions or requiring a new dependency.
         schema["$defs"] = dict(digest=scenario["$defs"]["digest"])
         for node in schema["properties"].values():
             if "$ref" in node:
-                self.assertEqual(node["$ref"], "urn:af:schema:scenario:5#/$defs/digest")
+                self.assertEqual(node["$ref"], "urn:af:schema:scenario:6#/$defs/digest")
                 node["$ref"] = "#/$defs/digest"
         return json_subset.Schema(schema, "scenario-experiment-source-v1.json").validate(receipt)
 

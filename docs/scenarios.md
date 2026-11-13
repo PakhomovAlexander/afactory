@@ -11,7 +11,7 @@ defines the authority boundary.
 ## Review, record, drive
 
 Definitions use TOML for authoring and JSON for their versioned wire documents, with schema
-`af/scenario@5`. A bundle (`af/scenario-bundle@5`) names its
+`af/scenario@6`. A bundle (`af/scenario-bundle@6`) names its
 `root` and maps names to definitions. See the inert examples in `fixtures/scenarios/` and the
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
@@ -200,7 +200,7 @@ script does not change native Wait behavior or complete a native Scenario Run.
 
 ## Ant scheduling
 
-An `af/ant@6` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
+An `af/ant@7` definition has `id`, `scenario` (bundle), typed `inputs`, `owner`, `notification`,
 `schedule` (`kind: daily`, `timezone`, `hour`, `minute`, `start_unix_ms`), and `execution`. The
 notification is
 an accountable routing label retained in inspection; sending a notification is an explicit
@@ -525,7 +525,7 @@ Creation refuses an existing label. Replay checks the revision chain and account
 missing ownership and corrupt journals fail closed.
 
 Roadmaps share `runs/scenarios.sqlite`, its immediate transactions, private ownership and checksum
-with Runs and Ants. The journal is now `af/scenario-store@9`; the previous Store shape is refused
+with Runs and Ants. The journal is now `af/scenario-store@10`; the previous Store shape is refused
 without migration. The unchanged 16 MiB document bound includes all roadmap history; the Ant
 retention policy above does not erase goal provenance or roadmap revisions. The ordinary
 machine Storage Budget counts these bytes as retained Store remainder; pruning never silently
@@ -640,3 +640,9 @@ extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous 
 `af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
 retrieves one native findings, History Capture or adoption artifact after checking its recorded
 Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.
+
+Fresh Task planning requires the exact durable native template-pin record in the selected Task
+Store before creating a Task. An authorized template digest alone cannot substitute authority from
+another committed source. Scenario/Bundle/Pin/Run/List version 6, Ant/Ant-pin version 7, Ant-state
+and Ant-list version 8, Ant-inspection version 3, Ant-tick version 7 and Store version 10 carry
+the embedded template contract; earlier shapes are refused. Machine policy remains version 5.

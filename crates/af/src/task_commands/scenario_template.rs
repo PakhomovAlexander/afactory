@@ -65,7 +65,7 @@ pub(crate) fn validate_document(
     }
     Ok(())
 }
-fn capture(template: &Template) -> Result<(String, String, String, TaskKindProfile), String> {
+fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), String> {
     if crate::resolve_filesystem_path(&template.repo)? != template.repo
         || crate::resolve_filesystem_path(&template.state)? != template.state
     {
@@ -74,6 +74,28 @@ fn capture(template: &Template) -> Result<(String, String, String, TaskKindProfi
     let (_, state) = state_path(&template.repo, Some(&template.state))?;
     crate::storage::owned::prepare(&state, true)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    // Only explicit native pinning establishes the source/authority association. A machine
+    // policy grant for a recomputed template digest cannot manufacture that association.
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let run = format!(
+        "scenario-template-{}",
+        template.id()?.trim_start_matches("sha256:")
+    );
+    let events = store.replay(&run).map_err(|e| e.to_string())?;
+    let [event] = events.as_slice() else {
+        return Err("Template has no exact durable native pin".into());
+    };
+    let expected = serde_json::to_value(template).map_err(|e| e.to_string())?;
+    let artifact = event.payload["artifact_id"]
+        .as_str()
+        .ok_or("Template pin has no artifact")?;
+    if event.event_type != af_contracts::EventType::ScenarioTemplatePinnedV1
+        || event.artifact_refs != [artifact]
+        || cas.get_json(artifact).map_err(|e| e.to_string())? != expected
+    {
+        return Err("Template differs from its durable native pin".into());
+    }
     let home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let repo = Repo::open(&template.repo, home.path());
     let source = Capture::new(&repo, &cas)
@@ -95,12 +117,7 @@ fn capture(template: &Template) -> Result<(String, String, String, TaskKindProfi
         return Err("Template bindings differ from captured authority".into());
     }
     let profile = selected_profile(&compiler, &settings, &file.kind, file.verification)?;
-    Ok((
-        authority,
-        source.repository_id,
-        source.content_digest,
-        profile,
-    ))
+    Ok((source.repository_id, source.content_digest, profile))
 }
 pub(crate) fn pin(
     repo: PathBuf,
@@ -325,10 +342,9 @@ pub(crate) fn plan(
     performance: bool,
     predecessors: &BTreeMap<String, (TaskReceipt, String)>,
 ) -> Result<TaskTarget, String> {
-    let (authority, repository, content, profile) = capture(template)?;
-    if (authority, repository, content)
+    let (repository, content, profile) = capture(template)?;
+    if (repository, content)
         != (
-            template.authority_id.clone(),
             template.repository_id.clone(),
             template.source_content_digest.clone(),
         )

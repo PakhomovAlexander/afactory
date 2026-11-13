@@ -102,7 +102,7 @@ def main():
         root["result"]["publication"] = step_ref("publish-performance")
         policy["adapters"]["performance-publication"] = adapter
         policy["performance_publications"]["performance-publication"] = scope
-    ant = dict(schema="af/ant@6", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
+    ant = dict(schema="af/ant@7", id="performance-native", scenario=copy.deepcopy(bundle), inputs={},
         schedule=dict(kind="daily", timezone="UTC", hour=3, minute=0, start_unix_ms=1793664000000),
         owner="performance-owner", notification="local:performance-owner",
         execution=dict(overlap="skip", missed="skip", lateness_ms=60000, per_run=root["limits"],

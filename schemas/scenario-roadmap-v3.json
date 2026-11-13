@@ -17,7 +17,7 @@
       "const": "af/scenario-roadmap@3"
     },
     "id": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/name"
+      "$ref": "urn:af:schema:scenario:6#/$defs/name"
     },
     "identity": {
       "type": "string",
@@ -33,7 +33,7 @@
     "progress": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
       },
       "additionalProperties": {
         "$ref": "urn:af:schema:scenario-roadmap:3#/$defs/Progress"
@@ -104,7 +104,7 @@
         "task_receipts": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+            "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
           }
         },
         "artifacts": {
@@ -129,13 +129,13 @@
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:5#/$defs/TaskCharge"
+            "$ref": "urn:af:schema:scenario:6#/$defs/TaskCharge"
           }
         },
         "claim": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:5#/$defs/Claim"
+              "$ref": "urn:af:schema:scenario:6#/$defs/Claim"
             },
             {
               "type": "null"

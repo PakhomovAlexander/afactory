@@ -23,7 +23,10 @@ its diagnostic bindings document. Explicit pinning passes the original bindings 
 bounded capture once. The native package artifacts retain exact pins, bytes, Provider aliases,
 slot mappings, constraining defaults and policies. Only permitted local Worker packages are admitted.
 
-Fresh planning restores this authority through the ordinary compiler. It compares diagnostic
+Fresh planning first requires the exact durable native template-pin event and verifies its
+CAS template bytes, binding source, repository, commit, authority and diagnostic bindings as one
+identity. Machine policy admission alone cannot create that association. Reconciliation passes
+through the same check. Planning then restores authority through the ordinary compiler. It compares diagnostic
 bindings with their captured document and verifies committed repository/source identity. Planning
 and restart never reopen original local paths. Missing or corrupt artifacts fail closed. Existing
 Task reconciliation requires both exact file bytes and the same captured authority; recorded plan
@@ -35,6 +38,14 @@ Existing conservative CAS reachability retains the complete closure before the f
 through Task collection. Pins live for the Store lifetime, count against the machine storage
 budget, and are discarded with that Store. Native Tasks also retain their own authority references.
 There is no mutable recapture fallback. Version 1 templates and pin envelopes are refused.
+
+The changed embedded template contract versions Scenario, Bundle, Pin, Run and Run-list to 6;
+Ant and Ant-pin to 7; Ant-state and Ant-list to 8; Ant-inspection to 3; Ant-tick to 7; and
+Scenario-store (including its ownership marker) to 10. Writers, validators, schemas, shipped
+schema tables and fixtures move together; previous versions fail closed. Machine policy remains
+version 5, and adapter, roadmap and decision contracts retain their existing versions: they do
+not embed templates or the changed enclosing records. Updating shared schema references does
+not itself change those contracts.
 
 ## Consequences
 

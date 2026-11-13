@@ -598,18 +598,18 @@ Campaign selectors and their inspection documents are retired. Review plan captu
 Task plan; --authority selects trusted authority independently of source/base selectors.
 
 Scenario and Ant documents (ADR-0274; `af help scenarios`):
-  scenario validate: af/scenario-pin@5; start, show, resume, decide, cancel: af/scenario-run@5.
-  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@5.
-  ant validate: af/ant-pin@6; add, enable, pause, disable: af/ant-state@7;
-  ant show: af/ant-inspection@2; ant scheduler status/stop: af/ant-scheduler@1;
-  ant list: af/ant-list@7; tick: af/ant-tick@6.
+  scenario validate: af/scenario-pin@6; start, show, resume, decide, cancel: af/scenario-run@6.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@6.
+  ant validate: af/ant-pin@7; add, enable, pause, disable: af/ant-state@8;
+  ant show: af/ant-inspection@3; ant scheduler status/stop: af/ant-scheduler@1;
+  ant list: af/ant-list@8; tick: af/ant-tick@7.
   Result presentation: af/result-document@1; rendered metadata: af/result-snapshot@1.
-  Definitions and machine policy: af/scenario@5, af/scenario-bundle@5, af/scenario-policy@5,
-  af/ant@6; signed envelopes: af/scenario-signed-decision@1.
+  Definitions and machine policy: af/scenario@6, af/scenario-bundle@6, af/scenario-policy@5,
+  af/ant@7; signed envelopes: af/scenario-signed-decision@1.
   Roadmaps: af/scenario-roadmap-proposal@2 (input), af/scenario-roadmap-revision@2 (validate),
   af/scenario-roadmap@3 (create, show, revise), af/scenario-roadmap-list@3 (list).
   Fresh templates: af/scenario-task-template@2; capture: af/scenario-template-pin@2.
-  Journal: af/scenario-store@9. Owned file envelope: af/scenario-owned-file@1.
+  Journal: af/scenario-store@10. Owned file envelope: af/scenario-owned-file@1.
   Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Accepted Git candidates: af/git-candidate-source-request@1 and af/git-candidate-source@1.

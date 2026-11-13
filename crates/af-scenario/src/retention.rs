@@ -540,7 +540,7 @@ mod tests {
             );
         }
         let definition = Ant {
-            schema: "af/ant@6".into(),
+            schema: "af/ant@7".into(),
             id: id.into(),
             scenario: bundle,
             inputs: BTreeMap::new(),
@@ -645,7 +645,7 @@ mod tests {
                 let world = store.read().unwrap();
                 assert_eq!(world, Store::isolated(root.path()).unwrap().read().unwrap());
                 assert!(serde_json::to_vec(&world).unwrap().len() as u64 <= MAX_BYTES);
-                valid("scenario-store-v9.json", &world);
+                valid("scenario-store-v10.json", &world);
             }
         }
         eprintln!(
@@ -1474,7 +1474,7 @@ mod tests {
         );
         assert_eq!(run.dispatches, 1);
         assert!(occupied(&world).unwrap() <= MAX_BYTES);
-        valid("scenario-store-v9.json", &world);
+        valid("scenario-store-v10.json", &world);
     }
 
     #[test]
@@ -1612,7 +1612,7 @@ mod tests {
             .charged_tokens = "00".into();
         assert!(corrupt.validate(&TestHost::default()).is_err());
         let mut previous = serde_json::to_value(&world).unwrap();
-        previous["schema"] = serde_json::json!("af/scenario-store@8");
+        previous["schema"] = serde_json::json!("af/scenario-store@9");
         previous.as_object_mut().unwrap().remove("run_capacity");
         assert!(serde_json::from_value::<World>(previous).is_err());
         let mut previous = world.ants["unknown"].clone();
