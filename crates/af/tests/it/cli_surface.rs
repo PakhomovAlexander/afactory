@@ -2584,7 +2584,7 @@ fn schema_show_prints_every_id_af_help_json_lists() {
         "af.ci-health-state/2",
         "af.ci-observe-occurrence/1",
         "af.ci-observe-service/1",
-        "af.ci-signature-state/3",
+        "af.ci-signature-state/4",
         "af.maintenance-watchdog-alert/1",
         "af.maintenance-watchdog-config/1",
     ] {

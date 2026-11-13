@@ -29,7 +29,7 @@ const SCHEMAS: [&str; 245] = [
     "ci-diagnosis-v1.json",
     "ci-diagnosis-selection-v1.json",
     "ci-health-notification-v5.json",
-    "ci-signature-state-v3.json",
+    "ci-signature-state-v4.json",
     "ci-observe-service-v1.json",
     "maintenance-watchdog-config-v1.json",
     "maintenance-watchdog-alert-v1.json",
