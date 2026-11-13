@@ -1,9 +1,9 @@
 # Inert authoring example; an owner-only machine policy must supply the public signing key.
-schema = "af/scenario-bundle@5"
+schema = "af/scenario-bundle@6"
 root = "approval"
 
 [definitions.approval]
-schema = "af/scenario@5"
+schema = "af/scenario@6"
 completion = [
   { source = "project", value = { source = "step", step = "owner", port = "result" }, projection = { kind = "decision_approved" } },
 ]

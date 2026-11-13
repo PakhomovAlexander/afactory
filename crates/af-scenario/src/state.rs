@@ -196,7 +196,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@5".into(),
+            schema: "af/scenario-run@6".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -240,7 +240,7 @@ impl Run {
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@5" && af_contracts::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@6" && af_contracts::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;

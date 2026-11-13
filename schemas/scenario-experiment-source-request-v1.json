@@ -16,12 +16,12 @@
       "const": "af/scenario-experiment-source-request@1"
     },
     "receipt": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
     },
     "baseline_snapshot_id": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
         },
         {
           "type": "null"
@@ -29,7 +29,7 @@
       ]
     },
     "candidate_snapshot_id": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     },
     "control_sha": {
       "type": "string",

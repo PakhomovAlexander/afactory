@@ -266,7 +266,7 @@ mod tests {
             AfHost
                 .validate_template(&document, Some(&bindings), 20)
                 .unwrap_err()
-                .contains("never mutable local packages")
+                .contains("af.task-bindings/1")
         );
     }
 }

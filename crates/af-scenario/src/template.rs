@@ -28,7 +28,7 @@ pub struct Predecessor {
 impl Template {
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-task-template@1",
+            self.schema == "af/scenario-task-template@2",
             "Unsupported Task template",
         )?;
         require(

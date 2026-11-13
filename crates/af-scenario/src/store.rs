@@ -23,7 +23,7 @@ pub struct World {
 impl World {
     fn empty() -> Self {
         Self {
-            schema: "af/scenario-store@9".into(),
+            schema: "af/scenario-store@10".into(),
             writer_version: env!("CARGO_PKG_VERSION").into(),
             runs: BTreeMap::new(),
             run_capacity: BTreeMap::new(),
@@ -64,7 +64,7 @@ impl World {
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-store@9"
+            self.schema == "af/scenario-store@10"
                 && self.writer_version == env!("CARGO_PKG_VERSION"),
             "Scenario Store was written by another release or version",
         )?;
@@ -267,12 +267,12 @@ impl Store {
                 .open(&marker)
                 .map_err(|e| e.to_string())?;
             use std::io::Write;
-            file.write_all(b"af/scenario-store@9\n")
+            file.write_all(b"af/scenario-store@10\n")
                 .and_then(|()| file.sync_all())
                 .map_err(|e| e.to_string())?;
         }
         require(
-            read(&marker, 128)? == b"af/scenario-store@9\n"
+            read(&marker, 128)? == b"af/scenario-store@10\n"
                 && db.is_file()
                 && path.join("events.sqlite").is_file(),
             "Invalid or incomplete Scenario Store; refusing to recreate lost state",

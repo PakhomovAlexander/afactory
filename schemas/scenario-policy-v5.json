@@ -20,17 +20,17 @@
     "adapters": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/Adapter"
+        "$ref": "urn:af:schema:scenario:6#/$defs/Adapter"
       },
       "maxProperties": 32
     },
     "task_plans": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+        "$ref": "urn:af:schema:scenario:6#/$defs/digest"
       },
       "uniqueItems": true,
       "maxItems": 256
@@ -38,17 +38,17 @@
     "decision_keys": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/text"
+        "$ref": "urn:af:schema:scenario:6#/$defs/text"
       },
       "maxProperties": 32
     },
     "file_roots": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/path"
+        "$ref": "urn:af:schema:scenario:6#/$defs/path"
       },
       "uniqueItems": true,
       "maxItems": 32
@@ -58,17 +58,17 @@
       "uniqueItems": true,
       "maxItems": 256,
       "items": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+        "$ref": "urn:af:schema:scenario:6#/$defs/digest"
       }
     },
     "performance_publications": {
       "type": "object",
       "maxProperties": 32,
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        "$ref": "urn:af:schema:scenario:6#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:5#/$defs/PerformancePublicationScope"
+        "$ref": "urn:af:schema:scenario:6#/$defs/PerformancePublicationScope"
       }
     }
   }

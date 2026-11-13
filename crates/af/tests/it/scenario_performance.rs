@@ -698,15 +698,17 @@ sys.exit(99)
         let template = &step["operation"]["template"];
         assert_eq!(template["authority_commit"], p.commit);
         let bindings = &template["bindings"];
-        assert!(bindings.get("packages").is_none());
-        assert_eq!(bindings.as_object().unwrap().len(), 3);
         let document = &template["document"];
         let kind = document["kind"].as_str().unwrap();
+        let binding_file = p.bindings(kind);
+        let mut expected_bindings: Value =
+            serde_json::from_slice(&std::fs::read(&binding_file).unwrap()).unwrap();
+        expected_bindings["packages"] = json!({});
+        assert_eq!(bindings, &expected_bindings, "{stage}");
         if kind == "implement" {
             assert_owner_performance_instruction_contracts(&p.f.repo, document);
         }
         let file = p.f.machine.join(format!("{stage}-template.json"));
-        let binding_file = p.bindings(kind);
         let planned = p.cli(
             &p.task_state,
             &[
@@ -927,7 +929,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let history = &mut bundle["definitions"]["performance"]["steps"][0];
     history["inputs"]["subject"]["value"]["value"] = packet["index_digest"].clone();
     history["inputs"]["revision"]["value"]["value"] = packet["compatibility"].clone();
-    valid("scenario-bundle-v5.json", &bundle);
+    valid("scenario-bundle-v6.json", &bundle);
     write(&p.f.bundle, &bundle);
     let pin = p.cli(
         &p.f.state,
@@ -1074,7 +1076,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]

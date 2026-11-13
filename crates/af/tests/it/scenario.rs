@@ -138,7 +138,7 @@ impl Fixture {
         ];
         write(
             &bundle,
-            &json!({"schema":"af/scenario-bundle@5","root":"main","definitions":{"main":{"schema":"af/scenario@5","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
+            &json!({"schema":"af/scenario-bundle@6","root":"main","definitions":{"main":{"schema":"af/scenario@6","inputs":{},"outputs":{"ok":"boolean"},"steps":steps,"result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],"authority":{"task_plans":[],"task_templates":[],"grants":[g],"decision_owners":["owner"]},"limits":{"max_tokens":2000,"max_wall_ms":604800000,"max_dispatches":64}}}}),
         );
         Self {
             _root: root,
@@ -165,7 +165,7 @@ impl Fixture {
                 self.policy.to_str().unwrap(),
             ],
         );
-        valid("scenario-pin-v5.json", &pinned);
+        valid("scenario-pin-v6.json", &pinned);
         cli(
             &self.repo,
             &self.state,
@@ -267,8 +267,8 @@ fn performance_scenario_native_task_submission_lost_response_wait_and_report_com
         json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
     let candidate = json!({"source":"step","step":"candidate","port":"result"});
     let report = json!({"source":"step","step":"comparison","port":"result"});
-    let bundle = json!({"schema":"af/scenario-bundle@5","root":"performance","definitions":{"performance":{
-        "schema":"af/scenario@5","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
+    let bundle = json!({"schema":"af/scenario-bundle@6","root":"performance","definitions":{"performance":{
+        "schema":"af/scenario@6","admission":null,"inputs":{},"outputs":{"candidate":"task","report":"observation"},
         "steps":[
             step("candidate", json!({"kind":"task","target":{"repo":f.repo,"state":task_state,
                 "task_id":"pagination-cli","plan_id":plan["plan_id"],"revision_id":plan["revision_id"],"max_tokens":1000}}),json!({}),"task"),
@@ -282,7 +282,7 @@ fn performance_scenario_native_task_submission_lost_response_wait_and_report_com
             "projection":{"kind":"observation_satisfied"}}],
         "authority":{"task_plans":[plan["plan_id"]],"task_templates":[],"grants":[submit,observe],"decision_owners":[]},
         "limits":{"max_tokens":1000,"max_wall_ms":3600000,"max_dispatches":8}}}});
-    valid("scenario-bundle-v5.json", &bundle);
+    valid("scenario-bundle-v6.json", &bundle);
     write(&f.bundle, &bundle);
     std::fs::write(
         f.machine.join("lose-response"),
@@ -356,7 +356,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     )
     .unwrap();
     let waiting = f.start("issue-fix");
-    valid("scenario-run-v5.json", &waiting);
+    valid("scenario-run-v6.json", &waiting);
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waiting"]["kind"], "decision");
     assert_eq!(
@@ -399,7 +399,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
         &json!({"revision":"head-1","checks_passed":true,"merged":true}),
     );
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "issue-fix"]);
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     assert_eq!(done["status"], "succeeded");
     assert_eq!(
         done["frames"]["root"]["outputs"]["implementation"]["type"],
@@ -449,7 +449,7 @@ fn cancellation_preserves_receipts_and_never_dispatches_later_effects() {
     );
     assert!(!f.owned.join("note").exists());
     assert_eq!(cancelled["cancellation"]["reason"], "operator cancelled");
-    valid("scenario-run-v5.json", &cancelled);
+    valid("scenario-run-v6.json", &cancelled);
 }
 
 #[test]
@@ -617,7 +617,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let ant = f._root.path().join("ant.json");
     write(
         &ant,
-        &json!({"schema":"af/ant@6","id":"daily","scenario":bundle,"inputs":{},"schedule":{"kind":"daily","timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
+        &json!({"schema":"af/ant@7","id":"daily","scenario":bundle,"inputs":{},"schedule":{"kind":"daily","timezone":"UTC","hour":12,"minute":0,"start_unix_ms":now},"owner":"owner","notification":"local:owner","execution":{"overlap":"skip","missed":"skip","lateness_ms":1000,"per_run":bundle["definitions"]["main"]["limits"],"rolling_tokens":2000,"rolling_window_ms":172800000}}),
     );
     let pin = cli(
         &f.repo,
@@ -685,7 +685,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
         1
     );
     for tick in ticks {
-        valid("ant-tick-v6.json", &tick);
+        valid("ant-tick-v7.json", &tick);
     }
     let shown = cli(&f.repo, &f.state, &["ant", "show", "daily"]);
     assert_eq!(shown["occurrences"].as_array().unwrap().len(), 1);
@@ -718,7 +718,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let expired = cli(&f.repo, &f.state, &["scenario", "show", run_id]);
     assert_eq!(expired["status"], "failed");
     assert!(expired["failure"].as_str().unwrap().contains("deadline"));
-    valid("ant-inspection-v2.json", &paused);
+    valid("ant-inspection-v3.json", &paused);
 }
 
 #[test]
@@ -903,7 +903,7 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
             f.policy.to_str().unwrap(),
         ],
     );
-    valid("scenario-pin-v5.json", &pin);
+    valid("scenario-pin-v6.json", &pin);
     let json_wire = f._root.path().join("wire.json");
     write(&json_wire, &pin["bundle"]);
     let replay = cli(
@@ -1211,7 +1211,7 @@ fn github_read_only_source_sequence(f: Fixture) {
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
     assert_eq!(done["status"], "succeeded", "{done:#}");
     assert_eq!(done["pin"], pin);
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     let journal: Value = serde_json::from_slice(
         &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
     )
@@ -1516,8 +1516,8 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
             commit.trim(),
         ],
     );
-    valid("scenario-template-pin-v1.json", &pinned);
-    valid("scenario-task-template-v1.json", &pinned["template"]);
+    valid("scenario-template-pin-v2.json", &pinned);
+    valid("scenario-task-template-v2.json", &pinned["template"]);
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
     policy["task_templates"] = json!([pinned["template_id"]]);
     write(&f.policy, &policy);
@@ -1591,7 +1591,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     write(&f.bundle, &bundle);
     let done = f.start("fresh-chain");
     assert_eq!(done["status"], "succeeded", "{done}");
-    valid("scenario-run-v5.json", &done);
+    valid("scenario-run-v6.json", &done);
     let roadmap = cli(
         &f.repo,
         &f.state,
@@ -2099,8 +2099,8 @@ fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_sa
         let mut publish_repair = publish("publish-repair", "repaired", "approve-repair");
         publish_repair["when"] = repair_if.clone();
         let selected = json!({"source":"select","condition":repair_if,"when_true":binding("repaired"),"when_false":binding("prepare")});
-        let bundle = json!({"schema":"af/scenario-bundle@5","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
-            "schema":"af/scenario@5","admission":null,"inputs":{},"outputs":{"selected":"action"},
+        let bundle = json!({"schema":"af/scenario-bundle@6","root":"documentation-maintenance","definitions":{"documentation-maintenance":{
+            "schema":"af/scenario@6","admission":null,"inputs":{},"outputs":{"selected":"action"},
             "steps":[step("edit",json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),json!({}),"task"),
                 prepare("prepare","edit"),decision("approve","prepare"),publish("publish","prepare","approve"),
                 step("checks",json!({"kind":"wait","grant":grant("observe"),"condition":"checks_completed"}),
@@ -2110,7 +2110,7 @@ fn ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_sa
             "authority":{"task_plans":[],"task_templates":[pinned["template_id"]],
                 "grants":[grant("prepare_candidate_v1"),grant("publish_pr"),grant("observe")],"decision_owners":["owner"]},
             "limits":{"max_tokens":2000,"max_wall_ms":3600000,"max_dispatches":16}}}});
-        valid("scenario-bundle-v5.json", &bundle);
+        valid("scenario-bundle-v6.json", &bundle);
         write(&f.bundle, &bundle);
         assert_eq!(f.start("documentation")["status"], "waiting");
         f.approve("documentation");
@@ -2274,7 +2274,7 @@ fn generated_impl_scenario_runs_zero_one_two_repairs_then_actual_merge_and_owned
             &std::fs::read(f.bundle.with_extension("generated.json")).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v5.json", &bundle);
+        valid("scenario-bundle-v6.json", &bundle);
         let mut tampered = bundle.clone();
         tampered["definitions"]["impl"]["steps"][0]["operation"]["template"]["document"]["goal"] =
             json!("unapproved goal");
@@ -2413,7 +2413,7 @@ fn interval_scheduler_executes_real_one_second_occurrences_and_generic_results()
         let ant = f._root.path().join(format!("{label}-ant.json"));
         write(
             &ant,
-            &json!({"schema":"af/ant@6","id":label,"scenario":bundle,"inputs":{},"schedule":{"kind":"interval","seconds":1,"start_unix_ms":now},"owner":"owner","notification":"local:fixture","execution":{"overlap":"skip","missed":"skip","lateness_ms":999,"per_run":bundle["definitions"][label]["limits"],"rolling_tokens":0,"rolling_window_ms":10000}}),
+            &json!({"schema":"af/ant@7","id":label,"scenario":bundle,"inputs":{},"schedule":{"kind":"interval","seconds":1,"start_unix_ms":now},"owner":"owner","notification":"local:fixture","execution":{"overlap":"skip","missed":"skip","lateness_ms":999,"per_run":bundle["definitions"][label]["limits"],"rolling_tokens":0,"rolling_window_ms":10000}}),
         );
         let pin = cli(
             &f.repo,
@@ -2427,7 +2427,7 @@ fn interval_scheduler_executes_real_one_second_occurrences_and_generic_results()
                 f.policy.to_str().unwrap(),
             ],
         );
-        valid("ant-pin-v6.json", &pin);
+        valid("ant-pin-v7.json", &pin);
         cli(
             &f.repo,
             &f.state,
@@ -2457,7 +2457,7 @@ fn interval_scheduler_executes_real_one_second_occurrences_and_generic_results()
     );
     for label in ["weather", "library"] {
         let shown = cli(&f.repo, &f.state, &["ant", "show", label]);
-        valid("ant-inspection-v2.json", &shown);
+        valid("ant-inspection-v3.json", &shown);
         let occurrences = shown["occurrences"].as_array().unwrap();
         let started: Vec<_> = occurrences
             .iter()
@@ -2685,8 +2685,8 @@ fn recorded_observation_results_are_partial_then_final_and_new_occurrences_chang
         json!({"adapter":"service","operation":"observe","destination":"fixture:repository"});
     let result = json!({"source":"step","step":"sample","port":"result"});
     let inputs = json!({"subject":literal("text",json!("sensor")),"revision":literal("text",json!("head-1"))});
-    let bundle = json!({"schema":"af/scenario-bundle@5","root":"sensor","definitions":{"sensor":{
-        "schema":"af/scenario@5","inputs":{},"outputs":{"report":"observation"},
+    let bundle = json!({"schema":"af/scenario-bundle@6","root":"sensor","definitions":{"sensor":{
+        "schema":"af/scenario@6","inputs":{},"outputs":{"report":"observation"},
         "steps":[step("sample",json!({"kind":"wait","grant":observe,"condition":"sampled"}),inputs.clone(),"observation"),step("finish",json!({"kind":"wait","grant":observe,"condition":"finished"}),inputs,"observation")],
         "result":{"report":result},"completion":[literal("boolean",json!(true))],
         "authority":{"task_plans":[],"task_templates":[],"grants":[observe],"decision_owners":[]},
@@ -2701,7 +2701,7 @@ fn recorded_observation_results_are_partial_then_final_and_new_occurrences_chang
     let ant = f._root.path().join("sensor-ant.json");
     write(
         &ant,
-        &json!({"schema":"af/ant@6","id":"sensor","scenario":bundle,"inputs":{},"schedule":{"kind":"interval","seconds":1,"start_unix_ms":now},"owner":"owner","notification":"local:fixture","execution":{"overlap":"skip","missed":"skip","lateness_ms":999,"per_run":bundle["definitions"]["sensor"]["limits"],"rolling_tokens":0,"rolling_window_ms":10000}}),
+        &json!({"schema":"af/ant@7","id":"sensor","scenario":bundle,"inputs":{},"schedule":{"kind":"interval","seconds":1,"start_unix_ms":now},"owner":"owner","notification":"local:fixture","execution":{"overlap":"skip","missed":"skip","lateness_ms":999,"per_run":bundle["definitions"]["sensor"]["limits"],"rolling_tokens":0,"rolling_window_ms":10000}}),
     );
     let pin = cli(
         &f.repo,
@@ -2976,4 +2976,982 @@ fn native_authored_markdown_watch_uses_recorded_observation_and_never_drives_wor
             .unwrap()
             .contains("Unsupported presentation shape")
     );
+}
+
+#[test]
+fn template_local_workers_are_captured_once_retained_and_restored_after_deletion() {
+    use af_pipeline_config::task::catalog::TaskWorkerManifest;
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let root = f._root.path().join("task-fixture");
+    std::fs::create_dir(&root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let commit = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+    document["verification"] = json!("evaluation");
+    let file = f.machine.join("template.json");
+    write(&file, &document);
+    // Initialize the shared Store with a different template. The concurrently created
+    // local-template streams below are still empty; schema bootstrap is a separate boundary.
+    cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "template-pin",
+            "--file",
+            file.to_str().unwrap(),
+            "--repo",
+            f.repo.to_str().unwrap(),
+            "--task-state",
+            task_state.to_str().unwrap(),
+            "--authority-commit",
+            commit.trim(),
+        ],
+    );
+    let mut pins = Vec::new();
+    let mut workers = Vec::new();
+    let mut unrelated_authority = None;
+    for developer in ["alice", "bob"] {
+        let local = f.machine.join(developer);
+        let package = local.join("worker");
+        crate::task_cli::copy_tree(
+            &f.repo.join(".af/task-packages/fixture/implementer"),
+            &package,
+        );
+        let mut worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+        worker.name = format!("local/{developer}");
+        worker.signature.attempt.as_mut().unwrap().wall_ms =
+            if developer == "alice" { 4500 } else { 4800 };
+        std::fs::write(
+            package.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        let digest = af_pipeline_config::lock::package_digest(&worker.name, &package).unwrap();
+        let bindings = local.join("bindings.toml");
+        let definition = json!({"schema":"af.task-bindings/1", "packages":{worker.name.clone():{"version":"1.0.0","digest":digest,"path":"worker"}},"slots":{"root.slots.implementer":worker.name}});
+        std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+        let args = [
+            "scenario",
+            "template-pin",
+            "--file",
+            file.to_str().unwrap(),
+            "--repo",
+            f.repo.to_str().unwrap(),
+            "--task-state",
+            task_state.to_str().unwrap(),
+            "--authority-commit",
+            commit.trim(),
+            "--bindings",
+            bindings.to_str().unwrap(),
+        ];
+        // Independent CLI processes start together, then all acknowledge one durable pin.
+        let barrier = std::sync::Barrier::new(4);
+        let pinned = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        cli(&f.repo, &f.state, &args)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            assert!(results.iter().all(|r| r == &results[0]));
+            results[0].clone()
+        });
+        let store = af_store::EventStore::open_read_only(task_state.join("events.sqlite")).unwrap();
+        let run = format!(
+            "scenario-template-{}",
+            pinned["template_id"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("sha256:")
+        );
+        assert_eq!(store.replay(&run).unwrap().len(), 1);
+        valid("scenario-template-pin-v2.json", &pinned);
+        assert_eq!(pinned, cli(&f.repo, &f.state, &args));
+        for (field, bad) in [
+            ("path", json!("../worker")),
+            ("digest", json!(format!("sha256:{}", "0".repeat(64)))),
+            ("version", json!("9.9.9")),
+        ] {
+            let mut wrong = definition.clone();
+            wrong["packages"][&worker.name][field] = bad;
+            std::fs::write(&bindings, toml::to_string(&wrong).unwrap()).unwrap();
+            assert!(
+                !output(&f.repo, &f.state, &args).status.success(),
+                "{field}"
+            );
+        }
+        let mut shadow = definition.clone();
+        shadow["packages"] = json!({"fixture/implementer":definition["packages"][&worker.name]});
+        std::fs::write(&bindings, toml::to_string(&shadow).unwrap()).unwrap();
+        assert!(!output(&f.repo, &f.state, &args).status.success());
+        std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+        let oversized = package.join("oversized");
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(16 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(!output(&f.repo, &f.state, &args).status.success());
+        std::fs::remove_file(&oversized).unwrap();
+        if developer == "alice" {
+            let pipeline = local.join("pipeline");
+            crate::task_cli::copy_tree(
+                &f.repo.join(".af/task-packages/fixture/implementation"),
+                &pipeline,
+            );
+            let manifest_path = pipeline.join("pipeline.toml");
+            let mut manifest: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+            manifest["name"] = toml::Value::String("local/pipeline".into());
+            std::fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+            let digest =
+                af_pipeline_config::lock::package_digest("local/pipeline", &pipeline).unwrap();
+            let mut wrong = definition.clone();
+            wrong["packages"]["local/pipeline"] = json!({"path":"pipeline","version":manifest["version"].as_str().unwrap(),"digest":digest});
+            std::fs::write(&bindings, toml::to_string(&wrong).unwrap()).unwrap();
+            let refused = output(&f.repo, &f.state, &args);
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stdout).contains("Worker packages only"),
+                "{}",
+                String::from_utf8_lossy(&refused.stdout)
+            );
+        }
+        std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+        let moved = local.join("moved");
+        std::fs::rename(&package, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &package).unwrap();
+        assert!(!output(&f.repo, &f.state, &args).status.success());
+        std::fs::remove_file(&package).unwrap();
+        // No fresh Task has been planned: retention must start at pinning, not dispatch.
+        cli(
+            &f.repo,
+            &task_state,
+            &["task", "gc", "--older-than", "0", "--keep", "0", "--apply"],
+        );
+        let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+        let authority = cas
+            .get_json(pinned["template"]["authority_id"].as_str().unwrap())
+            .unwrap();
+        assert!(
+            authority["packages"]["fixture/implementer"].is_object(),
+            "constraining default retained"
+        );
+        assert_eq!(
+            authority["slot_workers"]["root.slots.implementer"],
+            worker.name
+        );
+        let captured = authority["packages"][&worker.name]["artifact_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        cas.get_json(&captured).unwrap();
+        if developer == "alice" {
+            std::fs::rename(&moved, &package).unwrap();
+            // Seed an unrooted closure with old mtimes, then repin using exactly those CAS
+            // objects. Timestamp protection alone must not make this test pass.
+            let db = rusqlite::Connection::open(task_state.join("events.sqlite")).unwrap();
+            db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+                .unwrap();
+            let digest = captured.strip_prefix("sha256:").unwrap();
+            let object = task_state
+                .join("cas/objects")
+                .join(&digest[..2])
+                .join(&digest[2..]);
+            let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+            std::fs::File::open(&object)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+            let barriers = f.machine.join("pin-barriers");
+            for phase in ["template-captured-1", "template-verifying-1"] {
+                std::fs::create_dir_all(barriers.join(phase)).unwrap();
+            }
+            let planned = cli(
+                &f.repo,
+                &task_state,
+                &["task", "plan", "--file", "ticket.json"],
+            );
+            let mut active = store.reopen(std::time::Duration::from_secs(1)).unwrap();
+            let lease = active
+                .take_task_lease(
+                    &cas,
+                    planned["task_id"].as_str().unwrap(),
+                    "active-writer",
+                    6_000,
+                )
+                .unwrap();
+            let child = crate::common::af()
+                .current_dir(&f.repo)
+                .args(args)
+                .args(["--json", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut collector = store.reopen(std::time::Duration::ZERO).unwrap();
+            for phase in ["template-captured-1", "template-verifying-1"] {
+                let barrier = barriers.join(phase);
+                let initial_expiry = active.task_lease_state(&lease).unwrap();
+                let started = std::time::Instant::now();
+                while !barrier.join("ready").exists() {
+                    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
+                assert!(store.is_empty(&run).unwrap());
+                let refused = collector
+                    .apply_task_collection(&cas, 0, 0, false)
+                    .unwrap_err();
+                assert!(
+                    refused
+                        .to_string()
+                        .contains("CAS capture/collection reservation"),
+                    "{refused}"
+                );
+                // Exercise the real heartbeat during capture and final artifact verification.
+                // Holding its shared handle forces renewal through the bounded-timeout connection.
+                let shared = std::sync::Mutex::new(&mut active);
+                let cancelled = std::sync::atomic::AtomicBool::new(false);
+                let lost = std::sync::atomic::AtomicBool::new(false);
+                af_runtime::task::lease::with_heartbeat_supervised(
+                    &shared,
+                    &cas,
+                    &lease,
+                    af_runtime::task::lease::HeartbeatControl {
+                        cancellation: Some(&cancelled),
+                        writer_lost: Some(&lost),
+                        timing: af_runtime::task::lease::LeaseTiming::for_lease(6_000),
+                    },
+                    || {
+                        let _busy = shared.lock().unwrap();
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(20);
+                        while store.task_lease_state(&lease).unwrap() < initial_expiry + 3_000 {
+                            assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "heartbeat did not renew"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        assert!(!barrier.join("proceed").exists());
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
+                assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                // The capture reservation must still exclude collection until publication.
+                let refused = collector
+                    .apply_task_collection(&cas, 0, 0, false)
+                    .unwrap_err();
+                assert!(
+                    refused
+                        .to_string()
+                        .contains("CAS capture/collection reservation"),
+                    "{refused}"
+                );
+                assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
+                std::fs::write(barrier.join("proceed"), []).unwrap();
+            }
+            active.release_task_lease(&cas, &lease).unwrap();
+            assert_eq!(value(child.wait_with_output().unwrap(), 0), pinned);
+            collector.apply_task_collection(&cas, 0, 0, false).unwrap();
+            cas.get_json(&captured).unwrap();
+            // A killed capture has no durable authority and leaves no reservation to expire.
+            // Recovery is ordinary collection, followed by an explicit new pin from local bytes.
+            db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+                .unwrap();
+            let barriers = f.machine.join("killed-pin-barriers");
+            let barrier = barriers.join("template-captured-1");
+            std::fs::create_dir_all(&barrier).unwrap();
+            let mut killed = crate::common::af()
+                .current_dir(&f.repo)
+                .args(args)
+                .args(["--json", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let started = std::time::Instant::now();
+            while !barrier.join("ready").exists() {
+                assert!(started.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            killed.kill().unwrap();
+            assert!(!killed.wait().unwrap().success());
+            assert!(store.is_empty(&run).unwrap());
+            collector.apply_task_collection(&cas, 0, 0, false).unwrap();
+            assert!(cas.get_json(&captured).is_err());
+            assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+            // Capture a real, valid authority with identical local bindings but a different
+            // committed policy. The forged template below will be explicitly machine-admitted.
+            std::fs::write(&bindings, toml::to_string(&definition).unwrap()).unwrap();
+            let policy_path = f.repo.join(".af/code-policy.toml");
+            let original = std::fs::read_to_string(&policy_path).unwrap();
+            let changed = original.replace("check_wall_ms = 5000", "check_wall_ms = 4000");
+            assert_ne!(changed, original);
+            std::fs::write(&policy_path, changed).unwrap();
+            for command in [
+                vec!["add", ".af/code-policy.toml"],
+                vec!["commit", "-qm", "other template authority"],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .current_dir(&f.repo)
+                        .args(command)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let other_commit = std::process::Command::new("git")
+                .current_dir(&f.repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            assert!(other_commit.status.success());
+            let other_commit = String::from_utf8(other_commit.stdout).unwrap();
+            let mut other_args = args;
+            other_args[9] = other_commit.trim();
+            let other = cli(&f.repo, &f.state, &other_args);
+            assert_eq!(
+                other["template"]["bindings"],
+                pinned["template"]["bindings"]
+            );
+            assert_ne!(
+                other["template"]["authority_id"],
+                pinned["template"]["authority_id"]
+            );
+            unrelated_authority = Some(other["template"]["authority_id"].clone());
+            // Restore the fixture's source for the successful immutable-reuse cases.
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(&f.repo)
+                    .args(["reset", "--hard", commit.trim()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            std::fs::rename(&package, &moved).unwrap();
+        }
+
+        std::fs::write(
+            moved.join("worker.py"),
+            "raise Exception('mutable bytes must not execute')",
+        )
+        .unwrap();
+        std::fs::write(&bindings, "invalid after capture").unwrap();
+        std::fs::remove_dir_all(&local).unwrap();
+        pins.push(pinned);
+        workers.push(captured);
+    }
+    assert_ne!(pins[0]["template_id"], pins[1]["template_id"]);
+    assert_ne!(workers[0], workers[1]);
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!(
+        pins.iter()
+            .map(|p| p["template_id"].clone())
+            .collect::<Vec<_>>()
+    );
+    write(&f.policy, &policy);
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    let main = &mut bundle["definitions"]["main"];
+    main["authority"]["task_templates"] = policy["task_templates"].clone();
+    main["steps"] = json!(
+        pins.iter()
+            .enumerate()
+            .map(|(i, p)| step(
+                &format!("customer-{i}"),
+                json!({"kind":"fresh_task","template":p["template"],"bindings":{}}),
+                json!({}),
+                "task"
+            ))
+            .collect::<Vec<_>>()
+    );
+    write(&f.bundle, &bundle);
+    let done = f.start("captured-customers");
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(done["fresh_tasks"].as_object().unwrap().len(), 2);
+    for (index, pin) in pins.iter().enumerate() {
+        let receipt = &done["frames"]["root"]["steps"][index]["outputs"]["result"]["value"];
+        let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+        let revision = cas
+            .get_artifact(receipt["revision_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            revision.payload["authority"]["policy_id"],
+            pin["template"]["authority_id"]
+        );
+    }
+    assert_eq!(
+        cli(
+            &f.repo,
+            &f.state,
+            &["scenario", "resume", "captured-customers"]
+        ),
+        done
+    );
+    cli(
+        &f.repo,
+        &task_state,
+        &["task", "gc", "--older-than", "0", "--keep", "0", "--apply"],
+    );
+    let again = f.start("fresh-after-collection");
+    assert_eq!(again["status"], "succeeded", "{again}");
+    // Corrupt and missing captured package bytes both fail without consulting deleted paths.
+    let digest = workers[0].strip_prefix("sha256:").unwrap();
+    let object = task_state
+        .join("cas/objects")
+        .join(&digest[..2])
+        .join(&digest[2..]);
+    let bytes = std::fs::read(&object).unwrap();
+    std::fs::write(&object, b"corrupt captured package").unwrap();
+    for run in ["corrupt-package", "missing-package"] {
+        let failed = f.start(run);
+        assert_eq!(failed["status"], "failed", "{failed}");
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+        std::fs::remove_file(&object).ok();
+    }
+    std::fs::write(&object, bytes).unwrap();
+    // Even a newly authorized template cannot substitute missing native authority,
+    // a different committed source, or Provider mappings absent from its sealed closure.
+    for (case, (field, replacement)) in [
+        ("authority_id", json!(format!("sha256:{}", "f".repeat(64)))),
+        ("authority_id", unrelated_authority.unwrap()),
+        (
+            "source_content_digest",
+            json!(format!("sha256:{}", "f".repeat(64))),
+        ),
+        ("repository_id", json!("another-repository")),
+        ("authority_commit", json!("0".repeat(40))),
+        (
+            "bindings",
+            json!({"schema":"af.task-bindings/1","packages":{},"slots":{},"providers":{"local/alice":"substituted"}}),
+        ),
+    ].into_iter().enumerate() {
+        let before = cli(&f.repo, &task_state, &["task", "list"]);
+        let mut template = pins[0]["template"].clone();
+        template[field] = replacement;
+        let id = af_scenario::contract::hash(&template).unwrap();
+        policy["task_templates"] = json!([id]);
+        write(&f.policy, &policy);
+        bundle["definitions"]["main"]["authority"]["task_templates"] = json!([id]);
+        bundle["definitions"]["main"]["steps"] = json!([step(
+            "changed",
+            json!({"kind":"fresh_task","template":template,"bindings":{}}),
+            json!({}),
+            "task"
+        )]);
+        write(&f.bundle, &bundle);
+        let failed = f.start(&format!("changed-{field}-{case}"));
+        assert_eq!(failed["status"], "failed", "{field}: {failed}");
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+        assert_eq!(before, cli(&f.repo, &task_state, &["task", "list"]));
+    }
+    let mut old = pins[0]["template"].clone();
+    old["schema"] = json!("af/scenario-task-template@1");
+    assert!(!crate::schemas::validator("scenario-task-template-v2.json").is_valid(&old));
+}
+
+#[test]
+fn template_sealed_restore_refuses_incompatible_workers_and_same_model_verification() {
+    for case in ["typed-contract", "widened-effects", "same-model"] {
+        let f = Fixture::bare();
+        std::fs::remove_dir(&f.repo).unwrap();
+        let root = f._root.path().join("task-fixture");
+        std::fs::create_dir(&root).unwrap();
+        let (repo, task_state) = crate::task_cli::fixture_named(&root, "pagination");
+        std::fs::rename(repo, &f.repo).unwrap();
+        let providers = crate::planning_models::Providers::new(&f.machine);
+        if case == "same-model" {
+            let path = f.repo.join(".af/task-catalog.toml");
+            let mut catalog: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            catalog["independence"]["distinct_principals"] = toml::Value::Boolean(false);
+            catalog["independence"]["distinct_models"] = toml::Value::Boolean(true);
+            // Author the disposable fixture's model variant with one explicit native
+            // Provider admission Attempt, alongside its three ordinary Attempts.
+            let pipeline_path = f.repo.join(".af/task-packages/fixture/implementation");
+            let manifest_path = pipeline_path.join("pipeline.toml");
+            let mut pipeline: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+            pipeline["max_attempts"] = toml::Value::Integer(4);
+            std::fs::write(&manifest_path, toml::to_string(&pipeline).unwrap()).unwrap();
+            catalog["packages"]["fixture/implementation"]["digest"] = toml::Value::String(
+                af_pipeline_config::lock::package_digest("fixture/implementation", &pipeline_path)
+                    .unwrap(),
+            );
+            std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
+            for args in [
+                ["add", ".af"].as_slice(),
+                ["commit", "-qm", "require distinct models"].as_slice(),
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .current_dir(&f.repo)
+                        .args(args)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+        }
+        let commit = std::process::Command::new("git")
+            .current_dir(&f.repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(commit.status.success());
+        let commit = String::from_utf8(commit.stdout).unwrap();
+        let local = f.machine.join("local");
+        let mut packages = serde_json::Map::new();
+        let mut slots = serde_json::Map::new();
+        let mut aliases = serde_json::Map::new();
+        for role in ["implementer", "evaluator"] {
+            let name = format!("local/{role}");
+            let package = local.join(role);
+            crate::task_cli::copy_tree(
+                &f.repo.join(".af/task-packages/fixture").join(role),
+                &package,
+            );
+            let path = package.join("worker.toml");
+            let mut worker: Value = serde_json::to_value(
+                toml::from_str::<toml::Value>(&std::fs::read_to_string(&path).unwrap()).unwrap(),
+            )
+            .unwrap();
+            worker["name"] = json!(name);
+            if role == "implementer" {
+                match case {
+                    "typed-contract" => {
+                        worker["signature"]["contract"]["inputs"]["requirements"]["artifact_type"] =
+                            json!("af/Document@1")
+                    }
+                    "widened-effects" => {
+                        worker["signature"]["effects"] = json!(["write-source", "execute-checks"])
+                    }
+                    _ => {}
+                }
+            }
+            if case == "same-model" {
+                worker["runner"] = json!({"kind":"model","provider_kind":"codex","model":"gpt-6.1-sol","effort":"medium"});
+                worker["signature"]["attempt"]["tokens"] = json!(100);
+                // Explicit Provider aliases cannot establish model independence.
+                aliases.insert(name.clone(), json!("fixture-codex"));
+            }
+            std::fs::write(&path, toml::to_string(&worker).unwrap()).unwrap();
+            packages.insert(name.clone(), json!({"version":"1.0.0","path":role,"digest":af_pipeline_config::lock::package_digest(&name,&package).unwrap()}));
+            slots.insert(format!("root.slots.{role}"), json!(name));
+        }
+        let bindings = local.join("bindings.toml");
+        std::fs::write(&bindings, toml::to_string(&json!({"schema":"af.task-bindings/1","packages":packages,"slots":slots,"providers":aliases})).unwrap()).unwrap();
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+        document["verification"] = json!("evaluation");
+        document["limits"]["tokens"] = json!(200000);
+        document["limits"]["wall_ms"] = json!(1000000);
+        document["limits"]["verification"]["tokens"] = json!(100000);
+        document["limits"]["verification"]["wall_ms"] = json!(500000);
+        if case == "same-model" {
+            document["limits"]["max_attempts"] = json!(4);
+            document["limits"]["verification"]["attempts"] = json!(3);
+        }
+
+        let file = f.machine.join("template.json");
+        write(&file, &document);
+        let pinned = cli(
+            &f.repo,
+            &f.state,
+            &[
+                "scenario",
+                "template-pin",
+                "--file",
+                file.to_str().unwrap(),
+                "--repo",
+                f.repo.to_str().unwrap(),
+                "--task-state",
+                task_state.to_str().unwrap(),
+                "--authority-commit",
+                commit.trim(),
+                "--bindings",
+                bindings.to_str().unwrap(),
+            ],
+        );
+        // Capture admits valid package bytes without compiling the selected Pipeline.
+        // Delete them before planning to exercise only the sealed restore path.
+        std::fs::remove_dir_all(&local).unwrap();
+        let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+        policy["task_templates"] = json!([pinned["template_id"]]);
+        write(&f.policy, &policy);
+        let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+        let main = &mut bundle["definitions"]["main"];
+        main["authority"]["task_templates"] = policy["task_templates"].clone();
+        main["limits"]["max_tokens"] = json!(200000);
+        main["steps"] = json!([step(
+            "refused",
+            json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),
+            json!({}),
+            "task"
+        )]);
+        write(&f.bundle, &bundle);
+        let pin = cli(
+            &f.repo,
+            &f.state,
+            &[
+                "scenario",
+                "validate",
+                "--file",
+                f.bundle.to_str().unwrap(),
+                "--authority",
+                f.policy.to_str().unwrap(),
+            ],
+        );
+        let result = providers
+            .command(&f.repo)
+            .args([
+                "scenario",
+                "start",
+                case,
+                "--file",
+                f.bundle.to_str().unwrap(),
+                "--authority",
+                f.policy.to_str().unwrap(),
+                "--inputs",
+                f.inputs.to_str().unwrap(),
+                "--confirm-pin",
+                pin["revision"].as_str().unwrap(),
+                "--execute",
+                "--json",
+                "--state",
+                f.state.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        let failed = value(result, 0);
+        assert_eq!(failed["status"], "failed", "{case}: {failed}");
+        assert!(
+            failed["fresh_tasks"].as_object().unwrap().is_empty(),
+            "{failed}"
+        );
+        let expected = if case == "same-model" {
+            "Trusted policy requires distinct models"
+        } else {
+            "public contract or authority"
+        };
+        assert!(
+            failed["failure"].as_str().unwrap().contains(expected),
+            "{case}: {failed}"
+        );
+        // Silent Scenario planning refuses before recording a Task or executable plan.
+        let listed = cli(&f.repo, &task_state, &["task", "list"]);
+        assert!(listed["tasks"].as_array().unwrap().is_empty(), "{listed}");
+        providers.assert_no_dispatch();
+    }
+}
+
+#[test]
+fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let root = f._root.path().join("task-fixture");
+    std::fs::create_dir(&root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let commit = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let file = f.machine.join("template.json");
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+    document["verification"] = json!("evaluation");
+    write(&file, &document);
+    let args = [
+        "scenario",
+        "template-pin",
+        "--file",
+        file.to_str().unwrap(),
+        "--repo",
+        f.repo.to_str().unwrap(),
+        "--task-state",
+        task_state.to_str().unwrap(),
+        "--authority-commit",
+        commit.trim(),
+    ];
+    let pinned = cli(&f.repo, &f.state, &args);
+    let run = format!(
+        "scenario-template-{}",
+        pinned["template_id"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("sha256:")
+    );
+    let db = rusqlite::Connection::open(task_state.join("events.sqlite")).unwrap();
+    let original: (String, String, String) = db
+        .query_row(
+            "SELECT type,payload,artifact_refs FROM events WHERE run_id=?1",
+            [&run],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    let cas = af_store::Cas::open_existing(task_state.join("cas")).unwrap();
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pinned["template_id"]]);
+    write(&f.policy, &policy);
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    bundle["definitions"]["main"]["authority"]["task_templates"] = policy["task_templates"].clone();
+    bundle["definitions"]["main"]["steps"] = json!([step(
+        "fresh",
+        json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}}),
+        json!({}),
+        "task"
+    )]);
+    write(&f.bundle, &bundle);
+    assert_eq!(f.start("canonical-pin")["status"], "succeeded");
+    let snapshot = || {
+        db.query_row(
+            "SELECT json_array(run_id,sequence,event_id,type,occurred_at,node_id,attempt_id,causation_id,correlation_id,artifact_refs,payload) FROM events WHERE run_id=?1",
+            [&run],
+            |r| r.get::<_, String>(0),
+        ).unwrap()
+    };
+    for field in [
+        "node_id",
+        "attempt_id",
+        "causation_id",
+        "correlation_id",
+        "occurred_at",
+    ] {
+        let original_row = snapshot();
+        let original_value: Option<String> = db
+            .query_row(
+                &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                [&run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.execute(
+            &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+            rusqlite::params!["2026-11-13T00:00:00Z", run],
+        )
+        .unwrap();
+        let before = snapshot();
+        assert!(
+            !output(&f.repo, &f.state, &args).status.success(),
+            "{field}"
+        );
+        assert_eq!(snapshot(), before, "repin mutated {field}");
+        let failed = f.start(&format!("corrupt-{field}"));
+        assert_eq!(failed["status"], "failed", "{field}: {failed}");
+        assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+        assert!(
+            failed.to_string().contains("durable native pin"),
+            "{failed}"
+        );
+        assert_eq!(snapshot(), before, "planning mutated {field}");
+        db.execute(
+            &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+            rusqlite::params![original_value, run],
+        )
+        .unwrap();
+        assert_eq!(snapshot(), original_row);
+        assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+    }
+    let conflicting = cas.put_json(&json!({"not":"the pinned template"})).unwrap();
+    let missing = format!("sha256:{}", "f".repeat(64));
+    for artifact in [&conflicting, &missing] {
+        let payload = json!({"artifact_id":artifact}).to_string();
+        let refs = json!([artifact]).to_string();
+        db.execute(
+            "UPDATE events SET payload=?1,artifact_refs=?2 WHERE run_id=?3",
+            rusqlite::params![payload, refs, run],
+        )
+        .unwrap();
+        let refused = output(&f.repo, &f.state, &args);
+        assert!(
+            !refused.status.success(),
+            "{}",
+            crate::task_report::text(&refused)
+        );
+        let after: (String, String, String) = db
+            .query_row(
+                "SELECT type,payload,artifact_refs FROM events WHERE run_id=?1",
+                [&run],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            after,
+            (original.0.clone(), payload, refs),
+            "refusal must not rewrite the record"
+        );
+    }
+    db.execute(
+        "UPDATE events SET payload=?1,artifact_refs=?2 WHERE run_id=?3",
+        rusqlite::params![original.1, original.2, run],
+    )
+    .unwrap();
+    assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+    // Pin admission must examine the entire stream, including rows replay used to hide.
+    for sequences in [vec![-1], vec![-9], vec![-1, 0], vec![1], vec![0, 2]] {
+        db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+            .unwrap();
+        for sequence in &sequences {
+            db.execute(
+                "INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
+                 VALUES (?1,?2,?3,?4,'2026-11-13T00:00:00Z',?5,?6)",
+                rusqlite::params![run, sequence, format!("corrupt-{sequence}"), original.0, original.2, original.1],
+            ).unwrap();
+        }
+        let snapshot = || {
+            db.prepare("SELECT sequence,event_id,type,payload,artifact_refs FROM events WHERE run_id=?1 ORDER BY sequence")
+                .unwrap().query_map([&run], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)))
+                .unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        let before = snapshot();
+        assert!(
+            !output(&f.repo, &f.state, &args).status.success(),
+            "{sequences:?}"
+        );
+        assert_eq!(snapshot(), before, "refusal must preserve every row");
+    }
+    db.execute("DELETE FROM events WHERE run_id=?1", [&run])
+        .unwrap();
+    assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+    let mut store = af_store::EventStore::open(task_state.join("events.sqlite")).unwrap();
+    store
+        .append(
+            &run,
+            &cas,
+            af_store::NewEvent::new(
+                af_contracts::EventType::ScenarioTemplatePinnedV1,
+                serde_json::from_str(&original.1).unwrap(),
+            )
+            .referencing(serde_json::from_str(&original.2).unwrap()),
+        )
+        .unwrap();
+    let before = store.replay(&run).unwrap();
+    assert_eq!(before.len(), 2);
+    assert!(!output(&f.repo, &f.state, &args).status.success());
+    assert_eq!(store.replay(&run).unwrap(), before);
+    // A corrupt but individually valid sequential history must never be replayed while
+    // repinning holds SQLite's writer lock. Keep a real unrelated Task heartbeat active.
+    let duplicate = af_store::NewEvent::new(
+        af_contracts::EventType::ScenarioTemplatePinnedV1,
+        serde_json::from_str(&original.1).unwrap(),
+    )
+    .referencing(serde_json::from_str(&original.2).unwrap());
+    store
+        .append_batch(&run, &cas, &vec![duplicate; 4095])
+        .unwrap();
+    let before = store.replay(&run).unwrap();
+    let planned = cli(
+        &f.repo,
+        &task_state,
+        &["task", "plan", "--file", "ticket.json"],
+    );
+    let mut active = store.reopen(std::time::Duration::from_secs(1)).unwrap();
+    let lease = active
+        .take_task_lease(
+            &cas,
+            planned["task_id"].as_str().unwrap(),
+            "pin-history-heartbeat",
+            6_000,
+        )
+        .unwrap();
+    let expiry = active.task_lease_state(&lease).unwrap();
+    let shared = std::sync::Mutex::new(&mut active);
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let lost = std::sync::atomic::AtomicBool::new(false);
+    af_runtime::task::lease::with_heartbeat_supervised(
+        &shared,
+        &cas,
+        &lease,
+        af_runtime::task::lease::HeartbeatControl {
+            cancellation: Some(&cancelled),
+            writer_lost: Some(&lost),
+            timing: af_runtime::task::lease::LeaseTiming::for_lease(6_000),
+        },
+        || {
+            let _busy = shared.lock().unwrap();
+            assert!(!output(&f.repo, &f.state, &args).status.success());
+            assert_eq!(f.start("large-duplicate-pin")["status"], "failed");
+            assert_eq!(store.replay(&run).unwrap(), before);
+            db.execute("DELETE FROM events WHERE run_id=?1 AND sequence<>0", [&run])
+                .unwrap();
+            for field in [
+                "event_id",
+                "type",
+                "occurred_at",
+                "node_id",
+                "attempt_id",
+                "causation_id",
+                "correlation_id",
+                "payload",
+                "artifact_refs",
+            ] {
+                let original: Option<String> = db
+                    .query_row(
+                        &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                        [&run],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                db.execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    rusqlite::params!["é".repeat(129), run],
+                )
+                .unwrap();
+                let before = snapshot();
+                assert!(
+                    !output(&f.repo, &f.state, &args).status.success(),
+                    "{field}"
+                );
+                let failed = f.start(&format!("oversized-{field}"));
+                assert_eq!(failed["status"], "failed", "{field}: {failed}");
+                assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+                assert_eq!(snapshot(), before, "refusal mutated {field}");
+                db.execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    rusqlite::params![original, run],
+                )
+                .unwrap();
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while store.task_lease_state(&lease).unwrap() < expiry + 3_000 {
+                assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "heartbeat did not renew"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(cli(&f.repo, &f.state, &args), pinned);
 }

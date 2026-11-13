@@ -19,8 +19,8 @@ spec.loader.exec_module(w)
 
 
 def pin(pipeline, kind='implement'):
-    return {'schema': 'af/scenario-template-pin@1', 'template_id': 'sha256:' + '1' * 64,
-            'template': {'schema': 'af/scenario-task-template@1', 'repo': '/project', 'state': '/private/state',
+    return {'schema': 'af/scenario-template-pin@2', 'template_id': 'sha256:' + '1' * 64,
+            'template': {'schema': 'af/scenario-task-template@2', 'repo': '/project', 'state': '/private/state',
                          'authority_commit': '1' * 40, 'repository_id': 'fixture',
                          'source_content_digest': 'sha256:' + '2' * 64, 'authority_id': 'sha256:' + '3' * 64,
                          'max_tokens': 1000, 'bindings': None,

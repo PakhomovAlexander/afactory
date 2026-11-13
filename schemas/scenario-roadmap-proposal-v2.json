@@ -21,7 +21,7 @@
       "const": "af/scenario-roadmap-proposal@2"
     },
     "id": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/name"
+      "$ref": "urn:af:schema:scenario:6#/$defs/name"
     },
     "objective": {
       "type": "string",
@@ -128,7 +128,7 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:scenario:5#/$defs/name"
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
         },
         "objective": {
           "type": "string",
@@ -221,7 +221,7 @@
         "dependencies": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:5#/$defs/name"
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
           },
           "minItems": 0,
           "maxItems": 255,
@@ -230,7 +230,7 @@
         "conflicts": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:5#/$defs/name"
+            "$ref": "urn:af:schema:scenario:6#/$defs/name"
           },
           "minItems": 0,
           "maxItems": 255,
@@ -309,7 +309,7 @@
           "const": "af/scenario-roadmap-proposal@2"
         },
         "id": {
-          "$ref": "urn:af:schema:scenario:5#/$defs/name"
+          "$ref": "urn:af:schema:scenario:6#/$defs/name"
         },
         "objective": {
           "type": "string",

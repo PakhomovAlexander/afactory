@@ -86,7 +86,7 @@ def main():
         ant_paths = []
         for label in ['weather', 'library']:
             bundle = json.loads((ROOT / f'fixtures/scenarios/results/{label}.json').read_text())
-            ant = {'schema': 'af/ant@6', 'id': label, 'scenario': bundle, 'inputs': {},
+            ant = {'schema': 'af/ant@7', 'id': label, 'scenario': bundle, 'inputs': {},
                    'schedule': {'kind': 'interval', 'seconds': 1,
                                 'start_unix_ms': time.time_ns() // 1_000_000},
                    'owner': 'fixture', 'notification': 'local:fixture',

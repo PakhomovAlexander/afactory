@@ -1,18 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario-template-pin:1",
-  "title": "scenario-template-pin v1",
+  "$id": "urn:af:schema:scenario-template-pin:2",
+  "title": "scenario-template-pin v2",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af/scenario-template-pin@1"
+      "const": "af/scenario-template-pin@2"
     },
     "template_id": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     },
     "template": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/Template"
+      "$ref": "urn:af:schema:scenario:6#/$defs/Template"
     }
   },
   "required": [

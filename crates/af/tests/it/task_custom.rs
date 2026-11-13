@@ -659,7 +659,7 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     )
     .unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-bundle-v5.json"),
+        &crate::schemas::validator("scenario-bundle-v6.json"),
         &bundle,
     );
     bundle["definitions"]["triage"]["steps"][0]["operation"]["target"] = json!({"repo":f.repo,"state":f.state,"task_id":"triage-one","plan_id":planned["plan_id"],"revision_id":planned["revision_id"],"max_tokens":150000});

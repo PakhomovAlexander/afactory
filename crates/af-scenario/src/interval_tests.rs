@@ -33,7 +33,7 @@ fn native_interval_boundaries_replay_overlap_misfire_and_clock_recovery() {
                 .is_empty()
         );
         ant.validate(&TestHost::default(), &runs).unwrap();
-        valid("ant-state-v7.json", &ant);
+        valid("ant-state-v8.json", &ant);
         let text = serde_json::to_string(&ant).unwrap();
         ant = serde_json::from_str(&text).unwrap();
         if seconds > 900 {
@@ -68,7 +68,7 @@ fn native_interval_boundaries_replay_overlap_misfire_and_clock_recovery() {
         assert_eq!(ant.occurrences[2].through_index, 1_000_000);
         assert_eq!(ant.occurrences[2].outcome, OccurrenceOutcome::SkippedMissed);
         ant.validate(&TestHost::default(), &runs).unwrap();
-        valid("ant-state-v7.json", &ant);
+        valid("ant-state-v8.json", &ant);
         assert!(
             ant.tick(&TestHost::default(), later + 1, &mut runs)
                 .unwrap()
@@ -165,16 +165,16 @@ fn interval_serde_refusals_and_old_generations_fail_closed() {
         assert!(serde_json::from_value::<Ant>(wire).is_err());
     }
     let mut old = ant.clone();
-    old.schema = "af/ant-state@5".into();
+    old.schema = "af/ant-state@7".into();
     assert!(
         old.validate(&TestHost::default(), &BTreeMap::new())
             .is_err()
     );
     let mut old = ant.pin.clone();
-    old.schema = "af/ant-pin@5".into();
+    old.schema = "af/ant-pin@6".into();
     assert!(old.validate(&TestHost::default()).is_err());
     let mut old = ant.pin.definition;
-    old.schema = "af/ant@5".into();
+    old.schema = "af/ant@6".into();
     assert!(old.validate(&TestHost::default()).is_err());
     let root = tempfile::tempdir().unwrap();
     let store = Store::isolated(root.path()).unwrap();

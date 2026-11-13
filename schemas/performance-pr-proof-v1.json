@@ -15,13 +15,13 @@
       "const": "af/performance-pr-proof@1"
     },
     "request_digest": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     },
     "source_snapshot": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     },
     "candidate_snapshot": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
     },
     "body": {
       "type": "string",

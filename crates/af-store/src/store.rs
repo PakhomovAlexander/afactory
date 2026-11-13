@@ -547,6 +547,44 @@ impl EventStore {
         })
     }
 
+    /// Read exactly one canonical Scenario template pin without replaying its stream.
+    /// The indexed probe visits at most two sequence entries (including negative ones).
+    /// Each returned text column is capped at 256 UTF-8 bytes in SQLite, before Rust
+    /// allocates or decodes it; optional metadata is observed only as NULL predicates.
+    /// No CAS access occurs here, so this is safe inside pin publication's transaction.
+    pub fn scenario_template_pin(&self, run_id: &str) -> Result<String, StoreError> {
+        let invalid = || StoreError::Conflict("Template has no exact durable native pin".into());
+        let Some(digest) = run_id.strip_prefix("scenario-template-") else {
+            return Err(invalid());
+        };
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        let mut statement = self.conn.prepare(SCENARIO_PIN_SQL)?;
+        let mut rows = statement.query([run_id])?;
+        let row = rows.next()?.ok_or_else(invalid)?;
+        let mut fields = Vec::with_capacity(5);
+        for column in 0..5 {
+            fields.push(row.get::<_, Option<String>>(column)?.ok_or_else(invalid)?);
+        }
+        if !row.get::<_, bool>(5)?
+            || fields[0] != derive_event_id(run_id, 0)
+            || fields[1] != EventType::ScenarioTemplatePinnedV1.to_string()
+            || fields[2] != "1970-01-01T00:00:00Z"
+        {
+            return Err(invalid());
+        }
+        let payload: serde_json::Value = serde_json::from_str(&fields[3])?;
+        let references: Vec<String> = serde_json::from_str(&fields[4])?;
+        let artifact = payload["artifact_id"].as_str().ok_or_else(invalid)?;
+        af_contracts::event::validate_event_payload(EventType::ScenarioTemplatePinnedV1, &payload)
+            .map_err(|_| invalid())?;
+        if payload != serde_json::json!({"artifact_id": artifact}) || references != [artifact] {
+            return Err(invalid());
+        }
+        Ok(artifact.to_owned())
+    }
+
     /// Append one event, assigning it the next sequence for its run.
     ///
     /// Every referenced artifact must already be in `cas`, and durable before the row lands.
@@ -563,6 +601,62 @@ impl EventStore {
             .into_iter()
             .next()
             .ok_or_else(|| StoreError::Conflict("single-event append produced no event".into()))
+    }
+
+    /// Append only when the run is empty, under the same writer lock as the insert.
+    /// `None` means another event already exists; callers must validate that history
+    /// before treating creation as idempotent success.
+    pub fn append_if_empty(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        event: NewEvent,
+    ) -> Result<Option<RunEvent>, StoreError> {
+        Ok(self
+            .append_batch_committed(run_id, cas, &[event], None, None, true)?
+            .into_iter()
+            .next())
+    }
+
+    /// Capture a Scenario template under a process-owned CAS reservation, leaving SQLite
+    /// available for Task heartbeats. `capture` must validate the complete captured closure;
+    /// `validate` checks the exact durable pin, including an already existing stream. Any
+    /// failure rolls back publication. CAS objects left by a failed capture remain scratch.
+    /// All CAS verification belongs in `capture`; `validate` must use only SQLite and bounded
+    /// in-memory checks, because it runs under the writer lock.
+    pub fn capture_scenario_template<T>(
+        &self,
+        cas: &Cas,
+        capture: impl FnOnce() -> Result<(String, NewEvent, T), String>,
+        validate: impl FnOnce(&Self, &T) -> Result<(), String>,
+    ) -> Result<T, String> {
+        let _capture = cas.hold_capture(false).map_err(|e| e.to_string())?;
+        let (run, event, value) = capture()?;
+        if event.event_type != EventType::ScenarioTemplatePinnedV1 {
+            return Err("Template capture requires a Scenario template pin event".into());
+        }
+        // Captured source bytes can leave thousands of pending syncs. The reservation
+        // protects them through this durability barrier without blocking SQLite renewal.
+        self.prepare_event_artifacts(cas, std::slice::from_ref(&event))
+            .map_err(|e| e.to_string())?;
+        let verified = VerifiedScenarioPin {
+            event: &event,
+            _reservation: &_capture,
+        };
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| e.to_string())?;
+        let appended = if self.is_empty(&run).map_err(|e| e.to_string())? {
+            verified.insert(&tx, &run).map_err(|e| e.to_string())?
+        } else {
+            Vec::new()
+        };
+        validate(self, &value)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.committed(cas, &appended, None);
+        Ok(value)
     }
 
     /// Atomically append an ordered event batch.
@@ -603,8 +697,9 @@ impl EventStore {
             return Ok(Vec::new());
         }
         let span = store_span("af.store.append", "append");
-        let appended = span
-            .in_scope(|| self.append_batch_committed(run_id, cas, events, task_permit, applied));
+        let appended = span.in_scope(|| {
+            self.append_batch_committed(run_id, cas, events, task_permit, applied, false)
+        });
         if !span.is_disabled() {
             let bytes = events
                 .iter()
@@ -622,6 +717,7 @@ impl EventStore {
         events: &[NewEvent],
         task_permit: Option<&task::WritePermit>,
         applied: Option<&task::TaskProjection>,
+        require_empty: bool,
     ) -> Result<Vec<RunEvent>, StoreError> {
         if events.iter().any(|e| {
             matches!(
@@ -645,6 +741,16 @@ impl EventStore {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if require_empty {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id=?1)",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                return Ok(Vec::new());
+            }
+        }
         let first: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
@@ -669,6 +775,7 @@ impl EventStore {
                 !matches!(
                     event.event_type,
                     EventType::SourceCapturedV1
+                        | EventType::ScenarioTemplatePinnedV1
                         | EventType::CheckCompletedV1
                         | EventType::ProjectRegisteredV1
                         | EventType::WorkspaceRegisteredV1
@@ -688,11 +795,7 @@ impl EventStore {
         Ok(appended)
     }
 
-    fn prepare_event_artifacts(
-        &mut self,
-        cas: &Cas,
-        events: &[NewEvent],
-    ) -> Result<(), StoreError> {
+    fn prepare_event_artifacts(&self, cas: &Cas, events: &[NewEvent]) -> Result<(), StoreError> {
         let mut verified = std::collections::BTreeSet::new();
         for event in events {
             af_contracts::json::admit(&event.payload)
@@ -826,6 +929,14 @@ impl EventStore {
         mut budget: Option<&mut ReplayBudget>,
         bytes: &mut u64,
     ) -> Result<Vec<RunEvent>, Bounded> {
+        let negative: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE run_id=?1 AND sequence < 0)",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        if negative {
+            return Err(StoreError::Conflict(format!("negative sequence in run {run_id}")).into());
+        }
         let first_sequence_sql = i64::try_from(first_sequence).map_err(|_| {
             StoreError::Conflict("event replay sequence exceeds SQLite range".into())
         })?;
@@ -931,7 +1042,12 @@ impl EventStore {
     }
 
     pub fn is_empty(&self, run_id: &str) -> Result<bool, StoreError> {
-        Ok(self.len(run_id)? == 0)
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE run_id=?1)",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        Ok(!exists)
     }
 }
 
@@ -1026,6 +1142,28 @@ fn decode_stored_event(run_id: &str, row: StoredEventRow) -> Result<RunEvent, St
     })
 }
 
+// MATERIALIZED bounds the complete history probe, independently of the outer lookup.
+// The primary key covers (run_id, sequence), so no sort, table scan or COUNT is needed.
+// Bundled SQLite's octet_length uses OPFLAG_BYTELENARG on the direct column: it
+// reads the record's byte length without loading text from overflow pages or counting
+// Unicode characters. CASE fetches the actual column only after its budget passes,
+// preventing oversized allocations inside SQLite as well as in Rust.
+const SCENARIO_PIN_SQL: &str = "
+    WITH pins AS MATERIALIZED (
+        SELECT sequence FROM events WHERE run_id=?1 ORDER BY sequence LIMIT 2
+    )
+    SELECT
+        CASE WHEN octet_length(event_id) <= 256 THEN event_id END,
+        CASE WHEN octet_length(type) <= 256 THEN type END,
+        CASE WHEN octet_length(occurred_at) <= 256 THEN occurred_at END,
+        CASE WHEN octet_length(payload) <= 256 THEN payload END,
+        CASE WHEN octet_length(artifact_refs) <= 256 THEN artifact_refs END,
+        node_id IS NULL AND attempt_id IS NULL AND causation_id IS NULL
+            AND correlation_id IS NULL
+    FROM events WHERE run_id=?1 AND sequence=0
+        AND (SELECT sequence FROM pins LIMIT 1)=0
+        AND NOT EXISTS (SELECT 1 FROM pins LIMIT 1 OFFSET 1)";
+
 fn derive_event_id(run_id: &str, sequence: i64) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1058,6 +1196,34 @@ fn insert_events(
             });
         }
     }
+    insert_preverified_events(tx, run_id, events, first)
+}
+
+// Only constructed by capture_scenario_template, after verification and flush under its
+// live shared reservation. Collection cannot invalidate these references before commit.
+struct VerifiedScenarioPin<'a> {
+    event: &'a NewEvent,
+    _reservation: &'a nix::fcntl::Flock<std::fs::File>,
+}
+
+impl VerifiedScenarioPin<'_> {
+    fn insert(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        run_id: &str,
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        insert_preverified_events(tx, run_id, std::slice::from_ref(self.event), 0)
+    }
+}
+
+// SQLite and in-memory work only. Ordinary append must go through insert_events' CAS
+// recheck; only a verified, reservation-protected Scenario pin may bypass that recheck.
+fn insert_preverified_events(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    events: &[NewEvent],
+    first: i64,
+) -> Result<Vec<RunEvent>, StoreError> {
     if events.is_empty() {
         return Ok(Vec::new());
     }
@@ -1512,6 +1678,285 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_append_if_empty_publishes_exactly_one_event() {
+        let (dir, store, cas) = fixture();
+        let path = store.database_path().unwrap();
+        let cas_path = dir.path().join("cas");
+        let barrier = std::sync::Barrier::new(8);
+        let winners = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut contender = EventStore::open(&path).unwrap();
+                        let cas = Cas::open(&cas_path).unwrap();
+                        assert!(contender.is_empty("pin").unwrap());
+                        barrier.wait();
+                        contender
+                            .append_if_empty(
+                                "pin",
+                                &cas,
+                                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+                            )
+                            .unwrap()
+                            .is_some()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| usize::from(h.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(winners, 1);
+        let before = store.replay("pin").unwrap();
+        assert_eq!(before.len(), 1);
+        let mut reopened = EventStore::open(&path).unwrap();
+        assert!(
+            reopened
+                .append_if_empty(
+                    "pin",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({"conflict":true}))
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(reopened.replay("pin").unwrap(), before);
+    }
+
+    #[test]
+    fn template_capture_validation_failure_rolls_back_its_root() {
+        let (_dir, store, cas) = fixture();
+        let artifact = cas.put_json(&json!({"captured":"template"})).unwrap();
+        let error = store
+            .capture_scenario_template(
+                &cas,
+                || {
+                    Ok((
+                        "pin".into(),
+                        NewEvent::new(
+                            EventType::ScenarioTemplatePinnedV1,
+                            json!({"artifact_id":artifact}),
+                        )
+                        .referencing(vec![artifact.clone()]),
+                        (),
+                    ))
+                },
+                |locked, ()| {
+                    assert_eq!(locked.replay("pin").unwrap().len(), 1);
+                    Err("incomplete captured closure".into())
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error, "incomplete captured closure");
+        assert!(store.is_empty("pin").unwrap());
+        // Failure releases the process reservation along with rolling back the root. Native
+        // collection can recover the unpublished objects immediately, with no stale lease.
+        let mut collector = store.reopen(std::time::Duration::ZERO).unwrap();
+        collector.apply_task_collection(&cas, 0, 0, false).unwrap();
+        assert!(cas.get_json(&artifact).is_err());
+    }
+
+    #[test]
+    fn template_capture_refuses_a_collector_before_reading_or_reusing_objects() {
+        let (_dir, store, cas) = fixture();
+        let collection = cas.hold_capture(true).unwrap();
+        let error = store
+            .capture_scenario_template(
+                &cas,
+                || -> Result<(String, NewEvent, ()), String> {
+                    panic!("capture must not start while collection owns the CAS")
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+        assert!(error.contains("CAS capture/collection reservation"));
+        drop(collection);
+        assert!(cas.hold_capture(false).is_ok());
+    }
+
+    #[test]
+    fn append_if_empty_and_replay_refuse_corrupt_sequences_without_mutation() {
+        for sequences in [vec![-1], vec![-9], vec![-1, 0], vec![1], vec![0, 2]] {
+            let (_dir, mut store, cas) = fixture();
+            for sequence in &sequences {
+                store.conn.execute(
+                    "INSERT INTO events (run_id,sequence,event_id,type,occurred_at,artifact_refs,payload)
+                     VALUES ('pin',?1,?2,'SourceCaptured@1','2026-11-13T00:00:00Z','[]','{}')",
+                    params![sequence, derive_event_id("pin", *sequence)],
+                ).unwrap();
+            }
+            assert!(
+                store
+                    .append_if_empty(
+                        "pin",
+                        &cas,
+                        NewEvent::new(EventType::SourceCapturedV1, json!({}))
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(store.replay("pin").is_err(), "{sequences:?}");
+            let after: Vec<i64> = store
+                .conn
+                .prepare("SELECT sequence FROM events WHERE run_id='pin' ORDER BY sequence")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(after, sequences);
+        }
+    }
+
+    #[test]
+    fn scenario_pin_read_bounds_rows_bytes_and_query_work() {
+        let (_dir, mut store, cas) = fixture();
+        let run = format!("scenario-template-{}", "a".repeat(64));
+        let artifact = cas.put_json(&json!({"template": true})).unwrap();
+        let event = NewEvent::new(
+            EventType::ScenarioTemplatePinnedV1,
+            json!({"artifact_id":artifact}),
+        )
+        .referencing(vec![artifact.clone()]);
+        store.append(&run, &cas, event.clone()).unwrap();
+        assert_eq!(store.scenario_template_pin(&run).unwrap(), artifact);
+        for field in ["payload", "artifact_refs"] {
+            let original: String = store
+                .conn
+                .query_row(
+                    &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                    [&run],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // Whitespace remains semantically exact up to the byte budget, inclusive.
+            for bytes in [255, 256, 257] {
+                let padded = format!("{original:bytes$}");
+                store
+                    .conn
+                    .execute(
+                        &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                        params![padded, run],
+                    )
+                    .unwrap();
+                assert_eq!(store.scenario_template_pin(&run).is_ok(), bytes <= 256);
+            }
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    params![original, run],
+                )
+                .unwrap();
+        }
+        for field in [
+            "event_id",
+            "type",
+            "occurred_at",
+            "node_id",
+            "attempt_id",
+            "causation_id",
+            "correlation_id",
+            "payload",
+            "artifact_refs",
+        ] {
+            let original: Option<String> = store
+                .conn
+                .query_row(
+                    &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                    [&run],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // 129 characters but 258 bytes: a character-count guard would be insufficient.
+            let oversized = "é".repeat(129);
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    params![oversized, run],
+                )
+                .unwrap();
+            assert!(store.scenario_template_pin(&run).is_err(), "{field}");
+            let after: String = store
+                .conn
+                .query_row(
+                    &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                    [&run],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(after, oversized);
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    params![original, run],
+                )
+                .unwrap();
+        }
+        for sequence in [-1, 1, 9] {
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET sequence=?1 WHERE run_id=?2",
+                    params![sequence, run],
+                )
+                .unwrap();
+            assert!(store.scenario_template_pin(&run).is_err());
+        }
+        store
+            .conn
+            .execute("UPDATE events SET sequence=0 WHERE run_id=?1", [&run])
+            .unwrap();
+        store.append_batch(&run, &cas, &vec![event; 4096]).unwrap();
+        assert!(store.scenario_template_pin(&run).is_err());
+        let mut query = store.conn.prepare(SCENARIO_PIN_SQL).unwrap();
+        assert!(!query.exists([&run]).unwrap());
+        assert!(query.get_status(rusqlite::StatementStatus::VmStep) < 200);
+        // SQLite counts the single step to the second row of the bounded `pins`
+        // materialization as a full-scan step; the event table itself is index-only probed.
+        assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 1);
+        assert_eq!(query.get_status(rusqlite::StatementStatus::Sort), 0);
+        // Audit the byte guards too: VM step counts alone cannot detect an opcode
+        // that loads a huge text value. All five size probes must use metadata only.
+        let byte_probes = store
+            .conn
+            .prepare(&format!("EXPLAIN {SCENARIO_PIN_SQL}"))
+            .unwrap()
+            .query_map([&run], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, u32>(6)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .filter(|(opcode, flags)| opcode == "Column" && flags & 0xc0 == 0xc0)
+            .count();
+        assert_eq!(byte_probes, 5);
+        let plan = store
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {SCENARIO_PIN_SQL}"))
+            .unwrap()
+            .query_map([&run], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("COVERING INDEX") && line.contains("run_id=?")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.contains("SCAN events") || line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
     fn a_reopened_store_continues_the_sequence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.sqlite");
@@ -1578,6 +2023,38 @@ mod tests {
         let error = store.append("review", &cas, event).unwrap_err().to_string();
         assert!(error.contains("native Task publication"), "{error}");
         assert!(store.is_empty("review").unwrap());
+    }
+
+    #[test]
+    fn ordinary_insert_refuses_a_reference_collected_after_preparation() {
+        let (directory, mut store, cas) = fixture();
+        let artifact = cas.put(b"unreserved scratch").unwrap();
+        let event = NewEvent::new(EventType::SourceCapturedV1, json!({}))
+            .referencing(vec![artifact.clone()]);
+        store
+            .prepare_event_artifacts(&cas, std::slice::from_ref(&event))
+            .unwrap();
+        // Ordinary append has no capture reservation. A sweep may remove its references
+        // between preparation and acquiring SQLite; the insertion must still fail closed.
+        let digest = artifact.strip_prefix("sha256:").unwrap();
+        std::fs::remove_file(
+            directory
+                .path()
+                .join("cas/objects")
+                .join(&digest[..2])
+                .join(&digest[2..]),
+        )
+        .unwrap();
+        let tx = store
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(matches!(
+            insert_events(&tx, &cas, "ordinary", &[event], 0),
+            Err(StoreError::DanglingArtifact { digest }) if digest == artifact
+        ));
+        tx.rollback().unwrap();
+        assert!(store.is_empty("ordinary").unwrap());
     }
 
     #[test]

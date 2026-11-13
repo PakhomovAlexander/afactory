@@ -304,6 +304,31 @@ pub struct Cas {
 }
 
 impl Cas {
+    /// Process-owned capture/collection exclusion on the existing CAS directory inode.
+    /// Shared holders may capture even old reused objects; an exclusive collector refuses
+    /// before taking SQLite's writer lock. No timestamp, durable authority or recovery row is
+    /// involved: close/unwind/process death releases the reservation automatically.
+    pub(crate) fn hold_capture(
+        &self,
+        collecting: bool,
+    ) -> Result<nix::fcntl::Flock<fs::File>, CasError> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_DIRECTORY | nix::libc::O_NOFOLLOW)
+            .open(&self.root)?;
+        let operation = if collecting {
+            nix::fcntl::FlockArg::LockExclusiveNonblock
+        } else {
+            nix::fcntl::FlockArg::LockSharedNonblock
+        };
+        nix::fcntl::Flock::lock(directory, operation).map_err(|(_, error)| {
+            CasError::Io(std::io::Error::other(format!(
+                "CAS capture/collection reservation is held or unavailable: {error}"
+            )))
+        })
+    }
+
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CasError> {
         let root = root.as_ref().to_path_buf();
         // The CAS holds whole source snapshots, prompts and results: private, whatever the

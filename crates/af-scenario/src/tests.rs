@@ -44,7 +44,7 @@ pub fn simple() -> (Bundle, Policy) {
         },
     };
     let def = Scenario {
-        schema: "af/scenario@5".into(),
+        schema: "af/scenario@6".into(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::from([("ok".into(), Port::Boolean)]),
         steps: vec![step],
@@ -61,7 +61,7 @@ pub fn simple() -> (Bundle, Policy) {
     };
     (
         Bundle {
-            schema: "af/scenario-bundle@5".into(),
+            schema: "af/scenario-bundle@6".into(),
             root: "main".into(),
             definitions: BTreeMap::from([("main".into(), def)]),
         },
@@ -124,7 +124,7 @@ fn publication() -> (Bundle, Policy) {
 pub fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
-        schema: "af/ant@6".into(),
+        schema: "af/ant@7".into(),
         id: "daily".into(),
         scenario,
         inputs: BTreeMap::new(),
@@ -161,7 +161,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
     for file in [
-        "scenario-v5.json",
+        "scenario-v6.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
         "scenario-roadmap-v3.json",
@@ -210,7 +210,7 @@ fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results
     }))
     .unwrap();
     Datum::Task(receipt.clone()).validate().unwrap();
-    let validator = schema("scenario-v5.json#/$defs/TaskReceipt");
+    let validator = schema("scenario-v6.json#/$defs/TaskReceipt");
     let mut wire = serde_json::to_value(&receipt).unwrap();
     let errors: Vec<_> = validator
         .iter_errors(&wire)
@@ -245,42 +245,54 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
     let ant = ant("UTC", 12, 0);
     for (file, value) in [
         (
-            "scenario-v5.json",
+            "scenario-v6.json",
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
-        ("scenario-bundle-v5.json", json!(bundle)),
+        ("scenario-bundle-v6.json", json!(bundle)),
         ("scenario-policy-v5.json", json!(policy)),
-        ("scenario-pin-v5.json", json!(pin)),
-        ("scenario-run-v5.json", json!(run)),
-        ("ant-v6.json", json!(ant.pin.definition)),
-        ("ant-pin-v6.json", json!(ant.pin)),
-        ("ant-state-v7.json", json!(ant)),
+        ("scenario-pin-v6.json", json!(pin)),
+        ("scenario-run-v6.json", json!(run)),
+        ("ant-v7.json", json!(ant.pin.definition)),
+        ("ant-pin-v7.json", json!(ant.pin)),
+        ("ant-state-v8.json", json!(ant)),
         (
-            "scenario-list-v5.json",
-            json!({"schema":"af/scenario-list@5","runs":{"run":run}}),
+            "scenario-list-v6.json",
+            json!({"schema":"af/scenario-list@6","runs":{"run":run}}),
         ),
         (
-            "ant-list-v7.json",
-            json!({"schema":"af/ant-list@7","ants":{"daily":{
-                "schema":"af/ant-inspection@2", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
+            "ant-list-v8.json",
+            json!({"schema":"af/ant-list@8","ants":{"daily":{
+                "schema":"af/ant-inspection@3", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
                 "scheduler":{"schema":"af/ant-scheduler@1","running":false,"started_unix_ms":null,"heartbeat_unix_ms":null,"stop_requested":false,"error":null},"next_due_unix_ms":START,"next_due_error":null,"active_run":null,"last_lateness_ms":null
             }}}),
         ),
         (
-            "ant-tick-v6.json",
-            json!({"schema":"af/ant-tick@6","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v7.json",
+            json!({"schema":"af/ant-tick@7","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
         let mut old = value.clone();
-        old["schema"] = json!("af/unknown@0");
+        let current = value["schema"].as_str().unwrap();
+        let (kind, version) = current.rsplit_once('@').unwrap();
+        old["schema"] = json!(format!("{kind}@{}", version.parse::<u32>().unwrap() - 1));
         assert!(!schema(file).is_valid(&old), "{file} admitted old version");
     }
+    let host = TestHost::default();
+    let mut previous_bundle = bundle.clone();
+    previous_bundle.schema = "af/scenario-bundle@5".into();
+    assert!(previous_bundle.validate(&host).is_err());
+    previous_bundle = bundle.clone();
+    previous_bundle.definitions.get_mut("main").unwrap().schema = "af/scenario@5".into();
+    assert!(previous_bundle.validate(&host).is_err());
+    let mut previous_pin = pin.clone();
+    previous_pin.schema = "af/scenario-pin@5".into();
+    assert!(previous_pin.validate(&host).is_err());
     let text = serde_json::to_string(&run).unwrap();
     let replay: Run = serde_json::from_str(&text).unwrap();
     assert_eq!(run, replay);
     let mut old = run.clone();
-    old.schema = "af/scenario-run@0".into();
+    old.schema = "af/scenario-run@5".into();
     assert!(old.validate(&TestHost::default()).is_err());
     let mut wrong = json!(bundle);
     wrong["extra"] = json!(true);
@@ -1217,7 +1229,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v9.json", &world);
+    valid("scenario-store-v10.json", &world);
 }
 
 #[test]
@@ -1727,7 +1739,7 @@ fn inert_performance_bundles_have_native_typed_ports_feasible_whole_loop_bounds_
             &std::fs::read(root.join("fixtures/scenarios").join(file)).unwrap(),
         )
         .unwrap();
-        valid("scenario-bundle-v5.json", &value);
+        valid("scenario-bundle-v6.json", &value);
         let bundle: Bundle = serde_json::from_value(value).unwrap();
         bundle.validate(&TestHost::default()).unwrap();
         let definition = &bundle.definitions["performance"];
@@ -1770,7 +1782,7 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
     def.result.insert("ok".into(), selection.clone());
     def.completion = vec![selection];
     bundle.validate(&TestHost::default()).unwrap();
-    valid("scenario-bundle-v5.json", &bundle);
+    valid("scenario-bundle-v6.json", &bundle);
     let mut run = Run::new(
         &TestHost::default(),
         "selection".into(),
