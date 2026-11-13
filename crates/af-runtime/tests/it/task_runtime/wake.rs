@@ -808,8 +808,11 @@ fn wake_long_history_advances_checked_pages_to_completion_and_restores_checkpoin
         .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
         .unwrap();
     f.store.resume_task(&f.cas, &lease, &authority).unwrap();
-    for _ in 0..4100 {
-        f.store.renew_task_lease(&f.cas, &lease, 60000).unwrap();
+    // Advance expiry even when consecutive checked writes share the same millisecond.
+    for index in 1..=4100 {
+        f.store
+            .renew_task_lease(&f.cas, &lease, 60_000 + index)
+            .unwrap();
     }
     f.store
         .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
