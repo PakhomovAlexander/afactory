@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline release preflight regressions, with no binary, benchmark or GitHub access."""
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -32,6 +33,45 @@ def copy_inputs(source, destination):
     schemas = destination / 'schemas'
     shutil.copytree(source / 'schemas', schemas, copy_function=shutil.copyfile)
     schemas.chmod(schemas.stat().st_mode | stat.S_IRWXU)
+
+
+class HostedReleaseDependencies(unittest.TestCase):
+    def test_base_installs_real_signature_dependency_before_release_checks(self):
+        workflow = (ROOT / '.github/workflows/validate.yml').read_text()
+        base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]
+        self.assertIn('"ubuntu-latest", "macos-latest"', base)
+        install, checks = base.split('      - name: Always-on format, lint, policy and binary smoke', 1)
+        self.assertIn('make fmt lint base-check', checks)
+        step = install.split('      - name: Install release-check signature verifier\n', 1)[1]
+        self.assertIn('        shell: bash\n', step)
+        script = '\n'.join(line[10:] for line in step.split('        run: |\n', 1)[1].splitlines())
+        # Exercise the actual workflow shell without installing packages or contacting a service.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'commands'
+            for name in ('sudo', 'brew'):
+                stub = root / name
+                stub.write_text('#!/bin/bash\nprintf "%s\\n" "${0##*/} $*" >> "$COMMAND_LOG"\n'
+                                'exit "$INSTALL_EXIT"\n')
+                stub.chmod(0o755)
+            for runner, commands in (
+                ('Linux', ['sudo apt-get update',
+                           'sudo apt-get install -y --no-install-recommends minisign']),
+                ('macOS', ['brew install minisign']),
+            ):
+                for exit_code in (0, 23):
+                    with self.subTest(runner=runner, exit_code=exit_code):
+                        log.write_text('')
+                        result = subprocess.run([shutil.which('bash'), '-c', script],
+                            env={'PATH': str(root), 'RUNNER_OS': runner,
+                                 'COMMAND_LOG': str(log), 'INSTALL_EXIT': str(exit_code)},
+                            capture_output=True, text=True)
+                        self.assertEqual(result.returncode, exit_code, result.stderr)
+                        self.assertEqual(log.read_text().splitlines(),
+                                         commands if exit_code == 0 else commands[:1])
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        self.assertEqual(policy['pr_validation']['source_files']['.github/workflows/validate.yml'],
+                         hashlib.sha256(workflow.strip().encode()).hexdigest())
 
 
 class ReleaseContract(unittest.TestCase):

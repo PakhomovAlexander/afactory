@@ -18,6 +18,9 @@ npx (for `markdownlint-cli2`), minisign, and 30 GiB
 free on the volume `target/` builds on. It installs and changes nothing,
 and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
 
+`release-check` requires real minisign for its signed release recovery regression. The shared
+CI base job installs it before running those checks, using apt on Linux and Homebrew on macOS.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain (`1.88.0`, with `clippy` and `rustfmt`); `rustup`
