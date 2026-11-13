@@ -98,7 +98,9 @@ inbox until an idle poll, then uses `pi.sendMessage` with `triggerTurn: true` an
 `deliverAs: 'followUp'`; it never steers or runs a parallel turn. Each authenticated idle poll also extracts one checked
 history page and accepts at most one packet for its route. No foreground drain is required during
 that attachment window; `wake drain` remains available for larger catch-up and after hook expiry.
-Closing Pi does not erase that inbox or its native intent.
+Closing Pi does not erase that inbox or its native intent. Disconnect, shutdown and reconnect
+invalidate pending callbacks: an old callback cannot send or change a replacement attachment.
+Any already committed native intent stays uncertain.
 
 ## Registration and finite driving
 
@@ -119,8 +121,11 @@ Catch-up starts at its checked opening and is bounded to 128 observations. The r
 supports exact idempotent registration keys and refuses changed configuration. A new CLI registration
 is a distinct subscription, not an ambiguous-send recovery command.
 
-`drain` performs at most its selected page count and delivery count, each at most 128, and stops
-at its selected wall deadline, at most 300 seconds. Each extraction page examines at most 4096
+`drain` bounds each stage independently to `--max-batches` (at most 128): source visits,
+transport claims and native route visits. Empty or unavailable visits count too. Extraction and
+native traversal positions persist in the Store, so repeated `--max-batches 1` invocations reach
+later subscriptions/routes across restart. These positions do not bypass expiry or uncertainty
+fences. The driver stops at its selected wall deadline, at most 300 seconds. Each extraction page examines at most 4096
 new history rows, retaining the checked checkpoint across restart. Ordinary canonical validation
 can revisit earlier history. Each native request has at most five seconds plus shared supervisor
 cleanup. Extraction/outbox/cursor commit atomically under the Store writer serialization.

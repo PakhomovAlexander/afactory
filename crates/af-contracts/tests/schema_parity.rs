@@ -22,7 +22,8 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 248] = [
+const SCHEMAS: [&str; 249] = [
+    "task-wake-traversal-v1.json",
     "task-wake-pi-config-v1.json",
     "task-wake-pi-next-v1.json",
     "task-wake-capabilities-v1.json",

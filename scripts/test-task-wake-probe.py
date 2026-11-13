@@ -172,7 +172,7 @@ class EvidenceTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('# fail 0', result.stdout)
-        self.assertIn('# tests 4', result.stdout)
+        self.assertIn('# tests 11', result.stdout)
 
 
 if __name__ == '__main__':

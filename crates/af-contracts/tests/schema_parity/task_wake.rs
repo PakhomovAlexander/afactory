@@ -40,12 +40,19 @@ fn wake_owner_routes_and_receiver_contracts_are_closed_and_versioned() {
     let delivery = json!({"schema":"af/task-wake-delivery@1","envelope":envelope,"route_id":digest('1'),
         "attempts":1,"epoch":1,"claim_until_unix_ms":100,"next_attempt_unix_ms":0,"state":"pending","reason":null,"receipts":[]});
     for (schema, value) in [
+        (
+            "traversal",
+            json!({"schema":"af/task-wake-traversal@1", "extraction_after":digest('1'),"native_after":null}),
+        ),
         ("route", route.clone()),
         ("grant", grant),
         ("delivery", delivery),
     ] {
         let validate = |v: Value| -> Result<(), String> {
             match schema {
+                "traversal" => serde_json::from_value::<WakeTraversalV1>(v)
+                    .map_err(|e| e.to_string())?
+                    .validate(),
                 "route" => serde_json::from_value::<WakeRouteV1>(v)
                     .map_err(|e| e.to_string())?
                     .validate(),
@@ -208,4 +215,35 @@ fn wake_states_and_receipt_stages_are_independently_typed() {
         rust("receipt", value).unwrap();
     }
     assert!(decode_bounded::<WakeReceiptV1>(&vec![b' '; MAX_WAKE_BYTES + 1]).is_err());
+}
+
+#[test]
+fn wake_traversal_positions_refuse_malformed_ids() {
+    use af_contracts::task::wake::delivery::WakeTraversalV1;
+    for extraction in [Value::Null, json!(digest('1'))] {
+        for native in [Value::Null, json!(digest('2'))] {
+            let value = json!({"schema":"af/task-wake-traversal@1",
+                "extraction_after":extraction,"native_after":native});
+            assert_valid("task-wake-traversal-v1.json", &value);
+            serde_json::from_value::<WakeTraversalV1>(value.clone())
+                .unwrap()
+                .validate()
+                .unwrap();
+            for key in ["extraction_after", "native_after"] {
+                for invalid in [
+                    json!("unknown"),
+                    json!(7),
+                    json!(format!("{}\n", digest('1'))),
+                ] {
+                    let mut bad = value.clone();
+                    bad[key] = invalid;
+                    assert_invalid("task-wake-traversal-v1.json", &bad, key);
+                    assert!(
+                        serde_json::from_value::<WakeTraversalV1>(bad)
+                            .map_or(true, |v| v.validate().is_err())
+                    );
+                }
+            }
+        }
+    }
 }

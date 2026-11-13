@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub mod delivery;
+mod traversal;
+pub use traversal::WakeTraversalStage;
 
 pub const MAX_SUBSCRIPTIONS: u64 = 128;
 pub const MAX_ENVELOPES: u64 = 4096;
@@ -60,6 +62,9 @@ pub struct WakeJournal {
 }
 
 pub(super) const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS wake_traversal_v1 (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), record TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS wake_incarnation_v1 (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity TEXT NOT NULL, owner TEXT NOT NULL
 );
@@ -156,7 +161,8 @@ fn capacity(conn: &Connection) -> Result<(), StoreError> {
         COALESCE((SELECT SUM(length(route)) FROM wake_routes_v1),0)
         + COALESCE((SELECT SUM(length(record)) FROM wake_delivery_v1),0)
         + (SELECT COUNT(*)*1024 FROM wake_session_fences_v1)
-        + (SELECT COUNT(*)*512 FROM wake_session_stores_v1)",
+        + (SELECT COUNT(*)*512 FROM wake_session_stores_v1)
+        + COALESCE((SELECT SUM(length(record)) FROM wake_traversal_v1),0)",
         [],
         |r| {
             Ok((

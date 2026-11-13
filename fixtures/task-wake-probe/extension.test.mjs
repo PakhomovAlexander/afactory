@@ -113,3 +113,74 @@ test('host hook records argv, waits while busy and stops after uncertain native 
   await events.get('session_shutdown')();
   assert.equal(native.length, 1);
 });
+
+function delayedHook(t) {
+  const f = config(t);
+  const commands = new Map();
+  const events = new Map();
+  const pending = [];
+  const timers = new Set();
+  const sends = [];
+  const notices = [];
+  const originalExec = child.execFile;
+  const originalInterval = globalThis.setInterval;
+  const originalClear = globalThis.clearInterval;
+  t.after(() => {
+    child.execFile = originalExec;
+    globalThis.setInterval = originalInterval;
+    globalThis.clearInterval = originalClear;
+    syncBuiltinESMExports();
+  });
+  child.execFile = (_binary, _args, _options, done) => { pending.push(done); return {}; };
+  syncBuiltinESMExports();
+  globalThis.setInterval = tick => { const timer = { tick, unref() {} }; timers.add(timer); return timer; };
+  globalThis.clearInterval = timer => { assert.ok(timers.delete(timer)); };
+  extension({ registerCommand: (n, v) => commands.set(n, v), on: (n, cb) => events.set(n, cb),
+    sendMessage: (...args) => sends.push(args) });
+  const ctx = { ...context(), ui: { notify: (...args) => notices.push(args) } };
+  return { ...f, commands, events, pending, timers, sends, notices,
+    connect: () => commands.get('af-wake-connect').handler(f.file, ctx) };
+}
+for (const stop of ['disconnect', 'shutdown']) {
+  for (const response of ['success', 'error']) {
+    test(`delayed ${response} callback has no authority after ${stop}`, async t => {
+      const hook = delayedHook(t);
+      await hook.connect();
+      assert.equal(hook.pending.length, 1);
+      const oldTick = [...hook.timers][0].tick;
+      if (stop === 'shutdown') await hook.events.get('session_shutdown')();
+      else await hook.commands.get('af-wake-disconnect').handler();
+      const notices = hook.notices.length;
+      hook.pending[0](response === 'error' ? Error('lost subprocess return') : null, JSON.stringify(packet));
+      oldTick();
+      assert.equal(hook.sends.length, 0, 'a possibly committed intent stays uncertain without sending');
+      assert.equal(hook.notices.length, notices, 'stale errors cannot mutate attachment UI');
+      assert.equal(hook.timers.size, 0);
+      assert.equal(hook.pending.length, 1, 'a queued stale interval cannot poll again');
+    });
+  }
+}
+for (const response of ['success', 'empty', 'error']) {
+  test(`old ${response} callback cannot send or alter replacement polling`, async t => {
+    const hook = delayedHook(t);
+    await hook.connect();
+    const oldTick = [...hook.timers][0].tick;
+    await hook.connect();
+    assert.equal(hook.pending.length, 2, 'replacement has its own in-flight operation');
+    const replacement = [...hook.timers][0];
+    const notices = hook.notices.length;
+    hook.pending[0](response === 'error' ? Error('old failure') : null,
+      JSON.stringify(response === 'empty' ? { ...packet, message: null, delivery_id: null } : packet));
+    oldTick();
+    replacement.tick();
+    assert.equal(hook.pending.length, 2, 'old callback cannot clear replacement in-flight state');
+    assert.equal(hook.sends.length, 0);
+    assert.equal(hook.notices.length, notices);
+    assert.deepEqual([...hook.timers], [replacement], 'old callback cannot stop the replacement timer');
+    hook.pending[1](null, JSON.stringify(packet));
+    assert.equal(hook.sends.length, 1, 'only the current attachment can send');
+    assert.equal(hook.timers.size, 0, 'current uncertain native attempt still stops polling');
+    replacement.tick();
+    assert.equal(hook.pending.length, 2);
+  });
+}

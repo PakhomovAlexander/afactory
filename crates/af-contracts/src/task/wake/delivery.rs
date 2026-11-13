@@ -186,3 +186,27 @@ impl WakeDeliveryV1 {
     }
 }
 wake_contract!(WakeRouteV1, WakeGrantV1, WakeDeliveryV1);
+
+/// Durable fair traversal hints, never delivery, lease or native admission authority.
+/// Positions may outlive removed/expired targets; selection resumes at their sorted successor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeTraversalV1 {
+    pub schema: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub extraction_after: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub native_after: Option<String>,
+}
+impl WakeTraversalV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.schema == "af/task-wake-traversal@1"
+                && [&self.extraction_after, &self.native_after]
+                    .into_iter()
+                    .all(|id| id.as_deref().is_none_or(is_digest)),
+            "Invalid wake traversal version or position",
+        )
+    }
+}
+wake_contract!(WakeTraversalV1);

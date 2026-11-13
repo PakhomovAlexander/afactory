@@ -2947,3 +2947,343 @@ fn a_detached_run_not_admitted_in_time_is_not_claimed_to_run() {
     let waited = af(&repo, &state, &["task", "wait", task, "--timeout", "600"]);
     assert_eq!(waited.status.code(), Some(0), "{}", err(&waited));
 }
+
+#[cfg(target_os = "linux")]
+struct WakeFairFixture {
+    _root: tempfile::TempDir,
+    repo: PathBuf,
+    state: PathBuf,
+    calls: PathBuf,
+    grants: Vec<PathBuf>,
+    _listeners: Vec<std::os::unix::net::UnixListener>,
+}
+#[cfg(target_os = "linux")]
+impl WakeFairFixture {
+    fn new(host: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = task_gc::fixture(root.path());
+        let owner = root.path().join("wake-owner");
+        std::fs::create_dir(&owner).unwrap();
+        std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = owner.canonicalize().unwrap();
+        let calls = owner.join("calls");
+        let binary = owner.join("host-recording-standin");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut f = Self {
+            _root: root,
+            repo,
+            state,
+            calls,
+            grants: vec![],
+            _listeners: vec![],
+        };
+        for task in ["gc-older", "gc-newer"] {
+            expect(
+                &af(
+                    &f.repo,
+                    &f.state,
+                    &["task", "plan", "--file", &format!("{task}.json")],
+                ),
+                0,
+            );
+            let grant = owner.join(format!("{task}.grant"));
+            let session = format!(
+                "{task}-{}",
+                f._root
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .trim_start_matches('.')
+            );
+            let mut args = vec![
+                "grant",
+                task,
+                "--host",
+                host,
+                "--session",
+                &session,
+                "--executable",
+                binary.to_str().unwrap(),
+                "--grant-file",
+                grant.to_str().unwrap(),
+            ];
+            let endpoint;
+            if host == "codex" {
+                endpoint = owner.join(format!("{task}.sock"));
+                f._listeners
+                    .push(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
+                std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o777))
+                    .unwrap();
+                args.extend(["--socket", endpoint.to_str().unwrap()]);
+            } else {
+                assert_eq!(host, "pi");
+                endpoint = owner.join(format!("{task}.ts"));
+                std::fs::write(
+                    &endpoint,
+                    std::fs::read(workspace().join("scripts/task-wake-extension.ts")).unwrap(),
+                )
+                .unwrap();
+                std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600))
+                    .unwrap();
+                args.extend(["--extension", endpoint.to_str().unwrap()]);
+            }
+            document(&f.wake(&args), 0, None);
+            document(
+                &f.wake(&["register", task, "--route", grant.to_str().unwrap()]),
+                0,
+                None,
+            );
+            f.grants.push(grant);
+        }
+        f
+    }
+    fn wake(&self, args: &[&str]) -> Output {
+        crate::common::af()
+            .current_dir(&self.repo)
+            .args(["task", "wake", "--state"])
+            .arg(&self.state)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn status(&self) -> Value {
+        document(
+            &self.wake(&["inspect"]),
+            0,
+            Some("task-wake-status-v1.json"),
+        )
+    }
+    fn drain_one(&self) {
+        let result = document(&self.wake(&["drain", "--max-batches", "1"]), 0, None);
+        assert_eq!(result["pages"], 1);
+        assert_eq!(result["native_batches"], 1);
+        assert!(result["deliveries"].as_u64().unwrap() <= 1);
+    }
+    fn finish(&self, task: &str) {
+        expect(
+            &af(&self.repo, &self.state, &["task", "run", task, "--execute"]),
+            0,
+        );
+    }
+    fn registration_for_route(&self, id: &str) -> Value {
+        self.status()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["registration"]["subscription"]["recipient_ref"] == id)
+            .unwrap()
+            .clone()
+    }
+    fn fill_inbox(&self) {
+        // Public journal/receiver paths isolate native traversal from extraction scheduling.
+        let store = EventStore::open(self.state.join("events.sqlite")).unwrap();
+        let cas = Cas::open_existing(self.state.join("cas")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        for r in store.wake_registrations().unwrap() {
+            assert!(
+                af_runtime::wake::journal::reconcile(
+                    &store,
+                    &cas,
+                    &r.subscription.subscription_id,
+                    now
+                )
+                .unwrap()
+            );
+            for envelope in store
+                .inspect_wake(&r.subscription.subscription_id)
+                .unwrap()
+                .envelopes
+            {
+                let claim = store.claim_wake(&envelope, now).unwrap().unwrap();
+                store.accept_wake(&claim, now).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_one_batch_extraction_passes_caught_up_subscription_across_processes() {
+    let f = WakeFairFixture::new("pi");
+    let status = f.status();
+    let subscriptions = status["subscriptions"].as_array().unwrap();
+    let first = subscriptions[0]["registration"]["subscription"]["subscription_id"]
+        .as_str()
+        .unwrap();
+    let later = subscriptions[1]["registration"]["subscription"]["task"]["task_id"]
+        .as_str()
+        .unwrap();
+    f.drain_one();
+    let status = f.status();
+    let first_journal = status["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["registration"]["subscription"]["subscription_id"] == first)
+        .unwrap();
+    assert!(first_journal["extracted_through"].is_u64());
+    assert!(first_journal["envelopes"].as_array().unwrap().is_empty());
+    f.finish(later);
+    // Every invocation is a fresh CLI process; the first subscription remains caught up.
+    f.drain_one();
+    let status = f.status();
+    let journal = status["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["registration"]["subscription"]["task"]["task_id"] == later)
+        .unwrap();
+    assert_eq!(journal["envelopes"].as_array().unwrap().len(), 1);
+    assert_eq!(journal["envelopes"][0]["observation"]["kind"], "completed");
+    let retained = journal["envelopes"].clone();
+    f.drain_one();
+    f.drain_one();
+    let status = f.status();
+    assert_eq!(
+        status["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["registration"]["subscription"]["task"]["task_id"] == later)
+            .unwrap()["envelopes"],
+        retained
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_one_batch_native_passes_empty_route_and_keeps_uncertainty_fence() {
+    let f = WakeFairFixture::new("codex");
+    let mut routes = f.status()["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| {
+            j["registration"]["subscription"]["recipient_ref"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    routes.sort();
+    let later = f.registration_for_route(&routes[1]);
+    f.finish(
+        later["registration"]["subscription"]["task"]["task_id"]
+            .as_str()
+            .unwrap(),
+    );
+    f.fill_inbox();
+    f.drain_one();
+    assert!(!f.calls.exists(), "first native route has an empty inbox");
+    f.drain_one();
+    let calls = std::fs::read_to_string(&f.calls).unwrap();
+    assert_eq!(calls.lines().filter(|s| *s == "queue").count(), 1);
+    f.drain_one();
+    f.drain_one();
+    assert_eq!(
+        std::fs::read_to_string(&f.calls).unwrap(),
+        calls,
+        "uncertain admission is never resent"
+    );
+    assert_eq!(
+        f.status()["uncertain_session_fences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_one_batch_native_removal_and_replacement_remain_bounded() {
+    for removal in ["revoked", "removed", "substituted"] {
+        let f = WakeFairFixture::new("codex");
+        let mut routes = f.status()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| {
+                j["registration"]["subscription"]["recipient_ref"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        routes.sort();
+        let first = f.registration_for_route(&routes[0]);
+        let later = f.registration_for_route(&routes[1]);
+        f.finish(
+            later["registration"]["subscription"]["task"]["task_id"]
+                .as_str()
+                .unwrap(),
+        );
+        f.fill_inbox();
+        let first_task = first["registration"]["subscription"]["task"]["task_id"]
+            .as_str()
+            .unwrap();
+        if removal == "revoked" {
+            let grant = f
+                .grants
+                .iter()
+                .find(|p| p.file_name().unwrap() == format!("{first_task}.grant").as_str())
+                .unwrap();
+            expect(&f.wake(&["revoke", "--route", grant.to_str().unwrap()]), 0);
+        } else {
+            // Deterministic persisted removal/substitution fault; do not sleep or relax grant validation.
+            let sql = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+            if removal == "removed" {
+                sql.execute("DELETE FROM wake_routes_v1 WHERE id=?1", [&routes[0]])
+                    .unwrap();
+            } else {
+                let text: String = sql
+                    .query_row(
+                        "SELECT route FROM wake_routes_v1 WHERE id=?1",
+                        [&routes[0]],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let mut route: af_contracts::task::wake::delivery::WakeRouteV1 =
+                    serde_json::from_str(&text).unwrap();
+                route.session = "replacement-session".into();
+                sql.execute(
+                    "UPDATE wake_routes_v1 SET route=?1 WHERE id=?2",
+                    rusqlite::params![serde_json::to_string(&route).unwrap(), &routes[0]],
+                )
+                .unwrap();
+                assert!(
+                    EventStore::open(f.state.join("events.sqlite"))
+                        .unwrap()
+                        .wake_route(&routes[0], 2)
+                        .is_err()
+                );
+            }
+        }
+        f.drain_one();
+        assert!(
+            !f.calls.exists(),
+            "unavailable first route cannot send: {removal}"
+        );
+        f.drain_one();
+        let calls = std::fs::read_to_string(&f.calls).unwrap();
+        assert_eq!(
+            calls.lines().filter(|s| *s == "queue").count(),
+            1,
+            "later route progresses: {removal}"
+        );
+    }
+}

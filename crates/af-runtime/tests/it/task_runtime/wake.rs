@@ -1916,3 +1916,169 @@ fn wake_receiver_persisted_expiry_prevents_native_admission_after_clock_rollback
         "expiry creates no admission or success"
     );
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_traversal_restart_removal_expiry_and_corruption_preserve_bounds() {
+    use af_store::store::wake::WakeTraversalStage::{Extraction, Native};
+    let mut f = Fixture::new(SUCCESS);
+    f.store
+        .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+        .unwrap();
+    let a = register(&f, 'a', 128);
+    let b = register(&f, 'b', 128);
+    let ids = [
+        a.subscription.subscription_id.clone(),
+        b.subscription.subscription_id.clone(),
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let first = ids.first().unwrap().clone();
+    let last = ids.last().unwrap().clone();
+    assert_eq!(
+        f.store.next_wake_target(Extraction, &ids).unwrap(),
+        Some(first.clone())
+    );
+    let routes = [a.subscription.recipient_ref.clone()].into_iter().collect();
+    assert_eq!(
+        f.store.next_wake_target(Native, &routes).unwrap(),
+        Some(a.subscription.recipient_ref.clone())
+    );
+    // A second connection and reopened Store observe the committed position, not an in-memory hint.
+    let other = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    assert_eq!(
+        other.next_wake_target(Extraction, &ids).unwrap(),
+        Some(last.clone())
+    );
+    drop(other);
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    assert_eq!(
+        f.store.next_wake_target(Extraction, &ids).unwrap(),
+        Some(first.clone())
+    );
+    // Disappearing targets need no retained row or index: sorted successor then wrap is bounded.
+    let only_last = [last.clone()].into_iter().collect();
+    assert_eq!(
+        f.store.next_wake_target(Extraction, &only_last).unwrap(),
+        Some(last.clone())
+    );
+    assert_eq!(
+        f.store
+            .next_wake_target(Extraction, &BTreeSet::new())
+            .unwrap(),
+        None
+    );
+    let only_first = [first.clone()].into_iter().collect();
+    assert_eq!(
+        f.store.next_wake_target(Extraction, &only_first).unwrap(),
+        Some(first)
+    );
+    f.store
+        .maintain_wakes(a.subscription.expires_unix_ms)
+        .unwrap();
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    assert_eq!(
+        f.store
+            .inspect_wake(&a.subscription.subscription_id)
+            .unwrap()
+            .closure
+            .as_deref(),
+        Some("expired")
+    );
+    assert_eq!(
+        f.store.next_wake_target(Extraction, &ids).unwrap(),
+        Some(last)
+    );
+    // Scheduling never resets expiry/closure and cannot manufacture an eligible send.
+    assert!(
+        f.store
+            .inspect_wake(&a.subscription.subscription_id)
+            .unwrap()
+            .closure
+            .is_some()
+    );
+    let unknown = [digest('f')].into_iter().collect();
+    assert!(f.store.next_wake_target(Extraction, &unknown).is_err());
+    let too_many = (0..129)
+        .map(|n| af_store::content_id(&json!(n)).unwrap())
+        .collect();
+    assert!(f.store.next_wake_target(Extraction, &too_many).is_err());
+    let db = rusqlite::Connection::open(f._directory.path().join("events.sqlite")).unwrap();
+    for record in [
+        json!({"schema":"af/task-wake-traversal@0","extraction_after":null,"native_after":null}),
+        json!({"schema":"af/task-wake-traversal@1","extraction_after":"corrupt","native_after":null}),
+        json!({"schema":"af/task-wake-traversal@1","extraction_after":null,"native_after":null,"callback":"bad"}),
+    ] {
+        db.execute(
+            "UPDATE wake_traversal_v1 SET record=?1",
+            [record.to_string()],
+        )
+        .unwrap();
+        assert!(f.store.next_wake_target(Extraction, &ids).is_err());
+        assert!(f.store.next_wake_target(Native, &routes).is_err());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_traversal_native_expiry_and_collection_do_not_reset_positions_or_admission() {
+    use af_store::store::wake::{WakeTraversalStage::Native, delivery::route_identity};
+    let mut f = Fixture::new(SUCCESS);
+    f.store
+        .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+        .unwrap();
+    let (first, registration) = receiver_registration(&f);
+    let mut later = first.clone();
+    later.session = "later-original-session".into();
+    later.expires_unix_ms += 1000;
+    later.route_id = route_identity(&later).unwrap();
+    f.store.install_wake_route(&later).unwrap();
+    let mut second = registration.clone();
+    second.subscription.recipient_ref = later.route_id.clone();
+    second.subscription.subscription_id = digest('9');
+    second.subscription.registration_key = digest('8');
+    second.subscription.expires_unix_ms = later.expires_unix_ms;
+    second.subscription.configuration_digest =
+        af_runtime::wake::configuration_digest(&second.subscription).unwrap();
+    let second = f.store.register_wake(&f.cas, &second).unwrap();
+    let first_only = [first.route_id.clone()].into_iter().collect();
+    assert_eq!(
+        f.store.next_wake_target(Native, &first_only).unwrap(),
+        Some(first.route_id.clone())
+    );
+    let clock = first.expires_unix_ms;
+    f.store.maintain_wakes(clock).unwrap();
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    assert!(f.store.wake_route(&first.route_id, clock).is_err());
+    assert!(f.store.take_wake_native(&first, clock).is_err());
+    assert!(f.store.wake_route(&later.route_id, clock).is_ok());
+    let both = [first.route_id.clone(), later.route_id.clone()]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        f.store.next_wake_target(Native, &both).unwrap(),
+        Some(later.route_id.clone())
+    );
+    assert!(
+        f.store.take_wake_native(&later, clock).unwrap().is_none(),
+        "rotation never invents a packet"
+    );
+    f.store
+        .maintain_wakes(clock + af_store::store::wake::delivery::RETENTION_MS)
+        .unwrap();
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    let remaining = [later.route_id.clone()].into_iter().collect();
+    assert_eq!(
+        f.store.next_wake_target(Native, &remaining).unwrap(),
+        Some(later.route_id)
+    );
+    assert_eq!(
+        f.store
+            .inspect_wake(&second.subscription.subscription_id)
+            .unwrap()
+            .closure
+            .as_deref(),
+        Some("expired")
+    );
+    assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
+}

@@ -1,7 +1,7 @@
 //! Explicit owner routes and finite token-free delivery. No Task runner is reachable here.
 use super::*;
 use af_contracts::task::wake::{delivery::*, *};
-use af_store::store::wake::{CatchUp, WakeRegistration, delivery::*};
+use af_store::store::wake::{CatchUp, WakeRegistration, WakeTraversalStage, delivery::*};
 use clap::Subcommand;
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -59,7 +59,7 @@ pub(crate) enum WakeCommand {
     },
     /// Finite foreground extraction/delivery; install no service and never respawn a Task
     Drain {
-        /// Maximum extraction/delivery batches, from 1 to 128
+        /// Maximum source visits, transport claims and native route visits, from 1 to 128
         #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u32).range(1..=128))]
         max_batches: u32,
         /// Foreground driver wall-clock limit in seconds, from 1 to 300
@@ -643,19 +643,32 @@ pub(crate) fn execute(
             store.maintain_wakes(now()).map_err(err)?;
             let mut pages = 0;
             let registrations = store.wake_registrations().map_err(err)?;
-            for r in &registrations {
-                if r.subscription.expires_unix_ms <= now() {
-                    continue;
-                }
-                let id = &r.subscription.subscription_id;
-                if !store.inspect_wake(id).map_err(err)?.source_available {
-                    continue;
-                }
-                while pages < max_batches && start.elapsed() < wall {
-                    pages += 1;
-                    if reconcile_registered(&store, &cas, &state, r)? {
-                        break;
-                    }
+            let mut extraction = registrations
+                .iter()
+                .map(|r| r.subscription.subscription_id.clone())
+                .collect::<BTreeSet<_>>();
+            while pages < max_batches && start.elapsed() < wall {
+                let Some(id) = store
+                    .next_wake_target(WakeTraversalStage::Extraction, &extraction)
+                    .map_err(err)?
+                else {
+                    break;
+                };
+                // Every visit consumes a page slot, including caught-up/expired sources.
+                // The durable position advances before visiting, so bounded restarts are fair.
+                pages += 1;
+                let r = registrations
+                    .iter()
+                    .find(|r| r.subscription.subscription_id == id)
+                    .ok_or("Unknown wake extraction target")?;
+                let journal = store.inspect_wake(&id).map_err(err)?;
+                if r.subscription.expires_unix_ms <= now()
+                    || journal.closure.is_some()
+                    || journal.expired
+                    || !journal.source_available
+                    || reconcile_registered(&store, &cas, &state, r)?
+                {
+                    extraction.remove(&id);
                 }
             }
             let mut deliveries = 0;
@@ -692,22 +705,27 @@ pub(crate) fn execute(
             // Recover an already accepted inbox after driver loss BEFORE native intent.
             // A retained native intent itself is never dispatched again.
             let mut native_batches = 0;
-            let mut seen = BTreeSet::new();
-            for registration in &registrations {
-                if native_batches >= max_batches || start.elapsed() >= wall {
+            let mut routes = registrations
+                .iter()
+                .map(|r| r.subscription.recipient_ref.clone())
+                .collect::<BTreeSet<_>>();
+            while native_batches < max_batches && start.elapsed() < wall {
+                let Some(id) = store
+                    .next_wake_target(WakeTraversalStage::Native, &routes)
+                    .map_err(err)?
+                else {
                     break;
-                }
-                let id = &registration.subscription.recipient_ref;
-                if !seen.insert(id) {
-                    continue;
-                }
-                let Ok(route) = store.wake_route(id, now()) else {
+                };
+                routes.remove(&id);
+                // Empty, revoked, removed and expired routes still consume a bounded visit.
+                // None can permanently starve later routes, even across separate invocations.
+                native_batches += 1;
+                let Ok(route) = store.wake_route(&id, now()) else {
                     continue;
                 };
                 if route.host != WakeHostV1::Codex {
                     continue;
                 }
-                native_batches += 1;
                 if let Err(reason) = codex(&store, &route, wall.saturating_sub(start.elapsed())) {
                     store.defer_wake_native(&route, now()).map_err(err)?;
                     eprintln!("wake: blocked: {reason}");

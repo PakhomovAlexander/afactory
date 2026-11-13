@@ -77,13 +77,20 @@ export function deliver(pi: Host, ctx: Context, packet: Packet): void {
 }
 export default function (pi: ExtensionAPI): void {
   let timer: ReturnType<typeof setInterval> | undefined;
-  let polling = false;
-  const stop = () => { if (timer) clearInterval(timer); timer = undefined; };
+  let generation = 0;
+  const stop = () => {
+    generation++;
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
   pi.on('session_shutdown', async () => { stop(); });
   pi.registerCommand('af-wake-connect', {
     description: 'Explicitly attach this interactive session to an owner-private AF wake config for at most 5 minutes; reconnect explicitly',
     handler: async (args, native) => {
       stop();
+      const attachment = generation;
+      const stopAttachment = () => { if (attachment === generation) stop(); };
+      let polling = false;
       const ctx = native as unknown as Context;
       try {
         if (ctx.mode !== 'interactive') fail();
@@ -94,22 +101,26 @@ export default function (pi: ExtensionAPI): void {
         const started = Date.now();
         let polls = 0;
         const poll = () => {
+          if (attachment !== generation) return;
           if (++polls > 128 || Date.now() - started >= 300000 ||
-              ctx.sessionManager.getSessionId() !== session) { stop(); return; }
+              ctx.sessionManager.getSessionId() !== session) { stopAttachment(); return; }
           if (polling || !ctx.isIdle()) return;
           polling = true;
-          try { configuration(file); } catch { polling = false; stop(); return; }
+          try { configuration(file); } catch { polling = false; stopAttachment(); return; }
           // Exact argv; no shell, no ambient session ID or callback. The CLI authenticates
           // its Linux parent and protected grant, then commits durable uncertainty.
           execFile(config.af, ['task', 'wake', '--repo', config.repo, '--state', config.state,
             'pi-next', '--route', config.route, '--session', session],
           { timeout: 5000, maxBuffer: 16384, cwd: '/', encoding: 'utf8' }, (error, stdout) => {
+            // The subprocess may already have committed native intent. A detached callback
+            // must leave it uncertain: no send, retry, notification or replacement mutation.
+            if (attachment !== generation) return;
             polling = false;
             try {
               if (error) fail();
               const packet = validatePacket(JSON.parse(stdout), session);
-              if (packet.message !== null) { deliver(pi, ctx, packet); stop(); }
-            } catch { stop(); native.ui.notify('AF wake blocked or uncertain; inspect `af task wake inspect`. No native resend.', 'error'); }
+              if (packet.message !== null) { deliver(pi, ctx, packet); stopAttachment(); }
+            } catch { if (attachment !== generation) return; stopAttachment(); native.ui.notify('AF wake blocked or uncertain; inspect `af task wake inspect`. No native resend.', 'error'); }
           });
         };
         timer = setInterval(poll, 2000);
