@@ -24,7 +24,9 @@ def copy_inputs(source, destination):
                     destination / 'scripts/telemetry-overhead.py')
     # copyfile does not preserve read-only file modes, unlike copy/copy2. copytree
     # still preserves the directory mode; schemas is a flat directory we also mutate.
-    shutil.copyfile(source / 'scripts/release-contract.json', destination / 'scripts/release-contract.json')
+    declaration = json.loads((source / 'scripts/release-contract.json').read_text())
+    declaration['version'] = '0.15.1-rc.3'
+    (destination / 'scripts/release-contract.json').write_text(json.dumps(declaration))
     for fixture in (source / 'fixtures').glob('telemetry-bench'):
         shutil.copytree(fixture, destination / 'fixtures' / fixture.name, copy_function=shutil.copyfile)
     schemas = destination / 'schemas'

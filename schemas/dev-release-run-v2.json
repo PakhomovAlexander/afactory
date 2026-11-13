@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "af.dev-release-run/1",
+  "title": "af.dev-release-run/2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af.dev-release-run/1"
+      "const": "af.dev-release-run/2"
     },
     "plan": {
       "type": "object",

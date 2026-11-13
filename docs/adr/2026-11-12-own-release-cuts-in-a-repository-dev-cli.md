@@ -26,6 +26,13 @@ is not release source. Dirty caller files must contribute no release bytes.
 One explicit `rc` authorizes normal release PR creation, required checks, normal squash merge,
 and the existing protected tag/build/sign/publication workflow. There is no bypass or local
 installation. Planning grants no publication authority; resume retains captured authorization.
+Default `rc` and `resume` internally reconcile and advance to signed readiness, a real failure,
+operator interruption or a bounded time limit. Waiting uses a 30-second poll interval and six-hour
+invocation limit by default, configurable within explicit bounds. The lease spans the driver;
+interruptions and timeouts preserve recoverable waiting receipts and exact effect intents. Status
+and watch remain read-only; an explicit `--step` supports single reconciliation diagnostics.
+Failed release jobs terminate waiting even before artifacts exist; downstream pin-only failures
+remain independent. Matching validation receipts are reused on every reconciliation.
 
 An owned private state directory outside source holds one immutable versioned plan, a bare Git
 repository and an isolated candidate worktree. A nonblocking repository lease serializes callers
@@ -51,6 +58,18 @@ include a versioned provenance document binding source, repository, version and 
 The controller verifies signatures, every platform archive digest, provenance, tag and the exact
 protected publication job. A pin job failure leaves publication readiness independent of pin
 adoption. A normal pin-only PR still requires its own policy and human merge.
+
+PR validation is independent of formally required status configuration. Policy version 3 binds
+workflow/resolver/catalog source bytes and immutable workflow identity. The exact latest run's
+attempt plan artifact is digest-checked and validated with the existing class resolver. Its tested
+merge commit binds approved base, candidate and tree; REST head SHA remains the branch identity.
+Historical event labels come from that retained plan, never current labels. Profile mismatches wait
+for matching evidence. Every platform/class and hosted conditional job must be present; the existing
+aggregate contract owns intentional skip outcomes. Paginated totals and unique identities establish
+collection completeness, and an attempt recheck prevents accepting stale reruns. Successful existing
+CI aggregates still own exact class receipts. Missing evidence waits; partial or rejected evidence
+never authorizes merge. Bare and ref-qualified canonical workflow paths both require matching
+workflow IDs, including signed-bundle recovery. The strict expected-base prerequisite remains.
 
 ## Consequences
 

@@ -4,21 +4,27 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import platform
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import tempfile
+import zipfile
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = 'af.dev-release-run/1'
+SCHEMA = 'af.dev-release-run/2'
 AUTHORIZATION = 'normal-release-pr-check-merge-and-signed-publication-v1'
+DRIVER_DEADLINE = None
+
 ALLOWED = ('Cargo.toml', 'Cargo.lock', 'CHANGELOG.md', 'scripts/release-contract.json')
 
 RUN_REQUIRED = ('schema', 'plan', 'identity', 'authorization', 'created', 'updated',
@@ -29,6 +35,13 @@ PLAN_FIELDS = ('repo', 'remote', 'source', 'version', 'branch', 'policy', 'profi
 STAGES = ('preflight', 'preparation', 'validation', 'branch', 'pr', 'checks', 'merge', 'publication')
 RECEIPT_FIELDS = ('status', 'at', 'source', 'checks', 'planned_paths', 'paths', 'key',
                   'commit', 'url', 'number', 'next', 'checksums', 'features', 'commands')
+
+
+def canonical_workflow(path, expected):
+    if not isinstance(path, str):
+        return False
+    canonical, separator, ref = path.partition('@')
+    return canonical == expected and (not separator or bool(ref.strip()))
 
 
 def state_schema():
@@ -59,6 +72,9 @@ def validate_state(state):
     if (not isinstance(state['plan'], dict) or set(state['plan']) != set(PLAN_FIELDS)
             or not isinstance(state['receipts'], dict) or set(state['receipts']) - set(STAGES)):
         raise Refusal('foreign_state: unknown plan or stage fields')
+    policy = state['plan']['policy']
+    if not isinstance(policy, dict) or policy.get('schema') != 'af.dev-release-policy/3':
+        raise Refusal('foreign_state: unsupported release policy version')
     for receipt in state['receipts'].values():
         if (not isinstance(receipt, dict) or set(receipt) - set(RECEIPT_FIELDS)
                 or not {'status', 'at'} <= set(receipt)):
@@ -76,10 +92,29 @@ class Refusal(Exception):
     pass
 
 
+class DriverTimeout(Exception):
+    pass
+
+
+def remaining():
+    if DRIVER_DEADLINE is None:
+        return 14400
+    seconds = DRIVER_DEADLINE - time.monotonic()
+    if seconds <= 0:
+        raise DriverTimeout()
+    return min(14400, seconds)
+
+
 def run(argv, cwd=None, accepted=(0,)):
-    result = subprocess.run([str(x) for x in argv], cwd=cwd, capture_output=True, text=True,
-                            env={**os.environ, 'GIT_TERMINAL_PROMPT': '0',
-                                 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}, timeout=14400)
+    try:
+        result = subprocess.run([str(x) for x in argv], cwd=cwd, capture_output=True, text=True,
+                                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0',
+                                     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'},
+                                timeout=remaining())
+    except subprocess.TimeoutExpired:
+        if DRIVER_DEADLINE is not None and time.monotonic() >= DRIVER_DEADLINE:
+            raise DriverTimeout() from None
+        raise
     if result.returncode not in accepted:
         # Never retain transport diagnostics: credential-bearing URLs can appear there.
         operation = next((str(x) for x in argv[1:] if str(x) in
@@ -188,7 +223,7 @@ class Controller:
                 raise Refusal('source_inclusion: missing required feature ' + path)
         if not policy['compatibility'].strip():
             raise Refusal('compatibility_metadata: review scripts/release-policy.json')
-        if policy.get('schema') != 'af.dev-release-policy/1':
+        if policy.get('schema') != 'af.dev-release-policy/3':
             raise Refusal('policy_version: unsupported policy')
         planned = (*ALLOWED, 'changelog.d', 'fixtures/performance/kernel-measure')
         for row in self.git('ls-tree', '-r', source).splitlines():
@@ -205,14 +240,220 @@ class Controller:
         # Presence is observable; secret values are never read or retained.
         secrets = self.api('actions/secrets').get('secrets', [])
         names = {item['name'] for item in secrets}
-        missing = {'MINISIGN_SECRET_KEY', 'RELEASE_PIN_TOKEN'} - names
+        self.pin_readiness = 'PENDING' if 'RELEASE_PIN_TOKEN' in names else 'CREDENTIAL_MISSING'
+        missing = {'MINISIGN_SECRET_KEY'} - names
         if missing:
             raise Refusal('runner_configuration: missing observable secret names ' + ', '.join(sorted(missing)))
+        self.merge_prerequisite()
+        self.validation_policy(source, policy)
         labels = self.api('labels?per_page=100')
         profile = self.state['plan']['profile'] if self.state else (self.args.profile or 'fast')
         if 'release:' + profile not in {item['name'] for item in labels}:
             raise Refusal('release_label: provision release:' + profile + ' with make test-labels APPLY=1')
         return policy
+
+    def pages(self, endpoint, key=None):
+        rows = []
+        total = None
+        for page in range(1, 11):
+            data = self.api(endpoint + ('&' if '?' in endpoint else '?') +
+                            'per_page=100&page=' + str(page))
+            batch = data[key] if key else data
+            if not isinstance(batch, list):
+                raise Refusal('unobservable_policy: invalid API collection')
+            if key:
+                count = data.get('total_count')
+                if not isinstance(count, int) or count < 0 or (total is not None and total != count):
+                    raise Refusal('incomplete_observation: missing or changing API total_count')
+                total = count
+            rows.extend(batch)
+            if len(batch) < 100:
+                if total is not None:
+                    if len(rows) != total:
+                        raise Refusal('incomplete_observation: partial API collection')
+                    ids = [row.get('id') for row in rows]
+                    if any(not isinstance(i, int) for i in ids) or len(ids) != len(set(ids)):
+                        raise Refusal('incomplete_observation: ambiguous API collection identities')
+                return rows
+        raise Refusal('observation_budget: API collection exceeds 1000 entries')
+
+    def merge_prerequisite(self):
+        rules = self.pages('rules/branches/main')
+        if not any(r.get('type') == 'required_status_checks'
+                   and r.get('parameters', {}).get('strict_required_status_checks_policy') is True
+                   and r['parameters'].get('required_status_checks') for r in rules):
+            raise Refusal('expected_base_prerequisite: administrator must configure an active main '
+                          'ruleset with required status checks and Require branches to be up to date; '
+                          'release actor must have no bypass. See docs/dev-release.md')
+        # Effective branch rules do not describe bypass actors. Inspect their owning
+        # rulesets too, refusing any bypass rather than assuming this token cannot use it.
+        for rule_id in {r['ruleset_id'] for r in rules if r.get('type') == 'required_status_checks'}:
+            rule = next(r for r in rules if r.get('ruleset_id') == rule_id)
+            if rule.get('ruleset_source_type') != 'Repository':
+                raise Refusal('expected_base_prerequisite: repository-owned observable ruleset required')
+            details = self.api('rulesets/' + str(rule_id))
+            if details.get('bypass_actors') != [] or details.get('enforcement') != 'active':
+                raise Refusal('expected_base_prerequisite: active ruleset without bypass actors required')
+
+    def validation_policy(self, source, policy):
+        declaration = policy.get('pr_validation', {})
+        expected = {'workflow', 'source_files'}
+        if (set(declaration) != expected or declaration['workflow'] != 'ci.yml'
+                or set(declaration['source_files']) != {'.github/workflows/ci.yml',
+                    '.github/workflows/validate.yml', 'scripts/test-classes.py',
+                    '.config/test-classes.json'}):
+            raise Refusal('validation_policy: reviewed release PR workflow policy missing')
+        for path, checksum in declaration['source_files'].items():
+            if hashlib.sha256(self.blob(source, path).encode()).hexdigest() != checksum:
+                raise Refusal('validation_policy: workflow semantics changed; review ' + path)
+        for path in ('scripts/test-classes.py', '.config/test-classes.json'):
+            if hashlib.sha256((ROOT / path).read_text().strip().encode()).hexdigest() != declaration['source_files'][path]:
+                raise Refusal('authority_source_mismatch: release resolver/catalog must match fetched source')
+        workflow = self.api('actions/workflows/' + declaration['workflow'])
+        if (workflow.get('state') != 'active' or workflow.get('path') != '.github/workflows/ci.yml'
+                or not isinstance(workflow.get('id'), int)):
+            raise Refusal('validation_policy: enable the declared CI workflow')
+        return workflow
+
+    def validation_plan(self, selected):
+        """Read the digest-verified resolver output of this exact run attempt."""
+        artifacts = self.pages('actions/runs/%s/artifacts' % selected['id'], 'artifacts')
+        name = 'validation-plan-' + str(selected['run_attempt'])
+        matches = [a for a in artifacts if a.get('name') == name]
+        if not matches:
+            return None
+        if len(matches) != 1 or matches[0].get('expired'):
+            raise Refusal('checks_rejected: ambiguous or expired validation plan')
+        artifact = matches[0]
+        origin = artifact.get('workflow_run', {})
+        if origin.get('id') != selected['id'] or origin.get('head_sha') != selected['head_sha']:
+            raise Refusal('checks_rejected: foreign validation plan origin')
+        archive = subprocess.run(['gh', 'api', 'repos/' + self.args.repo +
+                                  '/actions/artifacts/%s/zip' % artifact['id']],
+                                 capture_output=True, timeout=remaining())
+        if (archive.returncode or len(archive.stdout) > 1024 * 1024
+                or artifact.get('digest') != 'sha256:' + hashlib.sha256(archive.stdout).hexdigest()):
+            raise Refusal('checks_rejected: validation plan download/digest differs')
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive.stdout)) as bundle:
+                if bundle.namelist() != ['plan.json'] or bundle.getinfo('plan.json').file_size > 65536:
+                    raise ValueError('plan inventory/budget differs')
+                plan = json.loads(bundle.read('plan.json'))
+            spec = importlib.util.spec_from_file_location('release_test_classes', ROOT / 'scripts/test-classes.py')
+            resolver = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(resolver)
+            resolver.validate_plan(plan)
+        except (ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile) as error:
+            raise Refusal('checks_rejected: invalid retained validation plan: ' + str(error)) from error
+        p = self.state['plan']
+        if (plan['context'] != 'release_pr' or plan['version'] != p['version']):
+            raise Refusal('checks_rejected: validation plan context/version differs')
+        # The event's GITHUB_SHA is the tested merge commit, while REST run/job
+        # head_sha is the candidate branch SHA. Check both identities independently.
+        commit = self.api('git/commits/' + plan['sha'])
+        if (commit.get('sha') != plan['sha']
+                or [x.get('sha') for x in commit.get('parents', [])] != [p['source'], self.state['candidate']]
+                or commit.get('tree', {}).get('sha') != self.state['candidate_tree']):
+            raise Refusal('checks_rejected: tested merge source/base/tree differs')
+        return plan, artifact, resolver
+
+    def latest_pr_run(self, pr, workflow):
+        p = self.state['plan']
+        policy = p['policy']['pr_validation']
+        runs = self.pages('actions/workflows/' + policy['workflow'] +
+                          '/runs?event=pull_request&head_sha=' + self.state['candidate'], 'workflow_runs')
+        exact = [r for r in runs if r.get('head_sha') == self.state['candidate']
+                 and r.get('workflow_id') == workflow['id']
+                 and r.get('event') == 'pull_request'
+                 and canonical_workflow(r.get('path'), '.github/workflows/ci.yml')
+                 and r.get('head_branch') == p['branch']
+                 and any(x.get('number') == pr['number']
+                         and x.get('head', {}).get('sha') == self.state['candidate']
+                         and x.get('base', {}).get('sha') == p['source']
+                         and x.get('base', {}).get('ref') == 'main'
+                         for x in r.get('pull_requests', []))]
+        return max(exact, key=lambda r: (r['id'], r['run_attempt']), default=None)
+
+    def pr_checks(self, pr):
+        p = self.state['plan']
+        policy = p['policy']['pr_validation']
+        workflow = self.validation_policy(p['source'], p['policy'])
+        selected = self.latest_pr_run(pr, workflow)
+        if selected is None:
+            return None
+        attempt = selected['run_attempt']
+        if selected['status'] != 'completed':
+            return None
+        evidence = self.validation_plan(selected)
+        if evidence is not None:
+            plan, artifact, resolver = evidence
+            expected = resolver.resolve(['release:' + p['profile']], 'release_pr', plan['sha'], p['version'])
+            if plan['profile'] != expected['profile'] or plan['selected'] != expected['selected']:
+                return None # An older opened event may be fast, even cancelled by labeling.
+        if evidence is None and selected.get('conclusion') == 'cancelled':
+            return None # No retained plan establishes which profile was cancelled.
+        if selected.get('conclusion') != 'success':
+            raise Refusal('checks_rejected: release CI ' + str(selected.get('conclusion')))
+        if evidence is None:
+            return None
+        jobs = self.pages('actions/runs/%s/attempts/%s/jobs' % (selected['id'], attempt), 'jobs')
+        required = {'validation / resolve', 'validation / lint'}
+        for os_name in ('ubuntu-latest', 'macos-latest'):
+            required.update('validation / %s (%s)' % (job, os_name)
+                            for job in ('base', 'check', *('class ' + c for c in plan['selected'])))
+        hosted = resolver.catalog()['hosted_checks']
+        required.update('validation / ' + job for job in hosted)
+        names = [j['name'] for j in jobs]
+        if len(names) != len(set(names)) or required != set(names):
+            raise Refusal('checks_rejected: incomplete or ambiguous release CI jobs')
+        needs = {job: {'result': 'success'} for job in ('resolve', 'base', 'classes')}
+        needs['resolve']['outputs'] = {'plan': json.dumps(plan)}
+        for job in jobs:
+            # The attempt-specific endpoint is authoritative. GitHub's documented
+            # job shape omits run_attempt; check it as well when supplied.
+            if (job.get('head_sha') != selected['head_sha'] or job.get('run_id') != selected['id']
+                    or job.get('run_attempt', attempt) != attempt):
+                raise Refusal('checks_rejected: foreign CI job identity/attempt')
+            local_name = job['name'].removeprefix('validation / ')
+            expected = ('skipped' if local_name in hosted and hosted[local_name] not in plan['selected']
+                        else 'success')
+            if job.get('status') != 'completed' or job.get('conclusion') != expected:
+                raise Refusal('checks_rejected: rejected or skipped release validation ' + job['name'])
+            if local_name in hosted:
+                needs[local_name] = {'result': job['conclusion']}
+        # Reuse the same hosted exemption/aggregate contract as CI, not a separate skip list.
+        resolver.aggregate(plan, needs)
+        # gh exits 1 with no JSON when no checks are formally required. The
+        # diagnostic is distinct from an API/permission error; never swallow either.
+        result = subprocess.run(['gh', 'pr', 'checks', str(pr['number']), '--required',
+                                 '--json', 'name,bucket,link', '--repo', self.args.repo],
+                                capture_output=True, text=True, timeout=remaining())
+        if not result.stdout.strip():
+            if result.returncode == 1 and result.stderr.strip().startswith('no required checks reported on the'):
+                checks = []
+            else:
+                raise Refusal('required_status_observation: cannot read formally required checks')
+        else:
+            if result.returncode not in (0, 1, 8):
+                raise Refusal('required_status_observation: cannot read formally required checks')
+            checks = json.loads(result.stdout)
+        if any(c['bucket'] in ('fail', 'cancel') for c in checks):
+            raise Refusal('checks_rejected: required PR checks failed')
+        if any(c['bucket'] != 'pass' for c in checks):
+            return None
+        observed = self.api('actions/runs/' + str(selected['id']))
+        if any(observed.get(k) != selected.get(k) for k in
+               ('head_sha', 'workflow_id', 'path', 'event', 'head_branch', 'pull_requests',
+                'run_attempt', 'status', 'conclusion')):
+            return None # A rerun started while the attempt jobs were being read.
+        # Reconcile the complete collection too: a different run can start while
+        # this run's evidence is read without changing the selected run itself.
+        if self.latest_pr_run(pr, workflow) != selected:
+            return None
+        return [{'workflow': policy['workflow'], 'run_id': selected['id'],
+                 'attempt': attempt, 'plan': plan, 'plan_artifact': {k: artifact[k] for k in
+                     ('id', 'name', 'digest')}, 'jobs': [{k: j[k] for k in
+                     ('id', 'name', 'status', 'conclusion', 'head_sha', 'run_id')} for j in jobs]}, *checks]
 
     def source_checks(self, source):
         # Disposable read-only source validation, after lineage/path admission and before
@@ -320,9 +561,10 @@ class Controller:
             'profile': profile, 'executor': digest((ROOT / 'scripts/dev-release.py').read_text()),
             'date': time.strftime('%Y-%m-%d', time.gmtime()),
             'signing_readiness': 'unavailable locally; protected publication runner verifies key usability',
-            'main_policy': 'refuse movement before merge; require exact candidate tree and source ancestry after merge',
+            'main_policy': 'require active strict required-status ruleset with no bypass; refuse main movement; verify merged tree and ancestry',
         }, 'authorization': AUTHORIZATION if authorized else None,
             'created': int(time.time()), 'receipts': {}, 'stage': 'preflight', 'status': 'planned'}
+        self.state['pin'] = {'state': self.pin_readiness, 'url': None}
         self.state['identity'] = digest(self.state['plan'])
         self.receipt('preflight', 'planned', source=source, checks=['release-contract', 'harness-digest'],
                      features={path: digest(self.blob(source, path)) for path in policy['required_features']},
@@ -464,20 +706,28 @@ class Controller:
                 if not pr:
                     raise Refusal('pr_ambiguous: reconcile with resume')
             self.receipt('pr', 'complete', url=pr['url'], number=pr['number'])
-            checks = json.loads(run(['gh', 'pr', 'checks', str(pr['number']), '--required',
-                                     '--json', 'name,bucket,link', '--repo', self.args.repo], accepted=(0, 1, 8)))
-            if not checks or any(c['bucket'] != 'pass' for c in checks):
-                if any(c['bucket'] in ('fail', 'cancel') for c in checks):
-                    raise Refusal('checks_rejected: required PR checks failed')
-                self.receipt('checks', 'waiting', next='resume after required checks pass', url=pr['url'])
+            checks = self.pr_checks(pr)
+            if checks is None:
+                self.receipt('checks', 'waiting', next='waiting for exact release CI and required checks; resume if stopped', url=pr['url'])
                 return
             self.receipt('checks', 'complete', checks=checks)
+            # A successful merge request can precede its observable result. Poll
+            # the PR instead of submitting that acknowledged effect again.
+            merge_receipt = self.state['receipts'].get('merge', {})
+            if (merge_receipt.get('status') == 'waiting'
+                    and merge_receipt.get('commit') == self.state['candidate']):
+                self.receipt('merge', 'waiting', number=pr['number'], url=pr['url'],
+                             commit=self.state['candidate'],
+                             next='waiting for acknowledged merge; resume if stopped')
+                return
             self.unchanged_main()
+            self.merge_prerequisite()
             self.receipt('merge', 'intent', number=pr['number'])
             self.gh('pr', 'merge', str(pr['number']), '--squash', '--match-head-commit', self.state['candidate'])
             pr = self.find_pr()
             if not pr or pr['state'] != 'MERGED':
-                self.receipt('merge', 'waiting', next='resume to reconcile merge')
+                self.receipt('merge', 'waiting', commit=self.state['candidate'],
+                             next='waiting to reconcile merge; resume if stopped')
                 return
         merged = pr['mergeCommit']['oid']
         self.fetch()
@@ -488,17 +738,37 @@ class Controller:
         self.receipt('merge', 'complete', commit=merged, url=pr['url'])
         self.artifacts()
 
-    def publication_jobs_pass(self, run_id):
-        jobs = self.api('actions/runs/' + str(run_id) + '/jobs?per_page=100')['jobs']
-        # A failed pin job must not erase a ready-to-test RC. Require the publication
-        # join (which needs all platform checks/builds), independently of pin adoption.
-        return any(j['name'] == 'sign and publish' and j['conclusion'] == 'success' for j in jobs)
+    def publication_runs(self):
+        runs = self.api('actions/workflows/release.yml/runs?head_sha=' + self.state['merged'])['workflow_runs']
+        return [r for r in runs if r['head_sha'] == self.state['merged']]
+
+    def publication_jobs_pass(self, release_run):
+        jobs = self.api('actions/runs/' + str(release_run['id']) + '/jobs?per_page=100')['jobs']
+        # The pin-only job is downstream of publication and has independent policy.
+        release_jobs = [j for j in jobs if j['name'] != 'pin the release in .af/af.lock']
+        failed = [j['name'] for j in release_jobs
+                  if j.get('conclusion') in ('failure', 'cancelled', 'timed_out',
+                                             'action_required', 'startup_failure', 'stale')]
+        if failed:
+            raise Refusal('release_workflow_failed: ' + ', '.join(failed) +
+                          '; inspect release workflow run ' + str(release_run['id']))
+        published = any(j['name'] == 'sign and publish' and j.get('conclusion') == 'success'
+                        for j in release_jobs)
+        if release_run.get('status') == 'completed' and not published:
+            raise Refusal('release_workflow_failed: completed run ' + str(release_run['id']) +
+                          ' has no successful publication join; inspect workflow prerequisites')
+        return published
 
     def artifacts(self):
         self.state['published'] = False
         self.receipt('publication', 'reconciling')
         p = self.state['plan']
         tag = 'v' + p['version']
+        runs = self.publication_runs()
+        # The latest attempt owns progress. A prior failed run must not poison an
+        # explicit operator rerun; signed provenance still selects its exact run below.
+        publication_passed = bool(runs) and self.publication_jobs_pass(
+            max(runs, key=lambda r: (r['id'], r.get('run_attempt', 1))))
         refs = self.git('ls-remote', 'origin', 'refs/tags/' + tag, 'refs/tags/' + tag + '^{}').splitlines()
         if not refs:
             self.receipt('publication', 'waiting', next='release workflow must tag/build/check/sign/publish')
@@ -510,6 +780,9 @@ class Controller:
         release = next((r for r in releases if r['tag_name'] == tag), None)
         if release is None or release['draft']:
             self.receipt('publication', 'waiting', next='wait for protected signing/publication runner')
+            return
+        if not publication_passed:
+            self.receipt('publication', 'waiting', next='require successful exact-source release workflow', url=release['html_url'])
             return
         names = {'af-' + tag + '-' + target + '.tar.gz' for target in p['policy']['targets']}
         names.update(('SHA256SUMS', 'SHA256SUMS.minisig', 'release-provenance.json'))
@@ -541,18 +814,43 @@ class Controller:
                 or provenance['source'] != self.state['merged']
                 or provenance['repository'] != p['repo']):
             raise Refusal('artifact_provenance: signed version/source/repository mismatch')
-        # Signed provenance must name the exact successful protected publication run.
-        runs = self.api('actions/workflows/release.yml/runs?head_sha=' + self.state['merged'])['workflow_runs']
+        # Signed provenance names the original signing run. The successful protected
+        # publication join above can restore its immutable bundle in a later run.
         if not any(r['head_sha'] == self.state['merged'] and str(r['id']) == str(provenance['run_id'])
-                   and self.publication_jobs_pass(r['id']) for r in runs):
+                   for r in runs):
             self.receipt('publication', 'waiting', next='require successful exact-source release workflow', url=release['html_url'])
             return
         pins = json.loads(self.gh('pr', 'list', '--head', 'release/pin-' + tag, '--state', 'all',
                                    '--json', 'url,state'))
         self.state['published'] = True
-        self.state['pin'] = pins[0] if len(pins) == 1 else {'state': 'PENDING', 'url': None}
+        self.state['pin'] = pins[0] if len(pins) == 1 else self.state.get('pin', {'state': 'PENDING', 'url': None})
         self.receipt('publication', 'ready', url=release['html_url'], checksums=sums,
                      next='test RC; review pin-only PR separately')
+
+    def drive(self):
+        while True:
+            remaining()
+            self.state.pop('failure', None)
+            self.execute()
+            if self.state['status'] == 'ready' or self.args.step:
+                return
+            time.sleep(min(self.args.poll_interval, remaining()))
+
+    def stopped(self, reason):
+        if self.state and self.state['status'] != 'ready':
+            self.state.pop('failure', None)
+            stage = self.state['stage']
+            # Do not erase a reusable successful receipt if the interruption
+            # occurred between stages (for example just after local validation).
+            while (self.state['receipts'].get(stage, {}).get('status') == 'complete'
+                   and stage != STAGES[-1]):
+                stage = STAGES[STAGES.index(stage) + 1]
+            previous = self.state['receipts'].get(stage, {})
+            details = {key: value for key, value in previous.items()
+                       if key not in ('status', 'at', 'next')}
+            self.receipt(stage, 'waiting', **details,
+                         next=reason + '; resume this exact run to reconcile and continue')
+
 
 
 def display(state, style):
@@ -582,8 +880,17 @@ def main():
     parser.add_argument('--version', help='optional exact reserved RC version')
     parser.add_argument('--format', choices=('json', 'markdown'), default='markdown')
     parser.add_argument('--new', action='store_true', help='start the next run after a ready release; archive terminal receipt')
+    parser.add_argument('--timeout', type=int, default=21600,
+                        help='driver time limit in seconds, including commands (default 21600)')
+    parser.add_argument('--poll-interval', type=int, default=30,
+                        help='seconds between reconciliations, 1..300 (default 30)')
+    parser.add_argument('--step', action='store_true', help='explicit single reconciliation without driving')
     parser.add_argument('--watch', action='store_true', help='read-only status refresh')
     args = parser.parse_args()
+    if not 1 <= args.timeout <= 86400 or not 1 <= args.poll_interval <= 300:
+        parser.error('--timeout must be 1..86400; --poll-interval must be 1..300')
+    if (args.step and args.command not in ('rc', 'resume')) or (args.watch and args.command != 'status'):
+        parser.error('--step requires rc/resume; --watch requires status')
     if args.new and args.command not in ('plan', 'rc'):
         parser.error('--new is only valid with plan or rc')
     if not re.fullmatch(r'[A-Za-z0-9-]+/[A-Za-z0-9_.-]+', args.repo):
@@ -599,6 +906,12 @@ def main():
     if directory == ROOT or ROOT in directory.parents:
         parser.error('state must be outside source')
     controller = Controller(args, directory)
+    def interrupt(_signum, _frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, interrupt)
+    global DRIVER_DEADLINE
+    if args.command in ('rc', 'resume'):
+        DRIVER_DEADLINE = time.monotonic() + args.timeout
     try:
         if args.command == 'status':
             while True:
@@ -607,15 +920,25 @@ def main():
                     return 0
                 time.sleep(2)
         with lease(directory):
-            if args.new:
-                controller.new_run()
-            if args.command == 'resume' and not controller.path.exists():
-                raise Refusal('missing_run: plan or cut first')
-            controller.plan(args.command == 'rc')
-            if args.command in ('rc', 'resume'):
-                controller.execute()
-            display(controller.state, args.format)
+            try:
+                if args.new:
+                    controller.new_run()
+                if args.command == 'resume' and not controller.path.exists():
+                    raise Refusal('missing_run: plan or cut first')
+                controller.plan(args.command == 'rc')
+                if args.command in ('rc', 'resume'):
+                    controller.drive()
+                display(controller.state, args.format)
+            except (DriverTimeout, KeyboardInterrupt) as error:
+                reason = 'driver_timeout' if isinstance(error, DriverTimeout) else 'operator_interrupted'
+                controller.stopped(reason)
+                if controller.state:
+                    display(controller.state, args.format)
+                print('release: ' + reason + '; resume retains exact authorization', file=sys.stderr)
+                return 124 if isinstance(error, DriverTimeout) else 130
         return 0
+    except KeyboardInterrupt:
+        return 130
     except (Refusal, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         message = str(error) if isinstance(error, Refusal) else 'prerequisite_or_state: ' + type(error).__name__
         if controller.state:

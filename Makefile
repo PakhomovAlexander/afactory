@@ -113,6 +113,7 @@ release-check:
 	$(CI_STEP) --stage release quarantine-scan-tests python3 scripts/test-class-python.py test-test-quarantine.py "$(BASE_EVIDENCE)/test-test-quarantine.py.xml"
 	$(CI_STEP) --stage release af-pin-tests python3 scripts/test-class-python.py test-af-pin.py "$(BASE_EVIDENCE)/test-af-pin.py.xml"
 	$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check
+	$(CI_STEP) --stage release telemetry-contract python3 -I scripts/test-performance.py --module test_telemetry_bench_contracts
 
 # Offline advisory orchestration checks against the native inspection fixture, the pull
 # request description check against the `af task report` renderer's fixture (ADR-0142),

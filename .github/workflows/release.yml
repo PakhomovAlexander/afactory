@@ -182,6 +182,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read # reconcile the immutable signed bundle across workflow runs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -191,7 +192,18 @@ jobs:
           pattern: af-*
           path: dist
           merge-multiple: true
+      - name: Install signature verifier
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+      - name: Restore original signed publication bytes
+        id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 -I scripts/release-bundle.py "${{ needs.resolve.outputs.tag }}" "${{ github.sha }}"
       - name: Checksum and sign
+        if: steps.bundle.outputs.reused != 'true'
         shell: bash
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
@@ -220,6 +232,20 @@ jobs:
           rm -f "$key"
           minisign -V -q -m SHA256SUMS -p crates/af/keys/release.pub
           cat SHA256SUMS
+      # Persist the complete signed set BEFORE any release API effect. A failed
+      # publish can then resume in another run without rebuilding release bytes.
+      - name: Retain immutable signed publication bundle
+        if: steps.bundle.outputs.reused != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-signed-${{ needs.resolve.outputs.tag }}-${{ github.sha }}
+          path: |
+            dist/
+            SHA256SUMS
+            SHA256SUMS.minisig
+            install.sh
+          retention-days: 90
+          if-no-files-found: error
       - name: Release notes from CHANGELOG.md
         shell: bash
         run: |

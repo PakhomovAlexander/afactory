@@ -75,16 +75,17 @@ class FixtureContracts(TempDir):
         with self.assertRaisesRegex(overhead.BenchError, "not `af VERSION`"):
             overhead.release_version("0.15.1-rc.1")
 
-    def test_workspace_and_rc2_rc3_release_guard_keep_the_current_native_contract(self):
+    def test_workspace_exact_release_declaration_binds_current_capabilities(self):
         from tests.support import ROOT
         preflight = telemetry_lab.script_module("scripts/release-contract.py")
         manifest = toml_file.loads((pathlib.Path(ROOT) / "Cargo.toml").read_bytes(), "Cargo.toml")
         release = manifest["workspace"]["package"]["version"]
         self.assertEqual(preflight.check(), release)
-        self.assertIn(release, overhead.CURRENT_RELEASES)
-        self.assertIn("0.15.1-rc.2", overhead.CURRENT_RELEASES)
-        self.assertIn("0.15.1-rc.3", overhead.CURRENT_RELEASES)
-        self.assertNotIn("0.15.1-rc.4", overhead.CURRENT_RELEASES)
+        declaration = json.loads((pathlib.Path(ROOT) / 'scripts/release-contract.json').read_text())
+        self.assertEqual(declaration['version'], release)
+        self.assertEqual(declaration['capabilities'], preflight.capabilities(pathlib.Path(ROOT)))
+        self.assertEqual(declaration['contract'], overhead.CURRENT_CONTRACT)
+        self.assertEqual(declaration['receipt'], overhead.CHECK_RECEIPT_CURRENT)
         self.assertEqual(overhead.select_contract(), "native-task-review@1")
         self.assertEqual(overhead.CHECK_RECEIPT_CURRENT, "af/TaskCheckReceipt@2")
 
