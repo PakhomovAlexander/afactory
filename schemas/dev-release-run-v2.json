@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "af.dev-release-run/2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "plan",
+    "identity",
+    "authorization",
+    "created",
+    "updated",
+    "receipts",
+    "stage",
+    "status"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.dev-release-run/2"
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "remote",
+        "source",
+        "version",
+        "branch",
+        "policy",
+        "profile",
+        "executor",
+        "date",
+        "signing_readiness",
+        "main_policy"
+      ],
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "object"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "executor": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "signing_readiness": {
+          "type": "string"
+        },
+        "main_policy": {
+          "type": "string"
+        }
+      }
+    },
+    "identity": {
+      "type": "string"
+    },
+    "authorization": {
+      "enum": [
+        null,
+        "normal-release-pr-check-merge-and-signed-publication-v1"
+      ]
+    },
+    "created": {
+      "type": "integer"
+    },
+    "updated": {
+      "type": "integer"
+    },
+    "receipts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preflight": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "preparation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "branch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "pr": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "merge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        },
+        "publication": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "at"
+          ],
+          "properties": {
+            "status": {},
+            "at": {},
+            "source": {},
+            "checks": {},
+            "planned_paths": {},
+            "paths": {},
+            "key": {},
+            "commit": {},
+            "url": {},
+            "number": {},
+            "next": {},
+            "checksums": {},
+            "features": {},
+            "commands": {}
+          }
+        }
+      }
+    },
+    "stage": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "candidate": {
+      "type": "string"
+    },
+    "candidate_tree": {
+      "type": "string"
+    },
+    "merged": {
+      "type": "string"
+    },
+    "published": {
+      "type": "boolean"
+    },
+    "pin": {
+      "type": "object"
+    },
+    "failure": {
+      "type": "string"
+    }
+  }
+}

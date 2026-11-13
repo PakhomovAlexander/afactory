@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Repository developer automations (never part of the installed af CLI)."""
+import runpy
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+if len(sys.argv) < 2 or sys.argv[1] != 'release':
+    sys.exit('usage: ./dev release {rc,plan,status,resume} [options]')
+sys.argv = [sys.argv[0], *sys.argv[2:]]
+runpy.run_path(str(Path(__file__).resolve().parent / 'scripts/dev-release.py'), run_name='__main__')
