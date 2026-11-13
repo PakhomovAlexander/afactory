@@ -197,7 +197,7 @@ impl TaskPlanCompiler {
         }
         let mut normalized = task.clone();
         normalized.inputs = preview.normalize_root_inputs(cas, &proposal.root, task)?;
-        let graph = preview.compile_graph(&normalized, &proposal.root)?;
+        let graph = preview.compile_graph(cas, &normalized, &proposal.root)?;
         preview.validate_replacement_schemas(&graph)?;
         Ok((preview, normalized, graph))
     }
@@ -435,6 +435,7 @@ impl TaskPlanCompiler {
 
     pub(super) fn compile_graph(
         &self,
+        cas: &Cas,
         task: &TaskRevisionV1,
         root: &str,
     ) -> Result<CompiledTask, String> {
@@ -461,7 +462,7 @@ impl TaskPlanCompiler {
             Ok(graph)
         } else {
             let graph = compile_task(task, root, &context)?;
-            self.validate_requirements_inputs(&graph)?;
+            self.validate_requirements_inputs(cas, task, &graph)?;
             Ok(graph)
         }
     }

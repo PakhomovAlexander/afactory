@@ -959,3 +959,62 @@ fn private_notes_exempts_only_bound_attempt_identity_from_credential_checks() {
         }
     }
 }
+
+#[test]
+fn predicted_selected_ports_match_rendered_manifest_query_and_notes_inputs() {
+    for query in ["absent", "same-task", "foreign-task"] {
+        for notes in [false, true] {
+            let f = Fixture::new();
+            let (_, manifest) = f.select(&f.input);
+            let mut input = f.input.clone();
+            input.node = "root.read".into();
+            if notes {
+                f.notes(&mut input, "task-one", "root.discover");
+            }
+            if query != "absent" {
+                input.inputs.insert(
+                    QUERY_PORT.into(),
+                    f.query(
+                        &manifest,
+                        BTreeSet::from([manifest.manifest.entries["fact"].entry_id.clone()]),
+                        if query == "same-task" {
+                            "task-one"
+                        } else {
+                            "other-task"
+                        },
+                        "root.discover",
+                    ),
+                );
+            }
+            let replaced = replaced_input_names(
+                input
+                    .inputs
+                    .iter()
+                    .map(|(name, port)| (name.as_str(), port.artifact_type.as_str())),
+            );
+            let predicted = af_contracts::task::worker_inputs::project(
+                input.inputs.keys().map(|name| (name.clone(), ())).collect(),
+                None,
+                Some(()),
+                &replaced,
+            );
+            let (selected, context) = f.select(&input);
+            if query == "foreign-task" {
+                assert!(!context.omissions.is_empty());
+            }
+            let contract = contract(&f.cas);
+            let id = contract
+                .prepare(&f.cas, &selected, &[], "Read data")
+                .unwrap();
+            let (_, bytes) = contract.read_context(&f.cas, &id).unwrap();
+            let rendered: WorkerRequest = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                predicted.keys().collect::<Vec<_>>(),
+                rendered.inputs.keys().collect::<Vec<_>>()
+            );
+            assert!(!rendered.inputs.contains_key(QUERY_PORT));
+            assert!(!rendered.inputs.contains_key("notes"));
+            assert!(rendered.inputs.contains_key(KNOWLEDGE_PORT));
+        }
+    }
+}

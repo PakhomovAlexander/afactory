@@ -13,6 +13,9 @@ mod model_fallback;
 #[path = "task_file/wall_bounds.rs"]
 mod wall_bounds;
 
+#[path = "task_file/selected_inputs.rs"]
+mod selected_inputs;
+
 use crate::task_cli::{copy_tree, fixture_named};
 
 /// Each native-model reviewer's Attempt wall: two minutes, the load-safe wall (ADR-0114), in
@@ -118,6 +121,263 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
         .output()
         .unwrap();
     assert_eq!(wrong_kind.status.code(), Some(2));
+}
+
+#[test]
+fn review_without_a_requirements_port_uses_its_own_schema_contract() {
+    use af_contracts::task::pipeline::{PipelineDefinition, TaskOperatorV1};
+    use serde_json::json;
+    for required in [false, true] {
+        for named in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let (repo, state) = fixture_named(directory.path(), "review");
+            let packages = repo.join(".af/task-packages/fixture");
+            let path = packages.join("review/pipeline.toml");
+            let mut pipeline: PipelineDefinition =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            pipeline.contract.inputs.remove("requirements");
+            for node in &mut pipeline.nodes {
+                if matches!(node.operator, TaskOperatorV1::Verify { .. }) {
+                    node.inputs.remove("requirements");
+                }
+            }
+            std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
+            if required {
+                let path = packages.join("bugs/input.schema.json");
+                let original: Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                std::fs::write(
+                    path,
+                    serde_json::to_vec(&json!({"allOf":[original,{"required":["requirements"]}]}))
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+            let catalog_path = repo.join(".af/task-catalog.toml");
+            let mut catalog: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+            for name in ["review", "bugs"] {
+                catalog["packages"][format!("fixture/{name}")]["digest"] = toml::Value::String(
+                    af_pipeline_config::lock::package_digest(
+                        &format!("fixture/{name}"),
+                        &packages.join(name),
+                    )
+                    .unwrap(),
+                );
+            }
+            std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+            let file_path = repo.join("review.json");
+            let mut file: Value =
+                serde_json::from_slice(&std::fs::read(&file_path).unwrap()).unwrap();
+            if !named {
+                file.as_object_mut().unwrap().remove("pipeline");
+            }
+            std::fs::write(file_path, serde_json::to_vec(&file).unwrap()).unwrap();
+            for args in [
+                vec!["add", "-A"],
+                vec!["commit", "-qm", "no requirements root"],
+            ] {
+                assert!(
+                    Command::new("git")
+                        .current_dir(&repo)
+                        .args(args)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let output = crate::common::af()
+                .current_dir(&repo)
+                .args([
+                    "review",
+                    "run",
+                    "--file",
+                    "review.json",
+                    "--json",
+                    "--state",
+                ])
+                .arg(&state)
+                .output()
+                .unwrap();
+            let diagnostic = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                output.status.code(),
+                Some(if required { 1 } else { 3 }),
+                "{diagnostic}"
+            );
+            if required {
+                assert!(
+                    diagnostic.contains("Worker input presence cannot be proved"),
+                    "{diagnostic}"
+                );
+            } else {
+                let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(result["result"]["execution"], "completed");
+                assert_eq!(result["result"]["acceptance"], "satisfied");
+                assert_eq!(result["attempts"], 3);
+            }
+        }
+    }
+}
+
+/// Required schema inputs must be proved before the syntax gate or any Worker can run.
+#[test]
+fn review_requirements_are_refused_before_checks_or_delivered_explicitly() {
+    use serde_json::json;
+    for composition in [
+        "required",
+        "allOf",
+        "reference",
+        "single_one_of",
+        "count",
+        "conditional_count",
+        "forbidden_property",
+        "forbidden_additional",
+        "unknown_one_of",
+        "overlapping_count",
+    ] {
+        for named in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let (repo, state) = fixture_named(directory.path(), "review");
+            let catalog_path = repo.join(".af/task-catalog.toml");
+            let mut catalog: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+            for name in ["bugs", "correctness"] {
+                let package = format!("fixture/{name}");
+                let path = repo.join(format!(".af/task-packages/{package}"));
+                let schema_path = path.join("input.schema.json");
+                let original: Value =
+                    serde_json::from_slice(&std::fs::read(&schema_path).unwrap()).unwrap();
+                let required = json!({"required":["requirements"], "properties":{"requirements":{"items":{"properties":{"payload":{"properties":{"specification":{"const":{"acceptance":["Keep this exact explicit specification"]}}},"required":["specification"]}}}}}});
+                let schema = match composition {
+                    "required" => json!({"allOf":[original, required]}),
+                    "allOf" => json!({"allOf":[original, {"allOf":[required]}]}),
+                    "reference" => {
+                        json!({"$defs":{"business":required},"allOf":[original, {"$ref":"#/$defs/business"}]})
+                    }
+                    "single_one_of" => json!({"allOf":[original, required,{
+                        "properties":{"source":{"oneOf":[{"type":"array"}]}}
+                    }]}),
+                    "forbidden_property" => json!({"allOf":[original,{
+                        "if":{"required":["requirements"]},
+                        "else":{"properties":{"source":{"$ref":"#/$defs/forbidden"}}}
+                    }],"$defs":{"forbidden":{"allOf":[{"not":{}}]}}}),
+                    "forbidden_additional" => json!({"allOf":[original,{
+                        "if":{"required":["requirements"]},
+                        "else":{"properties":{"assignment":true,"checks":true,"history":true,"subject":true},"additionalProperties":{"not":{}}}
+                    }]}),
+                    "unknown_one_of" => json!({"allOf":[original,{
+                        "if":{"required":["requirements"]},
+                        "else":{"oneOf":[{"properties":{"source":{"type":"array"}}},{"properties":{"source":{"type":"array"}}}]}
+                    }]}),
+                    "overlapping_count" => json!({"allOf":[original,{
+                        "oneOf":[{"maxProperties":5,"additionalProperties":true},{}]
+                    }]}),
+                    _ => {
+                        let count = json!({"minProperties":6,"additionalProperties":false,"properties":{"assignment":{},"checks":{},"history":{},"source":{},"subject":{},"requirements":{}}});
+                        if composition == "count" {
+                            let mut direct = original;
+                            direct["minProperties"] = json!(6);
+                            let envelope = direct["additionalProperties"].clone();
+                            direct["properties"] = count["properties"].clone();
+                            for property in
+                                direct["properties"].as_object_mut().unwrap().values_mut()
+                            {
+                                *property = envelope.clone();
+                            }
+                            direct["additionalProperties"] = json!(false);
+                            direct
+                        } else {
+                            json!({"allOf":[original,{"if":{"required":["source"]},"then":{"$ref":"#/$defs/count"}}],"$defs":{"count":count}})
+                        }
+                    }
+                };
+                std::fs::write(schema_path, serde_json::to_vec(&schema).unwrap()).unwrap();
+                catalog["packages"][&package]["digest"] = toml::Value::String(
+                    af_pipeline_config::lock::package_digest(&package, &path).unwrap(),
+                );
+            }
+            std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+            let file_path = repo.join("review.json");
+            let mut file: Value =
+                serde_json::from_slice(&std::fs::read(&file_path).unwrap()).unwrap();
+            if !named {
+                file.as_object_mut().unwrap().remove("pipeline");
+            }
+            std::fs::write(&file_path, serde_json::to_vec(&file).unwrap()).unwrap();
+            for args in [
+                vec!["add", "-A"],
+                vec!["commit", "-qm", "required schema inputs"],
+            ] {
+                assert!(
+                    Command::new("git")
+                        .current_dir(&repo)
+                        .args(args)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let invoke = || {
+                crate::common::af()
+                    .current_dir(&repo)
+                    .args([
+                        "review",
+                        "run",
+                        "--file",
+                        "review.json",
+                        "--json",
+                        "--state",
+                    ])
+                    .arg(&state)
+                    .output()
+                    .unwrap()
+            };
+            let refused = invoke();
+            let diagnostic = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&refused.stdout),
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            assert_eq!(refused.status.code(), Some(1), "{diagnostic}");
+            assert!(
+                diagnostic.contains("Worker input presence cannot be proved"),
+                "{diagnostic}"
+            );
+            assert!(!diagnostic.contains("malformed_reply"), "{diagnostic}");
+            // No Task was admitted: not even the first check Attempt may have started.
+            let listed = crate::common::af()
+                .current_dir(&repo)
+                .args(["task", "list", "--json", "--state"])
+                .arg(&state)
+                .output()
+                .unwrap();
+            assert!(
+                listed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&listed.stderr)
+            );
+            assert!(!String::from_utf8_lossy(&listed.stdout).contains("review-cli"));
+            file["requirements"] = json!({"acceptance":["Keep this exact explicit specification"]});
+            std::fs::write(&file_path, serde_json::to_vec(&file).unwrap()).unwrap();
+            let completed = invoke();
+            assert_eq!(
+                completed.status.code(),
+                Some(3),
+                "{}\n{}",
+                String::from_utf8_lossy(&completed.stdout),
+                String::from_utf8_lossy(&completed.stderr)
+            );
+            let result: Value = serde_json::from_slice(&completed.stdout).unwrap();
+            assert_eq!(result["result"]["execution"], "completed");
+            assert_eq!(result["result"]["acceptance"], "satisfied");
+            assert_eq!(result["attempts"], 3);
+        }
+    }
 }
 
 #[test]
@@ -1909,7 +2169,7 @@ fn export_integration(
         push(
             &format!("integrated_{name}"),
             serde_json::json!({"op":"verify","slot":name}),
-            serde_json::json!({"source":from("unpromoted","source"),"subject":from("integrated_bind","subject"),"assignment":from("integrated_bind",name),"history":from("commit","history"),"checks":from("post_check","result")}),
+            serde_json::json!({"source":from("unpromoted","source"),"subject":from("integrated_bind","subject"),"assignment":from("integrated_bind",name),"history":from("commit","history"),"checks":from("post_check","result"),"requirements":root("requirements")}),
             true,
         );
     }

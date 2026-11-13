@@ -14,6 +14,21 @@ pub const INDEX_OPERATION: &str = "worker-knowledge-index@1";
 pub const CONTEXT_OPERATION: &str = "worker-knowledge-select@1";
 pub const CONTROL_BYTES: u64 = 256 * 1024;
 
+/// Raw provenance replaced by a selected context, independent of retrieval success.
+/// Shared by selection and compile-time rendered-input admission.
+pub fn replaced_input_names<'a>(
+    inputs: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> BTreeSet<String> {
+    std::iter::once(QUERY_PORT.to_owned())
+        .chain(
+            inputs
+                .into_iter()
+                .filter(|(_, kind)| *kind == super::WORKER_NOTES_V1)
+                .map(|(name, _)| name.to_owned()),
+        )
+        .collect()
+}
+
 pub fn canonical_knowledge_path(path: &str) -> bool {
     crate::is_valid_repo_path(path)
         && path.len() <= 4096

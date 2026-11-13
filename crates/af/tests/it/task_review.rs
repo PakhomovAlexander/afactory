@@ -606,6 +606,57 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             native::configure_sharded_integration(case, &mut pipeline, &mut packages);
             native::embed(case, &mut pipeline, &mut packages);
         }
+        if matches!(
+            case,
+            "native_scatter_missing_requirements" | "native_scatter_empty_many"
+        ) {
+            let (_, files) = packages
+                .iter_mut()
+                .find(|(name, _)| name == "fixture/bugs")
+                .unwrap();
+            let mut worker: TaskWorkerManifest =
+                toml::from_str(std::str::from_utf8(&files["worker.toml"]).unwrap()).unwrap();
+            let input = if case.ends_with("empty_many") {
+                "sources"
+            } else {
+                "requirements"
+            };
+            let mut extra = port(
+                if input == "sources" {
+                    "af/SourceTree@1"
+                } else {
+                    "af/Requirements@1"
+                },
+                PortAffinityV1::Unbound {},
+            );
+            extra.optional = true;
+            if input == "sources" {
+                extra.cardinality = af_contracts::PortCardinality::Many;
+                pipeline.contract.inputs.insert(input.into(), extra.clone());
+                pipeline
+                    .nodes
+                    .iter_mut()
+                    .find(|node| matches!(node.operator, TaskOperatorV1::ReviewScatter { .. }))
+                    .unwrap()
+                    .inputs
+                    .insert(input.into(), root(input));
+            }
+            worker.signature.contract.inputs.insert(input.into(), extra);
+            files.insert(
+                "worker.toml".into(),
+                toml::to_string(&worker).unwrap().into_bytes(),
+            );
+            let mut schema: serde_json::Value =
+                serde_json::from_slice(&files["input.schema.json"]).unwrap();
+            schema["required"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(input));
+            files.insert(
+                "input.schema.json".into(),
+                serde_json::to_vec(&schema).unwrap(),
+            );
+        }
         packages.push((
             pipeline.name.clone(),
             BTreeMap::from([(
@@ -619,6 +670,12 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             "authority":{"policy_id":policy_id,"allowed_effects":["execute-checks","read-source"],"data_destinations":[]},
             "limits":{"tokens":1000,"max_attempts":3,"deadline_unix_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64+60000,"verification":{"tokens":0,"attempts":3,"wall_ms":15000}},
             "strategy":"light","pipeline":{"name":pipeline.name,"fallback":"refuse"},"facts":{}})).unwrap();
+        if case == "native_scatter_empty_many" {
+            let mut empty = task.inputs["source"].clone();
+            empty.cardinality = af_contracts::PortCardinality::Many;
+            empty.artifact_ids.clear();
+            task.inputs.insert("sources".into(), empty);
+        }
         if two_rounds {
             task.limits.max_attempts = 6;
             task.limits.verification.attempts = 6;
@@ -702,7 +759,9 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
                         .collect(),
                 )
                 .unwrap();
-            if worker_package {
+            // This case must fail structural admission, before a machine binding or
+            // Provider admission is needed for the unsupported selection route.
+            if worker_package && !(case == "native_scatter_development" && name == "fixture/bugs") {
                 compiler
                     .bind_worker(
                         &name,
@@ -725,6 +784,38 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             .unwrap()
             .0;
         let compiled = compiler.compile(&cas, &revision, &pipeline.name);
+        if case == "native_scatter_development" {
+            let error = compiled.unwrap_err();
+            assert!(
+                error.contains(
+                    "development cache selection is unsupported for a Scatter coordinator"
+                ),
+                "{error}"
+            );
+            assert!(store.run_ids().unwrap().is_empty());
+            return;
+        }
+        if case == "native_scatter_knowledge" {
+            let error = compiled.unwrap_err();
+            assert!(
+                error.contains("knowledge selection is unsupported for a Scatter coordinator"),
+                "{error}"
+            );
+            assert!(store.run_ids().unwrap().is_empty());
+            return;
+        }
+        if matches!(
+            case,
+            "native_scatter_missing_requirements" | "native_scatter_empty_many"
+        ) {
+            let error = compiled.unwrap_err();
+            assert!(
+                error.contains("Worker input presence cannot be proved"),
+                "{error}"
+            );
+            assert!(store.run_ids().unwrap().is_empty());
+            return;
+        }
         if matches!(
             case,
             "native_integration_no_successor"

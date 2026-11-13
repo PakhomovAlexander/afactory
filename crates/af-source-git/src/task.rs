@@ -172,6 +172,47 @@ pub fn read_snapshot(cas: &Cas, id: &str) -> Result<(TaskSnapshot, Manifest), St
     Ok((snapshot, manifest))
 }
 
+/// Resolve the Task's exact declared base, as execution does (ADR-0212).
+pub fn declared_base(
+    cas: &Cas,
+    task: Option<&af_contracts::task::TaskRevisionV1>,
+) -> Result<Option<String>, String> {
+    use af_contracts::task::findings::{TASK_BASE_V1, TaskBaseV1};
+    let Some(task) = task else {
+        return Ok(None);
+    };
+    for id in &task.provenance.input_artifact_ids {
+        let Some(artifact) = cas.get_optional_artifact(id).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        if artifact.artifact_type != TASK_BASE_V1 {
+            continue;
+        }
+        let base: TaskBaseV1 =
+            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+        base.validate()?;
+        return Ok(Some(base.snapshot_id));
+    }
+    Ok(None)
+}
+
+/// Resolve a source's recorded base, including a re-rooted bound candidate (ADR-0212).
+pub fn recorded_base(cas: &Cas, snapshot: &TaskSnapshot) -> Result<Option<String>, String> {
+    if let Some(parent) = &snapshot.parent_snapshot_id {
+        return Ok(Some(parent.clone()));
+    }
+    // Only a bound origin names a tree this one came from; any other origin, typed or not,
+    // names none.
+    let Ok(origin) = read_origin(cas, &snapshot.origin_id) else {
+        return Ok(None);
+    };
+    let Some(bound) = origin.bound_from() else {
+        return Ok(None);
+    };
+    let (from, _) = read_snapshot(cas, &bound.snapshot_id)?;
+    Ok(from.parent_snapshot_id)
+}
+
 pub fn capture_snapshot(
     cas: &Cas,
     manifest: &Manifest,

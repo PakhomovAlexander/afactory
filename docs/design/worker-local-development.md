@@ -385,6 +385,8 @@ instructions or acceptance evidence.
 
 A discovery Worker emits an optional `knowledge_query` output of `af/KnowledgeQuery@1`, naming
 that index and selected entry IDs. Bind it to the next node's optional `knowledge_query` input.
+With a knowledge companion, `knowledge_query` is reserved on inputs and outputs for that type;
+unrelated types fail package admission. Query ports may be absent for manifest-only selection.
 The next invocation receives only bounded selected excerpts in its `knowledge` context. This
 uses existing typed pipeline nodes: there is no live retrieval callback, automatic extra model
 call or new scheduler. Every node uses its ordinary Attempt and token reservation. Worker

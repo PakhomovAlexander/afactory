@@ -329,8 +329,18 @@ impl WorkerContract {
                 }
             }
         }
+        let rendered = af_contracts::task::worker_inputs::project(
+            invocation
+                .inputs
+                .iter()
+                .map(|(name, input)| (name.clone(), input))
+                .collect(),
+            None,
+            None,
+            &replaced,
+        );
         for (port, input) in &invocation.inputs {
-            if replaced.contains(port) {
+            if !rendered.contains_key(port) {
                 for id in &input.artifact_ids {
                     manifest.record(
                         port,
