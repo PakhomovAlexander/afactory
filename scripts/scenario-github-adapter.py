@@ -911,7 +911,7 @@ def schema_documents():
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:5#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:6#/$defs/Datum"}}})
     record = obj({"request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},

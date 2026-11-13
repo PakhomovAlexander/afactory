@@ -69,6 +69,23 @@ its replacement. Resume recompiles those captured bytes and settings; it does no
 local file again. The integration fixture runs Alice and Bob against the same Pipeline,
 changes their local files after planning, and verifies both captured executions.
 
+Scenario `template-pin --bindings FILE` uses this same bounded capture from the original file
+location. Its version 2 template seals the full native authority closure in the Task Store.
+Concurrent identical pins create one durable record; repeating a pin validates that exact record
+and refuses conflicting, corrupt or duplicate history, including noncanonical event metadata.
+Pin validation probes at most two indexed sequence entries, including negative sequences, and
+bounds each required event text field to 256 UTF-8 bytes before decoding. Optional metadata must
+be absent. Fresh planning uses the same bounded read; corrupt history cannot trigger a full replay
+under pin publication's writer lock. Template artifact verification precedes that lock.
+A process-owned shared CAS reservation protects capture and reused objects through publication;
+Task collection refuses while it is held. Git and package capture leave SQLite available for
+unrelated Task heartbeat renewals. Process death releases the reservation automatically.
+Fresh Tasks and restarts restore that closure without reading local paths, even after the
+bindings and package directories are deleted. Committed customer Pipelines and policy remain
+anchored to the exact authority commit; local additions remain Workers only. A new binding
+requires a new template pin and Scenario/policy confirmation. See
+[Fresh Task templates](../scenarios.md#fresh-task-templates).
+
 ## Report evaluation dependencies
 
 Report verifiers may declare any number of prior `af/ReportEvaluation@1` inputs with

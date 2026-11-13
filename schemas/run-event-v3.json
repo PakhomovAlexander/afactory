@@ -53,6 +53,7 @@
         "GenerationAdvanced@1",
         "PolicyTimeAdvanced@1",
         "SourceCaptured@1",
+        "ScenarioTemplatePinned@1",
         "ProjectRegistered@1",
         "WorkspaceRegistered@1",
         "WorkspaceRemoved@1",
@@ -341,6 +342,34 @@
         "required": [
           "type"
         ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ScenarioTemplatePinned@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        }
       }
     }
   ],

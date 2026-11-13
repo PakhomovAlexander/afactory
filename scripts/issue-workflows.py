@@ -701,7 +701,7 @@ def composition(name, pins, facts):
     source = None
     for pin, pipeline in zip(pins, expected):
         exact(pin, ('schema', 'template_id', 'template'))
-        if pin['schema'] != 'af/scenario-template-pin@1' or not re.fullmatch(r'sha256:[0-9a-f]{64}', pin['template_id']):
+        if pin['schema'] != 'af/scenario-template-pin@2' or not re.fullmatch(r'sha256:[0-9a-f]{64}', pin['template_id']):
             raise ValueError('expected exact native template-pin receipt')
         template = pin['template']
         captured_catalog(template)
@@ -751,7 +751,7 @@ def composition(name, pins, facts):
                       'timeout_ms': template['document']['limits']['wall_ms'], 'on_timeout': 'fail'})
     # A Task datum is admitted only for an accepted, completed exact native result. The
     # research_report predecessor additionally authenticates original source and 32 KiB bound.
-    definition = {'schema': 'af/scenario@5', 'admission': None, 'inputs': {},
+    definition = {'schema': 'af/scenario@6', 'admission': None, 'inputs': {},
                   'outputs': {s['id']: 'task' for s in steps}, 'steps': steps,
                   'result': {s['id']: {'source': 'step', 'step': s['id'], 'port': 'result'} for s in steps},
                   'completion': [{'source': 'literal', 'value': {'type': 'boolean', 'value': True}}],
@@ -759,7 +759,7 @@ def composition(name, pins, facts):
                   'limits': {'max_tokens': sum(t['max_tokens'] for t in templates),
                              'max_wall_ms': sum(t['document']['limits']['wall_ms'] for t in templates) + 60000,
                              'max_dispatches': 16}}
-    return {'schema': 'af/scenario-bundle@5', 'root': 'issue-workflow', 'definitions': {'issue-workflow': definition}}
+    return {'schema': 'af/scenario-bundle@6', 'root': 'issue-workflow', 'definitions': {'issue-workflow': definition}}
 
 
 def main():

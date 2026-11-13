@@ -24,7 +24,7 @@ pub(super) fn fixture() -> (Roadmap, Pin) {
     let roadmap = Roadmap::new(Revision::new(None, p).unwrap()).unwrap();
     let (mut bundle, mut policy) = simple();
     let template = template::Template {
-        schema: "af/scenario-task-template@1".into(),
+        schema: "af/scenario-task-template@2".into(),
         repo: "/repo".into(),
         state: "/task-state".into(),
         authority_commit: "a".repeat(40),
@@ -135,7 +135,7 @@ fn concurrent_manual_admission_reserves_complete_loops_once_and_restart_keeps_cl
         .unwrap()
         .unwrap();
     assert_eq!(again, *c);
-    valid("scenario-store-v9.json", &store.read().unwrap());
+    valid("scenario-store-v10.json", &store.read().unwrap());
 }
 #[test]
 fn unknown_charge_and_midnight_never_release_a_complete_loop_or_enable_a_revision_reset() {
@@ -464,13 +464,16 @@ fn shipped_fresh_task_example_has_narrow_digest_grants_and_versioned_schema_pari
         .task_templates
         .clone();
     let pin = Pin::new(&TestHost::default(), bundle.clone(), policy).unwrap();
-    valid("scenario-bundle-v5.json", &bundle);
-    valid("scenario-pin-v5.json", &pin);
+    valid("scenario-bundle-v6.json", &bundle);
+    valid("scenario-pin-v6.json", &pin);
     let Kind::FreshTask { template, .. } = &bundle.definitions[&bundle.root].steps[0].operation
     else {
         unreachable!()
     };
-    valid("scenario-task-template-v1.json", template);
+    valid("scenario-task-template-v2.json", template);
+    let mut retired = template.clone();
+    retired.schema = "af/scenario-task-template@1".into();
+    assert!(retired.validate(&TestHost::default()).is_err());
     let mut wrong = pin.clone();
     wrong.policy.task_templates.clear();
     assert!(wrong.validate(&TestHost::default()).is_err());
@@ -713,7 +716,7 @@ fn goal_claimed_recovered_overrun_persists_replays_and_refuses_admission() {
             unknown_first
         );
         assert_eq!(progress.task_receipts.len(), 1);
-        valid("scenario-store-v9.json", &world);
+        valid("scenario-store-v10.json", &world);
         valid("scenario-roadmap-v3.json", &world.roadmaps["performance"]);
         // Expired budget windows cannot erase cumulative roadmap spend or revise it away.
         let refused = admit(&replay, &pin, "later", START + 3 * DAY);
@@ -785,7 +788,7 @@ fn single_goal_charge_above_safe_integer_replays_and_releases_only_its_reservati
     assert_eq!(progress.reserved_tokens, 0);
     assert!(progress.claim.as_ref().unwrap().settled_unix_ms.is_some());
     assert_eq!(world.runs["single"].status, Status::Failed);
-    valid("scenario-store-v9.json", &world);
+    valid("scenario-store-v10.json", &world);
     valid("scenario-roadmap-v3.json", &world.roadmaps["performance"]);
     let refused = admit(&replay, &pin, "blocked", START + 2);
     assert!(refused.goal_claim.is_none());

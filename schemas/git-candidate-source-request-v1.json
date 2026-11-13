@@ -23,7 +23,7 @@
       ]
     },
     "receipt": {
-      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+      "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
     },
     "schema": {
       "const": "af/git-candidate-source-request@1"

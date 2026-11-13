@@ -934,7 +934,7 @@ mod tests {
             initial.revisions[0]
         );
         assert_eq!(replay.roadmaps["performance"].progress, initial.progress);
-        valid("scenario-store-v9.json", &replay);
+        valid("scenario-store-v10.json", &replay);
         assert!(
             store
                 .update(|w| {
@@ -973,13 +973,13 @@ mod tests {
         assert_eq!(store.read().unwrap(), replay);
         // All prior-release Store documents fail closed, rather than defaulting missing history.
         let mut old = json!(replay);
-        old["schema"] = json!("af/scenario-store@8");
-        assert!(!schema("scenario-store-v9.json").is_valid(&old));
+        old["schema"] = json!("af/scenario-store@9");
+        assert!(!schema("scenario-store-v10.json").is_valid(&old));
         let parsed: super::super::store::World = serde_json::from_value(old.clone()).unwrap();
         assert!(parsed.validate(&crate::tests::TestHost::default()).is_err());
         old.as_object_mut().unwrap().remove("roadmaps");
         assert!(serde_json::from_value::<super::super::store::World>(old).is_err());
-        std::fs::write(path.join("runs/scenario-owner"), b"af/scenario-store@8\n").unwrap();
+        std::fs::write(path.join("runs/scenario-owner"), b"af/scenario-store@9\n").unwrap();
         assert!(Store::isolated(&path).is_err());
     }
 }

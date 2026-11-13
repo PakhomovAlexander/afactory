@@ -23,13 +23,13 @@ macro_rules! schema {
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
-    schema!("ant-inspection", 2),
-    schema!("ant-list", 7),
-    schema!("ant-pin", 6),
+    schema!("ant-inspection", 3),
+    schema!("ant-list", 8),
+    schema!("ant-pin", 7),
     schema!("ant-scheduler", 1),
-    schema!("ant-state", 7),
-    schema!("ant-tick", 6),
-    schema!("ant", 6),
+    schema!("ant-state", 8),
+    schema!("ant-tick", 7),
+    schema!("ant", 7),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
@@ -59,25 +59,25 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("review-ledger", 2),
     schema!("scenario-adapter-request", 4),
     schema!("scenario-adapter-response", 1),
-    schema!("scenario-bundle", 5),
+    schema!("scenario-bundle", 6),
     schema!("scenario-decision", 1),
     schema!("scenario-evidence-source", 1),
     schema!("scenario-experiment-source-request", 1),
     schema!("scenario-experiment-source", 1),
-    schema!("scenario-list", 5),
+    schema!("scenario-list", 6),
     schema!("scenario-owned-file", 1),
-    schema!("scenario-pin", 5),
+    schema!("scenario-pin", 6),
     schema!("scenario-policy", 5),
     schema!("scenario-roadmap-list", 3),
     schema!("scenario-roadmap-proposal", 2),
     schema!("scenario-roadmap-revision", 2),
     schema!("scenario-roadmap", 3),
-    schema!("scenario-run", 5),
+    schema!("scenario-run", 6),
     schema!("scenario-signed-decision", 1),
-    schema!("scenario-store", 9),
-    schema!("scenario-task-template", 1),
-    schema!("scenario-template-pin", 1),
-    schema!("scenario", 5),
+    schema!("scenario-store", 10),
+    schema!("scenario-task-template", 2),
+    schema!("scenario-template-pin", 2),
+    schema!("scenario", 6),
     schema!("task-attention", 1),
     schema!("task-cancelled", 2),
     schema!("task-checks", 3),
@@ -250,6 +250,6 @@ mod tests {
         assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/ant-inspection@2  "), "{listing}");
+        assert!(listing.starts_with("af/ant-inspection@3  "), "{listing}");
     }
 }
