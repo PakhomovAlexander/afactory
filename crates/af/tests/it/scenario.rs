@@ -3855,4 +3855,103 @@ fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
     assert_eq!(before.len(), 2);
     assert!(!output(&f.repo, &f.state, &args).status.success());
     assert_eq!(store.replay(&run).unwrap(), before);
+    // A corrupt but individually valid sequential history must never be replayed while
+    // repinning holds SQLite's writer lock. Keep a real unrelated Task heartbeat active.
+    let duplicate = af_store::NewEvent::new(
+        af_contracts::EventType::ScenarioTemplatePinnedV1,
+        serde_json::from_str(&original.1).unwrap(),
+    )
+    .referencing(serde_json::from_str(&original.2).unwrap());
+    store
+        .append_batch(&run, &cas, &vec![duplicate; 4095])
+        .unwrap();
+    let before = store.replay(&run).unwrap();
+    let planned = cli(
+        &f.repo,
+        &task_state,
+        &["task", "plan", "--file", "ticket.json"],
+    );
+    let mut active = store.reopen(std::time::Duration::from_secs(1)).unwrap();
+    let lease = active
+        .take_task_lease(
+            &cas,
+            planned["task_id"].as_str().unwrap(),
+            "pin-history-heartbeat",
+            6_000,
+        )
+        .unwrap();
+    let expiry = active.task_lease_state(&lease).unwrap();
+    let shared = std::sync::Mutex::new(&mut active);
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let lost = std::sync::atomic::AtomicBool::new(false);
+    af_runtime::task::lease::with_heartbeat_supervised(
+        &shared,
+        &cas,
+        &lease,
+        af_runtime::task::lease::HeartbeatControl {
+            cancellation: Some(&cancelled),
+            writer_lost: Some(&lost),
+            timing: af_runtime::task::lease::LeaseTiming::for_lease(6_000),
+        },
+        || {
+            let _busy = shared.lock().unwrap();
+            assert!(!output(&f.repo, &f.state, &args).status.success());
+            assert_eq!(f.start("large-duplicate-pin")["status"], "failed");
+            assert_eq!(store.replay(&run).unwrap(), before);
+            db.execute("DELETE FROM events WHERE run_id=?1 AND sequence<>0", [&run])
+                .unwrap();
+            for field in [
+                "event_id",
+                "type",
+                "occurred_at",
+                "node_id",
+                "attempt_id",
+                "causation_id",
+                "correlation_id",
+                "payload",
+                "artifact_refs",
+            ] {
+                let original: Option<String> = db
+                    .query_row(
+                        &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                        [&run],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                db.execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    rusqlite::params!["é".repeat(129), run],
+                )
+                .unwrap();
+                let before = snapshot();
+                assert!(
+                    !output(&f.repo, &f.state, &args).status.success(),
+                    "{field}"
+                );
+                let failed = f.start(&format!("oversized-{field}"));
+                assert_eq!(failed["status"], "failed", "{field}: {failed}");
+                assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
+                assert_eq!(snapshot(), before, "refusal mutated {field}");
+                db.execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    rusqlite::params![original, run],
+                )
+                .unwrap();
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while store.task_lease_state(&lease).unwrap() < expiry + 3_000 {
+                assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "heartbeat did not renew"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(cli(&f.repo, &f.state, &args), pinned);
 }

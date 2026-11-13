@@ -547,6 +547,44 @@ impl EventStore {
         })
     }
 
+    /// Read exactly one canonical Scenario template pin without replaying its stream.
+    /// The indexed probe visits at most two sequence entries (including negative ones).
+    /// Each returned text column is capped at 256 UTF-8 bytes in SQLite, before Rust
+    /// allocates or decodes it; optional metadata is observed only as NULL predicates.
+    /// No CAS access occurs here, so this is safe inside pin publication's transaction.
+    pub fn scenario_template_pin(&self, run_id: &str) -> Result<String, StoreError> {
+        let invalid = || StoreError::Conflict("Template has no exact durable native pin".into());
+        let Some(digest) = run_id.strip_prefix("scenario-template-") else {
+            return Err(invalid());
+        };
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid());
+        }
+        let mut statement = self.conn.prepare(SCENARIO_PIN_SQL)?;
+        let mut rows = statement.query([run_id])?;
+        let row = rows.next()?.ok_or_else(invalid)?;
+        let mut fields = Vec::with_capacity(5);
+        for column in 0..5 {
+            fields.push(row.get::<_, Option<String>>(column)?.ok_or_else(invalid)?);
+        }
+        if !row.get::<_, bool>(5)?
+            || fields[0] != derive_event_id(run_id, 0)
+            || fields[1] != EventType::ScenarioTemplatePinnedV1.to_string()
+            || fields[2] != "1970-01-01T00:00:00Z"
+        {
+            return Err(invalid());
+        }
+        let payload: serde_json::Value = serde_json::from_str(&fields[3])?;
+        let references: Vec<String> = serde_json::from_str(&fields[4])?;
+        let artifact = payload["artifact_id"].as_str().ok_or_else(invalid)?;
+        af_contracts::event::validate_event_payload(EventType::ScenarioTemplatePinnedV1, &payload)
+            .map_err(|_| invalid())?;
+        if payload != serde_json::json!({"artifact_id": artifact}) || references != [artifact] {
+            return Err(invalid());
+        }
+        Ok(artifact.to_owned())
+    }
+
     /// Append one event, assigning it the next sequence for its run.
     ///
     /// Every referenced artifact must already be in `cas`, and durable before the row lands.
@@ -1103,6 +1141,28 @@ fn decode_stored_event(run_id: &str, row: StoredEventRow) -> Result<RunEvent, St
         payload,
     })
 }
+
+// MATERIALIZED bounds the complete history probe, independently of the outer lookup.
+// The primary key covers (run_id, sequence), so no sort, table scan or COUNT is needed.
+// Bundled SQLite's octet_length uses OPFLAG_BYTELENARG on the direct column: it
+// reads the record's byte length without loading text from overflow pages or counting
+// Unicode characters. CASE fetches the actual column only after its budget passes,
+// preventing oversized allocations inside SQLite as well as in Rust.
+const SCENARIO_PIN_SQL: &str = "
+    WITH pins AS MATERIALIZED (
+        SELECT sequence FROM events WHERE run_id=?1 ORDER BY sequence LIMIT 2
+    )
+    SELECT
+        CASE WHEN octet_length(event_id) <= 256 THEN event_id END,
+        CASE WHEN octet_length(type) <= 256 THEN type END,
+        CASE WHEN octet_length(occurred_at) <= 256 THEN occurred_at END,
+        CASE WHEN octet_length(payload) <= 256 THEN payload END,
+        CASE WHEN octet_length(artifact_refs) <= 256 THEN artifact_refs END,
+        node_id IS NULL AND attempt_id IS NULL AND causation_id IS NULL
+            AND correlation_id IS NULL
+    FROM events WHERE run_id=?1 AND sequence=0
+        AND (SELECT sequence FROM pins LIMIT 1)=0
+        AND NOT EXISTS (SELECT 1 FROM pins LIMIT 1 OFFSET 1)";
 
 fn derive_event_id(run_id: &str, sequence: i64) -> String {
     use sha2::{Digest, Sha256};
@@ -1747,6 +1807,153 @@ mod tests {
                 .unwrap();
             assert_eq!(after, sequences);
         }
+    }
+
+    #[test]
+    fn scenario_pin_read_bounds_rows_bytes_and_query_work() {
+        let (_dir, mut store, cas) = fixture();
+        let run = format!("scenario-template-{}", "a".repeat(64));
+        let artifact = cas.put_json(&json!({"template": true})).unwrap();
+        let event = NewEvent::new(
+            EventType::ScenarioTemplatePinnedV1,
+            json!({"artifact_id":artifact}),
+        )
+        .referencing(vec![artifact.clone()]);
+        store.append(&run, &cas, event.clone()).unwrap();
+        assert_eq!(store.scenario_template_pin(&run).unwrap(), artifact);
+        for field in ["payload", "artifact_refs"] {
+            let original: String = store
+                .conn
+                .query_row(
+                    &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                    [&run],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // Whitespace remains semantically exact up to the byte budget, inclusive.
+            for bytes in [255, 256, 257] {
+                let padded = format!("{original:bytes$}");
+                store
+                    .conn
+                    .execute(
+                        &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                        params![padded, run],
+                    )
+                    .unwrap();
+                assert_eq!(store.scenario_template_pin(&run).is_ok(), bytes <= 256);
+            }
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    params![original, run],
+                )
+                .unwrap();
+        }
+        for field in [
+            "event_id",
+            "type",
+            "occurred_at",
+            "node_id",
+            "attempt_id",
+            "causation_id",
+            "correlation_id",
+            "payload",
+            "artifact_refs",
+        ] {
+            let original: Option<String> = store
+                .conn
+                .query_row(
+                    &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                    [&run],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // 129 characters but 258 bytes: a character-count guard would be insufficient.
+            let oversized = "é".repeat(129);
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    params![oversized, run],
+                )
+                .unwrap();
+            assert!(store.scenario_template_pin(&run).is_err(), "{field}");
+            let after: String = store
+                .conn
+                .query_row(
+                    &format!("SELECT {field} FROM events WHERE run_id=?1"),
+                    [&run],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(after, oversized);
+            store
+                .conn
+                .execute(
+                    &format!("UPDATE events SET {field}=?1 WHERE run_id=?2"),
+                    params![original, run],
+                )
+                .unwrap();
+        }
+        for sequence in [-1, 1, 9] {
+            store
+                .conn
+                .execute(
+                    "UPDATE events SET sequence=?1 WHERE run_id=?2",
+                    params![sequence, run],
+                )
+                .unwrap();
+            assert!(store.scenario_template_pin(&run).is_err());
+        }
+        store
+            .conn
+            .execute("UPDATE events SET sequence=0 WHERE run_id=?1", [&run])
+            .unwrap();
+        store.append_batch(&run, &cas, &vec![event; 4096]).unwrap();
+        assert!(store.scenario_template_pin(&run).is_err());
+        let mut query = store.conn.prepare(SCENARIO_PIN_SQL).unwrap();
+        assert!(!query.exists([&run]).unwrap());
+        assert!(query.get_status(rusqlite::StatementStatus::VmStep) < 200);
+        // SQLite counts the single step to the second row of the bounded `pins`
+        // materialization as a full-scan step; the event table itself is index-only probed.
+        assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 1);
+        assert_eq!(query.get_status(rusqlite::StatementStatus::Sort), 0);
+        // Audit the byte guards too: VM step counts alone cannot detect an opcode
+        // that loads a huge text value. All five size probes must use metadata only.
+        let byte_probes = store
+            .conn
+            .prepare(&format!("EXPLAIN {SCENARIO_PIN_SQL}"))
+            .unwrap()
+            .query_map([&run], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, u32>(6)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .filter(|(opcode, flags)| opcode == "Column" && flags & 0xc0 == 0xc0)
+            .count();
+        assert_eq!(byte_probes, 5);
+        let plan = store
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {SCENARIO_PIN_SQL}"))
+            .unwrap()
+            .query_map([&run], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("COVERING INDEX") && line.contains("run_id=?")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.contains("SCAN events") || line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
     }
 
     #[test]

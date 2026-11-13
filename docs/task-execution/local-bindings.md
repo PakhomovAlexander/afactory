@@ -73,6 +73,10 @@ Scenario `template-pin --bindings FILE` uses this same bounded capture from the 
 location. Its version 2 template seals the full native authority closure in the Task Store.
 Concurrent identical pins create one durable record; repeating a pin validates that exact record
 and refuses conflicting, corrupt or duplicate history, including noncanonical event metadata.
+Pin validation probes at most two indexed sequence entries, including negative sequences, and
+bounds each required event text field to 256 UTF-8 bytes before decoding. Optional metadata must
+be absent. Fresh planning uses the same bounded read; corrupt history cannot trigger a full replay
+under pin publication's writer lock. Template artifact verification precedes that lock.
 A process-owned shared CAS reservation protects capture and reused objects through publication;
 Task collection refuses while it is held. Git and package capture leave SQLite available for
 unrelated Task heartbeat renewals. Process death releases the reservation automatically.

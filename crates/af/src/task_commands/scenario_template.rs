@@ -107,15 +107,10 @@ fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<()
         "scenario-template-{}",
         template.id()?.trim_start_matches("sha256:")
     );
-    let events = store.replay(&run).map_err(|e| e.to_string())?;
-    let [event] = events.as_slice() else {
-        return Err("Template has no exact durable native pin".into());
-    };
-    let artifact = event.payload["artifact_id"]
-        .as_str()
-        .ok_or("Template pin has no artifact")?;
-    verify_pin_artifact(cas, template, artifact)?;
-    validate_pin_event(store, template, artifact)
+    let artifact = store
+        .scenario_template_pin(&run)
+        .map_err(|e| e.to_string())?;
+    verify_pin_artifact(cas, template, &artifact)
 }
 
 fn verify_pin_artifact(cas: &Cas, template: &Template, artifact: &str) -> Result<(), String> {
@@ -136,18 +131,10 @@ fn validate_pin_event(
         "scenario-template-{}",
         template.id()?.trim_start_matches("sha256:")
     );
-    let events = store.replay(&run).map_err(|e| e.to_string())?;
-    let [event] = events.as_slice() else {
-        return Err("Template has no exact durable native pin".into());
-    };
-    if event.event_type != af_contracts::EventType::ScenarioTemplatePinnedV1
-        || event.occurred_at != "1970-01-01T00:00:00Z"
-        || event.node_id.is_some()
-        || event.attempt_id.is_some()
-        || event.causation_id.is_some()
-        || event.correlation_id.is_some()
-        || event.payload != json!({"artifact_id":artifact})
-        || event.artifact_refs != [artifact]
+    if store
+        .scenario_template_pin(&run)
+        .map_err(|e| e.to_string())?
+        != artifact
     {
         return Err("Template differs from its durable native pin".into());
     }
