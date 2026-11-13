@@ -44,6 +44,11 @@ def catalog():
     return value
 
 
+def catalog_file(name=None):
+    return STAGED / ('experiment-catalog.toml' if name == 'bugfix/primitive-codex'
+                     else 'replacement-catalog.toml')
+
+
 def selection(name):
     choices = catalog()['selections']
     if name not in choices:
@@ -95,7 +100,7 @@ def validate_plan(name, value, state):
     if name not in internal:
         selection(name)
     validate_native_projection(value, state)
-    native = toml(STAGED / 'replacement-catalog.toml')
+    native = toml(catalog_file(name))
     plan, graph = value['plan'], value['graph']
     validate_policy(value, state)
     if value['selection']['assessment']['decision'] != {'kind': 'selected', 'pipeline': name}:
@@ -216,7 +221,7 @@ def available_models(af, provider):
 
 def check_latest_models(af, name):
     """New launcher plans/composition only. Never rewrite pins or recheck historical Tasks."""
-    native = toml(STAGED / 'replacement-catalog.toml')
+    native = toml(catalog_file(name))
     workers, visited = set(), set()
     def visit(package):
         if package in visited:
@@ -613,10 +618,10 @@ def approved_policy_id(kind):
     return kernel_contracts.kernel_digest(kernel_contracts.KERNEL_CONTENT_DOMAIN, policy, 'policy')
 
 
-def approved_review_policy():
+def approved_review_policy(name=None):
     # capture_authority maps ReviewSettings to ReviewTaskPolicy (/2). Generation is
     # a catalog selector, not a persisted policy field; all acceptance fields remain.
-    review = dict(toml(STAGED / 'replacement-catalog.toml')['review'])
+    review = dict(toml(catalog_file(name))['review'])
     if review.pop('generation', None) not in (None, 2):
         raise ValueError('unsupported staged Review generation')
     review.setdefault('allow_targeted_repairs', False)
@@ -633,7 +638,7 @@ def validate_policy(value, state):
     kind = 'report' if pipeline in ('issue-internal/report', 'issue-internal/kimi-report', 'design/astra-kimi') else 'code'
     expected = approved_policy_id(kind)
     # catalog_id is the hash of raw captured TOML, not a parsed JSON projection.
-    catalog_bytes = (STAGED / 'replacement-catalog.toml').read_bytes()
+    catalog_bytes = catalog_file(pipeline).read_bytes()
     catalog_id = kernel_contracts.kernel_blob_id(catalog_bytes)
     if authority.get('catalog_id') != catalog_id:
         raise ValueError('effective approved catalog identity differs')
@@ -641,7 +646,7 @@ def validate_policy(value, state):
         raise ValueError('effective approved catalog bytes differ')
     policies = {kind + '_policy_id': expected}
     if kind == 'code':
-        review = approved_review_policy()
+        review = approved_review_policy(pipeline)
         policies['review_policy_id'] = kernel_contracts.kernel_digest(
             kernel_contracts.KERNEL_CONTENT_DOMAIN, review, 'Review policy')
     # Native Report authority omits code/Review policies. Explicit nulls or extra
@@ -661,9 +666,10 @@ def validate_policy(value, state):
             raise ValueError('approved checks must run locally')
 
 
-def installed_authority(repo):
-    if (Path(repo) / '.af/task-catalog.toml').read_bytes() != (STAGED / 'replacement-catalog.toml').read_bytes():
-        raise ValueError('install and review the exact replacement catalog before planning')
+def installed_authority(repo, name=None):
+    if (Path(repo) / '.af/task-catalog.toml').read_bytes() != catalog_file(name).read_bytes():
+        kind = 'experiment' if name == 'bugfix/primitive-codex' else 'replacement'
+        raise ValueError('install and review the exact ' + kind + ' catalog before planning')
     if (Path(repo) / '.af/af.toml').read_bytes() != (STAGED / 'replacement-af.toml').read_bytes():
         raise ValueError('installed approved af.toml settings bytes differ')
     for kind in ('code', 'report'):
@@ -676,7 +682,7 @@ def captured_catalog(template):
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('template requires exact source commit')
     files = {'af.toml': 'replacement-af.toml',
-             'task-catalog.toml': 'replacement-catalog.toml',
+             'task-catalog.toml': catalog_file(template['document']['pipeline']['name']).name,
              'code-policy.toml': 'approved-code-policy.toml',
              'report-policy.toml': 'approved-report-policy.toml'}
     for installed, staged in files.items():
@@ -684,6 +690,25 @@ def captured_catalog(template):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=True)
         if len(result.stdout) > LIMIT or result.stdout != (STAGED / staged).read_bytes():
             raise ValueError('pinned source does not install approved authority: ' + installed)
+
+
+def primitive_lineage(implementation, verification):
+    """Only the approved catalog may differ across the two captured authorities."""
+    original = implementation['authority_commit']
+    normal = verification['authority_commit']
+    if original == normal:
+        raise ValueError('primitive stages require separate experiment and normal authorities')
+    repo = implementation['repo']
+    subprocess.run(['git', '-C', repo, 'merge-base', '--is-ancestor', normal, original],
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=True)
+    changed = subprocess.run(['git', '-C', repo, 'diff', '--name-only', '--no-renames',
+                              '-z', normal, original, '--'],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=True)
+    if changed.stdout != b'.af/task-catalog.toml\0':
+        raise ValueError('primitive authorities must share original source lineage except the approved catalog')
+    for template in (implementation, verification):
+        if template['document'].get('base') != {'commit': original}:
+            raise ValueError('primitive stages must explicitly retain the original whole-change Base')
 
 
 def composition(name, pins, facts):
@@ -699,13 +724,16 @@ def composition(name, pins, facts):
         raise ValueError('supply one exact native template pin per stage: ' + ', '.join(expected))
     templates, identities = [], []
     source = None
+    primitive = name == 'bugfix/primitive-codex'
     for pin, pipeline in zip(pins, expected):
         exact(pin, ('schema', 'template_id', 'template'))
         if pin['schema'] != 'af/scenario-template-pin@2' or not re.fullmatch(r'sha256:[0-9a-f]{64}', pin['template_id']):
             raise ValueError('expected exact native template-pin receipt')
         template = pin['template']
         captured_catalog(template)
-        identity = tuple(template[k] for k in ('repo', 'state', 'authority_commit', 'repository_id', 'source_content_digest'))
+        keys = ('repo', 'state', 'repository_id') if primitive else (
+            'repo', 'state', 'authority_commit', 'repository_id', 'source_content_digest')
+        identity = tuple(template[k] for k in keys)
         if source is None:
             source = identity
         if source != identity:
@@ -713,7 +741,7 @@ def composition(name, pins, facts):
         document = template['document']
         if document.get('pipeline') != {'name': pipeline, 'fallback': 'refuse'}:
             raise ValueError('stage template selects a different Pipeline')
-        if pipeline == catalog()['verification'] and document.get('base', {}).get('commit') != template['authority_commit']:
+        if not primitive and pipeline == catalog()['verification'] and document.get('base', {}).get('commit') != template['authority_commit']:
             raise ValueError('verification base must retain the original whole-change commit')
         if template.get('bindings') and set(template['bindings']) - {'schema', 'providers'}:
             raise ValueError('stage templates may bind only personal accounts')
@@ -721,6 +749,8 @@ def composition(name, pins, facts):
             raise ValueError('stage templates require personal accounts')
         templates.append(template)
         identities.append(pin['template_id'])
+    if primitive:
+        primitive_lineage(*templates)
     if not design and issue_identity(templates[-2]['document']) != issue_identity(templates[-1]['document']):
         raise ValueError('verification must preserve exact original issue goal, requirements and acceptance')
     if design:
@@ -794,7 +824,7 @@ def main():
     elif args.command == 'reconcile':
         result = reconcile(args.af, args.repo, args.state, read(args.manifest))
     else:
-        installed_authority(args.repo)
+        installed_authority(args.repo, args.selection)
         route(args.selection, read(args.routing))
         if selection(args.selection)['research_pipeline']:
             raise ValueError('research/design requires native Scenario composition; plan its internal Report Task and use compose')

@@ -98,6 +98,15 @@
         "measurement acceptance",
         "verification"
       ]
+    },
+    "bugfix/primitive-codex": {
+      "pipeline": "bugfix/primitive-codex",
+      "light": false,
+      "research_pipeline": null,
+      "stages": [
+        "implementation",
+        "verification"
+      ]
     }
   }
 }

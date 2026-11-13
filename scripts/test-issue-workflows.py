@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -168,6 +169,123 @@ class DirectPlanning(unittest.TestCase):
         with mock.patch.object(w, 'invoke', return_value={'plan_id': 'native-plan'}) as invoke:
             self.assertEqual(self.plan(task), {'plan_id': 'native-plan'})
         self.assertEqual(invoke.call_count, 1)
+
+
+class PrimitiveComposition(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.repo = Path(temp.name)
+        self.git('init', '-q')
+        authority = self.repo / '.af'
+        authority.mkdir()
+        for installed, staged in [('af.toml', 'replacement-af.toml'),
+                                  ('code-policy.toml', 'approved-code-policy.toml'),
+                                  ('report-policy.toml', 'approved-report-policy.toml')]:
+            (authority / installed).write_bytes((w.STAGED / staged).read_bytes())
+        self.catalog_path = authority / 'task-catalog.toml'
+        self.catalog_path.write_bytes(w.catalog_file().read_bytes())
+        (self.repo / 'source.txt').write_text('original source\n')
+        self.normal = self.commit()
+        self.catalog_path.write_bytes(w.catalog_file('bugfix/primitive-codex').read_bytes())
+        self.experiment = self.commit()
+        self.pins = [pin('bugfix/primitive-codex'), pin(w.catalog()['verification'], 'verification')]
+        for receipt, commit in zip(self.pins, (self.experiment, self.normal)):
+            template = receipt['template']
+            template['repo'] = str(self.repo)
+            template['authority_commit'] = commit
+            # Native pinning authenticates these source identities independently. The
+            # catalogs differ, so the two template source digests must be allowed to differ.
+            template['source_content_digest'] = 'sha256:' + ('4' if commit == self.experiment else '5') * 64
+            template['document']['base'] = {'commit': self.experiment}
+
+    def git(self, *args):
+        return subprocess.check_output(['git', '-C', str(self.repo), '-c', 'user.name=Fixture',
+                                        '-c', 'user.email=fixture@example.invalid', *args],
+                                       stderr=subprocess.PIPE).decode().strip()
+
+    def commit(self):
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'captured authority')
+        return self.git('rev-parse', 'HEAD')
+
+    def compose(self):
+        return w.composition('bugfix/primitive-codex', self.pins, FACTS)
+
+    def test_primitive_composes_separate_exact_authorities_with_original_base(self):
+        steps = self.compose()['definitions']['issue-workflow']['steps']
+        self.assertEqual([step['id'] for step in steps], ['implement', 'verify'])
+        self.assertEqual(steps[1]['inputs']['source']['step'], 'implement')
+        self.assertEqual(steps[1]['operation']['bindings']['source'],
+                         {'port': 'snapshot', 'artifact_type': 'af/SourceTree@1'})
+        self.assertEqual([step['operation']['template'] for step in steps],
+                         [receipt['template'] for receipt in self.pins])
+
+    def test_primitive_refuses_wrong_source_lineage(self):
+        (self.repo / 'source.txt').write_text('unrelated implementation source\n')
+        self.pins[0]['template']['authority_commit'] = self.commit()
+        with self.assertRaisesRegex(ValueError, 'source lineage'):
+            self.compose()
+
+    def test_primitive_refuses_unrelated_authority_ancestry(self):
+        # Same final file differences alone cannot attest shared original lineage.
+        self.git('checkout', '--orphan', 'unrelated')
+        self.pins[0]['template']['authority_commit'] = self.commit()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.compose()
+
+    def test_primitive_refuses_wrong_base_on_either_stage(self):
+        for index in (0, 1):
+            with self.subTest(stage=index):
+                original = self.pins[index]['template']['document'].pop('base')
+                with self.assertRaisesRegex(ValueError, 'original whole-change Base'):
+                    self.compose()
+                self.pins[index]['template']['document']['base'] = {'commit': self.normal}
+                with self.assertRaisesRegex(ValueError, 'original whole-change Base'):
+                    self.compose()
+                self.pins[index]['template']['document']['base'] = original
+
+    def test_primitive_refuses_wrong_catalog_or_policy_on_either_stage(self):
+        for index in (0, 1):
+            for file in ('task-catalog.toml', 'af.toml', 'code-policy.toml', 'report-policy.toml'):
+                with self.subTest(stage=index, file=file):
+                    self.git('checkout', '--detach', self.experiment if index == 0 else self.normal)
+                    path = self.repo / '.af' / file
+                    path.write_bytes(path.read_bytes() + b'\n# unapproved authority\n')
+                    self.pins[index]['template']['authority_commit'] = self.commit()
+                    with self.assertRaisesRegex(ValueError, 'approved authority: ' + file):
+                        self.compose()
+                    self.pins[index]['template']['authority_commit'] = self.experiment if index == 0 else self.normal
+
+    def test_primitive_refuses_swapped_catalogs(self):
+        for index in (0, 1):
+            with self.subTest(stage=index):
+                self.git('checkout', '--detach', self.experiment if index == 0 else self.normal)
+                wrong = w.catalog_file() if index == 0 else w.catalog_file('bugfix/primitive-codex')
+                self.catalog_path.write_bytes(wrong.read_bytes())
+                self.pins[index]['template']['authority_commit'] = self.commit()
+                with self.assertRaisesRegex(ValueError, 'approved authority: task-catalog.toml'):
+                    self.compose()
+                self.pins[index]['template']['authority_commit'] = self.experiment if index == 0 else self.normal
+
+    def test_primitive_still_requires_matching_repository_and_store(self):
+        for key in ('repo', 'state', 'repository_id'):
+            with self.subTest(key=key):
+                saved = self.pins[1]['template'][key]
+                self.pins[1]['template'][key] = '/different'
+                with mock.patch.object(w, 'captured_catalog'), self.assertRaisesRegex(ValueError, 'share exact source'):
+                    self.compose()
+                self.pins[1]['template'][key] = saved
+
+    def test_normal_composition_still_requires_identical_authority_and_source(self):
+        receipts = [pin('bugfix/default-codex'), pin(w.catalog()['verification'], 'verification')]
+        for key, value in [('authority_commit', '2' * 40), ('source_content_digest', 'sha256:' + '4' * 64)]:
+            with self.subTest(key=key), mock.patch.object(w, 'captured_catalog'):
+                saved = receipts[1]['template'][key]
+                receipts[1]['template'][key] = value
+                with self.assertRaisesRegex(ValueError, 'share exact source'):
+                    w.composition('bugfix/default-codex', receipts, FACTS)
+                receipts[1]['template'][key] = saved
 
 
 class Workflows(unittest.TestCase):
@@ -433,6 +551,8 @@ class Workflows(unittest.TestCase):
 
     def test_all_nine_are_composed_from_native_tasks_with_no_actions(self):
         for name, selection in w.catalog()['selections'].items():
+            if name == 'bugfix/primitive-codex':
+                continue  # Separate authorities are exercised with real Git below.
             research = selection['research_pipeline']
             pins = ([pin(research, 'report')] if research else []) + [pin(name), pin(w.catalog()['verification'], 'verification')]
             if research:
@@ -538,11 +658,99 @@ class Workflows(unittest.TestCase):
             elif '/light-' not in name and not name.startswith('design/'):
                 self.assertIs(facts['standard'], True)
 
+    def test_primitive_exact_team_contracts_and_separate_authority(self):
+        name = 'bugfix/primitive-codex'
+        normal = w.toml(w.catalog_file())
+        experiment = w.toml(w.catalog_file(name))
+        self.assertIs(normal['independence']['distinct_models'], True)
+        self.assertEqual(normal, w.toml(ROOT / '.af/task-catalog.toml'))
+        expected = copy.deepcopy(normal)
+        expected['independence']['distinct_models'] = False
+        expected['review']['reviewers']['bugs'] = 'required'
+        self.assertEqual(experiment, expected)
+        self.assertEqual(experiment['review']['reviewers'],
+                         dict(bugs='required', correctness='required'))
+        self.assertEqual(w.catalog()['default'], 'bugfix/light-kimi-terra-sol')
+        pipeline = w.toml(w.STAGED / 'task-packages' / name / 'pipeline.toml')
+        prior = w.toml(w.STAGED / 'task-packages/bugfix/default-codex/pipeline.toml')
+        self.assertEqual(pipeline['max_attempts'], prior['max_attempts'])
+        self.assertEqual(pipeline['max_parallel'], prior['max_parallel'])
+        self.assertEqual(pipeline['accepts'], prior['accepts'])
+        self.assertEqual(pipeline['coverage'], prior['coverage'])
+        for role, model, effort in [('implementer', 'gpt-6.1-terra', 'medium'),
+                                    ('bugs', 'gpt-6.1-terra', 'high'),
+                                    ('correctness', 'gpt-6.1-sol', 'medium'),
+                                    ('evaluator', 'gpt-6.1-sol', 'high')]:
+            package = 'issue-internal/primitive-' + role
+            slot = pipeline['slots'][role]
+            self.assertEqual(slot['worker'], package)
+            self.assertFalse(slot['allow_local_replacement'])
+            self.assertEqual(slot['independent_from'], [] if role == 'implementer' else ['implementer'])
+            self.assertEqual(slot['max_attempts'], prior['slots'][role]['max_attempts'])
+            worker = w.toml(w.STAGED / 'task-packages' / package / 'worker.toml')
+            old = w.toml(w.STAGED / 'task-packages/issue-internal' / role / 'worker.toml')
+            self.assertEqual(worker['signature']['attempt'], old['signature']['attempt'])
+            self.assertEqual(worker['runner'], dict(kind='model', provider_kind='codex', model=model, effort=effort))
+            self.assertEqual(normal['providers'][package], 'codex-personal')
+            self.assertEqual((ROOT / '.af/task-packages' / package / 'worker.toml').read_bytes(),
+                             (w.STAGED / 'task-packages' / package / 'worker.toml').read_bytes())
+            if role == 'correctness':
+                self.assertEqual(worker['signature']['effects'], ['read-source', 'execute-checks'])
+                self.assertFalse(worker['signature']['contract']['outputs']['testing']['optional'])
+            if role == 'evaluator':
+                self.assertEqual(worker['signature']['worker_input_type'], 'af/ImplementationEvaluationInput@1')
+                for port in ('testing', 'review', 'checks', 'requirements', 'source'):
+                    self.assertFalse(worker['signature']['contract']['inputs'][port]['optional'])
+                    self.assertIn(port, worker['signature']['retains']['result'])
+        prompt = Path('issue-internal/primitive-implementer/instructions.md')
+        text = (w.STAGED / 'task-packages' / prompt).read_text()
+        self.assertEqual((ROOT / '.af/task-packages' / prompt).read_text(), text)
+        for instruction in ('reviewed candidate, not the base', 'do not start over',
+                            'Resolve or dispute every finding', 'every finding by ID',
+                            '`fixed`, `disputed` or `out of scope`'):
+            self.assertIn(instruction, text)
+        review = w.toml(w.STAGED / 'task-packages/issue-internal/primitive-review/pipeline.toml')
+        nodes = {n['id']: n for n in review['nodes']}
+        self.assertEqual(nodes['checks']['operator']['checks'], ['kernel', 'markdownlint'])
+        self.assertEqual(nodes['reduce']['inputs']['bugs']['node'], 'bugs')
+        self.assertEqual(nodes['reduce']['inputs']['correctness']['node'], 'correctness')
+        evaluator = nodes['evaluate_goal']
+        self.assertEqual(evaluator['inputs']['testing'], dict(kind='node', node='correctness', port='testing'))
+        self.assertEqual(evaluator['inputs']['review'], dict(kind='node', node='reduce', port='result'))
+        for selected, catalog in [('bugfix/default-codex', w.catalog_file()),
+                                  (name, w.catalog_file(name))]:
+            def capture(args, **kwargs):
+                relative = args[-1].split(':.af/')[1]
+                source = catalog if relative == 'task-catalog.toml' else w.STAGED / {
+                    'af.toml': 'replacement-af.toml', 'code-policy.toml': 'approved-code-policy.toml',
+                    'report-policy.toml': 'approved-report-policy.toml'}[relative]
+                return mock.Mock(stdout=source.read_bytes())
+            with mock.patch.object(w.subprocess, 'run', side_effect=capture):
+                REAL_CAPTURED_CATALOG(pin(selected)['template'])
+        w.route(name, FACTS)
+        with self.assertRaisesRegex(ValueError, 'unknown bug cause'):
+            w.route(name, dict(FACTS, known_cause=False))
+        with tempfile.TemporaryDirectory() as directory:
+            authority = Path(directory) / '.af'
+            authority.mkdir()
+            for installed, staged in [('af.toml', 'replacement-af.toml'),
+                                      ('code-policy.toml', 'approved-code-policy.toml'),
+                                      ('report-policy.toml', 'approved-report-policy.toml')]:
+                (authority / installed).write_bytes((w.STAGED / staged).read_bytes())
+            (authority / 'task-catalog.toml').write_bytes(w.catalog_file().read_bytes())
+            w.installed_authority(directory)
+            with self.assertRaisesRegex(ValueError, 'exact experiment catalog'):
+                w.installed_authority(directory, name)
+            (authority / 'task-catalog.toml').write_bytes(w.catalog_file(name).read_bytes())
+            w.installed_authority(directory, name)
+            with self.assertRaisesRegex(ValueError, 'exact replacement catalog'):
+                w.installed_authority(directory)
+
     def test_old_public_names_are_refused_without_aliases(self):
         for family in ('default', 'default-light', 'pi-light', 'warm', 'kernel', 'owner-default'):
             with self.assertRaises(ValueError):
                 w.selection(family + '/implementation')
-        self.assertEqual(len(w.catalog()['selections']), 9)
+        self.assertEqual(len(w.catalog()['selections']), 10)
         with self.assertRaises(ValueError):
             w.selection('impl/design-codex')
 

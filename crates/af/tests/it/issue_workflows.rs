@@ -65,6 +65,24 @@ fn text(o: &std::process::Output) -> String {
     )
 }
 
+fn assert_primitive_model_policy_refusal(output: &std::process::Output) {
+    assert!(!output.status.success(), "normal model policy must refuse");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], "af/task-selection@3", "{value}");
+    assert_eq!(value["selection"]["decision"]["kind"], "invalid", "{value}");
+    let candidates = value["selection"]["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1, "{value}");
+    assert_eq!(candidates[0]["pipeline"], "bugfix/primitive-codex");
+    assert_eq!(
+        candidates[0]["state"],
+        json!({"kind": "invalid", "reason": "Trusted policy requires distinct models"}),
+        "{value}"
+    );
+    assert_eq!(value["attempts"], 0);
+    assert_eq!(value["chargeable_tokens"], 0);
+    assert!(value.get("plan_id").is_none(), "{value}");
+}
+
 #[test]
 fn private_catalog_copy_is_writable_and_preserves_read_only_source() {
     use std::os::unix::fs::PermissionsExt;
@@ -290,6 +308,10 @@ fn catalog_contracts_and_all_nine_native_plans_preserve_roles_gates_and_stage_da
             continue; // Compiled with report stages below; no implementation or code gates.
         }
         let o = plan(name, &format!("selection-{i}"), true);
+        if name == "bugfix/primitive-codex" {
+            assert_primitive_model_policy_refusal(&o);
+            continue;
+        }
         assert!(o.status.success(), "{name}: {}", text(&o));
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
         let bindings = v["plan"]["bindings"].as_object().unwrap();
@@ -869,6 +891,9 @@ assert values[-1]['result']['acceptance'] == 'satisfied'
         .iter()
         .enumerate()
     {
+        if name == "bugfix/primitive-codex" {
+            continue; // Its exact separate authority is tested below.
+        }
         let mut stages = Vec::new();
         if name == "impl/default-codex" {
             stages.push("stage-1.json".to_owned()); // Native accepted design reuse.
@@ -1295,8 +1320,10 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location('w', sys.argv[1])
 w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)
 repo, commit = sys.argv[2:]
+template = {'repo': repo, 'authority_commit': commit,
+            'document': {'pipeline': {'name': 'bugfix/default-codex', 'fallback': 'refuse'}}}
 for check in (lambda: w.installed_authority(repo),
-              lambda: w.captured_catalog({'repo': repo, 'authority_commit': commit})):
+              lambda: w.captured_catalog(template)):
     try:
         check()
     except ValueError:
@@ -1618,4 +1645,107 @@ fn launcher_freshness_uses_native_catalog_and_refuses_stale_or_unavailable_witho
         text(&unavailable)
     );
     assert_eq!(fake_models::turns(&auth), "");
+}
+
+#[test]
+fn primitive_codex_requires_separate_captured_experiment_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, state) = crate::task_report::starter(temp.path());
+    install(&repo);
+    let home = temp.path().join("home");
+    let bin = temp.path().join("bin");
+    let auth = home.join("codex");
+    fake_models::install("codex", &bin, &auth);
+    let providers = temp.path().join("providers.toml");
+    std::fs::write(
+        &providers,
+        toml::to_string(&json!({"version":4,"providers":[
+            {"id":"codex-personal","kind":"codex","auth_dir":auth}
+        ]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let mut task: Value = serde_json::from_slice(
+        &std::fs::read(repo.join("fixtures/issue-workflows/known-fix.json")).unwrap(),
+    )
+    .unwrap();
+    task["pipeline"]["name"] = json!("bugfix/primitive-codex");
+    let file = temp.path().join("primitive.json");
+    let plan = |id: &str| {
+        let mut document = task.clone();
+        document["task_id"] = json!(id);
+        std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
+        common::af()
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .env("AF_PROVIDERS_FILE", &providers)
+            .env("PATH", &path)
+            .args(["task", "plan", "--file"])
+            .arg(&file)
+            .arg("--state")
+            .arg(&state)
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    let refused = plan("normal-primitive");
+    assert_primitive_model_policy_refusal(&refused);
+    copy_private_catalog(
+        &workspace().join("fixtures/issue-workflows/experiment-catalog.toml"),
+        &repo.join(".af/task-catalog.toml"),
+    );
+    git(&repo, &["add", ".af/task-catalog.toml"]);
+    git(
+        &repo,
+        &["commit", "-qm", "explicit private experiment authority"],
+    );
+    let output = plan("experiment-primitive");
+    assert!(output.status.success(), "{}", text(&output));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["attempts"], 0);
+    let bindings = value["plan"]["bindings"].as_object().unwrap();
+    assert_eq!(bindings.len(), 4);
+    for (role, model, effort) in [
+        ("implementer", "gpt-6.1-terra", "medium"),
+        ("bugs", "gpt-6.1-terra", "high"),
+        ("correctness", "gpt-6.1-sol", "medium"),
+        ("evaluator", "gpt-6.1-sol", "high"),
+    ] {
+        let slot = format!("root.slots.{role}");
+        assert_eq!(bindings[&slot]["execution"]["model"], model);
+        assert_eq!(bindings[&slot]["execution"]["effort"], effort);
+        assert_eq!(
+            value["graph"]["slots"][&slot]["worker"],
+            format!("issue-internal/primitive-{role}")
+        );
+    }
+    let graph = value["graph"].to_string();
+    for required in [
+        "ImplementationTestEvidence@1",
+        "ImplementationEvaluationInput@1",
+        "TaskReviewRound@1",
+        "markdownlint",
+        "kernel",
+    ] {
+        assert!(graph.contains(required), "missing {required}");
+    }
+    assert!(!graph.contains("publish-gate"));
+    let inspection = temp.path().join("inspection.json");
+    std::fs::write(&inspection, output.stdout).unwrap();
+    let checked = std::process::Command::new("python3")
+        .arg("-I")
+        .arg(workspace().join("scripts/issue-workflows.py"))
+        .arg("--state")
+        .arg(&state)
+        .args(["check-plan", "bugfix/primitive-codex"])
+        .arg(&inspection)
+        .output()
+        .unwrap();
+    assert!(checked.status.success(), "{}", text(&checked));
+    assert_eq!(fake_models::turns(&auth), "", "planning must be token-free");
 }

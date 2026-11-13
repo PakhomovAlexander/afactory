@@ -40,6 +40,7 @@
         "bugfix/light-kimi-terra-sol",
         "bugfix/light-codex",
         "bugfix/default-codex",
+        "bugfix/primitive-codex",
         "bugfix/research-fix-codex",
         "impl/default-codex",
         "perf/research-experiment-codex",

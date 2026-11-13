@@ -371,6 +371,22 @@ fn every_shipped_model_worker_uses_supported_61_models_and_independent_judges() 
             "issue-internal/codex-light-evaluator",
             ("gpt-6-astra", "medium", "evaluate"),
         ),
+        (
+            "issue-internal/primitive-implementer",
+            ("gpt-6.1-terra", "medium", "implement"),
+        ),
+        (
+            "issue-internal/primitive-bugs",
+            ("gpt-6.1-terra", "high", "review"),
+        ),
+        (
+            "issue-internal/primitive-correctness",
+            ("gpt-6.1-sol", "medium", "review"),
+        ),
+        (
+            "issue-internal/primitive-evaluator",
+            ("gpt-6.1-sol", "high", "evaluate"),
+        ),
         ("issue-internal/bugs", ("gpt-6.1-terra", "high", "review")),
         (
             "issue-internal/correctness",
@@ -1000,7 +1016,10 @@ fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
             "issue-internal/correctness",
             "issue-internal/codex-light-evaluator",
             "issue-internal/evaluator",
-            "issue-internal/light-evaluator"
+            "issue-internal/light-evaluator",
+            "issue-internal/primitive-bugs",
+            "issue-internal/primitive-correctness",
+            "issue-internal/primitive-evaluator"
         ]
         .into_iter()
         .map(str::to_owned)

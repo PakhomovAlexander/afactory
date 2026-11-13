@@ -1,0 +1,269 @@
+"schema" = "af.task-catalog/2"
+"code_policy" = ".af/code-policy.toml"
+"report_policy" = ".af/report-policy.toml"
+"no_match" = "refuse"
+
+["review"]
+"generation" = 2
+"gate" = "major"
+"clean_rounds" = 1
+"max_rounds" = 2
+"allow_targeted_repairs" = false
+
+["review"."reviewers"]
+"bugs" = "required"
+"correctness" = "required"
+
+["packages"]
+
+["packages"."backlog/triage"]
+"version" = "1.0.1"
+"digest" = "sha256:d919ff2ba7f99162949780b6ff6bb2c4594ba9cd5625b5c73845adcbead5eee1"
+"path" = ".af/task-packages/backlog/triage"
+
+["packages"."backlog/triage-author"]
+"version" = "1.0.3"
+"digest" = "sha256:f2d19c66787808d9eb31e4d777809ee7f764622c6ab5789770409f2d8cbcc9fb"
+"path" = ".af/task-packages/backlog/triage-author"
+
+["packages"."backlog/triage-kind"]
+"version" = "1.0.1"
+"digest" = "sha256:3b6c592792c37c3f904385fc2cf30a87e7419b9ae08f0cfdffd746c19070cd2f"
+"path" = ".af/task-packages/backlog/triage-kind"
+
+["packages"."backlog/triage-verifier"]
+"version" = "1.0.3"
+"digest" = "sha256:062d97e9aa6252c81a2f3a387e9851f4aca85ef2ca9ec464d31313b51ff0465c"
+"path" = ".af/task-packages/backlog/triage-verifier"
+
+["packages"."bugfix/default-codex"]
+"version" = "1.0.1"
+"digest" = "sha256:c38ed38bd35a78af79f045d1dee3d3d0cec2ca23cb32ea24570cadd73d79f67b"
+"path" = ".af/task-packages/bugfix/default-codex"
+
+["packages"."bugfix/light-codex"]
+"version" = "1.0.1"
+"digest" = "sha256:f07e2bf356133b5342bc103ebbdf454eb59cc2407a0f69fc0b1f2dd2b0d9cabc"
+"path" = ".af/task-packages/bugfix/light-codex"
+
+["packages"."bugfix/light-kimi-terra-sol"]
+"version" = "1.0.1"
+"digest" = "sha256:db1e965f29a5aaf700fa2156be43d6b90c2a6205ecad6b46e23535458a77c411"
+"path" = ".af/task-packages/bugfix/light-kimi-terra-sol"
+
+["packages"."bugfix/research-fix-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:9151de11bbfe87386db9bbcbc2d03229f70aba0fb6f2bbc770b3a03cd68dc148"
+"path" = ".af/task-packages/bugfix/research-fix-codex"
+
+["packages"."design/astra-kimi"]
+"version" = "1.0.0"
+"digest" = "sha256:39e0ca1c6fdbb0a4bad07009db0cb8f6b1bc69e0e72da5e815f7412c774d736a"
+"path" = ".af/task-packages/design/astra-kimi"
+
+["packages"."impl/default-codex"]
+"version" = "1.0.1"
+"digest" = "sha256:f340ec9900280b6e7c123f5bfe5368dff12168f730bc09582f0f718d61db2091"
+"path" = ".af/task-packages/impl/default-codex"
+
+["packages"."impl/light-kimi-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:69c29cbb0f3c8dc560e89f1997488e61c78e01b7045a179878ee494a6072da19"
+"path" = ".af/task-packages/impl/light-kimi-codex"
+
+["packages"."issue-internal/bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:7ad61a75398e5e4614273838458217565373c16e4cdc3030410d81b12cc63d58"
+"path" = ".af/task-packages/issue-internal/bugs"
+
+["packages"."issue-internal/codex-light-evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:8dc2a8cc4987c0367040310d484a68a75414d0a1c2903e751e220de9ca6b199e"
+"path" = ".af/task-packages/issue-internal/codex-light-evaluator"
+
+["packages"."issue-internal/correctness"]
+"version" = "1.0.2"
+"digest" = "sha256:de89c6934eeb21005c1f59aa5c5e198d85fc46fce86ed7055114c645c97b7e79"
+"path" = ".af/task-packages/issue-internal/correctness"
+
+["packages"."issue-internal/design-acceptor"]
+"version" = "1.0.0"
+"digest" = "sha256:cb0b4a08552f44e4ea8693dc6b367e0b3a1098c8142e29eb17fe4e743cc29434"
+"path" = ".af/task-packages/issue-internal/design-acceptor"
+
+["packages"."issue-internal/designer"]
+"version" = "1.0.1"
+"digest" = "sha256:af9ffb8b75cf1e5d48062bbb169838e4e92447c5878103c176d43402a682b946"
+"path" = ".af/task-packages/issue-internal/designer"
+
+["packages"."issue-internal/evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:90e9165efc6601a89e2fae9038a1d4b51b8c14b60fe5b08f546e77e28f924cda"
+"path" = ".af/task-packages/issue-internal/evaluator"
+
+["packages"."issue-internal/experiment-evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:0262d8f45f7c28cdba4a9388d413d13c2be8ecc2045e38aff016e05997c78689"
+"path" = ".af/task-packages/issue-internal/experiment-evaluator"
+
+["packages"."issue-internal/experiment-trial"]
+"version" = "1.0.0"
+"digest" = "sha256:b7b15adb8f7857d211e091aaf11d8d936abf773dcb71bfb40af520f9c61b3178"
+"path" = ".af/task-packages/issue-internal/experiment-trial"
+
+["packages"."issue-internal/implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:bc464cbfadb4e9042f2629a5d85eff99371c3d9c4dda89a8b8fcb488a00221cb"
+"path" = ".af/task-packages/issue-internal/implementer"
+
+["packages"."issue-internal/investigator"]
+"version" = "1.0.1"
+"digest" = "sha256:c47a00a07404dd3c020cf5e04548e0a55d1b2bece2f2e595442e7d6e46060c1c"
+"path" = ".af/task-packages/issue-internal/investigator"
+
+["packages"."issue-internal/kimi"]
+"version" = "1.0.0"
+"digest" = "sha256:3240bc75117d201bfabd8a96ca68fec321936b179894f6aa09d90950d195f143"
+"path" = ".af/task-packages/issue-internal/kimi"
+
+["packages"."issue-internal/kimi-challenger"]
+"version" = "1.0.0"
+"digest" = "sha256:3db1e9d61725bbef1033780d407011c6b8946f775a3b44d9e17501bd0233e7dc"
+"path" = ".af/task-packages/issue-internal/kimi-challenger"
+
+["packages"."issue-internal/kimi-implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:75225610b90c49dcc9bea58f3ecce65d8e68875ab1415dd285c20002a17371e9"
+"path" = ".af/task-packages/issue-internal/kimi-implementer"
+
+["packages"."issue-internal/kimi-report"]
+"version" = "1.0.0"
+"digest" = "sha256:31956c970f2ea28ba49aad344b5a92f691cf5f60e00f2e9c7fb72b8fb0a6ffd9"
+"path" = ".af/task-packages/issue-internal/kimi-report"
+
+["packages"."issue-internal/kimi-researcher"]
+"version" = "1.0.0"
+"digest" = "sha256:87e50106161b9346685fc70d1a7c9f3ac63ab493a95e9d35bbb174e368b89981"
+"path" = ".af/task-packages/issue-internal/kimi-researcher"
+
+["packages"."issue-internal/light-evaluator"]
+"version" = "1.0.1"
+"digest" = "sha256:0e5236029c91e45fa429bb9c8c376b800fb56f0365d4c37f8250fc52f788bba5"
+"path" = ".af/task-packages/issue-internal/light-evaluator"
+
+["packages"."issue-internal/light-review"]
+"version" = "1.0.0"
+"digest" = "sha256:17fbb7013d3a1d46524febacc19553e0e74df1479ed6ead1f4b1ce1219cf56df"
+"path" = ".af/task-packages/issue-internal/light-review"
+
+["packages"."issue-internal/report"]
+"version" = "1.0.0"
+"digest" = "sha256:c39f812f339ab6347f824ebec7d68b896a878f991e2c2ca575c8f5aa86b3787a"
+"path" = ".af/task-packages/issue-internal/report"
+
+["packages"."issue-internal/report-verifier"]
+"version" = "1.0.1"
+"digest" = "sha256:ce1b36231be6ca8144951741cff981ae2013a628d26ef1cff36d9a5dee561e00"
+"path" = ".af/task-packages/issue-internal/report-verifier"
+
+["packages"."issue-internal/researched-implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:a21644707a7208d121c359b2cec68dcadd19a50dc28eb3824f9ad2e531bbf954"
+"path" = ".af/task-packages/issue-internal/researched-implementer"
+
+["packages"."issue-internal/review"]
+"version" = "1.0.0"
+"digest" = "sha256:2a4a69f3b0b3c7a7405800eff7f4e6e702c1f4d2f129319fa88a5d57f8059273"
+"path" = ".af/task-packages/issue-internal/review"
+
+["packages"."issue-internal/verification"]
+"version" = "1.0.0"
+"digest" = "sha256:cd7294c3406773733446b2a69b6cec0b840385c20a83d8289cd6ed8d8bd936b8"
+"path" = ".af/task-packages/issue-internal/verification"
+
+["packages"."issue-internal/verification-kind"]
+"version" = "1.0.0"
+"digest" = "sha256:87eafcea78225121ecde7cff46c7e66808871eebe1f4725d3bd4765c075ed98f"
+"path" = ".af/task-packages/issue-internal/verification-kind"
+
+["packages"."perf/research-experiment-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:e4e4d1900a8a193e7e70ab883d8bfec78e927c277dceb9b0d01c1905758d3d60"
+"path" = ".af/task-packages/perf/research-experiment-codex"
+
+["packages"."perf/research-kimi-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:c0937b1b6afb9bb7521e1fbb32951de726abce4782a9d0c80807418dd2853dc7"
+"path" = ".af/task-packages/perf/research-kimi-codex"
+
+["kinds"]
+"verification" = "issue-internal/verification-kind"
+"triage" = "backlog/triage-kind"
+
+["independence"]
+"command_workers_by_package" = true
+"distinct_principals" = false
+"distinct_providers" = false
+"distinct_models" = false
+
+["providers"]
+"backlog/triage-author" = "codex-personal"
+"backlog/triage-verifier" = "codex-personal"
+"issue-internal/bugs" = "codex-personal"
+"issue-internal/codex-light-evaluator" = "codex-personal"
+"issue-internal/correctness" = "codex-personal"
+"issue-internal/design-acceptor" = "codex-personal"
+"issue-internal/designer" = "codex-personal"
+"issue-internal/evaluator" = "codex-personal"
+"issue-internal/experiment-evaluator" = "codex-personal"
+"issue-internal/implementer" = "codex-personal"
+"issue-internal/investigator" = "codex-personal"
+"issue-internal/kimi" = "pi-personal"
+"issue-internal/kimi-challenger" = "pi-personal"
+"issue-internal/kimi-implementer" = "pi-personal"
+"issue-internal/kimi-researcher" = "pi-personal"
+"issue-internal/light-evaluator" = "codex-personal"
+"issue-internal/report-verifier" = "codex-personal"
+"issue-internal/researched-implementer" = "codex-personal"
+
+"issue-internal/primitive-bugs" = "codex-personal"
+
+"issue-internal/primitive-correctness" = "codex-personal"
+
+"issue-internal/primitive-evaluator" = "codex-personal"
+
+"issue-internal/primitive-implementer" = "codex-personal"
+
+["provider_admission"]
+"tokens" = 32768
+"wall_ms" = 45000
+
+["packages"."bugfix/primitive-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:d48872456ba3a97aa16595b5bfe9e7b970e919c05b5fcea21534d82a1d772787"
+"path" = ".af/task-packages/bugfix/primitive-codex"
+
+["packages"."issue-internal/primitive-bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:8a28f1d892681786beec0cc4608ab179cc93c6037eb106ab567607920e521cd4"
+"path" = ".af/task-packages/issue-internal/primitive-bugs"
+
+["packages"."issue-internal/primitive-correctness"]
+"version" = "1.0.0"
+"digest" = "sha256:e321352a1cd4daa434f5e588e57771ede96ad1c42589e7d6feacc8e12887a21a"
+"path" = ".af/task-packages/issue-internal/primitive-correctness"
+
+["packages"."issue-internal/primitive-evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:de61f06a4406662019e0476237826c6a9384a097a8df956a8a7c41cf802f89f1"
+"path" = ".af/task-packages/issue-internal/primitive-evaluator"
+
+["packages"."issue-internal/primitive-implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:c2ffa80e1c8ba35694289fca86c802d07fd93682c57909c58c222638f0c282b8"
+"path" = ".af/task-packages/issue-internal/primitive-implementer"
+
+["packages"."issue-internal/primitive-review"]
+"version" = "1.0.0"
+"digest" = "sha256:dd3cd88299cc1f3c9e8fc38445e090f7c1eee138b35774735a04422736933f88"
+"path" = ".af/task-packages/issue-internal/primitive-review"

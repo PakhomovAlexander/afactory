@@ -226,6 +226,44 @@
 "issue-internal/report-verifier" = "codex-personal"
 "issue-internal/researched-implementer" = "codex-personal"
 
+"issue-internal/primitive-bugs" = "codex-personal"
+
+"issue-internal/primitive-correctness" = "codex-personal"
+
+"issue-internal/primitive-evaluator" = "codex-personal"
+
+"issue-internal/primitive-implementer" = "codex-personal"
+
 ["provider_admission"]
 "tokens" = 32768
 "wall_ms" = 45000
+
+["packages"."bugfix/primitive-codex"]
+"version" = "1.0.0"
+"digest" = "sha256:d48872456ba3a97aa16595b5bfe9e7b970e919c05b5fcea21534d82a1d772787"
+"path" = ".af/task-packages/bugfix/primitive-codex"
+
+["packages"."issue-internal/primitive-bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:8a28f1d892681786beec0cc4608ab179cc93c6037eb106ab567607920e521cd4"
+"path" = ".af/task-packages/issue-internal/primitive-bugs"
+
+["packages"."issue-internal/primitive-correctness"]
+"version" = "1.0.0"
+"digest" = "sha256:e321352a1cd4daa434f5e588e57771ede96ad1c42589e7d6feacc8e12887a21a"
+"path" = ".af/task-packages/issue-internal/primitive-correctness"
+
+["packages"."issue-internal/primitive-evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:de61f06a4406662019e0476237826c6a9384a097a8df956a8a7c41cf802f89f1"
+"path" = ".af/task-packages/issue-internal/primitive-evaluator"
+
+["packages"."issue-internal/primitive-implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:c2ffa80e1c8ba35694289fca86c802d07fd93682c57909c58c222638f0c282b8"
+"path" = ".af/task-packages/issue-internal/primitive-implementer"
+
+["packages"."issue-internal/primitive-review"]
+"version" = "1.0.0"
+"digest" = "sha256:dd3cd88299cc1f3c9e8fc38445e090f7c1eee138b35774735a04422736933f88"
+"path" = ".af/task-packages/issue-internal/primitive-review"

@@ -1,6 +1,7 @@
 # Issue-oriented operator Pipelines
 
-This is executable, staged **consuming repository authority**. A Task Worker cannot edit `.af/`.
+This is executable, staged **consuming repository authority**. Installation requires explicit Task
+scope or root operator authority; ordinary implementation Tasks do not edit `.af/`.
 The root operator installs it after the candidate verifies. This checkout's existing authority
 is deliberately not silently modified. The replacement catalog contains none of the old
 `default/*`, `default-light/*`, `pi-light/*`, `warm/*` or operator `kernel/*` choices; it retains
@@ -285,7 +286,7 @@ Do not infer live quality, economic savings or throughput from deterministic pla
 
 ## Deterministic evidence
 
-`issue_workflows` in the native integration binary compiles all nine public model plans,
+`issue_workflows` in the native integration binary compiles the nine normal public model plans and separately checks primitive experiment authority,
 plans both research stages and read-only verification, checks models/efforts and local gates,
 consumes a real accepted hermetic Report output, refuses missing Documents and old names, and
 validates composed native Scenarios using exact captured template pins. Providers are isolated
@@ -302,7 +303,7 @@ The root operator must copy the updated staged `task-packages/` and replace
 retain code/report policies and existing Task pins. Replace the three updated report Worker
 prompts and pins as well as both
 `.af/task-packages/backlog/triage-{author,verifier}/instructions.md` and their catalog pins.
-Workers in this Task cannot perform that operation. The installed-catalog audit checks installed
+A Task without explicit authority-installation scope cannot perform that operation. The installed-catalog audit checks installed
 bindings and pins; the rubric audit checks the updated staged authority and active docs/examples.
 After that update, remove `.af/task-packages/{default,default-light,pi-light,warm,kernel,owner-default}`.
 Generic digest and schema tests use supported staged packages and do not read those directories.
@@ -344,3 +345,134 @@ checks deliberately refuse old package closures; they do not reinterpret old rol
 bottleneck and existing measured reproduction before using them, and make a verification Task
 with that same complete goal/requirements/acceptance. No sample contains measured timings or
 claims success. The routing booleans attest eligibility; they never replace native Measurements.
+
+## Primitive Codex experiment authority
+
+`bugfix/primitive-codex` is a tenth, explicitly experimental selection, with its own packages:
+
+| Role | Worker | Model | Effort |
+|---|---|---|---|
+| Implementer | `issue-internal/primitive-implementer` | `gpt-6.1-terra` | medium |
+| Bug-bounty reviewer | `issue-internal/primitive-bugs` | `gpt-6.1-terra` | high |
+| Executable correctness reviewer | `issue-internal/primitive-correctness` | `gpt-6.1-sol` | medium |
+| Goal evaluator | `issue-internal/primitive-evaluator` | `gpt-6.1-sol` | high |
+
+The new `issue-internal/primitive-review` child keeps kernel/Markdown checks and reduces both
+reviewers. Correctness independently builds, privately installs or stages, and tests the sealed
+candidate, returning required `ImplementationTestEvidence@1`. Evaluation consumes that evidence,
+checks, requirements, source and the reduced Review Round. Existing acceptance operators, reserves,
+Task and slot Attempt caps remain. Every role has its own Worker instance and context; all three
+judges retain `independent_from = ["implementer"]`. No transcript, private reasoning, sessions or
+Worker Notes are shared between roles.
+
+The normal installed and replacement catalogs retain `distinct_models = true`, so native planning
+**refuses this Pipeline** there: Terra implements and also performs bug review. Merely installing
+its packages does not enable it. `experiment-catalog.toml` is separate, explicit captured authority:
+it differs from the normal replacement catalog only by `distinct_models = false` and making
+**both** bugs and correctness required. It does not change the production independence policy,
+other teams, default selection, checks or budgets. The launcher chooses and authenticates these
+exact experiment catalog bytes only for this named selection. Ordinary selections and final shared
+verification still require the exact normal catalog. This experiment makes no measured quality,
+throughput or performance claim.
+
+### Prepare a machine-local pilot authority
+
+This procedure is for the operator after review; package installation alone authorizes no execution.
+Use a disposable local clone outside the product checkout, an exact reviewed main commit that
+includes these packages, and the matching candidate binary. Native Tasks require committed
+`.af/` authority, so the sole local commit below captures only the reviewed experiment catalog.
+Never push that private authority commit. Keep ad hoc Task documents, bindings, credentials, state,
+inspection receipts and live pilot configuration outside **both** Git checkouts.
+
+```sh
+source_repo=/absolute/path/to/reviewed/afactory
+reviewed_main=FULL_REVIEWED_MAIN_COMMIT
+pilot=/private/primitive-authority
+records=/private/primitive-pilot
+candidate_af=/absolute/path/to/candidate/af
+mkdir -p "$records"
+git clone --local --no-hardlinks --no-checkout "$source_repo" "$pilot"
+git -C "$pilot" checkout --detach "$reviewed_main"
+cp "$pilot/fixtures/issue-workflows/experiment-catalog.toml" "$pilot/.af/task-catalog.toml"
+```
+
+Check the exact normal main authority first, then check the only permitted authority differences
+and every installed package pin using the native hasher (no hand-computed package digests):
+
+```sh
+python3 -I - "$pilot" "$candidate_af" <<'PY'
+import copy, pathlib, subprocess, sys, tomllib
+repo, af = pathlib.Path(sys.argv[1]), sys.argv[2]
+staged = repo / 'fixtures/issue-workflows'
+normal = tomllib.loads((staged / 'replacement-catalog.toml').read_text())
+main_bytes = subprocess.check_output(['git', '-C', str(repo), 'show', 'HEAD:.af/task-catalog.toml'])
+assert main_bytes == (staged / 'replacement-catalog.toml').read_bytes()
+assert normal['independence']['distinct_models'] is True
+expected = copy.deepcopy(normal)
+expected['independence']['distinct_models'] = False
+expected['review']['reviewers']['bugs'] = 'required'
+assert tomllib.loads((repo / '.af/task-catalog.toml').read_text()) == expected
+for name, pin in expected['packages'].items():
+    actual = subprocess.check_output([af, 'catalog', 'digest', str(repo / pin['path'])], text=True).strip()
+    assert actual == pin['digest'], name
+PY
+git -C "$pilot" add -- .af/task-catalog.toml
+git -C "$pilot" commit -m 'Capture explicit local primitive-codex experiment authority'
+git -C "$pilot" rev-parse HEAD > "$records/authority-commit.txt"
+```
+
+Copy `known-fix.json` to `$records/task.json`, give it a new Task ID, set the exact Pipeline to
+`bugfix/primitive-codex`, and supply the actual original goal, requirements and acceptance items.
+Set `base.commit` explicitly to the experiment authority commit in `authority-commit.txt`.
+Keep `verification: "review"`, `facts.standard`, limits and reserves. Copy `routing-known.json`
+to `$records/routing.json` outside Git and record the actual issue-specific facts, including
+whether the cause is known and a deterministic regression exists. The checked-in fixture is
+an example, never an operator attestation. Unknown-cause work must use the applicable
+`bugfix/research-fix-codex` research route under normal authority.
+Do not run a pilot to fix other pilot issues as part of preparing this authority. Use the launcher
+**from the private clone** so it checks the matching reviewed authority:
+
+```sh
+python3 -I "$pilot/scripts/issue-workflows.py" --af "$candidate_af" \
+  --repo "$pilot" --state "$records/state" plan bugfix/primitive-codex \
+  --file "$records/task.json" --routing "$records/routing.json" \
+  > "$records/plan-summary.json"
+task_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["task_id"])' "$records/task.json")
+"$candidate_af" task explain "$task_id" --repo "$pilot" --state "$records/state" --json \
+  > "$records/inspection.json"
+python3 -I "$pilot/scripts/issue-workflows.py" --state "$records/state" \
+  check-plan bugfix/primitive-codex "$records/inspection.json"
+```
+
+Planning is token-free and grants no execution authority. Review the captured authority commit,
+exact plan, four bindings, independent edges, both required reviewers and local gates before any
+separately authorized run. Use normal reviewed main authority for the shared final verification
+Task; do not ask the normal launcher to validate that Task under the experiment catalog. The
+plan summary is only a launcher receipt; `check-plan` requires the full `af task explain` inspection.
+
+For a two-stage Scenario, copy `verify.json` outside Git to `$records/verify.json`, preserve
+the implementation's exact original goal, requirements and acceptance, and set **both** documents'
+`base.commit` to the experiment authority commit. Capture both templates from the **same private
+repository and Store**, using the experiment commit for implementation and `$reviewed_main` for
+normal verification. Composition checks the exact catalog and policy bytes at each commit, requires
+the normal authority to be an ancestor of the experiment authority, and permits only the catalog
+file to differ between their source trees. Any other source difference is refused. Ordinary
+compositions still require identical source and authority. Keep the clone at the experiment commit;
+explicit authority selectors capture the two different committed trees:
+
+```sh
+experiment_commit=$(cat "$records/authority-commit.txt")
+"$candidate_af" scenario template-pin --file "$records/task.json" --repo "$pilot" \
+  --task-state "$records/state" --authority-commit "$experiment_commit" --json \
+  > "$records/implement.pin.json"
+"$candidate_af" scenario template-pin --file "$records/verify.json" --repo "$pilot" \
+  --task-state "$records/state" --authority-commit "$reviewed_main" --json \
+  > "$records/verify.pin.json"
+python3 -I "$pilot/scripts/issue-workflows.py" --af "$candidate_af" compose bugfix/primitive-codex \
+  "$records/implement.pin.json" "$records/verify.pin.json" --routing "$records/routing.json" \
+  > "$records/workflow.json"
+```
+
+The Scenario supplies the exact accepted implementation candidate through the native recorded-input
+binding; verification retains the original whole-change Base, goal and acceptance while using normal
+policy. Publication and live pilot execution remain separate operator actions.
