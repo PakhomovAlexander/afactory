@@ -589,9 +589,10 @@ def validate_occurrence(value):
     return value
 
 
-def stage_occurrence(snapshot, *, since, nightly_receipt, occurrence_dir):
+def stage_occurrence(snapshot, *, since, nightly_receipt, occurrence_dir, requested_release_pr=None):
     """Exclusively create one owner-approved occurrence's bounded selector document."""
-    value = validate_occurrence(C.occurrence_document(snapshot, since=since, nightly_receipt=nightly_receipt))
+    value = validate_occurrence(C.occurrence_document(snapshot, since=since, nightly_receipt=nightly_receipt,
+                                                      requested_release_pr=requested_release_pr))
     raw = C.canonical(value)
     C.require(len(raw) <= 8192, 'Occurrence selector byte bound exceeded')
     with occurrence_directory(occurrence_dir) as fd:

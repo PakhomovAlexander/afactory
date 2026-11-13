@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:ci-signature-state:3",
+  "$id": "urn:af:schema:ci-signature-state:4",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -50,7 +50,7 @@
       "type": "integer"
     },
     "schema": {
-      "const": "af.ci-signature-state/3"
+      "const": "af.ci-signature-state/4"
     },
     "scopes": {
       "items": {
@@ -62,6 +62,16 @@
           },
           "completion_unknown": {
             "type": "boolean"
+          },
+          "unknown_occurrences": {
+            "items": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "maxItems": 4096,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
           },
           "head_sha": {
             "pattern": "^[0-9a-f]{40}$",
@@ -96,7 +106,8 @@
           "head_sha",
           "last_seen_at",
           "completed_at",
-          "completion_unknown"
+          "completion_unknown",
+          "unknown_occurrences"
         ],
         "type": "object"
       },
@@ -120,6 +131,6 @@
     "transient_count",
     "repair_count"
   ],
-  "title": "Ci signature state v3",
+  "title": "Ci signature state v4",
   "type": "object"
 }

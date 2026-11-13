@@ -958,6 +958,25 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(failure['release_blocking'])
         self.assertEqual(self.observe(dict(raw, jobs=[success])), observed)
 
+    def test_distinct_occurrence_completion_cannot_clear_another_unknown(self):
+        raw = service()
+        unknown = copy.deepcopy(raw['jobs'][0])
+        unknown['completed_at'] = None
+        unknown['release_blocking'] = True
+        raw['release_unavailable'] = True
+        raw['nightly_receipt']['conclusion'] = 'success'
+        self.observe(dict(raw, jobs=[unknown]))
+        other = copy.deepcopy(unknown)
+        other.update(job_id=404, run_attempt=2, completed_at='2026-11-09T01:00:00Z')
+        success = copy.deepcopy(unknown)
+        success.update(conclusion='success', job_id=405, run_attempt=3,
+                       completed_at='2026-11-09T02:00:00Z')
+        observed = self.observe(dict(raw, jobs=[other, success]))
+        self.assertFalse(observed['complete'])
+        self.assertEqual(sorted(f['job_id'] for f in observed['failures']), sorted([unknown['job_id'], 404]))
+        self.assertTrue(any(f['release_blocking'] for f in observed['failures']))
+        self.assertEqual(self.observe(dict(raw, jobs=[other, success])), observed)
+
     def test_recovered_completion_replaces_synthetic_unknown_and_closes_only_when_proven(self):
         raw = service()
         failure = copy.deepcopy(raw['jobs'][0])
@@ -2247,6 +2266,23 @@ class ProductionTests(unittest.TestCase):
         failure, = snapshot['failures']
         self.assertEqual(failure['job_id'], 403)
         self.assertTrue(failure['release_blocking'])
+    def test_unavailable_selected_release_keeps_its_selector_for_staging_and_reobservation(self):
+        routes = production_routes()
+        snapshot = self.P.observe(self.options, opener=Transport(routes))
+        routes['repos/octo/project/pulls/7'] = ValueError('404')
+        snapshot = self.P.observe(self.options, opener=Transport(routes))
+        self.assertFalse(snapshot['complete'])
+        self.assertTrue(any('release PR evidence unavailable' in reason for reason in snapshot['omissions']))
+        self.assertEqual(snapshot['failures'][0]['job_id'], 403)
+        self.P.stage_occurrence(snapshot, since=self.options['since'],
+                                nightly_receipt=self.options['nightly_receipt'],
+                                occurrence_dir=self.staged_options()['occurrence_dir'],
+                                requested_release_pr=7)
+        staged = self.P.occurrence_options(self.staged_options(), C.digest(snapshot))
+        self.assertEqual(staged['release_pr'], 7)
+        replay = self.P.observe(self.options, opener=Transport(routes))
+        self.assertEqual(replay, snapshot)
+        self.assertTrue(replay['failures'][0]['release_blocking'])
 
 
 if __name__ == '__main__':

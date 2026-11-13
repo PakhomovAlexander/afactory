@@ -132,8 +132,9 @@ def schema_documents():
                      'signature_id': ident, 'source_sha': sha})
     scope = obj({'workflow_id': positive, 'job_name': text(256), 'platform': text(128), 'head_sha': sha,
                  'last_seen_at': timestamp, 'completed_at': timestamp,
-                 'completion_unknown': {'type': 'boolean'}})
-    state = obj({'schema': {'const': 'af.ci-signature-state/3'}, 'scopes': array(scope, MAX_STATE),
+                 'completion_unknown': {'type': 'boolean'},
+                 'unknown_occurrences': array(ident, MAX_STATE)})
+    state = obj({'schema': {'const': 'af.ci-signature-state/4'}, 'scopes': array(scope, MAX_STATE),
         'first_seen_at': timestamp, 'last_seen_at': timestamp,
         'occurrences': {'type': 'object', 'maxProperties': MAX_STATE,
             'propertyNames': ident, 'additionalProperties': obj({'at': timestamp, 'run': positive, 'attempt': positive})},
@@ -188,7 +189,7 @@ def schema_documents():
             for name, shape in [('ci-health-snapshot', snapshot), ('ci-diagnosis', diagnosis), ('ci-diagnosis-selection', selection),
                 ('ci-signature-state', state), ('ci-health-state', journal),
                 ('ci-observe-service', service), ('ci-health-notification', notification)]
-            for version in [5 if name == 'ci-health-notification' else 3 if name == 'ci-signature-state' else 2 if name == 'ci-health-state' else 1]}
+            for version in [5 if name == 'ci-health-notification' else 4 if name == 'ci-signature-state' else 2 if name == 'ci-health-state' else 1]}
 
     documents['scenario-ci-notification-evidence-v2.json'] = notification_evidence_schema()
     return documents
@@ -210,7 +211,7 @@ def structural(value, name):
         for document in schema_documents().values():
             _VALIDATOR.schemas[document['$id']] = document
     errors = _VALIDATOR.errors(value, 'urn:af:schema:' + name
-        + (':5' if name == 'ci-health-notification' else ':3' if name == 'ci-signature-state' else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state') else ':1'))
+        + (':5' if name == 'ci-health-notification' else ':4' if name == 'ci-signature-state' else ':2' if name in ('scenario-ci-notification-evidence', 'ci-health-state') else ':1'))
     require(not errors, '; '.join(errors[:4]))
     require(len(canonical(value)) <= (MAX_BYTES if name in ('ci-health-snapshot', 'ci-diagnosis') else 1_048_576), 'CI evidence exceeds byte bound')
 
@@ -465,7 +466,7 @@ class Journal:
             # Closure is per signature, never per job scope. Every other failure is retained.
             return sorted(closed_signatures)
         raw = self.db.execute('SELECT document FROM signatures WHERE repository=? AND signature=?', (repository, signature)).fetchone()
-        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/3', 'scopes': [], 'first_seen_at': at,
+        state = loads(raw[0]) if raw else {'schema': 'af.ci-signature-state/4', 'scopes': [], 'first_seen_at': at,
             'last_seen_at': at, 'occurrences': {}, 'transient_count': 0, 'repair_count': 0}
         structural(state, 'ci-signature-state')
         require(now >= instant(state['last_seen_at']), 'Observer clock moved backwards')
@@ -478,22 +479,24 @@ class Journal:
         scope = {key: job[key] for key in ('workflow_id', 'job_name', 'platform', 'head_sha')}
         previous_completion = max((instant(s['completed_at']) for s in state['scopes']
             if all(s[key] == scope[key] for key in scope)), default=None)
-        previous_unknown = any(s['completion_unknown'] for s in state['scopes']
-            if all(s[key] == scope[key] for key in scope))
+        unknown_occurrences = set(state['scopes'][-1]['unknown_occurrences']) if state['scopes'] else set()
+        was_unknown = occurrence in unknown_occurrences
+        if completed is not None:
+            # Only recovery for this exact occurrence clears its unknown timing. Another
+            # occurrence's completion remains independent evidence and cannot close this one.
+            unknown_occurrences.discard(occurrence)
+            event_completion = completed if was_unknown else max(completed, previous_completion or completed)
+        else:
+            unknown_occurrences.add(occurrence)
+            event_completion = max(now, previous_completion or now)
+        completion_unknown = bool(unknown_occurrences)
         state['scopes'] = [s for s in state['scopes'] if now - instant(s['last_seen_at']) < dt.timedelta(days=14)
             and not all(s[key] == scope[key] for key in scope)]
         require(len(state['scopes']) < MAX_STATE, 'Signature scope bound exhausted')
-        if completed is not None:
-            # Exact recovered evidence replaces a synthetic unknown bound, even when the
-            # unavailable capture had assigned a later timestamp. Measured bounds only increase.
-            event_completion = completed if previous_unknown else max(completed, previous_completion or completed)
-            completion_unknown = False
-        else:
-            event_completion = max(now, previous_completion or now)
-            completion_unknown = True
         state['scopes'].append({**scope, 'last_seen_at': at,
             'completed_at': event_completion.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'completion_unknown': completion_unknown})
+            'completion_unknown': completion_unknown,
+            'unknown_occurrences': sorted(unknown_occurrences)})
         state.update(first_seen_at=min(v['at'] for v in state['occurrences'].values()), last_seen_at=at)
         structural(state, 'ci-signature-state')
         if raw is None:
@@ -613,6 +616,11 @@ def observe(service, journal, *, expected_snapshot=None, snapshot_fits=None):
         return snapshot
 
 
+def release_unavailable(service):
+    return bool(service.get('release_unavailable', False) or any(
+        'release PR evidence unavailable' in reason for reason in service.get('omissions', [])))
+
+
 def fold_capture(service, journal, *, snapshot_fits=None):
     """Offline adapter/service contract: one exact repository/ref/window capture, capped input.
 
@@ -703,7 +711,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
                 continue
             failure = {key: job[key] for key in ('workflow_id', 'workflow_file', 'run_id', 'run_attempt', 'job_id', 'job_name', 'platform', 'head_sha', 'conclusion')}
             failure.update(folded, log_artifacts=list(dict.fromkeys(refs)), release_blocking=bool(job.get('release_blocking', False)))
-            if service.get('release_unavailable', False) and previous_release_flags.get(occurrence, False):
+            if release_unavailable(service) and previous_release_flags.get(occurrence, False):
                 failure['release_blocking'] = True
             structural({**snapshot, 'failures': [failure]}, 'ci-health-snapshot')
             snapshot['failures'].append(failure)
@@ -722,7 +730,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
             # An unavailable release lookup is not evidence that a release was removed.
             # Only an unchanged, non-release main head may be advanced by main itself.
             superseded = (previous_release is None and previous['head_sha'] != service['source_sha']
-                          and not service.get('release_unavailable', False))
+                          and not release_unavailable(service))
         if ((previous['signature_id'], previous['workflow_id'], previous['job_name'],
              previous['platform'], previous['head_sha']) in closed_all
                 or previous['occurrence_id'] in admitted_occurrences or superseded
@@ -733,7 +741,7 @@ def fold_capture(service, journal, *, snapshot_fits=None):
         retained = dict(previous)
         if current_release is not None:
             retained['release_blocking'] = retained['head_sha'] == current_release['head_sha']
-        elif not service.get('release_unavailable', False):
+        elif not release_unavailable(service):
             retained['release_blocking'] = False
         structural({**snapshot, 'failures': [retained]}, 'ci-health-snapshot')
         snapshot['failures'].append(retained)
@@ -772,13 +780,14 @@ def fold_capture(service, journal, *, snapshot_fits=None):
     return validate_snapshot(snapshot)
 
 
-def occurrence_document(snapshot, *, since, nightly_receipt):
+def occurrence_document(snapshot, *, since, nightly_receipt, requested_release_pr=None):
     """Owner reviews and installs these selectors, never executable or credential bytes."""
     validate_snapshot(snapshot)
     return {'schema': 'af.ci-observe-occurrence/1', 'snapshot_digest': digest(snapshot),
             'since': since, 'captured_at': snapshot['captured_at'],
             'nightly_receipt': str(nightly_receipt),
-            'release_pr': snapshot['release_pr']['number'] if snapshot['release_pr'] else None}
+            'release_pr': requested_release_pr if requested_release_pr is not None
+                else snapshot['release_pr']['number'] if snapshot['release_pr'] else None}
 
 
 def main():
@@ -791,6 +800,7 @@ def main():
     observer.add_argument('--state', required=True, type=Path)
     occurrence = sub.add_parser('stage-occurrence', help='stage owner-reviewed daily selectors; no observation or activation')
     occurrence.add_argument('--snapshot', required=True, type=Path)
+    occurrence.add_argument('--release-pr', type=int)
     occurrence.add_argument('--since', required=True)
     occurrence.add_argument('--nightly-receipt', required=True)
     occurrence.add_argument('--occurrence-dir', required=True)
@@ -838,7 +848,7 @@ def main():
         if args.command == 'stage-occurrence':
             snapshot = loads(module.read_file(args.snapshot, MAX_BYTES, 'Selected snapshot'))
             module.stage_occurrence(snapshot, since=args.since, nightly_receipt=args.nightly_receipt,
-                                    occurrence_dir=args.occurrence_dir)
+                                    occurrence_dir=args.occurrence_dir, requested_release_pr=args.release_pr)
             return
         options = {key: value for key, value in vars(args).items() if key not in ('command', 'output')}
         # Validate selectors and bounds during staging without reading state or credentials.
