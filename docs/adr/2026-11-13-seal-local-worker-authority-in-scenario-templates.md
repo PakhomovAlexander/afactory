@@ -49,8 +49,11 @@ changes for this exclusion protocol. Extending busy timeouts or protecting only 
 objects would leave the heartbeat defect or the reused-object race intact.
 
 Before publishing, pinning restores and validates the complete captured closure under that
-reservation. Only final pin insertion and exact durable-record validation hold SQLite's writer
-lock; Git, filesystem capture and compilation do not. Existing rows of any sequence prevent
+reservation, including deserializing and comparing the exact template artifact before taking
+SQLite's writer lock. Final insertion uses a private verified-reference guard tied to the live
+reservation, avoiding redundant CAS filesystem checks. Ordinary append retains its dangling-reference
+recheck. Only SQLite operations and bounded in-memory encoding and exact durable-record comparisons
+hold the final writer lock; Git, CAS reads, filesystem capture and compilation do not. Existing rows of any sequence prevent
 insertion; negative, gapped or otherwise corrupt pin histories fail closed without mutation.
 The sole event must retain the native writer's fixed epoch timestamp and absent node, attempt,
 causation and correlation metadata, as well as its exact type, payload and artifact references.

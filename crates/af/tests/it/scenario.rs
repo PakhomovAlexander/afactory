@@ -3177,8 +3177,9 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
                 .set_times(std::fs::FileTimes::new().set_modified(old))
                 .unwrap();
             let barriers = f.machine.join("pin-barriers");
-            let barrier = barriers.join("template-captured-1");
-            std::fs::create_dir_all(&barrier).unwrap();
+            for phase in ["template-captured-1", "template-verifying-1"] {
+                std::fs::create_dir_all(barriers.join(phase)).unwrap();
+            }
             let planned = cli(
                 &f.repo,
                 &task_state,
@@ -3193,7 +3194,6 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
                     6_000,
                 )
                 .unwrap();
-            let initial_expiry = active.task_lease_state(&lease).unwrap();
             let child = crate::common::af()
                 .current_dir(&f.repo)
                 .args(args)
@@ -3204,69 +3204,73 @@ fn template_local_workers_are_captured_once_retained_and_restored_after_deletion
                 .stderr(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
-            let started = std::time::Instant::now();
-            while !barrier.join("ready").exists() {
-                assert!(started.elapsed() < std::time::Duration::from_secs(30));
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
-            assert!(store.is_empty(&run).unwrap());
             let mut collector = store.reopen(std::time::Duration::ZERO).unwrap();
-            let refused = collector
-                .apply_task_collection(&cas, 0, 0, false)
-                .unwrap_err();
-            assert!(
-                refused
-                    .to_string()
-                    .contains("CAS capture/collection reservation"),
-                "{refused}"
-            );
-            // Exercise the real heartbeat while capture is deliberately paused. Holding
-            // its shared handle forces renewal through its own bounded-timeout connection.
-            let shared = std::sync::Mutex::new(&mut active);
-            let cancelled = std::sync::atomic::AtomicBool::new(false);
-            let lost = std::sync::atomic::AtomicBool::new(false);
-            af_runtime::task::lease::with_heartbeat_supervised(
-                &shared,
-                &cas,
-                &lease,
-                af_runtime::task::lease::HeartbeatControl {
-                    cancellation: Some(&cancelled),
-                    writer_lost: Some(&lost),
-                    timing: af_runtime::task::lease::LeaseTiming::for_lease(6_000),
-                },
-                || {
-                    let _busy = shared.lock().unwrap();
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-                    while store.task_lease_state(&lease).unwrap() < initial_expiry + 3_000 {
-                        assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "heartbeat did not renew"
-                        );
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    assert!(!barrier.join("proceed").exists());
-                    Ok(())
-                },
-            )
-            .unwrap();
-            assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
-            assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+            for phase in ["template-captured-1", "template-verifying-1"] {
+                let barrier = barriers.join(phase);
+                let initial_expiry = active.task_lease_state(&lease).unwrap();
+                let started = std::time::Instant::now();
+                while !barrier.join("ready").exists() {
+                    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
+                assert!(store.is_empty(&run).unwrap());
+                let refused = collector
+                    .apply_task_collection(&cas, 0, 0, false)
+                    .unwrap_err();
+                assert!(
+                    refused
+                        .to_string()
+                        .contains("CAS capture/collection reservation"),
+                    "{refused}"
+                );
+                // Exercise the real heartbeat during capture and final artifact verification.
+                // Holding its shared handle forces renewal through the bounded-timeout connection.
+                let shared = std::sync::Mutex::new(&mut active);
+                let cancelled = std::sync::atomic::AtomicBool::new(false);
+                let lost = std::sync::atomic::AtomicBool::new(false);
+                af_runtime::task::lease::with_heartbeat_supervised(
+                    &shared,
+                    &cas,
+                    &lease,
+                    af_runtime::task::lease::HeartbeatControl {
+                        cancellation: Some(&cancelled),
+                        writer_lost: Some(&lost),
+                        timing: af_runtime::task::lease::LeaseTiming::for_lease(6_000),
+                    },
+                    || {
+                        let _busy = shared.lock().unwrap();
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(20);
+                        while store.task_lease_state(&lease).unwrap() < initial_expiry + 3_000 {
+                            assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "heartbeat did not renew"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        assert!(!barrier.join("proceed").exists());
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
+                assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+                // The capture reservation must still exclude collection until publication.
+                let refused = collector
+                    .apply_task_collection(&cas, 0, 0, false)
+                    .unwrap_err();
+                assert!(
+                    refused
+                        .to_string()
+                        .contains("CAS capture/collection reservation"),
+                    "{refused}"
+                );
+                assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
+                std::fs::write(barrier.join("proceed"), []).unwrap();
+            }
             active.release_task_lease(&cas, &lease).unwrap();
-            // No live Task lease or other template now roots this old object. Capture's
-            // reservation alone must still exclude collection until publication completes.
-            let refused = collector
-                .apply_task_collection(&cas, 0, 0, false)
-                .unwrap_err();
-            assert!(
-                refused
-                    .to_string()
-                    .contains("CAS capture/collection reservation"),
-                "{refused}"
-            );
-            assert_eq!(std::fs::metadata(&object).unwrap().modified().unwrap(), old);
-            std::fs::write(barrier.join("proceed"), []).unwrap();
             assert_eq!(value(child.wait_with_output().unwrap(), 0), pinned);
             collector.apply_task_collection(&cas, 0, 0, false).unwrap();
             cas.get_json(&captured).unwrap();

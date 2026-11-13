@@ -584,6 +584,8 @@ impl EventStore {
     /// available for Task heartbeats. `capture` must validate the complete captured closure;
     /// `validate` checks the exact durable pin, including an already existing stream. Any
     /// failure rolls back publication. CAS objects left by a failed capture remain scratch.
+    /// All CAS verification belongs in `capture`; `validate` must use only SQLite and bounded
+    /// in-memory checks, because it runs under the writer lock.
     pub fn capture_scenario_template<T>(
         &self,
         cas: &Cas,
@@ -599,13 +601,17 @@ impl EventStore {
         // protects them through this durability barrier without blocking SQLite renewal.
         self.prepare_event_artifacts(cas, std::slice::from_ref(&event))
             .map_err(|e| e.to_string())?;
+        let verified = VerifiedScenarioPin {
+            event: &event,
+            _reservation: &_capture,
+        };
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )
         .map_err(|e| e.to_string())?;
         let appended = if self.is_empty(&run).map_err(|e| e.to_string())? {
-            insert_events(&tx, cas, &run, &[event], 0).map_err(|e| e.to_string())?
+            verified.insert(&tx, &run).map_err(|e| e.to_string())?
         } else {
             Vec::new()
         };
@@ -1130,6 +1136,34 @@ fn insert_events(
             });
         }
     }
+    insert_preverified_events(tx, run_id, events, first)
+}
+
+// Only constructed by capture_scenario_template, after verification and flush under its
+// live shared reservation. Collection cannot invalidate these references before commit.
+struct VerifiedScenarioPin<'a> {
+    event: &'a NewEvent,
+    _reservation: &'a nix::fcntl::Flock<std::fs::File>,
+}
+
+impl VerifiedScenarioPin<'_> {
+    fn insert(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        run_id: &str,
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        insert_preverified_events(tx, run_id, std::slice::from_ref(self.event), 0)
+    }
+}
+
+// SQLite and in-memory work only. Ordinary append must go through insert_events' CAS
+// recheck; only a verified, reservation-protected Scenario pin may bypass that recheck.
+fn insert_preverified_events(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    events: &[NewEvent],
+    first: i64,
+) -> Result<Vec<RunEvent>, StoreError> {
     if events.is_empty() {
         return Ok(Vec::new());
     }
@@ -1782,6 +1816,38 @@ mod tests {
         let error = store.append("review", &cas, event).unwrap_err().to_string();
         assert!(error.contains("native Task publication"), "{error}");
         assert!(store.is_empty("review").unwrap());
+    }
+
+    #[test]
+    fn ordinary_insert_refuses_a_reference_collected_after_preparation() {
+        let (directory, mut store, cas) = fixture();
+        let artifact = cas.put(b"unreserved scratch").unwrap();
+        let event = NewEvent::new(EventType::SourceCapturedV1, json!({}))
+            .referencing(vec![artifact.clone()]);
+        store
+            .prepare_event_artifacts(&cas, std::slice::from_ref(&event))
+            .unwrap();
+        // Ordinary append has no capture reservation. A sweep may remove its references
+        // between preparation and acquiring SQLite; the insertion must still fail closed.
+        let digest = artifact.strip_prefix("sha256:").unwrap();
+        std::fs::remove_file(
+            directory
+                .path()
+                .join("cas/objects")
+                .join(&digest[..2])
+                .join(&digest[2..]),
+        )
+        .unwrap();
+        let tx = store
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(matches!(
+            insert_events(&tx, &cas, "ordinary", &[event], 0),
+            Err(StoreError::DanglingArtifact { digest }) if digest == artifact
+        ));
+        tx.rollback().unwrap();
+        assert!(store.is_empty("ordinary").unwrap());
     }
 
     #[test]

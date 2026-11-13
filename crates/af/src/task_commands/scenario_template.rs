@@ -111,10 +111,35 @@ fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<()
     let [event] = events.as_slice() else {
         return Err("Template has no exact durable native pin".into());
     };
-    let expected = serde_json::to_value(template).map_err(|e| e.to_string())?;
     let artifact = event.payload["artifact_id"]
         .as_str()
         .ok_or("Template pin has no artifact")?;
+    verify_pin_artifact(cas, template, artifact)?;
+    validate_pin_event(store, template, artifact)
+}
+
+fn verify_pin_artifact(cas: &Cas, template: &Template, artifact: &str) -> Result<(), String> {
+    let expected = serde_json::to_value(template).map_err(|e| e.to_string())?;
+    if cas.get_json(artifact).map_err(|e| e.to_string())? != expected {
+        return Err("Template differs from its durable native pin".into());
+    }
+    Ok(())
+}
+
+// SQLite and in-memory comparisons only: pin publication calls this under the writer lock.
+fn validate_pin_event(
+    store: &EventStore,
+    template: &Template,
+    artifact: &str,
+) -> Result<(), String> {
+    let run = format!(
+        "scenario-template-{}",
+        template.id()?.trim_start_matches("sha256:")
+    );
+    let events = store.replay(&run).map_err(|e| e.to_string())?;
+    let [event] = events.as_slice() else {
+        return Err("Template has no exact durable native pin".into());
+    };
     if event.event_type != af_contracts::EventType::ScenarioTemplatePinnedV1
         || event.occurred_at != "1970-01-01T00:00:00Z"
         || event.node_id.is_some()
@@ -123,7 +148,6 @@ fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<()
         || event.correlation_id.is_some()
         || event.payload != json!({"artifact_id":artifact})
         || event.artifact_refs != [artifact]
-        || cas.get_json(artifact).map_err(|e| e.to_string())? != expected
     {
         return Err("Template differs from its durable native pin".into());
     }
@@ -156,55 +180,60 @@ pub(crate) fn pin(
     crate::storage::owned::prepare(&state, true)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    store.capture_scenario_template(
-        &cas,
-        || {
-            let home = tempfile::tempdir().map_err(|e| e.to_string())?;
-            let repo = Repo::open(&template.repo, home.path());
-            let source = Capture::new(&repo, &cas)
-                .committed(&template.authority_commit)
-                .map_err(|e| e.to_string())?;
-            let delivery = captured_delivery_policy(&cas, &source.manifest)?;
-            let file: TaskFile =
-                serde_json::from_value(template.document.clone()).map_err(|e| e.to_string())?;
-            let (authority, settings, compiler) =
-                capture_authority(&cas, &source.manifest, local, &file.kind, delivery)?;
-            selected_profile(&compiler, &settings, &file.kind, file.verification)?;
-            #[cfg(debug_assertions)]
-            runs::observation_barrier("template-captured")?;
-            // The process-owned CAS reservation excludes collection, including reused old
-            // package objects, without holding SQLite across Git, filesystem or compilation.
-            restore_compiler(&cas, &authority, &settings)?;
-            template.bindings = settings
-                .local_bindings_id
-                .as_ref()
-                .map(|id| cas.get_json(id).map_err(|e| e.to_string()))
-                .transpose()?;
-            template.authority_id = authority;
-            template.repository_id = source.repository_id;
-            template.source_content_digest = source.content_digest;
-            template.validate(&crate::scenario::host::AfHost)?;
-            // A template pin is a durable non-Task root. Task collection traverses its native
-            // authority and package references even before the first Scenario Run exists.
-            let template_artifact = cas
-                .put_json(&serde_json::to_value(&template).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            let run = format!(
-                "scenario-template-{}",
-                template.id()?.trim_start_matches("sha256:")
-            );
-            Ok((
-                run,
-                af_store::NewEvent::new(
-                    af_contracts::EventType::ScenarioTemplatePinnedV1,
-                    json!({"artifact_id":template_artifact}),
-                )
-                .referencing(vec![template_artifact]),
-                template,
-            ))
-        },
-        |store, template| validate_pin(store, &cas, template),
-    )
+    store
+        .capture_scenario_template(
+            &cas,
+            || {
+                let home = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let repo = Repo::open(&template.repo, home.path());
+                let source = Capture::new(&repo, &cas)
+                    .committed(&template.authority_commit)
+                    .map_err(|e| e.to_string())?;
+                let delivery = captured_delivery_policy(&cas, &source.manifest)?;
+                let file: TaskFile =
+                    serde_json::from_value(template.document.clone()).map_err(|e| e.to_string())?;
+                let (authority, settings, compiler) =
+                    capture_authority(&cas, &source.manifest, local, &file.kind, delivery)?;
+                selected_profile(&compiler, &settings, &file.kind, file.verification)?;
+                #[cfg(debug_assertions)]
+                runs::observation_barrier("template-captured")?;
+                // The process-owned CAS reservation excludes collection, including reused old
+                // package objects, without holding SQLite across Git, filesystem or compilation.
+                restore_compiler(&cas, &authority, &settings)?;
+                template.bindings = settings
+                    .local_bindings_id
+                    .as_ref()
+                    .map(|id| cas.get_json(id).map_err(|e| e.to_string()))
+                    .transpose()?;
+                template.authority_id = authority;
+                template.repository_id = source.repository_id;
+                template.source_content_digest = source.content_digest;
+                template.validate(&crate::scenario::host::AfHost)?;
+                // A template pin is a durable non-Task root. Task collection traverses its native
+                // authority and package references even before the first Scenario Run exists.
+                let template_artifact = cas
+                    .put_json(&serde_json::to_value(&template).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                #[cfg(debug_assertions)]
+                runs::observation_barrier("template-verifying")?;
+                verify_pin_artifact(&cas, &template, &template_artifact)?;
+                let run = format!(
+                    "scenario-template-{}",
+                    template.id()?.trim_start_matches("sha256:")
+                );
+                Ok((
+                    run,
+                    af_store::NewEvent::new(
+                        af_contracts::EventType::ScenarioTemplatePinnedV1,
+                        json!({"artifact_id":template_artifact}),
+                    )
+                    .referencing(vec![template_artifact.clone()]),
+                    (template, template_artifact),
+                ))
+            },
+            |store, (template, artifact)| validate_pin_event(store, template, artifact),
+        )
+        .map(|(template, _)| template)
 }
 pub(crate) fn check_predecessor(
     template: &Template,
