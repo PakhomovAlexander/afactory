@@ -71,6 +71,8 @@ changes their local files after planning, and verifies both captured executions.
 
 Scenario `template-pin --bindings FILE` uses this same bounded capture from the original file
 location. Its version 2 template seals the full native authority closure in the Task Store.
+Concurrent identical pins create one durable record; repeating a pin validates that exact record
+and refuses conflicting, corrupt or duplicate history.
 Fresh Tasks and restarts restore that closure without reading local paths, even after the
 bindings and package directories are deleted. Committed customer Pipelines and policy remain
 anchored to the exact authority commit; local additions remain Workers only. A new binding

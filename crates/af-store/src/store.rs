@@ -565,6 +565,21 @@ impl EventStore {
             .ok_or_else(|| StoreError::Conflict("single-event append produced no event".into()))
     }
 
+    /// Append only when the run is empty, under the same writer lock as the insert.
+    /// `None` means another event already exists; callers must validate that history
+    /// before treating creation as idempotent success.
+    pub fn append_if_empty(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        event: NewEvent,
+    ) -> Result<Option<RunEvent>, StoreError> {
+        Ok(self
+            .append_batch_committed(run_id, cas, &[event], None, None, true)?
+            .into_iter()
+            .next())
+    }
+
     /// Atomically append an ordered event batch.
     ///
     /// Every payload and artifact reference is validated before the publication barrier. The
@@ -603,8 +618,9 @@ impl EventStore {
             return Ok(Vec::new());
         }
         let span = store_span("af.store.append", "append");
-        let appended = span
-            .in_scope(|| self.append_batch_committed(run_id, cas, events, task_permit, applied));
+        let appended = span.in_scope(|| {
+            self.append_batch_committed(run_id, cas, events, task_permit, applied, false)
+        });
         if !span.is_disabled() {
             let bytes = events
                 .iter()
@@ -622,6 +638,7 @@ impl EventStore {
         events: &[NewEvent],
         task_permit: Option<&task::WritePermit>,
         applied: Option<&task::TaskProjection>,
+        require_empty: bool,
     ) -> Result<Vec<RunEvent>, StoreError> {
         if events.iter().any(|e| {
             matches!(
@@ -653,6 +670,9 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
+        if require_empty && first != 0 {
+            return Ok(Vec::new());
+        }
         if let Some(permit) = task_permit {
             permit.validate(&tx, run_id, first, events)?;
         } else {
@@ -1510,6 +1530,53 @@ mod tests {
             .unwrap();
         assert_eq!(first.event_id, derive_event_id("run-a", 0));
         assert_ne!(derive_event_id("run-a", 0), derive_event_id("run-b", 0));
+    }
+
+    #[test]
+    fn concurrent_append_if_empty_publishes_exactly_one_event() {
+        let (dir, store, cas) = fixture();
+        let path = store.database_path().unwrap();
+        let cas_path = dir.path().join("cas");
+        let barrier = std::sync::Barrier::new(8);
+        let winners = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut contender = EventStore::open(&path).unwrap();
+                        let cas = Cas::open(&cas_path).unwrap();
+                        assert!(contender.is_empty("pin").unwrap());
+                        barrier.wait();
+                        contender
+                            .append_if_empty(
+                                "pin",
+                                &cas,
+                                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+                            )
+                            .unwrap()
+                            .is_some()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| usize::from(h.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(winners, 1);
+        let before = store.replay("pin").unwrap();
+        assert_eq!(before.len(), 1);
+        let mut reopened = EventStore::open(&path).unwrap();
+        assert!(
+            reopened
+                .append_if_empty(
+                    "pin",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({"conflict":true}))
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(reopened.replay("pin").unwrap(), before);
     }
 
     #[test]

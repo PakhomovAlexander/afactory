@@ -78,24 +78,7 @@ fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), Str
     // policy grant for a recomputed template digest cannot manufacture that association.
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    let run = format!(
-        "scenario-template-{}",
-        template.id()?.trim_start_matches("sha256:")
-    );
-    let events = store.replay(&run).map_err(|e| e.to_string())?;
-    let [event] = events.as_slice() else {
-        return Err("Template has no exact durable native pin".into());
-    };
-    let expected = serde_json::to_value(template).map_err(|e| e.to_string())?;
-    let artifact = event.payload["artifact_id"]
-        .as_str()
-        .ok_or("Template pin has no artifact")?;
-    if event.event_type != af_contracts::EventType::ScenarioTemplatePinnedV1
-        || event.artifact_refs != [artifact]
-        || cas.get_json(artifact).map_err(|e| e.to_string())? != expected
-    {
-        return Err("Template differs from its durable native pin".into());
-    }
+    validate_pin(&store, &cas, template)?;
     let home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let repo = Repo::open(&template.repo, home.path());
     let source = Capture::new(&repo, &cas)
@@ -118,6 +101,28 @@ fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), Str
     }
     let profile = selected_profile(&compiler, &settings, &file.kind, file.verification)?;
     Ok((source.repository_id, source.content_digest, profile))
+}
+fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<(), String> {
+    let run = format!(
+        "scenario-template-{}",
+        template.id()?.trim_start_matches("sha256:")
+    );
+    let events = store.replay(&run).map_err(|e| e.to_string())?;
+    let [event] = events.as_slice() else {
+        return Err("Template has no exact durable native pin".into());
+    };
+    let expected = serde_json::to_value(template).map_err(|e| e.to_string())?;
+    let artifact = event.payload["artifact_id"]
+        .as_str()
+        .ok_or("Template pin has no artifact")?;
+    if event.event_type != af_contracts::EventType::ScenarioTemplatePinnedV1
+        || event.payload != json!({"artifact_id":artifact})
+        || event.artifact_refs != [artifact]
+        || cas.get_json(artifact).map_err(|e| e.to_string())? != expected
+    {
+        return Err("Template differs from its durable native pin".into());
+    }
+    Ok(())
 }
 pub(crate) fn pin(
     repo: PathBuf,
@@ -175,19 +180,18 @@ pub(crate) fn pin(
         "scenario-template-{}",
         template.id()?.trim_start_matches("sha256:")
     );
-    if store.is_empty(&run).map_err(|e| e.to_string())? {
-        store
-            .append(
-                &run,
-                &cas,
-                af_store::NewEvent::new(
-                    af_contracts::EventType::ScenarioTemplatePinnedV1,
-                    json!({"artifact_id":template_artifact}),
-                )
-                .referencing(vec![template_artifact]),
+    store
+        .append_if_empty(
+            &run,
+            &cas,
+            af_store::NewEvent::new(
+                af_contracts::EventType::ScenarioTemplatePinnedV1,
+                json!({"artifact_id":template_artifact}),
             )
-            .map_err(|e| e.to_string())?;
-    }
+            .referencing(vec![template_artifact]),
+        )
+        .map_err(|e| e.to_string())?;
+    validate_pin(&store, &cas, &template)?;
     Ok(template)
 }
 pub(crate) fn check_predecessor(
