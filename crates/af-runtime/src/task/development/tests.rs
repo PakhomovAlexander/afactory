@@ -1027,3 +1027,41 @@ printf '{"schema":"af.worker-reply/1","outputs":{"report":[{"answer":77}]}}\n'
         manifest
     );
 }
+
+#[test]
+fn predicted_warm_port_matches_rendered_empty_policy_and_cold_cache_selection() {
+    for caches in [false, true] {
+        let mut f = Fixture::new();
+        let ordinary = f
+            .input
+            .inputs
+            .keys()
+            .map(|name| (name.clone(), ()))
+            .collect();
+        if caches {
+            f.enable_build_cache();
+            assert!(matches!(
+                f.warm().development["objects"],
+                DevelopmentCacheSelectionRecordV1::Omitted {
+                    reason: DevelopmentCacheMissV1::NoInput,
+                    ..
+                }
+            ));
+        } else {
+            f.pin_and_select();
+        }
+        let predicted = af_contracts::task::worker_inputs::project(
+            ordinary,
+            caches.then_some(()),
+            None,
+            &BTreeSet::new(),
+        );
+        let (_, bytes) = f.contract.read_context(&f.cas, &f.context).unwrap();
+        let rendered: af_runner::task::WorkerRequest = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            predicted.keys().collect::<Vec<_>>(),
+            rendered.inputs.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(rendered.inputs.contains_key(DEVELOPMENT_WARM_PORT), caches);
+    }
+}

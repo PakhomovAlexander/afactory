@@ -111,6 +111,19 @@ failure and source-integrity refusal. Private container runtime paths replace ho
 Worker execution keeps its own environment authority. See the
 [live proof and its execution boundary](../security/containment-probes.md).
 
+Before checks or Worker dispatch, compilation proves schema-required verifier inputs from the
+bound Task inputs and flattened wiring, including owned Scatter reviewer templates and their
+kernel-generated Slice inputs. Empty root artifact lists are absent. The bounded proof handles
+root property counts and name restrictions through schema composition, local references and
+conditionals; unsupported presence constraints refuse admission. Schema-valued property
+restrictions retain their Boolean composition and local references. A `oneOf` with multiple
+branches requires proven exclusive acceptance; individually safe branches alone do not establish
+it. A single-branch `oneOf` uses that branch's presence proof and retains runtime value validation.
+A goal-only Review whose reviewers require Requirements must provide an explicit `requirements`
+table or issue capture; otherwise planning refuses it. Reviewers with permissive schemas may omit
+Requirements, including Pipelines without a public requirements port. Value-dependent presence
+conditions that cannot be proved safe are refused; payload validation still runs at invocation.
+
 ## Human Review decisions
 
 Read the selected complete Review with `af review decision-context TASK --json`. Its

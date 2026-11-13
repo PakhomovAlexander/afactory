@@ -368,6 +368,97 @@ fn a_task_file_with_only_an_id_a_kind_and_a_goal_plans_with_the_project_defaults
     );
 }
 
+fn require_diff_subject(repo: &Path) {
+    let path = repo.join(".af/task-packages/fixture/bugs/input.schema.json");
+    let original: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({
+            "allOf": [original, {"required": ["diff_subject"]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    catalog["packages"]["fixture/bugs"]["digest"] = af_pipeline_config::lock::package_digest(
+        "fixture/bugs",
+        &repo.join(".af/task-packages/fixture/bugs"),
+    )
+    .unwrap()
+    .into();
+    std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
+}
+
+/// Admission and dispatch agree about a bound candidate's recorded base. A root
+/// capture without a base and an upstream source with unknown lineage still refuse.
+#[test]
+fn required_diff_subject_uses_recorded_lineage_before_checks() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture(root.path());
+    json(
+        &repo,
+        &state,
+        &["task", "start", "--execute", "--file", "first.json"],
+        3,
+    );
+    let (continued, _) = json(
+        &repo,
+        &state,
+        &["task", "run", "next", "--from", "first"],
+        0,
+    );
+    let cas = af_store::Cas::open_existing(state.join("cas")).unwrap();
+    let revision = payload(&cas, &continued["revision_id"]);
+    let source = revision["inputs"]["source"]["artifact_ids"][0].clone();
+    require_diff_subject(&repo);
+    let mut review = serde_json::json!({
+        "schema":"af.task-file/1", "task_id":"recorded", "kind":"review",
+        "goal":"Review the exact bound candidate", "strategy":"light", "facts":{},
+        "pipeline":{"name":"fixture/review","fallback":"refuse"},
+        "inputs":{"source":{"artifact":source}},
+        "limits":{"tokens":1000,"max_attempts":3,"wall_ms":60000,
+            "verification":{"tokens":0,"attempts":3,"wall_ms":15000}}
+    });
+    std::fs::write(repo.join("recorded.json"), review.to_string()).unwrap();
+    review["task_id"] = "declared".into();
+    let first_commit = git(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
+    review["base"] =
+        serde_json::json!({"commit":String::from_utf8(first_commit.stdout).unwrap().trim()});
+    std::fs::write(repo.join("declared.json"), review.to_string()).unwrap();
+    review["task_id"] = "baseless".into();
+    review.as_object_mut().unwrap().remove("base");
+    review.as_object_mut().unwrap().remove("inputs");
+    std::fs::write(repo.join("baseless.json"), review.to_string()).unwrap();
+    let mut upstream: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("first.json")).unwrap()).unwrap();
+    upstream["task_id"] = "upstream".into();
+    std::fs::write(repo.join("upstream.json"), upstream.to_string()).unwrap();
+    commit(&repo, "require the kernel Diff Subject");
+    for file in ["recorded.json", "declared.json"] {
+        let (ran, _) = json(
+            &repo,
+            &state,
+            &["task", "start", "--execute", "--file", file],
+            3,
+        );
+        assert_eq!(ran["result"]["execution"], "completed", "{ran}");
+        assert_eq!(ran["result"]["acceptance"], "satisfied", "{ran}");
+        assert_eq!(ran["attempts"], 3);
+    }
+    for file in ["baseless.json", "upstream.json"] {
+        let output = run(&repo, &state, &["task", "plan", "--file", file], false);
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            diagnostic.contains("Worker input presence cannot be proved"),
+            "{output:?}"
+        );
+        assert!(!diagnostic.contains("malformed_reply"), "{output:?}");
+    }
+}
+
 /// A Task file's `base` names the tree its judging Workers read at `../base`: the reviewer of
 /// a Task based on the fixture's first commit sees the catalog pin in its diff subject, which
 /// the default base, the source the candidate was sealed from, does not hold.

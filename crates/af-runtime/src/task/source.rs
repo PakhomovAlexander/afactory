@@ -264,23 +264,7 @@ pub fn check_diff_subject(
 /// record in the revision's provenance (ADR-0212). A revision that names none, or no revision,
 /// declares no base.
 fn declared_base(cas: &Cas, task: Option<&TaskRevisionV1>) -> Result<Option<String>, String> {
-    use af_contracts::task::findings::{TASK_BASE_V1, TaskBaseV1};
-    let Some(task) = task else {
-        return Ok(None);
-    };
-    for id in &task.provenance.input_artifact_ids {
-        let Some(artifact) = cas.get_optional_artifact(id).map_err(|e| e.to_string())? else {
-            continue;
-        };
-        if artifact.artifact_type != TASK_BASE_V1 {
-            continue;
-        }
-        let base: TaskBaseV1 =
-            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
-        base.validate()?;
-        return Ok(Some(base.snapshot_id));
-    }
-    Ok(None)
+    af_source_git::task::declared_base(cas, task)
 }
 
 /// The acceptance items a Task file stated, read from the `af/TaskAcceptance@1` record in the
@@ -326,19 +310,7 @@ pub fn task_acceptance(
 /// parent, or, for a tree a Task bound and re-rooted, the parent of the tree it was bound from.
 /// `None` for a root capture, which changed nothing the Store knows of.
 pub fn recorded_base(cas: &Cas, snapshot: &TaskSnapshot) -> Result<Option<String>, String> {
-    if let Some(parent) = &snapshot.parent_snapshot_id {
-        return Ok(Some(parent.clone()));
-    }
-    // Only a bound origin names a tree this one came from; any other origin, typed or not,
-    // names none.
-    let Ok(origin) = af_source_git::task::read_origin(cas, &snapshot.origin_id) else {
-        return Ok(None);
-    };
-    let Some(bound) = origin.bound_from() else {
-        return Ok(None);
-    };
-    let (from, _) = read_snapshot(cas, &bound.snapshot_id)?;
-    Ok(from.parent_snapshot_id)
+    af_source_git::task::recorded_base(cas, snapshot)
 }
 
 /// `af/diff-subject@1` between two recorded trees: every path whose kind or content differs,

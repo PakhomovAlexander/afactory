@@ -63,6 +63,9 @@ pub fn validate_ports(
         return Err("Knowledge input must be one optional unbound KnowledgeContext@1".into());
     }
     for (name, port) in inputs.iter().chain(outputs) {
+        if name == QUERY_PORT && port.artifact_type != QUERY_TYPE {
+            return Err("The knowledge_query port must have type af/KnowledgeQuery@1".into());
+        }
         if port.artifact_type == QUERY_TYPE
             && (name != QUERY_PORT
                 || !port.optional
@@ -145,6 +148,43 @@ mod tests {
             assert!(parse_knowledge(&files).is_err());
         }
     }
+    #[test]
+    fn knowledge_query_name_is_reserved_only_with_a_companion() {
+        let (policy, signature, _) = fixture();
+        // Queries are optional declarations; manifest-only selection remains supported.
+        let mut no_query = signature.clone();
+        no_query.contract.inputs.remove(QUERY_PORT);
+        no_query.contract.outputs.remove(QUERY_PORT);
+        validate_ports(Some(&policy), &no_query).unwrap();
+        for output in [false, true] {
+            let mut malformed = signature.clone();
+            let ports = if output {
+                &mut malformed.contract.outputs
+            } else {
+                &mut malformed.contract.inputs
+            };
+            ports.get_mut(QUERY_PORT).unwrap().artifact_type = "af/Requirements@1".into();
+            assert_eq!(
+                validate_ports(Some(&policy), &malformed).unwrap_err(),
+                "The knowledge_query port must have type af/KnowledgeQuery@1"
+            );
+            // Without selection this is an ordinary name, never a removed input.
+            malformed.contract.inputs.remove(KNOWLEDGE_PORT);
+            malformed.contract.inputs.remove("notes");
+            malformed.contract.outputs.remove("notes");
+            if output {
+                malformed.contract.inputs.remove(QUERY_PORT);
+            } else {
+                malformed.contract.outputs.remove(QUERY_PORT);
+            }
+            validate_ports(None, &malformed).unwrap();
+        }
+        let mut renamed = signature;
+        let query = renamed.contract.inputs.remove(QUERY_PORT).unwrap();
+        renamed.contract.inputs.insert("other_query".into(), query);
+        assert!(validate_ports(Some(&policy), &renamed).is_err());
+    }
+
     #[test]
     fn knowledge_requests_cannot_widen_source_context_or_acceptance_authority() {
         let (policy, signature, _) = fixture();

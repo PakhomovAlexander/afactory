@@ -23,6 +23,7 @@ pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
 pub const COMPILED_TASK_V4: &str = "af/CompiledTask@4";
 
 pub mod export;
+mod input_presence;
 mod local;
 pub mod planning;
 mod requirements;
@@ -1034,7 +1035,7 @@ impl TaskPlanCompiler {
                 max_depth: 4,
             },
         )?;
-        self.validate_requirements_inputs(&graph)?;
+        self.validate_requirements_inputs(cas, task, &graph)?;
         self.validate_replacement_schemas(&graph)?;
         self.validate_structured(cas, &normalized, &graph)?;
         if let Err(reason) = graph.budget(task.limits.clone()) {
@@ -1183,7 +1184,7 @@ impl TaskPlanCompiler {
         {
             return Err("Task kind differs from its captured kind package".into());
         }
-        let graph = self.compile_graph(&task, root)?;
+        let graph = self.compile_graph(cas, &task, root)?;
         self.validate_replacement_schemas(&graph)?;
         self.validate_structured(cas, &task, &graph)?;
         Ok(graph
@@ -1215,7 +1216,7 @@ impl TaskPlanCompiler {
         }
         cas.verify(&self.engine_id).map_err(|e| e.to_string())?;
         cas.verify(&self.policy_id).map_err(|e| e.to_string())?;
-        let mut graph = self.compile_graph(&task, root)?;
+        let mut graph = self.compile_graph(cas, &task, root)?;
         graph.experimental_slots = self.experimental_slots.clone();
         graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;

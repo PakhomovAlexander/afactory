@@ -52,6 +52,7 @@ pub mod state;
 pub mod storage_sweep;
 pub mod usage;
 pub mod verification;
+pub mod worker_inputs;
 
 use std::collections::{BTreeMap, BTreeSet};
 

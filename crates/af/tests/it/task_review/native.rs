@@ -65,6 +65,22 @@ fn failed_native_post_apply_checks_cannot_publish_a_promoted_source() {
     run_case("native_integration_failed_checks");
 }
 #[test]
+fn native_scatter_requires_bound_schema_inputs_before_any_attempt() {
+    run_case("native_scatter_missing_requirements");
+    run_case("native_scatter_empty_many");
+}
+
+#[test]
+fn native_scatter_knowledge_is_refused_before_any_attempt() {
+    run_case("native_scatter_knowledge");
+}
+
+#[test]
+fn native_scatter_development_caches_are_refused_before_any_attempt() {
+    run_case("native_scatter_development");
+}
+
+#[test]
 fn native_scatter_runs_real_owned_attempts_and_closes_the_whole_subject() {
     run_case("native_scatter");
 }
@@ -874,6 +890,73 @@ fn configure_scatter(
             .unwrap()
             .insert("diff_subject".into());
     }
+    if case == "native_scatter_knowledge" {
+        let mut knowledge = port(
+            af_contracts::task::knowledge::CONTEXT_TYPE,
+            PortAffinityV1::Unbound {},
+        );
+        knowledge.optional = true;
+        worker
+            .signature
+            .contract
+            .inputs
+            .insert("knowledge".into(), knowledge);
+        files.insert(
+            "knowledge.toml".into(),
+            include_bytes!("../../../../../fixtures/worker-knowledge/knowledge.toml").to_vec(),
+        );
+    }
+    if case == "native_scatter_development" {
+        let identity = format!("sha256:{}", "a".repeat(64));
+        let text = include_str!(
+            "../../../../../fixtures/worker-development/rust/development.template.toml"
+        )
+        .replace("@BINDING_ID@", &identity)
+        .replace("@SH_ID@", &identity)
+        .replace("@CARGO_ID@", &identity)
+        .replace("@RUSTC_ID@", &identity)
+        .replace("@CC_ID@", &identity);
+        let mut request: af_contracts::task::development::WorkerDevelopmentV3 =
+            toml::from_str(&text).unwrap();
+        request.limits.wall_ms = 5000;
+        for cache in request.caches.values_mut() {
+            cache.input = None;
+            cache.output = None;
+            cache.persistence =
+                af_contracts::task::development::DevelopmentCachePersistenceV1::Discard;
+        }
+        worker.signature.effects.insert("execute-checks".into());
+        worker.runner = TaskWorkerRunner::Command {
+            command: af_pipeline_config::CommandSpec {
+                program: "@tool/sh".into(),
+                args: vec![],
+            },
+        };
+        let mut warm = port(
+            af_contracts::contract::WARM_SET_V3,
+            PortAffinityV1::Unbound {},
+        );
+        warm.optional = true;
+        worker
+            .signature
+            .contract
+            .inputs
+            .insert("development_warm".into(), warm);
+        files.insert(
+            "development.toml".into(),
+            toml::to_string(&request).unwrap().into_bytes(),
+        );
+        let mut schema: serde_json::Value =
+            serde_json::from_slice(&files["input.schema.json"]).unwrap();
+        schema["required"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("development_warm"));
+        files.insert(
+            "input.schema.json".into(),
+            serde_json::to_vec(&schema).unwrap(),
+        );
+    }
     worker.signature.contract.inputs.insert(
         "slice".into(),
         port(af_contracts::contract::REVIEW_SLICE_V1, same()),
@@ -887,6 +970,17 @@ fn configure_scatter(
     files.insert(
         "worker.toml".into(),
         toml::to_string(&worker).unwrap().into_bytes(),
+    );
+    // The schema, as well as the script, requires the kernel-generated child input.
+    let mut schema: serde_json::Value =
+        serde_json::from_slice(&files["input.schema.json"]).unwrap();
+    schema["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("slice"));
+    files.insert(
+        "input.schema.json".into(),
+        serde_json::to_vec(&schema).unwrap(),
     );
     files.insert("worker.py".into(),format!(r#"import json,sys
 r=json.load(sys.stdin)
