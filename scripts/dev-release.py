@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -110,10 +111,11 @@ def remaining():
     return min(14400, seconds)
 
 
-def run(argv, cwd=None, accepted=(0,)):
+def run(argv, cwd=None, accepted=(0,), git_env=None):
     try:
         result = subprocess.run([str(x) for x in argv], cwd=cwd, capture_output=True, text=True,
-                                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0',
+                                env={**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')},
+                                     **(git_env or {}), 'GIT_TERMINAL_PROMPT': '0',
                                      'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'},
                                 timeout=remaining())
     except subprocess.TimeoutExpired:
@@ -177,6 +179,109 @@ def lease(directory):
         yield
 
 
+def cache_path(path, directory=False):
+    """Admit an owned ordinary path, refusing symlinks in every component."""
+    remaining()
+    path = Path(os.path.abspath(path))
+    for component in (*reversed(path.parents), path):
+        metadata = component.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError('symlink')
+    metadata = path.stat()
+    if (metadata.st_uid != os.getuid() or metadata.st_mode & 0o022
+            or not (stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode))):
+        raise ValueError('unsupported ownership or file type')
+    return path
+
+
+def cache_text(path, limit=256 * 1024):
+    path = cache_path(path)
+    with path.open('rb') as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('oversized cache metadata')
+    return data.decode('utf-8')
+
+
+def cache_bundle(checkout, repository, temporary):
+    """Read cache metadata as data; execute Git only against our empty isolated repository."""
+    checkout = cache_path(checkout, directory=True)
+    marker = checkout / '.git'
+    if marker.is_dir():
+        gitdir = cache_path(marker, directory=True)
+    else:
+        text = cache_text(marker).strip()
+        if not text.startswith('gitdir: '):
+            raise ValueError('unsupported gitdir')
+        gitdir = cache_path(checkout / text[8:], directory=True)
+    common = gitdir
+    if (gitdir / 'commondir').exists():
+        common = cache_path(gitdir / cache_text(gitdir / 'commondir').strip(), directory=True)
+    config = cache_path(common / 'config')
+    if config.stat().st_size > 256 * 1024:
+        raise ValueError('oversized cache configuration')
+    isolated = temporary / 'reader.git'
+    run(['git', '-c', 'init.templateDir=', 'init', '--bare', isolated])
+    def git(*args, **kwargs):
+        return run(['git', '--git-dir', isolated, '-c', 'core.hooksPath=/dev/null', *args], **kwargs)
+    origins = git('config', '--file', config, '--no-includes', '--get-all', 'remote.origin.url')
+    allowed = {'https://github.com/' + repository + '.git', 'https://github.com/' + repository,
+               'git@github.com:' + repository + '.git', 'git@github.com:' + repository}
+    if origins not in allowed:
+        raise ValueError('foreign origin')
+    # No extensions, partial clones, replace refs, grafts or alternate object providers.
+    configuration = git('config', '--file', config, '--no-includes', '--name-only', '--list').lower()
+    if any(key.startswith(('extensions.', 'include.', 'includeif.')) for key in configuration.splitlines()):
+        raise ValueError('unsupported repository')
+    objects = cache_path(common / 'objects', directory=True)
+    for base, dirs, files in os.walk(objects, followlinks=False):
+        remaining()
+        for name in dirs:
+            cache_path(Path(base) / name, directory=True)
+        for name in files:
+            cache_path(Path(base) / name)
+    if (objects / 'info/alternates').exists() or (objects / 'info/http-alternates').exists():
+        raise ValueError('alternates')
+    head = cache_text(gitdir / 'HEAD').strip()
+    if head.startswith('ref: '):
+        ref = head[5:]
+        if not re.fullmatch(r'refs/heads/[A-Za-z0-9_./-]+', ref) or '..' in ref:
+            raise ValueError('unsupported HEAD')
+        loose = common / ref
+        if loose.exists():
+            head = cache_text(loose).strip()
+        else:
+            rows = cache_text(common / 'packed-refs', 16 * 1024 * 1024).splitlines()
+            head = next((row.split()[0] for row in rows if row.endswith(' ' + ref)), '')
+    if not re.fullmatch('[0-9a-f]{40}', head):
+        raise ValueError('unsupported object identity')
+    # This environment is used only by the reader; no caller config, refs or hooks are loaded.
+    environment = {'GIT_OBJECT_DIRECTORY': str(objects), 'GIT_NO_REPLACE_OBJECTS': '1'}
+    git('update-ref', 'refs/cache/caller-head', head, git_env=environment)
+    bundle = temporary / 'objects.bundle'
+    git('bundle', 'create', bundle, 'refs/cache/caller-head', git_env=environment)
+    return bundle
+
+
+def initial_status(directory):
+    """Observe the existing lease without creating a lock or another state ledger."""
+    lock = directory / 'lock'
+    if lock.is_symlink():
+        raise Refusal('foreign_state: lock symlink refused')
+    try:
+        with os.fdopen(os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)) as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise Refusal('foreign_state: require owned regular lock')
+            try:
+                fcntl.flock(stream, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {'status': 'initializing', 'next': 'acquiring source and checking prerequisites; no plan yet'}
+    except FileNotFoundError:
+        pass
+    return {'status': 'missing_run', 'next': 'plan or cut first; no active initialization'}
+
+
 class Controller:
     def __init__(self, args, directory):
         self.args = args
@@ -203,10 +308,44 @@ class Controller:
         except ValueError as error:
             raise Refusal(str(error)) from error
 
-    def fetch(self):
-        self.git('fetch', '--quiet', '--no-tags', 'origin', '+refs/heads/main:refs/heads/main',
-                 '+refs/tags/*:refs/tags/*')
+    def fetch(self, acquisition=False):
+        print('release: authoritative main/tag fetch started', file=sys.stderr, flush=True)
+        for attempt in range(2 if acquisition else 1):
+            try:
+                self.git('fetch', '--quiet', '--atomic', '--prune', '--no-tags', 'origin',
+                         '+refs/heads/main:refs/heads/main', '+refs/tags/*:refs/tags/*')
+                break
+            except Refusal:
+                if not acquisition or attempt == 1:
+                    raise Refusal('source_acquisition_failed: authoritative fetch required; check GitHub access '
+                                  'and retry initialization; cached objects grant no source authority') from None
+                remaining()
+                print('release: authoritative fetch retry 2/2 (read-only acquisition)',
+                      file=sys.stderr, flush=True)
+        print('release: authoritative main/tag fetch complete', file=sys.stderr, flush=True)
         return self.git('rev-parse', 'refs/heads/main')
+
+    def seed_cache(self):
+        print('release: optional local object cache acquisition started', file=sys.stderr, flush=True)
+        # A killed acquisition may leave only our scratch directory. The lease owns cleanup.
+        scratch = self.directory / 'cache-acquisition'
+        if scratch.is_symlink():
+            raise Refusal('foreign_state: cache scratch symlink refused')
+        if scratch.exists():
+            shutil.rmtree(scratch)
+        scratch.mkdir(mode=0o700)
+        try:
+            try:
+                bundle = cache_bundle(ROOT, self.args.repo, scratch)
+                self.git('-c', 'fetch.fsckObjects=true', 'fetch', '--quiet', '--no-tags', bundle,
+                         '+refs/cache/caller-head:refs/cache/caller-head')
+            except (OSError, ValueError, Refusal):
+                print('release: local object cache skipped (unavailable or unsupported); remote fetch required',
+                      file=sys.stderr, flush=True)
+            else:
+                print('release: local object cache acquired; remote fetch required', file=sys.stderr, flush=True)
+        finally:
+            shutil.rmtree(scratch)
 
     def blob(self, source, path):
         return self.git('show', source + ':' + path)
@@ -546,13 +685,14 @@ class Controller:
         if self.mirror.is_symlink():
             raise Refusal('foreign_state: mirror symlink refused')
         if not self.mirror.exists():
-            run(['git', 'init', '--bare', self.mirror])
+            run(['git', '-c', 'init.templateDir=', 'init', '--bare', self.mirror])
             self.git('remote', 'add', 'origin', self.args.remote)
         elif self.git('remote', 'get-url', 'origin') != self.args.remote:
             raise Refusal('foreign_state: mirror origin differs')
         if self.git('config', '--get-all', 'remote.origin.url') != self.args.remote:
             raise Refusal('foreign_state: mirror remote differs')
-        source = self.fetch()
+        self.seed_cache()
+        source = self.fetch(acquisition=True)
         if self.args.source and self.args.source != source:
             raise Refusal('authority_source_mismatch: --source must equal fetched main')
         policy = self.preflight(source)
@@ -635,15 +775,13 @@ class Controller:
         # commit-tree has no hooks and uses pinned timestamps; crashes reproduce one ID.
         tree_id = run(['git', 'write-tree'], self.tree)
         timestamp = self.git('show', '-s', '--format=%cI', p['source'])
-        environment = {**os.environ, 'GIT_AUTHOR_NAME': 'Afactory Release',
+        environment = {'GIT_AUTHOR_NAME': 'Afactory Release',
                        'GIT_AUTHOR_EMAIL': 'release@afactory.invalid',
                        'GIT_COMMITTER_NAME': 'Afactory Release',
                        'GIT_COMMITTER_EMAIL': 'release@afactory.invalid',
                        'GIT_AUTHOR_DATE': timestamp, 'GIT_COMMITTER_DATE': timestamp}
-        result = subprocess.run(['git', 'commit-tree', tree_id, '-p', p['source'],
-                                 '-m', 'release: v' + p['version']], cwd=self.tree,
-                                env=environment, capture_output=True, text=True, check=True)
-        candidate = result.stdout.strip()
+        candidate = run(['git', 'commit-tree', tree_id, '-p', p['source'],
+                         '-m', 'release: v' + p['version']], self.tree, git_env=environment)
         self.git('update-ref', 'refs/af-release/candidate', candidate)
         run(['git', 'reset', '--hard', candidate], self.tree)
         self.state['candidate'] = candidate
@@ -881,6 +1019,10 @@ class Controller:
 
 
 def display(state, style):
+    if 'plan' not in state:
+        print(json.dumps(state, sort_keys=True) if style == 'json' else
+              'Release: ' + state['status'] + '; ' + state['next'])
+        return
     if style == 'json':
         print(json.dumps(state, sort_keys=True))
         return
@@ -937,12 +1079,12 @@ def main():
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, interrupt)
     global DRIVER_DEADLINE
-    if args.command in ('rc', 'resume'):
+    if args.command in ('plan', 'rc', 'resume'):
         DRIVER_DEADLINE = time.monotonic() + args.timeout
     try:
         if args.command == 'status':
             while True:
-                display(load(controller.path), args.format)
+                display(load(controller.path) if controller.path.exists() else initial_status(directory), args.format)
                 if not args.watch:
                     return 0
                 time.sleep(2)
@@ -961,7 +1103,8 @@ def main():
                 controller.stopped(reason)
                 if controller.state:
                     display(controller.state, args.format)
-                print('release: ' + reason + '; resume retains exact authorization', file=sys.stderr)
+                print('release: ' + reason + ('; resume retains exact authorization' if controller.state else
+                      '; initialization incomplete; retry plan or rc (no plan or authorization retained)'), file=sys.stderr)
                 return 124 if isinstance(error, DriverTimeout) else 130
         return 0
     except KeyboardInterrupt:

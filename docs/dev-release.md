@@ -31,6 +31,29 @@ completed candidate/assets; retain unfinished runs until reconciliation complete
 ./dev release resume --repo PakhomovAlexander/afactory
 ```
 
+The normal single command is `./dev release rc --repo OWNER/REPO`. Fresh or incomplete
+initialization automatically tries the invoking checkout as a local object cache when its actual
+origin is the selected GitHub repository (canonical HTTPS or `git@github.com:` spelling). Dirty
+files and local tags contribute no release authority. An isolated temporary bundle transfers only
+objects reachable from cache HEAD into `refs/cache/caller-head`; no caller configuration, hooks,
+source refs or alternate-object dependency is copied. Linked worktrees are supported. Foreign,
+unavailable, unowned, writable-by-others, symlinked or unsupported caches are skipped. Caller Git
+configuration is read only as data, without includes; caller hooks and upload-pack commands never run.
+
+Stderr announces cache acquisition and authoritative main/tag fetch start and completion. The
+matching remote fetch must succeed, regardless of cache availability; only its main and tags select
+source and Git version inventory. Initial acquisition can retry that read-only fetch once, within
+the invocation deadline. No publication effect gains a retry from this optimization. Existing plans
+retain their authority and are never reseeded. No measured timing improvement is claimed.
+
+Before a plan exists, status/watch observes the existing repository lease without creating state:
+`initializing` means a controller is acquiring source or checking prerequisites; `missing_run` means
+there is no retained run and no active initialization. Neither invents a source or plan identity.
+An interrupted acquisition cleans temporary bundle data; a later initialization removes scratch
+left by a killed process under the same lease. If initialization stops before saving a plan, retry
+`plan` or `rc`; there is no authorization or plan for `resume` yet. Initialization, including `plan`,
+uses the same bounded invocation deadline.
+
 `rc` is explicit bounded authorization to prepare/push one release branch, create its normal PR,
 wait for required checks, normally squash-merge that exact head and observe the existing protected
 release workflow. `rc` and `resume` drive the same authorized run through checks, merge and signed publication in

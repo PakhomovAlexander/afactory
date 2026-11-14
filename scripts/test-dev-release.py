@@ -31,6 +31,7 @@ def effect(key,action):
  crash(key,'before'); action(); d.setdefault('effects',[]).append(key); save(); crash(key,'after')
 def out(value): print(json.dumps(value)); sys.exit(0)
 if name=='git':
+ if 'fetch' in a and 'origin' in a: time.sleep(float(os.environ.get('FAKE_GIT_FETCH_DELAY','0')))
  key = 'push' if 'push' in a else ('prepare' if 'commit-tree' in a else '')
  if key: crash(key,'before')
  p=subprocess.run([os.environ['REAL_GIT'],*a],capture_output=True)
@@ -502,6 +503,49 @@ class ReleaseCLI(unittest.TestCase):
         state['unknown'] = True
         path.write_text(json.dumps(state))
         self.assertIn('foreign_state', self.cli('resume', ok=False).stderr)
+
+    def test_initialization_refuses_remote_failure_even_with_local_cache(self):
+        self.git('-C', self.source, 'remote', 'add', 'origin', 'git@github.com:o/r.git')
+        shutil.rmtree(self.remote)
+        result = self.cli('plan', ok=False)
+        self.assertIn('local object cache acquired', result.stderr)
+        self.assertIn('source_acquisition_failed', result.stderr)
+        self.assertIn('retry 2/2', result.stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse((self.state / 'cache-acquisition').exists())
+        self.assertEqual(self.data().get('effects', []), [])
+
+    def test_initialization_timeout_status_and_progress_without_a_plan(self):
+        self.env['FAKE_GIT_FETCH_DELAY'] = '10'
+        process = self.start_driver(timeout=3)
+        deadline = time.monotonic() + 10
+        while not (self.state / 'lock').exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        status = self.cli('status')
+        self.assertEqual(json.loads(status.stdout)['status'], 'initializing')
+        self.assertFalse((self.state / 'run.json').exists())
+        stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 124, stdout + stderr)
+        self.assertIn('authoritative main/tag fetch started', stderr)
+        self.assertNotIn('authoritative main/tag fetch complete', stderr)
+        self.assertIn('no plan or authorization retained', stderr)
+        self.assertFalse((self.state / 'cache-acquisition').exists())
+        self.assertEqual(json.loads(self.cli('status').stdout)['status'], 'missing_run')
+
+    def test_normal_initialization_automatically_seeds_and_planned_run_never_reseeds(self):
+        self.git('-C', self.source, 'remote', 'add', 'origin', 'https://github.com/o/r.git')
+        self.git('-C', self.source, 'tag', 'v999.0.0')
+        (self.source / 'Cargo.toml').write_text('dirty caller')
+        result = self.cli('plan')
+        self.assertIn('local object cache acquired', result.stderr)
+        self.assertIn('authoritative main/tag fetch started', result.stderr)
+        self.assertIn('authoritative main/tag fetch complete', result.stderr)
+        mirror = self.state / 'repository.git'
+        self.assertEqual(self.git('--git-dir', mirror, 'rev-parse', 'refs/cache/caller-head'), self.initial)
+        self.assertEqual(self.state_value()['plan']['version'], '0.15.1-rc.4')
+        self.assertEqual(self.state_value()['plan']['source'], self.initial)
+        self.assertEqual((self.source / 'Cargo.toml').read_text(), 'dirty caller')
+        self.assertNotIn('cache acquisition', self.cli('plan').stderr)
 
     def test_plan_dirty_caller_and_read_only_status(self):
         (self.source / 'Cargo.toml').write_text('dirty caller cannot supply bytes')
@@ -1530,6 +1574,165 @@ class MetadataObservation(unittest.TestCase):
                     for i in range((page-1)*100, page*100)]}
         with self.assertRaisesRegex(ValueError, 'observation_budget'):
             self.observation.pages(api, 'actions/secrets', 'secrets', 'name')
+
+
+class CacheAcquisition(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        from types import SimpleNamespace
+        spec = importlib.util.spec_from_file_location('dev_release_cache', ROOT / 'scripts/dev-release.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.caller = self.base / 'caller'
+        self.env = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+        self.git('init', '-q', '-b', 'main', self.caller)
+        (self.caller / 'file').write_text('committed')
+        self.git('-C', self.caller, 'add', '.')
+        self.git('-C', self.caller, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                 'commit', '-qm', 'initial')
+        self.head = self.git('-C', self.caller, 'rev-parse', 'HEAD')
+        self.git('-C', self.caller, 'remote', 'add', 'origin', 'git@github.com:o/r.git')
+        self.remote = self.base / 'remote.git'
+        self.git('clone', '-q', '--bare', '--no-local', self.caller, self.remote)
+        self.state = self.base / 'state'
+        self.state.mkdir(mode=0o700)
+        self.controller = self.module.Controller(SimpleNamespace(repo='o/r'), self.state)
+        self.git('init', '-q', '--bare', self.controller.mirror)
+        self.git('--git-dir', self.controller.mirror, 'remote', 'add', 'origin', self.remote)
+        patcher = mock.patch.object(self.module, 'ROOT', self.caller)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def git(self, *args):
+        return subprocess.check_output([GIT, *map(str, args)], env=self.env,
+                                       text=True, stderr=subprocess.DEVNULL).strip()
+
+    def seed(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.controller.seed_cache()
+        self.assertFalse((self.state / 'cache-acquisition').exists())
+        self.assertFalse((self.controller.mirror / 'objects/info/alternates').exists())
+        return output.getvalue()
+
+    def test_cache_dirty_hooks_config_tags_and_remote_authority(self):
+        self.git('-C', self.caller, 'tag', 'v999.0.0')
+        (self.caller / 'file').write_text('dirty caller')
+        hook = self.caller / '.git/hooks/pre-upload-pack'
+        hook.write_text('#!/bin/sh\ntouch "' + str(self.base / 'executed') + '"\nexit 1\n')
+        hook.chmod(0o755)
+        for name in ('reference-transaction', 'post-checkout', 'post-index-change'):
+            executable = hook.parent / name
+            executable.write_text(hook.read_text())
+            executable.chmod(0o755)
+        self.git('-C', self.caller, 'config', 'core.hooksPath', str(hook.parent))
+        for key in ('uploadpack.packObjectsHook', 'core.sshCommand'):
+            self.git('-C', self.caller, 'config', key, str(hook))
+        before = {str(p.relative_to(self.caller)): p.read_bytes()
+                  for p in self.caller.rglob('*') if p.is_file()}
+        self.assertIn('cache acquired', self.seed())
+        self.assertEqual(self.controller.git('rev-parse', 'refs/cache/caller-head'), self.head)
+        self.assertEqual(self.controller.git('tag', '--list'), '')
+        # Advance remote main without the caller; the authoritative fetch selects it.
+        tree = self.git('--git-dir', self.remote, 'rev-parse', self.head + '^{tree}')
+        with mock.patch.dict(os.environ, {'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 't@example.invalid',
+                                        'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 't@example.invalid'}):
+            remote_head = self.module.run(['git', '--git-dir', self.remote, 'commit-tree', tree,
+                                          '-p', self.head, '-m', 'remote advance'], git_env={k: os.environ[k] for k in
+                                          ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL')})
+        self.git('--git-dir', self.remote, 'update-ref', 'refs/heads/main', remote_head)
+        self.assertEqual(self.controller.fetch(acquisition=True), remote_head)
+        self.assertEqual(self.controller.git('tag', '--list'), '')
+        self.assertFalse((self.base / 'executed').exists())
+        self.assertEqual(before, {str(p.relative_to(self.caller)): p.read_bytes()
+                                 for p in self.caller.rglob('*') if p.is_file()})
+        shutil.rmtree(self.caller)
+        self.assertEqual(self.controller.git('show', self.head + ':file'), 'committed')
+
+    def test_cache_linked_worktree_and_https_identity(self):
+        linked = self.base / 'linked'
+        self.git('-C', self.caller, 'worktree', 'add', '--detach', linked, self.head)
+        self.git('-C', self.caller, 'config', 'remote.origin.url', 'https://github.com/o/r.git')
+        with mock.patch.object(self.module, 'ROOT', linked):
+            self.assertIn('cache acquired', self.seed())
+
+    def test_cache_packed_head_and_symlinked_objects(self):
+        self.git('-C', self.caller, 'pack-refs', '--all')
+        self.assertIn('cache acquired', self.seed())
+        objects = self.caller / '.git/objects'
+        saved = self.caller / '.git/saved-objects'
+        objects.rename(saved)
+        objects.symlink_to(saved, target_is_directory=True)
+        self.assertIn('cache skipped', self.seed())
+
+    def test_cache_unsupported_foreign_unavailable_symlink_and_alternates(self):
+        config = self.caller / '.git/config'
+        original = config.read_text()
+        cases = ['[remote "origin"]\nurl = https://github.com/foreign/repo.git\n',
+                 original + '\n[include]\npath = /nonexistent\n',
+                 original + '\n[extensions]\nobjectformat = sha256\n']
+        for content in cases:
+            config.write_text(content)
+            self.assertIn('cache skipped', self.seed())
+        config.write_text(original)
+        alternate = self.caller / '.git/objects/info/alternates'
+        alternate.write_text('/nonexistent\n')
+        self.assertIn('cache skipped', self.seed())
+        alternate.unlink()
+        config.rename(config.with_suffix('.saved'))
+        config.symlink_to(config.with_suffix('.saved'))
+        self.assertIn('cache skipped', self.seed())
+        with mock.patch.object(self.module, 'ROOT', self.base / 'missing'):
+            self.assertIn('cache skipped', self.seed())
+        config.unlink()
+        config.with_suffix('.saved').rename(config)
+        config.chmod(0o666)
+        self.assertIn('cache skipped', self.seed())
+        config.chmod(0o644)
+        with mock.patch.object(self.module.os, 'getuid', return_value=os.getuid() + 1):
+            self.assertIn('cache skipped', self.seed())
+
+    def test_cache_cannot_replace_failed_acquisition_and_retry_is_bounded(self):
+        self.assertIn('cache acquired', self.seed())
+        shutil.rmtree(self.remote)
+        with mock.patch.object(self.controller, 'git', wraps=self.controller.git) as invoked:
+            with self.assertRaisesRegex(self.module.Refusal, 'source_acquisition_failed'):
+                self.controller.fetch(acquisition=True)
+            self.assertEqual(invoked.call_count, 2)
+        self.assertFalse(self.controller.path.exists())
+        self.assertEqual(self.controller.git('tag', '--list'), '')
+
+    def test_initial_status_is_read_only_nonblocking_and_lease_based(self):
+        missing = self.base / 'missing'
+        self.assertEqual(self.module.initial_status(missing)['status'], 'missing_run')
+        self.assertFalse(missing.exists())
+        with self.module.lease(self.state):
+            self.assertEqual(self.module.initial_status(self.state)['status'], 'initializing')
+            self.assertFalse(self.controller.path.exists())
+        self.assertEqual(self.module.initial_status(self.state)['status'], 'missing_run')
+        # No new state, identity or plan is invented by observation.
+        self.assertEqual(sorted(p.name for p in self.state.iterdir()), ['lock', 'repository.git'])
+
+    def test_initial_status_refuses_fifo_without_blocking(self):
+        os.mkfifo(self.state / 'lock')
+        with self.assertRaisesRegex(self.module.Refusal, 'owned regular lock'):
+            self.module.initial_status(self.state)
+
+    def test_cache_interruption_cleans_and_never_reaches_remote(self):
+        with mock.patch.object(self.module, 'cache_bundle', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.controller.seed_cache()
+        self.assertFalse((self.state / 'cache-acquisition').exists())
+        self.assertFalse(self.controller.path.exists())
+        scratch = self.state / 'cache-acquisition'
+        scratch.mkdir()
+        (scratch / 'interrupted').write_text('scratch')
+        self.assertIn('cache acquired', self.seed())
 
 
 if __name__ == '__main__':
