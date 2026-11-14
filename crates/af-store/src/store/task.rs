@@ -155,6 +155,12 @@ impl TaskLease {
 }
 
 impl TaskProjection {
+    /// Ordinary resume, recording recovery and a later execution each establish an episode.
+    /// Lease maintenance and late accounting do not.
+    pub fn lifecycle_episode(&self) -> u64 {
+        self.lifecycle_episode
+    }
+
     pub fn lease_until_unix_ms(&self) -> u64 {
         self.lease_until
     }
@@ -380,6 +386,8 @@ struct Decision {
 #[derive(Debug, Clone)]
 pub struct TaskProjection {
     pub task_id: String,
+    /// Derived only from checked authorized restart boundaries; never persisted separately.
+    lifecycle_episode: u64,
     pub revision_id: String,
     pub revision: TaskRevisionV1,
     pub plan_id: Option<String>,
@@ -957,8 +965,12 @@ impl TaskProjection {
             ));
         }
         self.check_lease_of(&marker.writer, marker.epoch, marker.now_unix_ms)?;
+        let later_execution = !self.execution_epochs.is_empty();
         if !self.execution_epochs.insert(marker.epoch) {
             return Err(conflict("A lease begins its execution once"));
+        }
+        if later_execution {
+            self.lifecycle_episode += 1;
         }
         self.last_time = time;
         self.next_sequence = event.sequence + 1;
@@ -1282,6 +1294,7 @@ impl TaskProjection {
                         self.check_approval(cas, time)?;
                     }
                     self.phase = prior;
+                    self.lifecycle_episode += 1;
                 }
                 TaskChangeV1::RecordingResumed {
                     task_revision_id,
@@ -1296,6 +1309,7 @@ impl TaskProjection {
                         time,
                     )?;
                     self.check_plan_decision(cas, time)?;
+                    self.lifecycle_episode += 1;
                     self.recording_recovery = Some(recovery);
                     self.resume_phase = None;
                     self.phase = TaskPhaseV1::Running {};
@@ -1450,6 +1464,121 @@ impl TaskProjection {
         }
         Ok(plan)
     }
+}
+
+/// The canonical fold shared by archived-prefix and bounded wake replay. A caller may
+/// continue only a previously checked projection; no serialized TaskProjection is admitted.
+fn fold_task_event(
+    cas: &Cas,
+    task_id: &str,
+    state: &mut Option<TaskProjection>,
+    event: &RunEvent,
+    verified: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    if event.run_id != task_run_id(task_id)? {
+        return Err(conflict("Foreign Task event"));
+    }
+    // A lease's execution marker, the log's one event kind beside its transitions.
+    if event.event_type == EventType::TaskExecutionStartedV1 {
+        let marker = read_execution_started(event)?;
+        state
+            .as_mut()
+            .ok_or_else(|| conflict("Task execution marker precedes genesis"))?
+            .apply_execution_started(event, &marker)?;
+        return Ok(());
+    }
+    // A gate retry reopens a finished Task at its failed gates (`TaskGateRetried@1`).
+    if gate_retry::is_gate_retried(event) {
+        let retry = gate_retry::read_gate_retried(event)?;
+        for id in retry.artifact_refs() {
+            if verified.insert(id.clone()) {
+                cas.verify(&id)
+                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            }
+        }
+        state
+            .as_mut()
+            .ok_or_else(|| conflict("Task gate retry precedes genesis"))?
+            .apply_gate_retried(cas, event, &retry)?;
+        return Ok(());
+    }
+    if event.event_type == EventType::TaskProviderEventV1 {
+        let value = read_provider_event(event)?;
+        state
+            .as_mut()
+            .ok_or_else(|| conflict("Task Provider event precedes genesis"))?
+            .apply_provider_event(event, &value)?;
+        return Ok(());
+    }
+    if !matches!(event.event_type, EventType::TaskTransitionV6) {
+        return Err(conflict("Task log contains a foreign event"));
+    }
+    let transition = read_task_transition(event)?;
+    let expected = references(cas, &transition.change, state.as_ref())?;
+    if expected != event.artifact_refs {
+        return Err(conflict(
+            "Task event references disagree with its typed payload",
+        ));
+    }
+    for id in &expected {
+        if verified.insert(id.clone()) {
+            cas.verify(id)
+                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        }
+    }
+    if let Some(state) = state {
+        state.apply(cas, event, &transition)?;
+    } else if let TaskChangeV1::Opened {
+        revision_id,
+        lease_until_unix_ms,
+    } = &transition.change
+    {
+        let revision = revision(cas, revision_id)?;
+        if revision.task_id != task_id
+            || revision.revision != 1
+            || event.sequence != 0
+            || transition.epoch != 1
+        {
+            return Err(conflict("Invalid Task genesis"));
+        }
+        *state = Some(TaskProjection {
+            task_id: task_id.into(),
+            lifecycle_episode: 1,
+            revision_id: revision_id.clone(),
+            revision,
+            plan_id: None,
+            phase: TaskPhaseV1::Submitted {},
+            admitted: false,
+            next_sequence: 1,
+            writer: transition.writer,
+            epoch: 1,
+            lease_until: *lease_until_unix_ms,
+            last_time: transition.now_unix_ms,
+            previous_writer: (transition.now_unix_ms, *lease_until_unix_ms),
+            resume_phase: None,
+            recording_recovery: None,
+            recording_report: None,
+            decisions: BTreeMap::new(),
+            artifact_refs: BTreeSet::new(),
+            observed_artifacts: BTreeSet::new(),
+            observed_runs: BTreeMap::new(),
+            execution: None,
+            planning: None,
+            deliveries: Vec::new(),
+            adoption_observations: Vec::new(),
+            run_reports: Vec::new(),
+            gate_cleanups: Vec::new(),
+            storage_sweeps: Vec::new(),
+            execution_epochs: BTreeSet::new(),
+            gate_retries: Vec::new(),
+            opened_unix_ms: transition.now_unix_ms,
+            clock_started_unix_ms: None,
+            provider_events: Vec::new(),
+        });
+    } else {
+        return Err(conflict("Task transition precedes genesis"));
+    }
+    Ok(())
 }
 
 impl EventStore {
@@ -1709,6 +1838,25 @@ impl EventStore {
 
     /// Rebuild a checked current-format log prefix for read-only archived-plan inspection.
     /// The inclusive sequence is evidence selection, never execution or lease authority.
+    /// Continue a checked prefix by exactly one checked event, using the canonical fold.
+    /// This grants no mutation authority. The caller must revalidate source/CAS before commit.
+    pub fn advance_task_projection(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+        mut previous: Option<TaskProjection>,
+        event: &RunEvent,
+    ) -> Result<TaskProjection, StoreError> {
+        if previous.as_ref().is_some_and(|s| s.task_id != task_id) {
+            return Err(conflict("Foreign Task prefix"));
+        }
+        let mut verified = BTreeSet::new();
+        fold_task_event(cas, task_id, &mut previous, event, &mut verified)?;
+        let mut state = previous.ok_or_else(|| conflict("Missing Task genesis"))?;
+        state.artifact_refs.extend(verified);
+        Ok(state)
+    }
+
     pub fn task_projection_at_sequence(
         &self,
         cas: &Cas,
@@ -1838,105 +1986,7 @@ impl EventStore {
             .into_iter()
             .take_while(|event| through.is_none_or(|last| event.sequence <= last))
         {
-            // A lease's execution marker, the log's one event kind beside its transitions.
-            if event.event_type == EventType::TaskExecutionStartedV1 {
-                let marker = read_execution_started(&event)?;
-                state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task execution marker precedes genesis"))?
-                    .apply_execution_started(&event, &marker)?;
-                continue;
-            }
-            // A gate retry reopens a finished Task at its failed gates (`TaskGateRetried@1`).
-            if gate_retry::is_gate_retried(&event) {
-                let retry = gate_retry::read_gate_retried(&event)?;
-                for id in retry.artifact_refs() {
-                    if verified.insert(id.clone()) {
-                        cas.verify(&id)
-                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
-                    }
-                }
-                state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task gate retry precedes genesis"))?
-                    .apply_gate_retried(cas, &event, &retry)?;
-                continue;
-            }
-            if event.event_type == EventType::TaskProviderEventV1 {
-                let value = read_provider_event(&event)?;
-                state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task Provider event precedes genesis"))?
-                    .apply_provider_event(&event, &value)?;
-                continue;
-            }
-            if !matches!(event.event_type, EventType::TaskTransitionV6) {
-                return Err(conflict("Task log contains a foreign event"));
-            }
-            let transition = read_task_transition(&event)?;
-            let expected = references(cas, &transition.change, state.as_ref())?;
-            if expected != event.artifact_refs {
-                return Err(conflict(
-                    "Task event references disagree with its typed payload",
-                ));
-            }
-            for id in &expected {
-                if verified.insert(id.clone()) {
-                    cas.verify(id)
-                        .map_err(|e| StoreError::Artifact(e.to_string()))?;
-                }
-            }
-            if let Some(state) = &mut state {
-                state.apply(cas, &event, &transition)?;
-            } else if let TaskChangeV1::Opened {
-                revision_id,
-                lease_until_unix_ms,
-            } = &transition.change
-            {
-                let revision = revision(cas, revision_id)?;
-                if revision.task_id != task_id
-                    || revision.revision != 1
-                    || event.sequence != 0
-                    || transition.epoch != 1
-                {
-                    return Err(conflict("Invalid Task genesis"));
-                }
-                state = Some(TaskProjection {
-                    task_id: task_id.into(),
-                    revision_id: revision_id.clone(),
-                    revision,
-                    plan_id: None,
-                    phase: TaskPhaseV1::Submitted {},
-                    admitted: false,
-                    next_sequence: 1,
-                    writer: transition.writer,
-                    epoch: 1,
-                    lease_until: *lease_until_unix_ms,
-                    last_time: transition.now_unix_ms,
-                    previous_writer: (transition.now_unix_ms, *lease_until_unix_ms),
-                    resume_phase: None,
-                    recording_recovery: None,
-                    recording_report: None,
-                    decisions: BTreeMap::new(),
-                    artifact_refs: BTreeSet::new(),
-                    observed_artifacts: BTreeSet::new(),
-                    observed_runs: BTreeMap::new(),
-                    execution: None,
-                    planning: None,
-                    deliveries: Vec::new(),
-                    adoption_observations: Vec::new(),
-                    run_reports: Vec::new(),
-                    gate_cleanups: Vec::new(),
-                    storage_sweeps: Vec::new(),
-                    execution_epochs: BTreeSet::new(),
-                    gate_retries: Vec::new(),
-                    opened_unix_ms: transition.now_unix_ms,
-                    clock_started_unix_ms: None,
-                    provider_events: Vec::new(),
-                });
-            } else {
-                return Err(conflict("Task transition precedes genesis"));
-            }
+            fold_task_event(cas, task_id, &mut state, &event, &mut verified)?;
         }
         if let Some(state) = &mut state {
             state.artifact_refs = verified;
@@ -2109,6 +2159,7 @@ impl EventStore {
                     .replay_bounded(
                         &run_id,
                         first,
+                        None,
                         Some(&mut super::ReplayBudget::new(64, 65_536, 1_048_576)),
                         &mut 0,
                     )

@@ -24,6 +24,7 @@ pub mod gate_retry;
 pub mod handoff;
 pub mod input_bindings;
 pub mod knowledge;
+pub mod lifecycle;
 pub mod limits_fit;
 pub mod measurement;
 pub mod native_review;
@@ -52,6 +53,7 @@ pub mod state;
 pub mod storage_sweep;
 pub mod usage;
 pub mod verification;
+pub mod wake;
 
 use std::collections::{BTreeMap, BTreeSet};
 

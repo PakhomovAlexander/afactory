@@ -138,7 +138,8 @@ pub(crate) fn resolve_task_workspace(
             workspace,
             ..
         } => Some((repo.as_path(), workspace, state)),
-        T::Refresh { inspect, .. }
+        T::Wake { inspect, .. }
+        | T::Refresh { inspect, .. }
         | T::DecisionPayload { inspect, .. }
         | T::Output { inspect, .. }
         | T::Approve { inspect, .. }

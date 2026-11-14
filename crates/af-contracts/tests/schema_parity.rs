@@ -22,7 +22,21 @@ use af_contracts::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 235] = [
+const SCHEMAS: [&str; 249] = [
+    "task-wake-traversal-v1.json",
+    "task-wake-pi-config-v1.json",
+    "task-wake-pi-next-v1.json",
+    "task-wake-capabilities-v1.json",
+    "task-wake-status-v1.json",
+    "task-wake-route-v1.json",
+    "task-wake-grant-v1.json",
+    "task-wake-delivery-v1.json",
+    "task-wake-subscription-v1.json",
+    "task-wake-registration-v1.json",
+    "task-wake-checkpoint-v1.json",
+    "task-wake-observation-v1.json",
+    "task-wake-envelope-v1.json",
+    "task-wake-receipt-v1.json",
     "implementation-test-evidence-v1.json",
     "implementation-evaluation-input-v1.json",
     "worker-development-v3.json",
@@ -3971,6 +3985,9 @@ fn native_check_containment_schema_and_reader_preserve_admission_and_execution()
         );
     }
 }
+
+#[path = "schema_parity/task_wake.rs"]
+mod task_wake;
 
 #[test]
 fn scenario_template_pin_event_has_exact_reference_schema_parity() {

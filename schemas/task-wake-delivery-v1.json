@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-delivery:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "envelope",
+    "route_id",
+    "attempts",
+    "epoch",
+    "claim_until_unix_ms",
+    "next_attempt_unix_ms",
+    "state",
+    "receipts",
+    "reason"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-delivery@1"
+    },
+    "envelope": {
+      "$ref": "urn:af:schema:task-wake-envelope:1"
+    },
+    "route_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "claim_until_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "next_attempt_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "state": {
+      "enum": [
+        "pending",
+        "inbox_accepted",
+        "admission_unknown",
+        "blocked",
+        "expired"
+      ]
+    },
+    "receipts": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "$ref": "urn:af:schema:task-wake-receipt:1"
+      }
+    },
+    "reason": {
+      "enum": [
+        null,
+        "route_unavailable",
+        "transport_retry_exhausted",
+        "native_preflight_unavailable",
+        "native_preflight_exhausted",
+        "expired",
+        "native_admission_uncertain"
+      ]
+    }
+  }
+}

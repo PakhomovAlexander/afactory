@@ -6,23 +6,26 @@
 //! written, no Worker runs, no Provider is contacted.
 
 use super::*;
-use af_contracts::task::check_report::{CheckReportStateV1, CheckStageV1, TaskCheckRunV1};
+#[cfg(test)]
+use af_contracts::task::check_report::CheckStageV1;
+use af_contracts::task::check_report::{CheckReportStateV1, TaskCheckRunV1};
 use af_contracts::task::execution::TaskAttemptResultV1;
-use af_contracts::task::feedback::{
-    TASK_RETRY_FEEDBACK_V1, TaskFeedbackCodeV1, TaskRetryFeedbackV1,
-};
-use af_contracts::task::run_report::{
-    TASK_DIAGNOSTIC_V1, TaskDiagnosticV1, TaskFailureClassV1, TaskNodeOutcomeV1,
-};
+#[cfg(test)]
+use af_contracts::task::run_report::TaskFailureClassV1;
+use af_contracts::task::run_report::{TASK_DIAGNOSTIC_V1, TaskDiagnosticV1, TaskNodeOutcomeV1};
 use af_contracts::task::runtime::{
     TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
 };
 use af_contracts::task::state::*;
+#[cfg(test)]
 use af_contracts::task::usage::TaskUnknownUsageCauseV1;
 use af_contracts::task::verification::{
     TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2, TaskCheckStopV2,
 };
-use af_graph::task::CompiledOperator;
+pub(crate) use af_runtime::task_lifecycle::wall_end;
+#[cfg(test)]
+use af_runtime::task_lifecycle::{NodeKind, native_failure_cause};
+use af_runtime::task_lifecycle::{attempt_error, node_cause, node_kind, node_slot};
 use af_store::store::task::execution::TaskAttemptAccounting;
 use af_store::store::task::gate_retry::GateRetry;
 
@@ -114,14 +117,7 @@ pub(crate) struct CheckView {
     pub(crate) layer: Option<af_contracts::task::check_layer::TaskCheckLayerRunV1>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct StoppedStep {
-    pub(crate) step: String,
-    pub(crate) exit_code: i64,
-    /// The step's stage, as the check's report names it; `None` for a step read from its log.
-    #[serde(skip)]
-    pub(crate) stage: Option<CheckStageV1>,
-}
+use af_runtime::task_lifecycle::StoppedStep;
 
 /// Where a check's failed and flaky tests and its stopped step came from (ADR-0258): its
 /// admitted `af/TaskCheckReport@1`, or, for a check without one, the text of its output.
@@ -156,26 +152,8 @@ pub(crate) fn view(
     let gate = checks.as_ref().map(gate_of);
     let failures = failures(cas, state)?;
     let id = &state.task_id;
-    let phase = match &state.phase {
-        TaskPhaseV1::Finished { .. } => TaskStatePhaseV1::Finished,
-        TaskPhaseV1::Waiting { .. } => TaskStatePhaseV1::Waiting,
-        _ if state.lease_until_unix_ms() > now => TaskStatePhaseV1::Running,
-        // A plan that waits for `af task run` to confirm it, a refreshed one included.
-        _ if !state.admitted => TaskStatePhaseV1::Planned,
-        // A run that ended on a node's own failure without finishing waits for a person (a
-        // signed decision, say); one that was interrupted or lost its writer was abandoned, and
-        // so was a node whose Attempt was (ADR-0209).
-        _ if abandoned_cause(cas, state, cancelled) != TaskCauseV1::HostCancelled
-            && failures.iter().any(|f| {
-                f.cause.is_some_and(|cause| {
-                    !matches!(cause, TaskCauseV1::WriterLost | TaskCauseV1::HostCancelled)
-                })
-            }) =>
-        {
-            TaskStatePhaseV1::Waiting
-        }
-        _ => TaskStatePhaseV1::Abandoned,
-    };
+    let semantic = af_runtime::task_lifecycle::semantic_state(cas, state, result, now, cancelled)?;
+    let phase = semantic.phase;
     let state_value = match phase {
         TaskStatePhaseV1::Running => TaskStateV1::new(phase),
         TaskStatePhaseV1::Planned => match &state.plan_id {
@@ -198,26 +176,18 @@ pub(crate) fn view(
         }
         // A node that used up its recovery allowance is never dispatched again: `af task run`
         // refuses, so the next command starts the Task again from its file (ADR-0209).
-        TaskStatePhaseV1::Abandoned => TaskStateV1::ended(
-            phase,
-            TaskOutcomeV1::Cancelled,
-            Some(abandoned_cause(cas, state, cancelled)),
-        )
-        .with_next(if super::recovery::exhausted_any(state) {
-            format!("af task start --file {TASK_FILE}")
-        } else {
-            format!("af task run {id}")
-        }),
+        TaskStatePhaseV1::Abandoned => {
+            TaskStateV1::ended(phase, TaskOutcomeV1::Cancelled, semantic.cause).with_next(
+                if super::recovery::exhausted_any(state) {
+                    format!("af task start --file {TASK_FILE}")
+                } else {
+                    format!("af task run {id}")
+                },
+            )
+        }
         TaskStatePhaseV1::Finished => {
             let result = result.ok_or("A finished Task has no recorded result")?;
-            finished(
-                cas,
-                state,
-                result,
-                gate.as_ref(),
-                checks.as_ref(),
-                &failures,
-            )?
+            finished(cas, state, result, &semantic)?
         }
     };
     state_value.validate()?;
@@ -253,108 +223,35 @@ pub(crate) fn started(state: &TaskProjection) -> bool {
             .is_some_and(|execution| execution.budget.begun_attempts() > 0)
 }
 
-/// Why a Task that ran stopped before it finished: an `af task cancel` of its last lease, a
-/// started Attempt nobody settled (its writer was lost), the cause its last Attempt was
-/// abandoned with (ADR-0209), an interrupt as its last Attempt's usage or diagnostic records it,
-/// or a writer that lost its lease (the default when nothing says more).
-fn abandoned_cause(cas: &Cas, state: &TaskProjection, cancelled: Option<u64>) -> TaskCauseV1 {
-    use af_store::store::task::execution::TaskAbandonCause;
-    if cancelled == Some(state.lease_epoch()) {
-        return TaskCauseV1::HostCancelled;
-    }
-    if state
-        .execution
-        .as_ref()
-        .is_some_and(|execution| !execution.orphaned_attempts().is_empty())
-    {
-        return TaskCauseV1::WriterLost;
-    }
-    let mut attempts = state
-        .execution
-        .iter()
-        .flat_map(|execution| execution.attempt_accounting())
-        .collect::<Vec<_>>();
-    attempts.sort_by_key(|attempt| (attempt.settled_unix_ms, attempt.started_unix_ms));
-    let Some(last) = attempts.last() else {
-        return TaskCauseV1::WriterLost;
-    };
-    match last.abandoned {
-        Some(TaskAbandonCause::WriterLost) => return TaskCauseV1::WriterLost,
-        Some(TaskAbandonCause::HostCancelled) => return TaskCauseV1::HostCancelled,
-        None => {}
-    }
-    let interrupted = last.unknown_usage == Some(TaskUnknownUsageCauseV1::Interrupted)
-        || attempt_error(cas, last).and_then(|error| TaskCauseV1::of_diagnostic(&error))
-            == Some(TaskCauseV1::HostCancelled);
-    if interrupted {
-        TaskCauseV1::HostCancelled
-    } else {
-        TaskCauseV1::WriterLost
-    }
-}
-
 fn finished(
     cas: &Cas,
     state: &TaskProjection,
     result: &TaskResultV1,
-    gate: Option<&TaskGateV1>,
-    checks: Option<&ChecksView>,
-    failures: &[NodeFailure],
+    semantic: &af_contracts::task::wake::WakeStateV1,
 ) -> Result<TaskStateV1, String> {
     let id = &state.task_id;
-    let phase = TaskStatePhaseV1::Finished;
-    // A review that ran to its conclusion asked for changes; a Review Task's acceptance is only
-    // that the review ran, so its conclusion says what it found.
-    let concluded = matches!(
-        result.domain_conclusion.as_str(),
-        "changes_requested" | "convergence_exhausted"
+    let value = TaskStateV1::ended(
+        TaskStatePhaseV1::Finished,
+        semantic.outcome.ok_or("Missing finished outcome")?,
+        semantic.cause,
     );
-    if result.acceptance == TaskAcceptanceV1::Satisfied && !concluded {
-        let verified = TaskStateV1::ended(phase, TaskOutcomeV1::Verified, None);
-        let deliverable = result.outputs.contains_key("snapshot")
-            && state
-                .revision
-                .authority
-                .allowed_effects
-                .contains("write-source")
-            && state.deliveries.is_empty();
-        return Ok(if deliverable {
-            verified.with_next(format!(
-                "af task deliver {id} --branch af/{id} --worktree ../{id} --confirm {id}"
-            ))
-        } else {
-            verified
-        });
+    if let Some(cause) = semantic.cause {
+        return Ok(value.with_next(next_action(cas, state, cause)?));
     }
-    let ended = |cause: TaskCauseV1| -> Result<TaskStateV1, String> {
-        Ok(TaskStateV1::ended(
-            phase,
-            cause.outcome().unwrap_or(TaskOutcomeV1::Exhausted),
-            Some(cause),
-        )
-        .with_next(next_action(cas, state, cause)?))
-    };
-    // The last gate failing decides: what came after it never ran on a passing tree.
-    if let (Some(gate), Some(checks)) = (
-        gate.filter(|g| g.status != TaskGateStatusV1::Passed),
-        checks,
-    ) {
-        return ended(gate_cause(checks, gate));
-    }
-    // Findings a review recorded are its verdict, whatever else failed beside it.
-    if concluded && reviewed_with_findings(cas, state)? {
-        return ended(TaskCauseV1::ReviewerFindings);
-    }
-    // The first node that failed on its own decides; a node that only missed another's receipt
-    // follows from it.
-    let cause = if let Some(failure) = failures.iter().find(|f| f.cause.is_some()) {
-        failure.cause.expect("found by its cause")
-    } else if concluded || result.acceptance == TaskAcceptanceV1::Unsatisfied {
-        TaskCauseV1::EvaluatorRejected
+    let deliverable = result.outputs.contains_key("snapshot")
+        && state
+            .revision
+            .authority
+            .allowed_effects
+            .contains("write-source")
+        && state.deliveries.is_empty();
+    Ok(if deliverable {
+        value.with_next(format!(
+            "af task deliver {id} --branch af/{id} --worktree ../{id} --confirm {id}"
+        ))
     } else {
-        planning_cause(cas, state).unwrap_or(TaskCauseV1::Budget)
-    };
-    ended(cause)
+        value
+    })
 }
 
 /// The one command a person runs after a Task ended with `cause`. After a failed gate it is
@@ -432,46 +329,12 @@ fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
         })
 }
 
-fn node_slot(operator: &CompiledOperator) -> Option<&str> {
-    match operator {
-        CompiledOperator::ProviderAdmission { bindings } => bindings.first().map(String::as_str),
-        CompiledOperator::Primitive {
-            operator:
-                pipeline::TaskOperatorV1::Worker { slot }
-                | pipeline::TaskOperatorV1::Verify { slot }
-                | pipeline::TaskOperatorV1::FixVerify { slot },
-            ..
-        } => Some(slot),
-        _ => None,
-    }
-}
-
-/// What kind of work a node does, for a failure no recorded word classifies.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NodeKind {
-    Worker,
-    Admission,
-    Check,
-    Kernel,
-}
-
-fn node_kind(operator: Option<&CompiledOperator>) -> NodeKind {
-    match operator {
-        Some(CompiledOperator::ProviderAdmission { .. }) => NodeKind::Admission,
-        Some(CompiledOperator::Primitive {
-            operator: pipeline::TaskOperatorV1::Check { .. },
-            ..
-        }) => NodeKind::Check,
-        Some(operator) if node_slot(operator).is_some() => NodeKind::Worker,
-        _ => NodeKind::Kernel,
-    }
-}
-
 /// A failed gate's cause: a check the kernel stopped at its wall ran and failed (ADR-0255); a
 /// check never started, or every failed check stopped at a step before its tests and named no
 /// test; its tests failed after some were flaky; or it failed. A step its report names is
 /// before the tests when its stage is (`preflight`, `lint`, `build`); a step read from a log,
 /// when its label does not start with `test`.
+#[cfg(test)]
 fn gate_cause(checks: &ChecksView, gate: &TaskGateV1) -> TaskCauseV1 {
     let preflight = checks.checks.iter().all(|c| {
         c.status != "failed"
@@ -485,14 +348,12 @@ fn gate_cause(checks: &ChecksView, gate: &TaskGateV1) -> TaskCauseV1 {
         .checks
         .iter()
         .any(|c| c.status != "passed" && c.stop.is_some());
-    match gate.status {
-        _ if walled && gate.flaky.is_empty() => TaskCauseV1::CheckFailed,
-        _ if walled => TaskCauseV1::CheckFlakyThenFailed,
-        TaskGateStatusV1::NotRun => TaskCauseV1::PreflightFailed,
-        _ if preflight => TaskCauseV1::PreflightFailed,
-        _ if !gate.flaky.is_empty() => TaskCauseV1::CheckFlakyThenFailed,
-        _ => TaskCauseV1::CheckFailed,
-    }
+    af_runtime::task_lifecycle::gate_failure_cause(
+        gate.status,
+        preflight,
+        walled,
+        !gate.flaky.is_empty(),
+    )
 }
 
 fn gate_of(checks: &ChecksView) -> TaskGateV1 {
@@ -524,54 +385,6 @@ fn gate_of(checks: &ChecksView) -> TaskGateV1 {
         failed_tests,
         flaky,
     }
-}
-
-/// Whether a review round the Task recorded asked for changes.
-fn reviewed_with_findings(cas: &Cas, state: &TaskProjection) -> Result<bool, String> {
-    let Some(execution) = &state.execution else {
-        return Ok(false);
-    };
-    for id in execution
-        .outputs
-        .values()
-        .flat_map(|(_, output)| output.outputs.values())
-        .filter(|port| port.artifact_type == TASK_REVIEW_ROUND_V1)
-        .flat_map(|port| port.artifact_ids.iter())
-    {
-        let round: TaskReviewRoundV1 = artifact(cas, id, TASK_REVIEW_ROUND_V1)?;
-        if matches!(
-            round.conclusion,
-            af_contracts::task::review::ReviewConclusionV1::ChangesRequested
-                | af_contracts::task::review::ReviewConclusionV1::ConvergenceExhausted
-        ) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// The cause a planning diagnostic the result cites names, if it names one.
-fn planning_cause(cas: &Cas, state: &TaskProjection) -> Option<TaskCauseV1> {
-    let TaskPhaseV1::Finished { result_id } = &state.phase else {
-        return None;
-    };
-    let envelope = cas.get_artifact(result_id).ok()?;
-    envelope.input_artifacts.iter().find_map(|id| {
-        let diagnostic = cas.get_json(id).ok()?;
-        (diagnostic["schema"] == "af.planning-diagnostic/1")
-            .then(|| {
-                diagnostic["reason"]
-                    .as_str()
-                    .and_then(TaskCauseV1::of_diagnostic)
-            })
-            .flatten()
-            .filter(|cause| {
-                matches!(
-                    cause.outcome(),
-                    Some(TaskOutcomeV1::Exhausted | TaskOutcomeV1::Expired)
-                )
-            })
-    })
 }
 
 /// Each failed node of the Task's last run report, with the cause its own records name.
@@ -662,71 +475,6 @@ fn failures(cas: &Cas, state: &TaskProjection) -> Result<Vec<NodeFailure>, Strin
     Ok(own)
 }
 
-/// The `error` an Attempt's own diagnostic records.
-fn attempt_error(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> {
-    let (Some(TaskAttemptResultV1::Failed { diagnostic_id, .. })
-    | Some(TaskAttemptResultV1::Abandoned { diagnostic_id })) = &attempt.result
-    else {
-        return None;
-    };
-    let value = cas.get_json(diagnostic_id).ok()?;
-    value["error"]
-        .as_str()
-        .or_else(|| value["message"].as_str())
-        .map(str::to_owned)
-}
-
-/// The closed class an Attempt's own diagnostic names, when af wrote one (`cause`):
-/// `host_cancelled`, `writer_lost`, `attempt_wall` or `environment`.
-fn diagnostic_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> {
-    let (Some(TaskAttemptResultV1::Failed { diagnostic_id, .. })
-    | Some(TaskAttemptResultV1::Abandoned { diagnostic_id })) = &attempt.result
-    else {
-        return None;
-    };
-    let value = cas.get_json(diagnostic_id).ok()?;
-    value["cause"].as_str().map(str::to_owned)
-}
-
-/// Settlement appends the final adapter class as an Attempt-produced artifact. Bare native
-/// output cannot supply it, and an earlier call's evidence cannot replace the last call's.
-fn native_failure_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<TaskCauseV1> {
-    use af_runner::native_failure::{NATIVE_FAILURE_EVIDENCE_V1, NativeFailureEvidenceV1};
-    let envelope = cas.get_artifact(attempt.raw_artifact_ids.last()?).ok()?;
-    if envelope.artifact_type != NATIVE_FAILURE_EVIDENCE_V1
-        || !matches!(&envelope.producer, Producer::Attempt { node_id, attempt_id, .. }
-            if node_id == &attempt.reservation.node && attempt_id == &attempt.attempt_id)
-        || envelope.input_artifacts.len() != 1
-        || envelope.input_artifacts.first() != attempt.context_id.as_ref()
-    {
-        return None;
-    }
-    NativeFailureEvidenceV1::decode(envelope.payload)
-        .ok()?
-        .task_cause()
-}
-
-/// The `af/TaskAttemptWallEnd@1` an Attempt's settlement keeps among its raw evidence, with its
-/// ID, when the Attempt wall ended it (ADR-0257).
-pub(crate) fn wall_end(
-    cas: &Cas,
-    attempt: &TaskAttemptAccounting,
-) -> Option<(
-    String,
-    af_contracts::task::attempt_wall::TaskAttemptWallEndV1,
-)> {
-    use af_contracts::task::attempt_wall::*;
-    attempt.raw_artifact_ids.iter().find_map(|id| {
-        let envelope = cas.get_optional_artifact(id).ok()??;
-        if envelope.artifact_type != TASK_ATTEMPT_WALL_END_V1 {
-            return None;
-        }
-        let end: TaskAttemptWallEndV1 = serde_json::from_value(envelope.payload).ok()?;
-        end.validate().ok()?;
-        Some((id.clone(), end))
-    })
-}
-
 /// The raw capture of an Attempt's stderr, when its Worker adapter recorded one by that name.
 fn stderr_capture(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> {
     attempt.raw_artifact_ids.iter().find_map(|id| {
@@ -737,90 +485,6 @@ fn stderr_capture(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> 
             .contains("stderr")
             .then(|| id.clone())
     })
-}
-
-/// The cause of one failed node: typed evidence first (the Attempt wall, final native class,
-/// unknown usage and retry feedback), af's own words second, and the kind of work
-/// the node does last.
-fn node_cause(
-    cas: &Cas,
-    class: TaskFailureClassV1,
-    kind: NodeKind,
-    attempt: Option<&TaskAttemptAccounting>,
-    attempt_error: Option<&str>,
-    message: &str,
-) -> TaskCauseV1 {
-    let text = format!("{}\n{message}", attempt_error.unwrap_or_default());
-    if let Some(attempt) = attempt {
-        // The typed records of ADR-0257 first: an Attempt its wall ended, and a failure whose
-        // diagnostic names the Provider's environment as its closed class.
-        if wall_end(cas, attempt).is_some() {
-            return TaskCauseV1::AttemptWall;
-        }
-        if diagnostic_cause(cas, attempt).as_deref() == Some("environment") {
-            return TaskCauseV1::ProviderEnvironment;
-        }
-        if let Some(cause) = native_failure_cause(cas, attempt) {
-            return cause;
-        }
-        match attempt.unknown_usage {
-            Some(TaskUnknownUsageCauseV1::Capacity | TaskUnknownUsageCauseV1::RateLimit) => {
-                return TaskCauseV1::ProviderCapacity;
-            }
-            Some(TaskUnknownUsageCauseV1::Network) => return TaskCauseV1::ProviderNetwork,
-            Some(TaskUnknownUsageCauseV1::Authentication) => {
-                return TaskCauseV1::IdentityUnverified;
-            }
-            Some(TaskUnknownUsageCauseV1::ModelUnavailable) => return TaskCauseV1::ModelRefused,
-            Some(TaskUnknownUsageCauseV1::LeaseExpired) => return TaskCauseV1::WriterLost,
-            Some(TaskUnknownUsageCauseV1::Interrupted) => return TaskCauseV1::HostCancelled,
-            Some(TaskUnknownUsageCauseV1::Unreported) | None => (),
-        }
-        if matches!(attempt.result, Some(TaskAttemptResultV1::Abandoned { .. })) {
-            return TaskCauseV1::WriterLost;
-        }
-        let code = match &attempt.result {
-            Some(TaskAttemptResultV1::Failed {
-                feedback_id: Some(id),
-                ..
-            }) => artifact::<TaskRetryFeedbackV1>(cas, id, TASK_RETRY_FEEDBACK_V1)
-                .ok()
-                .map(|feedback| feedback.code),
-            _ => None,
-        };
-        // A node whose last Attempt failed ran out of retries because of that failure: the
-        // Attempt's own failure is the cause, not the limit it then reached.
-        if matches!(
-            code,
-            Some(
-                TaskFeedbackCodeV1::InvalidOutputContract
-                    | TaskFeedbackCodeV1::OutputAdmissionRejected
-                    | TaskFeedbackCodeV1::CompilerRejected
-            )
-        ) {
-            return TaskCauseV1::MalformedReply;
-        }
-        if let Some(cause) = attempt_error.and_then(TaskCauseV1::of_diagnostic) {
-            return cause;
-        }
-        if code.is_some() && kind == NodeKind::Worker {
-            return TaskCauseV1::MalformedReply;
-        }
-    }
-    if class == TaskFailureClassV1::Resources {
-        return if text.to_ascii_lowercase().contains("deadline") {
-            TaskCauseV1::Deadline
-        } else {
-            TaskCauseV1::Budget
-        };
-    }
-    match (TaskCauseV1::of_diagnostic(&text), kind) {
-        (Some(cause), _) => cause,
-        (None, NodeKind::Worker) => TaskCauseV1::MalformedReply,
-        (None, NodeKind::Admission) => TaskCauseV1::IdentityUnverified,
-        (None, NodeKind::Check) => TaskCauseV1::PreflightFailed,
-        (None, NodeKind::Kernel) => TaskCauseV1::Budget,
-    }
 }
 
 /// The last check receipt the Task's current execution recorded, in graph order, with every

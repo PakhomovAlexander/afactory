@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-status:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "driver",
+    "observed_unix_ms",
+    "subscriptions",
+    "deliveries",
+    "uncertain_session_fences"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-status@1"
+    },
+    "driver": {
+      "const": "no_service_installed_run_drain_explicitly"
+    },
+    "observed_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "subscriptions": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "registration",
+          "checkpoint",
+          "extracted_through",
+          "source_available",
+          "envelopes",
+          "closure",
+          "expired"
+        ],
+        "properties": {
+          "registration": {
+            "$ref": "urn:af:schema:task-wake-registration:1"
+          },
+          "checkpoint": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 16384
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extracted_through": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_available": {
+            "type": "boolean"
+          },
+          "envelopes": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "$ref": "urn:af:schema:task-wake-envelope:1"
+            }
+          },
+          "closure": {
+            "anyOf": [
+              {
+                "enum": [
+                  "expired",
+                  "expired_unextracted"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expired": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "deliveries": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "urn:af:schema:task-wake-delivery:1"
+      }
+    },
+    "uncertain_session_fences": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_key",
+          "subscription_id",
+          "delivery_id",
+          "payload_digest",
+          "intent_id",
+          "expires_unix_ms",
+          "task_id",
+          "causal_sequence",
+          "causal_event_id",
+          "state",
+          "historical",
+          "source_available"
+        ],
+        "properties": {
+          "session_key": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "subscription_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "delivery_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "payload_digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "intent_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "expires_unix_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$(?![\\s\\S])"
+          },
+          "causal_sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "causal_event_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{26}$",
+            "minLength": 26,
+            "maxLength": 26
+          },
+          "state": {
+            "const": "admission_unknown"
+          },
+          "historical": {
+            "const": true
+          },
+          "source_available": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

@@ -127,6 +127,7 @@ preflight-check:
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) --stage preflight pi-host python3 scripts/test-pi-host.py
+	$(CI_STEP) --stage preflight task-wake-probes python3 scripts/test-task-wake-probe.py
 	$(CI_STEP) --stage preflight pr-report python3 scripts/test-check-pr-report.py
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"

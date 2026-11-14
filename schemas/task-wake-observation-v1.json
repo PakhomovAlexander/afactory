@@ -1,0 +1,600 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-observation:1",
+  "$comment": "Foundation metadata only; no authority. Rust additionally validates ordered times, source boundaries and content identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task",
+    "observation_id",
+    "causal",
+    "checked_prefix",
+    "revision_id",
+    "episode",
+    "kind",
+    "state",
+    "evidence",
+    "observed_unix_ms",
+    "result_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskWakeObservation@1"
+    },
+    "task": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/task"
+    },
+    "observation_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "causal": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+    },
+    "checked_prefix": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/boundary"
+    },
+    "revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "episode": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "kind": {
+      "enum": [
+        "attention_required",
+        "execution_stopped",
+        "completed"
+      ]
+    },
+    "state": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/state"
+    },
+    "evidence": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/evidence"
+    },
+    "observed_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "result_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "minLength": 71,
+          "maxLength": 71
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "attention_required"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "phase": {
+                "const": "waiting"
+              }
+            }
+          },
+          "result_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "execution_stopped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "phase": {
+                "const": "abandoned"
+              }
+            }
+          },
+          "result_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "phase": {
+                "const": "finished"
+              }
+            }
+          },
+          "result_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "minLength": 71,
+            "maxLength": 71
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence": {
+            "properties": {
+              "kind": {
+                "const": "lease_expired"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "attention_required",
+              "execution_stopped"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "outcome": {
+      "enum": [
+        "verified",
+        "changes_requested",
+        "gate_failed",
+        "provider_failed",
+        "cancelled",
+        "exhausted",
+        "expired"
+      ]
+    },
+    "cause": {
+      "enum": [
+        "reviewer_findings",
+        "evaluator_rejected",
+        "check_failed",
+        "check_flaky_then_failed",
+        "preflight_failed",
+        "malformed_reply",
+        "provider_network",
+        "provider_capacity",
+        "provider_timeout",
+        "provider_environment",
+        "identity_changed",
+        "identity_unverified",
+        "model_refused",
+        "writer_lost",
+        "deadline",
+        "budget",
+        "attempt_wall",
+        "collected",
+        "host_cancelled"
+      ]
+    },
+    "waiting_reason": {
+      "enum": [
+        "needs_resources",
+        "needs_input",
+        "needs_human",
+        "needs_plan_review"
+      ]
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_incarnation",
+        "task_id",
+        "task_run_id",
+        "opening_event_id"
+      ],
+      "properties": {
+        "store_incarnation": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "minLength": 71,
+          "maxLength": 71
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+          "minLength": 1,
+          "maxLength": 128,
+          "not": {
+            "pattern": "[^A-Za-z0-9_-]"
+          }
+        },
+        "task_run_id": {
+          "type": "string",
+          "pattern": "^task:sha256:[0-9a-f]{64}$",
+          "minLength": 76,
+          "maxLength": 76
+        },
+        "opening_event_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{26}$",
+          "minLength": 26,
+          "maxLength": 26
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "event_id"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "event_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{26}$",
+          "minLength": 26,
+          "maxLength": 26
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "outcome",
+        "cause",
+        "waiting_reason"
+      ],
+      "properties": {
+        "phase": {
+          "enum": [
+            "planned",
+            "running",
+            "waiting",
+            "abandoned",
+            "finished"
+          ]
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/outcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cause": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/cause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waiting_reason": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-wake-observation:1#/$defs/waiting_reason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "enum": [
+                  "finished",
+                  "abandoned"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "$ref": "urn:af:schema:task-wake-observation:1#/$defs/outcome"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "outcome": {
+                "type": "null"
+              },
+              "cause": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "abandoned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "cancelled"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "verified"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  null
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "changes_requested"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "reviewer_findings",
+                  "evaluator_rejected"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "gate_failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "check_failed",
+                  "check_flaky_then_failed",
+                  "preflight_failed"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "provider_failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "malformed_reply",
+                  "provider_network",
+                  "provider_capacity",
+                  "provider_timeout",
+                  "provider_environment",
+                  "identity_changed",
+                  "identity_unverified",
+                  "model_refused"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "cancelled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "writer_lost",
+                  "host_cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "expired"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "deadline"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "exhausted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "budget",
+                  "attempt_wall"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "abandoned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "enum": [
+                  "writer_lost",
+                  "host_cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "enum": [
+                  "planned",
+                  "running",
+                  "abandoned",
+                  "finished"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "waiting_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "history"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "epoch",
+            "deadline_unix_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "lease_expired"
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "deadline_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      ]
+    }
+  }
+}

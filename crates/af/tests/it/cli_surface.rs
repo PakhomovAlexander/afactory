@@ -2413,6 +2413,45 @@ fn help_json_prints_the_generated_command_catalog() {
     assert_eq!(run["commands"].as_array().unwrap().len(), 1);
     assert_eq!(run["commands"][0], *named("af task run"));
 
+    let wake = af(&["help", "task", "wake", "--json"]);
+    assert!(wake.status.success(), "{}", err(&wake));
+    let wake: serde_json::Value = serde_json::from_slice(&wake.stdout).unwrap();
+    crate::schemas::valid(&catalog, &wake);
+    assert_eq!(wake["scope"], "af task wake");
+    let wake_commands = wake["commands"].as_array().unwrap();
+    assert_eq!(wake_commands.len(), 8);
+    assert_eq!(wake_commands[0]["runnable"], false);
+    assert_eq!(
+        wake_commands[0]["subcommands"],
+        serde_json::json!([
+            "capabilities",
+            "grant",
+            "register",
+            "inspect",
+            "revoke",
+            "drain",
+            "pi-next"
+        ])
+    );
+    for name in [
+        "capabilities",
+        "grant",
+        "register",
+        "inspect",
+        "revoke",
+        "drain",
+        "pi-next",
+    ] {
+        let name = format!("af task wake {name}");
+        let entry = wake_commands
+            .iter()
+            .find(|entry| entry["command"] == name)
+            .unwrap();
+        assert_eq!(*entry, *named(&name));
+        assert_eq!(entry["effects"]["tokens"], "free");
+        assert_eq!(entry["effects"]["human"], serde_json::json!([]));
+    }
+
     let proof = af(&["help", "scenario", "performance-proof", "--json"]);
     assert!(proof.status.success(), "{}", err(&proof));
     let proof: serde_json::Value = serde_json::from_slice(&proof.stdout).unwrap();
