@@ -44,6 +44,11 @@ fn wake_owner_routes_and_receiver_contracts_are_closed_and_versioned() {
             "traversal",
             json!({"schema":"af/task-wake-traversal@1", "extraction_after":digest('1'),"native_after":null}),
         ),
+        (
+            "route-traversal",
+            json!({"schema":"af/task-wake-route-traversal@1", "route_id":digest('1'),
+                "extraction_after":digest('2'), "expires_unix_ms":1000}),
+        ),
         ("route", route.clone()),
         ("grant", grant),
         ("delivery", delivery),
@@ -51,6 +56,9 @@ fn wake_owner_routes_and_receiver_contracts_are_closed_and_versioned() {
         let validate = |v: Value| -> Result<(), String> {
             match schema {
                 "traversal" => serde_json::from_value::<WakeTraversalV1>(v)
+                    .map_err(|e| e.to_string())?
+                    .validate(),
+                "route-traversal" => serde_json::from_value::<WakeRouteTraversalV1>(v)
                     .map_err(|e| e.to_string())?
                     .validate(),
                 "route" => serde_json::from_value::<WakeRouteV1>(v)
@@ -245,5 +253,30 @@ fn wake_traversal_positions_refuse_malformed_ids() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn wake_route_traversal_scope_and_expiry_match_schema() {
+    use af_contracts::task::wake::delivery::WakeRouteTraversalV1;
+    let value = json!({"schema":"af/task-wake-route-traversal@1", "route_id":digest('1'),
+        "extraction_after":digest('2'), "expires_unix_ms":1000});
+    for (field, invalid) in [
+        ("route_id", json!("unknown")),
+        ("route_id", json!(format!("{}\n", digest('1')))),
+        ("extraction_after", json!("unknown")),
+        ("extraction_after", Value::Null),
+        ("expires_unix_ms", json!(0)),
+        ("expires_unix_ms", json!(9007199254740992_u64)),
+        ("schema", json!("af/task-wake-route-traversal@0")),
+        ("schema", json!("af/task-wake-traversal@1")),
+    ] {
+        let mut bad = value.clone();
+        bad[field] = invalid;
+        assert_invalid("task-wake-route-traversal-v1.json", &bad, field);
+        assert!(
+            serde_json::from_value::<WakeRouteTraversalV1>(bad)
+                .map_or(true, |v| v.validate().is_err())
+        );
     }
 }

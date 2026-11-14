@@ -62,6 +62,10 @@ pub struct WakeJournal {
 }
 
 pub(super) const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS wake_route_traversal_v1 (
+ route_id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL, expires INTEGER NOT NULL,
+ record TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS wake_traversal_v1 (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), record TEXT NOT NULL
 );
@@ -162,7 +166,8 @@ fn capacity(conn: &Connection) -> Result<(), StoreError> {
         + COALESCE((SELECT SUM(length(record)) FROM wake_delivery_v1),0)
         + (SELECT COUNT(*)*1024 FROM wake_session_fences_v1)
         + (SELECT COUNT(*)*512 FROM wake_session_stores_v1)
-        + COALESCE((SELECT SUM(length(record)) FROM wake_traversal_v1),0)",
+        + COALESCE((SELECT SUM(length(record)) FROM wake_traversal_v1),0)
+        + COALESCE((SELECT SUM(length(record)+length(route_id)+length(subscription_id)+8) FROM wake_route_traversal_v1),0)",
         [],
         |r| {
             Ok((
@@ -176,7 +181,12 @@ fn capacity(conn: &Connection) -> Result<(), StoreError> {
     let bindings: u64 = conn.query_row("SELECT COUNT(*) FROM wake_session_stores_v1", [], |r| {
         u64_column(r, 0)
     })?;
-    if bindings > MAX_ENVELOPES
+    let route_positions: u64 =
+        conn.query_row("SELECT COUNT(*) FROM wake_route_traversal_v1", [], |r| {
+            u64_column(r, 0)
+        })?;
+    if route_positions > MAX_SUBSCRIPTIONS
+        || bindings > MAX_ENVELOPES
         || subscriptions > MAX_SUBSCRIPTIONS
         || envelopes > MAX_ENVELOPES
         || routes > MAX_SUBSCRIPTIONS

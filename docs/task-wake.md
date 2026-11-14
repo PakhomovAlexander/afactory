@@ -28,6 +28,10 @@ bound to one authoritative Task Store in a separate private machine control Stor
 A grant in another Task Store refuses, preventing cross-Store overtaking of uncertain admission.
 There are at most 4096 such machine session bindings; neither expiry nor a replacement grant
 rebinds them. Removing machine control state is destructive removal of recovery authority.
+Before acknowledging a binding or using a route, AF fsyncs the machine Store's directory
+publication chain through the filesystem root, including directories left by interrupted grants.
+A sync failure refuses route activation or use; directory existence and SQLite FULL alone do not
+prove that ancestry survived publication. An interrupted attempt may leave an inert grant file.
 
 For Codex, explicitly select the original interactive thread and its existing local daemon socket.
 The canonical socket parent must be owner-owned and private (mode `0700`, with no group/other
@@ -98,6 +102,12 @@ inbox until an idle poll, then uses `pi.sendMessage` with `triggerTurn: true` an
 `deliverAs: 'followUp'`; it never steers or runs a parallel turn. Each authenticated idle poll also extracts one checked
 history page and accepts at most one packet for its route. No foreground drain is required during
 that attachment window; `wake drain` remains available for larger catch-up and after hook expiry.
+Visits rotate durably across every registration on the selected route. A later registration cannot
+strand an earlier unclaimed packet after its persisted backoff becomes due, including across fresh
+poll processes. Each route owns a separate bounded, expiring Store traversal record, so polling
+another session or running a foreground drain cannot reset its progress. Revocation, expiry and
+registration compaction remove these hints without clearing delivery evidence. Rotation never
+changes committed outbox order or the original-session fence.
 Closing Pi does not erase that inbox or its native intent. Disconnect, shutdown and reconnect
 invalidate pending callbacks: an old callback cannot send or change a replacement attachment.
 Any already committed native intent stays uncertain.

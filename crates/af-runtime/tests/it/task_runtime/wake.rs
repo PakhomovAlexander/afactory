@@ -2021,6 +2021,128 @@ fn wake_traversal_restart_removal_expiry_and_corruption_preserve_bounds() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn wake_pi_route_traversal_scope_expiry_compaction_and_corruption_fail_closed() {
+    use af_contracts::task::wake::delivery::WakeRouteTraversalV1;
+    use af_store::store::wake::{WakeTraversalStage::Extraction, delivery::*};
+    let mut f = Fixture::new(SUCCESS);
+    f.store
+        .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+        .unwrap();
+    let (route, registration) = receiver_registration(&f);
+    let clock = registration.subscription.registered_unix_ms;
+    assert_eq!(
+        f.store.next_wake_pi_target(&route, clock).unwrap(),
+        Some(registration.subscription.subscription_id.clone())
+    );
+    let db = rusqlite::Connection::open(f._directory.path().join("events.sqlite")).unwrap();
+    let original: String = db
+        .query_row("SELECT record FROM wake_route_traversal_v1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let original_value: WakeRouteTraversalV1 = serde_json::from_str(&original).unwrap();
+    assert!(
+        schema_registry::validator("task-wake-route-traversal-v1.json")
+            .is_valid(&serde_json::to_value(&original_value).unwrap())
+    );
+    // Scoped progress neither needs nor creates a global traversal row.
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM wake_traversal_v1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let ids = [registration.subscription.subscription_id.clone()]
+        .into_iter()
+        .collect();
+    f.store.next_wake_target(Extraction, &ids).unwrap();
+    let mut replacement = route.clone();
+    replacement.session = "replacement-original-session".into();
+    replacement.route_id = route_identity(&replacement).unwrap();
+    f.store.install_wake_route(&replacement).unwrap();
+    assert!(
+        f.store
+            .next_wake_pi_target(&replacement, clock)
+            .unwrap()
+            .is_none()
+    );
+    let mut substituted = route.clone();
+    substituted.session = "ungranted-session".into();
+    assert!(f.store.next_wake_pi_target(&substituted, clock).is_err());
+    // Persisted row, indexed scope, selected subscription and route expiry must all agree.
+    for (field, invalid) in [
+        ("schema", json!("af/task-wake-route-traversal@0")),
+        ("schema", json!("af/task-wake-traversal@1")),
+        ("route_id", json!(replacement.route_id)),
+        ("extraction_after", json!(digest('f'))),
+        ("expires_unix_ms", json!(route.expires_unix_ms + 1)),
+        ("callback", json!("untrusted")),
+    ] {
+        let mut corrupt = serde_json::to_value(&original_value).unwrap();
+        corrupt[field] = invalid;
+        db.execute(
+            "UPDATE wake_route_traversal_v1 SET record=?1",
+            [corrupt.to_string()],
+        )
+        .unwrap();
+        f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+        assert!(
+            f.store.next_wake_pi_target(&route, clock).is_err(),
+            "{field}"
+        );
+        assert_eq!(f.store.wake_deliveries().unwrap().len(), 0);
+        assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
+    }
+    db.execute("UPDATE wake_route_traversal_v1 SET record=?1", [&original])
+        .unwrap();
+    let grant = af_contracts::task::wake::delivery::WakeGrantV1 {
+        schema: "af/task-wake-grant@1".into(),
+        route_id: route.route_id.clone(),
+        capability: digest('c'),
+    };
+    f.store.revoke_wake_route(&grant, clock).unwrap();
+    assert!(f.store.next_wake_pi_target(&route, clock).is_err());
+    f.store.maintain_wakes(clock).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM wake_route_traversal_v1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // A separate valid route can keep its own position until expiry; compaction and restart
+    // discard only the hint and never create native intent or a successful receipt.
+    let mut second = registration.clone();
+    second.subscription.registration_key = digest('9');
+    second.subscription.recipient_ref = replacement.route_id.clone();
+    second.subscription.configuration_digest =
+        af_runtime::wake::configuration_digest(&second.subscription).unwrap();
+    let second = f.store.register_wake(&f.cas, &second).unwrap();
+    assert_eq!(
+        f.store.next_wake_pi_target(&replacement, clock).unwrap(),
+        Some(second.subscription.subscription_id)
+    );
+    f.store.maintain_wakes(replacement.expires_unix_ms).unwrap();
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM wake_route_traversal_v1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(
+        f.store
+            .next_wake_pi_target(&replacement, replacement.expires_unix_ms)
+            .is_err()
+    );
+    f.store
+        .maintain_wakes(replacement.expires_unix_ms + RETENTION_MS)
+        .unwrap();
+    assert!(f.store.wake_registrations().unwrap().is_empty());
+    assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn wake_traversal_native_expiry_and_collection_do_not_reset_positions_or_admission() {
     use af_store::store::wake::{WakeTraversalStage::Native, delivery::route_identity};
     let mut f = Fixture::new(SUCCESS);

@@ -636,6 +636,14 @@ impl EventStore {
             [cutoff],
         )?;
         tx.execute("DELETE FROM wake_routes_v1 WHERE expires<=?1", [cutoff])?;
+        // Hints grant no delivery authority and retain no source. Remove them at route
+        // expiry/revocation or when compaction removes their selected registration.
+        tx.execute(
+            "DELETE FROM wake_route_traversal_v1 WHERE expires<=?1
+            OR route_id NOT IN (SELECT id FROM wake_routes_v1 WHERE revoked=0)
+            OR subscription_id NOT IN (SELECT id FROM wake_subscriptions_v1)",
+            [sql_number(now)?],
+        )?;
         capacity(&tx)?;
         tx.commit()?;
         Ok(())

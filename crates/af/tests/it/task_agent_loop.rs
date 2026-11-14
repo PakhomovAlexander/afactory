@@ -556,6 +556,647 @@ fn wake_cli_detached_pi_receiver_authenticates_parent_and_replays_without_resend
     );
 }
 
+#[cfg(target_os = "linux")]
+struct WakePiFixture {
+    _root: tempfile::TempDir,
+    repo: PathBuf,
+    state: PathBuf,
+    machine: PathBuf,
+    owner: PathBuf,
+    binary: PathBuf,
+    extension: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl WakePiFixture {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = task_gc::fixture(root.path());
+        expect(
+            &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+            0,
+        );
+        let owner = root.path().join("owner");
+        std::fs::create_dir(&owner).unwrap();
+        std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = owner.canonicalize().unwrap();
+        let binary = owner.join("interactive-pi-standin");
+        std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &binary).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let extension = owner.join("extension.ts");
+        std::fs::write(&extension, "// recording fixture, no host calls").unwrap();
+        std::fs::set_permissions(&extension, std::fs::Permissions::from_mode(0o600)).unwrap();
+        Self {
+            machine: root.path().join("machine/state"),
+            _root: root,
+            repo,
+            state,
+            owner,
+            binary,
+            extension,
+        }
+    }
+    fn wake(&self, state: &Path, args: &[&str]) -> Command {
+        let mut command = crate::common::af();
+        command
+            .current_dir(&self.repo)
+            .env("XDG_STATE_HOME", &self.machine)
+            .args(["task", "wake", "--state"])
+            .arg(state)
+            .args(args);
+        command
+    }
+    fn grant(&self, state: &Path, file: &Path) -> Command {
+        self.grant_session(state, file, "original")
+    }
+    fn grant_session(&self, state: &Path, file: &Path, session: &str) -> Command {
+        self.wake(
+            state,
+            &[
+                "grant",
+                "gc-older",
+                "--host",
+                "pi",
+                "--session",
+                session,
+                "--executable",
+                self.binary.to_str().unwrap(),
+                "--extension",
+                self.extension.to_str().unwrap(),
+                "--grant-file",
+                file.to_str().unwrap(),
+            ],
+        )
+    }
+    fn pull(&self, grant: &Path) -> Value {
+        self.pull_session(grant, "original")
+    }
+    fn pull_session(&self, grant: &Path, session: &str) -> Value {
+        let mut host = Command::new(&self.binary);
+        for (name, value) in crate::common::af().get_envs() {
+            if let Some(value) = value {
+                host.env(name, value);
+            }
+        }
+        // Keep the actual pinned interpreter as the child's authenticated parent.
+        let output = host.current_dir(&self.repo).env("XDG_STATE_HOME", &self.machine)
+            .args(["-c", "\"$1\" task wake --state \"$2\" pi-next --route \"$3\" --session \"$4\"; result=$?; exit $result", "recording-pi"])
+            .arg(crate::common::af_binary()).arg(&self.state).arg(grant).arg(session).output().unwrap();
+        document(&output, 0, Some("task-wake-pi-next-v1.json"))
+    }
+    fn finish(&self) {
+        expect(
+            &af(
+                &self.repo,
+                &self.state,
+                &["task", "run", "gc-older", "--execute"],
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_publication_syncs_existing_ancestry_before_binding() {
+    let f = WakePiFixture::new();
+    let identity =
+        af_store::content_id(&serde_json::json!({"domain":"af/wake-machine-session-store/1"}))
+            .unwrap();
+    let registry = f
+        .machine
+        .join("af/task/local")
+        .join(identity.strip_prefix("sha256:").unwrap());
+    let objects = registry.join("cas/objects");
+    let chain: Vec<_> = objects.ancestors().map(Path::to_path_buf).collect();
+    let record = f.owner.join("syncs");
+    let key = af_store::content_id(
+        &serde_json::json!({"domain":"af/wake-session/1","host":"pi","session":"original"}),
+    )
+    .unwrap();
+    // Fail every link in turn. All later attempts encounter preexisting directories left
+    // by the earlier failure, so syncing only newly created ancestors cannot pass.
+    for (index, directory) in chain.iter().enumerate() {
+        std::fs::write(&record, "").unwrap();
+        let grant = f.owner.join(format!("failed-{index}.json"));
+        let refused = f
+            .grant(&f.state, &grant)
+            .env("AF_TEST_WAKE_FAIL_DIRECTORY_SYNC", directory)
+            .env("AF_TEST_WAKE_DIRECTORY_SYNCS", &record)
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "a failed sync must refuse the grant"
+        );
+        assert!(
+            err(&refused).contains("syncing machine wake directory"),
+            "{}",
+            err(&refused)
+        );
+        let synced: Vec<_> = std::fs::read_to_string(&record)
+            .unwrap()
+            .lines()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(synced, chain[..index]);
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let capability: af_contracts::task::wake::delivery::WakeGrantV1 =
+            serde_json::from_slice(&std::fs::read(&grant).unwrap()).unwrap();
+        assert!(
+            store.wake_route(&capability.route_id, 1).is_err(),
+            "no usable route before publication"
+        );
+        let machine = EventStore::open_read_only(registry.join("events.sqlite")).unwrap();
+        assert!(
+            machine
+                .check_wake_session_store(&key, &store.wake_incarnation().unwrap())
+                .is_err(),
+            "no acknowledged binding before publication"
+        );
+    }
+    // Model losing the still-unpublished directory entry. There was no acknowledged
+    // binding or usable route to lose. Recovery must publish the newly recreated chain.
+    std::fs::remove_dir_all(f.machine.join("af")).unwrap();
+    let grant = f.owner.join("usable.json");
+    std::fs::write(&record, "").unwrap();
+    document(
+        &f.grant(&f.state, &grant)
+            .env("AF_TEST_WAKE_DIRECTORY_SYNCS", &record)
+            .output()
+            .unwrap(),
+        0,
+        None,
+    );
+    let synced: Vec<_> = std::fs::read_to_string(&record)
+        .unwrap()
+        .lines()
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(
+        synced, chain,
+        "acknowledgement publishes every directory entry through root"
+    );
+    let refused = f
+        .wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .env(
+            "AF_TEST_WAKE_FAIL_DIRECTORY_SYNC",
+            registry.parent().unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "preexisting routes also require publication"
+    );
+    assert!(err(&refused).contains("syncing machine wake directory"));
+    assert!(
+        EventStore::open(f.state.join("events.sqlite"))
+            .unwrap()
+            .wake_registrations()
+            .unwrap()
+            .is_empty()
+    );
+    document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        None,
+    );
+    f.finish();
+    assert!(f.pull(&grant)["message"].is_string());
+    assert_eq!(
+        f.pull(&grant)["message"],
+        Value::Null,
+        "restart preserves native uncertainty"
+    );
+    // Another real Task Store cannot bind this original session after reopening both
+    // databases. No host call, fabricated receipt or simulated power loss is involved.
+    let second_root = f._root.path().join("second");
+    std::fs::create_dir(&second_root).unwrap();
+    let (repo, state) = task_gc::fixture(&second_root);
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let refused = f
+        .grant(&state, &f.owner.join("second.json"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("already belongs to another wake Store"),
+        "{}",
+        err(&refused)
+    );
+    let machine = EventStore::open_read_only(registry.join("events.sqlite")).unwrap();
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    machine
+        .check_wake_session_store(&key, &store.wake_incarnation().unwrap())
+        .unwrap();
+    assert_eq!(
+        store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_next_rotates_registrations_and_recovers_earlier_unclaimed_backoff() {
+    use af_contracts::task::wake::{WAKE_SUBSCRIPTION_V1, WakeBoundaryV1, WakeSubscriptionV1};
+    use af_store::store::wake::{CatchUp, WakeRegistration, configuration_digest};
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    let granted = document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let route = store
+        .wake_route(granted["route_id"].as_str().unwrap(), clock)
+        .unwrap();
+    // Use the public registration writer for deterministic reverse IDs, without depending
+    // on random CLI nonces or mutating a registration's checked identity in SQLite.
+    let mut keys = [
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+    ];
+    keys.sort_by_cached_key(|key| {
+        af_store::content_id(&serde_json::json!({
+            "domain":"af/wake-subscription/1", "store":route.task.store_incarnation, "key":key,
+        }))
+        .unwrap()
+    });
+    let register = |key: &str| {
+        let mut subscription = WakeSubscriptionV1 {
+            schema: WAKE_SUBSCRIPTION_V1.into(),
+            subscription_id: key.into(),
+            registration_key: key.into(),
+            configuration_digest: key.into(),
+            task: route.task.clone(),
+            recipient_ref: route.route_id.clone(),
+            registered_unix_ms: clock,
+            expires_unix_ms: route.expires_unix_ms,
+            max_observations: 128,
+        };
+        subscription.configuration_digest = configuration_digest(&subscription).unwrap();
+        let projection = store.task_projection(&cas, "gc-older").unwrap().unwrap();
+        let prefix = store
+            .replay_window(
+                &subscription.task.task_run_id,
+                projection.next_sequence - 1,
+                1,
+            )
+            .unwrap()
+            .remove(0);
+        let r = WakeRegistration {
+            schema: "af/task-wake-registration@1".into(),
+            subscription,
+            policy: CatchUp::FromOpening,
+            registered_prefix: WakeBoundaryV1 {
+                sequence: prefix.sequence,
+                event_id: prefix.event_id,
+            },
+            launch_intent: false,
+        };
+        store.register_wake(&cas, &r).unwrap()
+    };
+    let a = register(&keys[1]);
+    f.finish();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert!(
+        af_runtime::wake::journal::reconcile(&store, &cas, &a.subscription.subscription_id, clock)
+            .unwrap()
+    );
+    let earlier = store
+        .inspect_wake(&a.subscription.subscription_id)
+        .unwrap()
+        .envelopes
+        .remove(0);
+    let claim = store.claim_wake(&earlier, clock).unwrap().unwrap();
+    store.backoff_wake(&claim, clock).unwrap();
+    // Freeze this persisted deadline until explicitly made due, so CLI startup speed
+    // never decides whether backoff is still active. Preserve attempts and all evidence.
+    let mut record = store.wake_deliveries().unwrap().remove(0);
+    record.next_attempt_unix_ms = earlier.expires_unix_ms;
+    let save_deadline = |record: &af_contracts::task::wake::delivery::WakeDeliveryV1| {
+        rusqlite::Connection::open(f.state.join("events.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(record).unwrap(),
+                    record.envelope.delivery_id
+                ],
+            )
+            .unwrap();
+    };
+    save_deadline(&record);
+    let b = register(&keys[0]);
+    assert!(b.subscription.subscription_id < a.subscription.subscription_id);
+    // Poll only the public attached path in fresh authenticated processes. B may be
+    // accepted, but the earlier committed A packet must prevent native overtaking.
+    for _ in 0..2 {
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+    }
+    assert!(
+        store
+            .wake_deliveries()
+            .unwrap()
+            .iter()
+            .any(
+                |r| r.envelope.subscription_id == b.subscription.subscription_id
+                    && r.state
+                        == af_contracts::task::wake::delivery::WakeDeliveryStateV1::InboxAccepted
+            )
+    );
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .wake_deliveries()
+            .unwrap()
+            .iter()
+            .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+            .unwrap()
+            .attempts,
+        1
+    );
+    record.next_attempt_unix_ms = 0;
+    save_deadline(&record);
+    drop(store);
+    drop(cas);
+    // At most one existing source/transport visit per poll: a complete fair cycle
+    // reaches A despite B's smaller ID. No foreground drain is used anywhere.
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        let packet = f.pull(&grant);
+        if packet["delivery_id"].is_string() {
+            delivered.push(packet["delivery_id"].clone());
+        }
+    }
+    assert_eq!(delivered, vec![Value::String(earlier.delivery_id.clone())]);
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let retained = store.wake_deliveries().unwrap();
+    let earlier_record = retained
+        .iter()
+        .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+        .unwrap();
+    assert_eq!(earlier_record.attempts, 2);
+    assert_eq!(earlier_record.receipts.len(), 3);
+    assert_eq!(
+        store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        f.pull(&grant)["message"],
+        Value::Null,
+        "uncertain native intent cannot be resent or overtaken"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_traversal_isolates_routes_and_foreground_drain_across_restart() {
+    use af_contracts::task::wake::delivery::WakeDeliveryStateV1;
+    use af_contracts::task::wake::{WAKE_SUBSCRIPTION_V1, WakeBoundaryV1, WakeSubscriptionV1};
+    use af_store::store::wake::{CatchUp, WakeRegistration, configuration_digest};
+    let f = WakePiFixture::new();
+    let grants = [
+        f.owner.join("route-one.json"),
+        f.owner.join("route-two.json"),
+    ];
+    let sessions = ["original-one", "original-two"];
+    let mut store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let routes: Vec<_> = grants
+        .iter()
+        .zip(sessions)
+        .map(|(grant, session)| {
+            let granted = document(
+                &f.grant_session(&f.state, grant, session).output().unwrap(),
+                0,
+                None,
+            );
+            store
+                .wake_route(granted["route_id"].as_str().unwrap(), clock)
+                .unwrap()
+        })
+        .collect();
+    assert_ne!(routes[0].route_id, routes[1].route_id);
+    // Pick registration keys by their actual public-writer-derived IDs: A < B < C.
+    // Route one owns A,B, route two owns C; B commits its packet first.
+    let mut keys: Vec<_> = (0..3)
+        .map(|n| af_store::content_id(&serde_json::json!({"key":n})).unwrap())
+        .collect();
+    keys.sort_by_cached_key(|key| {
+        af_store::content_id(&serde_json::json!({
+            "domain":"af/wake-subscription/1", "store":routes[0].task.store_incarnation,"key":key,
+        }))
+        .unwrap()
+    });
+    let register = |route: &af_contracts::task::wake::delivery::WakeRouteV1, key: &str| {
+        let mut subscription = WakeSubscriptionV1 {
+            schema: WAKE_SUBSCRIPTION_V1.into(),
+            subscription_id: key.into(),
+            registration_key: key.into(),
+            configuration_digest: key.into(),
+            task: route.task.clone(),
+            recipient_ref: route.route_id.clone(),
+            registered_unix_ms: clock,
+            expires_unix_ms: route.expires_unix_ms,
+            max_observations: 128,
+        };
+        subscription.configuration_digest = configuration_digest(&subscription).unwrap();
+        let projection = store.task_projection(&cas, "gc-older").unwrap().unwrap();
+        let prefix = store
+            .replay_window(
+                &subscription.task.task_run_id,
+                projection.next_sequence - 1,
+                1,
+            )
+            .unwrap()
+            .remove(0);
+        store
+            .register_wake(
+                &cas,
+                &WakeRegistration {
+                    schema: "af/task-wake-registration@1".into(),
+                    subscription,
+                    policy: CatchUp::FromOpening,
+                    registered_prefix: WakeBoundaryV1 {
+                        sequence: prefix.sequence,
+                        event_id: prefix.event_id,
+                    },
+                    launch_intent: false,
+                },
+            )
+            .unwrap()
+    };
+    let b = register(&routes[0], &keys[1]);
+    f.finish();
+    let observed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert!(
+        af_runtime::wake::journal::reconcile(
+            &store,
+            &cas,
+            &b.subscription.subscription_id,
+            observed
+        )
+        .unwrap()
+    );
+    let earlier = store
+        .inspect_wake(&b.subscription.subscription_id)
+        .unwrap()
+        .envelopes
+        .remove(0);
+    let claim = store.claim_wake(&earlier, observed).unwrap().unwrap();
+    store.backoff_wake(&claim, observed).unwrap();
+    let mut record = store.wake_deliveries().unwrap().remove(0);
+    // Freeze only the persisted due time, avoiding a wall-clock race during process startup.
+    let save_deadline = |record: &af_contracts::task::wake::delivery::WakeDeliveryV1| {
+        rusqlite::Connection::open(f.state.join("events.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(record).unwrap(),
+                    record.envelope.delivery_id
+                ],
+            )
+            .unwrap();
+    };
+    record.next_attempt_unix_ms = earlier.expires_unix_ms;
+    save_deadline(&record);
+    let a = register(&routes[0], &keys[0]);
+    let c = register(&routes[1], &keys[2]);
+    assert!(a.subscription.subscription_id < b.subscription.subscription_id);
+    assert!(b.subscription.subscription_id < c.subscription.subscription_id);
+    drop(store);
+    // Every poll is a fresh, authenticated CLI process. Alternating scopes used to select
+    // A,C,A,C forever, leaving B's earlier unclaimed packet stranded behind backoff.
+    let mut other_packets = Vec::new();
+    for _ in 0..2 {
+        assert_eq!(
+            f.pull_session(&grants[0], sessions[0])["message"],
+            Value::Null
+        );
+        let packet = f.pull_session(&grants[1], sessions[1]);
+        assert_eq!(packet["session"], sessions[1]);
+        if packet["delivery_id"].is_string() {
+            other_packets.push(packet["delivery_id"].clone());
+        }
+    }
+    assert_eq!(
+        other_packets.len(),
+        1,
+        "the other original session progresses independently"
+    );
+    store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let retained = store.wake_deliveries().unwrap();
+    assert!(retained.iter().any(
+        |r| r.envelope.subscription_id == a.subscription.subscription_id
+            && r.state == WakeDeliveryStateV1::InboxAccepted
+    ));
+    assert_eq!(
+        retained
+            .iter()
+            .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+            .unwrap()
+            .attempts,
+        1
+    );
+    // A competing foreground visit starts at A, but cannot reset either route's position.
+    document(
+        &f.wake(&f.state, &["drain", "--max-batches", "1"])
+            .output()
+            .unwrap(),
+        0,
+        None,
+    );
+    let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+    let selected: String = db
+        .query_row(
+            "SELECT subscription_id FROM wake_route_traversal_v1 WHERE route_id=?1",
+            [&routes[0].route_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected, b.subscription.subscription_id);
+    drop(db);
+    // Leave the other scope as the last visitor before B becomes due. With the old
+    // shared cursor this restores after=C and the A,C starvation, even after a drain.
+    assert_eq!(
+        f.pull_session(&grants[1], sessions[1])["message"],
+        Value::Null
+    );
+    record.next_attempt_unix_ms = 0;
+    save_deadline(&record);
+    drop(store);
+    // Restart and alternate again, with no further drain: a complete two-visit route-local
+    // cycle must transport B and admit exactly its earlier packet before A.
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        let packet = f.pull_session(&grants[0], sessions[0]);
+        assert_eq!(packet["session"], sessions[0]);
+        if packet["delivery_id"].is_string() {
+            delivered.push(packet["delivery_id"].clone());
+        }
+        assert_eq!(
+            f.pull_session(&grants[1], sessions[1])["message"],
+            Value::Null
+        );
+    }
+    assert_eq!(delivered, vec![Value::String(earlier.delivery_id.clone())]);
+    store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let retained = store.wake_deliveries().unwrap();
+    let earlier_record = retained
+        .iter()
+        .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+        .unwrap();
+    assert_eq!(earlier_record.attempts, 2);
+    assert_eq!(earlier_record.receipts.len(), 3);
+    assert_eq!(earlier_record.state, WakeDeliveryStateV1::AdmissionUnknown);
+    assert_eq!(
+        store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+        2
+    );
+    for (grant, session) in grants.iter().zip(sessions) {
+        assert_eq!(
+            f.pull_session(grant, session)["message"],
+            Value::Null,
+            "neither session may resend or overtake its retained uncertain intent"
+        );
+    }
+}
+
 fn af(repo: &Path, state: &Path, args: &[&str]) -> Output {
     crate::common::af()
         .current_dir(repo)

@@ -184,17 +184,64 @@ fn session_store(create: bool) -> Result<EventStore, String> {
             .strip_prefix("sha256:")
             .ok_or("Invalid machine wake identity")?,
     );
-    if create {
+    let store = if create {
         crate::storage::owned::prepare(&path, false)?;
         Cas::open(path.join("cas")).map_err(err)?;
         let store = EventStore::open(path.join("events.sqlite")).map_err(err)?;
         store.admit_wake_incarnation().map_err(err)?;
-        Ok(store)
+        store
     } else {
         let store = EventStore::open_read_only(path.join("events.sqlite")).map_err(err)?;
         store.wake_incarnation().map_err(err)?;
-        Ok(store)
+        store
+    };
+    // SQLite FULL persists rows, not the Store's directory ancestry. Existence is not
+    // durability: retry the complete publication chain even after an interrupted grant,
+    // and before using a preexisting route. No binding or usable route escapes this barrier.
+    private(&path, true)?;
+    publish_session_store(&path)?;
+    Ok(store)
+}
+fn publish_session_store(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let objects = path.join("cas/objects");
+    private(&objects, true)?;
+    for directory in objects.ancestors() {
+        let sync = || -> Result<(), String> {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_DIRECTORY | nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+                .open(directory)
+                .map_err(err)?;
+            // Debug fixtures can fail any particular barrier, including a preexisting
+            // ancestor. Release builds expose neither failure nor recording controls.
+            #[cfg(debug_assertions)]
+            if std::env::var_os("AF_TEST_WAKE_FAIL_DIRECTORY_SYNC").as_deref()
+                == Some(directory.as_os_str())
+            {
+                return Err("injected machine wake directory sync failure".into());
+            }
+            nix::unistd::fsync(&file).map_err(err)?;
+            #[cfg(debug_assertions)]
+            if let Some(record) = std::env::var_os("AF_TEST_WAKE_DIRECTORY_SYNCS") {
+                let mut file = af_store::local_fs::private_file_options()
+                    .append(true)
+                    .create(true)
+                    .custom_flags(nix::libc::O_NOFOLLOW)
+                    .open(record)
+                    .map_err(err)?;
+                writeln!(file, "{}", directory.display()).map_err(err)?;
+            }
+            Ok(())
+        };
+        sync().map_err(|e| {
+            format!(
+                "syncing machine wake directory {}: {e}",
+                directory.display()
+            )
+        })?;
     }
+    Ok(())
 }
 fn check_session_store(route: &WakeRouteV1) -> Result<(), String> {
     session_store(false)?
@@ -779,20 +826,22 @@ pub(crate) fn execute(
                 return Err("Wrong Pi receiver peer".into());
             }
             // The explicitly attached host hook is also a bounded observation driver:
-            // one registered source page and one local transport per poll. It therefore
-            // catches completion while the coordinator has stopped observing the Task.
-            if let Some(r) = store
-                .wake_registrations()
-                .map_err(err)?
-                .into_iter()
-                .find(|r| r.subscription.recipient_ref == route.route_id)
-            {
+            // one registered source page and one local transport per poll. Persist the
+            // visit across all registrations on this route, including caught-up sources
+            // and packets in backoff. Restart cannot strand an earlier unclaimed packet
+            // behind a later registration whose ID sorts first. Native order is unchanged.
+            let registrations = store.wake_registrations().map_err(err)?;
+            if let Some(id) = store.next_wake_pi_target(&route, now()).map_err(err)? {
+                let r = registrations
+                    .iter()
+                    .find(|r| r.subscription.subscription_id == id)
+                    .ok_or("Unknown Pi extraction target")?;
                 let journal = store
                     .inspect_wake(&r.subscription.subscription_id)
                     .map_err(err)?;
                 if journal.closure.is_none() && !journal.expired {
                     if journal.source_available {
-                        reconcile_registered(&store, &cas, &state, &r)?;
+                        reconcile_registered(&store, &cas, &state, r)?;
                     }
                     for packet in store
                         .inspect_wake(&r.subscription.subscription_id)

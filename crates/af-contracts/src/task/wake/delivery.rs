@@ -210,3 +210,26 @@ impl WakeTraversalV1 {
     }
 }
 wake_contract!(WakeTraversalV1);
+
+/// One authenticated Pi route owns this bounded visit position independently of other
+/// routes and foreground draining. Expiry and maintenance remove scheduling hints only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeRouteTraversalV1 {
+    pub schema: String,
+    pub route_id: String,
+    pub extraction_after: String,
+    pub expires_unix_ms: u64,
+}
+impl WakeRouteTraversalV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.schema == "af/task-wake-route-traversal@1"
+                && is_digest(&self.route_id)
+                && is_digest(&self.extraction_after)
+                && positive(self.expires_unix_ms),
+            "Invalid wake route traversal version, scope or position",
+        )
+    }
+}
+wake_contract!(WakeRouteTraversalV1);

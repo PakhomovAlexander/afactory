@@ -33,3 +33,10 @@ but cannot permanently starve later targets across restarts. Positions grant no 
 authority. Pi attachment generations invalidate outstanding callbacks on disconnect, shutdown and
 replacement; a stale callback leaves committed native intent uncertain. See the proposed
 [fair progress and attachment decision](../adr/2026-11-13-fence-wake-attachments-and-persist-fair-drain-progress.md).
+
+Authenticated Pi polling now owns a separate `af/task-wake-route-traversal@1` row per route,
+independent from the foreground positions and every other Pi route. The Store derives the complete
+bounded registration set for that route, checks its exact authority and retained selected ID, and
+commits the next visit before work. Rows count toward existing capacity and expire with the route;
+maintenance removes revoked or compacted hints without changing receipts or uncertainty. See the
+[route isolation decision](../adr/2026-11-14-isolate-pi-wake-route-traversal.md).
