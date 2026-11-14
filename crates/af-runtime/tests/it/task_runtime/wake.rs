@@ -2157,6 +2157,201 @@ fn wake_native_order_includes_unclaimed_outbox_across_subscriptions_and_restart(
     );
 }
 
+#[cfg(target_os = "linux")]
+fn native_order_route_fixture() -> (
+    Fixture,
+    [af_contracts::task::wake::delivery::WakeRouteV1; 2],
+    [WakeEnvelopeV1; 2],
+    u64,
+) {
+    use af_store::store::wake::delivery::{route_identity, session_key};
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "wake-writer", 60000)
+        .unwrap();
+    let (first_route, first) = receiver_registration(&f);
+    let mut later_route = first_route.clone();
+    later_route.installation_id = digest('f');
+    later_route.expires_unix_ms += 1000;
+    later_route.route_id = route_identity(&later_route).unwrap();
+    assert_eq!(
+        session_key(&first_route).unwrap(),
+        session_key(&later_route).unwrap()
+    );
+    f.store.install_wake_route(&later_route).unwrap();
+    let mut second = first.clone();
+    second.subscription.registration_key = digest('9');
+    second.subscription.recipient_ref = later_route.route_id.clone();
+    second.subscription.expires_unix_ms = later_route.expires_unix_ms;
+    second.subscription.configuration_digest =
+        af_runtime::wake::configuration_digest(&second.subscription).unwrap();
+    let second = f.store.register_wake(&f.cas, &second).unwrap();
+    f.store
+        .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
+        .unwrap();
+    let clock = stamp(&f);
+    let packets = [first, second].map(|registration| {
+        let id = &registration.subscription.subscription_id;
+        assert!(af_runtime::wake::journal::reconcile(&f.store, &f.cas, id, clock).unwrap());
+        let mut packets = f.store.inspect_wake(id).unwrap().envelopes;
+        assert_eq!(packets.len(), 1);
+        packets.remove(0)
+    });
+    // B has an accepted receiver row while the earlier committed A remains unclaimed.
+    let claim = f.store.claim_wake(&packets[1], clock).unwrap().unwrap();
+    f.store.accept_wake(&claim, clock).unwrap();
+    (f, [first_route, later_route], packets, clock)
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_native_order_invalid_earlier_route_refuses_without_fencing_later_packet_after_restart() {
+    use af_contracts::task::wake::delivery::WakeDeliveryStateV1;
+    for fault in [
+        "malformed",
+        "missing",
+        "substituted",
+        "identity_mismatch",
+        "database_type",
+        "malformed_revoked",
+        "substituted_revoked",
+        "malformed_expired",
+    ] {
+        let (mut f, [first, later], packets, clock) = native_order_route_fixture();
+        let path = f._directory.path().join("events.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        match fault {
+            "missing" => {
+                db.execute("DELETE FROM wake_routes_v1 WHERE id=?1", [&first.route_id])
+                    .unwrap();
+            }
+            "database_type" => {
+                db.execute(
+                    "UPDATE wake_routes_v1 SET route=X'00' WHERE id=?1",
+                    [&first.route_id],
+                )
+                .unwrap();
+            }
+            _ => {
+                let text = match fault {
+                    "substituted" | "substituted_revoked" => serde_json::to_string(&later).unwrap(),
+                    "identity_mismatch" => {
+                        let mut corrupt = first.clone();
+                        corrupt.session = "substituted-session".into();
+                        serde_json::to_string(&corrupt).unwrap()
+                    }
+                    _ => "{".into(),
+                };
+                db.execute(
+                    "UPDATE wake_routes_v1 SET route=?1,revoked=?2 WHERE id=?3",
+                    rusqlite::params![text, fault.ends_with("_revoked"), first.route_id],
+                )
+                .unwrap();
+            }
+        }
+        let check_at = if fault == "malformed_expired" {
+            first.expires_unix_ms
+        } else {
+            clock
+        };
+        let before = serde_json::to_value(f.store.wake_deliveries().unwrap()).unwrap();
+        for restarted in [false, true] {
+            if restarted {
+                f.store = EventStore::open(&path).unwrap();
+            }
+            assert!(f.store.wake_route(&first.route_id, check_at).is_err());
+            assert!(f.store.wake_route(&later.route_id, check_at).is_ok());
+            assert!(
+                f.store.reserve_wake_native(&later, check_at).is_err(),
+                "{fault}, restarted={restarted}: invalid A must prevent B's endpoint reservation"
+            );
+            assert!(
+                f.store.take_wake_native(&later, check_at).is_err(),
+                "{fault}, restarted={restarted}: invalid A must prevent B's native admission"
+            );
+            assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
+            assert_eq!(
+                serde_json::to_value(f.store.wake_deliveries().unwrap()).unwrap(),
+                before,
+                "refusal must leave attempts, deadlines and inbox receipts unchanged"
+            );
+        }
+        // Repair the original row: no later fence was created to strand A permanently.
+        db.execute(
+            "INSERT OR REPLACE INTO wake_routes_v1(id,route,revoked,expires) VALUES(?1,?2,0,?3)",
+            rusqlite::params![
+                first.route_id,
+                serde_json::to_string(&first).unwrap(),
+                i64::try_from(first.expires_unix_ms).unwrap()
+            ],
+        )
+        .unwrap();
+        f.store = EventStore::open(&path).unwrap();
+        let claim = f.store.claim_wake(&packets[0], clock).unwrap().unwrap();
+        f.store.accept_wake(&claim, clock).unwrap();
+        let admitted = f.store.take_wake_native(&first, clock).unwrap().unwrap();
+        assert_eq!(admitted.envelope, packets[0]);
+        assert_eq!(admitted.state, WakeDeliveryStateV1::AdmissionUnknown);
+        assert!(f.store.take_wake_native(&later, clock).unwrap().is_none());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_native_order_skips_valid_expired_or_revoked_routes_after_restart() {
+    use af_contracts::task::wake::delivery::{WakeDeliveryStateV1, WakeGrantV1};
+    for expired in [false, true] {
+        let (mut f, [first, later], packets, clock) = native_order_route_fixture();
+        let check_at = if expired {
+            first.expires_unix_ms
+        } else {
+            f.store
+                .revoke_wake_route(
+                    &WakeGrantV1 {
+                        schema: "af/task-wake-grant@1".into(),
+                        route_id: first.route_id.clone(),
+                        capability: digest('c'),
+                    },
+                    clock,
+                )
+                .unwrap();
+            clock
+        };
+        f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+        assert!(f.store.wake_route(&first.route_id, check_at).is_err());
+        let reservation = f
+            .store
+            .reserve_wake_native(&later, check_at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reservation.envelope, packets[1]);
+        f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+        let admitted = f
+            .store
+            .take_reserved_wake_native(&later, &reservation, check_at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(admitted.envelope, packets[1]);
+        assert_eq!(admitted.state, WakeDeliveryStateV1::AdmissionUnknown);
+        assert_eq!(
+            f.store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            f.store
+                .take_wake_native(&later, check_at)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn wake_native_preflight_reservation_is_atomic_fenced_and_bounded_across_restart() {

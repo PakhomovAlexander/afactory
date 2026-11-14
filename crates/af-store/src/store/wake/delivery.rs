@@ -8,6 +8,7 @@ pub const CLAIM_MS: u64 = 30_000;
 fn hash(value: &impl Serialize) -> Result<String, StoreError> {
     content_id(&serde_json::to_value(value)?).map_err(|e| refusal(&e.to_string()))
 }
+
 pub fn route_identity(route: &WakeRouteV1) -> Result<String, StoreError> {
     let mut value = serde_json::to_value(route)?;
     value
@@ -184,6 +185,12 @@ impl EventStore {
         Ok(())
     }
     pub fn wake_route(&self, id: &str, now: u64) -> Result<WakeRouteV1, StoreError> {
+        self.eligible_wake_route(id, now)?
+            .ok_or_else(|| refusal("Wake route revoked or expired"))
+    }
+    /// Only a validated route can prove expiry or revocation. Missing, corrupt or
+    /// substituted authority must stop native ordering, even if marked revoked/expired.
+    fn eligible_wake_route(&self, id: &str, now: u64) -> Result<Option<WakeRouteV1>, StoreError> {
         self.wake_incarnation()?;
         let (text, revoked): (String, bool) = self.conn.query_row(
             "SELECT route,revoked FROM wake_routes_v1 WHERE id=?1",
@@ -195,15 +202,13 @@ impl EventStore {
         }
         let route: WakeRouteV1 = serde_json::from_str(&text)?;
         route.validate().map_err(|e| refusal(&e))?;
-        if revoked
-            || route.route_id != id
+        if route.route_id != id
             || route_identity(&route)? != id
             || route.task.store_incarnation != self.wake_incarnation()?
-            || now >= route.expires_unix_ms
         {
-            return Err(refusal("Wake route revoked, expired or substituted"));
+            return Err(refusal("Wake route substituted or Store mismatch"));
         }
-        Ok(route)
+        Ok((!revoked && now < route.expires_unix_ms).then_some(route))
     }
     pub fn authenticate_wake_grant(
         &self,
@@ -434,9 +439,10 @@ impl EventStore {
             {
                 return Err(refusal("Conflicting outbox identity"));
             }
-            let other = match self.wake_route(&registration.subscription.recipient_ref, now) {
-                Ok(r) => r,
-                Err(_) => continue,
+            let Some(other) =
+                self.eligible_wake_route(&registration.subscription.recipient_ref, now)?
+            else {
+                continue;
             };
             if session_key(&other)? != key || envelope.expires_unix_ms <= now {
                 continue;
@@ -701,5 +707,81 @@ impl EventStore {
             row["source_available"] = json!(self.task_tombstone(task_id)?.is_none());
         }
         Ok(json!(rows))
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_route_eligibility_validates_store_before_expiry_or_revocation() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::local_fs::narrow_owned_dir(directory.path()).unwrap();
+        let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let incarnation = store.admit_wake_incarnation().unwrap();
+        let digest = hash(&json!("fixture")).unwrap();
+        let now = task::now().unwrap();
+        let mut route = WakeRouteV1 {
+            schema: "af/task-wake-route@1".into(),
+            route_id: digest.clone(),
+            installation_id: digest.clone(),
+            capability_digest: digest.clone(),
+            task: WakeTaskV1 {
+                store_incarnation: incarnation,
+                task_id: "wake-route-test".into(),
+                task_run_id: task::task_run_id("wake-route-test").unwrap(),
+                opening_event_id: "a".repeat(26),
+            },
+            host: WakeHostV1::Pi,
+            session: "original-session".into(),
+            mode: "follow_up".into(),
+            expires_unix_ms: now + 60_000,
+            installation: WakeInstallationV1 {
+                executable: "/owner/node".into(),
+                executable_digest: digest.clone(),
+                extension: Some("/owner/pi.ts".into()),
+                extension_digest: Some(digest.clone()),
+                socket: None,
+                socket_device: None,
+                socket_inode: None,
+            },
+        };
+        route.route_id = route_identity(&route).unwrap();
+        store.install_wake_route(&route).unwrap();
+        assert_eq!(
+            store.eligible_wake_route(&route.route_id, now).unwrap(),
+            Some(route.clone())
+        );
+        assert!(
+            store
+                .eligible_wake_route(&route.route_id, route.expires_unix_ms)
+                .unwrap()
+                .is_none()
+        );
+        // A self-consistent foreign Store identity is corrupt authority, even with
+        // a valid hash and a persisted revoked flag or an elapsed expiry deadline.
+        route.task.store_incarnation = digest;
+        route.route_id = route_identity(&route).unwrap();
+        for revoked in [false, true] {
+            store
+                .conn
+                .execute(
+                    "INSERT OR REPLACE INTO wake_routes_v1 VALUES(?1,?2,?3,?4)",
+                    params![
+                        route.route_id,
+                        serde_json::to_string(&route).unwrap(),
+                        revoked,
+                        sql_number(route.expires_unix_ms).unwrap()
+                    ],
+                )
+                .unwrap();
+            for check_at in [now, route.expires_unix_ms] {
+                assert!(matches!(
+                    store.eligible_wake_route(&route.route_id, check_at),
+                    Err(StoreError::Conflict(_))
+                ));
+            }
+        }
     }
 }
