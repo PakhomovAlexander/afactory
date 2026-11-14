@@ -633,6 +633,10 @@ impl WakePiFixture {
         self.pull_session(grant, "original")
     }
     fn pull_session(&self, grant: &Path, session: &str) -> Value {
+        let output = self.pull_command(grant, session).output().unwrap();
+        document(&output, 0, Some("task-wake-pi-next-v1.json"))
+    }
+    fn pull_command(&self, grant: &Path, session: &str) -> Command {
         let mut host = Command::new(&self.binary);
         for (name, value) in crate::common::af().get_envs() {
             if let Some(value) = value {
@@ -640,10 +644,10 @@ impl WakePiFixture {
             }
         }
         // Keep the actual pinned interpreter as the child's authenticated parent.
-        let output = host.current_dir(&self.repo).env("XDG_STATE_HOME", &self.machine)
+        host.current_dir(&self.repo).env("XDG_STATE_HOME", &self.machine)
             .args(["-c", "\"$1\" task wake --state \"$2\" pi-next --route \"$3\" --session \"$4\"; result=$?; exit $result", "recording-pi"])
-            .arg(crate::common::af_binary()).arg(&self.state).arg(grant).arg(session).output().unwrap();
-        document(&output, 0, Some("task-wake-pi-next-v1.json"))
+            .arg(crate::common::af_binary()).arg(&self.state).arg(grant).arg(session);
+        host
     }
     fn finish(&self) {
         expect(
@@ -655,6 +659,78 @@ impl WakePiFixture {
             0,
         );
     }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_selects_first_registration_committed_during_poll() {
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+    let barriers = f.owner.join("selection-barriers");
+    let point = barriers.join("wake-pi-selection-1");
+    std::fs::create_dir_all(&point).unwrap();
+    let child = f
+        .pull_command(&grant, "original")
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = task_interrupt::ChildGuard(Some(child));
+    await_observation_read(&mut child, &point.join("ready"));
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    assert!(store.wake_registrations().unwrap().is_empty());
+    // A real public writer commits the first registration after the authenticated poll
+    // starts, immediately before its serialized route selection. No timing decides order.
+    let registration = document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        Some("task-wake-registration-v1.json"),
+    );
+    assert_eq!(store.wake_registrations().unwrap().len(), 1);
+    std::fs::write(point.join("proceed"), []).unwrap();
+    let output = child.0.take().unwrap().wait_with_output().unwrap();
+    // The extension keeps polling only on successful, well-formed responses. A planned
+    // Task has no completion yet; the newly reserved registration is nevertheless usable.
+    let packet = document(&output, 0, Some("task-wake-pi-next-v1.json"));
+    assert_eq!(packet["message"], Value::Null);
+    assert_eq!(packet["session"], "original");
+    assert!(
+        store
+            .inspect_wake(
+                registration["subscription"]["subscription_id"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap()
+            .extracted_through
+            .is_some(),
+        "the poll must reconcile the registration selected by its transaction"
+    );
+    // Fresh authenticated host processes continue polling without a reconnect repair or
+    // a foreground drain. Completion must be extracted and returned exactly once.
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    f.finish();
+    let packet = f.pull(&grant);
+    assert!(
+        packet["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("AF Task wake metadata. Task: gc-older;")
+    );
+    let delivery = store.wake_deliveries().unwrap().remove(0);
+    assert_eq!(packet["delivery_id"], delivery.envelope.delivery_id);
+    assert_eq!(
+        delivery.envelope.observation.kind,
+        af_contracts::task::wake::WakeKindV1::Completed
+    );
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
 }
 
 #[test]

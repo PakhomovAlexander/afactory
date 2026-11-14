@@ -3,7 +3,7 @@ use super::*;
 use af_contracts::task::wake::delivery::{
     WakeHostV1, WakeRouteTraversalV1, WakeRouteV1, WakeTraversalV1,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy)]
 pub enum WakeTraversalStage {
@@ -15,11 +15,13 @@ impl EventStore {
     /// Reserve one visit over the complete registration set of this exact admitted Pi route.
     /// The scope is fixed by Store authority, never by a caller-provided candidate subset.
     /// Route-local polls and foreground drains therefore cannot reset each other's progress.
+    /// Return the registration read in this transaction so concurrent registration cannot
+    /// leave the caller resolving a newly reserved ID against an older registration list.
     pub fn next_wake_pi_target(
         &self,
         route: &WakeRouteV1,
         now: u64,
-    ) -> Result<Option<String>, StoreError> {
+    ) -> Result<Option<WakeRegistration>, StoreError> {
         self.wake_incarnation()?;
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -29,14 +31,14 @@ impl EventStore {
             return Err(refusal("Wrong Pi traversal route"));
         }
         let registrations = self.wake_registrations()?;
-        let mut candidates = BTreeSet::new();
-        for registration in &registrations {
+        let mut candidates = BTreeMap::new();
+        for registration in registrations {
             let sub = &registration.subscription;
             if sub.recipient_ref == route.route_id {
                 if sub.task != route.task {
                     return Err(refusal("Wrong Pi traversal subscription scope"));
                 }
-                candidates.insert(sub.subscription_id.clone());
+                candidates.insert(sub.subscription_id.clone(), registration);
             }
         }
         let retained: Option<(String, u64, String)> = tx.query_row(
@@ -54,7 +56,7 @@ impl EventStore {
                 || value.extraction_after != id
                 || value.expires_unix_ms != expires
                 || expires != route.expires_unix_ms
-                || !candidates.contains(&id)
+                || !candidates.contains_key(&id)
             {
                 return Err(refusal("Wake route traversal scope mismatch"));
             }
@@ -64,10 +66,11 @@ impl EventStore {
         };
         let next = candidates
             .iter()
-            .find(|id| after.as_ref().is_none_or(|last| *id > last))
-            .or_else(|| candidates.first())
-            .cloned();
-        if let Some(id) = &next {
+            .find(|(id, _)| after.as_ref().is_none_or(|last| *id > last))
+            .or_else(|| candidates.first_key_value())
+            .map(|(_, registration)| registration.clone());
+        if let Some(registration) = &next {
+            let id = &registration.subscription.subscription_id;
             let value = WakeRouteTraversalV1 {
                 schema: "af/task-wake-route-traversal@1".into(),
                 route_id: route.route_id.clone(),

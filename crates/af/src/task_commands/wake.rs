@@ -830,18 +830,15 @@ pub(crate) fn execute(
             // visit across all registrations on this route, including caught-up sources
             // and packets in backoff. Restart cannot strand an earlier unclaimed packet
             // behind a later registration whose ID sorts first. Native order is unchanged.
-            let registrations = store.wake_registrations().map_err(err)?;
-            if let Some(id) = store.next_wake_pi_target(&route, now()).map_err(err)? {
-                let r = registrations
-                    .iter()
-                    .find(|r| r.subscription.subscription_id == id)
-                    .ok_or("Unknown Pi extraction target")?;
+            #[cfg(debug_assertions)]
+            runs::observation_barrier("wake-pi-selection")?;
+            if let Some(r) = store.next_wake_pi_target(&route, now()).map_err(err)? {
                 let journal = store
                     .inspect_wake(&r.subscription.subscription_id)
                     .map_err(err)?;
                 if journal.closure.is_none() && !journal.expired {
                     if journal.source_available {
-                        reconcile_registered(&store, &cas, &state, r)?;
+                        reconcile_registered(&store, &cas, &state, &r)?;
                     }
                     for packet in store
                         .inspect_wake(&r.subscription.subscription_id)

@@ -2032,7 +2032,7 @@ fn wake_pi_route_traversal_scope_expiry_compaction_and_corruption_fail_closed() 
     let clock = registration.subscription.registered_unix_ms;
     assert_eq!(
         f.store.next_wake_pi_target(&route, clock).unwrap(),
-        Some(registration.subscription.subscription_id.clone())
+        Some(registration.clone())
     );
     let db = rusqlite::Connection::open(f._directory.path().join("events.sqlite")).unwrap();
     let original: String = db
@@ -2119,7 +2119,7 @@ fn wake_pi_route_traversal_scope_expiry_compaction_and_corruption_fail_closed() 
     let second = f.store.register_wake(&f.cas, &second).unwrap();
     assert_eq!(
         f.store.next_wake_pi_target(&replacement, clock).unwrap(),
-        Some(second.subscription.subscription_id)
+        Some(second)
     );
     f.store.maintain_wakes(replacement.expires_unix_ms).unwrap();
     f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
