@@ -1,0 +1,1 @@
+- Cover release-note boundaries after the move to `./dev release`, preserving new change notes even in the previous release second.
