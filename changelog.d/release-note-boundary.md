@@ -1,0 +1,1 @@
+- Exclude pull requests already included in the previous release from generated release notes.
