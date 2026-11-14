@@ -382,15 +382,38 @@ class FirstPublish(Night):
             github_rest.GitHub(REPO, None, send=self.github.send).release_by_tag(TAG)
 
     def test_authenticated_writes_never_use_environment_proxies(self):
-        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:8080",
-                                          "https_proxy": "http://proxy.invalid:8080"}):
-            proxies = [handler for handler in github_rest._OPENER.handlers
+        transport_path = os.path.join(ROOT, "scripts", "nightly", "github_rest.py")
+        with open(transport_path, encoding="utf-8") as stream:
+            source = stream.read()
+        explicit_handler = "urllib.request.ProxyHandler({}), "
+        self.assertEqual(source.count(explicit_handler), 1)
+
+        def check_transport(transport_source):
+            spec = importlib.util.spec_from_file_location("isolated_github_rest", transport_path)
+            transport = importlib.util.module_from_spec(spec)
+            exec(compile(transport_source, transport_path, "exec"), transport.__dict__)
+            proxies = [handler for handler in transport._OPENER.handlers
                        if isinstance(handler, urllib.request.ProxyHandler)]
-            # Some Python versions omit a default ProxyHandler whose map is empty; others
-            # retain it. Either shape proves no environment-derived proxy is installed.
-            self.assertTrue(all(handler.proxies == {} for handler in proxies))
-            self.assertIs(publish.https_send, github_rest.https_send)
-            self.assertIs(publish.Telegram(BOT_TOKEN, "1").send, github_rest.https_send)
+            # An empty proxy handler may be omitted by build_opener on some Python versions.
+            self.assertTrue(all(handler.proxies == {} for handler in proxies),
+                            "environment proxy installed in writer opener")
+            with mock.patch.dict(sys.modules, {"github_rest": transport}):
+                spec = importlib.util.spec_from_file_location("isolated_publish", PUBLISH)
+                publisher = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(publisher)
+            self.assertIs(publisher.https_send, transport.https_send)
+            self.assertIs(publisher.GitHub(REPO, WRITE_TOKEN).send, transport.https_send)
+            self.assertIs(publisher.Telegram(BOT_TOKEN, "1").send, transport.https_send)
+            self.assertIs(transport.https_send.__globals__["_OPENER"], transport._OPENER)
+
+        # Construct both transports under the same hostile environment, without opening URLs.
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:8080",
+                                          "https_proxy": "http://proxy.invalid:8080"}, clear=True), \
+                mock.patch.object(sys, "path", list(sys.path)):
+            check_transport(source)
+            # Removing the explicit handler must make this exact regression fail.
+            with self.assertRaisesRegex(AssertionError, "environment proxy installed"):
+                check_transport(source.replace(explicit_handler, "", 1))
 
     def test_a_tag_already_naming_another_commit_refuses_before_any_write(self):
         self.build()

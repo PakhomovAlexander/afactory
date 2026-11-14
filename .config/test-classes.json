@@ -6,7 +6,8 @@
     "test-af-pin.py",
     "test-changelog-notes.py",
     "test-gate-owner.py",
-    "test-test-quarantine.py"
+    "test-test-quarantine.py",
+    "test-dev-release.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -366,7 +367,8 @@
     "test-workspace-fixtures.py": "functional",
     "test-workspace-fixture-benchmark.py": "perf",
     "test-scenario-merge-watch.py": "e2e",
-    "test-task-wake-probe.py": "functional"
+    "test-task-wake-probe.py": "functional",
+    "test-dev-release.py": "e2e"
   },
   "utilities": [
     "test-classes.py",

@@ -87,8 +87,6 @@ DRAIN_CLOCK = 'CLOCK_MONOTONIC'
 # two source trees with the same release may accept different formats.
 CURRENT_CONTRACT = 'native-task-review@1'
 CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'
-# Explicit release preparation guard; measurement capability still requires schema and planner admission.
-CURRENT_RELEASES = ('0.15.1-rc.1', '0.15.1-rc.2', '0.15.1-rc.3')
 CONTRACT_SCHEMAS = (
     'pipeline-definition-v6.json', 'compiled-task-v6.json', 'task-kind-v3.json',
     'task-check-receipt-v2.json', 'task-review-subject-v3.json',
