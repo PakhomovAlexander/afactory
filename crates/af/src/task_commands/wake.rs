@@ -494,16 +494,21 @@ fn recorder_snapshot(state: &Path, id: &str) -> Result<RecorderSnapshot, String>
         let Some(name) = name.to_str() else {
             return Err("Invalid recorder path".into());
         };
-        let Some(rest) = name.strip_prefix(&format!("{id}-")) else {
-            continue;
-        };
-        let Some((run, kind)) = rest.split_once('.') else {
+        // Task IDs may contain hyphens. Find the complete filename boundary before
+        // deciding whether its run number or contents belong to this Task.
+        let Some((stem, kind)) = name.split_once('.') else {
             continue;
         };
         if kind != "json" && kind != "cancel.json" {
             continue;
         }
-        if run.starts_with('0') || run.parse::<u64>().ok().is_none_or(|n| n == 0) {
+        let Some((task_id, _)) = stem.rsplit_once('-') else {
+            continue;
+        };
+        if task_id != id {
+            continue;
+        }
+        if runs::run_of(id, name).is_none() {
             return Err("Invalid wake recorder identity".into());
         }
         private(&entry.path(), false)?;
@@ -562,10 +567,12 @@ fn reconcile_registered(
     cas: &Cas,
     state: &Path,
     r: &WakeRegistration,
-) -> Result<bool, String> {
-    let snapshot = recorder_snapshot(state, &r.subscription.task.task_id)?;
-    let facts = recorder_facts(&snapshot, &r.subscription.task.task_id)?;
-    af_runtime::wake::journal::reconcile_with_run_facts(
+) -> Result<bool, af_store::StoreError> {
+    let snapshot = recorder_snapshot(state, &r.subscription.task.task_id)
+        .map_err(af_store::StoreError::Conflict)?;
+    let facts = recorder_facts(&snapshot, &r.subscription.task.task_id)
+        .map_err(af_store::StoreError::Conflict)?;
+    af_runtime::wake::journal::reconcile_with_run_facts_observed(
         store,
         cas,
         &r.subscription.subscription_id,
@@ -581,12 +588,31 @@ fn reconcile_registered(
             }
             Ok(())
         },
+        |point| {
+            #[cfg(debug_assertions)]
+            runs::observation_barrier(match point {
+                af_runtime::wake::ReconcilePoint::SourceObserved => "wake-source-observed",
+                af_runtime::wake::ReconcilePoint::BeforeCommit => "wake-before-commit",
+            })
+            .map_err(af_store::StoreError::Conflict)?;
+            let _ = point;
+            Ok(())
+        },
     )
-    .map_err(err)
 }
 fn print(value: &impl Serialize) -> Result<i32, String> {
     println!("{}", serde_json::to_string(value).map_err(err)?);
     Ok(0)
+}
+
+fn print_pi_next(
+    session: &str,
+    record: Option<&af_contracts::task::wake::delivery::WakeDeliveryV1>,
+) -> Result<i32, String> {
+    print(
+        &json!({"schema":"af/task-wake-pi-next@1","session":session,"message":record.map(|r|message(&r.envelope)),
+        "delivery_id":record.map(|r|&r.envelope.delivery_id),"admission":"unknown_if_packet_returned","turn_started":null,"reported":null}),
+    )
 }
 
 pub(crate) fn execute(
@@ -738,7 +764,7 @@ pub(crate) fn execute(
                     || journal.closure.is_some()
                     || journal.expired
                     || !journal.source_available
-                    || reconcile_registered(&store, &cas, &state, r)?
+                    || reconcile_registered(&store, &cas, &state, r).map_err(err)?
                 {
                     extraction.remove(&id);
                 }
@@ -838,7 +864,21 @@ pub(crate) fn execute(
                     .map_err(err)?;
                 if journal.closure.is_none() && !journal.expired {
                     if journal.source_available {
-                        reconcile_registered(&store, &cas, &state, &r)?;
+                        match reconcile_registered(&store, &cas, &state, &r) {
+                            Ok(_) => {}
+                            // Only known pre-native observation/CAS contention is deferred.
+                            // End this poll before transport or native intent; the attachment's
+                            // existing finite polling allowance owns any later attempt.
+                            Err(af_store::StoreError::WakeReconcileDeferred) => {
+                                if store.wake_route(&route.route_id, now()).map_err(err)? != route {
+                                    return Err("Pi wake route changed".into());
+                                }
+                                installation(&route)?;
+                                check_session_store(&route)?;
+                                return print_pi_next(&session, None);
+                            }
+                            Err(error) => return Err(err(error)),
+                        }
                     }
                     for packet in store
                         .inspect_wake(&r.subscription.subscription_id)
@@ -853,10 +893,7 @@ pub(crate) fn execute(
                 }
             }
             let record = store.take_wake_native(&route, now()).map_err(err)?;
-            print(
-                &json!({"schema":"af/task-wake-pi-next@1","session":session,"message":record.as_ref().map(|r|message(&r.envelope)),
-                "delivery_id":record.as_ref().map(|r|&r.envelope.delivery_id),"admission":"unknown_if_packet_returned","turn_started":null,"reported":null}),
-            )
+            print_pi_next(&session, record.as_ref())
         }
     }
 }
@@ -864,6 +901,48 @@ pub(crate) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wake_recorder_snapshot_selects_exact_task_before_private_bounded_validation() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("runs");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Unrelated paths must never be opened or validated as this Task's recorder.
+        for name in [
+            "build-fix-1.json",
+            "build-fix-1.cancel.json",
+            "build-1-2.json",
+        ] {
+            std::fs::write(directory.join(name), "unrelated").unwrap();
+            std::fs::set_permissions(directory.join(name), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        assert!(recorder_snapshot(root.path(), "build").unwrap().is_empty());
+        for name in [
+            "build-0.json",
+            "build-01.cancel.json",
+            "build-x.json",
+            "build-18446744073709551616.json",
+        ] {
+            std::fs::write(directory.join(name), "invalid selected number").unwrap();
+            assert!(
+                recorder_snapshot(root.path(), "build")
+                    .unwrap_err()
+                    .contains("recorder identity")
+            );
+            std::fs::remove_file(directory.join(name)).unwrap();
+        }
+        std::fs::write(directory.join("build-1.json"), "corrupt selected process").unwrap();
+        std::fs::set_permissions(
+            directory.join("build-1.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let snapshot = recorder_snapshot(root.path(), "build").unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(recorder_facts(&snapshot, "build").is_err());
+    }
 
     #[test]
     fn wake_codex_foreign_peer_refuses_even_with_an_admitted_endpoint() {

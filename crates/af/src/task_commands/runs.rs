@@ -60,7 +60,7 @@ fn alive(pid: u32) -> bool {
 
 /// The run number a file of `task_id` in `runs/` carries: `<task>-<run>.json`,
 /// `<task>-<run>.log` or `<task>-<run>.cancel.json`, and which of the three it is.
-fn run_of<'a>(task_id: &str, name: &'a str) -> Option<(u64, &'a str)> {
+pub(super) fn run_of<'a>(task_id: &str, name: &'a str) -> Option<(u64, &'a str)> {
     let rest = name.strip_prefix(task_id)?.strip_prefix('-')?;
     let (number, kind) = rest.split_once('.')?;
     if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) || number.starts_with('0') {

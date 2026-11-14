@@ -13,6 +13,13 @@ use af_store::{
 use serde_json::json;
 pub mod journal;
 
+/// Observation seams for deterministic reconciliation interleavings; no delivery authority.
+#[derive(Clone, Copy)]
+pub enum ReconcilePoint {
+    SourceObserved,
+    BeforeCommit,
+}
+
 /// A candidate extraction, requiring current-history revalidation and transactional persistence
 /// by the future reconciler. The cursor means examined history, never successful delivery.
 pub struct WakeProjection {
@@ -100,6 +107,7 @@ pub fn restore_checkpoint_with_run_facts(
             expected.observed_unix_ms,
             facts,
             Some((expected.through.sequence, expected.clock_observed)),
+            &|_| Ok(()),
         )?;
         if page.through.sequence == expected.through.sequence {
             if page.checkpoint != expected {
@@ -219,9 +227,11 @@ pub fn project_with_run_facts(
         observed_unix_ms,
         facts,
         None,
+        &|_| Ok(()),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_page(
     store: &EventStore,
     cas: &Cas,
@@ -230,6 +240,7 @@ fn project_page(
     observed_unix_ms: u64,
     facts: &[RecordedRunFacts],
     stop_at: Option<(u64, bool)>,
+    observe: &dyn Fn(ReconcilePoint) -> Result<(), StoreError>,
 ) -> Result<WakeProjection, StoreError> {
     let database = store.database_observation()?;
     let ((result, runs), reads) = cas.track_reads(|| {
@@ -246,6 +257,7 @@ fn project_page(
         })
     });
     let result = result?;
+    observe(ReconcilePoint::SourceObserved)?;
     let current = store
         .task_projection(cas, &subscription.task.task_id)?
         .ok_or_else(|| error("Wake Task disappeared"))?;
@@ -256,7 +268,17 @@ fn project_page(
         Ok(())
     })? || !store.database_observation_unchanged(&database)?
     {
-        return Err(error("Wake source changed; revalidate before committing"));
+        // Mutation, collection, invalid checkpoint and corrupt current history remain
+        // terminal. Only a valid, still-bound source observation can be deferred.
+        let retained = store.inspect_wake(&subscription.subscription_id)?;
+        if !retained.source_available
+            || retained.expired
+            || retained.closure.is_some()
+            || retained.registration.subscription != *subscription
+        {
+            return Err(error("Wake source identity changed"));
+        }
+        return Err(StoreError::WakeReconcileDeferred);
     }
     Ok(result)
 }

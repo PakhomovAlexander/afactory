@@ -27,6 +27,27 @@ pub fn reconcile_with_run_facts(
     facts: &[RecordedRunFacts],
     recorder_unchanged: impl Fn() -> Result<(), StoreError>,
 ) -> Result<bool, StoreError> {
+    reconcile_with_run_facts_observed(
+        store,
+        cas,
+        subscription_id,
+        observed_unix_ms,
+        facts,
+        recorder_unchanged,
+        |_| Ok(()),
+    )
+}
+
+/// As above, with read/commit observation seams for deterministic concurrent writers.
+pub fn reconcile_with_run_facts_observed(
+    store: &EventStore,
+    cas: &Cas,
+    subscription_id: &str,
+    observed_unix_ms: u64,
+    facts: &[RecordedRunFacts],
+    recorder_unchanged: impl Fn() -> Result<(), StoreError>,
+    observe: impl Fn(ReconcilePoint) -> Result<(), StoreError>,
+) -> Result<bool, StoreError> {
     let retained = store.inspect_wake(subscription_id)?;
     if !retained.source_available {
         return Err(error(
@@ -52,13 +73,15 @@ pub fn reconcile_with_run_facts(
     } else {
         None
     };
-    let page = project_with_run_facts(
+    let page = project_page(
         store,
         cas,
         subscription,
         cursor.as_ref(),
         observed_unix_ms,
         facts,
+        None,
+        &observe,
     )?;
     let envelopes = page
         .observations
@@ -83,6 +106,7 @@ pub fn reconcile_with_run_facts(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let checkpoint = serde_json::to_string(&page.checkpoint)?;
+    observe(ReconcilePoint::BeforeCommit)?;
     store.commit_wake_batch_with(
         cas,
         subscription_id,

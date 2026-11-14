@@ -195,3 +195,31 @@ for (const response of ['success', 'empty', 'error']) {
     assert.equal(hook.pending.length, 2);
   });
 }
+
+test('successful deferred empty polls retain the same bounded attachment until completion', async t => {
+  const hook = delayedHook(t);
+  await hook.connect();
+  const timer = [...hook.timers][0];
+  for (let poll = 0; poll < 3; poll++) {
+    hook.pending[poll](null, JSON.stringify({ ...packet, message: null, delivery_id: null }));
+    assert.deepEqual([...hook.timers], [timer]);
+    assert.equal(hook.sends.length, 0);
+    timer.tick();
+    assert.equal(hook.pending.length, poll + 2);
+  }
+  hook.pending[3](null, JSON.stringify(packet));
+  assert.equal(hook.sends.length, 1, 'completion needs no reconnect or external drain');
+  assert.equal(hook.timers.size, 0, 'native uncertainty still stops polling');
+});
+test('empty deferred polls cannot extend the finite attachment allowance', async t => {
+  const hook = delayedHook(t);
+  await hook.connect();
+  const timer = [...hook.timers][0];
+  for (let poll = 0; poll < 128; poll++) {
+    hook.pending[poll](null, JSON.stringify({ ...packet, message: null, delivery_id: null }));
+    timer.tick();
+  }
+  assert.equal(hook.pending.length, 128);
+  assert.equal(hook.timers.size, 0);
+  assert.equal(hook.sends.length, 0);
+});

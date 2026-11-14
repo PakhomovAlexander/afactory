@@ -543,12 +543,8 @@ impl EventStore {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         recorder_unchanged()?;
-        if valid != 1
-            || old.as_deref() != expected_checkpoint
-            || task_id != source.task_id
-            || !self.task_observation_unchanged(cas, source)?
-        {
-            return Err(refusal("Wake cursor/source changed; retry"));
+        if valid != 1 || task_id != source.task_id {
+            return Err(refusal("Wake source identity changed"));
         }
         let registration: String = lock.query_row(
             "SELECT registration FROM wake_subscriptions_v1 WHERE id=?1",
@@ -573,6 +569,14 @@ impl EventStore {
                 .is_none_or(|e| e.event_id != parsed.through.event_id)
         {
             return Err(refusal("Wake checkpoint scope/boundary mismatch"));
+        }
+        if old.as_deref() != expected_checkpoint || !self.task_observation_unchanged(cas, source)? {
+            // Checkpoint integrity, source mutation and corrupt current history must not
+            // be hidden by contention. No outbox or native effect has committed here.
+            self.inspect_wake(id)?;
+            self.task_projection(cas, &task_id)?
+                .ok_or_else(|| refusal("Wake Task disappeared"))?;
+            return Err(StoreError::WakeReconcileDeferred);
         }
         for envelope in envelopes {
             if envelope.observation.task != registration.subscription.task

@@ -65,6 +65,9 @@ pub enum StoreError {
     },
     /// Two events claimed the same sequence, or an event id repeated.
     Conflict(String),
+    /// A checked wake page lost a pre-native observation/checkpoint race. No delivery
+    /// effect was attempted; a bounded caller may defer to its next scheduled poll.
+    WakeReconcileDeferred,
     /// The captured domain rejected structurally valid output. This is distinct from
     /// an authority, artifact or persistence failure at the Store boundary.
     TaskOutputRejected(String),
@@ -90,6 +93,12 @@ impl std::fmt::Display for StoreError {
                 "event references an artifact that is not durable: {digest}"
             ),
             StoreError::Conflict(what) => write!(f, "event store conflict: {what}"),
+            StoreError::WakeReconcileDeferred => {
+                write!(
+                    f,
+                    "wake observation or checkpoint changed; defer reconciliation"
+                )
+            }
             StoreError::TaskOutputRejected(what) => {
                 write!(f, "Task output admission rejected: {what}")
             }
