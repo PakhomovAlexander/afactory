@@ -92,6 +92,20 @@ jobs:
           ln -s "$linker" "$RUNNER_TEMP/af-linker/ld.lld"
           echo "$RUNNER_TEMP/af-linker" >> "$GITHUB_PATH"
           echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - name: Install release-check signature verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends minisign
+              ;;
+            macOS)
+              brew install minisign
+              ;;
+            *) echo "Unsupported runner OS: $RUNNER_OS" >&2; exit 1 ;;
+          esac
       - name: Always-on format, lint, policy and binary smoke
         env:
           AF_CI_METRICS: target/base-metrics.jsonl

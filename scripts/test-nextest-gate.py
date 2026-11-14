@@ -18,6 +18,10 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 NL = chr(10)
 MANY = 26  # one more failed test than the isolation rerun's bound
+SPEC = importlib.util.spec_from_file_location(
+    'make_test_fixture', ROOT / 'scripts/make-test-fixture.py')
+MAKE_FIXTURE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MAKE_FIXTURE)
 
 
 def run(command, repo, env):
@@ -270,9 +274,8 @@ def main():
         # Use the actual Makefile test recipe; other gate stages do not apply to
         # this miniature crate. The production check target is not modified.
         makefile = (ROOT / 'Makefile').read_text()
-        # `test` depends on `test-build` (the build receipt the kernel's phase monitor waits for),
-        # so the slice starts at that target.
-        recipe = makefile[makefile.index('test-build:'):makefile.index('# Open the release PR')]
+        # Retain both targets and the runner conditionals, independent of release comments.
+        recipe = MAKE_FIXTURE.test_recipe(makefile)
         probe_recipe = makefile.split('review-kernel-container-probes:\n', 1)[1].split(
             '\n\n', 1)[0].splitlines()[-1]
         (repo / 'Full.mk').write_text(makefile)

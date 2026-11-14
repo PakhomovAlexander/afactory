@@ -31,6 +31,10 @@ sys.dont_write_bytecode = True
 SPEC = importlib.util.spec_from_file_location('test_time_report', SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+SPEC = importlib.util.spec_from_file_location(
+    'make_test_fixture', ROOT / 'scripts/make-test-fixture.py')
+MAKE_FIXTURE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MAKE_FIXTURE)
 # The fixture's exclusive block, as `fixtures/test-time-report/nextest.toml` lists it.
 FIXTURE_EXCLUSIVE = ['::alone_with_a_budget$', 'measured_elapsed$']
 
@@ -437,6 +441,27 @@ sys.exit(int(os.environ['FAKE_EXIT']))
 '''
 
 
+def check_make_recipe_selection():
+    build = 'test-build:\n\tbuild-command\n'
+    test = ('test: test-build\nifeq ($(TEST_RUNNER),nextest)\n\tnextest-command\n'
+            'else\n\tcargo-command\nendif\n')
+    foreign = 'release:\n\t./dev release rc\n'
+    for comment in ('', '# Open the release PR\n', '# Updated release wiring\n'):
+        for rules in (build + test + comment + foreign,
+                      foreign + test + comment + build,
+                      build + foreign + test + comment):
+            recipe = MAKE_FIXTURE.test_recipe(rules)
+            assert build in recipe and test in recipe, recipe
+            assert foreign not in recipe, recipe
+    for invalid in (build, test, build + test + build):
+        try:
+            MAKE_FIXTURE.test_recipe(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('missing/duplicate fixture targets accepted')
+
+
 def project(base, *, script=True):
     """A copy of the real test recipe, gate scripts and nextest config, with a stand-in cargo."""
     repo = base / 'repo'
@@ -454,9 +479,7 @@ def project(base, *, script=True):
     (repo / '.config' / 'test-quarantine.json').write_text(
         '{"schema": "af.test-quarantine/1", "tests": {}}\n')
     makefile = (ROOT / 'Makefile').read_text()
-    # `test` depends on `test-build` (the build receipt the kernel's phase monitor waits for).
-    start = makefile.index('\ntest-build:\n') + 1
-    recipe = makefile[start:makefile.index('# Open the release PR')]
+    recipe = MAKE_FIXTURE.test_recipe(makefile)
     (repo / 'Makefile').write_text('\n'.join([
         'TEST_RUNNER = nextest', 'TEST_THREADS = 4', 'CI_STEP = python3 scripts/ci-step.py',
         'check: test', recipe]))
@@ -683,6 +706,7 @@ def check_task_gate():
 
 
 def main():
+    check_make_recipe_selection()
     with tempfile.TemporaryDirectory(prefix='af test time ') as tmp:
         tmp = Path(tmp)
         check_fixture_totals()

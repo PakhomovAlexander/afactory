@@ -53,6 +53,11 @@ print(json.dumps(pages[page - 1] if page <= len(pages) else []))
                                        text=True).strip()
 
     def commit(self, version):
+        if (self.repo / 'Cargo.toml').exists():
+            source = self.git('rev-parse', 'HEAD')
+            (self.repo / 'scripts').mkdir(exist_ok=True)
+            (self.repo / 'scripts/release-contract.json').write_text(json.dumps({
+                'schema': 'af.dev-release-contract/1', 'version': version, 'source': source}))
         (self.repo / 'Cargo.toml').write_text('[workspace.package]\nversion = "' + version + '"\n')
         (self.repo / 'CHANGELOG.md').write_text('## [' + version + '] - today\n')
         self.git('add', '.')
@@ -94,6 +99,28 @@ print(json.dumps(pages[page - 1] if page <= len(pages) else []))
             self.assertEqual(values['tag'], 'v1.0.1')
         self.assertEqual(self.git('--git-dir=' + str(self.remote), 'rev-parse', 'v1.0.1^{}'),
                          self.release)
+
+    def test_advanced_main_or_unrelated_paths_never_tag(self):
+        (self.repo / 'unrelated.rs').write_text('not release metadata')
+        self.git('add', '.')
+        self.git('commit', '--amend', '--no-edit', '-q')
+        result, _ = self.resolve()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('outside approved metadata', result.stderr)
+        self.assertEqual(self.git('ls-remote', '--tags', 'origin'), '')
+        (self.repo / 'unrelated.rs').unlink()
+        self.git('add', '.')
+        self.git('commit', '--amend', '--no-edit', '-q')
+        declaration = self.repo / 'scripts/release-contract.json'
+        document = json.loads(declaration.read_text())
+        document['source'] = '0' * 40
+        declaration.write_text(json.dumps(document))
+        self.git('add', '.')
+        self.git('commit', '--amend', '--no-edit', '-q')
+        result, _ = self.resolve()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('approved first parent', result.stderr)
+        self.assertEqual(self.git('ls-remote', '--tags', 'origin'), '')
 
     def test_later_main_commit_cannot_win_even_when_it_runs_first(self):
         self.git('commit', '--allow-empty', '-qm', 'later PR')
@@ -242,12 +269,20 @@ fi''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(values['test_plan'])['profile'], 'fast')
 
-    def test_manual_tag_is_full_despite_stale_metadata_and_associated_labels(self):
+    def source_with_prior_policy(self, text):
+        # Retired metadata belongs to the captured source, not the release delta.
+        self.git('reset', '--hard', self.base)
         policy = self.repo / '.config/release-tests.json'
         policy.parent.mkdir(exist_ok=True)
-        policy.write_text('{"schema":"af.release-test-policy/1","version":"1.0.0","labels":["release:fast"]}')
+        policy.write_text(text)
         self.git('add', '.config')
-        self.git('commit', '--amend', '--no-edit', '-q')
+        self.git('commit', '-qm', 'prior source metadata')
+        self.base = self.git('rev-parse', 'HEAD')
+        self.commit('1.0.1')
+        self.release = self.git('rev-parse', 'HEAD')
+
+    def test_manual_tag_is_full_despite_stale_metadata_and_associated_labels(self):
+        self.source_with_prior_policy('{"schema":"af.release-test-policy/1","version":"1.0.0","labels":["release:fast"]}')
         self.git('tag', '-a', 'v1.0.1', '-m', 'manual release')
         self.git('push', 'origin', 'refs/tags/v1.0.1')
         result, values = self.resolve('tag', 'v1.0.1', labels=['release:fast'])
@@ -266,11 +301,7 @@ fi''')
         self.assertFalse(self.api_log.exists())
 
     def test_stale_prior_release_metadata_is_ignored(self):
-        policy = self.repo / '.config/release-tests.json'
-        policy.parent.mkdir(exist_ok=True)
-        policy.write_text('{"version":"1.0.0","labels":["release:fast"]}')
-        self.git('add', '.config')
-        self.git('commit', '--amend', '--no-edit', '-q')
+        self.source_with_prior_policy('{"version":"1.0.0","labels":["release:fast"]}')
         result, values = self.resolve()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(values['test_plan'])['profile'], 'full')

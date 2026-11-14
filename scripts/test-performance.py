@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the performance laboratory's deterministic tests; they never run a benchmark."""
+import argparse
 import os
 import sys
 import unittest
@@ -11,7 +12,11 @@ sys.path.insert(0, LAB)
 
 
 def main():
-    tests = unittest.defaultTestLoader.discover(os.path.join(LAB, "tests"), top_level_dir=LAB)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--module', choices=['test_telemetry_bench_contracts'])
+    args = parser.parse_args()
+    tests = unittest.defaultTestLoader.discover(os.path.join(LAB, "tests"), top_level_dir=LAB,
+                                                  pattern=(args.module + ".py") if args.module else "test*.py")
     result = unittest.TextTestRunner(verbosity=1).run(tests)
     return 0 if result.wasSuccessful() else 1
 

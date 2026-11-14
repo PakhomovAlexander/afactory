@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "af.release-provenance/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "source", "repository", "run_id"],
+  "properties": {
+    "schema": {"const": "af.release-provenance/1"},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-rc\\.[1-9][0-9]*)?$"},
+    "source": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+    "run_id": {"type": "string", "pattern": "^[0-9]+$"}
+  }
+}
