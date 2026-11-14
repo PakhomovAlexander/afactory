@@ -131,6 +131,31 @@ class ReleaseContract(unittest.TestCase):
             declaration = json.loads((self.root / 'scripts/release-contract.json').read_text())
             self.assertEqual(declaration['source'], 'a' * 40)
 
+    def test_current_scenario_contracts_are_declared_and_drift_is_refused(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        expected = {'scenario-store': 10, 'scenario': 6, 'scenario-bundle': 6,
+                    'scenario-pin': 6, 'scenario-run': 6, 'scenario-list': 6,
+                    'ant': 7, 'ant-pin': 7, 'ant-tick': 7, 'ant-state': 8,
+                    'ant-inspection': 3, 'ant-list': 8,
+                    'scenario-task-template': 2, 'scenario-template-pin': 2}
+        for name, version in expected.items():
+            relative = 'schemas/%s-v%s.json' % (name, version)
+            with self.subTest(schema=relative):
+                self.assertIn('af/%s@%s' % (name, version), policy['required_features'][relative])
+                path = self.root / relative
+                original = path.read_bytes()
+                document = json.loads(original)
+                self.assertEqual(document['properties']['schema']['const'], 'af/%s@%s' % (name, version))
+                document['properties']['schema']['const'] = 'af/foreign@1'
+                path.write_text(json.dumps(document))
+                with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+                    PREFLIGHT.check(self.root)
+                path.write_bytes(original)
+        template = json.loads((self.root / 'schemas/scenario-task-template-v2.json').read_text())
+        self.assertIn('authority_id', template['required'])
+        self.assertIn('bindings', template['required'])
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+
     def test_preparation_refuses_changed_capabilities(self):
         self.version('0.15.1-rc.4')
         path = self.root / 'scripts/release-contract.json'

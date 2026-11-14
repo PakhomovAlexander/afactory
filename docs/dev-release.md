@@ -67,7 +67,13 @@ The controller and structured `scripts/release-policy.json` must match fetched s
 feature paths and tokens enforce current Ant/Scenario inclusion before materialization. The policy
 states reviewed compatibility and exact validation commands. Missing compatibility information is a
 planning prerequisite, never model-generated advice. The current metadata states the breaking
-persisted Ant/Scenario shapes: finish/discard older runs and state before upgrade. There is no
+persisted Ant/Scenario shapes: Store 10, Scenario definitions/bundles/pins/runs/list 6, Ant
+definitions/pins/tick 7, state/list 8 and inspection 3. Task templates and template pins are
+generation 2, retaining captured local Worker authority without reopening original package paths
+on restart. Required schemas are parsed and their `properties.schema.const` must equal the
+required contract identity; retaining that identity elsewhere in the JSON does not satisfy
+preflight. Additional source tokens cover captured authority fields and native authority restoration.
+Finish/discard older runs and state before upgrade. There is no
 migration or old-state replay promise. Authority lock refresh and pin adoption remain explicit.
 
 `scripts/release-contract.json` names exactly one version and reviewed schema/telemetry-fixture

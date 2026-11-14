@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking persisted Ant/Scenario shapes: Scenario Store 9, Ant state 7, inspection 2 and list 7. Finish or discard prior-release runs and state before upgrading; no migration or replay of retired shapes. Scenario definitions and pins remain generation 5. Review committed authority and refresh its lock with the published release; pin adoption is a separate reviewed PR.",
+  "compatibility": "Breaking persisted Ant/Scenario shapes: Scenario Store 10, Scenario definitions/bundles/pins/runs/list 6, Ant definitions/pins/tick 7, Ant state/list 8 and inspection 3. Task templates and template pins are generation 2 and seal captured local Worker authority; restart never reopens original local package paths. Finish or discard prior-release runs and state before upgrading; no migration or replay of retired shapes. Review committed authority and refresh its lock with the published release; pin adoption is a separate reviewed PR.",
   "required_features": {
     "crates/af-scenario/src/retention.rs": [
       "settlement",
@@ -10,17 +10,61 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@9",
+      "af/scenario-store@10",
       "run_capacity"
     ],
-    "schemas/ant-state-v7.json": [
-      "af/ant-state@7"
+    "schemas/scenario-store-v10.json": [
+      "af/scenario-store@10"
     ],
-    "schemas/ant-inspection-v2.json": [
-      "af/ant-inspection@2"
+    "schemas/scenario-v6.json": [
+      "af/scenario@6"
     ],
-    "schemas/ant-list-v7.json": [
-      "af/ant-list@7"
+    "schemas/scenario-bundle-v6.json": [
+      "af/scenario-bundle@6"
+    ],
+    "schemas/scenario-pin-v6.json": [
+      "af/scenario-pin@6"
+    ],
+    "schemas/scenario-run-v6.json": [
+      "af/scenario-run@6"
+    ],
+    "schemas/scenario-list-v6.json": [
+      "af/scenario-list@6"
+    ],
+    "schemas/ant-v7.json": [
+      "af/ant@7"
+    ],
+    "schemas/ant-pin-v7.json": [
+      "af/ant-pin@7"
+    ],
+    "schemas/ant-tick-v7.json": [
+      "af/ant-tick@7"
+    ],
+    "schemas/ant-state-v8.json": [
+      "af/ant-state@8"
+    ],
+    "schemas/ant-inspection-v3.json": [
+      "af/ant-inspection@3"
+    ],
+    "schemas/ant-list-v8.json": [
+      "af/ant-list@8"
+    ],
+    "schemas/scenario-task-template-v2.json": [
+      "af/scenario-task-template@2",
+      "\"authority_id\"",
+      "\"bindings\""
+    ],
+    "schemas/scenario-template-pin-v2.json": [
+      "af/scenario-template-pin@2"
+    ],
+    "crates/af-scenario/src/template.rs": [
+      "af/scenario-task-template@2",
+      "pub authority_id: String"
+    ],
+    "crates/af/src/task_commands/scenario_template.rs": [
+      "validate_pin(&store, &cas, template)?",
+      "restore_compiler(&cas, &authority, &settings)?",
+      "recorded_bindings != template.bindings"
     ]
   },
   "targets": [

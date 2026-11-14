@@ -4,12 +4,14 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import signal
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
@@ -241,14 +243,23 @@ class ReleaseCLI(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
         for name in ('schemas', 'scripts/performance/perflab'):
-            shutil.copytree(ROOT / name, self.source / name)
+            # Copy bytes, not the sealed source's read-only file modes: these
+            # disposable fixture schemas are intentionally mutated below.
+            shutil.copytree(ROOT / name, self.source / name, copy_function=shutil.copyfile)
         shutil.copyfile(ROOT / 'scripts/telemetry-overhead.py', self.source / 'scripts/telemetry-overhead.py')
         for fixture in (ROOT / 'fixtures').glob('telemetry-bench'):
             shutil.copytree(fixture, self.source / 'fixtures' / fixture.name)
-        for name in ('retention.rs', 'roadmap.rs', 'store.rs'):
-            path = self.source / 'crates/af-scenario/src' / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / 'crates/af-scenario/src' / name, path)
+        # copytree preserves directory modes even with copyfile. Only this
+        # disposable copy may be made writable/searchable for fixture mutations.
+        for directory in (self.source, *self.source.rglob('*')):
+            if directory.is_dir():
+                directory.chmod(directory.stat().st_mode | stat.S_IRWXU)
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        for name in policy['required_features']:
+            path = self.source / name
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, path)
         (self.source / 'changelog.d').mkdir()
         (self.source / 'changelog.d/README.md').write_text('Fragment instructions.\n')
         (self.source / 'changelog.d/note.md').write_text('- A reviewed feature.\n')
@@ -585,6 +596,118 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('source_inclusion', self.cli('plan', ok=False).stderr)
         (self.source / 'scripts/release-policy.json').write_text('{}')
         self.assertIn('authority_source_mismatch', self.cli('plan', ok=False).stderr)
+
+    def test_read_only_source_keeps_contract_mutations_in_owned_fixture(self):
+        sealed = self.base / 'sealed'
+        shutil.copytree(self.source, sealed, ignore=shutil.ignore_patterns('.git'))
+        originals = {}
+        for path in (sealed, *sealed.rglob('*')):
+            mode = path.stat().st_mode
+            if path.is_dir():
+                self.addCleanup(path.chmod, mode)
+            path.chmod(mode & ~0o222)
+            originals[path] = (path.read_bytes() if path.is_file() else None,
+                               path.stat().st_mode)
+        # Run the real setup and admission/mutation paths with read-only inputs.
+        # Only the nested test's fresh temporary fixture may receive writes.
+        result = unittest.TestResult()
+        with mock.patch.object(sys.modules[__name__], 'ROOT', sealed):
+            unittest.TestSuite([
+                ReleaseCLI('test_plan_dirty_caller_and_read_only_status'),
+                ReleaseCLI('test_current_contracts_and_captured_authority_are_required'),
+                ReleaseCLI('test_declared_schema_identity_is_required_with_rebound_capabilities'),
+            ]).run(result)
+        self.assertEqual(result.testsRun, 3)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+        self.assertEqual({sealed, *sealed.rglob('*')}, set(originals))
+        for path, (content, mode) in originals.items():
+            if content is not None:
+                self.assertEqual(path.read_bytes(), content, str(path))
+            self.assertEqual(path.stat().st_mode, mode, str(path))
+
+    def test_current_contracts_and_captured_authority_are_required(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        # Exercise fetched-source admission, not just the policy's token list. Each
+        # mutation is committed to the disposable remote and restored before the next.
+        for name, tokens in policy['required_features'].items():
+            path = self.source / name
+            original = path.read_text()
+            for token in tokens:
+                with self.subTest(path=name, token=token):
+                    self.assertIn(token, original)
+                    path.write_text(original.replace(token, 'foreign-contract'))
+                    self.commit('foreign feature')
+                    self.git('-C', self.source, 'push', str(self.remote), 'main')
+                    result = self.cli('plan', ok=False)
+                    self.assertIn('source_inclusion', result.stderr)
+                    self.assertIn(name, result.stderr)
+                    self.assertFalse((self.state / 'candidate').exists())
+                    self.assertFalse(self.data().get('effects'))
+                    path.write_text(original)
+            self.commit('restore feature')
+        # Missing required schema paths must also fail before materialization.
+        path = self.source / 'schemas/scenario-task-template-v2.json'
+        original = path.read_bytes()
+        path.unlink()
+        self.commit('absent template contract')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('plan', ok=False)
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertFalse(self.data().get('effects'))
+        path.write_bytes(original)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_declared_schema_identity_is_required_with_rebound_capabilities(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('release_contract', ROOT / 'scripts/release-contract.py')
+        contract = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(contract)
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        declaration_path = self.source / 'scripts/release-contract.json'
+        original_declaration = declaration_path.read_bytes()
+        for name, tokens in policy['required_features'].items():
+            if not name.startswith('schemas/'):
+                continue
+            with self.subTest(schema=name):
+                path = self.source / name
+                original = path.read_bytes()
+                document = json.loads(original)
+                expected = document['properties']['schema']['const']
+                document['properties']['schema']['const'] = 'af/foreign@1'
+                document['description'] = 'Retains expected identity: ' + expected
+                path.write_text(json.dumps(document))
+                self.assertTrue(all(token in path.read_text() for token in tokens))
+                declaration = json.loads(original_declaration)
+                declaration['capabilities'] = contract.capabilities(self.source)
+                declaration_path.write_text(json.dumps(declaration))
+                # Exact-byte preflight accepts these explicitly reviewed bytes;
+                # fetched-source identity admission must independently refuse them.
+                self.assertEqual(contract.check(self.source), '0.15.1-rc.3')
+                self.commit('foreign declared identity with reviewed capabilities')
+                self.git('-C', self.source, 'push', str(self.remote), 'main')
+                result = self.cli('plan', ok=False)
+                self.assertIn('source_inclusion: foreign required schema identity ' + name, result.stderr)
+                self.assertFalse((self.state / 'candidate').exists())
+                self.assertFalse(self.data().get('effects'))
+                path.write_bytes(original)
+                declaration_path.write_bytes(original_declaration)
+        self.commit('restore reviewed schemas')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('plan')
+
+    def test_malformed_required_schema_identity_is_refused(self):
+        name = 'schemas/scenario-v6.json'
+        path = self.source / name
+        for content in ('null', '{}', '{"properties": []}',
+                        '{"properties": {"schema": {}}}', '{invalid json'):
+            with self.subTest(content=content):
+                path.write_text(content)
+                self.commit('malformed required schema')
+                self.git('-C', self.source, 'push', str(self.remote), 'main')
+                result = self.cli('plan', ok=False)
+                self.assertIn('source_inclusion: invalid required schema ' + name, result.stderr)
+                self.assertFalse((self.state / 'candidate').exists())
+                self.assertFalse(self.data().get('effects'))
 
     def test_release_pr_profile_drift_and_fork_are_refused(self):
         self.data(checks='pending')

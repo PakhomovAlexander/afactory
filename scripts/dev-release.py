@@ -232,6 +232,14 @@ class Controller:
                 raise Refusal('authority_source_mismatch: fetched source must contain reviewed ' + name)
         for path, tokens in policy['required_features'].items():
             content = self.blob(source, path)
+            if path.startswith('schemas/') and path.endswith('.json'):
+                identities = [token for token in tokens if token.startswith('af/')]
+                try:
+                    declared = json.loads(content)['properties']['schema']['const']
+                except (ValueError, KeyError, TypeError) as error:
+                    raise Refusal('source_inclusion: invalid required schema ' + path) from error
+                if identities != [declared]:
+                    raise Refusal('source_inclusion: foreign required schema identity ' + path)
             if any(token not in content for token in tokens):
                 raise Refusal('source_inclusion: missing required feature ' + path)
         if not policy['compatibility'].strip():
