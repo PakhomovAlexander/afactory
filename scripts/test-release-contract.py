@@ -2,6 +2,8 @@
 """Offline release preflight regressions, with no binary, benchmark or GitHub access."""
 from pathlib import Path
 import shutil
+import json
+import os
 import stat
 import subprocess
 import sys
@@ -26,6 +28,92 @@ def copy_inputs(source, destination):
     schemas = destination / 'schemas'
     shutil.copytree(source / 'schemas', schemas, copy_function=shutil.copyfile)
     schemas.chmod(schemas.stat().st_mode | stat.S_IRWXU)
+
+
+class ReleaseNotesSelection(unittest.TestCase):
+    def test_tag_boundary_excludes_ancestors_but_keeps_equal_time_successors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'checkout'
+            root.mkdir()
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            shutil.copy(Path(os.environ.get('AF_TEST_RELEASE_SCRIPT', ROOT / 'scripts/release.sh')), scripts / 'release.sh')
+            helper = ROOT / 'scripts/release-changes.py'
+            if helper.exists():
+                shutil.copy(helper, scripts)
+            (scripts / 'test-labels.py').write_text('')
+            (scripts / 'changelog-notes.py').write_text('#!/bin/sh\n')
+            (scripts / 'changelog-notes.py').chmod(0o755)
+            (scripts / 'performance').mkdir()
+            (scripts / 'performance/cli.py').write_text('')
+            (root / 'Cargo.toml').write_text('version = "1.0.0"\n')
+            env = dict(os.environ, GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.com',
+                       GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.com',
+                       GIT_AUTHOR_DATE='2026-01-01T00:00:00Z',
+                       GIT_COMMITTER_DATE='2026-01-01T00:00:00Z')
+            def git(*args):
+                return subprocess.check_output(['git', *args], cwd=root, env=env, text=True).strip()
+            git('init', '-q', '-b', 'main')
+            git('add', '.')
+            git('commit', '-qm', 'release')
+            release = git('rev-parse', 'HEAD')
+            git('tag', 'v1.0.0')
+            git('commit', '--allow-empty', '-qm', 'after')
+            after = git('rev-parse', 'HEAD')
+            prs = [dict(number=1, title='release: v1.0.0', mergedAt='2026-01-01T00:00:00Z', mergeCommit=dict(oid=release)),
+                   dict(number=2, title='same-second change', mergedAt='2026-01-01T00:00:00Z', mergeCommit=dict(oid=after)),
+                   dict(number=3, title='later change', mergedAt='2026-01-01T00:00:01Z', mergeCommit=dict(oid=after))]
+            gh = root / 'gh'
+            gh.write_text('#!' + sys.executable + '\nimport json,sys\n'
+                          + 'args=sys.argv[1:]\n'
+                          + 'if args == ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]: print("fixture/repo")\n'
+                          + 'elif args[:2] == ["pr", "list"]:\n'
+                          + ' prefix=["pr", "list", "--repo", "fixture/repo", "--state", "merged", "--base", "main", "--limit", "200", "--search", "merged:>=2026-01-01T00:00:00Z", "--json"]\n'
+                          + ' if args[:len(prefix)] != prefix: sys.exit("unexpected gh arguments: " + repr(args))\n'
+                          + ' rest=args[len(prefix):]\n'
+                          + ' prs=json.load(open(' + repr(str(Path(tmp) / 'prs.json')) + '))\n'
+                          + ' if rest == ["number,title,mergedAt,mergeCommit"]: print(json.dumps(prs))\n'
+                          + ''' elif rest == ['number,title,mergedAt', '--jq', r'sort_by(.mergedAt) | .[] | "- \\(.title) (#\\(.number))"']:
+  for pr in sorted(prs, key=lambda pr: pr['mergedAt']): print('- {} (#{})'.format(pr['title'], pr['number']))
+ else: sys.exit('unexpected gh query: ' + repr(rest))
+else: sys.exit('unexpected gh command: ' + repr(args))
+''')
+            gh.chmod(0o755)
+            # Keep the stand-in outside the committed tree's status checks.
+            git('add', 'gh')
+            git('commit', '-qm', 'fixture')
+            remote = Path(tmp) / 'origin.git'
+            subprocess.check_call(['git', 'clone', '-q', '--bare', str(root), str(remote)], env=env)
+            git('remote', 'add', 'origin', str(remote))
+            other = Path(tmp) / 'other'
+            subprocess.check_call(['git', 'clone', '-q', str(remote), str(other)], env=env)
+            subprocess.check_call(['git', 'commit', '--allow-empty', '-qm', 'remote merge'], cwd=other, env=env)
+            remote_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=other, env=env, text=True).strip()
+            subprocess.check_call(['git', 'push', '-q', 'origin', 'HEAD:main'], cwd=other, env=env)
+            self.assertNotEqual(subprocess.run(['git', 'cat-file', '-e', remote_commit], cwd=root,
+                                              env=env, capture_output=True).returncode, 0)
+            prs.append(dict(number=4, title='remote change', mergedAt='2026-01-01T00:00:02Z',
+                            mergeCommit=dict(oid=remote_commit)))
+            (Path(tmp) / 'prs.json').write_text(json.dumps(prs))
+            env['PATH'] = str(root) + os.pathsep + env['PATH']
+            result = subprocess.run(['bash', str(scripts / 'release.sh'), '1.0.1', '--compat', 'unchanged', '--dry-run'],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, f'command failed: {result.stderr}\n{result.stdout}')
+            self.assertIn('release: 1.0.0 -> 1.0.1 on fixture/repo (validation profile: fast)', result.stdout)
+            self.assertIn('### Changes\n\n', result.stdout)
+            self.assertIn('(dry run: nothing written)', result.stdout)
+            self.assertIn('- same-second change (#2)', result.stdout)
+            self.assertIn('- later change (#3)', result.stdout)
+            self.assertIn('- remote change (#4)', result.stdout)
+            self.assertNotIn('- release: v1.0.0 (#1)', result.stdout,
+                             'previous release PR must be excluded from Changes')
+
+    def test_missing_merge_commit_is_an_error(self):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/release-changes.py'), 'v1.0.0'],
+                                input=json.dumps([dict(number=4, title='unknown', mergedAt='2026-01-01T00:00:00Z', mergeCommit=None)]),
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('PR #4 has no merge commit', result.stderr)
 
 
 class ReleaseContract(unittest.TestCase):

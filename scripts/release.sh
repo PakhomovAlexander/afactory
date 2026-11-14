@@ -72,12 +72,14 @@ if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; the
   exit 1
 fi
 
-# The pull requests merged since the last release, newest first.
+# The inclusive time query retains same-second merges; ancestry removes PRs in the tag.
 last_tag="$(git tag --list 'v*' --sort=-v:refname | head -1)"
 since="$(git log -1 --format=%cI "$last_tag" 2>/dev/null || echo 1970-01-01T00:00:00Z)"
-changes="$(gh pr list --repo "$repo" --state merged --base main --limit 200 \
-  --search "merged:>=$since" --json number,title,mergedAt \
-  --jq 'sort_by(.mergedAt) | .[] | "- \(.title) (#\(.number))"')"
+prs="$(gh pr list --repo "$repo" --state merged --base main --limit 200 \
+  --search "merged:>=$since" --json number,title,mergedAt,mergeCommit)"
+# Fetch after listing so merges observed by GitHub are available for ancestry checks.
+git fetch -q origin main
+changes="$(printf '%s\n' "$prs" | python3 scripts/release-changes.py "$last_tag")"
 [[ -n "$changes" ]] || changes="- (no pull requests merged since $last_tag)"
 
 date="$(date -u +%Y-%m-%d)"
