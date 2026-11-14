@@ -51,8 +51,12 @@ if name!='gh': sys.exit(99)
 Path(str(f)+'.controller-'+str(os.getppid())).touch()
 if os.environ.get('FAKE_DELAY'): time.sleep(float(os.environ['FAKE_DELAY']))
 if a[0]=='api':
- endpoint=a[1].replace('{owner}/{repo}','o/r').split('repos/o/r/',1)[1]
- if endpoint=='': out({'full_name':'o/r','permissions':{'push':not d.get('deny')}})
+ request=a[1].replace('{owner}/{repo}','o/r')
+ d.setdefault('api_requests',[]).append(request);save()
+ if request=='repos/o/r/':
+  print('HTTP 404: malformed repository endpoint',file=sys.stderr);sys.exit(1)
+ if request=='repos/o/r': out({'full_name':'o/r','permissions':{'push':not d.get('deny')}})
+ endpoint=request.split('repos/o/r/',1)[1]
  if endpoint.startswith('actions/secrets'):
   rows=d.get('secret_rows',[{'name':n} for n in ([] if d.get('no_secrets') else (['MINISIGN_SECRET_KEY'] if d.get('no_pin') else ['MINISIGN_SECRET_KEY','RELEASE_PIN_TOKEN']))])
   page=int(endpoint.split('page=')[-1]);batch=rows[(page-1)*100:page*100]
@@ -546,6 +550,26 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(self.state_value()['plan']['source'], self.initial)
         self.assertEqual((self.source / 'Cargo.toml').read_text(), 'dirty caller')
         self.assertNotIn('cache acquisition', self.cli('plan').stderr)
+
+    def test_plan_uses_canonical_repository_and_preserves_nested_queries(self):
+        result = self.cli('plan')
+        self.assertIn('authoritative main/tag fetch complete', result.stderr)
+        state = json.loads(result.stdout)
+        self.assertEqual(state['plan']['source'], self.initial)
+        self.assertIsNone(state['authorization'])
+        self.assertEqual(state['receipts']['preflight']['status'], 'planned')
+        data = self.data()
+        requests = data['api_requests']
+        self.assertEqual(requests[0], 'repos/o/r')
+        self.assertEqual(requests.count('repos/o/r'), 1)
+        self.assertNotIn('repos/o/r/', requests)
+        for endpoint in ('actions/secrets?per_page=100&page=1',
+                         'rules/branches/main?per_page=100&page=1',
+                         'rulesets/1', 'actions/workflows/ci.yml',
+                         'labels?per_page=100', 'releases?per_page=100&page=1'):
+            with self.subTest(endpoint=endpoint):
+                self.assertIn('repos/o/r/' + endpoint, requests)
+        self.assertEqual(data.get('effects', []), [])
 
     def test_plan_dirty_caller_and_read_only_status(self):
         (self.source / 'Cargo.toml').write_text('dirty caller cannot supply bytes')
