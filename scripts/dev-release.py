@@ -299,7 +299,8 @@ class Controller:
         return run(['gh', *args, '--repo', self.args.repo])
 
     def api(self, endpoint):
-        return json.loads(run(['gh', 'api', 'repos/' + self.args.repo + '/' + endpoint]))
+        path = 'repos/' + self.args.repo + ('/' + endpoint if endpoint else '')
+        return json.loads(run(['gh', 'api', path]))
 
     def releases(self):
         try:
