@@ -29,10 +29,21 @@ export HOME="$scratch/home" XDG_CONFIG_HOME="$scratch/home/.config" \
   XDG_STATE_HOME="$scratch/home/.local/state" XDG_DATA_HOME="$scratch/home/.local/share" \
   XDG_CACHE_HOME="$scratch/home/.cache"
 mkdir -p "$HOME"
+chmod 700 "$HOME"
+# Release binaries ignore debug fixture settings. Isolate their actual OS account before
+# every invocation, including qemu wrappers; no operator authority is opened by the smoke.
+account_launcher="$(cd "$(dirname "$0")" && pwd)/performance/perflab/account_isolation.py"
+run_af() {
+  if [[ "$(uname -s)" == Linux ]]; then
+    python3 -I -B "$account_launcher" "$HOME" "$af" "$@"
+  else
+    "$af" "$@"
+  fi
+}
 repo="$scratch/repo"
 mkdir -p "$repo"
 git -C "$repo" init -q
-"$af" onboard --repo "$repo" --runner codex --gate check=true --apply
+run_af onboard --repo "$repo" --runner codex --gate check=true --apply
 git -C "$repo" add -A
 git -C "$repo" -c user.name=release -c user.email=release@example.invalid \
   commit -q -m "onboarded by the built binary"
@@ -41,7 +52,7 @@ git -C "$repo" -c user.name=release -c user.email=release@example.invalid \
 cp "$repo/.af/task-packages/onboard/review-code/task.json" "$scratch/review.json"
 printf 'A source change for native Review planning.\n' > "$repo/change.txt"
 status=0
-"$af" review plan --repo "$repo" --file "$scratch/review.json" \
+run_af review plan --repo "$repo" --file "$scratch/review.json" \
   --authority HEAD --base HEAD --uncommitted --json > "$scratch/plan.json" || status=$?
 # Missing Providers produce the current native selection receipt, not an invented Review
 # plan. Accept only that precise, uncharged refusal; every other failure stops publication.

@@ -30,6 +30,13 @@ selectors. Every invocation inventories and accounts this same bounded Store, ev
 ordinary Task state root differs. Changing shell configuration cannot reset an original-session
 binding or bypass uncertain native admission. An unsafe or unavailable account home refuses
 wake authority instead of selecting another location.
+An absent account or an account with a relative/root home disables wake admission while ordinary
+Task plan/run and storage commands continue with valid HOME/XDG/Store settings. Account lookup I/O
+errors and existing authority corruption remain errors, never an absent capability fallback.
+`af self uninstall --purge` refuses before teardown when account authority exists, including partial
+or damaged state. Use `af self uninstall` to remove the installation while preserving recovery.
+Cleanup reserves authority ancestry even before the first grant, so a concurrent grant cannot lose
+its binding namespace to a purge. No supported cleanup copies or clears that fence.
 A grant in another Task Store refuses, preventing cross-Store overtaking of uncertain admission.
 There are at most 4096 such machine session bindings; neither expiry nor a replacement grant
 rebinds them. Removing machine control state is destructive removal of recovery authority.

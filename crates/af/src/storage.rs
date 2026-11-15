@@ -2749,6 +2749,7 @@ fn remove_entry(
     roots: &Roots,
     entry: &Entry,
 ) -> Result<(u64, Option<u64>, Vec<PathBuf>), plan::Failed> {
+    config::protect_wake_authority(&entry.path)?;
     let identity = entry
         .identity
         .ok_or("its identity was not measured, so it is not removed".to_string())?;
@@ -2780,6 +2781,7 @@ fn remove_directory(
     identity: Option<af_sandbox::Identity>,
     measured: u64,
 ) -> Result<(u64, Option<u64>), plan::Failed> {
+    config::protect_wake_authority(path)?;
     let error = match af_sandbox::remove_beneath_measured(anchor, path, identity) {
         Ok(started) => return Ok((started.unwrap_or(measured), started)),
         Err(error) => error,
@@ -3689,6 +3691,10 @@ fn purge_registered(roots: &Roots, registered: &[registry::Registered]) -> Vec<S
             StoreKind::ReviewRoot => real_directories(&entry.path),
         };
         for store in stores.into_iter().filter(|path| has_store(path)) {
+            if let Err(reason) = config::protect_wake_authority(&store) {
+                lines.push(reason);
+                continue;
+            }
             // Outside every root af owns: opened from `/` one component at a time, and only
             // while it is still the directory just listed.
             let identity = match af_sandbox::Identity::of(&store) {
@@ -3750,6 +3756,10 @@ pub(crate) fn remove_claude_projects(
     let mut removed = 0;
     let mut failures = Vec::new();
     for (name, identity) in projects {
+        if let Err(reason) = config::protect_wake_authority(&config.join("projects").join(name)) {
+            failures.push(reason);
+            continue;
+        }
         // Only a directory measured when it was chosen is removed, and only while it is still
         // that directory.
         let Some(identity) = identity else {

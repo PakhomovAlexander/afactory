@@ -250,8 +250,9 @@ fn open(inspect: &crate::cli::TaskInspectArgs) -> Result<(PathBuf, Cas, EventSto
 fn session_store(create: bool) -> Result<EventStore, String> {
     // Existing inventory accounts this normal Task Store and retains its remainder.
     // It owns no business Task and can never dispatch work.
-    let path = crate::config::wake_session_store_path()?
-        .ok_or("Machine wake authority currently requires Linux")?;
+    let path = crate::config::wake_session_store_path()?.ok_or(
+        "Wake unavailable: requires Linux and an OS account with an absolute, non-root home",
+    )?;
     // Validate the longest existing ancestry BEFORE creating anything. Never follow an
     // alias, adopt a foreign parent, or write through a replaceable higher directory.
     let existing = path
@@ -795,6 +796,9 @@ pub(crate) fn execute(
             if host == "claude" {
                 return Err("Claude automatic wake unavailable; original-session live tests deferred; no login attempted".into());
             }
+            crate::config::wake_session_store_path()?.ok_or(
+                "Wake unavailable: requires Linux and an OS account with an absolute, non-root home",
+            )?;
             let repo = inspect.repo.canonicalize().map_err(err)?;
             let parent = grant_file.parent().ok_or("Missing grant directory")?;
             private(parent, true)?;

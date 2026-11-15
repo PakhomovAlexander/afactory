@@ -533,22 +533,55 @@ pub(crate) fn wake_session_store_path() -> Result<Option<PathBuf>, String> {
         #[cfg(not(debug_assertions))]
         let fixture: Option<PathBuf> = None;
         let home = match fixture {
-            Some(home) => home,
+            Some(home) => Some(home),
             None => os_account_home()?,
+        };
+        // Missing/unsuitable account identity is an unavailable optional capability.
+        // Lookup I/O errors still propagate; HOME/XDG never substitute for authority.
+        let Some(home) = home.filter(|home| home.is_absolute() && home != Path::new("/")) else {
+            return Ok(None);
         };
         wake_session_store_at(&home).map(Some)
     }
 }
 
-fn os_account_home() -> Result<PathBuf, String> {
+fn os_account_home() -> Result<Option<PathBuf>, String> {
     let uid = nix::unistd::geteuid();
-    let user = nix::unistd::User::from_uid(uid)
-        .map_err(|e| format!("Reading wake OS account: {e}"))?
-        .ok_or("Wake requires an OS account for the effective UID")?;
+    let Some(user) =
+        nix::unistd::User::from_uid(uid).map_err(|e| format!("Reading wake OS account: {e}"))?
+    else {
+        return Ok(None);
+    };
     if user.uid != uid {
         return Err("Wake OS account identity mismatch".into());
     }
-    Ok(user.dir)
+    Ok(Some(user.dir))
+}
+
+/// Refuse destructive operations overlapping the reserved account authority, even when
+/// it does not exist yet. No existence/empty test can serialize deletion with first grant.
+pub(crate) fn protect_wake_authority(path: &Path) -> Result<(), String> {
+    for authority in wake_authority_paths()? {
+        let path = canonical_root(path);
+        if authority.starts_with(&path) || path.starts_with(&authority) {
+            return Err(format!(
+                "kept {}: reserved OS-account wake authority (including original-session uncertainty)",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn wake_authority_paths() -> Result<Vec<PathBuf>, String> {
+    Ok(wake_session_store_path()?
+        .into_iter()
+        .flat_map(|path| {
+            // Protect both the reserved spelling and its resolved destination. A damaged
+            // symlink must not make ordinary cleanup erase incomplete authority either.
+            [canonical_root(&path), path]
+        })
+        .collect())
 }
 
 fn wake_session_store_at(home: &Path) -> Result<PathBuf, String> {
@@ -1256,10 +1289,13 @@ mod tests {
         const CHILD: &str = "AF_TEST_WAKE_OS_ACCOUNT_LOOKUP_CHILD";
         if let Some(expected) = std::env::var_os(CHILD) {
             // Read the OS account record only. Never open or write its real home/state.
-            assert_eq!(os_account_home().unwrap().as_os_str(), expected);
+            assert_eq!(
+                serde_json::to_string(&os_account_home().unwrap()).unwrap(),
+                expected.to_str().unwrap()
+            );
             return;
         }
-        let expected = os_account_home().unwrap();
+        let expected = serde_json::to_string(&os_account_home().unwrap()).unwrap();
         for index in 0..2 {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([

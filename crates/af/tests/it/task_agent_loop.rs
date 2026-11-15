@@ -6200,3 +6200,222 @@ fn wake_cli_competing_native_preflight_reserves_before_endpoint_and_fences_resta
         );
     }
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_optional_account_capability_preserves_ordinary_tasks_and_lookup_errors() {
+    let f = WakePiFixture::new();
+    let resolver = crate::common::account_resolver(&f.owner);
+    for (mode, home) in [("absent", "/unused"), ("home", "/"), ("home", "relative")] {
+        let run = |args: &[&str]| {
+            crate::common::af()
+                .current_dir(&f.repo)
+                .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+                .env("LD_PRELOAD", &resolver)
+                .env("WAKE_FIXTURE_ACCOUNT_MODE", mode)
+                .env("WAKE_FIXTURE_ACCOUNT_HOME", home)
+                .args(args)
+                .arg("--state")
+                .arg(&f.state)
+                .output()
+                .unwrap()
+        };
+        // A genuine ordinary plan and token-free run, using private HOME/XDG and Store.
+        expect(&run(&["task", "plan", "--file", "gc-older.json"]), 0);
+        expect(&run(&["task", "run", "gc-older", "--execute"]), 0);
+        let storage = crate::common::af()
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .env("LD_PRELOAD", &resolver)
+            .env("WAKE_FIXTURE_ACCOUNT_MODE", mode)
+            .env("WAKE_FIXTURE_ACCOUNT_HOME", home)
+            .args(["storage", "--json"])
+            .output()
+            .unwrap();
+        expect(&storage, 0);
+        let refused = f
+            .grant(&f.state, &f.owner.join("unavailable.json"))
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .env("LD_PRELOAD", &resolver)
+            .env("WAKE_FIXTURE_ACCOUNT_MODE", mode)
+            .env("WAKE_FIXTURE_ACCOUNT_HOME", home)
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "{}", out(&refused));
+        assert!(
+            err(&refused).contains("Wake unavailable"),
+            "{}",
+            err(&refused)
+        );
+        assert!(!f.owner.join("unavailable.json").exists());
+    }
+    let error = crate::common::af()
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("LD_PRELOAD", resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "io_error")
+        .args(["storage", "--json"])
+        .output()
+        .unwrap();
+    assert!(!error.status.success());
+    assert!(
+        err(&error).contains("Reading wake OS account"),
+        "{}",
+        err(&error)
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_purge_retains_cross_root_uncertainty_and_reserved_first_grant_ancestry() {
+    for concurrent in [false, true] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("original.json");
+        let custom_state = f.owner.join("custom-state");
+        let mut paused = None;
+        let mut point = None;
+        if concurrent {
+            let barriers = f.owner.join("first-grant-barrier");
+            let p = barriers.join("wake-machine-binding-1");
+            std::fs::create_dir_all(&p).unwrap();
+            let child = f
+                .grant(&f.state, &grant)
+                .env("XDG_STATE_HOME", &custom_state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut child = task_interrupt::ChildGuard(Some(child));
+            await_observation_read(&mut child, &p.join("ready"));
+            paused = Some(child);
+            point = Some(p);
+        } else {
+            expect(
+                &f.grant(&f.state, &grant)
+                    .env("XDG_STATE_HOME", &custom_state)
+                    .output()
+                    .unwrap(),
+                0,
+            );
+            expect(
+                &f.wake(
+                    &f.state,
+                    &["register", "gc-older", "--route", grant.to_str().unwrap()],
+                )
+                .env("XDG_STATE_HOME", &custom_state)
+                .output()
+                .unwrap(),
+                0,
+            );
+            f.finish();
+            let packet = f
+                .pull_command(&grant, "original")
+                .env("XDG_STATE_HOME", &custom_state)
+                .output()
+                .unwrap();
+            assert!(document(&packet, 0, None)["message"].is_string());
+        }
+        let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let before = serde_json::to_value(store.wake_deliveries().unwrap()).unwrap();
+        let uncertainty = store.wake_uncertainty().unwrap();
+        let sandbox = crate::common::Sandbox::new();
+        let real = sandbox.adopt_real_binary();
+        std::fs::create_dir_all(f.machine.join("af/disposable")).unwrap();
+        let output = sandbox
+            .command(&real)
+            .args(["self", "uninstall", "--purge"])
+            .env(
+                "AF_TEST_WAKE_ACCOUNT_HOME",
+                f.machine.parent().unwrap().parent().unwrap(),
+            )
+            .env("XDG_STATE_HOME", &f.machine)
+            // Alias and overlap: cache purge must preserve the same reserved ancestry.
+            .env("XDG_CACHE_HOME", &f.machine)
+            .output()
+            .unwrap();
+        if concurrent {
+            expect(&output, 0);
+            assert!(!f.machine.join("af/disposable").exists());
+            assert!(
+                !real.exists(),
+                "ordinary uninstall still removes installed versions"
+            );
+        } else {
+            assert!(!output.status.success());
+            assert!(err(&output).contains("purge refused"), "{}", err(&output));
+            assert!(real.exists(), "refusal precedes all destruction");
+            assert!(f.machine.join("af/disposable").exists());
+        }
+        if let Some(mut child) = paused {
+            std::fs::write(point.unwrap().join("proceed"), []).unwrap();
+            let output = child.0.take().unwrap().wait_with_output().unwrap();
+            expect(&output, 0);
+        }
+        let second = f._root.path().join("second");
+        std::fs::create_dir(&second).unwrap();
+        let (repo, state) = task_gc::fixture(&second);
+        expect(
+            &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+            0,
+        );
+        let refused = f
+            .grant(&state, &f.owner.join("other-store.json"))
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            err(&refused).contains("already belongs to another wake Store"),
+            "{}",
+            err(&refused)
+        );
+        assert_eq!(
+            serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.wake_uncertainty().unwrap(), uncertainty);
+        if !concurrent {
+            assert_eq!(before[0]["state"], "admission_unknown");
+            assert_empty_pi_poll(&f.pull_command(&grant, "original").output().unwrap());
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_purge_refuses_partial_authority_and_aliased_roots_before_destruction() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    for kind in ["directory", "file", "link"] {
+        let f = WakePiFixture::new();
+        let authority = f.authority();
+        af_store::local_fs::create_private_dir_all(authority.parent().unwrap()).unwrap();
+        match kind {
+            "directory" => std::fs::create_dir(&authority).unwrap(),
+            "file" => std::fs::write(&authority, b"incomplete authority").unwrap(),
+            "link" => symlink(f.owner.join("missing-authority"), &authority).unwrap(),
+            _ => unreachable!(),
+        }
+        let before = std::fs::symlink_metadata(&authority).unwrap();
+        let sandbox = crate::common::Sandbox::new();
+        let real = sandbox.adopt_real_binary();
+        let alias = f.owner.join("state-alias");
+        symlink(&f.machine, &alias).unwrap();
+        let output = sandbox
+            .command(&real)
+            .args(["self", "uninstall", "--purge"])
+            .env(
+                "AF_TEST_WAKE_ACCOUNT_HOME",
+                f.machine.parent().unwrap().parent().unwrap(),
+            )
+            .env("XDG_CACHE_HOME", &alias)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(err(&output).contains("purge refused"), "{}", err(&output));
+        assert!(real.exists(), "no executable removed on refusal");
+        let after = std::fs::symlink_metadata(&authority).unwrap();
+        assert_eq!(
+            (before.dev(), before.ino(), before.mode(), before.len()),
+            (after.dev(), after.ino(), after.mode(), after.len())
+        );
+        assert!(!authority.join("events.sqlite").exists());
+    }
+}

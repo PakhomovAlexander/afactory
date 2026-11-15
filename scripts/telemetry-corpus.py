@@ -27,6 +27,7 @@ them. Prints a Markdown table, or with `--json` the `af/telemetry-read-latency@2
 figure is over its bound, 1 when the corpus cannot be generated or measured.
 """
 import argparse
+import importlib.util
 from contextlib import contextmanager, nullcontext
 import fcntl
 import gzip
@@ -47,6 +48,11 @@ import time
 
 SCHEMA = 'af/telemetry-read-latency@2'
 REPOSITORY = Path(__file__).resolve().parent.parent
+sys.dont_write_bytecode = True
+_ACCOUNT_SPEC = importlib.util.spec_from_file_location(
+    'measurement_account', REPOSITORY / 'scripts/performance/perflab/account_isolation.py')
+account = importlib.util.module_from_spec(_ACCOUNT_SPEC)
+_ACCOUNT_SPEC.loader.exec_module(account)
 FULL_RUNS = 10000
 DEFAULT_SEED = 20261021
 # Per run, at every scale: two executions, 100 spans and 200 events per execution, 20 blobs of
@@ -399,7 +405,7 @@ def private_env(machine):
         'TMPDIR': str(machine / 'tmp'), 'AF_SELF_OFFLINE': '1', 'NO_COLOR': '1',
         'AF_TELEMETRY__LEVEL': 'content', 'AF_TELEMETRY__CONTENT_INDEX': 'true',
     })
-    return env
+    return account.fixture_environment(env)
 
 
 def index_files(corpus):
@@ -673,6 +679,10 @@ def main(argv=None):
     read.add_argument('--json', action='store_true', help=f'print the {SCHEMA} document')
     read.add_argument('--report', help='also write the document to this file')
     args = parser.parse_args(argv)
+    if args.command == 'measure':
+        isolated = account.run_script(str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv)
+        if isolated is not None:
+            return isolated
     try:
         if args.command == 'generate':
             return generate(args)

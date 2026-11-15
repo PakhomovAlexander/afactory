@@ -23,6 +23,9 @@ def copy_inputs(source, destination):
     (destination / 'scripts').mkdir()
     shutil.copyfile(source / 'scripts/telemetry-overhead.py',
                     destination / 'scripts/telemetry-overhead.py')
+    helper = Path('scripts/performance/perflab/account_isolation.py')
+    (destination / helper).parent.mkdir(parents=True)
+    shutil.copyfile(source / helper, destination / helper)
     # copyfile does not preserve read-only file modes, unlike copy/copy2. copytree
     # still preserves the directory mode; schemas is a flat directory we also mutate.
     declaration = json.loads((source / 'scripts/release-contract.json').read_text())
@@ -220,8 +223,8 @@ class ReleaseContract(unittest.TestCase):
     def test_real_preflight_cli_and_schema_writer_refuse_drift(self):
         shutil.copy(ROOT / 'scripts/release-contract.py', self.root / 'scripts')
         lab = self.root / 'scripts/performance'
-        lab.mkdir()
-        shutil.copytree(ROOT / 'scripts/performance/perflab', lab / 'perflab')
+        lab.mkdir(exist_ok=True)
+        shutil.copytree(ROOT / 'scripts/performance/perflab', lab / 'perflab', dirs_exist_ok=True)
         shutil.copy(ROOT / 'scripts/performance/schemas.py', lab)
         def run(script, *args):
             return subprocess.run([sys.executable, '-I', str(self.root / script), *args],

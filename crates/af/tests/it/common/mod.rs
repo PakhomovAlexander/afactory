@@ -784,6 +784,28 @@ pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
     claim
 }
 
+/// A narrowly injected libc account resolver, not an AF production override. Tests exercise
+/// the actual getpwuid_r path for an unmapped numeric UID and I/O errors without host changes.
+#[cfg(target_os = "linux")]
+pub fn account_resolver(directory: &Path) -> PathBuf {
+    let library = directory.join("account-resolver.so");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/task-wake-probe/account-resolver.c");
+    let output = Command::new("cc")
+        .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
+        .arg(source)
+        .args(["-ldl", "-o"])
+        .arg(&library)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    library
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

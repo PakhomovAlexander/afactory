@@ -44,7 +44,7 @@ import subprocess
 import sys
 import time
 
-from . import builds, supervise
+from . import account_isolation, builds, supervise
 from .values import ContractError, require
 
 POLL_SECONDS = 0.05
@@ -320,8 +320,13 @@ class TrustedLocal(Executor):
         self.python = python
 
     def launch(self, execution, stdout, stderr):
+        argv = execution.argv
+        # Actual laboratory AF executions carry this marker, even for release binaries
+        # which ignore it. Isolate their OS account before the script starts its timers.
+        if account_isolation.FIXTURE in execution.env and not account_isolation.in_private_account_namespace():
+            argv = account_isolation.namespace_argv(execution.env["HOME"], argv)
         return _LocalProcess(subprocess.Popen(
-            execution.argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
+            argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
             stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),
             close_fds=True))
 
@@ -591,8 +596,18 @@ class Contained(Executor):
             argv += ["--mount", "type=bind,src=%s,dst=%s%s" % (
                 path, path, "" if writable else ",readonly")]
         require(execution.cwd in execution.writable, "the working directory is writable state")
+        # Install the private OS account at the existing container boundary. Scripts
+        # validate the real NSS file/identity and need no nested user namespace or added
+        # capability inside the no-new-privileges, cap-drop-ALL container.
+        home = execution.env["HOME"]
+        require(any(home == path or home.startswith(path + os.sep) for path in execution.writable),
+                "the container account home lies in its own writable execution state")
+        passwd, nsswitch = account_isolation.account_files(home, self.uid, self.gid)
+        for source, destination in ((passwd, "/etc/passwd"), (nsswitch, "/etc/nsswitch.conf")):
+            argv += ["--mount", "type=bind,src=%s,dst=%s,readonly" % (source, destination)]
+        env = dict(execution.env, PERFLAB_ACCOUNT_FILE=str(passwd))
         argv += ["--entrypoint", "/usr/bin/env", self.image.reference, "-i"]
-        argv += ["%s=%s" % item for item in sorted(execution.env.items())]
+        argv += ["%s=%s" % item for item in sorted(env.items())]
         return argv + execution.argv
 
     def prepare(self, execution):

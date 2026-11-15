@@ -224,6 +224,68 @@ class FixtureContracts(TempDir):
         policy = toml_file.loads((repo / '.af/code-policy.toml').read_bytes(), 'policy')
         self.assertEqual(set(checks[0]['operator']['checks']), set(policy['checks']))
 
+class AccountIsolation(TempDir):
+    def test_contained_scripts_receive_the_account_helper_in_their_declared_readable_inputs(self):
+        from tests.support import ROOT
+        registry, _ = telemetry_lab.load_registry()
+        helper = os.path.join(ROOT, 'scripts/performance/perflab/account_isolation.py')
+        for experiment in registry['experiments']:
+            readable = telemetry_lab._readable(registry, ROOT, experiment, None)
+            self.assertIn(helper, readable, experiment)
+        self.assertIn('scripts/performance/perflab', telemetry_lab.authority_names(registry))
+
+    def test_guarded_builders_retain_only_the_validated_fixture_marker(self):
+        from unittest import mock
+        from perflab import account_isolation
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        modules = [overhead, telemetry_lab.script_module('scripts/telemetry-corpus.py')]
+        for marker in (str(home), str(home / '..'), '/', 'relative'):
+            parent = {'HOME': str(home), 'AF_TEST_WAKE_ACCOUNT_HOME': marker,
+                      'AF_PROVIDERS_FILE': '/foreign', 'AF_BUDGET': 'foreign'}
+            with mock.patch.dict(os.environ, parent, clear=True):
+                for module in modules:
+                    make = lambda: module.private_env(home, 'off') if module is overhead else module.private_env(home)
+                    if marker == str(home):
+                        env = make()
+                        self.assertEqual(env[account_isolation.FIXTURE], str(home))
+                        self.assertNotIn('AF_PROVIDERS_FILE', env)
+                        self.assertNotIn('AF_BUDGET', env)
+                    else:
+                        with self.assertRaises((ValueError, FileNotFoundError)):
+                            make()
+        home.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'owner-private'):
+            account_isolation.fixture_environment({}, {'HOME': str(home), account_isolation.FIXTURE: str(home)})
+
+    def test_release_launcher_changes_actual_os_account_before_measurement_script(self):
+        from unittest import mock
+        from perflab import account_isolation, telemetry_exec
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        command = ['/usr/bin/python3', '-I', 'telemetry-overhead.py', '--af', '/private/release-af']
+        with mock.patch.object(account_isolation.sys, "platform", "linux"):
+            argv = account_isolation.namespace_argv(str(home), command)
+        self.assertEqual(argv[:2], ['bwrap', '--unshare-user'])
+        self.assertEqual(argv[argv.index('--') + 1:], command)
+        mounts = [(argv[i + 1], argv[i + 2]) for i, word in enumerate(argv) if word == '--ro-bind']
+        passwd, nss = [pathlib.Path(source).read_text() for source, target in mounts]
+        self.assertIn(':%d:%d:AF measurement:%s:' % (os.geteuid(), os.getegid(), home), passwd)
+        self.assertEqual([target for _, target in mounts], ['/etc/passwd', '/etc/nsswitch.conf'])
+        self.assertIn('passwd: files\n', nss)
+        # A release laboratory execution uses the namespace even though its private debug
+        # fixture marker is present. The actual executable argv and wait4 interval inside
+        # the script are unchanged; there is no per-AF wrapper in the measured interval.
+        execution = type('Execution', (), dict(argv=command, cwd=str(home),
+            env={'HOME': str(home), account_isolation.FIXTURE: str(home)}, file_bytes=1 << 30))()
+        with mock.patch.object(account_isolation.sys, 'platform', 'linux'), mock.patch.object(
+                telemetry_exec.subprocess, 'Popen', side_effect=OSError('recorded')) as popen:
+            with self.assertRaises(OSError):
+                telemetry_exec.TrustedLocal('/usr/bin/python3').launch(execution, None, None)
+            called = popen.call_args.args[0]
+            self.assertEqual(called[0], 'bwrap')
+            self.assertEqual(called[called.index('--') + 1:], command)
+
 
 if __name__ == "__main__":
     import unittest
