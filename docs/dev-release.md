@@ -19,9 +19,17 @@ the CLI has no admin or ruleset bypass mode.
 Use an owned mode-0700 state directory outside any source checkout. The default is
 `$XDG_STATE_HOME/afactory-release/OWNER--REPO` (falling back to `~/.local/state`). Share that directory
 between concurrent callers on one machine. A run retains its reservation and never automatically
-selects another version when resumed. Use `rc --new` for a subsequent release after the existing release is ready, or a distinct
-state directory. `--new` archives the terminal receipt (up to sixteen retained) and reclaims the
-completed candidate/assets; retain unfinished runs until reconciliation completes. There is no background daemon.
+selects another version when resumed. Use `rc --new` after the existing release is ready, or to
+replace a conclusively failed local prepublication run on corrected fetched source. `plan --new`
+creates a nonpublishing plan; a new explicit `rc` supplies its own authorization. Recovery refuses
+active/waiting runs, branch intent or later receipts, publication evidence and ambiguous state.
+A completed local validation receipt must contain every captured policy command in order,
+including the run-owned gate target; empty, partial or inconsistent receipts refuse cleanup.
+The complete original receipt is durably archived under its version and exact byte digest before
+registered owned candidate cleanup or new planning. Same-version failures cannot overwrite
+archives; interrupted archival can resume explicitly. At sixteen archives a distinct receipt is
+refused: preserve the evidence and choose another state directory. No history is silently pruned.
+There is no background daemon.
 
 ```sh
 ./dev release plan --repo PakhomovAlexander/afactory --format json
@@ -45,6 +53,20 @@ matching remote fetch must succeed, regardless of cache availability; only its m
 source and Git version inventory. Initial acquisition can retry that read-only fetch once, within
 the invocation deadline. No publication effect gains a retry from this optimization. Existing plans
 retain their authority and are never reseeded. No measured timing improvement is claimed.
+
+Before saving a new plan or preparing a candidate, the exact fetched source's
+`af-pin.py --check-next VERSION` checks the prospective history (planned release followed by source
+history). The normal current-or-previous non-yanked release rule and complete target digests apply.
+An old/missing pin fails with `pin_prerequisite` before expensive validation or new-run authorization
+is retained. Prepare and merge a separate reviewed published-release pin PR, then explicitly
+replan; the check never adopts a pin. Already-pinned manual and `--pr` preparation verifies
+the signed version and complete digest mapping while preserving valid comments and whitespace.
+Signed refresh recognizes indented and quoted TOML table headers, skips table-like text in values,
+and validates the complete result, exact signed pin, non-pin values and non-pin bytes before atomic
+replacement. Unsafe or unsupported lock syntax refuses before writing. The pin-only guard uses
+the same semantic and byte validator, refusing unsupported `[af]` fields in both the base and
+updated lock. Reusing a published pin branch still requires the exact freshly generated
+pin bytes. Dirty caller lock and checker files supply no evidence.
 
 Before a plan exists, status/watch observes the existing repository lease without creating state:
 `initializing` means a controller is acquiring source or checking prerequisites; `missing_run` means

@@ -154,6 +154,104 @@ def save(path, state):
         os.close(fd)
 
 
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def validation_commands(policy, tree):
+    """The exact local argv sequence, shared by receipt production and recovery."""
+    commands = policy.get('validation')
+    if (not isinstance(commands, list) or not commands
+            or any(not isinstance(command, list) or not command
+                   or not all(isinstance(arg, str) and arg for arg in command)
+                   for command in commands)):
+        raise Refusal('validation_policy: expected nonempty ordered commands')
+    return [(['env', 'AF_GATE_TARGET_DIR=' + str(tree / 'target'), *command]
+             if command[0] == 'scripts/verify.sh' else command) for command in commands]
+
+
+def safe_prepublication_failure(state, tree):
+    """Only positively recognized local receipts authorize explicit archival recovery."""
+    plan = state['plan']
+    if (any(not isinstance(plan[key], str) for key in PLAN_FIELDS if key != 'policy')
+            or not re.fullmatch('[0-9a-f]{40}', plan['source'])
+            or not re.fullmatch('[0-9a-f]{64}', plan['executor'])
+            or plan['branch'] != 'release/v' + plan['version']
+            or plan['profile'] not in ('fast', 'full')):
+        return False
+    if (state['status'] != 'failed' or not isinstance(state.get('failure'), str)
+            or not state['failure'] or state['stage'] not in STAGES[:3]
+            or any(key in state for key in ('merged', 'published'))
+            or set(state['receipts']) != set(STAGES[:STAGES.index(state['stage']) + 1])
+            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*', plan['version'])):
+        return False
+    shapes = {
+        ('preflight', 'planned'): {'status', 'at', 'source', 'checks', 'features', 'planned_paths'},
+        ('preparation', 'intent'): {'status', 'at', 'source'},
+        ('preparation', 'complete'): {'status', 'at', 'paths'},
+        ('validation', 'intent'): {'status', 'at', 'key'},
+        ('validation', 'complete'): {'status', 'at', 'key', 'commands'},
+    }
+    for stage, receipt in state['receipts'].items():
+        if (not isinstance(receipt['status'], str)
+                or set(receipt) != shapes.get((stage, receipt['status']))
+                or type(receipt['at']) is not int):
+            return False
+        if 'source' in receipt and receipt['source'] != plan['source']:
+            return False
+        if 'key' in receipt and (not isinstance(receipt['key'], str)
+                                 or not re.fullmatch('[0-9a-f]{64}', receipt['key'])):
+            return False
+    receipts = state['receipts']
+    prepared = receipts.get('preparation', {}).get('status') == 'complete'
+    fields = {'candidate', 'candidate_tree'} & set(state)
+    if (bool(fields) != prepared or (fields and fields != {'candidate', 'candidate_tree'})
+            or (prepared and any(not isinstance(state[key], str) or not re.fullmatch('[0-9a-f]{40}', state[key])
+                                 for key in fields))
+            or (state['stage'] == 'validation' and not prepared)):
+        return False
+    preflight = receipts['preflight']
+    if (preflight['checks'] != ['release-contract', 'harness-digest']
+            or not isinstance(preflight['features'], dict)
+            or any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value)
+                   for value in preflight['features'].values())
+            or preflight['planned_paths'] != list(ALLOWED) + ['changelog.d/*', 'fixtures/performance/kernel-measure/*']):
+        return False
+    if prepared:
+        paths = receipts['preparation']['paths']
+        if (not isinstance(paths, list) or any(not isinstance(path, str)
+                or (path not in ALLOWED and not path.startswith(('changelog.d/', 'fixtures/performance/kernel-measure/')))
+                for path in paths)):
+            return False
+    validation = receipts.get('validation', {})
+    if validation.get('status') == 'complete':
+        commands = validation['commands']
+        try:
+            expected = validation_commands(plan['policy'], tree)
+        except Refusal:
+            return False
+        if not isinstance(commands, list) or len(commands) != len(expected):
+            return False
+        for command, argv in zip(commands, expected):
+            if (not isinstance(command, dict) or set(command) != {'argv', 'exit', 'stdout_sha256'}
+                    or type(command['exit']) is not int or command['exit'] != 0
+                    or command['argv'] != argv
+                    or not isinstance(command['argv'], list)
+                    or not all(isinstance(arg, str) for arg in command['argv'])
+                    or not isinstance(command['stdout_sha256'], str)
+                    or not re.fullmatch('[0-9a-f]{64}', command['stdout_sha256'])):
+                return False
+    if ('pin' in state and (not isinstance(state['pin'], dict)
+            or set(state['pin']) != {'state', 'url'} or state['pin']['url'] is not None
+            or state['pin']['state'] not in ('PENDING', 'CREDENTIAL_MISSING'))):
+        return False
+    return True
+
+
 def load(path):
     if path.is_symlink() or path.stat().st_size > 256 * 1024:
         raise Refusal('foreign_state: symlink or oversized state')
@@ -619,13 +717,23 @@ class Controller:
                      ('id', 'name', 'digest')}, 'jobs': [{k: j[k] for k in
                      ('id', 'name', 'status', 'conclusion', 'head_sha', 'run_id')} for j in jobs]}, *checks]
 
-    def source_checks(self, source):
+    def source_checks(self, source, version):
         # Disposable read-only source validation, after lineage/path admission and before
         # metadata preparation. A dirty invocation checkout contributes no bytes.
         with tempfile.TemporaryDirectory(prefix='preflight-', dir=self.directory) as temporary:
             tree = Path(temporary) / 'source'
             self.git('worktree', 'add', '--detach', tree, source)
             try:
+                try:
+                    for name in ('scripts/af-pin.py', '.af/af.lock', 'CHANGELOG.md',
+                                 '.github/workflows/release.yml'):
+                        cache_path(tree / name)
+                    run(['python3', '-I', 'scripts/af-pin.py', '--check-next', version], tree)
+                except (Refusal, OSError, ValueError):
+                    raise Refusal(f'pin_prerequisite: prospective release {version} requires the current or previous '
+                                  'non-yanked release pin and every target digest; prepare and merge a '
+                                  'separate reviewed published-release pin PR using scripts/pin-release.sh '
+                                  'VERSION before replanning; no pin was adopted') from None
                 for command in (
                     ['python3', '-I', 'scripts/release-contract.py'],
                     ['python3', '-I', 'scripts/performance/cli.py', 'harness-digest', '--check'],
@@ -635,30 +743,59 @@ class Controller:
                 self.git('worktree', 'remove', '--force', tree)
 
     def new_run(self):
-        if not self.path.exists():
+        if not self.path.exists() and not self.path.is_symlink():
             return
+        cache_path(self.path)
         previous = load(self.path)
-        if not previous.get('published') or previous['status'] != 'ready':
-            raise Refusal('unfinished_run: reconcile the existing cut before --new')
         if previous['plan']['repo'] != self.args.repo or previous['plan']['remote'] != self.args.remote:
             raise Refusal('foreign_state: repository differs')
+        version = previous['plan']['version']
+        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?', version):
+            raise Refusal('foreign_state: invalid archived version')
+        ready = previous.get('published') is True and previous['status'] == 'ready'
+        if not ready and not safe_prepublication_failure(previous, self.tree):
+            raise Refusal('unfinished_run: --new requires ready publication or conclusive failed local work')
+        # Admit every cleanup path before making the archive or removing anything.
+        if self.tree.exists() or self.tree.is_symlink():
+            cache_path(self.tree, directory=True)
+            registered = self.git('worktree', 'list', '--porcelain').splitlines()
+            if ('worktree ' + str(self.tree) not in registered
+                    or Path(run(['git', 'rev-parse', '--git-common-dir'], self.tree)).resolve() != self.mirror.resolve()):
+                raise Refusal('foreign_state: refuse candidate cleanup')
+        assets = self.directory / 'assets'
+        if assets.exists() or assets.is_symlink():
+            cache_path(assets, directory=True)
+            if not ready:
+                raise Refusal('foreign_state: prepublication run has unexpected assets')
         history = self.directory / 'history'
         history.mkdir(exist_ok=True, mode=0o700)
-        save(history / (previous['plan']['version'] + '.json'), previous)
-        # Keep at most sixteen bounded terminal receipts. No unfinished receipt is pruned.
-        receipts = sorted(history.glob('*.json'), key=lambda path: path.stat().st_mtime)
-        for path in receipts[:-16]:
-            path.unlink()
+        cache_path(history, directory=True)
+        data = self.path.read_bytes()
+        archive = history / (version + '-' + hashlib.sha256(data).hexdigest() + '.json')
+        entries = []
+        for entry in history.iterdir():
+            if len(entries) == 16:
+                raise Refusal('history_budget: more than sixteen archive entries; preserve evidence')
+            cache_path(entry)
+            load(entry)
+            entries.append(entry)
+        if archive.exists() or archive.is_symlink():
+            cache_path(archive)
+            if archive.read_bytes() != data:
+                raise Refusal('archive_collision: original evidence retained; no cleanup')
+        else:
+            if len(entries) >= 16:
+                raise Refusal('history_budget: sixteen archives retained; choose another state directory')
+            # No replacement; retain the original exact receipt, including its authorization.
+            os.link(self.path, archive, follow_symlinks=False)
+        sync_directory(history)
+        sync_directory(self.directory)
         if self.tree.exists():
-            if self.tree.is_symlink() or Path(run(['git', 'rev-parse', '--git-common-dir'], self.tree)).resolve() != self.mirror.resolve():
-                raise Refusal('foreign_state: refuse candidate cleanup')
             self.git('worktree', 'remove', '--force', self.tree)
-        assets = self.directory / 'assets'
-        if assets.is_symlink():
-            raise Refusal('foreign_state: refuse asset cleanup')
         if assets.exists():
             shutil.rmtree(assets)
         self.path.unlink()
+        sync_directory(self.directory)
 
     def plan(self, authorized):
         if self.path.exists():
@@ -697,7 +834,6 @@ class Controller:
         if self.args.source and self.args.source != source:
             raise Refusal('authority_source_mismatch: --source must equal fetched main')
         policy = self.preflight(source)
-        self.source_checks(source)
         manifest = self.blob(source, 'Cargo.toml')
         current = re.search(r'^version = "([^"]+)"', manifest, re.M)[1]
         base = current.split('-')[0]
@@ -713,6 +849,7 @@ class Controller:
             raise Refusal('version_conflict: RC must use the current reviewed version base')
         if int(version.rsplit('.', 1)[1]) <= max(numbers, default=0):
             raise Refusal('version_conflict: version already used or older than source')
+        self.source_checks(source, version)
         branch = 'release/v' + version
         if self.git('ls-remote', 'origin', 'refs/heads/' + branch):
             raise Refusal('branch_collision: no durable matching reservation')
@@ -803,10 +940,7 @@ class Controller:
             return
         self.receipt('validation', 'intent', key=key)
         commands = []
-        for command in p['policy']['validation']:
-            # Gate-owned reports/builds stay in this run's checkout-local target.
-            if command[0] == 'scripts/verify.sh':
-                command = ['env', 'AF_GATE_TARGET_DIR=' + str(self.tree / 'target'), *command]
+        for command in validation_commands(p['policy'], self.tree):
             output = run(command, self.tree)
             commands.append({'argv': command, 'exit': 0, 'stdout_sha256': hashlib.sha256(output.encode()).hexdigest()})
         if run(['git', 'status', '--porcelain'], self.tree):
@@ -1049,7 +1183,7 @@ def main():
     parser.add_argument('--source', help='optional required exact fetched main SHA')
     parser.add_argument('--version', help='optional exact reserved RC version')
     parser.add_argument('--format', choices=('json', 'markdown'), default='markdown')
-    parser.add_argument('--new', action='store_true', help='start the next run after a ready release; archive terminal receipt')
+    parser.add_argument('--new', action='store_true', help='archive ready or conclusively failed prepublication run and plan separately')
     parser.add_argument('--timeout', type=int, default=21600,
                         help='driver time limit in seconds, including commands (default 21600)')
     parser.add_argument('--poll-interval', type=int, default=30,

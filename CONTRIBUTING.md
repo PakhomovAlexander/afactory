@@ -483,9 +483,13 @@ After the release PR merges and publication succeeds, the release workflow opens
 PR from `release/pin-vVERSION` to `main`. **Review its CI and merge that PR too**: publication
 alone does not pin this repository. The pin binds every target's exact signed archive digest;
 only `.af/af.lock`'s `[af]` and `[af.digests]` may change. No release automation pushes to main.
-Refreshing current package pins preserves the catalog's exact bytes, including comments and
-formatting. If package digests actually change, the pin job refuses the catalog diff and leaves
-it for review; it never discards that diff or includes it in the pin PR.
+`scripts/prepare-release-pin.py` reads the explicitly selected published release through GitHub,
+verifies `SHA256SUMS` with the repository's trusted Minisign key and its signed version comment,
+and checks the complete target inventory. Archive-only signed releases such as RC3 are supported;
+when provenance is declared, its signed digest and repository/version identity must also match.
+It atomically replaces only the two pin tables, preserving all other lock bytes, policy, catalog
+and Worker pins. It never runs `af onboard`, requires a managed receipt, or installs or activates
+a release.
 See the [binding release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
 
 Provision the repository Actions secret **`RELEASE_PIN_TOKEN`** with a fine-grained PAT restricted

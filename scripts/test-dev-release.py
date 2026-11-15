@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Hermetic subprocess release lifecycle against local Git and a fake GitHub server."""
+import copy
+from contextlib import contextmanager
+import hashlib
+import inspect
 import json
 import os
+import runpy
 from pathlib import Path
 import shutil
 import stat
@@ -16,14 +21,40 @@ from unittest import mock
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 GIT = shutil.which('git')
-FAKE = r'''#!/usr/bin/env python3
+
+
+def publish_fixture_db(path, value):
+    """Publish complete fixture JSON by same-directory atomic replacement."""
+    import json
+    import os
+    from pathlib import Path
+    import tempfile
+
+    path = Path(path)
+    document = json.dumps(value)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp',
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(document)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+# Both generated executables use the same standalone fixture publisher.
+FIXTURE_DB_HELPER = inspect.getsource(publish_fixture_db)
+FAKE = '#!/usr/bin/env python3\n' + FIXTURE_DB_HELPER + r'''
 import hashlib,json,os,subprocess,sys,time
 from pathlib import Path
 name=Path(sys.argv[0]).name
 a=sys.argv[1:]
 f=Path(os.environ['FAKE_DB']); d=json.loads(f.read_text()); ci_run_id=d.get('ci_run_id',10)
 def save():
- temporary=Path(str(f)+'.'+str(os.getpid())+'.tmp');temporary.write_text(json.dumps(d));temporary.replace(f)
+ publish_fixture_db(f,d)
 def crash(effect,when):
  if d.get('crash')==effect+':'+when:
   d['crash']=''; save(); sys.exit(55)
@@ -215,6 +246,163 @@ print('unsupported fake request '+str(a),file=sys.stderr);sys.exit(98)
 '''
 
 
+def write_fixture_executables(directory):
+    directory.mkdir()
+    for name in ('git', 'gh', 'cargo', 'rustc', 'minisign', 'npx'):
+        path = directory / name
+        path.write_text(FAKE)
+        path.chmod(0o755)
+
+
+def write_fixture_gate(path):
+    path.write_text('#!' + sys.executable + '\n' + FIXTURE_DB_HELPER +
+                    'import json,os,sys\nfrom pathlib import Path\n'
+                    'p=os.environ["FAKE_DB"];d=json.loads(Path(p).read_text());'
+                    'd["gate_runs"]=d.get("gate_runs",0)+1;publish_fixture_db(p,d);'
+                    'import subprocess\n'
+                    'subprocess.run([sys.executable,"-I","scripts/release-contract.py"],check=True)\n'
+                    'sys.exit(9 if d.get("gate_fail") else 0)\n')
+    path.chmod(0o755)
+
+
+def fixture_data(path, **changes):
+    value = json.loads(path.read_text())
+    if changes:
+        value.update(changes)
+        publish_fixture_db(path, value)
+    return value
+
+
+class FixtureDatabase(unittest.TestCase):
+    """Actual fixture writers, without ReleaseCLI's real Git lifecycle setup."""
+
+    def setUp(self):
+        # Install before constructing fixtures: any accidental Git setup or other
+        # child launch fails, including check_output calls through Popen.
+        for target in ('subprocess.Popen', 'os.system', 'os.posix_spawn', 'os.posix_spawnp'):
+            if target.startswith('os.') and not hasattr(os, target.split('.')[1]):
+                continue
+            patcher = mock.patch(target, side_effect=AssertionError('child launch forbidden'))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.db = self.base / 'github.json'
+        publish_fixture_db(self.db, {'complete': 'old document'})
+        self.bin = self.base / 'bin'
+        write_fixture_executables(self.bin)
+        self.gate = self.base / 'verify.sh'
+        write_fixture_gate(self.gate)
+        self.env = {'FAKE_DB': str(self.db), 'REAL_GIT': GIT or '/forbidden/git'}
+
+    def tearDown(self):
+        self.assertFalse(list(self.base.rglob('.git')))
+        self.assertFalse((self.base / 'source').exists())
+        self.assertFalse((self.base / 'remote.git').exists())
+
+    def test_child_launch_guard_rejects_real_git_setup(self):
+        # ReleaseCLI.setUp starts with git init through check_output. The same
+        # launch here must fail before Git can create a repository or a child.
+        with self.assertRaisesRegex(AssertionError, 'child launch forbidden'):
+            subprocess.check_output([self.env['REAL_GIT'], 'init', str(self.base / 'source')])
+
+    def test_failed_publication_preserves_old_document_and_cleans_temp(self):
+        old = fixture_data(self.db)
+        with mock.patch('os.replace', side_effect=OSError('controlled failure')):
+            with self.assertRaisesRegex(OSError, 'controlled failure'):
+                publish_fixture_db(self.db, {'complete': 'new document'})
+        self.assertEqual(fixture_data(self.db), old)
+        self.assertEqual(list(self.base.glob('github.json.*.tmp')), [])
+
+    def test_original_truncate_and_dump_fails_polling_oracle(self):
+        old = fixture_data(self.db)
+        with self.db.open('w') as stream:
+            with self.assertRaises(json.JSONDecodeError):
+                fixture_data(self.db)
+            json.dump(old, stream)
+        self.assertEqual(fixture_data(self.db), old)
+
+    def test_fixture_writers_publish_complete_documents_atomically(self):
+        original_file = tempfile.NamedTemporaryFile
+        for writer in ('gate', 'gh', 'git-error', 'git-push', 'cargo', 'controller'):
+            with self.subTest(writer=writer):
+                old = fixture_data(self.db)
+                expected = copy.deepcopy(old)
+                if writer == 'gate':
+                    expected['gate_runs'] = old.get('gate_runs', 0) + 1
+                elif writer == 'gh':
+                    expected.setdefault('api_requests', []).append('repos/o/r')
+                elif writer == 'git-error':
+                    expected['last_git_error'] = 'controlled git error'
+                elif writer == 'git-push':
+                    expected.setdefault('effects', []).append('push')
+                elif writer == 'cargo':
+                    expected.setdefault('effects', []).append('metadata')
+                else:
+                    expected['controlled'] = True
+                observations = []
+
+                @contextmanager
+                def controlled_file(*args, **kwargs):
+                    with original_file(*args, **kwargs) as stream:
+                        self.assertEqual(Path(stream.name).parent, self.db.parent)
+                        self.assertNotEqual(Path(stream.name), self.db)
+
+                        def write(document):
+                            # Observe actual partial bytes in the temporary file,
+                            # then a complete document still awaiting publication.
+                            split = len(document) // 2
+                            stream.write(document[:split])
+                            stream.flush()
+                            self.assertEqual(Path(stream.name).read_text(), document[:split])
+                            self.assertEqual(fixture_data(self.db), old)
+                            observations.append('partial')
+                            stream.write(document[split:])
+                            stream.flush()
+                            self.assertEqual(json.loads(Path(stream.name).read_text()), expected)
+                            self.assertEqual(fixture_data(self.db), old)
+                            observations.append('unpublished')
+
+                        wrapped = mock.Mock(wraps=stream)
+                        wrapped.name = stream.name
+                        wrapped.write.side_effect = write
+                        yield wrapped
+
+                with mock.patch.dict(os.environ, self.env), \
+                        mock.patch('tempfile.NamedTemporaryFile', controlled_file):
+                    if writer == 'controller':
+                        fixture_data(self.db, controlled=True)
+                    else:
+                        path = self.gate if writer == 'gate' else self.bin / writer.split('-')[0]
+                        args = ['api', 'repos/o/r'] if writer == 'gh' else (
+                            ['push'] if writer == 'git-push' else [])
+
+                        def child_stub(command, **kwargs):
+                            # Intercept only the two explicit fixture delegation
+                            # sites. Neither Git nor release-contract is executed.
+                            if writer == 'gate':
+                                self.assertEqual(command, [sys.executable, '-I', 'scripts/release-contract.py'])
+                                self.assertEqual(kwargs, {'check': True})
+                            else:
+                                self.assertTrue(writer.startswith('git-'))
+                                self.assertEqual(command, [self.env['REAL_GIT'], *args])
+                                self.assertEqual(kwargs, {'capture_output': True})
+                            return subprocess.CompletedProcess(command, 1 if writer == 'git-error' else 0,
+                                                               b'', b'controlled git error' if writer == 'git-error' else b'')
+
+                        with mock.patch.object(sys, 'argv', [str(path), *args]), \
+                                mock.patch('subprocess.run', side_effect=child_stub) as child, \
+                                mock.patch('sys.stdout'), mock.patch('sys.stderr'), \
+                                self.assertRaises(SystemExit) as stopped:
+                            runpy.run_path(str(path), run_name='__main__')
+                        self.assertEqual(stopped.exception.code, 1 if writer == 'git-error' else 0)
+                        self.assertEqual(child.call_count, 1 if writer in ('gate', 'git-error', 'git-push') else 0)
+                self.assertEqual(observations, ['partial', 'unpublished'])
+                self.assertEqual(fixture_data(self.db), expected)
+                self.assertEqual(list(self.base.glob('github.json.*.tmp')), [])
+
+
 class ReleaseCLI(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -225,21 +413,17 @@ class ReleaseCLI(unittest.TestCase):
         self.remote = self.base / 'remote.git'
         self.state = self.base / 'state'
         self.db = self.base / 'github.json'
-        self.db.write_text(json.dumps({'remote': str(self.remote), 'source': str(self.source)}))
+        publish_fixture_db(self.db, {'remote': str(self.remote), 'source': str(self.source)})
         self.bin = self.base / 'bin'
-        self.bin.mkdir()
+        write_fixture_executables(self.bin)
         (self.base / 'tmp').mkdir()
-        for name in ('git', 'gh', 'cargo', 'rustc', 'minisign', 'npx'):
-            path = self.bin / name
-            path.write_text(FAKE)
-            path.chmod(0o755)
         self.env = {**os.environ, 'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
                     'FAKE_DB': str(self.db), 'REAL_GIT': GIT,
                     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
                     'HOME': str(self.base / 'home'), 'TMPDIR': str(self.base / 'tmp')}
         for name in ('dev', 'scripts/dev-release.py', 'scripts/release-contract.py',
                      'scripts/release-contract.json', 'scripts/release-policy.json',
-                     'scripts/release-observation.py',
+                     'scripts/release-observation.py', 'scripts/af-pin.py', '.af/af.lock', '.github/workflows/release.yml',
                      'scripts/changelog-notes.py', 'crates/af/keys/release.pub',
                      'CHANGELOG.md', 'rust-toolchain.toml', '.github/workflows/ci.yml',
                      '.github/workflows/validate.yml', 'scripts/test-classes.py',
@@ -273,18 +457,14 @@ class ReleaseCLI(unittest.TestCase):
         declaration = json.loads(declaration_path.read_text())
         declaration['version'] = '0.15.1-rc.3'
         declaration_path.write_text(json.dumps(declaration))
+        (self.source / 'CHANGELOG.md').write_text('# Changelog\n\n## [Unreleased]\n\n## [0.15.1-rc.3] - today\n\n## [0.15.1-rc.2] - today\n')
+        (self.source / '.af/af.lock').write_text('[af]\nversion = "0.15.1-rc.3"\n\n[af.digests]\n' + ''.join(
+            target + ' = "sha256:' + 'a' * 64 + '"\n' for target in policy['targets']))
         (self.source / 'Cargo.lock').write_text('# fixture lock\n')
         harness = self.source / 'scripts/performance/cli.py'
         harness.write_text('import pathlib,sys\np=pathlib.Path("fixtures/performance/kernel-measure/pin")\n'
                            'if "--write" in sys.argv:\n p.parent.mkdir(parents=True,exist_ok=True);p.write_text("pin")\n')
-        verify = self.source / 'scripts/verify.sh'
-        verify.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
-                          'p=os.environ["FAKE_DB"];d=json.load(open(p));'
-                          'd["gate_runs"]=d.get("gate_runs",0)+1;json.dump(d,open(p,"w"));'
-                          'import subprocess\n'
-                          'subprocess.run([sys.executable,"-I","scripts/release-contract.py"],check=True)\n'
-                          'sys.exit(9 if d.get("gate_fail") else 0)\n')
-        verify.chmod(0o755)
+        write_fixture_gate(self.source / 'scripts/verify.sh')
         self.git('init', '-q', '-b', 'main', self.source)
         self.commit('initial')
         self.git('clone', '--bare', '--no-local', self.source, self.remote)
@@ -299,13 +479,7 @@ class ReleaseCLI(unittest.TestCase):
                  'commit', '-qm', title)
 
     def data(self, **changes):
-        value = json.loads(self.db.read_text())
-        if changes:
-            value.update(changes)
-            temporary = self.db.with_suffix('.tmp')
-            temporary.write_text(json.dumps(value))
-            temporary.replace(self.db)
-        return value
+        return fixture_data(self.db, **changes)
 
     def cli(self, command, *args, ok=True, extra_env=None, drive=False):
         result = subprocess.run([sys.executable, str(self.source / 'dev'), 'release', command,
@@ -629,10 +803,235 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('unfinished_run', self.cli('plan', '--new', ok=False).stderr)
         self.publish_assets(self.state_value())
         self.cli('resume')
+        # A separate reviewed pin PR, not publication, supplies the next prerequisite.
+        self.git('-C', self.source, 'fetch', str(self.remote), 'main')
+        self.git('-C', self.source, 'reset', '--hard', 'FETCH_HEAD')
+        lock = self.source / '.af/af.lock'
+        lock.write_text(lock.read_text().replace('0.15.1-rc.3', '0.15.1-rc.4'))
+        self.commit('reviewed RC4 pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
         self.cli('plan', '--new')
         self.assertEqual(self.state_value()['plan']['version'], '0.15.1-rc.5')
-        self.assertTrue((self.state / 'history/0.15.1-rc.4.json').is_file())
+        self.assertEqual(len(list((self.state / 'history').glob('0.15.1-rc.4-*.json'))), 1)
         self.assertFalse((self.state / 'candidate').exists())
+
+    def test_prospective_pin_fails_before_gate_or_authority_from_fetched_bytes(self):
+        path = self.source / '.af/af.lock'
+        correct = path.read_text()
+        path.write_text(correct.replace('0.15.1-rc.3', '0.15.1-rc.2'))
+        self.commit('old pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        path.write_text(correct)
+        (self.source / 'scripts/af-pin.py').write_text('raise SystemExit(0)\n')
+        result = self.cli('rc', ok=False)
+        self.assertIn('pin_prerequisite', result.stderr)
+        self.assertIn('separate reviewed published-release pin PR', result.stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertFalse(self.data().get('effects'))
+
+    def test_prerequisite_diagnostics_are_bounded_and_redacted(self):
+        (self.source / 'scripts/af-pin.py').write_text(
+            'import sys\nsys.stderr.write("credential=secret-fixture\\n" * 1000)\nraise SystemExit(1)\n')
+        self.commit('failing source checker')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        result = self.cli('rc', ok=False)
+        self.assertIn('pin_prerequisite', result.stderr)
+        self.assertNotIn('secret-fixture', result.stderr)
+        self.assertLess(len(result.stderr), 2048)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertFalse(self.data().get('effects'))
+
+    def test_source_pin_symlink_cannot_borrow_caller_evidence(self):
+        path = self.source / '.af/af.lock'
+        external = self.base / 'caller.lock'
+        external.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(external)
+        self.commit('redirected pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('pin_prerequisite', self.cli('rc', ok=False).stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse(self.data().get('effects'))
+
+    def test_prospective_yanked_and_missing_digest_through_cli(self):
+        path = self.source / '.af/af.lock'
+        path.write_text(path.read_text().replace('0.15.1-rc.3', '0.15.1-rc.2'))
+        changelog = self.source / 'CHANGELOG.md'
+        changelog.write_text(changelog.read_text().replace('[0.15.1-rc.3] - today',
+                                                        '[0.15.1-rc.3] - today [YANKED]'))
+        self.commit('yanked newest release')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('plan')
+        self.assertIsNone(self.state_value()['authorization'])
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.state = self.base / 'missing-digest-state'
+        path.write_text(path.read_text().replace('aarch64-apple-darwin =', 'unknown ='))
+        self.commit('missing required digest')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('pin_prerequisite', self.cli('plan', ok=False).stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse(self.data().get('effects'))
+
+    def test_failed_local_new_retains_exact_evidence_and_separate_authority(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        original = (self.state / 'run.json').read_bytes()
+        source = self.state_value()['plan']['source']
+        (self.source / 'changelog.d/fix.md').write_text('- Corrected source.\n')
+        self.commit('correct source')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('rc', '--new', ok=False)
+        second = (self.state / 'run.json').read_bytes()
+        self.assertNotEqual(self.state_value()['plan']['source'], source)
+        self.assertEqual(self.state_value()['authorization'], 'normal-release-pr-check-merge-and-signed-publication-v1')
+        self.cli('plan', '--new')
+        self.assertIsNone(self.state_value()['authorization'])
+        self.assertCountEqual([p.read_bytes() for p in (self.state / 'history').iterdir()], [original, second])
+        self.assertEqual(self.state_value()['plan']['version'], '0.15.1-rc.4')
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertNotIn('push', self.data().get('effects', []))
+
+    def completed_local_failure(self):
+        # A real completed validation followed by refusal before branch intent.
+        self.cli('plan')
+        self.git('--git-dir', self.remote, 'update-ref',
+                 'refs/heads/release/v0.15.1-rc.4', self.initial)
+        result = self.cli('rc', ok=False)
+        self.assertIn('branch_collision', result.stderr)
+        state = self.state_value()
+        self.assertEqual(state['stage'], 'validation')
+        self.assertEqual(state['receipts']['validation']['status'], 'complete')
+        self.assertTrue(state['receipts']['validation']['commands'])
+        return state
+
+    def test_complete_local_validation_failure_can_be_archived(self):
+        self.completed_local_failure()
+        original = (self.state / 'run.json').read_bytes()
+        self.git('--git-dir', self.remote, 'update-ref', '-d', 'refs/heads/release/v0.15.1-rc.4')
+        self.cli('plan', '--new')
+        self.assertEqual([p.read_bytes() for p in (self.state / 'history').iterdir()], [original])
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertIsNone(self.state_value()['authorization'])
+        self.assertNotIn('push', self.data().get('effects', []))
+
+    def test_impossible_completed_validation_refuses_without_cleanup(self):
+        baseline = self.completed_local_failure()
+        commands = baseline['receipts']['validation']['commands']
+        cases = [[], commands[:-1], commands + commands[:1], list(reversed(commands)),
+                 None, {}, [None], [{'argv': []}]]
+        for field, value in (('argv', ['foreign-command']), ('exit', 1), ('exit', True),
+                             ('stdout_sha256', 'malformed')):
+            changed = copy.deepcopy(commands)
+            changed[0][field] = value
+            cases.append(changed)
+        changed = copy.deepcopy(commands)
+        gate = next(c for c in changed if c['argv'][0] == 'env')
+        gate['argv'][1] = 'AF_GATE_TARGET_DIR=/foreign/target'
+        cases.append(changed)
+        for invalid in cases:
+            with self.subTest(commands=invalid):
+                state = copy.deepcopy(baseline)
+                state['receipts']['validation']['commands'] = invalid
+                path = self.state / 'run.json'
+                path.write_text(json.dumps(state))
+                before = path.read_bytes()
+                effects = self.data().get('effects', [])
+                self.cli('plan', '--new', ok=False)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(self.data().get('effects', []), effects)
+                self.assertFalse((self.state / 'history').exists())
+                self.assertTrue((self.state / 'candidate').exists())
+
+    def test_new_refuses_active_ambiguous_or_later_state_unchanged(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        path = self.state / 'run.json'
+        baseline = self.state_value()
+        cases = [dict(status=status) for status in ('waiting', 'planned', 'intent', 'complete')]
+        cases += [dict(stage='branch'), dict(published=False), dict(merged='a'*40),
+                  dict(future_effect={}), dict(pin={'state': 'PENDING', 'url': 'https://example.test/pr'})]
+        for stage in ('branch', 'pr', 'checks', 'merge', 'publication'):
+            cases.append(dict(receipts={**baseline['receipts'], stage: {'status': 'intent', 'at': 1}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'validation':
+            {**baseline['receipts']['validation'], 'url': 'https://example.test/pr'}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'preparation': {'status': 'complete', 'at': 1}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'validation': {'status': 'waiting', 'at': 1}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'validation': {
+            'status': 'complete', 'at': 1, 'key': 'a'*64, 'commands': [{'publication': 'intent'}]}}))
+        for change in cases:
+            with self.subTest(change=change):
+                path.write_text(json.dumps({**baseline, **change}))
+                before = path.read_bytes()
+                effects = self.data().get('effects', [])
+                self.cli('plan', '--new', ok=False)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(self.data().get('effects', []), effects)
+                self.assertFalse((self.state / 'history').exists())
+                self.assertTrue((self.state / 'candidate').exists())
+
+    def test_new_refuses_foreign_receipt_before_reading(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        path = self.state / 'run.json'
+        before = path.read_bytes()
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        result = subprocess.run([sys.executable, str(self.source / 'dev'), 'release', 'plan',
+            '--new', '--repo', 'o/r', '--remote', str(self.remote), '--state', str(self.state)],
+            cwd=self.source, env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(stat.S_ISFIFO(path.lstat().st_mode))
+        self.assertFalse((self.state / 'history').exists())
+        path.unlink()
+        external = self.base / 'foreign-receipt.json'
+        external.write_bytes(before)
+        path.symlink_to(external)
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual(external.read_bytes(), before)
+        self.assertFalse((self.state / 'history').exists())
+        self.assertNotIn('push', self.data().get('effects', []))
+
+    def test_archive_collision_and_foreign_cleanup_fail_closed(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        before = (self.state / 'run.json').read_bytes()
+        history = self.state / 'history'
+        history.mkdir(mode=0o700)
+        archive = history / ('0.15.1-rc.4-' + hashlib.sha256(before).hexdigest() + '.json')
+        archive.write_bytes(before + b' ')
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual(archive.read_bytes(), before + b' ')
+        self.assertEqual((self.state / 'run.json').read_bytes(), before)
+        archive.unlink()
+        history.rmdir()
+        tree = self.state / 'candidate'
+        moved = self.state / 'foreign'
+        tree.rename(moved)
+        tree.symlink_to(moved, target_is_directory=True)
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual((self.state / 'run.json').read_bytes(), before)
+        self.assertTrue(moved.exists())
+        self.assertFalse(history.exists())
+
+    def test_interrupted_archive_idempotent_and_history_bounded(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        before = (self.state / 'run.json').read_bytes()
+        history = self.state / 'history'
+        history.mkdir(mode=0o700)
+        archive = history / ('0.15.1-rc.4-' + hashlib.sha256(before).hexdigest() + '.json')
+        os.link(self.state / 'run.json', archive)
+        for index in range(15):
+            (history / (str(index) + '.json')).write_bytes(before)
+        self.cli('rc', '--new', ok=False)
+        self.assertEqual(archive.read_bytes(), before)
+        current = (self.state / 'run.json').read_bytes()
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual((self.state / 'run.json').read_bytes(), current)
+        self.assertEqual(len(list(history.iterdir())), 16)
 
     def test_ambiguous_effects_reconcile_without_duplicate_prs(self):
         for effect in ('metadata', 'prepare', 'push', 'pr', 'merge'):
@@ -642,7 +1041,7 @@ class ReleaseCLI(unittest.TestCase):
                     self.state = self.base / ('state-' + effect + '-' + when)
                     self.remote = self.base / ('remote-' + effect + '-' + when + '.git')
                     self.git('clone', '--bare', '--no-local', self.source, self.remote)
-                    self.db.write_text(json.dumps({'remote': str(self.remote), 'source':str(self.source), 'crash': effect + ':' + when}))
+                    publish_fixture_db(self.db, {'remote': str(self.remote), 'source':str(self.source), 'crash': effect + ':' + when})
                     self.cli('rc', ok=False)
                     self.cli('resume')
                     self.assertEqual(self.data()['effects'].count('pr'), 1)
