@@ -1233,13 +1233,12 @@ fn wake_cli_pi_poll_refuses_genuine_future_semantics_with_unchanged_run_facts() 
             serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
         std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
         expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
-        let facts = [af_runtime::wake::RecordedRunFacts {
-            process: serde_json::from_slice(
-                &std::fs::read(f.state.join("runs/gc-older-1.json")).unwrap(),
-            )
-            .unwrap(),
-            cancellation: None,
-        }];
+        let process: af_contracts::task::agent_loop::TaskRunProcessV1 =
+            serde_json::from_slice(&std::fs::read(f.state.join("runs/gc-older-1.json")).unwrap())
+                .unwrap();
+        process.validate().unwrap();
+        assert_eq!(process.task_id, "gc-older");
+        assert!(!f.state.join("runs/gc-older-1.cancel.json").exists());
         let cas = Cas::open(f.state.join("cas")).unwrap();
         let actual = af_runtime::wake::project_with_run_facts(
             &store,
@@ -1247,9 +1246,16 @@ fn wake_cli_pi_poll_refuses_genuine_future_semantics_with_unchanged_run_facts() 
             &before.registration.subscription,
             None,
             checked_wake_clock(&f.state),
-            &facts,
+            // CLI recorder_facts emits only joined cancellations. Process-only records
+            // are validated separately and supply no lifecycle facts.
+            &[],
         )
         .unwrap();
+        assert!(actual.caught_up);
+        assert!(actual.observations.iter().any(|observation| {
+            observation.kind == af_contracts::task::wake::WakeKindV1::Completed
+                && observation.result_id.is_some()
+        }));
         let completed = serde_json::to_value(actual.checkpoint).unwrap();
         assert_eq!(
             checkpoint["run_facts_digest"],
@@ -1830,11 +1836,17 @@ fn invalid_current_evidence(point: &str) {
                     checkpoint["observed_unix_ms"] =
                         (registration.subscription.expires_unix_ms - 1).into();
                 }
-                let digest = af_store::content_id(&checkpoint).unwrap();
+                // A recomputed checksum is not authenticated provenance. Keep the
+                // closed seal shape and require refusal at inspection and polling.
+                let seal = serde_json::to_string(&serde_json::json!({
+                    "schema": "af/task-wake-checkpoint-seal@1",
+                    "tag": af_store::content_id(&checkpoint).unwrap()
+                }))
+                .unwrap();
                 let through = checkpoint["through"]["sequence"].as_u64().unwrap();
                 db.execute("UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3,through_sequence=?4,source_sequence=?4 WHERE id=?1",
-                    rusqlite::params![id, serde_json::to_string(&checkpoint).unwrap(), digest, i64::try_from(through).unwrap()]).unwrap();
-                store.inspect_wake(&id).unwrap(); // Correct retained digest; refusal must validate scope/time.
+                    rusqlite::params![id, serde_json::to_string(&checkpoint).unwrap(), seal, i64::try_from(through).unwrap()]).unwrap();
+                assert!(store.inspect_wake(&id).is_err(), "{point}/{fault}");
             }
             "checkpoint" => {
                 db.execute(
@@ -1920,6 +1932,11 @@ fn invalid_current_evidence(point: &str) {
             }
             _ => unreachable!(),
         }
+        let snapshot = || {
+            db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence FROM wake_subscriptions_v1 WHERE id=?1", [&id],
+                |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+        };
+        let before = snapshot();
         std::fs::write(barrier.join("proceed"), []).unwrap();
         let output = poll.0.take().unwrap().wait_with_output().unwrap();
         assert!(
@@ -1927,6 +1944,7 @@ fn invalid_current_evidence(point: &str) {
             "{point}/{fault}: {}",
             out(&output)
         );
+        assert_eq!(snapshot(), before, "{point}/{fault}");
         let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
         assert!(
             store.wake_deliveries().unwrap().is_empty(),
