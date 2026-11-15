@@ -591,8 +591,11 @@ impl WakePiFixture {
         let extension = owner.join("extension.ts");
         std::fs::write(&extension, "// recording fixture, no host calls").unwrap();
         std::fs::set_permissions(&extension, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let account = root.path().join("machine");
+        std::fs::create_dir(&account).unwrap();
+        std::fs::set_permissions(&account, std::fs::Permissions::from_mode(0o700)).unwrap();
         Self {
-            machine: root.path().join("machine/state"),
+            machine: account.join(".local/state"),
             _root: root,
             repo,
             state,
@@ -606,10 +609,22 @@ impl WakePiFixture {
         command
             .current_dir(&self.repo)
             .env("XDG_STATE_HOME", &self.machine)
+            .env(
+                "AF_TEST_WAKE_ACCOUNT_HOME",
+                self.machine.parent().unwrap().parent().unwrap(),
+            )
             .args(["task", "wake", "--state"])
             .arg(state)
             .args(args);
         command
+    }
+    fn authority(&self) -> PathBuf {
+        let identity =
+            af_store::content_id(&serde_json::json!({"domain":"af/wake-machine-session-store/1"}))
+                .unwrap();
+        self.machine
+            .join("af/task/local")
+            .join(identity.strip_prefix("sha256:").unwrap())
     }
     fn grant(&self, state: &Path, file: &Path) -> Command {
         self.grant_session(state, file, "original")
@@ -649,6 +664,7 @@ impl WakePiFixture {
         }
         // Keep the actual pinned interpreter as the child's authenticated parent.
         host.current_dir(&self.repo).env("XDG_STATE_HOME", &self.machine)
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.machine.parent().unwrap().parent().unwrap())
             .args(["-c", "\"$1\" task wake --state \"$2\" pi-next --route \"$3\" --session \"$4\"; result=$?; exit $result", "recording-pi"])
             .arg(crate::common::af_binary()).arg(&self.state).arg(grant).arg(session);
         host
@@ -2314,6 +2330,402 @@ fn wake_cli_pi_poll_selects_first_registration_committed_during_poll() {
         af_contracts::task::wake::WakeKindV1::Completed
     );
     assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_cannot_reset_through_shell_roots() {
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("original.json");
+    f.register(&grant);
+    f.finish();
+    assert!(f.pull(&grant)["message"].is_string());
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let before = serde_json::to_value(store.wake_deliveries().unwrap()).unwrap();
+    let uncertainty = store.wake_uncertainty().unwrap();
+    assert_eq!(uncertainty.as_array().unwrap().len(), 1);
+    assert_eq!(before[0]["state"], "admission_unknown");
+    let second = f._root.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    let (repo, state) = task_gc::fixture(&second);
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    for index in 0..3 {
+        let alternate = f.owner.join(format!("shell-{index}"));
+        std::fs::create_dir(&alternate).unwrap();
+        let mut command = f.grant(&state, &f.owner.join(format!("second-{index}.json")));
+        command.env("HOME", &alternate);
+        if index == 0 {
+            command.env("XDG_STATE_HOME", alternate.join("state"));
+        } else {
+            command.env_remove("XDG_STATE_HOME");
+        }
+        let refused = command.output().unwrap();
+        assert!(
+            !refused.status.success(),
+            "alternate shell must retain original-session fence: {}",
+            out(&refused)
+        );
+        assert!(
+            err(&refused).contains("already belongs to another wake Store"),
+            "{}",
+            err(&refused)
+        );
+        assert!(
+            EventStore::open_read_only(state.join("events.sqlite"))
+                .unwrap()
+                .wake_deliveries()
+                .unwrap()
+                .is_empty()
+        );
+        // The same Store remains usable across exactly the same shell changes and restart.
+        let output = f
+            .pull_command(&grant, "original")
+            .env("HOME", &alternate)
+            .env("XDG_STATE_HOME", alternate.join("other-state"))
+            .output()
+            .unwrap();
+        assert_empty_pi_poll(&output);
+        assert_eq!(
+            serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.wake_uncertainty().unwrap(), uncertainty);
+    }
+    // Ordinary default Store selection (no --state), with a different HOME and XDG root,
+    // must consult exactly the same account authority as explicit Store selection.
+    let mut default = crate::common::af();
+    default
+        .current_dir(&f.repo)
+        .env(
+            "AF_TEST_WAKE_ACCOUNT_HOME",
+            f.machine.parent().unwrap().parent().unwrap(),
+        )
+        .env("HOME", &second)
+        .env("XDG_STATE_HOME", second.join("default-state"));
+    let build = |args: &[&str]| {
+        let mut command = crate::common::af();
+        for (name, value) in default.get_envs() {
+            if let Some(value) = value {
+                command.env(name, value);
+            }
+        }
+        command.current_dir(&f.repo).args(args).output().unwrap()
+    };
+    expect(&build(&["task", "plan", "--file", "gc-older.json"]), 0);
+    let refused = build(&[
+        "task",
+        "wake",
+        "grant",
+        "gc-older",
+        "--host",
+        "pi",
+        "--session",
+        "original",
+        "--executable",
+        f.binary.to_str().unwrap(),
+        "--extension",
+        f.extension.to_str().unwrap(),
+        "--grant-file",
+        f.owner.join("default.json").to_str().unwrap(),
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("already belongs to another wake Store"),
+        "{}",
+        err(&refused)
+    );
+    assert_eq!(
+        serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(store.wake_uncertainty().unwrap(), uncertainty);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_concurrent_first_grants_converge_across_roots() {
+    let f = WakePiFixture::new();
+    let second = f._root.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    let (repo, state) = task_gc::fixture(&second);
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let mut children = Vec::new();
+    let mut points = Vec::new();
+    for (index, state) in [&f.state, &state].into_iter().enumerate() {
+        let barriers = f.owner.join(format!("grant-barriers-{index}"));
+        let point = barriers.join("wake-machine-binding-1");
+        std::fs::create_dir_all(&point).unwrap();
+        let child = f
+            .grant(state, &f.owner.join(format!("first-{index}.json")))
+            .env("XDG_STATE_HOME", f.owner.join(format!("shell-{index}")))
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = task_interrupt::ChildGuard(Some(child));
+        await_observation_read(&mut child, &point.join("ready"));
+        children.push(child);
+        points.push(point);
+    }
+    // Both grants reach the boundary before either can initialize/bind machine authority.
+    for point in points {
+        std::fs::write(point.join("proceed"), []).unwrap();
+    }
+    let outputs: Vec<_> = children
+        .iter_mut()
+        .map(|child| child.0.take().unwrap().wait_with_output().unwrap())
+        .collect();
+    assert_eq!(
+        outputs.iter().filter(|o| o.status.success()).count(),
+        1,
+        "{outputs:?}"
+    );
+    let winner = usize::from(!outputs[0].status.success());
+    let states = [&f.state, &state];
+    document(
+        &f.grant(states[winner], &f.owner.join("same-store-restart.json"))
+            .output()
+            .unwrap(),
+        0,
+        None,
+    );
+    let refused = f
+        .grant(
+            states[1 - winner],
+            &f.owner.join("other-store-restart.json"),
+        )
+        .env_remove("XDG_STATE_HOME")
+        .env("HOME", &f.owner)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("already belongs to another wake Store"),
+        "{}",
+        err(&refused)
+    );
+    let authority = EventStore::open_read_only(f.authority().join("events.sqlite")).unwrap();
+    let key = af_store::content_id(
+        &serde_json::json!({"domain":"af/wake-session/1", "host":"pi", "session":"original"}),
+    )
+    .unwrap();
+    authority
+        .check_wake_session_store(
+            &key,
+            &EventStore::open_read_only(states[winner].join("events.sqlite"))
+                .unwrap()
+                .wake_incarnation()
+                .unwrap(),
+        )
+        .unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_authority_damage_refuses_without_reset() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let before = serde_json::to_value(store.inspect_wake(&id).unwrap()).unwrap();
+    let database = f.authority().join("events.sqlite");
+    let retained = f.owner.join("retained-authority.sqlite");
+    std::fs::rename(&database, &retained).unwrap();
+    let refused = f.pull_command(&grant, "original").output().unwrap();
+    assert!(
+        !refused.status.success(),
+        "missing authority must not be recreated on use"
+    );
+    assert!(!database.exists());
+    let refused = f
+        .grant(&f.state, &f.owner.join("missing-authority.json"))
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "grant must not recreate missing authority either"
+    );
+    assert!(!database.exists());
+    std::os::unix::fs::symlink(&retained, &database).unwrap();
+    assert!(
+        !f.pull_command(&grant, "original")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::remove_file(&database).unwrap();
+    std::fs::write(&database, "malformed authority").unwrap();
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        !f.pull_command(&grant, "original")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::remove_file(&database).unwrap();
+    std::fs::rename(&retained, &database).unwrap();
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        !f.pull_command(&grant, "original")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.inspect_wake(&id).unwrap()).unwrap(),
+        before
+    );
+    assert!(store.wake_deliveries().unwrap().is_empty());
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    f.finish();
+    assert!(f.pull(&grant)["message"].is_string());
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_codex_socket_rejects_replaceable_higher_ancestry() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = WakePiFixture::new();
+    let outer = f.owner.join("outer");
+    let inner = outer.join("private");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = inner.join("daemon.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let binary = f.owner.join("recording-queue");
+    let called = f.owner.join("native-called");
+    std::fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            called.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let grant = f.owner.join("codex.json");
+    let grant_command = || {
+        f.wake(
+            &f.state,
+            &[
+                "grant",
+                "gc-older",
+                "--host",
+                "codex",
+                "--session",
+                "thread",
+                "--executable",
+                binary.to_str().unwrap(),
+                "--socket",
+                socket.to_str().unwrap(),
+                "--grant-file",
+                grant.to_str().unwrap(),
+            ],
+        )
+    };
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let refused = grant_command().output().unwrap();
+    assert!(
+        !refused.status.success(),
+        "higher writable ancestry must refuse before route admission"
+    );
+    assert!(!grant.exists());
+    // Sticky trusted parents protect the owner-owned private child. Socket mode 0777
+    // remains supported; executable mode policy is deliberately separate.
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    document(&grant_command().output().unwrap(), 0, None);
+    document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        None,
+    );
+    f.finish();
+    let barriers = f.owner.join("native-barriers");
+    let point = barriers.join("wake-native-preflight-1");
+    std::fs::create_dir_all(&point).unwrap();
+    let child = f
+        .wake(&f.state, &["drain", "--max-batches", "1"])
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = task_interrupt::ChildGuard(Some(child));
+    await_observation_read(&mut child, &point.join("ready"));
+    // Permission change after grant/transport but before native preflight must refuse
+    // before committing native intent or launching the reconnecting queue executable.
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::write(point.join("proceed"), []).unwrap();
+    let output = child.0.take().unwrap().wait_with_output().unwrap();
+    assert!(
+        err(&output).contains("replaceable or foreign directory ancestry"),
+        "{}",
+        err(&output)
+    );
+    assert!(!called.exists());
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store.wake_deliveries().unwrap().iter().all(|d| d.state
+            != af_contracts::task::wake::delivery::WakeDeliveryStateV1::AdmissionUnknown)
+    );
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Socket identity still matters even after the ancestor becomes safe again.
+    std::fs::rename(&inner, outer.join("retained-original")).unwrap();
+    std::fs::create_dir(&inner).unwrap();
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let refused = f
+        .wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(!called.exists());
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

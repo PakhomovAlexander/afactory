@@ -85,6 +85,8 @@ pub(crate) struct Roots {
     pub(crate) campaigns: PathBuf,
     pub(crate) local_reviews: PathBuf,
     pub(crate) tasks: PathBuf,
+    /// Fixed OS-account authority, also measured when state_home selects another root.
+    pub(crate) wake_authority: Option<PathBuf>,
     pub(crate) registry: PathBuf,
     /// Where installed versions, the default symlink and the pins seen live.
     pub(crate) installs: crate::self_management::Paths,
@@ -127,6 +129,7 @@ impl Roots {
             campaigns: state.join("review").join("campaigns"),
             local_reviews: state.join("review").join("local"),
             tasks: state.join("task").join("local"),
+            wake_authority: config::wake_session_store_path()?,
             registry: registry::location(&state_home),
             installs: crate::self_management::paths()?,
             telemetry: TelemetryRoots {
@@ -736,6 +739,12 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         .chain(listed(&mut inventory, &roots.local_reviews))
         .collect();
     let mut tasks: BTreeSet<PathBuf> = listed(&mut inventory, &roots.tasks).into_iter().collect();
+    // A shell's alternate XDG root must neither hide the machine authority from the
+    // budget nor make its monotone bindings collectable. The normal Task Store remainder
+    // is retained; a set deduplicates it when this is also the default state root.
+    if let Some(path) = &roots.wake_authority {
+        tasks.insert(path.clone());
+    }
     let mut projects: BTreeSet<PathBuf> = BTreeSet::new();
     for entry in &registered {
         match entry.kind {
@@ -888,6 +897,9 @@ pub(crate) fn accounted(roots: &Roots) -> (Vec<Accounted>, Option<String>) {
         Accounted::new(&roots.workspaces, "the warm Workspaces"),
         Accounted::new(&roots.installs.versions, "the release installations"),
     ];
+    if let Some(path) = &roots.wake_authority {
+        accounted.push(Accounted::new(path, "the OS-account wake authority Store"));
+    }
     let unknown = match registry::read(&roots.registry) {
         Ok(stores) => {
             for store in stores {

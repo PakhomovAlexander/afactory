@@ -67,7 +67,7 @@ def resolve(config, selection):
             "--artifact-id", selection["artifact_id"], "--repo", config["task_repo"],
             "--task-state", config["task_state"], "--json"], stdin=subprocess.DEVNULL, stdout=output,
             stderr=subprocess.DEVNULL, timeout=60,
-            env={"PATH": os.defpath, "HOME": home, "XDG_CONFIG_HOME": home,
+            env={"PATH": os.defpath, "HOME": home, "AF_TEST_WAKE_ACCOUNT_HOME": home, "XDG_CONFIG_HOME": home,
                  "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home, "AF_SELF_OFFLINE": "1"})
         require(result.returncode == 0, "native evidence source refused; inspect its Task and artifact receipt")
         output.seek(0)

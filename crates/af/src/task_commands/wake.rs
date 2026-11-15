@@ -126,28 +126,37 @@ fn controlled_directory(owner: u32, mode: u32) -> bool {
         && (mode & 0o022 == 0 || mode & 0o1000 != 0)
 }
 fn installation_ancestry(path: &Path) -> Result<Vec<InstallationDirectory>, String> {
+    checked_ancestry(path, |directory| {
+        let info = std::fs::symlink_metadata(directory).map_err(err)?;
+        if !info.is_dir() || directory.canonicalize().map_err(err)? != directory {
+            return Err("Wake installation requires canonical directory ancestry".into());
+        }
+        Ok(InstallationDirectory {
+            path: directory.to_owned(),
+            device: info.dev(),
+            inode: info.ino(),
+            owner: info.uid(),
+            mode: info.mode(),
+        })
+    })
+}
+fn checked_ancestry(
+    path: &Path,
+    mut inspect: impl FnMut(&Path) -> Result<InstallationDirectory, String>,
+) -> Result<Vec<InstallationDirectory>, String> {
     let mut identities = Vec::new();
     for directory in path
         .parent()
         .ok_or("Missing installation parent")?
         .ancestors()
     {
-        let info = std::fs::symlink_metadata(directory).map_err(err)?;
-        if !info.is_dir()
-            || directory.canonicalize().map_err(err)? != directory
-            || !controlled_directory(info.uid(), info.mode())
-        {
+        let info = inspect(directory)?;
+        if info.path != directory || !controlled_directory(info.owner, info.mode) {
             return Err("Wake installation has replaceable or foreign directory ancestry".into());
         }
         // Sticky protection applies to the trusted-owned child, independently checked at
         // every level, including the final file. Foreign directory owners may remove children.
-        identities.push(InstallationDirectory {
-            path: directory.to_owned(),
-            device: info.dev(),
-            inode: info.ino(),
-            owner: info.uid(),
-            mode: info.mode(),
-        });
+        identities.push(info);
     }
     Ok(identities)
 }
@@ -211,7 +220,8 @@ fn installation(route: &WakeRouteV1) -> Result<(), String> {
         use std::os::unix::fs::FileTypeExt;
         let path = Path::new(socket);
         private(path.parent().ok_or("Missing socket parent")?, true)?;
-        // Linux pathname access is protected by this canonical owner-private directory.
+        let ancestry = installation_ancestry(path)?;
+        // Linux pathname access is protected through the complete trusted ancestry.
         // Codex creates mode-0777 sockets there; the socket must still be owner-owned,
         // pinned by device/inode, and authenticated by SO_PEERCRED before native intent.
         let m = std::fs::symlink_metadata(path).map_err(err)?;
@@ -220,6 +230,7 @@ fn installation(route: &WakeRouteV1) -> Result<(), String> {
             || m.uid() != nix::unistd::geteuid().as_raw()
             || Some(m.dev()) != i.socket_device
             || Some(m.ino()) != i.socket_inode
+            || installation_ancestry(path)? != ancestry
         {
             return Err("Wake endpoint substituted or unsafe".into());
         }
@@ -239,21 +250,75 @@ fn open(inspect: &crate::cli::TaskInspectArgs) -> Result<(PathBuf, Cas, EventSto
 fn session_store(create: bool) -> Result<EventStore, String> {
     // Existing inventory accounts this normal Task Store and retains its remainder.
     // It owns no business Task and can never dispatch work.
-    let identity = hash(json!({"domain":"af/wake-machine-session-store/1"}))?;
-    let path = crate::config::state_home()?.join("af/task/local").join(
-        identity
-            .strip_prefix("sha256:")
-            .ok_or("Invalid machine wake identity")?,
-    );
-    let store = if create {
+    let path = crate::config::wake_session_store_path()?
+        .ok_or("Machine wake authority currently requires Linux")?;
+    // Validate the longest existing ancestry BEFORE creating anything. Never follow an
+    // alias, adopt a foreign parent, or write through a replaceable higher directory.
+    let existing = path
+        .ancestors()
+        .find(|ancestor| {
+            !matches!(std::fs::symlink_metadata(ancestor),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        })
+        .ok_or("Missing machine wake authority ancestry")?;
+    installation_ancestry(&existing.join("authority"))?;
+    // Lock the already required parent directory, without another durable file or a
+    // blocking wait. This serializes first initialization; a competing grant may retry
+    // explicitly, but cannot initialize a second identity after a partial first create.
+    let _initialization = if create {
+        use std::os::unix::fs::OpenOptionsExt;
+        let parent = path.parent().ok_or("Missing authority parent")?;
+        af_store::local_fs::create_private_dir_all(parent).map_err(err)?;
+        installation_ancestry(&parent.join("authority"))?;
+        let directory = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_DIRECTORY | nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+            .open(parent)
+            .map_err(err)?;
+        Some(
+            nix::fcntl::Flock::lock(directory, nix::fcntl::FlockArg::LockExclusiveNonblock)
+                .map_err(|(_, e)| {
+                    format!("Machine wake authority initialization unavailable: {e}")
+                })?,
+        )
+    } else {
+        None
+    };
+    let fresh = if create {
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(e) => return Err(err(e)),
+        }
+    } else {
+        false
+    };
+    private(&path, true)?;
+    let database = path.join("events.sqlite");
+    let ancestry = installation_ancestry(&database)?;
+    // Only the creator of the absent directory may initialize identity. Preexisting,
+    // interrupted or damaged authority is never recreated as an empty binding namespace.
+    // Concurrent first grants either share the committed identity or refuse safely.
+    let store = if fresh {
         crate::storage::owned::prepare(&path, false)?;
         Cas::open(path.join("cas")).map_err(err)?;
-        let store = EventStore::open(path.join("events.sqlite")).map_err(err)?;
+        let store = EventStore::open(&database).map_err(err)?;
         store.admit_wake_incarnation().map_err(err)?;
         store
     } else {
-        let store = EventStore::open_read_only(path.join("events.sqlite")).map_err(err)?;
+        private(&database, false)?;
+        let store = if create {
+            EventStore::open(&database).map_err(err)?
+        } else {
+            EventStore::open_read_only(&database).map_err(err)?
+        };
         store.wake_incarnation().map_err(err)?;
+        if create {
+            // Idempotent admission still checks the retained seal key; the prior read
+            // prevents this path from creating identity in an incomplete existing Store.
+            store.admit_wake_incarnation().map_err(err)?;
+        }
         store
     };
     // SQLite FULL persists rows, not the Store's directory ancestry. Existence is not
@@ -261,6 +326,9 @@ fn session_store(create: bool) -> Result<EventStore, String> {
     // and before using a preexisting route. No binding or usable route escapes this barrier.
     private(&path, true)?;
     publish_session_store(&path)?;
+    if installation_ancestry(&database)? != ancestry {
+        return Err("Machine wake authority pathname changed".into());
+    }
     Ok(store)
 }
 fn publish_session_store(path: &Path) -> Result<(), String> {
@@ -783,6 +851,8 @@ pub(crate) fn execute(
             std::fs::File::open(parent)
                 .and_then(|f| f.sync_all())
                 .map_err(err)?;
+            #[cfg(debug_assertions)]
+            runs::observation_barrier("wake-machine-binding")?;
             session_store(true)?
                 .bind_wake_session_store(
                     &session_key(&route).map_err(err)?,
@@ -872,6 +942,7 @@ pub(crate) fn execute(
                         .map_err(err)
                         .and_then(|route| {
                             installation(&route)?;
+                            check_session_store(&route)?;
                             Ok(route)
                         });
                     match admission {
@@ -1108,6 +1179,80 @@ mod tests {
         }
         for mode in [0o700, 0o755, 0o1777] {
             assert!(!controlled_directory(foreign, mode));
+        }
+    }
+
+    #[test]
+    fn wake_path_ancestry_checks_every_level_and_retains_exact_identities() {
+        // Metadata fixtures supplement real CLI coverage on user-namespace Workers where
+        // the system root is mapped to a foreign UID. No production ownership bypass exists.
+        let path = Path::new("/outer/middle/private/daemon.sock");
+        let owner = nix::unistd::geteuid().as_raw();
+        let inspect = |directory: &Path| {
+            Ok(InstallationDirectory {
+                path: directory.to_owned(),
+                device: 1,
+                inode: 2,
+                owner: if directory == Path::new("/") {
+                    0
+                } else {
+                    owner
+                },
+                mode: 0o700,
+            })
+        };
+        let safe = checked_ancestry(path, inspect).unwrap();
+        assert_eq!(
+            safe.iter().map(|i| i.path.as_path()).collect::<Vec<_>>(),
+            ["/outer/middle/private", "/outer/middle", "/outer", "/"].map(Path::new)
+        );
+        for directory in path.parent().unwrap().ancestors() {
+            for mode in [0o777, 0o775, 0o702] {
+                assert!(
+                    checked_ancestry(path, |p| {
+                        let mut info = inspect(p)?;
+                        if p == directory {
+                            info.mode = mode;
+                        }
+                        Ok(info)
+                    })
+                    .is_err(),
+                    "{} mode {mode:o}",
+                    directory.display()
+                );
+            }
+            assert!(
+                checked_ancestry(path, |p| {
+                    let mut info = inspect(p)?;
+                    if p == directory {
+                        info.owner = owner.wrapping_add(12345);
+                        info.mode = 0o1777;
+                    }
+                    Ok(info)
+                })
+                .is_err()
+            );
+            for mode in [0o700, 0o755, 0o1777] {
+                assert!(
+                    checked_ancestry(path, |p| {
+                        let mut info = inspect(p)?;
+                        if p == directory {
+                            info.mode = mode;
+                        }
+                        Ok(info)
+                    })
+                    .is_ok()
+                );
+            }
+            let changed = checked_ancestry(path, |p| {
+                let mut info = inspect(p)?;
+                if p == directory {
+                    info.inode += 1;
+                }
+                Ok(info)
+            })
+            .unwrap();
+            assert_ne!(safe, changed);
         }
     }
 

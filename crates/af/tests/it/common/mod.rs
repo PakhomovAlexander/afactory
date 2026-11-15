@@ -180,6 +180,7 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
     });
     vec![
         ("HOME", home.clone()),
+        ("AF_TEST_WAKE_ACCOUNT_HOME", home.clone()),
         ("XDG_CONFIG_HOME", home.join(".config")),
         ("XDG_STATE_HOME", home.join(".local/state")),
         ("XDG_CACHE_HOME", home.join(".cache")),
@@ -320,6 +321,7 @@ impl Sandbox {
         let mut command = Command::new(binary);
         command
             .env("HOME", self.path("home"))
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_STATE_HOME", self.path("state"))

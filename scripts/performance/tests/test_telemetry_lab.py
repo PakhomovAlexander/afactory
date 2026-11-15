@@ -70,8 +70,11 @@ class Runs(TempDir):
                                                       self.path("result.work", "corpus")])
             else:
                 self.assertEqual(execution.writable, [execution.cwd])
+            # The only AF setting is the explicit private account scope for debug test
+            # executables. Shipped release builds do not read it. No caller setting leaks.
+            self.assertEqual(execution.env["AF_TEST_WAKE_ACCOUNT_HOME"], execution.env["HOME"])
             self.assertFalse(any(name.startswith(("AF_", "XDG_", "OTEL_"))
-                                 for name in execution.env))
+                                 for name in execution.env if name != "AF_TEST_WAKE_ACCOUNT_HOME"))
             if "measure" in execution.argv:
                 corpus = execution.argv[execution.argv.index("--dir") + 1]
                 self.assertEqual(corpus, os.path.join(execution.cwd, "corpus"))

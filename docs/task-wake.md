@@ -23,20 +23,33 @@ canonical paths: no symlinks, writable installation binaries, network URLs or sh
 The Store itself must satisfy Linux machine/owner/device/inode incarnation admission.
 The same-UID owner is trusted; this facility does not isolate hostile processes with that owner's
 privileges. Worker sandboxes must not have access to owner files or the Store. An original host/session is
-bound to one authoritative Task Store in a separate private machine control Store under
-`$XDG_STATE_HOME/af/task/local/`. The existing machine inventory accounts and retains that Store.
+bound to one authoritative Task Store in a separate private machine control Store under the
+Linux effective UID's OS-account home at `.local/state/af/task/local/`. AF resolves that home
+through the OS account database, independently of `HOME`, XDG settings and `--state`/workspace
+selectors. Every invocation inventories and accounts this same bounded Store, even when its
+ordinary Task state root differs. Changing shell configuration cannot reset an original-session
+binding or bypass uncertain native admission. An unsafe or unavailable account home refuses
+wake authority instead of selecting another location.
 A grant in another Task Store refuses, preventing cross-Store overtaking of uncertain admission.
 There are at most 4096 such machine session bindings; neither expiry nor a replacement grant
 rebinds them. Removing machine control state is destructive removal of recovery authority.
 Before acknowledging a binding or using a route, AF fsyncs the machine Store's directory
 publication chain through the filesystem root, including directories left by interrupted grants.
-A sync failure refuses route activation or use; directory existence and SQLite FULL alone do not
+A partially initialized authority is never recreated as a fresh registry. Preserve damaged or
+missing authority for inspection; removing it cannot prove that an earlier native call was absent.
+Concurrent first initialization uses a nonblocking lock on the existing parent directory, then
+the usual serialized session binding. A sync failure refuses route activation or use;
+directory existence and SQLite FULL alone do not
 prove that ancestry survived publication. An interrupted attempt may leave an inert grant file.
 
 For Codex, explicitly select the original interactive thread and its existing local daemon socket.
 The canonical socket parent must be owner-owned and private (mode `0700`, with no group/other
 access). The socket must also be owner-owned, but may have mode `0777`: Linux pathname access
-is protected by the private parent directory. AF still rejects symlinks, pins socket device/inode
+is protected by the private parent and every higher ancestor. As for executable installations,
+each ancestor must be canonical, owned by the effective UID or root, and not writable by other
+users unless trusted sticky-directory protection applies. A private directory beneath a
+non-sticky mode-0777 ancestor is unsafe: another UID can rename it without entering it.
+AF checks the complete chain at grant and use, rejects symlinks, pins socket device/inode
 and authenticates the connected peer's UID. Do not change the daemon's socket permissions.
 Obtain the thread and endpoint from the original host, rather than Task text or an environment
 session string. Example (replace the paths and UUID):
