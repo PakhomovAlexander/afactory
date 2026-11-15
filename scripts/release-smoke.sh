@@ -35,7 +35,7 @@ chmod 700 "$HOME"
 account_launcher="$(cd "$(dirname "$0")" && pwd)/performance/perflab/account_isolation.py"
 run_af() {
   if [[ "$(uname -s)" == Linux ]]; then
-    python3 -I -B "$account_launcher" "$HOME" "$af" "$@"
+    python3 -I -B "$account_launcher" --directory "$scratch" "$HOME" -- "$af" "$@"
   else
     "$af" "$@"
   fi

@@ -228,6 +228,139 @@ class FixtureContracts(TempDir):
         self.assertEqual(set(checks[0]['operator']['checks']), set(policy['checks']))
 
 class AccountIsolation(TempDir):
+    def test_declared_relative_inputs_and_outputs_survive_reconstructed_cwd(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from tests.account_namespace_smoke import foreign_ancestor
+        from perflab import account_isolation
+        parent = pathlib.Path(self.path('ancestor'))
+        for name in ('home', 'cwd', 'inputs'):
+            (parent / name).mkdir(parents=True, mode=0o700)
+        source = parent / 'inputs/source'
+        source.write_text('required source')
+        source.chmod(0o444)
+        program = '''
+import argparse, pathlib
+p = argparse.ArgumentParser()
+p.add_argument('--input'); p.add_argument('--report')
+a = p.parse_args()
+pathlib.Path(a.report).write_text(pathlib.Path(a.input).read_text())
+'''
+        cwd = parent / 'cwd'
+        # Both inputs and output are outside the bound cwd, with the original joined
+        # and relative syntax. Explicit metadata supplies their independent branches.
+        command = [sys.executable, '-I', '-c', program,
+                   '--input=../inputs/source', '--report=../report']
+        before = source.stat()
+        with foreign_ancestor(parent, 0o755):
+            with account_isolation.namespace_argv(
+                    parent / 'home', command, cwd=cwd, inputs=('../inputs/source',),
+                    outputs=('../report',)) as argv:
+                self.assertEqual(argv[argv.index('--') + 1:], command)
+                result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((parent / 'report').read_text(), 'required source')
+        self.assertTrue(os.path.samestat(before, source.stat()))
+        with self.assertRaises(FileNotFoundError):
+            with account_isolation.namespace_argv(
+                    parent / 'home', command, cwd=cwd, inputs=('../inputs/missing',)):
+                self.fail('missing required input admitted')
+
+    def test_directory_declarations_never_inspect_synthetic_entry_names(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from unittest import mock
+        from perflab import account_isolation
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        original = pathlib.Path.stat
+        for failure in (PermissionError, FileNotFoundError):
+            def guarded(path, *args, **kwargs):
+                if path.name == 'entry':
+                    raise failure('unrelated inaccessible/disappearing entry')
+                return original(path, *args, **kwargs)
+            with mock.patch.object(pathlib.Path, 'stat', guarded):
+                with account_isolation.namespace_argv(home, ['/usr/bin/true']) as argv:
+                    result = subprocess.run(argv, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_parent_components_follow_symlinks_without_remounting_ancestors(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from tests.account_namespace_smoke import foreign_ancestor
+        from perflab import account_isolation
+        parent = pathlib.Path(self.path('ancestor'))
+        for name in ('home', 'work', 'nested/target', 'nested/tools'):
+            (parent / name).mkdir(parents=True, mode=0o700)
+        (parent / 'route').symlink_to('nested/target')
+        (parent / 'alias').symlink_to('route/../tools')
+        (parent / 'nested/tools/tool').symlink_to(sys.executable)
+        cwd = parent / 'work'
+        env = dict(os.environ, PATH='../alias:/opt/../usr/bin:/usr/bin')
+        program = ('import os,pathlib; '
+                   'assert all(p.stat().st_uid == os.geteuid() '
+                   'for p in pathlib.Path(os.environ["HOME"]).parents)')
+        env['HOME'] = str(parent / 'home')
+        for executable in ('tool', '../alias/tool'):
+            command = [executable, '-I', '-c', program]
+            with foreign_ancestor(parent, 0o711):
+                with account_isolation.namespace_argv(
+                        parent / 'home', command, cwd=cwd, env=env) as argv:
+                    targets = [argv[i + 2] for i, word in enumerate(argv)
+                               if word in ('--bind', '--dev-bind', '--ro-bind', '--symlink')]
+                    self.assertFalse(any('..' in pathlib.Path(p).parts for p in targets))
+                    result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_actual_child_retains_separate_tmp_volume_and_cleans_backings(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from tests.support import ROOT
+        # The outer fixture supplies a genuinely distinct original /tmp filesystem,
+        # irrespective of the host layout. HOME stays on the checkout's real device.
+        import tempfile
+        target = pathlib.Path(ROOT) / 'target'
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target) as directory:
+            home = pathlib.Path(directory) / 'home'
+            home.mkdir(mode=0o700)
+            program = '''
+import json, os, pathlib, subprocess, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / 'scripts/performance'))
+from perflab import account_isolation
+home = pathlib.Path(sys.argv[2])
+def volume(p):
+    v = os.statvfs(p)
+    return [os.stat(p).st_dev, v.f_blocks, v.f_frsize]
+before = volume('/tmp')
+assert before[0] != volume(home)[0]
+code = "import os,json; v=os.statvfs('/tmp'); print(json.dumps([os.stat('/tmp').st_dev,v.f_blocks,v.f_frsize]))"
+with account_isolation.namespace_argv(home, [sys.executable, '-I', '-c', code]) as argv:
+    backings = [pathlib.Path(argv[i+1]) for i, v in enumerate(argv) if v == '--bind' and 'af-namespace-' in argv[i+1]]
+    r = subprocess.run(argv, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == before, (r.stdout, before)
+assert all(not p.exists() for p in backings), backings
+'''
+            result = subprocess.run([
+                'bwrap', '--unshare-user', '--uid', str(os.geteuid()), '--gid', str(os.getegid()),
+                '--bind', '/', '/', '--tmpfs', '/tmp', '--', sys.executable, '-I', '-B', '-c',
+                program, ROOT, str(home)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unavailable_same_volume_backing_refuses_and_removes_preparation(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from unittest import mock
+        from perflab import account_isolation
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        with mock.patch.object(account_isolation.os, 'access', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'no writable backing on measurement filesystem'):
+                with account_isolation.namespace_argv(home, ['/usr/bin/true']):
+                    self.fail('unavailable original filesystem admitted a launch')
+        self.assertEqual(list(home.iterdir()), [], 'failed preparation must remove its account files')
+
     def test_private_namespace_preserves_files_and_account_with_unmapped_ancestors(self):
         from perflab import account_isolation
         if sys.platform != 'linux':
@@ -261,9 +394,10 @@ print(json.dumps({
     'executable_owner': paths[2].stat().st_uid,
 }))
 '''
-        result = subprocess.run(account_isolation.namespace_argv(
-            str(home), [sys.executable, '-I', '-c', program, *map(str, paths)]),
-            capture_output=True, text=True)
+        with account_isolation.namespace_argv(
+                str(home), [sys.executable, '-I', '-c', program, *map(str, paths)],
+                inputs=paths) as argv:
+            result = subprocess.run(argv, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         observed = json.loads(result.stdout)
         self.assertEqual(observed['identities'], [list(identity) for identity in identities])
@@ -292,18 +426,18 @@ print(json.dumps({
         home.mkdir(mode=0o700)
         for mode in (0o711, 0o755):
             with foreign_ancestor(parent, mode):
-                argv = account_isolation.namespace_argv(home, ['/usr/bin/true'])
-                result = subprocess.run(argv, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                with account_isolation.namespace_argv(home, ['/usr/bin/true']) as argv:
+                    result = subprocess.run(argv, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
         # This exceeds exec ARG_MAX with the former three arguments per sibling.
         for index in range(6000):
             (parent / ('unrelated-%04d-' % index + 'x' * 210)).touch()
         with foreign_ancestor(parent, 0o755):
-            argv = account_isolation.namespace_argv(home, ['/usr/bin/true'])
-            self.assertLess(sum(len(os.fsencode(arg)) + 1 for arg in argv), 65536)
-            self.assertFalse(any('unrelated-' in arg for arg in argv))
-            result = subprocess.run(argv, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            with account_isolation.namespace_argv(home, ['/usr/bin/true']) as argv:
+                self.assertLess(sum(len(os.fsencode(arg)) + 1 for arg in argv), 65536)
+                self.assertFalse(any('unrelated-' in arg for arg in argv))
+                result = subprocess.run(argv, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_relative_command_and_path_symlink_branches_use_declared_cwd(self):
         from unittest import mock
@@ -322,10 +456,11 @@ print(json.dumps({
         for command in (['tool'], ['../alias/tool'], [str(parent / 'alias/tool')]):
             with foreign_ancestor(parent, 0o711), mock.patch.object(
                     pathlib.Path, 'iterdir', side_effect=AssertionError('sibling inventory')):
-                argv = account_isolation.namespace_argv(parent / 'home', command, env=env, cwd=cwd)
-                self.assertEqual(argv[argv.index('--') + 1:], command)
-                result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                with account_isolation.namespace_argv(
+                        parent / 'home', command, env=env, cwd=cwd) as argv:
+                    self.assertEqual(argv[argv.index('--') + 1:], command)
+                    result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_contained_scripts_receive_the_account_helper_in_their_declared_readable_inputs(self):
         from tests.support import ROOT
@@ -366,12 +501,11 @@ print(json.dumps({
         home = pathlib.Path(self.path('home'))
         home.mkdir(mode=0o700)
         command = ['/usr/bin/python3', '-I', 'telemetry-overhead.py', '--af', '/private/release-af']
-        with mock.patch.object(account_isolation.sys, "platform", "linux"):
-            argv = account_isolation.namespace_argv(str(home), command)
+        with account_isolation.namespace_argv(str(home), command) as argv:
+            mounts = [(argv[i + 1], argv[i + 2]) for i, word in enumerate(argv) if word == '--ro-bind']
+            passwd, nss = [pathlib.Path(source).read_text() for source, target in mounts]
         self.assertEqual(argv[:2], ['bwrap', '--unshare-user'])
         self.assertEqual(argv[argv.index('--') + 1:], command)
-        mounts = [(argv[i + 1], argv[i + 2]) for i, word in enumerate(argv) if word == '--ro-bind']
-        passwd, nss = [pathlib.Path(source).read_text() for source, target in mounts]
         self.assertIn(':%d:%d:AF measurement:%s:' % (os.geteuid(), os.getegid(), home), passwd)
         self.assertEqual([target for _, target in mounts], ['/etc/passwd', '/etc/nsswitch.conf'])
         self.assertIn('passwd: files\n', nss)
@@ -379,7 +513,8 @@ print(json.dumps({
         # fixture marker is present. The actual executable argv and wait4 interval inside
         # the script are unchanged; there is no per-AF wrapper in the measured interval.
         execution = type('Execution', (), dict(argv=command, cwd=str(home),
-            env={'HOME': str(home), account_isolation.FIXTURE: str(home)}, file_bytes=1 << 30))()
+            env={'HOME': str(home), account_isolation.FIXTURE: str(home)}, file_bytes=1 << 30,
+            readable=[], writable=[str(home)], capture=str(home)))()
         with mock.patch.object(account_isolation.sys, 'platform', 'linux'), mock.patch.object(
                 telemetry_exec.subprocess, 'Popen', side_effect=OSError('recorded')) as popen:
             with self.assertRaises(OSError):

@@ -3182,8 +3182,8 @@
   },
   {
    "path": "scripts/performance/perflab/account_isolation.py",
-   "sha256": "sha256:b2bcfb7cb6b789f917f01eb13f7392d733d3566963330a920c1ad1165e1b52a2",
-   "size": 9211
+   "sha256": "sha256:013178695de0a90837e27f6645b96e4d43c4a25cd3d9e4a41b6863e4c60c03c8",
+   "size": 12017
   },
   {
    "path": "scripts/performance/perflab/activation.py",
@@ -3517,8 +3517,8 @@
   },
   {
    "path": "scripts/performance/perflab/telemetry_exec.py",
-   "sha256": "sha256:8ffd8033c63801071ca0e0f747f19fe94b5bf8f787d29f53f94e9f6fa625d463",
-   "size": 32880
+   "sha256": "sha256:dc2740e04bf743a4fb3d1602542097d7c9f51828f7356278a682713b1a10259d",
+   "size": 33435
   },
   {
    "path": "scripts/performance/perflab/telemetry_lab.py",
@@ -3652,8 +3652,8 @@
   },
   {
    "path": "scripts/performance/tests/account_namespace_smoke.py",
-   "sha256": "sha256:14101d8df6872aee16ef687305c50c22af1d975a253c3e8118eff9cf23411a28",
-   "size": 7727
+   "sha256": "sha256:37327dbbff76a22161e7e9092bb2db18bcd1e44aa78ece44547954febaf679d2",
+   "size": 14192
   },
   {
    "path": "scripts/performance/tests/activation_fixtures.py",
@@ -3937,8 +3937,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:42201ee04142773207107c6027256c9a07d9aea98022546259e3871c9572f251",
-   "size": 23667
+   "sha256": "sha256:89a61bf1f207a3522afaf068d9746aa1c8dcda7258e039327b7d614afe3d76c8",
+   "size": 31195
   },
   {
    "path": "scripts/performance/tests/test_telemetry_build_bounds.py",
@@ -4046,7 +4046,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:266f6060f8a9a8d416b7ec77323918e71e8130fcd2f39ad88e4e4d874fd27e43",
+ "harness_digest": "sha256:0531d202180d832c08503556345d9f5f5a87786b6b51bb095a402309f94c14fb",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

@@ -1431,7 +1431,7 @@ for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry
     // Required e2e coverage, rather than author-only release-smoke commands. Exercise
     // actual AF inventory, provider selection and Task planning under both path families,
     // including search-only foreign ancestry and enough siblings to overflow old argv.
-    for family in ["tmp", "home"] {
+    for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
         for case in ["ordinary", "search-only", "populated"] {
             let home = machine.root.join(family).join(case).join("os-account");
             let authority = home
@@ -1448,7 +1448,7 @@ for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry
     }
     // Map the invoking owner to a non-root UID even when CI itself starts as root.
     // Other host owners remain unmapped; never promote overflow ownership to root.
-    for family in ["tmp", "home"] {
+    for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
         let mut command = Command::new("bwrap");
         command.args([
             "--unshare-user",
@@ -1463,13 +1463,25 @@ for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry
             "/dev",
             "/dev",
         ]);
-        let root = if family == "home" {
-            // An actual /home pathname without creating/chmodding any host /home
-            // entry. Keep the sealed source and held executable visible on CI hosts
-            // whose checkout is itself under /home.
-            let alias = PathBuf::from("/home/af-account-fixture");
+        if family == "split-tmp" {
+            // A distinct original temporary filesystem, even on single-volume CI.
+            // Bind the held source/executable below only after installing this overlay.
+            command.args(["--perms", "1777", "--tmpfs", "/tmp"]);
+        }
+        let root = if family == "tmp" {
+            machine.root.clone()
+        } else {
+            // Overlay only a private fixture parent. Higher runtime ancestry remains
+            // genuinely foreign/unmapped, without writing/chmodding host directories.
+            let parent = match family {
+                "home" | "split-tmp" => "/home",
+                "var" => "/var/tmp",
+                "usr-local" => "/usr/local",
+                _ => unreachable!(),
+            };
+            let alias = PathBuf::from(parent).join("af-account-fixture");
             command
-                .args(["--tmpfs", "/home", "--bind"])
+                .args(["--perms", "1777", "--tmpfs", parent, "--bind"])
                 .arg(&machine.root)
                 .arg(&alias)
                 .arg("--bind")
@@ -1479,8 +1491,6 @@ for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry
                 .arg(crate::common::af_binary())
                 .arg(crate::common::af_binary());
             alias
-        } else {
-            machine.root.clone()
         };
         let native = command
             .args(["--", "python3", "-I", "-B"])

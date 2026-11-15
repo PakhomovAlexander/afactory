@@ -320,16 +320,27 @@ class TrustedLocal(Executor):
         self.python = python
 
     def launch(self, execution, stdout, stderr):
+        namespace = None
         argv = execution.argv
-        # Actual laboratory AF executions carry this marker, even for release binaries
-        # which ignore it. Isolate their OS account before the script starts its timers.
+        # Parsed execution metadata, rather than command syntax, names every resource.
+        # Keep setup outside the script's AF timers and retain it through group teardown.
         if account_isolation.FIXTURE in execution.env and not account_isolation.in_private_account_namespace():
-            argv = account_isolation.namespace_argv(
-                execution.env["HOME"], argv, env=execution.env, cwd=execution.cwd)
-        return _LocalProcess(subprocess.Popen(
-            argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
-            stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),
-            close_fds=True))
+            namespace = account_isolation.namespace_argv(
+                execution.env["HOME"], argv, env=execution.env, cwd=execution.cwd,
+                inputs=execution.readable,
+                directories=execution.writable + [execution.capture])
+            argv = namespace.__enter__()
+        try:
+            process = _LocalProcess(subprocess.Popen(
+                argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
+                stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),
+                close_fds=True))
+        except BaseException:
+            if namespace is not None:
+                namespace.__exit__(*sys.exc_info())
+            raise
+        process.namespace = namespace
+        return process
 
     def prepare(self, execution):
         if sys.platform != "linux" and sys.platform != "darwin":
@@ -377,6 +388,9 @@ class TrustedLocal(Executor):
             time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
         # This is the only reap. No signal or scan of the group follows it.
         process.reap()
+        namespace = getattr(process, 'namespace', None)
+        if namespace is not None:
+            namespace.__exit__(None, None, None)
         if process.problem:
             notes.insert(0, process.problem)
         if not gone:

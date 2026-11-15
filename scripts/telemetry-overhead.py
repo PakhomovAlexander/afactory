@@ -666,7 +666,13 @@ def main(argv=None):
                         help='recompute the figures and the verdict of a recorded document')
     args = parser.parse_args(argv)
     if not args.judge:
-        isolated = account.run_script(str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv)
+        if args.work:
+            Path(args.work).mkdir(parents=True, exist_ok=True)
+        isolated = account.run_script(
+            str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv,
+            inputs=(args.af, REPOSITORY / 'scripts', FIXTURES_DIR),
+            directories=(args.work,) if args.work else (),
+            outputs=(args.report,) if args.report else ())
         if isolated is not None:
             return isolated
     if args.pairs < 1:

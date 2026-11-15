@@ -5,6 +5,9 @@ Release executables ignore that setting: local release measurements run their ou
 or supervisor in a mount/user namespace with a private files-only account database instead.
 No AF production authority lookup or accounting rule is replaced.
 """
+import argparse
+from collections import deque
+from contextlib import contextmanager, ExitStack
 import os
 import pwd
 import shutil
@@ -55,75 +58,117 @@ def account_files(home, uid, gid):
     return passwd, nsswitch
 
 
-def namespace_directories(home, command, env, cwd, staging):
-    """Private mount points for ancestors which the single-UID map cannot represent.
+def _branches(value, cwd, entries, directories, *, required, authority):
+    """Resolve components in filesystem order, retaining links and traversal directories.
 
-    Bubblewrap maps only the caller, so host root becomes the overflow UID for a
-    non-root caller. Recreate directory *containers*, never chown host paths or map
-    overflow ownership to a trusted UID. Bind only required branches at the same
-    names: files and private HOME/Store/source subtrees retain their backing inodes.
-    Foreign leaves remain foreign. Original permission bits, including sticky bits,
-    are retained; this does not turn an unsafe writable directory into a safe one.
+    In particular, link/.. follows the link before its parent. Only canonical named
+    entries become mount targets; neither dot nor parent pseudoentries can undo mounts.
+    Missing optional configuration leaves retain their existing creation ancestry.
     """
-    # Bubblewrap itself needs /tmp, including nested launches with every input
-    # under /home and an explicit TMPDIR elsewhere. Retain its mode and volume.
-    paths = [Path(home), Path(cwd) / 'entry', Path('/tmp') / 'entry']
+    path = Path(value)
+    pending = deque((path if path.is_absolute() else Path(cwd) / path).parts[1:])
+    current = Path('/')
+    links = 0
+    while pending:
+        component = pending.popleft()
+        if component == '.':
+            continue
+        if component == '..':
+            current = current.parent
+            continue
+        entry = current / component
+        try:
+            info = entry.lstat()
+        except FileNotFoundError:
+            if required:
+                raise
+            return
+        entries.add(entry)
+        if stat.S_ISLNK(info.st_mode):
+            links += 1
+            if links > 40:
+                raise ValueError('too many symlinks in measurement input: %s' % value)
+            target = Path(os.readlink(entry))
+            if target.is_absolute():
+                current = Path('/')
+            pending.extendleft(reversed(target.parts[1:] if target.is_absolute() else target.parts))
+        else:
+            current = entry
+            if stat.S_ISDIR(info.st_mode):
+                # Follow Path.stat here as in the launcher's scoped foreign-owner fixture.
+                if authority and entry.stat().st_uid != os.geteuid():
+                    directories.add(entry)
+            elif pending:
+                raise NotADirectoryError(str(entry))
+
+
+def namespace_directories(home, command, env, cwd, staging, resources, *,
+                          inputs=(), directories=(), outputs=()):
+    """Construct only explicit branches, with private containers on their real volumes.
+
+    Required inputs are supplied by each parsed caller, independently of argv syntax.
+    Fixed runtime trees are opaque; required ancestry takes precedence even inside them.
+    There is no ambient sibling inventory and no fabricated filename used as a directory.
+    """
+    entries, containers = set(), {Path('/')}
+    # Runtime inputs do not manufacture trusted ownership of executables or leaves.
+    # Subtrees keep standard tools/libraries available when a required branch carves a
+    # broader runtime prefix. None of these names is inferred from ambient siblings.
+    runtime = ('/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev', '/proc',
+               '/sys', '/run', '/var', '/usr/bin', '/usr/sbin', '/usr/lib',
+               '/usr/lib64', '/usr/libexec', '/usr/share', '/usr/local',
+               '/usr/local/bin', '/usr/local/lib', '/usr/local/share')
+    for value in runtime:
+        if Path(value).exists():
+            _branches(value, cwd, entries, containers, required=True, authority=False)
+    for path in os.get_exec_path(env):
+        _branches(path or '.', cwd, entries, containers, required=False, authority=False)
+    executable = (str(Path(cwd) / command[0]) if os.path.dirname(command[0])
+                  else shutil.which(command[0], path=os.pathsep.join(
+                      str(Path(cwd) / path) for path in os.get_exec_path(env))))
+    if not executable:
+        raise FileNotFoundError(command[0])
+    _branches(executable, cwd, entries, containers, required=True,
+              authority=Path(executable).stat().st_uid == os.geteuid())
+    for value in (home, cwd, '/tmp', *directories):
+        _branches(value, cwd, entries, containers, required=True, authority=True)
     for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME',
                  'XDG_CACHE_HOME', 'TMPDIR', 'AF_PROVIDERS_FILE', 'AF_WORKSPACE_ROOT'):
         value = env.get(name)
-        if value and Path(value).is_absolute():
-            paths.append(Path(value))
-    exec_path = [Path(cwd) / path for path in os.get_exec_path(env)]
-    paths.extend(path / 'entry' for path in exec_path)
-    paths.extend(Path(arg) for arg in command if Path(arg).is_absolute())
-    name = str(Path(cwd) / command[0]) if os.path.dirname(command[0]) else command[0]
-    executable = shutil.which(name, path=os.pathsep.join(map(str, exec_path)))
-    if executable:
-        paths.append(Path(executable))
-    # Runtime trees are opaque inputs, not inventories of ambient /tmp or /home.
-    # Preserve the loader, libraries, NSS, devices and subprocess tools together.
-    runtime = {Path(path) for path in (
-        '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys',
-        '/run', '/var') if Path(path).exists()}
-    paths.extend(runtime)
-    directories = {Path('/')}
-    entries = set()
-    seen = set()
-    uid = os.geteuid()
-    while paths:
-        path = paths.pop()
-        if path in seen:
-            continue
-        seen.add(path)
-        resolved = path.resolve()
-        for parent in resolved.parents:
-            # Runtime trees retain their original leaves and ownership, including
-            # foreign executable leaves. Never manufacture trusted executable owners.
-            if any(parent == root or root in parent.parents for root in runtime):
-                continue
-            if parent.is_dir() and parent.stat().st_uid != uid:
-                directories.add(parent)
-        for entry in (*reversed(path.parents), path):
-            if entry == Path('/'):
-                continue
-            # Retain lexical symlinks as well as their canonical target branches.
-            # Checking prefixes also captures intermediate links in a link chain.
-            canonical = entry.parent.resolve() / entry.name
-            if canonical.is_symlink():
-                paths.append(canonical.parent / os.readlink(canonical))
-            if canonical.exists() or canonical.is_symlink():
-                entries.add(canonical)
+        if value:
+            _branches(value, cwd, entries, containers, required=False, authority=True)
+    for value in inputs:
+        _branches(value, cwd, entries, containers, required=True, authority=True)
+    for value in outputs:
+        # These scripts write reports in place. A declared file must also persist when
+        # its parent is reconstructed (e.g. /tmp/report.json); never bind that parent
+        # back over trusted ancestry. Do not truncate existing reports during setup.
+        path = Path(value)
+        path = path if path.is_absolute() else Path(cwd) / path
+        with path.open('ab'):
+            pass
+        _branches(path, cwd, entries, containers, required=True, authority=True)
+
+    candidates = [Path(staging), Path(home), Path(cwd), Path.cwd(), Path('/tmp'), Path('/var/tmp')]
+    candidates.extend(sorted(path for path in entries if path.is_dir()
+                             and path.stat().st_uid == os.geteuid()))
     argv = []
-    for directory in sorted(directories, key=lambda path: (len(path.parts), str(path))):
-        mode = stat.S_IMODE(directory.stat().st_mode)
-        # Use the private account's existing filesystem for the mount points. A new
-        # tmpfs would replace disk capacity with the memory limit and change AF's
-        # free-space admission and measurement behavior.
-        backing = Path(tempfile.mkdtemp(prefix='directory-', dir=staging))
-        backing.chmod(mode)
-        argv += ['--bind', str(backing), str(directory)]
-        for entry in sorted(entry for entry in entries
-                            if entry.parent == directory and entry not in directories):
+    for entry in sorted(entries | containers, key=lambda path: (len(path.parts), str(path))):
+        if entry in containers:
+            device = entry.stat().st_dev
+            # Prefer retained private storage, but never substitute its filesystem for
+            # the original ancestor's. Private external containers have bounded lifetime
+            # under the launch context, including failure before subprocess creation.
+            base = next((path for path in candidates if path.is_dir()
+                         and path.stat().st_dev == device
+                         and os.access(path, os.W_OK | os.X_OK)), None)
+            if base is None:
+                raise ValueError('no writable backing on measurement filesystem for %s' % entry)
+            backing = Path(resources.enter_context(tempfile.TemporaryDirectory(
+                prefix='af-namespace-', dir=base)))
+            backing.chmod(stat.S_IMODE(entry.stat().st_mode))
+            argv += ['--bind', str(backing), str(entry)]
+        elif entry.parent in containers:
             if entry.is_symlink():
                 argv += ['--symlink', os.readlink(entry), str(entry)]
             else:
@@ -132,30 +177,32 @@ def namespace_directories(home, command, env, cwd, staging):
     return argv
 
 
-def namespace_argv(home, command, *, env=None, cwd=None):
-    """Prepare account files and a Linux launcher; failure has no unisolated fallback.
+@contextmanager
+def namespace_argv(home, command, *, env=None, cwd=None, inputs=(), directories=(), outputs=()):
+    """Own a Linux launch's temporary account and same-volume directory containers.
 
-    Run before the script/supervisor starts its AF timers, so wait4 still measures the
-    actual AF child. Private ancestor mounts and account files leave source/binary
-    bytes, paths, supervision, limits and counters unchanged.
+    Preparation surrounds the outer script, outside AF's measured child intervals.
+    Every caller keeps this context through process teardown; errors have no fallback.
     """
-    # AF has no OS-account wake authority on macOS, so there is nothing to overlay.
     if sys.platform == "darwin":
-        return list(command)
+        yield list(command)
+        return
     if sys.platform != "linux":
         raise ValueError("local release measurement account isolation currently requires Linux")
-    # Some untimed CLI fixture setups have not made HOME yet. Their private scratch
-    # parent already exists; do not adopt or chmod any existing directory here.
     Path(home).mkdir(mode=0o700, exist_ok=True)
     uid, gid = os.geteuid(), os.getegid()
-    passwd, nsswitch = account_files(home, uid, gid)
-    return ["bwrap", "--unshare-user", "--uid", str(uid), "--gid", str(gid),
-            "--die-with-parent", *namespace_directories(
-                home, command, os.environ if env is None else env,
-                os.getcwd() if cwd is None else cwd, passwd.parent),
-            "--ro-bind", str(passwd), "/etc/passwd",
-            "--ro-bind", str(nsswitch), "/etc/nsswitch.conf",
-            "--setenv", "PERFLAB_ACCOUNT_FILE", str(passwd), "--", *command]
+    with ExitStack() as resources:
+        passwd, nsswitch = account_files(home, uid, gid)
+        resources.callback(shutil.rmtree, passwd.parent)
+        argv = ["bwrap", "--unshare-user", "--uid", str(uid), "--gid", str(gid),
+                "--die-with-parent", *namespace_directories(
+                    home, command, os.environ if env is None else env,
+                    os.getcwd() if cwd is None else cwd, passwd.parent, resources,
+                    inputs=inputs, directories=directories, outputs=outputs),
+                "--ro-bind", str(passwd), "/etc/passwd",
+                "--ro-bind", str(nsswitch), "/etc/nsswitch.conf",
+                "--setenv", "PERFLAB_ACCOUNT_FILE", str(passwd), "--", *command]
+        yield argv
 
 
 def in_private_account_namespace():
@@ -174,19 +221,31 @@ def in_private_account_namespace():
     return True
 
 
-def run_script(script, args):
-    """Isolate a standalone measurement once, regardless of any debug fixture override."""
+def run_script(script, args, *, inputs=(), directories=(), outputs=()):
+    """Isolate a parsed measurement once without interpreting its unchanged argv."""
     if sys.platform == "darwin" or in_private_account_namespace():
         return None
     with tempfile.TemporaryDirectory(prefix="af-measurement-") as home:
-        return subprocess.call(namespace_argv(home, [sys.executable, "-I", "-B", script, *args]))
+        with namespace_argv(home, [sys.executable, "-I", "-B", script, *args],
+                            inputs=(script, *inputs), directories=directories,
+                            outputs=outputs) as argv:
+            return subprocess.call(argv)
 
 
 def main():
-    # An outer launcher for standalone release scripts (no AF fixture override).
-    if len(sys.argv) < 3:
-        raise ValueError("usage: account_isolation.py PRIVATE_HOME COMMAND...")
-    return subprocess.call(namespace_argv(sys.argv[1], sys.argv[2:]))
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--input', action='append', default=[])
+    parser.add_argument('--directory', action='append', default=[])
+    parser.add_argument('--output', action='append', default=[])
+    parser.add_argument('home')
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    if not command:
+        parser.error('a command is required')
+    with namespace_argv(args.home, command, inputs=args.input,
+                        directories=args.directory, outputs=args.output) as argv:
+        return subprocess.call(argv)
 
 
 if __name__ == "__main__":

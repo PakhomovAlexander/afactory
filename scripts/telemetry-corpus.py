@@ -680,7 +680,11 @@ def main(argv=None):
     read.add_argument('--report', help='also write the document to this file')
     args = parser.parse_args(argv)
     if args.command == 'measure':
-        isolated = account.run_script(str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv)
+        isolated = account.run_script(
+            str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv,
+            inputs=(args.af, args.dir, REPOSITORY / 'scripts'),
+            directories=(),
+            outputs=(args.report,) if args.report else ())
         if isolated is not None:
             return isolated
     try:
