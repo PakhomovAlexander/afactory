@@ -281,6 +281,52 @@ print(json.dumps({
             self.assertNotEqual(observed['executable_owner'], os.geteuid())
         self.assertEqual([p.stat().st_uid for p in parents], original_owners)
 
+    def test_search_only_and_populated_ancestors_launch_without_sibling_inventory(self):
+        from tests.account_namespace_smoke import foreign_ancestor
+        from perflab import account_isolation
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        parent = pathlib.Path(self.path('ancestor'))
+        parent.mkdir()
+        home = parent / 'home'
+        home.mkdir(mode=0o700)
+        for mode in (0o711, 0o755):
+            with foreign_ancestor(parent, mode):
+                argv = account_isolation.namespace_argv(home, ['/usr/bin/true'])
+                result = subprocess.run(argv, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        # This exceeds exec ARG_MAX with the former three arguments per sibling.
+        for index in range(6000):
+            (parent / ('unrelated-%04d-' % index + 'x' * 210)).touch()
+        with foreign_ancestor(parent, 0o755):
+            argv = account_isolation.namespace_argv(home, ['/usr/bin/true'])
+            self.assertLess(sum(len(os.fsencode(arg)) + 1 for arg in argv), 65536)
+            self.assertFalse(any('unrelated-' in arg for arg in argv))
+            result = subprocess.run(argv, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_relative_command_and_path_symlink_branches_use_declared_cwd(self):
+        from unittest import mock
+        from tests.account_namespace_smoke import foreign_ancestor
+        from perflab import account_isolation
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        parent = pathlib.Path(self.path('ancestor'))
+        parent.mkdir()
+        for name in ('home', 'work', 'tools'):
+            (parent / name).mkdir(mode=0o700)
+        (parent / 'tools/tool').symlink_to('/usr/bin/true')
+        (parent / 'alias').symlink_to('tools')
+        cwd = parent / 'work'
+        env = dict(os.environ, PATH='../alias:/usr/bin:/bin')
+        for command in (['tool'], ['../alias/tool'], [str(parent / 'alias/tool')]):
+            with foreign_ancestor(parent, 0o711), mock.patch.object(
+                    pathlib.Path, 'iterdir', side_effect=AssertionError('sibling inventory')):
+                argv = account_isolation.namespace_argv(parent / 'home', command, env=env, cwd=cwd)
+                self.assertEqual(argv[argv.index('--') + 1:], command)
+                result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_contained_scripts_receive_the_account_helper_in_their_declared_readable_inputs(self):
         from tests.support import ROOT
         registry, _ = telemetry_lab.load_registry()

@@ -1428,6 +1428,80 @@ for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry
         "the actual private OS-account authority must remain inventoried: {}",
         text(&isolated)
     );
+    // Required e2e coverage, rather than author-only release-smoke commands. Exercise
+    // actual AF inventory, provider selection and Task planning under both path families,
+    // including search-only foreign ancestry and enough siblings to overflow old argv.
+    for family in ["tmp", "home"] {
+        for case in ["ordinary", "search-only", "populated"] {
+            let home = machine.root.join(family).join(case).join("os-account");
+            let authority = home
+                .join(".local/state/af/task/local")
+                .join(identity.strip_prefix("sha256:").unwrap());
+            af_store::local_fs::create_private_dir_all(&authority).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Cas::open(authority.join("cas")).unwrap();
+            EventStore::open(authority.join("events.sqlite"))
+                .unwrap()
+                .admit_wake_incarnation()
+                .unwrap();
+        }
+    }
+    // Map the invoking owner to a non-root UID even when CI itself starts as root.
+    // Other host owners remain unmapped; never promote overflow ownership to root.
+    for family in ["tmp", "home"] {
+        let mut command = Command::new("bwrap");
+        command.args([
+            "--unshare-user",
+            "--uid",
+            "1000",
+            "--gid",
+            "1000",
+            "--bind",
+            "/",
+            "/",
+            "--dev-bind",
+            "/dev",
+            "/dev",
+        ]);
+        let root = if family == "home" {
+            // An actual /home pathname without creating/chmodding any host /home
+            // entry. Keep the sealed source and held executable visible on CI hosts
+            // whose checkout is itself under /home.
+            let alias = PathBuf::from("/home/af-account-fixture");
+            command
+                .args(["--tmpfs", "/home", "--bind"])
+                .arg(&machine.root)
+                .arg(&alias)
+                .arg("--bind")
+                .arg(workspace())
+                .arg(workspace())
+                .arg("--bind")
+                .arg(crate::common::af_binary())
+                .arg(crate::common::af_binary());
+            alias
+        } else {
+            machine.root.clone()
+        };
+        let native = command
+            .args(["--", "python3", "-I", "-B"])
+            .arg(workspace().join("scripts/performance/tests/account_namespace_smoke.py"))
+            .arg(&root)
+            .arg(crate::common::af_binary())
+            .arg(root.join("account-resolver.so"))
+            .arg(family)
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .output()
+            .unwrap();
+        assert!(native.status.success(), "{}", text(&native));
+        assert_eq!(
+            String::from_utf8_lossy(&native.stdout)
+                .matches("non-root namespace: inventory, native Provider refusal and ready Task:")
+                .count(),
+            3,
+            "{}",
+            text(&native)
+        );
+    }
     assert_eq!(
         snapshot(),
         before,

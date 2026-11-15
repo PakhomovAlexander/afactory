@@ -60,28 +60,59 @@ def namespace_directories(home, command, env, cwd, staging):
 
     Bubblewrap maps only the caller, so host root becomes the overflow UID for a
     non-root caller. Recreate directory *containers*, never chown host paths or map
-    overflow ownership to a trusted UID. Bind their original children at the same
+    overflow ownership to a trusted UID. Bind only required branches at the same
     names: files and private HOME/Store/source subtrees retain their backing inodes.
     Foreign leaves remain foreign. Original permission bits, including sticky bits,
     are retained; this does not turn an unsafe writable directory into a safe one.
     """
-    paths = [Path(home), Path(cwd) / 'entry']
+    # Bubblewrap itself needs /tmp, including nested launches with every input
+    # under /home and an explicit TMPDIR elsewhere. Retain its mode and volume.
+    paths = [Path(home), Path(cwd) / 'entry', Path('/tmp') / 'entry']
     for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME',
                  'XDG_CACHE_HOME', 'TMPDIR', 'AF_PROVIDERS_FILE', 'AF_WORKSPACE_ROOT'):
         value = env.get(name)
         if value and Path(value).is_absolute():
             paths.append(Path(value))
-    paths.extend(Path(path) / 'entry' for path in os.get_exec_path(env) if Path(path).is_absolute())
+    exec_path = [Path(cwd) / path for path in os.get_exec_path(env)]
+    paths.extend(path / 'entry' for path in exec_path)
     paths.extend(Path(arg) for arg in command if Path(arg).is_absolute())
-    executable = shutil.which(command[0], path=env.get('PATH'))
+    name = str(Path(cwd) / command[0]) if os.path.dirname(command[0]) else command[0]
+    executable = shutil.which(name, path=os.pathsep.join(map(str, exec_path)))
     if executable:
         paths.append(Path(executable))
+    # Runtime trees are opaque inputs, not inventories of ambient /tmp or /home.
+    # Preserve the loader, libraries, NSS, devices and subprocess tools together.
+    runtime = {Path(path) for path in (
+        '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys',
+        '/run', '/var') if Path(path).exists()}
+    paths.extend(runtime)
     directories = {Path('/')}
+    entries = set()
+    seen = set()
     uid = os.geteuid()
-    for path in paths:
-        for parent in path.resolve().parents:
+    while paths:
+        path = paths.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        resolved = path.resolve()
+        for parent in resolved.parents:
+            # Runtime trees retain their original leaves and ownership, including
+            # foreign executable leaves. Never manufacture trusted executable owners.
+            if any(parent == root or root in parent.parents for root in runtime):
+                continue
             if parent.is_dir() and parent.stat().st_uid != uid:
                 directories.add(parent)
+        for entry in (*reversed(path.parents), path):
+            if entry == Path('/'):
+                continue
+            # Retain lexical symlinks as well as their canonical target branches.
+            # Checking prefixes also captures intermediate links in a link chain.
+            canonical = entry.parent.resolve() / entry.name
+            if canonical.is_symlink():
+                paths.append(canonical.parent / os.readlink(canonical))
+            if canonical.exists() or canonical.is_symlink():
+                entries.add(canonical)
     argv = []
     for directory in sorted(directories, key=lambda path: (len(path.parts), str(path))):
         mode = stat.S_IMODE(directory.stat().st_mode)
@@ -91,14 +122,12 @@ def namespace_directories(home, command, env, cwd, staging):
         backing = Path(tempfile.mkdtemp(prefix='directory-', dir=staging))
         backing.chmod(mode)
         argv += ['--bind', str(backing), str(directory)]
-        for entry in sorted(directory.iterdir()):
+        for entry in sorted(entry for entry in entries
+                            if entry.parent == directory and entry not in directories):
             if entry.is_symlink():
                 argv += ['--symlink', os.readlink(entry), str(entry)]
             else:
-                # Unrelated temporary entries can disappear between enumeration and
-                # mounting. Missing declared inputs still fail at their actual use;
-                # no alternative bytes, account or executable are substituted.
-                argv += ['--dev-bind' if entry == Path('/dev') else '--bind-try',
+                argv += ['--dev-bind' if entry == Path('/dev') else '--bind',
                          str(entry), str(entry)]
     return argv
 
