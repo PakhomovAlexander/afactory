@@ -6,7 +6,7 @@ release of exact fetched main, regardless of dirty files in the invoking checkou
 
 ## Setup and authorization
 
-Install Git, Python 3, the pinned Rust toolchain with nextest, Node/npx and minisign. Authenticate
+Install Git, Python 3, the pinned Rust toolchain (Cargo and rustc), and minisign. Authenticate
 `gh` as an approved repository writer. GitHub access needs normal Contents and Pull requests write,
 plus read access to repository secret **names** for observable configuration preflight. No secret
 values are read. Configure `MINISIGN_SECRET_KEY` and the scoped `RELEASE_PIN_TOKEN` on the protected
@@ -24,7 +24,11 @@ replace a conclusively failed local prepublication run on corrected fetched sour
 creates a nonpublishing plan; a new explicit `rc` supplies its own authorization. Recovery refuses
 active/waiting runs, branch intent or later receipts, publication evidence and ambiguous state.
 A completed local validation receipt must contain every captured policy command in order,
-including the run-owned gate target; empty, partial or inconsistent receipts refuse cleanup.
+with exact argv and successful output digests; empty, partial or inconsistent receipts refuse cleanup.
+The shared command renderer retains the run-owned `AF_GATE_TARGET_DIR=<candidate>/target`
+wrapper for a captured policy that declares `scripts/verify.sh`. Recovery compares that exact
+rendered argv without changing the captured receipt or policy. The ordinary new-RC policy
+contains only the metadata commands described below.
 The complete original receipt is durably archived under its version and exact byte digest before
 registered owned candidate cleanup or new planning. Same-version failures cannot overwrite
 archives; interrupted archival can resume explicitly. At sixteen archives a distinct receipt is
@@ -98,7 +102,7 @@ independent of publication readiness.
 `plan` and `status` publish nothing. Read-only watch refreshes retained local receipts and never
 drives work.
 JSON includes the immutable plan and receipts; Markdown shows stages, elapsed seconds, next actions
-and URLs. `--source SHA` optionally asserts the exact fetched main. `--profile full` selects full validation (fast is the default).
+and URLs. `--source SHA` optionally asserts the exact fetched main. `--profile full` selects full hosted CI validation (fast is the default).
 `--version X.Y.Z-rc.N` asserts
 an exact unused RC on the current base; neither selector retargets an existing run.
 
@@ -127,9 +131,21 @@ capabilities. New compatible RCs need no Python list edit. Changed or unknown ca
 reviewing the declaration and actual schemas/fixtures together; never copy a digest to suppress an
 incompatibility. Source and prepared harness checks are executable receipts, including fast releases.
 
+Both profiles run only cheap release metadata checks locally: prospective AF-pin/version checks,
+source and prepared release-contract and harness-digest checks, plus metadata-only
+`cargo update --workspace --offline --quiet` during preparation. The prepared validation receipt
+contains exactly `python3 -I scripts/release-contract.py` followed by
+`python3 -I scripts/performance/cli.py harness-digest --check`. Profile selection never rewrites
+these commands. Normal RC creation runs no local `verify.sh`, `make check`, Rust compilation or
+tests, or Python regression suite. Cargo-nextest and Node/npx are not RC prerequisites.
+Broad validation runs in mandatory exact-source Linux/macOS hosted CI and the protected release
+workflow; `--profile fast/full` selects that captured hosted coverage. Required checks, strict main
+protection, archive smoke, signatures and separate pin adoption remain mandatory. The repository's
+native local development fast gate is unchanged. This boundary makes no measured speedup claim.
+
 Preparation updates the workspace manifest, workspace lock, collected changelog fragments, exact
 contract declaration and derived harness pins together. Only declared metadata paths can change.
-The isolated candidate has checkout-local `target/`; dirty caller files are not copied. Validation
+The candidate stays isolated; dirty caller files are not copied. Validation
 reuse requires the same candidate, commands, Python/platform and Rust/Cargo identity. Platform gates,
 archive onboard/plan smoke and signature verification remain owned by `release.yml`.
 
@@ -173,10 +189,10 @@ failure, not success. The publication job joins all platform check/build jobs. I
 without erasing a ready-to-test RC. JSON reports `published` separately from `pin`; no local install,
 pin merge or silent adoption occurs. Review the normal pin-only PR independently.
 
-The JSON receipt is bounded to 256 KiB. Each run retains one mirror, one candidate with build
-products and one downloaded release asset set. Once the release and pin have been independently
-reviewed, archive the receipt and remove the completed owned run directory to reclaim its build
-products. Do not remove a directory while a controller holds its lease.
+The JSON receipt is bounded to 256 KiB. Each run retains one mirror, one metadata candidate
+and one downloaded release asset set. Once the release and pin have been independently
+reviewed, archive the receipt and remove the completed owned run directory to reclaim its retained
+data. Do not remove a directory while a controller holds its lease.
 
 ## Hermetic development checks
 
