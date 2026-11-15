@@ -3182,8 +3182,8 @@
   },
   {
    "path": "scripts/performance/perflab/account_isolation.py",
-   "sha256": "sha256:257a8c1fd5c7ee9caccaa22585e198498ae0391350fede7eebe794bd4de7da63",
-   "size": 4977
+   "sha256": "sha256:9d1567146501460da83da9ace1c264658531e0f3794d1836826d525c976d353a",
+   "size": 7723
   },
   {
    "path": "scripts/performance/perflab/activation.py",
@@ -3517,8 +3517,8 @@
   },
   {
    "path": "scripts/performance/perflab/telemetry_exec.py",
-   "sha256": "sha256:90a38aff6e3054afef265c2f77e361389e675106c5797a94f4b10e24d0347175",
-   "size": 32825
+   "sha256": "sha256:8ffd8033c63801071ca0e0f747f19fe94b5bf8f787d29f53f94e9f6fa625d463",
+   "size": 32880
   },
   {
    "path": "scripts/performance/perflab/telemetry_lab.py",
@@ -3932,8 +3932,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:927d31ce0f3a341dc6223349e838e0bf83dd8b5ab6fdae84823bc75e9c9338e5",
-   "size": 17969
+   "sha256": "sha256:6189d36ebc46b26b00c433c83813ea900601f9a7a01429057e99f2fe8d2315fc",
+   "size": 21059
   },
   {
    "path": "scripts/performance/tests/test_telemetry_build_bounds.py",
@@ -4041,7 +4041,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:5b776735e8a1d09cf0ca1a56fc1aa7461f5d9a01ce2ff67d54e4bdbb8a7ba14c",
+ "harness_digest": "sha256:dfb55af626615721a15d480cfd90a3a85b812ae2fa6c4505c800a03c57b55880",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

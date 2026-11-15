@@ -324,7 +324,8 @@ class TrustedLocal(Executor):
         # Actual laboratory AF executions carry this marker, even for release binaries
         # which ignore it. Isolate their OS account before the script starts its timers.
         if account_isolation.FIXTURE in execution.env and not account_isolation.in_private_account_namespace():
-            argv = account_isolation.namespace_argv(execution.env["HOME"], argv)
+            argv = account_isolation.namespace_argv(
+                execution.env["HOME"], argv, env=execution.env, cwd=execution.cwd)
         return _LocalProcess(subprocess.Popen(
             argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
             stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),

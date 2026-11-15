@@ -7,6 +7,7 @@ No AF production authority lookup or accounting rule is replaced.
 """
 import os
 import pwd
+import shutil
 import subprocess
 from pathlib import Path
 import stat
@@ -54,12 +55,60 @@ def account_files(home, uid, gid):
     return passwd, nsswitch
 
 
-def namespace_argv(home, command):
+def namespace_directories(home, command, env, cwd, staging):
+    """Private mount points for ancestors which the single-UID map cannot represent.
+
+    Bubblewrap maps only the caller, so host root becomes the overflow UID for a
+    non-root caller. Recreate directory *containers*, never chown host paths or map
+    overflow ownership to a trusted UID. Bind their original children at the same
+    names: files and private HOME/Store/source subtrees retain their backing inodes.
+    Foreign leaves remain foreign. Original permission bits, including sticky bits,
+    are retained; this does not turn an unsafe writable directory into a safe one.
+    """
+    paths = [Path(home), Path(cwd) / 'entry']
+    for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME',
+                 'XDG_CACHE_HOME', 'TMPDIR', 'AF_PROVIDERS_FILE', 'AF_WORKSPACE_ROOT'):
+        value = env.get(name)
+        if value and Path(value).is_absolute():
+            paths.append(Path(value))
+    paths.extend(Path(path) / 'entry' for path in os.get_exec_path(env) if Path(path).is_absolute())
+    paths.extend(Path(arg) for arg in command if Path(arg).is_absolute())
+    executable = shutil.which(command[0], path=env.get('PATH'))
+    if executable:
+        paths.append(Path(executable))
+    directories = {Path('/')}
+    uid = os.geteuid()
+    for path in paths:
+        for parent in path.resolve().parents:
+            if parent.is_dir() and parent.stat().st_uid != uid:
+                directories.add(parent)
+    argv = []
+    for directory in sorted(directories, key=lambda path: (len(path.parts), str(path))):
+        mode = stat.S_IMODE(directory.stat().st_mode)
+        # Use the private account's existing filesystem for the mount points. A new
+        # tmpfs would replace disk capacity with the memory limit and change AF's
+        # free-space admission and measurement behavior.
+        backing = Path(tempfile.mkdtemp(prefix='directory-', dir=staging))
+        backing.chmod(mode)
+        argv += ['--bind', str(backing), str(directory)]
+        for entry in sorted(directory.iterdir()):
+            if entry.is_symlink():
+                argv += ['--symlink', os.readlink(entry), str(entry)]
+            else:
+                # Unrelated temporary entries can disappear between enumeration and
+                # mounting. Missing declared inputs still fail at their actual use;
+                # no alternative bytes, account or executable are substituted.
+                argv += ['--dev-bind' if entry == Path('/dev') else '--bind-try',
+                         str(entry), str(entry)]
+    return argv
+
+
+def namespace_argv(home, command, *, env=None, cwd=None):
     """Prepare account files and a Linux launcher; failure has no unisolated fallback.
 
     Run before the script/supervisor starts its AF timers, so wait4 still measures the
-    actual AF child. Only the account database is overlaid; source/binary paths and
-    existing process supervision, limits and counters retain their meanings.
+    actual AF child. Private ancestor mounts and account files leave source/binary
+    bytes, paths, supervision, limits and counters unchanged.
     """
     # AF has no OS-account wake authority on macOS, so there is nothing to overlay.
     if sys.platform == "darwin":
@@ -72,7 +121,9 @@ def namespace_argv(home, command):
     uid, gid = os.geteuid(), os.getegid()
     passwd, nsswitch = account_files(home, uid, gid)
     return ["bwrap", "--unshare-user", "--uid", str(uid), "--gid", str(gid),
-            "--die-with-parent", "--bind", "/", "/", "--dev-bind", "/dev", "/dev",
+            "--die-with-parent", *namespace_directories(
+                home, command, os.environ if env is None else env,
+                os.getcwd() if cwd is None else cwd, passwd.parent),
             "--ro-bind", str(passwd), "/etc/passwd",
             "--ro-bind", str(nsswitch), "/etc/nsswitch.conf",
             "--setenv", "PERFLAB_ACCOUNT_FILE", str(passwd), "--", *command]

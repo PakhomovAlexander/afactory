@@ -7,6 +7,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub fn workspace() -> PathBuf {
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 #[path = "../../../src/providers/fixture_fs.rs"]
 pub mod provider_fixture_fs;
 
@@ -789,8 +795,7 @@ pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
 #[cfg(target_os = "linux")]
 pub fn account_resolver(directory: &Path) -> PathBuf {
     let library = directory.join("account-resolver.so");
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/task-wake-probe/account-resolver.c");
+    let source = workspace().join("fixtures/task-wake-probe/account-resolver.c");
     let output = Command::new("cc")
         .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
         .arg(source)

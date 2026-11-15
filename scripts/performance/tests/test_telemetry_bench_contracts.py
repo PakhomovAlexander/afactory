@@ -7,6 +7,9 @@ import copy
 import json
 import os
 import pathlib
+import stat
+import subprocess
+import sys
 import time
 
 from perflab import telemetry_lab, toml_file
@@ -225,6 +228,59 @@ class FixtureContracts(TempDir):
         self.assertEqual(set(checks[0]['operator']['checks']), set(policy['checks']))
 
 class AccountIsolation(TempDir):
+    def test_private_namespace_preserves_files_and_account_with_unmapped_ancestors(self):
+        from perflab import account_isolation
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        source = pathlib.Path(self.path('source'))
+        source.write_text('source bytes stay on the original inode')
+        source.chmod(0o444)
+        paths = [home, source, pathlib.Path(sys.executable).resolve()]
+        identities = [(p.stat().st_dev, p.stat().st_ino, stat.S_IMODE(p.stat().st_mode))
+                      for p in paths]
+        volumes = [(os.statvfs(p).f_blocks, os.statvfs(p).f_frsize) for p in paths]
+        parents = list(home.parents)
+        modes = [stat.S_IMODE(p.stat().st_mode) for p in parents]
+        original_owners = [p.stat().st_uid for p in parents]
+        devices = [p.stat().st_dev for p in parents]
+        program = '''
+import json, os, pathlib, pwd, stat, sys
+paths = [pathlib.Path(p) for p in sys.argv[1:]]
+home = paths[0]
+assert pwd.getpwuid(os.geteuid()).pw_dir == str(home)
+assert pathlib.Path('/etc/nsswitch.conf').read_text().startswith('passwd: files\\n')
+assert paths[1].read_text() == 'source bytes stay on the original inode'
+print(json.dumps({
+    'identities': [(p.stat().st_dev, p.stat().st_ino, stat.S_IMODE(p.stat().st_mode)) for p in paths],
+    'volumes': [(os.statvfs(p).f_blocks, os.statvfs(p).f_frsize) for p in paths],
+    'owners': [p.stat().st_uid for p in home.parents],
+    'modes': [stat.S_IMODE(p.stat().st_mode) for p in home.parents],
+    'devices': [p.stat().st_dev for p in home.parents],
+    'executable_owner': paths[2].stat().st_uid,
+}))
+'''
+        result = subprocess.run(account_isolation.namespace_argv(
+            str(home), [sys.executable, '-I', '-c', program, *map(str, paths)]),
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed['identities'], [list(identity) for identity in identities])
+        self.assertEqual(observed['volumes'], [list(volume) for volume in volumes])
+        self.assertEqual(observed['modes'], modes)
+        self.assertEqual(observed['owners'], [os.geteuid()] * len(parents))
+        for index, device in enumerate(devices):
+            if device == home.stat().st_dev:
+                self.assertEqual(observed['devices'][index], device,
+                                 'private account storage must use its original filesystem')
+        # A private directory mount is a new inode, not a remapping of arbitrary
+        # overflow ownership. Foreign executable leaves remain foreign, and AF's
+        # admission rules must still refuse those leaves when ownership matters.
+        if paths[2].stat().st_uid != os.geteuid():
+            self.assertNotEqual(observed['executable_owner'], os.geteuid())
+        self.assertEqual([p.stat().st_uid for p in parents], original_owners)
+
     def test_contained_scripts_receive_the_account_helper_in_their_declared_readable_inputs(self):
         from tests.support import ROOT
         registry, _ = telemetry_lab.load_registry()
