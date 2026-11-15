@@ -270,6 +270,29 @@ fn wake_immediate_finish_is_distinct_from_expired_execution_and_replay_is_stable
 }
 
 #[test]
+fn wake_explicit_clock_still_refuses_future_history_and_checkpoint() {
+    let mut f = Fixture::new(SUCCESS);
+    f.store
+        .open_task(&f.cas, &f.revision_id, "wake-clock-writer", 60000)
+        .unwrap();
+    let sub = subscription(&f);
+    let events = f.store.replay(&sub.task.task_run_id).unwrap();
+    let opened = read_task_transition(&events[0]).unwrap().now_unix_ms;
+    assert!(matches!(
+        project(&f.store, &f.cas, &sub, None, opened - 1),
+        Err(af_store::StoreError::Conflict(_))
+    ));
+    let at = stamp(&f);
+    let checkpoint = project(&f.store, &f.cas, &sub, None, at)
+        .unwrap()
+        .checkpoint;
+    assert!(matches!(
+        project(&f.store, &f.cas, &sub, Some(&checkpoint), at - 1),
+        Err(af_store::StoreError::Conflict(_))
+    ));
+}
+
+#[test]
 fn wake_unknown_corrupt_history_and_mismatched_cursors_fail_closed() {
     let mut f = Fixture::new(SUCCESS);
     let lease = f

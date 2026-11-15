@@ -16,6 +16,7 @@ pub mod journal;
 /// Observation seams for deterministic reconciliation interleavings; no delivery authority.
 #[derive(Clone, Copy)]
 pub enum ReconcilePoint {
+    ClockCaptured,
     FinalStateCaptured,
     SourceObserved,
     BeforeCommit,
@@ -109,6 +110,7 @@ pub fn restore_checkpoint_with_run_facts(
             facts,
             Some((expected.through.sequence, expected.clock_observed)),
             &|_| Ok(()),
+            None,
         )?;
         if page.through.sequence == expected.through.sequence {
             if page.checkpoint != expected {
@@ -324,6 +326,7 @@ pub fn project_with_run_facts(
         facts,
         None,
         &|_| Ok(()),
+        None,
     )
 }
 
@@ -337,6 +340,7 @@ fn project_page(
     facts: &[RecordedRunFacts],
     stop_at: Option<(u64, bool)>,
     observe: &dyn Fn(ReconcilePoint) -> Result<(), StoreError>,
+    clock: Option<&dyn Fn() -> u64>,
 ) -> Result<WakeProjection, StoreError> {
     let database = store.database_observation()?;
     let ((result, runs), reads) = cas.track_reads(|| {
@@ -350,6 +354,7 @@ fn project_page(
                 facts,
                 stop_at,
                 observe,
+                clock,
             )
         })
     });
@@ -383,6 +388,7 @@ fn project_inner(
     facts: &[RecordedRunFacts],
     stop_at: Option<(u64, bool)>,
     observe: &dyn Fn(ReconcilePoint) -> Result<(), StoreError>,
+    clock: Option<&dyn Fn() -> u64>,
 ) -> Result<WakeProjection, StoreError> {
     subscription.validate().map_err(error)?;
     if subscription.configuration_digest != configuration_digest(subscription).map_err(error)? {
@@ -408,6 +414,16 @@ fn project_inner(
     let final_state = store
         .task_projection(cas, &task.task_id)?
         .ok_or_else(|| error("Unknown wake Task"))?;
+    // The live journal samples only after the checked prefix has been captured. Standalone
+    // projection keeps the caller's explicit clock and its strict timestamp contract.
+    let captured_unix_ms = observed_unix_ms;
+    let observed_unix_ms = clock.map_or(observed_unix_ms, |clock| clock());
+    if observed_unix_ms < captured_unix_ms
+        || observed_unix_ms > subscription.expires_unix_ms
+        || observed_unix_ms > af_contracts::json::SAFE_INTEGER_MAX as u64
+    {
+        return Err(error("Invalid live wake observation clock"));
+    }
     observe(ReconcilePoint::FinalStateCaptured)?;
     let last = final_state.next_sequence - 1;
     let scan_last = stop_at.map_or(last, |(sequence, _)| sequence).min(last);
@@ -421,6 +437,7 @@ fn project_inner(
     }) {
         return Err(error("Invalid wake checkpoint scope or clock"));
     }
+    let mut clock_raced = cursor.is_some_and(|c| c.observed_unix_ms > captured_unix_ms);
     // Revalidate exact source bytes in fixed-size pages; event IDs alone are position-derived.
     // This does no lifecycle extraction and never buffers the complete prefix. Canonical Task
     // validation below retains its own authority and CAS-corruption checks.
@@ -479,6 +496,7 @@ fn project_inner(
         if at > observed_unix_ms {
             return Err(error("Wake observation precedes checked history"));
         }
+        clock_raced |= at > captured_unix_ms;
         // Expiry can become observable between recorded events. The persisted deadline is its
         // authority; the later event only supplies an explicit observation clock.
         if let Some(state) = &previous {
@@ -562,6 +580,11 @@ fn project_inner(
         return Err(error("Wake observation allowance exhausted"));
     }
     if !store.task_observation_unchanged(cas, &final_state)? {
+        return Err(StoreError::WakeReconcileChanged);
+    }
+    if clock.is_some() && clock_raced {
+        // No page derived beyond the original observation clock can commit. The journal
+        // validates current source, checkpoint and recorders together before allowing deferral.
         return Err(StoreError::WakeReconcileChanged);
     }
     let checkpoint = WakeCheckpoint {

@@ -129,28 +129,64 @@ pub(crate) fn cancelled_epoch(state: Option<&Path>, task: &TaskProjection) -> Op
         .map(|request| request.epoch)
 }
 
-/// Write `value` as `name` in `runs/`, only when no file of that name exists: written aside and
-/// linked into place, so a reader never sees half of it and two writers never share a name.
+/// Publish a completed recorder only when its name is absent. On wake-supported Linux a
+/// no-replace rename keeps every visible recorder single-linked, including during publication.
 fn write_new(state: &Path, name: &str, value: &impl Serialize) -> Result<bool, String> {
     let directory = runs_dir(state);
     crate::storage::owned::private_dir(&directory)?;
     let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
-    let aside = directory.join(format!(".{name}.{}.tmp", std::process::id()));
-    af_store::local_fs::private_file_options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&aside)
-        .and_then(|mut file| std::io::Write::write_all(&mut file, &bytes))
-        .map_err(|e| format!("writing {}: {e}", aside.display()))?;
-    let linked = std::fs::hard_link(&aside, directory.join(name));
-    let _ = std::fs::remove_file(&aside);
-    match linked {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+    let mut aside = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .tempfile_in(&directory)
+        .map_err(|e| format!("staging {name}: {e}"))?;
+    std::io::Write::write_all(&mut aside, &bytes)
+        .and_then(|()| aside.as_file().sync_all())
+        .map_err(|e| format!("writing {}: {e}", aside.path().display()))?;
+    let destination = directory.join(name);
+    #[cfg(target_os = "linux")]
+    let published: std::io::Result<()> = rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        aside.path(),
+        rustix::fs::CWD,
+        &destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into);
+    // Ordinary run/cancel remains supported elsewhere; automatic wakes require Linux.
+    #[cfg(not(target_os = "linux"))]
+    let published = std::fs::hard_link(aside.path(), &destination);
+    match published {
+        Ok(()) => {
+            #[cfg(target_os = "linux")]
+            aside.disable_cleanup(true);
+            #[cfg(debug_assertions)]
+            observation_barrier(if name.ends_with(".cancel.json") {
+                "cancel-published"
+            } else {
+                "run-published"
+            })?;
+            // On Linux the rename consumed the aside. Elsewhere remove its second link
+            // before returning; TempPath handles cleanup on every error path too.
+            #[cfg(not(target_os = "linux"))]
+            aside
+                .close()
+                .map_err(|e| format!("cleaning recorder stage: {e}"))?;
+            std::fs::File::open(&directory)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| format!("syncing {}: {e}", directory.display()))?;
+            std::fs::File::open(state)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| format!("syncing {}: {e}", state.display()))?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            aside
+                .close()
+                .map_err(|e| format!("cleaning recorder collision stage: {e}"))?;
+            Ok(false)
+        }
         Err(error) => Err(format!(
-            "recording {} in {}: {error}",
-            name,
+            "recording {name} in {}: {error}",
             directory.display()
         )),
     }
@@ -1417,6 +1453,42 @@ mod tests {
         assert_eq!(run_of("t", "t-01.json"), None);
         assert_eq!(run_of("t", "t-1.txt"), None);
         assert_eq!(run_of("t", ".t-1.json.4.tmp"), None);
+    }
+
+    #[test]
+    fn completed_recorders_publish_once_under_contention_without_overwrite_or_asides() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let results = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|value| {
+                    let barrier = &barrier;
+                    let state = root.path();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        (value, write_new(state, "task-1.json", &value).unwrap())
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let winners: Vec<_> = results.into_iter().filter(|(_, won)| *won).collect();
+        assert_eq!(winners.len(), 1);
+        let path = root.path().join("runs/task-1.json");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(serde_json::from_slice::<u64>(&bytes).unwrap(), winners[0].0);
+        assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1);
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert!(!write_new(root.path(), "task-1.json", &999).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read_dir(root.path().join("runs")).unwrap().count(),
+            1
+        );
     }
 
     #[test]

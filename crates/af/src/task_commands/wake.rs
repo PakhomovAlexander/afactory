@@ -562,6 +562,17 @@ fn recorder_facts(
         })
         .collect()
 }
+fn observation_time() -> u64 {
+    #[cfg(debug_assertions)]
+    if let Some(time) = std::env::var_os("AF_TEST_WAIT_OBSERVATION_BARRIER")
+        .and_then(|root| std::fs::read_to_string(PathBuf::from(root).join("clock-ms")).ok())
+        .and_then(|text| text.parse().ok())
+    {
+        return time;
+    }
+    now()
+}
+
 fn reconcile_registered(
     store: &EventStore,
     cas: &Cas,
@@ -572,11 +583,11 @@ fn reconcile_registered(
         .map_err(af_store::StoreError::Conflict)?;
     let facts = recorder_facts(&snapshot, &r.subscription.task.task_id)
         .map_err(af_store::StoreError::Conflict)?;
-    af_runtime::wake::journal::reconcile_with_run_facts_observed(
+    af_runtime::wake::journal::reconcile_live_with_run_facts_observed(
         store,
         cas,
         &r.subscription.subscription_id,
-        now(),
+        observation_time,
         &facts,
         || {
             #[cfg(debug_assertions)]
@@ -600,6 +611,7 @@ fn reconcile_registered(
         |point| {
             #[cfg(debug_assertions)]
             runs::observation_barrier(match point {
+                af_runtime::wake::ReconcilePoint::ClockCaptured => "wake-clock-captured",
                 af_runtime::wake::ReconcilePoint::FinalStateCaptured => "wake-final-state-captured",
                 af_runtime::wake::ReconcilePoint::SourceObserved => "wake-source-observed",
                 af_runtime::wake::ReconcilePoint::BeforeCommit => "wake-before-commit",

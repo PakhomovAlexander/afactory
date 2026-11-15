@@ -68,3 +68,34 @@ response, no early checkpoint/envelopes/transport/native fence, continued same-r
 later authoritative completion. Cancellation may retain an earlier historical stopped observation;
 its metadata asks the host to inspect current evidence rather than assert a stale final state.
 No foreground drain, reconnect, extra host authority or larger poll allowance is needed.
+
+## Clock and publication boundaries
+
+The proposed [clock and recorder publication decision](../adr/2026-11-15-capture-coherent-wake-clocks-and-publish-single-link-recorders.md)
+continues the cumulative candidate for #942–944 without changing persisted contracts.
+
+| Public boundary | Validation and ordering | Evidence |
+| --- | --- | --- |
+| Observation clock capture → journal inspection | Capture initial clock, expose a deterministic barrier, then inspect exact retained registration/checkpoint | `wake_cli_pi_poll_clock_capture_precedes_new_checkpoint`: a second authenticated CLI poll commits its genuinely newer checkpoint inside this window |
+| Checkpoint restore → source capture | Retained digest, schema, configuration, checked prefix and run facts stay required; standalone explicit clocks stay strict | Existing checkpoint provenance, paged replay and corruption regressions |
+| Checked final-state capture → coherent live clock | Sample live clock after checked prefix capture; reject rollback, expiry and invalid clock range | `wake_cli_pi_poll_clock_capture_precedes_checked_append`: a real public run commits completion at a controlled later policy time before source capture |
+| Event policy time → inner currentness | Validate every candidate event against coherent clock before marking a checked race; no generic future-time catch-all | Explicit-clock future-history negatives and concurrent-invalid-evidence matrices |
+| Inner → outer source/database currentness | Propagate only typed logical change to fresh serialized validation | Preserved inner/outer heartbeat, recorder and corruption tests |
+| Fresh serialized current evidence → bounded empty Pi response | Validate current source/CAS, scope, expiry/closure, retained checkpoint, all current timestamps and selected private recorders | Clock-race regressions require no stale checkpoint/envelopes/transport/native intent and later completion on the same route |
+| Page cursor CAS and both transactional recorder checks | Preserve source/subscription authority validation and recorder checks before and after writes, rolling back stale pages | Preserved competing-poll and both-recorder-check public regressions |
+| Initial process/cancellation recorder visibility | Complete private file is synchronized, then absent-only renamed on Linux; every visible destination has one link | Publication barrier exercises genuine public run/cancel writers while a poll reads the new recorder; foreign extra links remain refused |
+| Native intent and receipts | Existing durable intent, original-session ordering and uncertainty fences remain independent | Preserved no-resend, attachment-generation and probe tests; no live host certification claimed |
+
+The observation fixture uses a clock file only below the existing debug barrier root. Public Task
+writers use the existing debug fixed-clock seam. Neither mechanism exists in release behavior;
+barriers determine writer order, with no clock-tick sleep or retry deciding a race.
+
+The three baseline public-CLI regressions were run before the repairs: checked append failed with
+`Wake observation precedes checked history`; the competing poll failed with
+`Invalid wake checkpoint scope or clock`; recorder publication failed with
+`Wake authority requires a canonical owner-private path without links` (the visible file had two
+links). The publication regression now also holds a real process writer at visibility while
+both transactional recorder checks run. Cancellation visibility, foreign extra links, collision
+contention, explicit-clock refusal, rollback/zero/future clocks and concurrent scope/digest-valid
+checkpoint faults have separate assertions. No stale page or new native intent is allowed on a
+deferred poll. A later native intent remains a no-resend fence.
