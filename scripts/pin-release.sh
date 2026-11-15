@@ -31,16 +31,22 @@ done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$root"
-af="${AF:-af}"
+pin_repo="${GH_REPO:-PakhomovAlexander/afactory}"
 lock=.af/af.lock
 
 pinned() {
-  sed -n '/^\[af\]$/,/^\[/s/^version = "\(.*\)"$/\1/p' "$lock" | head -1
+  python3 -I - "$lock" <<'PYPIN'
+import pathlib, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(pathlib.Path('scripts/performance').resolve()))
+from perflab._vendor import tomli
+print(tomli.loads(pathlib.Path(sys.argv[1]).read_text())['af']['version'])
+PYPIN
 }
 
 # Rewrite the pin in the clean checkout at HEAD, and prove nothing else moved.
 refresh() {
-  "$af" onboard --refresh-lock --af "$version" >/dev/null
+  python3 -I scripts/prepare-release-pin.py "$version" --repo "$pin_repo"
   local changed
   changed="$(git status --porcelain)"
   if [[ "$changed" != " M $lock" ]]; then
@@ -55,6 +61,7 @@ refresh() {
 
 if [[ "$pr" -eq 0 ]]; then
   if [[ "$(pinned)" == "$version" ]]; then
+    python3 -I scripts/prepare-release-pin.py "$version" --repo "$pin_repo" --check
     echo "pin-release: $lock already pins af $version"
     exit 0
   fi
@@ -77,6 +84,7 @@ repo="${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 [[ "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$ ]] || {
   echo "pin-release: expected GH_REPO=OWNER/REPO on github.com" >&2; exit 1;
 }
+pin_repo="$repo"
 remote_url="https://github.com/$repo.git"
 origin="$(git config --get-all remote.origin.url || true)"
 [[ "$origin" == "$remote_url" || "$origin" == "${remote_url%.git}" ]] || {
@@ -119,8 +127,8 @@ for attempt in 1 2 3; do
   git checkout -q --detach origin/main
   base="$(git rev-parse HEAD)"
   if [[ "$(pinned)" == "$version" ]]; then
-    # Even the idempotent path checks every target digest.
-    python3 scripts/af-pin.py --only-pin-moved HEAD "$version"
+    # Even the idempotent path verifies every signed target digest.
+    python3 -I scripts/prepare-release-pin.py "$version" --repo "$pin_repo" --check
     echo "pin-release: $lock on main already pins af $version"
     exit 0
   fi
@@ -151,7 +159,10 @@ PYORDER
     python3 scripts/af-pin.py --only-pin-moved "$base" "$version"
     # A branch is reusable only if its bytes equal a fresh signed release refresh, not
     # merely because its digests look well-formed. Do not repair or rewrite a published ref.
-    "$af" onboard --refresh-lock --af "$version" >/dev/null
+    if ! python3 -I scripts/prepare-release-pin.py "$version" --repo "$pin_repo" --check-exact; then
+      echo "pin-release: existing branch does not match the signed release refresh; review by hand; repository is not pinned" >&2
+      exit 1
+    fi
     [[ -z "$(git status --porcelain)" ]] || {
       echo "pin-release: existing branch does not match the signed release refresh; review by hand; repository is not pinned" >&2
       exit 1

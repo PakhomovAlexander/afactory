@@ -305,16 +305,12 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-      - name: Install the published release
+      - name: Install signature verifier
         shell: bash
-        env:
-          AF_INSTALL_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends minisign
-          sh install.sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Open the pin-only PR for CI and human merge
         shell: bash
         env:

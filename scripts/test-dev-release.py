@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic subprocess release lifecycle against local Git and a fake GitHub server."""
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -239,7 +241,7 @@ class ReleaseCLI(unittest.TestCase):
                     'HOME': str(self.base / 'home'), 'TMPDIR': str(self.base / 'tmp')}
         for name in ('dev', 'scripts/dev-release.py', 'scripts/release-contract.py',
                      'scripts/release-contract.json', 'scripts/release-policy.json',
-                     'scripts/release-observation.py',
+                     'scripts/release-observation.py', 'scripts/af-pin.py', '.af/af.lock', '.github/workflows/release.yml',
                      'scripts/changelog-notes.py', 'crates/af/keys/release.pub',
                      'CHANGELOG.md', 'rust-toolchain.toml', '.github/workflows/ci.yml',
                      '.github/workflows/validate.yml', 'scripts/test-classes.py',
@@ -273,6 +275,9 @@ class ReleaseCLI(unittest.TestCase):
         declaration = json.loads(declaration_path.read_text())
         declaration['version'] = '0.15.1-rc.3'
         declaration_path.write_text(json.dumps(declaration))
+        (self.source / 'CHANGELOG.md').write_text('# Changelog\n\n## [Unreleased]\n\n## [0.15.1-rc.3] - today\n\n## [0.15.1-rc.2] - today\n')
+        (self.source / '.af/af.lock').write_text('[af]\nversion = "0.15.1-rc.3"\n\n[af.digests]\n' + ''.join(
+            target + ' = "sha256:' + 'a' * 64 + '"\n' for target in policy['targets']))
         (self.source / 'Cargo.lock').write_text('# fixture lock\n')
         harness = self.source / 'scripts/performance/cli.py'
         harness.write_text('import pathlib,sys\np=pathlib.Path("fixtures/performance/kernel-measure/pin")\n'
@@ -629,10 +634,235 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('unfinished_run', self.cli('plan', '--new', ok=False).stderr)
         self.publish_assets(self.state_value())
         self.cli('resume')
+        # A separate reviewed pin PR, not publication, supplies the next prerequisite.
+        self.git('-C', self.source, 'fetch', str(self.remote), 'main')
+        self.git('-C', self.source, 'reset', '--hard', 'FETCH_HEAD')
+        lock = self.source / '.af/af.lock'
+        lock.write_text(lock.read_text().replace('0.15.1-rc.3', '0.15.1-rc.4'))
+        self.commit('reviewed RC4 pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
         self.cli('plan', '--new')
         self.assertEqual(self.state_value()['plan']['version'], '0.15.1-rc.5')
-        self.assertTrue((self.state / 'history/0.15.1-rc.4.json').is_file())
+        self.assertEqual(len(list((self.state / 'history').glob('0.15.1-rc.4-*.json'))), 1)
         self.assertFalse((self.state / 'candidate').exists())
+
+    def test_prospective_pin_fails_before_gate_or_authority_from_fetched_bytes(self):
+        path = self.source / '.af/af.lock'
+        correct = path.read_text()
+        path.write_text(correct.replace('0.15.1-rc.3', '0.15.1-rc.2'))
+        self.commit('old pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        path.write_text(correct)
+        (self.source / 'scripts/af-pin.py').write_text('raise SystemExit(0)\n')
+        result = self.cli('rc', ok=False)
+        self.assertIn('pin_prerequisite', result.stderr)
+        self.assertIn('separate reviewed published-release pin PR', result.stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertFalse(self.data().get('effects'))
+
+    def test_prerequisite_diagnostics_are_bounded_and_redacted(self):
+        (self.source / 'scripts/af-pin.py').write_text(
+            'import sys\nsys.stderr.write("credential=secret-fixture\\n" * 1000)\nraise SystemExit(1)\n')
+        self.commit('failing source checker')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        result = self.cli('rc', ok=False)
+        self.assertIn('pin_prerequisite', result.stderr)
+        self.assertNotIn('secret-fixture', result.stderr)
+        self.assertLess(len(result.stderr), 2048)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertFalse(self.data().get('effects'))
+
+    def test_source_pin_symlink_cannot_borrow_caller_evidence(self):
+        path = self.source / '.af/af.lock'
+        external = self.base / 'caller.lock'
+        external.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(external)
+        self.commit('redirected pin')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('pin_prerequisite', self.cli('rc', ok=False).stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse(self.data().get('effects'))
+
+    def test_prospective_yanked_and_missing_digest_through_cli(self):
+        path = self.source / '.af/af.lock'
+        path.write_text(path.read_text().replace('0.15.1-rc.3', '0.15.1-rc.2'))
+        changelog = self.source / 'CHANGELOG.md'
+        changelog.write_text(changelog.read_text().replace('[0.15.1-rc.3] - today',
+                                                        '[0.15.1-rc.3] - today [YANKED]'))
+        self.commit('yanked newest release')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('plan')
+        self.assertIsNone(self.state_value()['authorization'])
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.state = self.base / 'missing-digest-state'
+        path.write_text(path.read_text().replace('aarch64-apple-darwin =', 'unknown ='))
+        self.commit('missing required digest')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.assertIn('pin_prerequisite', self.cli('plan', ok=False).stderr)
+        self.assertFalse((self.state / 'run.json').exists())
+        self.assertFalse(self.data().get('effects'))
+
+    def test_failed_local_new_retains_exact_evidence_and_separate_authority(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        original = (self.state / 'run.json').read_bytes()
+        source = self.state_value()['plan']['source']
+        (self.source / 'changelog.d/fix.md').write_text('- Corrected source.\n')
+        self.commit('correct source')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('rc', '--new', ok=False)
+        second = (self.state / 'run.json').read_bytes()
+        self.assertNotEqual(self.state_value()['plan']['source'], source)
+        self.assertEqual(self.state_value()['authorization'], 'normal-release-pr-check-merge-and-signed-publication-v1')
+        self.cli('plan', '--new')
+        self.assertIsNone(self.state_value()['authorization'])
+        self.assertCountEqual([p.read_bytes() for p in (self.state / 'history').iterdir()], [original, second])
+        self.assertEqual(self.state_value()['plan']['version'], '0.15.1-rc.4')
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertNotIn('push', self.data().get('effects', []))
+
+    def completed_local_failure(self):
+        # A real completed validation followed by refusal before branch intent.
+        self.cli('plan')
+        self.git('--git-dir', self.remote, 'update-ref',
+                 'refs/heads/release/v0.15.1-rc.4', self.initial)
+        result = self.cli('rc', ok=False)
+        self.assertIn('branch_collision', result.stderr)
+        state = self.state_value()
+        self.assertEqual(state['stage'], 'validation')
+        self.assertEqual(state['receipts']['validation']['status'], 'complete')
+        self.assertTrue(state['receipts']['validation']['commands'])
+        return state
+
+    def test_complete_local_validation_failure_can_be_archived(self):
+        self.completed_local_failure()
+        original = (self.state / 'run.json').read_bytes()
+        self.git('--git-dir', self.remote, 'update-ref', '-d', 'refs/heads/release/v0.15.1-rc.4')
+        self.cli('plan', '--new')
+        self.assertEqual([p.read_bytes() for p in (self.state / 'history').iterdir()], [original])
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertIsNone(self.state_value()['authorization'])
+        self.assertNotIn('push', self.data().get('effects', []))
+
+    def test_impossible_completed_validation_refuses_without_cleanup(self):
+        baseline = self.completed_local_failure()
+        commands = baseline['receipts']['validation']['commands']
+        cases = [[], commands[:-1], commands + commands[:1], list(reversed(commands)),
+                 None, {}, [None], [{'argv': []}]]
+        for field, value in (('argv', ['foreign-command']), ('exit', 1), ('exit', True),
+                             ('stdout_sha256', 'malformed')):
+            changed = copy.deepcopy(commands)
+            changed[0][field] = value
+            cases.append(changed)
+        changed = copy.deepcopy(commands)
+        gate = next(c for c in changed if c['argv'][0] == 'env')
+        gate['argv'][1] = 'AF_GATE_TARGET_DIR=/foreign/target'
+        cases.append(changed)
+        for invalid in cases:
+            with self.subTest(commands=invalid):
+                state = copy.deepcopy(baseline)
+                state['receipts']['validation']['commands'] = invalid
+                path = self.state / 'run.json'
+                path.write_text(json.dumps(state))
+                before = path.read_bytes()
+                effects = self.data().get('effects', [])
+                self.cli('plan', '--new', ok=False)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(self.data().get('effects', []), effects)
+                self.assertFalse((self.state / 'history').exists())
+                self.assertTrue((self.state / 'candidate').exists())
+
+    def test_new_refuses_active_ambiguous_or_later_state_unchanged(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        path = self.state / 'run.json'
+        baseline = self.state_value()
+        cases = [dict(status=status) for status in ('waiting', 'planned', 'intent', 'complete')]
+        cases += [dict(stage='branch'), dict(published=False), dict(merged='a'*40),
+                  dict(future_effect={}), dict(pin={'state': 'PENDING', 'url': 'https://example.test/pr'})]
+        for stage in ('branch', 'pr', 'checks', 'merge', 'publication'):
+            cases.append(dict(receipts={**baseline['receipts'], stage: {'status': 'intent', 'at': 1}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'validation':
+            {**baseline['receipts']['validation'], 'url': 'https://example.test/pr'}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'preparation': {'status': 'complete', 'at': 1}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'validation': {'status': 'waiting', 'at': 1}}))
+        cases.append(dict(receipts={**baseline['receipts'], 'validation': {
+            'status': 'complete', 'at': 1, 'key': 'a'*64, 'commands': [{'publication': 'intent'}]}}))
+        for change in cases:
+            with self.subTest(change=change):
+                path.write_text(json.dumps({**baseline, **change}))
+                before = path.read_bytes()
+                effects = self.data().get('effects', [])
+                self.cli('plan', '--new', ok=False)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(self.data().get('effects', []), effects)
+                self.assertFalse((self.state / 'history').exists())
+                self.assertTrue((self.state / 'candidate').exists())
+
+    def test_new_refuses_foreign_receipt_before_reading(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        path = self.state / 'run.json'
+        before = path.read_bytes()
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        result = subprocess.run([sys.executable, str(self.source / 'dev'), 'release', 'plan',
+            '--new', '--repo', 'o/r', '--remote', str(self.remote), '--state', str(self.state)],
+            cwd=self.source, env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(stat.S_ISFIFO(path.lstat().st_mode))
+        self.assertFalse((self.state / 'history').exists())
+        path.unlink()
+        external = self.base / 'foreign-receipt.json'
+        external.write_bytes(before)
+        path.symlink_to(external)
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual(external.read_bytes(), before)
+        self.assertFalse((self.state / 'history').exists())
+        self.assertNotIn('push', self.data().get('effects', []))
+
+    def test_archive_collision_and_foreign_cleanup_fail_closed(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        before = (self.state / 'run.json').read_bytes()
+        history = self.state / 'history'
+        history.mkdir(mode=0o700)
+        archive = history / ('0.15.1-rc.4-' + hashlib.sha256(before).hexdigest() + '.json')
+        archive.write_bytes(before + b' ')
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual(archive.read_bytes(), before + b' ')
+        self.assertEqual((self.state / 'run.json').read_bytes(), before)
+        archive.unlink()
+        history.rmdir()
+        tree = self.state / 'candidate'
+        moved = self.state / 'foreign'
+        tree.rename(moved)
+        tree.symlink_to(moved, target_is_directory=True)
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual((self.state / 'run.json').read_bytes(), before)
+        self.assertTrue(moved.exists())
+        self.assertFalse(history.exists())
+
+    def test_interrupted_archive_idempotent_and_history_bounded(self):
+        self.data(gate_fail=True)
+        self.cli('rc', ok=False)
+        before = (self.state / 'run.json').read_bytes()
+        history = self.state / 'history'
+        history.mkdir(mode=0o700)
+        archive = history / ('0.15.1-rc.4-' + hashlib.sha256(before).hexdigest() + '.json')
+        os.link(self.state / 'run.json', archive)
+        for index in range(15):
+            (history / (str(index) + '.json')).write_bytes(before)
+        self.cli('rc', '--new', ok=False)
+        self.assertEqual(archive.read_bytes(), before)
+        current = (self.state / 'run.json').read_bytes()
+        self.cli('plan', '--new', ok=False)
+        self.assertEqual((self.state / 'run.json').read_bytes(), current)
+        self.assertEqual(len(list(history.iterdir())), 16)
 
     def test_ambiguous_effects_reconcile_without_duplicate_prs(self):
         for effect in ('metadata', 'prepare', 'push', 'pr', 'merge'):
