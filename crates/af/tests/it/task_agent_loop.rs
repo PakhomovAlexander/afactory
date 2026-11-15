@@ -746,6 +746,67 @@ fn wake_cli_pi_poll_clock_races_refuse_invalid_clocks_and_future_checked_evidenc
 
 #[test]
 #[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_serialized_clock_is_monotonic_across_all_samples() {
+    // History is older than every sampled clock, including the rollback below initial.
+    // A future-evidence refusal cannot accidentally satisfy these assertions.
+    for final_offset in [1i64, -1, 2, 3] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let initial = checked_wake_clock(&f.state) + 1000;
+        let roots = f.owner.join("barriers");
+        let captured = roots.join("wake-clock-captured-1");
+        let source = roots.join("wake-final-state-captured-1");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(roots.join("clock-ms"), initial.to_string()).unwrap();
+        let (mut poll, _) = f.pause_poll(&grant, "wake-clock-captured-1");
+        std::fs::write(roots.join("clock-ms"), (initial + 2).to_string()).unwrap();
+        std::fs::write(captured.join("proceed"), []).unwrap();
+        await_observation_read(&mut poll, &source.join("ready"));
+        expect(
+            &crate::common::af()
+                .current_dir(&f.repo)
+                .args(["task", "run", "gc-older", "--execute", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_CLOCK_FIXED_MS", (initial - 10).to_string())
+                .output()
+                .unwrap(),
+            0,
+        );
+        let final_clock = initial.checked_add_signed(final_offset).unwrap();
+        assert!(checked_wake_clock(&f.state) < final_clock);
+        std::fs::write(roots.join("clock-ms"), final_clock.to_string()).unwrap();
+        std::fs::write(source.join("proceed"), []).unwrap();
+        let output = poll.0.take().unwrap().wait_with_output().unwrap();
+        if final_offset < 2 {
+            assert!(
+                !output.status.success(),
+                "rollback {final_offset}: {}",
+                out(&output)
+            );
+        } else {
+            assert_empty_pi_poll(&output);
+        }
+        f.no_wake_effects(&id);
+        if final_offset >= 2 {
+            let packet = f
+                .pull_command(&grant, "original")
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &roots)
+                .output()
+                .unwrap();
+            assert!(document(&packet, 0, Some("task-wake-pi-next-v1.json"))["message"].is_string());
+            assert_empty_pi_poll(
+                &f.pull_command(&grant, "original")
+                    .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &roots)
+                    .output()
+                    .unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn wake_cli_pi_poll_clock_capture_cannot_mask_invalid_current_evidence() {
     invalid_current_evidence("wake-clock-captured-1");
 }
@@ -1098,8 +1159,8 @@ fn wake_cli_pi_poll_reads_single_link_during_public_cancellation_publication() {
 }
 
 #[cfg(target_os = "linux")]
-fn public_cancellation_contention_at_publication(fault: Option<&str>, publication: bool) {
-    let f = WakePiFixture::configured(|repo| {
+fn cancellation_wake_fixture() -> WakePiFixture {
+    WakePiFixture::configured(|repo| {
         let worker = repo.join(".af/task-packages/fixture/implementer/worker.py");
         let original = std::fs::read_to_string(&worker).unwrap();
         let ready = repo.parent().unwrap().join("worker-ready");
@@ -1118,7 +1179,173 @@ fn public_cancellation_contention_at_publication(fault: Option<&str>, publicatio
         )
         .unwrap();
         task_interrupt::commit_fixture(repo);
-    });
+    })
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_validates_retained_checkpoint_before_cancellation_rebuild() {
+    for fault in [
+        None,
+        Some("scope"),
+        Some("boundary"),
+        Some("progress"),
+        Some("source"),
+        Some("provenance"),
+    ] {
+        retained_cancellation_checkpoint(fault, false);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_cancellation_rebuild_revalidates_replacement_at_commit() {
+    for fault in ["scope", "boundary", "progress", "source", "provenance"] {
+        retained_cancellation_checkpoint(Some(fault), true);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn retained_cancellation_checkpoint(fault: Option<&str>, at_commit: bool) {
+    let f = cancellation_wake_fixture();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    let runner = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["task", "run", "gc-older", "--execute", "--state"])
+        .arg(&f.state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut runner = task_interrupt::ChildGuard(Some(runner));
+    await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
+    // Persist the actual checked continuation BEFORE cancellation changes run facts.
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let before = store.inspect_wake(&id).unwrap();
+    assert!(before.checkpoint.is_some());
+    assert!(before.envelopes.is_empty());
+    expect(&af(&f.repo, &f.state, &["task", "cancel", "gc-older"]), 0);
+    assert!(
+        !runner
+            .0
+            .take()
+            .unwrap()
+            .wait_with_output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(f.state.join("runs/gc-older-1.cancel.json").is_file());
+    let paused = at_commit.then(|| f.pause_poll(&grant, "wake-before-commit-1"));
+    let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+    let mut checkpoint: Value = serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
+    match fault {
+        Some("scope") => {
+            checkpoint["configuration_digest"] = format!("sha256:{}", "f".repeat(64)).into()
+        }
+        Some("boundary") => checkpoint["through"]["event_id"] = "f".repeat(26).into(),
+        Some("progress") => {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET through_sequence=0 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        Some("source") => {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET source_sequence=0 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        Some("provenance") => {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET valid=0 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        None => {}
+        _ => unreachable!(),
+    }
+    // Column-only corruption must retain the exact checkpoint bytes: otherwise the cursor
+    // CAS alone would force deferral and miss an unchecked normal commit replacement.
+    let text = if matches!(fault, Some("scope" | "boundary")) {
+        serde_json::to_string(&checkpoint).unwrap()
+    } else {
+        before.checkpoint.as_ref().unwrap().clone()
+    };
+    db.execute(
+        "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+        rusqlite::params![id, text, af_store::content_id(&checkpoint).unwrap()],
+    )
+    .unwrap();
+    let snapshot = || {
+        db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence,valid FROM wake_subscriptions_v1 WHERE id=?1", [&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).unwrap()
+    };
+    let retained = snapshot();
+    let output = if let Some((mut poll, barrier)) = paused {
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        poll.0.take().unwrap().wait_with_output().unwrap()
+    } else {
+        f.pull_command(&grant, "original").output().unwrap()
+    };
+    if let Some(fault) = fault {
+        assert!(
+            !output.status.success(),
+            "retained {fault}: {}",
+            out(&output)
+        );
+        assert_eq!(snapshot(), retained);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM wake_outbox_v1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    } else {
+        document(&output, 0, Some("task-wake-pi-next-v1.json"));
+        std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
+        f.finish();
+        f.pull(&grant);
+        let after = store.inspect_wake(&id).unwrap();
+        let rebuilt: Value = serde_json::from_str(after.checkpoint.as_ref().unwrap()).unwrap();
+        assert_ne!(rebuilt["run_facts_digest"], checkpoint["run_facts_digest"]);
+        assert!(
+            after
+                .envelopes
+                .iter()
+                .any(|e| e.observation.kind == af_contracts::task::wake::WakeKindV1::Completed)
+        );
+        assert!(
+            after
+                .envelopes
+                .windows(2)
+                .all(|pair| pair[0].observation.causal.sequence
+                    <= pair[1].observation.causal.sequence)
+        );
+        assert_eq!(
+            f.pull(&grant)["message"],
+            Value::Null,
+            "native uncertainty fences resend"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn public_cancellation_contention_at_publication(fault: Option<&str>, publication: bool) {
+    let f = cancellation_wake_fixture();
     let grant = f.owner.join("grant.json");
     let id = f.register(&grant);
     let runner = crate::common::af()

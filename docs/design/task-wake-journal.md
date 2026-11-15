@@ -99,3 +99,28 @@ both transactional recorder checks run. Cancellation visibility, foreign extra l
 contention, explicit-clock refusal, rollback/zero/future clocks and concurrent scope/digest-valid
 checkpoint faults have separate assertions. No stale page or new native intent is allowed on a
 deferred poll. A later native intent remains a no-resend fence.
+
+## Retained rebuild and clock monotonicity
+
+The proposed [retained-state and clock decision](../adr/2026-11-15-validate-retained-wakes-before-rebuild-and-fence-every-clock.md)
+repairs #948 and #949 without changing persisted contracts or host support claims.
+
+| Boundary | Required validation | Deterministic evidence |
+| --- | --- | --- |
+| Serialized initial inspection → restore or replay | Actual subscription/configuration/opening, registration prefix, checked source/CAS, retained checkpoint boundary/provenance and stored progress; independent of current facts digest | `wake_cli_pi_poll_validates_retained_checkpoint_before_cancellation_rebuild` retains an old checkpoint, publishes genuine public cancellation, then tests foreign scope, boundary, progress, source sequence and provenance damage |
+| Matching facts → restore; new facts → opening replay | Only valid retained state reaches either choice; legitimate new cancellation rebuilds ordered historical observations and completion | The same fixture's valid case resumes to authoritative completion on the same bounded attachment; native intent still fences resend |
+| Page commit → retained replacement | Same current integrity validation under the writer transaction, plus exact expected-checkpoint and source fences; both recorder checks remain | `wake_cli_pi_poll_cancellation_rebuild_revalidates_replacement_at_commit` substitutes retained checkpoint/progress after successful initial validation; existing competing-poll and concurrent-invalid-evidence matrices remain |
+| Initial → post-source → serialized fresh clock | Every sampled live clock must be nondecreasing; current event/checkpoint times, safe integer range and expiry still checked | `wake_cli_pi_poll_serialized_clock_is_monotonic_across_all_samples` uses relative samples 100/102/101 and 100/102/99 with all history older than 99; equal/increasing samples defer and later complete |
+| Typed change → bounded empty Pi response | Shared serialized integrity validation, fresh monotonic clock and current private recorder validation; no stale progress, packet, transport or native fence | Both new fixtures assert unchanged retained state/no new delivery effects on refusal; preserved inner/outer/recorder currentness regressions |
+
+The initial integrity inspection does not compare checkpoint time with the captured live clock.
+A valid competing poll can therefore retain a newer checkpoint after initial clock capture and
+still take the existing narrow serialized deferral path. Normal success, restoration, opening
+replay and deferral all retain source/CAS and provenance checks; native uncertainty never enters
+this pre-native retry decision. These changes follow the accepted research recommendation above.
+
+Before these repairs, the new cancellation fixture produced a native wake packet from a
+checksum-valid foreign-scope old checkpoint. The three-sample clock fixture returned a successful
+empty response for 100/102/101. Both failures were reproduced before changing the runtime; the
+repaired fixtures also exercise unchanged retained corrupt progress, checked-boundary damage,
+invalid provenance and a valid cancellation rebuild. No live host call or certification is claimed.

@@ -95,13 +95,24 @@ fn reconcile_observed(
     clock: Option<&dyn Fn() -> u64>,
 ) -> Result<bool, StoreError> {
     observe(ReconcilePoint::ClockCaptured)?;
-    let retained = store.inspect_wake(subscription_id)?;
+    let retained = store.inspect_wake_for_reconcile(cas, subscription_id)?;
     if !retained.source_available {
         return Err(error(
             "Wake source was collected; retained envelopes are historical only",
         ));
     }
     let subscription = &retained.registration.subscription;
+    if clock.is_some() {
+        validate_live_clock_bounds(subscription, observed_unix_ms)?;
+    }
+    // Track the post-source sample even when projection exits with typed contention before
+    // it can return a page. Serialized validation must compare with the latest actual sample.
+    let latest_clock = std::cell::Cell::new(observed_unix_ms);
+    let project_clock = || {
+        let sampled = clock.map_or(observed_unix_ms, |clock| clock());
+        latest_clock.set(sampled);
+        sampled
+    };
     let result = (|| {
         let mut prior_clock = None;
         let cursor = if let Some(text) = &retained.checkpoint {
@@ -133,7 +144,7 @@ fn reconcile_observed(
             facts,
             None,
             &observe,
-            clock,
+            clock.map(|_| &project_clock as &dyn Fn() -> u64),
         )?;
         if clock.is_some() && prior_clock.is_some_and(|at| at > page.checkpoint.observed_unix_ms) {
             return Err(error("Invalid retained wake checkpoint clock"));
@@ -183,7 +194,11 @@ fn reconcile_observed(
             // observation, recorder revalidation or page CAS. None bypasses this decision.
             store.validate_wake_reconcile_with(cas, subscription, || {
                 if let Some(clock) = clock {
-                    validate_current_clock(store, cas, subscription, clock())?;
+                    let sampled = clock();
+                    if sampled < latest_clock.get() {
+                        return Err(error("Invalid live wake observation clock rollback"));
+                    }
+                    validate_current_clock(store, cas, subscription, sampled)?;
                 }
                 match recorder_unchanged() {
                     Ok(()) | Err(StoreError::WakeReconcileChanged) => Ok(()),
@@ -204,12 +219,7 @@ fn validate_current_clock(
     subscription: &WakeSubscriptionV1,
     observed_unix_ms: u64,
 ) -> Result<(), StoreError> {
-    if observed_unix_ms == 0
-        || observed_unix_ms > af_contracts::json::SAFE_INTEGER_MAX as u64
-        || observed_unix_ms >= subscription.expires_unix_ms
-    {
-        return Err(error("Invalid current wake observation clock"));
-    }
+    validate_live_clock_bounds(subscription, observed_unix_ms)?;
     let retained = store.inspect_wake(&subscription.subscription_id)?;
     if let Some(text) = retained.checkpoint {
         let checkpoint: WakeCheckpointV1 = serde_json::from_str(&text)?;
@@ -241,6 +251,19 @@ fn validate_current_clock(
             }
         }
         from += events.len() as u64;
+    }
+    Ok(())
+}
+
+fn validate_live_clock_bounds(
+    subscription: &WakeSubscriptionV1,
+    observed_unix_ms: u64,
+) -> Result<(), StoreError> {
+    if observed_unix_ms == 0
+        || observed_unix_ms > af_contracts::json::SAFE_INTEGER_MAX as u64
+        || observed_unix_ms >= subscription.expires_unix_ms
+    {
+        return Err(error("Invalid current wake observation clock"));
     }
     Ok(())
 }

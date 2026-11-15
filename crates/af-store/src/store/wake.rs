@@ -496,6 +496,41 @@ impl EventStore {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        let (_, current) = self.checked_wake_reconcile(cas, subscription)?;
+        validate_recorders()?;
+        if !self.task_observation_unchanged(cas, &current)? {
+            return Err(refusal(
+                "Wake validation source changed under serialization",
+            ));
+        }
+        lock.commit()?;
+        Ok(())
+    }
+
+    /// Inspect the exact retained state under writer serialization before choosing restore
+    /// or opening replay. Integrity is independent of the caller's current run facts/clock.
+    pub fn inspect_wake_for_reconcile(
+        &self,
+        cas: &Cas,
+        id: &str,
+    ) -> Result<WakeJournal, StoreError> {
+        let lock = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let registration = self.inspect_wake(id)?.registration;
+        let (retained, _) = self.checked_wake_reconcile(cas, &registration.subscription)?;
+        lock.commit()?;
+        Ok(retained)
+    }
+
+    // All callers hold the Store writer transaction. The same predicate protects initial
+    // inspection, successful replacement and typed deferral, including changed run facts.
+    fn checked_wake_reconcile(
+        &self,
+        cas: &Cas,
+        subscription: &WakeSubscriptionV1,
+    ) -> Result<(WakeJournal, task::TaskProjection), StoreError> {
         let retained = self.inspect_wake(&subscription.subscription_id)?;
         if !retained.source_available
             || retained.expired
@@ -532,8 +567,8 @@ impl EventStore {
         {
             return Err(refusal("Wake registration prefix changed"));
         }
-        if let Some(text) = retained.checkpoint {
-            let checkpoint: WakeCheckpointV1 = serde_json::from_str(&text)?;
+        if let Some(text) = &retained.checkpoint {
+            let checkpoint: WakeCheckpointV1 = serde_json::from_str(text)?;
             checkpoint.validate().map_err(|e| refusal(&e))?;
             if checkpoint.configuration_digest != subscription.configuration_digest
                 || checkpoint.through.sequence >= current.next_sequence
@@ -548,21 +583,14 @@ impl EventStore {
                     .replay_window(&task.task_run_id, checkpoint.through.sequence, 1)?
                     .first()
                     .is_none_or(|e| e.event_id != checkpoint.through.event_id)
-                || !self.wake_checkpoint_is_retained(&text)?
+                || !self.wake_checkpoint_is_retained(text)?
             {
                 return Err(refusal("Invalid current wake checkpoint"));
             }
         } else if retained.extracted_through.is_some() || source_sequence.is_some() {
             return Err(refusal("Wake progress without a retained checkpoint"));
         }
-        validate_recorders()?;
-        if !self.task_observation_unchanged(cas, &current)? {
-            return Err(refusal(
-                "Wake validation source changed under serialization",
-            ));
-        }
-        lock.commit()?;
-        Ok(())
+        Ok((retained, current))
     }
 
     /// Immutable envelopes and cursor update are one transaction, fenced on the previous
@@ -651,9 +679,7 @@ impl EventStore {
             return Err(refusal("Wake checkpoint scope/boundary mismatch"));
         }
         // Validate all current authority before a recorder/CAS conflict can be deferred.
-        self.inspect_wake(id)?;
-        self.task_projection(cas, &task_id)?
-            .ok_or_else(|| refusal("Wake Task disappeared"))?;
+        self.checked_wake_reconcile(cas, &registration.subscription)?;
         let source_unchanged = self.task_observation_unchanged(cas, source)?;
         recorder_unchanged()?;
         if old.as_deref() != expected_checkpoint || !source_unchanged {
