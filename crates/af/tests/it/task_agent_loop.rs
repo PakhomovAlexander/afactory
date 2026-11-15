@@ -1193,7 +1193,7 @@ fn wake_cli_pi_poll_validates_retained_checkpoint_before_cancellation_rebuild() 
         Some("source"),
         Some("provenance"),
     ] {
-        retained_cancellation_checkpoint(fault, false);
+        retained_cancellation_checkpoint(fault, None);
     }
 }
 
@@ -1201,12 +1201,60 @@ fn wake_cli_pi_poll_validates_retained_checkpoint_before_cancellation_rebuild() 
 #[cfg(target_os = "linux")]
 fn wake_cli_pi_poll_cancellation_rebuild_revalidates_replacement_at_commit() {
     for fault in ["scope", "boundary", "progress", "source", "provenance"] {
-        retained_cancellation_checkpoint(Some(fault), true);
+        retained_cancellation_checkpoint(Some(fault), Some("wake-before-commit-1"));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_lease_id() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("lease_id"), point);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_lease_role() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("lease_role"), point);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_lease_stale() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("lease_stale"), point);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_prefix() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("prefix"), point);
     }
 }
 
 #[cfg(target_os = "linux")]
-fn retained_cancellation_checkpoint(fault: Option<&str>, at_commit: bool) {
+fn retained_cancellation_checkpoint(fault: Option<&str>, point: Option<&str>) {
     let f = cancellation_wake_fixture();
     let grant = f.owner.join("grant.json");
     let id = f.register(&grant);
@@ -1222,7 +1270,7 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, at_commit: bool) {
     await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
     // Persist the actual checked continuation BEFORE cancellation changes run facts.
     assert_eq!(f.pull(&grant)["message"], Value::Null);
-    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let mut store = EventStore::open(f.state.join("events.sqlite")).unwrap();
     let before = store.inspect_wake(&id).unwrap();
     assert!(before.checkpoint.is_some());
     assert!(before.envelopes.is_empty());
@@ -1238,10 +1286,46 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, at_commit: bool) {
             .success()
     );
     assert!(f.state.join("runs/gc-older-1.cancel.json").is_file());
-    let paused = at_commit.then(|| f.pause_poll(&grant, "wake-before-commit-1"));
+    let paused = point.map(|point| f.pause_poll(&grant, point));
     let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
     let mut checkpoint: Value = serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
     match fault {
+        Some("lease_id") => checkpoint["lease_boundary"]["event_id"] = "f".repeat(26).into(),
+        Some("lease_role") => {
+            use af_contracts::{EventType, task::event::TaskChangeV1};
+            let events = store
+                .replay_window(
+                    &before.registration.subscription.task.task_run_id,
+                    0,
+                    checkpoint["through"]["sequence"].as_u64().unwrap() + 1,
+                )
+                .unwrap();
+            let event = events
+                .iter()
+                .find(|event| {
+                    event.event_type == EventType::TaskTransitionV6
+                        && !matches!(
+                            af_store::store::task::read_task_transition(event)
+                                .unwrap()
+                                .change,
+                            TaskChangeV1::Opened { .. }
+                                | TaskChangeV1::LeaseTaken { .. }
+                                | TaskChangeV1::LeaseRenewed { .. }
+                                | TaskChangeV1::LeaseReleased {}
+                        )
+                })
+                .unwrap();
+            checkpoint["lease_boundary"] = serde_json::json!({
+                "sequence":event.sequence, "event_id":event.event_id
+            });
+        }
+        Some("lease_stale") => {
+            assert!(checkpoint["lease_boundary"]["sequence"].as_u64().unwrap() > 0);
+            checkpoint["lease_boundary"] = serde_json::json!({
+                "sequence":0, "event_id":before.registration.subscription.task.opening_event_id
+            });
+        }
+        Some("prefix") => checkpoint["prefix_digest"] = format!("sha256:{}", "f".repeat(64)).into(),
         Some("scope") => {
             checkpoint["configuration_digest"] = format!("sha256:{}", "f".repeat(64)).into()
         }
@@ -1272,7 +1356,10 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, at_commit: bool) {
     }
     // Column-only corruption must retain the exact checkpoint bytes: otherwise the cursor
     // CAS alone would force deferral and miss an unchecked normal commit replacement.
-    let text = if matches!(fault, Some("scope" | "boundary")) {
+    let text = if matches!(
+        fault,
+        Some("scope" | "boundary" | "lease_id" | "lease_role" | "lease_stale" | "prefix")
+    ) {
         serde_json::to_string(&checkpoint).unwrap()
     } else {
         before.checkpoint.as_ref().unwrap().clone()
@@ -1286,6 +1373,15 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, at_commit: bool) {
         db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence,valid FROM wake_subscriptions_v1 WHERE id=?1", [&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).unwrap()
     };
     let retained = snapshot();
+    if point == Some("wake-final-state-captured-1") {
+        // A genuine checked writer invalidates the captured source and reaches the narrow
+        // serialized deferral validator before the page can attempt a replacement.
+        let cas = Cas::open(f.state.join("cas")).unwrap();
+        let lease = store
+            .take_task_lease(&cas, "gc-older", "retained-history-fixture", 60_000)
+            .unwrap();
+        store.release_task_lease(&cas, &lease).unwrap();
+    }
     let output = if let Some((mut poll, barrier)) = paused {
         std::fs::write(barrier.join("proceed"), []).unwrap();
         poll.0.take().unwrap().wait_with_output().unwrap()

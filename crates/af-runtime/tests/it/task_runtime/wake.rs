@@ -869,6 +869,19 @@ fn wake_long_history_advances_checked_pages_to_completion_and_restores_checkpoin
             .collect::<Vec<_>>(),
         [WakeKindV1::AttentionRequired, WakeKindV1::Completed]
     );
+    // The retained-state validator also walks beyond one page using the exact projector
+    // fingerprint, without trusting a checkpoint checksum or buffering the whole prefix.
+    let mut retained: WakeCheckpointV1 =
+        serde_json::from_value(serde_json::to_value(&second.checkpoint).unwrap()).unwrap();
+    f.store
+        .validate_wake_checkpoint_history(&sub.task, &retained)
+        .unwrap();
+    retained.prefix_digest = digest('f');
+    assert!(
+        f.store
+            .validate_wake_checkpoint_history(&sub.task, &retained)
+            .is_err()
+    );
     let replay = project(&f.store, &f.cas, &sub, Some(&checkpoint), at).unwrap();
     assert_eq!(second.observations, replay.observations);
     assert!(

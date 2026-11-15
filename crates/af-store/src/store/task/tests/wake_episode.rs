@@ -74,3 +74,76 @@ fn wake_plan_review_waiting_is_derived_from_the_checked_plan() {
         assert_eq!(f.state().lifecycle_episode(), before.lifecycle_episode());
     });
 }
+
+#[test]
+fn wake_retained_history_checks_the_latest_lease_at_the_exact_covered_prefix() {
+    use crate::store::wake::{history_prefix_hash, history_prefix_seed};
+    use af_contracts::task::wake::{WakeBoundaryV1, WakeCheckpointV1, WakeTaskV1};
+    super::super::test_clock::with_time(1_000_000, |_| {
+        let mut f = Fixture::new(false);
+        let lease = f.open();
+        f.propose(&lease); // A real non-lease event between opening and renewal.
+        f.store.renew_task_lease(&f.cas, &lease, 1_000_001).unwrap();
+        f.store.release_task_lease(&f.cas, &lease).unwrap();
+        let events = f
+            .store
+            .replay(&task_run_id(lease.task_id()).unwrap())
+            .unwrap();
+        assert_eq!(events.len(), 4);
+        let task = WakeTaskV1 {
+            store_incarnation: format!("sha256:{}", "1".repeat(64)),
+            task_id: lease.task_id().into(),
+            task_run_id: task_run_id(lease.task_id()).unwrap(),
+            opening_event_id: events[0].event_id.clone(),
+        };
+        let boundary = |index: usize| WakeBoundaryV1 {
+            sequence: events[index].sequence,
+            event_id: events[index].event_id.clone(),
+        };
+        let mut digest = history_prefix_seed(&task).unwrap();
+        for (index, event) in events.iter().enumerate() {
+            digest = history_prefix_hash(&digest, event).unwrap();
+            let checkpoint = WakeCheckpointV1 {
+                schema: "af/task-wake-checkpoint@1".into(),
+                configuration_digest: format!("sha256:{}", "2".repeat(64)),
+                run_facts_digest: format!("sha256:{}", "3".repeat(64)),
+                through: boundary(index),
+                prior_semantic: None,
+                lease_boundary: boundary(if index == 1 { 0 } else { index }),
+                observations: 0,
+                observed_unix_ms: 1_000_000,
+                prefix_digest: digest.clone(),
+                clock_observed: true,
+            };
+            // A later renewal/release must not invalidate a valid earlier covered prefix.
+            f.store
+                .validate_wake_checkpoint_history(&task, &checkpoint)
+                .unwrap();
+            if index >= 2 {
+                for invalid in [0, 1] {
+                    let mut damaged = checkpoint.clone();
+                    damaged.lease_boundary = boundary(invalid);
+                    assert!(
+                        f.store
+                            .validate_wake_checkpoint_history(&task, &damaged)
+                            .is_err()
+                    );
+                }
+            }
+            let mut damaged = checkpoint.clone();
+            damaged.through.event_id = "f".repeat(26);
+            assert!(
+                f.store
+                    .validate_wake_checkpoint_history(&task, &damaged)
+                    .is_err()
+            );
+            let mut damaged = checkpoint.clone();
+            damaged.prefix_digest = format!("sha256:{}", "f".repeat(64));
+            assert!(
+                f.store
+                    .validate_wake_checkpoint_history(&task, &damaged)
+                    .is_err()
+            );
+        }
+    });
+}

@@ -211,6 +211,29 @@ fn checkpoint_digest(text: &str) -> Result<String, StoreError> {
     value.validate().map_err(|e| refusal(&e))?;
     content_id(&serde_json::to_value(value)?).map_err(|e| refusal(&e.to_string()))
 }
+/// Canonical rolling source identity shared by projection and retained-history validation.
+pub fn history_prefix_seed(task: &WakeTaskV1) -> Result<String, StoreError> {
+    content_id(&json!({"domain":"af/wake-prefix/1","task":task}))
+        .map_err(|e| refusal(&e.to_string()))
+}
+
+pub fn history_prefix_hash(prior: &str, event: &RunEvent) -> Result<String, StoreError> {
+    content_id(&json!({"prior":prior,"event":event})).map_err(|e| refusal(&e.to_string()))
+}
+
+/// The checkpoint's lease cause is the latest of exactly these checked transitions.
+pub fn history_is_lease_boundary(event: &RunEvent) -> Result<bool, StoreError> {
+    use af_contracts::task::event::TaskChangeV1;
+    Ok(event.event_type == EventType::TaskTransitionV6
+        && matches!(
+            task::read_task_transition(event)?.change,
+            TaskChangeV1::Opened { .. }
+                | TaskChangeV1::LeaseTaken { .. }
+                | TaskChangeV1::LeaseRenewed { .. }
+                | TaskChangeV1::LeaseReleased {}
+        ))
+}
+
 impl EventStore {
     /// Explicit owner admission; opening a Store alone never allocates notification identity.
     pub fn admit_wake_incarnation(&self) -> Result<String, StoreError> {
@@ -455,7 +478,8 @@ impl EventStore {
     }
     /// Exact same-release retained continuation. Canonical event mutation invalidates it in
     /// the same SQLite transaction; appending a suffix leaves its checked ancestry intact.
-    /// This admits no external checkpoint or lifecycle summary.
+    /// Every retained source reference and the rolling fingerprint are independently replayed;
+    /// this admits no external checkpoint or lifecycle summary.
     pub fn wake_checkpoint_is_retained(&self, checkpoint: &str) -> Result<bool, StoreError> {
         if checkpoint.len() > MAX_WAKE_BYTES {
             return Err(refusal("Wake checkpoint too large"));
@@ -481,7 +505,61 @@ impl EventStore {
         if self.wake_incarnation()? != registration.subscription.task.store_incarnation {
             return Err(refusal("Foreign wake checkpoint incarnation"));
         }
+        // A retained control checksum is not evidence of source integrity. This also
+        // protects the projector's retained fast path, independently of current run facts.
+        let value: WakeCheckpointV1 = serde_json::from_str(checkpoint)?;
+        self.validate_wake_checkpoint_history(&registration.subscription.task, &value)?;
         Ok(true)
+    }
+
+    /// Check source references/fingerprint only; callers still validate canonical Task/CAS,
+    /// subscription scope, control provenance, progress and clocks. Never buffer the full
+    /// prefix or derive lifecycle authority from a caller-authored summary.
+    pub fn validate_wake_checkpoint_history(
+        &self,
+        task: &WakeTaskV1,
+        checkpoint: &WakeCheckpointV1,
+    ) -> Result<(), StoreError> {
+        task.validate().map_err(|e| refusal(&e))?;
+        checkpoint.validate().map_err(|e| refusal(&e))?;
+        let mut digest = history_prefix_seed(task)?;
+        let mut from = 0;
+        let mut lease_boundary = None;
+        let mut through = None;
+        while from <= checkpoint.through.sequence {
+            let page = self.replay_window(
+                &task.task_run_id,
+                from,
+                (checkpoint.through.sequence + 1 - from).min(4096),
+            )?;
+            if page.is_empty() {
+                return Err(refusal("Wake checkpoint beyond source"));
+            }
+            for event in &page {
+                if event.sequence == 0 && event.event_id != task.opening_event_id {
+                    return Err(refusal("Wake checkpoint opening mismatch"));
+                }
+                digest = history_prefix_hash(&digest, event)?;
+                let boundary = WakeBoundaryV1 {
+                    sequence: event.sequence,
+                    event_id: event.event_id.clone(),
+                };
+                if history_is_lease_boundary(event)? {
+                    lease_boundary = Some(boundary.clone());
+                }
+                through = Some(boundary);
+            }
+            from += page.len() as u64;
+        }
+        if through.as_ref() != Some(&checkpoint.through)
+            || lease_boundary.as_ref() != Some(&checkpoint.lease_boundary)
+            || digest != checkpoint.prefix_digest
+        {
+            return Err(refusal(
+                "Wake checkpoint history references or prefix mismatch",
+            ));
+        }
+        Ok(())
     }
 
     /// Validate a possible pre-native deferral under writer serialization. This records no

@@ -124,3 +124,35 @@ checksum-valid foreign-scope old checkpoint. The three-sample clock fixture retu
 empty response for 100/102/101. Both failures were reproduced before changing the runtime; the
 repaired fixtures also exercise unchanged retained corrupt progress, checked-boundary damage,
 invalid provenance and a valid cancellation rebuild. No live host call or certification is claimed.
+
+## Retained history integrity
+
+The proposed [retained-history decision](../adr/2026-11-15-verify-retained-wake-history-references.md)
+repairs #952 without changing the closed `WakeCheckpointV1` shape.
+
+| Fields or boundary | Validation and use |
+| --- | --- |
+| `through` | Exact sequence/event pair in checked canonical history; matches stored extraction progress and lies within the current checked source |
+| `lease_boundary` | Exact sequence/event pair of the latest Opened, LeaseTaken, LeaseRenewed or LeaseReleased at or before `through`; a real event of another role or an earlier valid lease refuses |
+| `prefix_digest` | Exact rolling hash of original RunEvent bytes from opening through `through`, seeded by the registered Task identity; shared canonical hash helpers with projection, using unchanged 4096-row/16 MiB pages |
+| `schema`, `configuration_digest` | Closed current shape and exact registered configuration; subscription, Store incarnation, opening, registration prefix, source/CAS and retained control provenance remain independently checked |
+| `run_facts_digest` | Valid digest selects restore only for identical authenticated facts; changed facts select replay after source integrity validation |
+| `prior_semantic` | Closed bounded lifecycle identity/state; prior-facts-derived semantics are discarded on changed facts and rebuilt from opening, never used to authorize continuation on that path |
+| `observations` | Shape and subscription allowance checked; opening replay rebuilds prior-facts-derived counts, while actual retained distinct envelopes still enforce the cumulative allowance |
+| `observed_unix_ms`, `clock_observed` | Valid bounded time/boolean shape; existing live/explicit-clock monotonicity, source-time, expiry and restore provenance checks remain. Opening replay rebuilds clock-dependent semantics |
+| Initial inspection, replacement, deferral | Same actual retained object and metadata validated under Store writer serialization before restore/replay or bounded empty response; refusal changes no retained progress or delivery effects |
+
+The authenticated public cancellation fixture covers lease event-ID mismatch, an exact real event
+of the wrong role, stale opening lease and altered prefix fingerprint at all three boundaries.
+A genuine maintenance writer forces the deferral case after source capture. Existing through,
+progress, source-sequence and provenance controls remain, including byte-identical checkpoint
+text with damaged metadata. The valid older-checkpoint case rebuilds after cancellation and later
+retains ordered authoritative completion on the same attachment; native uncertainty fences resend.
+The accepted research source and recommendation above remain unchanged. This candidate adds no
+live host evidence or new execution authority.
+
+Before the runtime repair, all four new authenticated CLI regressions failed by returning a native
+wake packet from their checksum-consistent corrupt checkpoint after genuine cancellation. After
+repair, the focused retained-history/rebuild selection passed all six tests, including each of the
+four faults at inspection, replacement and serialized deferral. The unit prefix/suffix fixture and
+extended long-history fixture separately cover source-boundary and multi-page fingerprint checks.

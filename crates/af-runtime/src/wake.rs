@@ -1,6 +1,6 @@
 //! Pure, read-only wake extraction. No journal, dispatch, host API or canonical event writes.
 use af_contracts::{
-    EventType, RunEvent,
+    RunEvent,
     task::{self, TaskPhaseV1, TaskResultV1, event::TaskChangeV1, wake::*},
 };
 use af_store::{
@@ -8,6 +8,7 @@ use af_store::{
     store::{
         StoreError,
         task::{self as stored, TaskProjection},
+        wake::{history_is_lease_boundary, history_prefix_hash, history_prefix_seed},
     },
 };
 use serde_json::json;
@@ -441,8 +442,7 @@ fn project_inner(
     // Revalidate exact source bytes in fixed-size pages; event IDs alone are position-derived.
     // This does no lifecycle extraction and never buffers the complete prefix. Canonical Task
     // validation below retains its own authority and CAS-corruption checks.
-    let mut prefix_digest = content_id(&json!({"domain":"af/wake-prefix/1","task":task}))
-        .map_err(|e| error(e.to_string()))?;
+    let mut prefix_digest = history_prefix_seed(task)?;
     if let Some(c) = cursor {
         if store.wake_checkpoint_is_retained(&serde_json::to_string(c)?)? {
             prefix_digest = c.prefix_digest.clone();
@@ -458,7 +458,7 @@ fn project_inner(
                     return Err(error("Wake checkpoint beyond source"));
                 }
                 for e in &page {
-                    prefix_digest = prefix_hash(&prefix_digest, e)?;
+                    prefix_digest = history_prefix_hash(&prefix_digest, e)?;
                 }
                 from += page.len() as u64;
                 if from == c.through.sequence + 1 && boundary(page.last().unwrap()) != c.through {
@@ -491,7 +491,7 @@ fn project_inner(
     let mut lease_boundary = cursor.map_or_else(|| boundary(&first), |c| c.lease_boundary.clone());
     let mut last_boundary = cursor.map_or_else(|| boundary(&first), |c| c.through.clone());
     for event in &events {
-        prefix_digest = prefix_hash(&prefix_digest, event)?;
+        prefix_digest = history_prefix_hash(&prefix_digest, event)?;
         let at = policy_time(event)?;
         if at > observed_unix_ms {
             return Err(error("Wake observation precedes checked history"));
@@ -525,14 +525,8 @@ fn project_inner(
             return Err(error("Invalid checked wake prefix"));
         }
         episode = state.lifecycle_episode();
-        if event.event_type == EventType::TaskTransitionV6 {
-            match stored::read_task_transition(event)?.change {
-                TaskChangeV1::Opened { .. }
-                | TaskChangeV1::LeaseTaken { .. }
-                | TaskChangeV1::LeaseRenewed { .. }
-                | TaskChangeV1::LeaseReleased {} => lease_boundary = boundary(event),
-                _ => {}
-            }
+        if history_is_lease_boundary(event)? {
+            lease_boundary = boundary(event);
         }
         let semantic = semantics(cas, &state, at, facts)?;
         emit(
@@ -606,10 +600,6 @@ fn project_inner(
         checkpoint,
         caught_up,
     })
-}
-
-fn prefix_hash(prior: &str, event: &RunEvent) -> Result<String, StoreError> {
-    content_id(&json!({"prior":prior,"event":event})).map_err(|e| error(e.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
