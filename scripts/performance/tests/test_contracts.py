@@ -296,7 +296,7 @@ class Parity(unittest.TestCase):
                    "shipping", "profiles", "executor", "executor-state", "executor-result",
                    "executor-request")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 7, 4, 2, 3, 3])
+                         [8, 3, 1, 6, 3, 2, 4, 5, 6, 2, 2, 5, 2, 7, 3, 3, 3, 7, 4, 2, 3, 3])
         self.assertEqual(dict((name, sorted(versions)) for name, versions
                               in contracts.READABLE.items()),
                          {"executor-request": ["af.perf-executor-request/1",
@@ -306,9 +306,9 @@ class Parity(unittest.TestCase):
         # profiles/6 bound retained archives (ADR-0224) and profiles/7 indexes a repeated
         # capture's recordings; report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
-                         (7, 3))
-        self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (7, 4))
+        self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
+                         (8, 6))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]
                      and entry["contract"] in changed
                      and parse(entry)[0]["schema"] == contracts.CONTRACTS[entry["contract"]][0])

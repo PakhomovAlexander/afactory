@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Deterministic, credential-free Codex protocol fixture for the AF development-flow smoke case."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import time
+
+FIXTURE = Path(__file__).resolve().parent.parent.parent
+HELP = """Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT]
+
+Options:
+  -c, --config <key=value>
+  -m, --model <MODEL>
+  -s, --sandbox <SANDBOX_MODE>
+  -C, --cd <DIR>
+      --skip-git-repo-check
+      --ephemeral
+      --json
+  -o, --output-last-message <FILE>
+      --output-schema <FILE>
+  -h, --help
+"""
+
+
+def emit(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def app_server():
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request.get("method")
+        if method == "initialize":
+            answer = {"id": request.get("id"), "result": {"userAgent": "codex_cli_rs/0.167.0"}}
+        elif method == "model/list":
+            answer = {"id": request.get("id"), "result": json.loads(
+                (FIXTURE / "mock" / "codex-model-list.json").read_text(encoding="utf-8"))}
+        elif method == "account/read":
+            answer = {"id": request.get("id"), "result": {
+                "account": {"type": "chatgpt", "email": "smoke@example.test"}}}
+        else:
+            continue
+        emit(answer)
+
+
+def option(args, name):
+    return args[args.index(name) + 1] if name in args else None
+
+
+def source_stage():
+    app = Path("crates/smoke-app/src/lib.rs")
+    logic = Path("crates/smoke-logic/src/lib.rs")
+    support = Path("crates/smoke-support/src/lib.rs")
+    app_text = app.read_text(encoding="utf-8") if app.exists() else ""
+    logic_text = logic.read_text(encoding="utf-8") if logic.exists() else ""
+    support_text = support.read_text(encoding="utf-8") if support.exists() else ""
+    if "pub fn feature()" not in app_text:
+        return 0
+    if "smoke_support::base() + 1" in logic_text:
+        return 1
+    if "pub fn base() -> i32 {\n    1\n}" in support_text:
+        return 2
+    return 3
+
+
+def finding(stage):
+    if stage == 0:
+        return {
+            "severity": "major",
+            "file": "crates/smoke-app/src/lib.rs",
+            "line": 5,
+            "title": "Use the declared logic adjustment",
+            "body": "The smoke continuation must change the logic adjustment from one to two.",
+            "fix": "Apply the authority's round-1 logic patch and retain its real test.",
+            "confidence": 1.0,
+        }
+    if stage == 1:
+        return {
+            "severity": "major",
+            "file": "crates/smoke-logic/src/lib.rs",
+            "line": 2,
+            "title": "Use the final support value",
+            "body": "The second smoke continuation must change the support base from one to two.",
+            "fix": "Apply the authority's round-2 support patch and retain its real test.",
+            "confidence": 1.0,
+        }
+    return None
+
+
+def business(args):
+    request_text = sys.stdin.read()
+    if request_text.startswith("This is a Provider admission check by the af review tool:"):
+        reply = "OK"
+        output = option(args, "-o") or option(args, "--output-last-message")
+        if output:
+            Path(output).write_text(reply, encoding="utf-8")
+        home = Path(os.environ["CODEX_HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        with (home / "invocations.jsonl").open("a", encoding="utf-8") as stream:
+            model = option(args, "--model")
+            stream.write(json.dumps({"role": "admission", "model": model,
+                                     "binding": f"codex-main:{model}:high",
+                                     "effort": "high", "monotonic_ns": time.monotonic_ns()}) + "\n")
+        emit({"type": "item.completed", "item": {"type": "agent_message", "text": reply}})
+        emit({"type": "turn.completed", "usage": {"input_tokens": 10,
+              "cached_input_tokens": 0, "output_tokens": 1,
+              "reasoning_output_tokens": 0, "cache_write_input_tokens": 0}})
+        return
+    schema_path = option(args, "--output-schema")
+    schema = json.loads(Path(schema_path).read_text(encoding="utf-8")) if schema_path else {}
+    debug_home = Path(os.environ["CODEX_HOME"])
+    debug_home.mkdir(parents=True, exist_ok=True)
+    (debug_home / "last-schema.json").write_text(
+        json.dumps({"path": schema_path, "schema": schema}, indent=2), encoding="utf-8")
+    properties = schema.get("properties", {})
+    schema_text = json.dumps(schema)
+    model = option(args, "--model")
+    request = json.loads(request_text)
+    if request.get("schema") != "af.worker-request/1":
+        raise RuntimeError("expected current native Worker request")
+    inputs = request.get("inputs", {})
+    role = ("correctness" if "assignment" in inputs else
+            "evaluator" if "checks" in inputs else "implementer")
+    expected_model = "gpt-6.1-sol" if role == "implementer" else "gpt-6.1-terra"
+    if model != expected_model:
+        raise RuntimeError(f"unexpected {role} model: {model}")
+    if not any("model_reasoning_effort=\"high\"" in arg for arg in args):
+        raise RuntimeError(f"unexpected {role} effort")
+    stage = source_stage()
+    outputs = {}
+    reply_stage = stage
+    if role == "implementer":
+        if stage > 2:
+            raise RuntimeError("implementer called after the final source was already repaired")
+        if stage:
+            findings = request.get("inputs", {}).get("findings")
+            if not findings:
+                raise RuntimeError("continuation implementer lacks typed findings")
+            expected_title = ("Use the declared logic adjustment" if stage == 1
+                              else "Use the final support value")
+            if expected_title not in request_text:
+                raise RuntimeError(f"continuation lacks {expected_title}")
+            if "current candidate still has its scripted correctness Finding" not in request_text:
+                raise RuntimeError("continuation lacks the failed evaluator Finding")
+        patch = FIXTURE / "patches" / f"round-{stage}"
+        for source in patch.rglob("*"):
+            if source.is_file():
+                destination = Path(source.relative_to(patch))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                # Content, not a current timestamp, must invalidate the build cache.
+                os.utime(destination, (1_600_000_000, 1_600_000_000))
+        outputs["report"] = [{"summary": (
+            f"Applied deterministic smoke round {stage}; typed continuation findings checked; "
+            "the real workspace gate is left to the authoritative review check.")}]
+        reply_stage = stage
+    elif role == "correctness":
+        # The implementer has already advanced the source by one stage.
+        report = finding(stage - 1)
+        outputs["result"] = [{
+            "reports": [] if report is None else [report],
+            "benchmark_demands": [],
+            "dispositions": [{"finding_id": entry["finding_id"],
+                              "position": "not_reproduced", "reason": "The declared source repair is present."}
+                             for entry in inputs["assignment"][0]["payload"]["findings"]],
+        }]
+    else:
+        outputs["result"] = [{
+            "outcome": "passed" if stage == 3 else "failed",
+            "reason": (
+                "The three-crate smoke graph, both repairs and all real checks have the expected final semantics."
+                if stage == 3 else
+                "The current candidate still has its scripted correctness Finding; the next continuation must repair it."),
+        }]
+
+    invocation = {
+        "role": role,
+        "source_stage": stage,
+        "reply_stage": reply_stage,
+        "model": model,
+        "effort": "high",
+        "finding_count": len(outputs.get("result", [{}])[0].get("reports", [])) if role == "correctness" else None,
+        "outcome": outputs.get("result", [{}])[0].get("outcome") if role == "evaluator" else None,
+        "cwd": str(Path.cwd()),
+        "feature_present_after": "pub fn feature()" in Path(
+            "crates/smoke-app/src/lib.rs").read_text(encoding="utf-8"),
+        "monotonic_ns": time.monotonic_ns(),
+    }
+    home = Path(os.environ["CODEX_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    with (home / "invocations.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(invocation, sort_keys=True) + "\n")
+    reply = json.dumps({"schema": "af.worker-reply/1", "outputs": outputs},
+                       separators=(",", ":"))
+    output = option(args, "-o") or option(args, "--output-last-message")
+    if output:
+        Path(output).write_text(reply, encoding="utf-8")
+    emit({"type": "item.completed", "item": {"type": "agent_message", "text": reply}})
+    emit({"type": "turn.completed", "usage": {
+        "input_tokens": 100,
+        "cached_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "cache_write_input_tokens": 0,
+    }})
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ["--version"]:
+        print("codex-cli 0.167.0")
+        return
+    if args == ["exec", "--help"]:
+        sys.stdout.write(HELP)
+        return
+    if args == ["app-server"]:
+        app_server()
+        return
+    if args and args[0] == "exec":
+        business(args)
+        return
+    raise RuntimeError(f"unsupported mock invocation: {args}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        import traceback
+        home = Path(os.environ.get("CODEX_HOME", "/tmp"))
+        home.mkdir(parents=True, exist_ok=True)
+        with (home / "errors.log").open("a", encoding="utf-8") as stream:
+            stream.write(traceback.format_exc())
+        raise

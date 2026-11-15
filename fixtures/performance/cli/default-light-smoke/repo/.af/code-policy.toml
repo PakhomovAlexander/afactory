@@ -1,0 +1,32 @@
+schema = "af.code-task-policy/1"
+check_wall_ms = 20000
+require_container = false
+
+[checks.kernel]
+name = "kernel"
+required = true
+
+[checks.kernel.command]
+program = "bash"
+args = [{ value = "scripts/check.sh", provenance = "literal" }]
+
+[checks.markdownlint]
+name = "markdownlint"
+required = true
+
+[checks.markdownlint.command]
+program = "python3"
+args = [{ value = "scripts/markdown-check.py", provenance = "literal" }]
+
+[rust_toolchain]
+version = "1.88.0"
+host = "native"
+components = ["clippy", "rustfmt"]
+checks = ["kernel"]
+
+[warm]
+build_cache = ["cargo_target", "cargo_home"]
+build_wall_ms = 20000
+clone_when_busy = false
+max_bytes = 268435456
+hard_max_bytes = 536870912

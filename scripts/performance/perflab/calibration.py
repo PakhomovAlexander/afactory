@@ -119,14 +119,21 @@ def declare(suite, authority, cohort_id, tier, environment_id, recipe_id, groups
                                                   if kind == "injection" else None),
                             "day": days[index % len(days)]})
 
-    add("aa", None, contracts.COHORT_COUNTS["aa"], [0, 1])
+    execution_class = ("long_running" if any(
+        doc["cases"][item["case_id"]].get("execution_class", "standard") == "long_running"
+        for item in suite.instances(tier)) else "standard")
+    counts_policy, injection_members, _ = contracts.cohort_counts(
+        {"execution_class": execution_class})
+    add("aa", None, counts_policy["aa"], [0, 1])
     add("preparation", "preparation", preparation_members, [2])
     trial_days = list(range(3, minimum_days))
-    for percent in contracts.INJECTION_PERCENTS:
-        add("injection", "injection_%d" % percent, contracts.INJECTION_MEMBERS, trial_days)
-    add("power", "power", contracts.COHORT_COUNTS["power"], trial_days)
+    percents = (5, 10) if execution_class == "long_running" else contracts.INJECTION_PERCENTS
+    for percent in percents:
+        add("injection", "injection_%d" % percent, injection_members, trial_days)
+    add("power", "power", counts_policy["power"], trial_days)
     cohort = {
         "schema": contracts.COHORT_SCHEMA, "cohort_id": cohort_id, "authority_sha": authority,
+        "execution_class": execution_class,
         "policy_digest": suite.policy_digest, "tier": tier, "environment_id": environment_id,
         "recipe_id": recipe_id, "cases": cases,
         "family_size": sum(1 for case in cases if case["criticality"] == "critical"),
@@ -139,11 +146,11 @@ def declare(suite, authority, cohort_id, tier, environment_id, recipe_id, groups
                      "branch": branch, "event": "workflow_dispatch",
                      "run_name": contracts.DISPATCH_RUN_NAME,
                      "after_run_number": after_run_number},
-        "target_formulas": dict(contracts.TARGET_FORMULAS),
+        "target_formulas": contracts.cohort_formulas({"execution_class": execution_class}),
         "members": members,
     }
     if local is not None:
-        cohort["schema"] = "af.perf-local-cohort/1"
+        cohort["schema"] = "af.perf-local-cohort/2"
         cohort["schedule"]["runners"] = "persistent_vm"
         cohort["dispatch"] = dict(local)
     return contracts.validate_cohort(cohort, "cohort")
@@ -1035,7 +1042,7 @@ def recompute_parameters(cohort, calibration, runs):
 
 
 def readiness(cohort, calibration, runs, refused, history):
-    """The af.perf-readiness/6 document of a cohort's recomputed evidence."""
+    """The af.perf-readiness/7 document of a cohort's recomputed evidence."""
     recomputed = recompute_parameters(cohort, calibration, runs)
     _judge_all(cohort, calibration, runs, kinds=contracts.MEMBER_KINDS)
     members = []
@@ -1069,15 +1076,16 @@ def readiness(cohort, calibration, runs, refused, history):
     tallies, groups, qualifies, ready = contracts.compute_readiness(cohort, calibration, members)
     for entry in members:
         entry["qualifies"] = qualifies[entry["member_id"]]
-    local = cohort["schema"] == "af.perf-local-cohort/1"
-    doc = {"schema": "af.perf-local-readiness/1" if local else contracts.READINESS_SCHEMA,
+    local = cohort["schema"] == "af.perf-local-cohort/2"
+    doc = {"schema": "af.perf-local-readiness/2" if local else contracts.READINESS_SCHEMA,
            "cohort_id": cohort["cohort_id"],
            "cohort_digest": canonical_digest(cohort),
            "calibration_digest": canonical_digest(calibration),
            "recomputed_calibration_digest": canonical_digest(recomputed),
            "history": dict(history), "members": members,
            "refused_evidence": refused[:256], "tallies": tallies, "groups": groups,
-           "ready": ready, "claim": contracts.READINESS_CLAIM}
+           "ready": ready, "claim": (contracts.LONG_READINESS_CLAIM
+                if cohort.get("execution_class") == "long_running" else contracts.READINESS_CLAIM)}
     validate = contracts.validate_local_readiness if local else contracts.validate_readiness
     return validate(doc, "readiness", cohort=cohort, calibration=calibration)
 
@@ -1107,6 +1115,7 @@ def summary_markdown(doc):
              % (tallies["aa_within_tolerance"], tallies["aa_members"]),
              "- Power trials valid in every critical case: %d of %d (at least %d required)"
              % (tallies["power_qualifying"], tallies["power_members"],
+                3 if doc["claim"] == contracts.LONG_READINESS_CLAIM else
                 contracts.POWER_DETECTIONS_REQUIRED),
              "- Refused evidence: %d dispatch(es) and artifact(s)" % len(
                  doc["refused_evidence"]), "",

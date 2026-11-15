@@ -2066,7 +2066,7 @@ def parser():
     declaring.add_argument("--repo", default=".")
     declaring.add_argument("--authority", required=True)
     declaring.add_argument("--cohort-id", required=True)
-    declaring.add_argument("--tier", required=True, choices=("quick", "nightly", "release"))
+    declaring.add_argument("--tier", required=True, choices=suite_module.TIERS)
     declaring.add_argument("--environment", required=True)
     declaring.add_argument("--recipe", required=True)
     declaring.add_argument("--group", action="append", nargs=3, required=True,

@@ -52,7 +52,8 @@
             "enum": [
               "quick",
               "nightly",
-              "release"
+              "release",
+              "e2e_long_running"
             ]
           },
           "trigger": {

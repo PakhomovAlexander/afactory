@@ -44,7 +44,8 @@
       "enum": [
         "quick",
         "nightly",
-        "release"
+        "release",
+        "e2e_long_running"
       ]
     },
     "environment_id": {
@@ -164,7 +165,8 @@
           "enum": [
             "quick",
             "nightly",
-            "release"
+            "release",
+            "e2e_long_running"
           ]
         },
         "baseline_sha": {
@@ -475,7 +477,8 @@
           "enum": [
             "quick",
             "nightly",
-            "release"
+            "release",
+            "e2e_long_running"
           ]
         },
         "baseline_sha": {

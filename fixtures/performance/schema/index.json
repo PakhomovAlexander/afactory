@@ -2,6 +2,11 @@
   "schema": "af.perf-schema-fixtures/1",
   "fixtures": [
     {
+      "path": "../../../scripts/nightly/nightly.example.toml",
+      "contract": "nightly-config",
+      "valid": true
+    },
+    {
       "path": "../../../scripts/performance/service/telemetry-collector.example.toml",
       "contract": "telemetry-collector",
       "valid": true
@@ -536,6 +541,13 @@
       "valid": true
     },
     {
+      "path": "cli/invalid-driver-interpreter.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "runs the side's AF binary or the declared PTY driver",
+      "shape": false
+    },
+    {
       "path": "cli/invalid-enumeration-without-identity.toml",
       "contract": "cli",
       "valid": false,
@@ -561,13 +573,6 @@
       "contract": "cli",
       "valid": false,
       "error": "a pending command declares nothing to run",
-      "shape": false
-    },
-    {
-      "path": "cli/invalid-driver-interpreter.toml",
-      "contract": "cli",
-      "valid": false,
-      "error": "runs the side's AF binary or the declared PTY driver",
       "shape": false
     },
     {
@@ -602,7 +607,7 @@
       "path": "cli/invalid-version.toml",
       "contract": "cli",
       "valid": false,
-      "error": "expected af.perf-cli/7",
+      "error": "expected af.perf-cli/8",
       "shape": true
     },
     {
@@ -655,6 +660,83 @@
     {
       "path": "cohort/valid-synthetic.json",
       "contract": "cohort",
+      "valid": true
+    },
+    {
+      "path": "comparison-aggregate/invalid-missing-partition-passes.json",
+      "contract": "comparison-aggregate",
+      "valid": false,
+      "error": "a missing partition never passes",
+      "shape": false
+    },
+    {
+      "path": "comparison-aggregate/valid-incomplete.json",
+      "contract": "comparison-aggregate",
+      "valid": true
+    },
+    {
+      "path": "comparison-export/invalid-version.json",
+      "contract": "comparison-export",
+      "valid": false,
+      "error": "expected af.perf-comparison-export/1",
+      "shape": true
+    },
+    {
+      "path": "comparison-export/valid-bundle.json",
+      "contract": "comparison-export",
+      "valid": true
+    },
+    {
+      "path": "comparison-overview/invalid-claimed-complete.json",
+      "contract": "comparison-overview",
+      "valid": false,
+      "error": "a comparison is complete only when",
+      "shape": false
+    },
+    {
+      "path": "comparison-overview/valid-incomplete.json",
+      "contract": "comparison-overview",
+      "valid": true
+    },
+    {
+      "path": "comparison-preflight/invalid-refused-with-declaration.json",
+      "contract": "comparison-preflight",
+      "valid": false,
+      "error": "a refusal carries its reason",
+      "shape": false
+    },
+    {
+      "path": "comparison-preflight/valid-ready.json",
+      "contract": "comparison-preflight",
+      "valid": true
+    },
+    {
+      "path": "comparison-preflight/valid-refused.json",
+      "contract": "comparison-preflight",
+      "valid": true
+    },
+    {
+      "path": "comparison-report/invalid-claimed-complete.json",
+      "contract": "comparison-report",
+      "valid": false,
+      "error": "a comparison is complete only when",
+      "shape": false
+    },
+    {
+      "path": "comparison-report/valid-running.json",
+      "contract": "comparison-report",
+      "valid": true
+    },
+    {
+      "path": "comparison/invalid-uncovered-shard.json",
+      "contract": "comparison",
+      "valid": false,
+      "error": "cover every shard of its plan exactly once",
+      "shape": false
+    },
+    {
+      "path": "comparison/valid-release.json",
+      "contract": "comparison",
       "valid": true
     },
     {
@@ -762,6 +844,274 @@
       "valid": true
     },
     {
+      "path": "evidence-export/invalid-version.json",
+      "contract": "evidence-export",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "evidence-export/valid.json",
+      "contract": "evidence-export",
+      "valid": true
+    },
+    {
+      "path": "evidence-index/invalid-version.json",
+      "contract": "evidence-index",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "evidence-index/valid.json",
+      "contract": "evidence-index",
+      "valid": true
+    },
+    {
+      "path": "evidence-packet/invalid-version.json",
+      "contract": "evidence-packet",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "evidence-packet/valid.json",
+      "contract": "evidence-packet",
+      "valid": true
+    },
+    {
+      "path": "executor-journal/invalid-version.json",
+      "contract": "executor-journal",
+      "valid": false,
+      "error": "expected af.perf-executor-journal/1",
+      "shape": true
+    },
+    {
+      "path": "executor-journal/valid-synthetic.json",
+      "contract": "executor-journal",
+      "valid": true
+    },
+    {
+      "path": "executor-preflight/invalid-infeasible-ready.json",
+      "contract": "executor-preflight",
+      "valid": false,
+      "error": "a ready preflight carries its request and no refusal",
+      "shape": false
+    },
+    {
+      "path": "executor-preflight/valid-ready.json",
+      "contract": "executor-preflight",
+      "valid": true
+    },
+    {
+      "path": "executor-preflight/valid-refused.json",
+      "contract": "executor-preflight",
+      "valid": true
+    },
+    {
+      "path": "executor-request/invalid-manual-tag.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field tag",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-baseline.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "names the frozen baseline",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-date.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "names no calendar date",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-key.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "keyed by its tag",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "neither a comparison partition nor a parent-selected profile",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-prerelease-baseline.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-profile.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "keyed by its tag",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-v2-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field parent, partition",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-v3-missing-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "missing field parent",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-version.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field partition",
+      "shape": true
+    },
+    {
+      "path": "executor-request/valid-manual.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly-explicit-base.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly-v3.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-synthetic.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-result/invalid-hosted-binaries.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "only a completed local original",
+      "shape": false
+    },
+    {
+      "path": "executor-result/invalid-missing-binaries.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "missing field binaries",
+      "shape": true
+    },
+    {
+      "path": "executor-result/invalid-version.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "expected af.perf-executor-result/3",
+      "shape": true
+    },
+    {
+      "path": "executor-result/valid-core-binaries.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-expired.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-no-binaries.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-synthetic.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-state/invalid-version.json",
+      "contract": "executor-state",
+      "valid": false,
+      "error": "expected af.perf-executor-state/2",
+      "shape": true
+    },
+    {
+      "path": "executor-state/valid-expired.json",
+      "contract": "executor-state",
+      "valid": true
+    },
+    {
+      "path": "executor-state/valid-synthetic.json",
+      "contract": "executor-state",
+      "valid": true
+    },
+    {
+      "path": "executor/invalid-missing-shipping-tools.json",
+      "contract": "executor",
+      "valid": false,
+      "shape": false,
+      "error": "requires zigbuild_bin"
+    },
+    {
+      "path": "executor/invalid-relative-tools.json",
+      "contract": "executor",
+      "valid": false,
+      "shape": true,
+      "error": "does not match"
+    },
+    {
+      "path": "executor/invalid-version.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "expected af.perf-executor/4",
+      "shape": true
+    },
+    {
+      "path": "executor/invalid-windows-past-hard-maximum.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "run_total_minutes",
+      "shape": true
+    },
+    {
+      "path": "executor/invalid-windows-sampling-past-run.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "sampling window fits inside its run total",
+      "shape": false
+    },
+    {
+      "path": "executor/valid-comparison-windows.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/valid-shipping.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/valid-synthetic.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
       "path": "golden/invalid-semantic-digest.json",
       "contract": "golden",
       "valid": false,
@@ -792,6 +1142,18 @@
     {
       "path": "history/valid-fixture-split.json",
       "contract": "history",
+      "valid": true
+    },
+    {
+      "path": "host-observer/invalid-attached-without-target.json",
+      "contract": "host-observer",
+      "valid": false,
+      "error": "an attachment names its frozen target",
+      "shape": false
+    },
+    {
+      "path": "host-observer/valid-attached.json",
+      "contract": "host-observer",
       "valid": true
     },
     {
@@ -1001,6 +1363,42 @@
       "valid": true
     },
     {
+      "path": "local-cohort/invalid-version.json",
+      "contract": "local-cohort-declaration",
+      "valid": false,
+      "error": "expected af.perf-local-cohort/2",
+      "shape": true
+    },
+    {
+      "path": "local-cohort/valid-synthetic.json",
+      "contract": "local-cohort-declaration",
+      "valid": true
+    },
+    {
+      "path": "local-readiness/invalid-version.json",
+      "contract": "local-readiness-assessment",
+      "valid": false,
+      "error": "expected af.perf-local-readiness/2",
+      "shape": true
+    },
+    {
+      "path": "local-readiness/valid-synthetic.json",
+      "contract": "local-readiness-assessment",
+      "valid": true
+    },
+    {
+      "path": "machine-lock-anchor/invalid-version.json",
+      "contract": "machine-lock-anchor",
+      "valid": false,
+      "error": "expected af.perf-machine-lock-anchor/1",
+      "shape": true
+    },
+    {
+      "path": "machine-lock-anchor/valid-synthetic.json",
+      "contract": "machine-lock-anchor",
+      "valid": true
+    },
+    {
       "path": "manifest/invalid-absolute.json",
       "contract": "manifest",
       "valid": false,
@@ -1034,37 +1432,43 @@
       "valid": true
     },
     {
-      "path": "../../../scripts/nightly/nightly.example.toml",
-      "contract": "nightly-config",
-      "valid": true
-    },
-    {
-      "path": "nightly-plan/valid-build.json",
-      "contract": "nightly-plan",
-      "valid": true
-    },
-    {
-      "path": "nightly-plan/valid-skipped.json",
-      "contract": "nightly-plan",
-      "valid": true
-    },
-    {
-      "path": "nightly-plan/invalid-release-tag.json",
-      "contract": "nightly-plan",
+      "path": "nightly-build/invalid-asset-of-another-night.json",
+      "contract": "nightly-build",
       "valid": false,
-      "error": ".tag: string length must be within",
-      "shape": true
-    },
-    {
-      "path": "nightly-plan/invalid-skipped-on-a-new-commit.json",
-      "contract": "nightly-plan",
-      "valid": false,
-      "error": "a night is skipped only when its commit is the previous night's",
+      "error": "asset: expected dist/af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
       "shape": false
     },
     {
-      "path": "nightly-plan/invalid-version-of-another-release.json",
-      "contract": "nightly-plan",
+      "path": "nightly-build/invalid-built-on-the-previous-commit.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "a night on the previous night's commit is skipped, never built",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-missing-aarch64.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "every nightly target, in order",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-skipped-with-archives.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "a skipped night has no archives and no SHA256SUMS",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-smoke-not-passed.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "expected 'passed'",
+      "shape": true
+    },
+    {
+      "path": "nightly-build/invalid-version-of-another-date.json",
+      "contract": "nightly-build",
       "valid": false,
       "error": "not the nightly version of cargo_version_on_main and date",
       "shape": false
@@ -1085,64 +1489,46 @@
       "valid": true
     },
     {
-      "path": "nightly-build/invalid-smoke-not-passed.json",
-      "contract": "nightly-build",
+      "path": "nightly-config/invalid-history-nights.toml",
+      "contract": "nightly-config",
       "valid": false,
-      "error": "expected 'passed'",
+      "error": "must be within 1..60",
       "shape": true
     },
     {
-      "path": "nightly-build/invalid-skipped-with-archives.json",
-      "contract": "nightly-build",
+      "path": "nightly-config/invalid-measure-deadline.toml",
+      "contract": "nightly-config",
       "valid": false,
-      "error": "a skipped night has no archives and no SHA256SUMS",
+      "error": "must be within 30..600",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-reports-root-inside-builds-root.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "reports_root and builds_root lie apart",
       "shape": false
     },
     {
-      "path": "nightly-build/invalid-missing-aarch64.json",
-      "contract": "nightly-build",
+      "path": "nightly-config/invalid-requires-a-release-job.toml",
+      "contract": "nightly-config",
       "valid": false,
-      "error": "every nightly target, in order",
+      "error": "is a job of the release workflow",
       "shape": false
     },
     {
-      "path": "nightly-build/invalid-asset-of-another-night.json",
-      "contract": "nightly-build",
+      "path": "nightly-config/invalid-telegram-chat-without-a-token.toml",
+      "contract": "nightly-config",
       "valid": false,
-      "error": "asset: expected dist/af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
+      "error": "telegram_token_file and telegram_chat_id are set together or not at all",
       "shape": false
     },
     {
-      "path": "nightly-build/invalid-version-of-another-date.json",
-      "contract": "nightly-build",
+      "path": "nightly-config/invalid-unpinned-image.toml",
+      "contract": "nightly-config",
       "valid": false,
-      "error": "not the nightly version of cargo_version_on_main and date",
-      "shape": false
-    },
-    {
-      "path": "nightly-build/invalid-built-on-the-previous-commit.json",
-      "contract": "nightly-build",
-      "valid": false,
-      "error": "a night on the previous night's commit is skipped, never built",
-      "shape": false
-    },
-    {
-      "path": "nightly-daily/valid-complete.json",
-      "contract": "nightly-daily",
-      "valid": true,
-      "digest": "nightly-daily/digest-complete.md"
-    },
-    {
-      "path": "nightly-daily/valid-skipped.json",
-      "contract": "nightly-daily",
-      "valid": true,
-      "digest": "nightly-daily/digest-skipped.md"
-    },
-    {
-      "path": "nightly-daily/valid-no-core-result.json",
-      "contract": "nightly-daily",
-      "valid": true,
-      "digest": "nightly-daily/digest-no-core-result.md"
+      "error": "does not match",
+      "shape": true
     },
     {
       "path": "nightly-daily/invalid-label-without-a-verdict.json",
@@ -1173,25 +1559,95 @@
       "shape": true
     },
     {
-      "path": "nightly-config/invalid-history-nights.toml",
-      "contract": "nightly-config",
+      "path": "nightly-daily/valid-complete.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-complete.md"
+    },
+    {
+      "path": "nightly-daily/valid-no-core-result.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-no-core-result.md"
+    },
+    {
+      "path": "nightly-daily/valid-skipped.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-skipped.md"
+    },
+    {
+      "path": "nightly-plan/invalid-release-tag.json",
+      "contract": "nightly-plan",
       "valid": false,
-      "error": "must be within 1..60",
+      "error": ".tag: string length must be within",
       "shape": true
     },
     {
-      "path": "nightly-config/invalid-requires-a-release-job.toml",
-      "contract": "nightly-config",
+      "path": "nightly-plan/invalid-skipped-on-a-new-commit.json",
+      "contract": "nightly-plan",
       "valid": false,
-      "error": "is a job of the release workflow",
+      "error": "a night is skipped only when its commit is the previous night's",
       "shape": false
     },
     {
-      "path": "nightly-config/invalid-unpinned-image.toml",
-      "contract": "nightly-config",
+      "path": "nightly-plan/invalid-version-of-another-release.json",
+      "contract": "nightly-plan",
+      "valid": false,
+      "error": "not the nightly version of cargo_version_on_main and date",
+      "shape": false
+    },
+    {
+      "path": "nightly-plan/valid-build.json",
+      "contract": "nightly-plan",
+      "valid": true
+    },
+    {
+      "path": "nightly-plan/valid-skipped.json",
+      "contract": "nightly-plan",
+      "valid": true
+    },
+    {
+      "path": "nightly-publish/invalid-asset-digest-without-algorithm.json",
+      "contract": "nightly-publish",
       "valid": false,
       "error": "does not match",
       "shape": true
+    },
+    {
+      "path": "nightly-publish/invalid-assets-out-of-order.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "every asset of the night, in order",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-prune-failure-of-a-pruned-tag.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "prune_failures: each tag once, never one pruned",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-release-of-another-night.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "release.url: expected https://github.com/PakhomovAlexander/afactory/releases/tag/nightly-2026.10.29",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-skipped-with-a-release.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "a skipped night publishes, uploads and prunes nothing",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-telegram-without-a-reason.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "a Telegram message id, or the reason there is none",
+      "shape": false
     },
     {
       "path": "nightly-publish/valid-published.json",
@@ -1204,67 +1660,16 @@
       "valid": true
     },
     {
-      "path": "nightly-publish/invalid-assets-out-of-order.json",
-      "contract": "nightly-publish",
+      "path": "partition-execution/invalid-widened-window.json",
+      "contract": "partition-execution",
       "valid": false,
-      "error": "every asset of the night, in order",
+      "error": "never widened",
       "shape": false
     },
     {
-      "path": "nightly-publish/invalid-telegram-without-a-reason.json",
-      "contract": "nightly-publish",
-      "valid": false,
-      "error": "a Telegram message id, or the reason there is none",
-      "shape": false
-    },
-    {
-      "path": "nightly-publish/invalid-skipped-with-a-release.json",
-      "contract": "nightly-publish",
-      "valid": false,
-      "error": "a skipped night publishes, uploads and prunes nothing",
-      "shape": false
-    },
-    {
-      "path": "nightly-publish/invalid-release-of-another-night.json",
-      "contract": "nightly-publish",
-      "valid": false,
-      "error": "release.url: expected https://github.com/PakhomovAlexander/afactory/releases/tag/nightly-2026.10.29",
-      "shape": false
-    },
-    {
-      "path": "nightly-publish/invalid-prune-failure-of-a-pruned-tag.json",
-      "contract": "nightly-publish",
-      "valid": false,
-      "error": "prune_failures: each tag once, never one pruned",
-      "shape": false
-    },
-    {
-      "path": "nightly-publish/invalid-asset-digest-without-algorithm.json",
-      "contract": "nightly-publish",
-      "valid": false,
-      "error": "does not match",
-      "shape": true
-    },
-    {
-      "path": "nightly-config/invalid-telegram-chat-without-a-token.toml",
-      "contract": "nightly-config",
-      "valid": false,
-      "error": "telegram_token_file and telegram_chat_id are set together or not at all",
-      "shape": false
-    },
-    {
-      "path": "nightly-config/invalid-measure-deadline.toml",
-      "contract": "nightly-config",
-      "valid": false,
-      "error": "must be within 30..600",
-      "shape": true
-    },
-    {
-      "path": "nightly-config/invalid-reports-root-inside-builds-root.toml",
-      "contract": "nightly-config",
-      "valid": false,
-      "error": "reports_root and builds_root lie apart",
-      "shape": false
+      "path": "partition-execution/valid-later-window.json",
+      "contract": "partition-execution",
+      "valid": true
     },
     {
       "path": "plan-refusal/invalid-status.json",
@@ -1350,6 +1755,20 @@
       "shape": false
     },
     {
+      "path": "profiles/invalid-cli-capture-lists-its-recordings.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "listed by its repetition index",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-cli-capture-without-its-index.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "without omission indexes its repetitions",
+      "shape": false
+    },
+    {
       "path": "profiles/invalid-contained-without-its-container.json",
       "contract": "profiles",
       "valid": false,
@@ -1406,6 +1825,20 @@
       "shape": true
     },
     {
+      "path": "profiles/invalid-referenced-with-archive.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly retained",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-retained-without-archive.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly retained",
+      "shape": false
+    },
+    {
       "path": "profiles/invalid-second-capture-not-dwarf.json",
       "contract": "profiles",
       "valid": false,
@@ -1424,6 +1857,13 @@
       "contract": "profiles",
       "valid": false,
       "error": "the region is missing exactly when no span of it was kept",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-shared-symbol-disagreement.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "shared evidence agrees",
       "shape": false
     },
     {
@@ -1476,6 +1916,13 @@
       "shape": false
     },
     {
+      "path": "profiles/invalid-unrelated-symbol-path.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "content-addressed",
+      "shape": false
+    },
+    {
       "path": "profiles/invalid-verdict-effect.json",
       "contract": "profiles",
       "valid": false,
@@ -1496,100 +1943,6 @@
       "path": "profiles/valid-trace-overhead-and-counters.json",
       "contract": "profiles",
       "valid": true
-    },
-    {
-      "path": "profiles/invalid-referenced-with-archive.json",
-      "contract": "profiles",
-      "valid": false,
-      "error": "exactly retained",
-      "shape": false
-    },
-    {
-      "path": "profiles/invalid-retained-without-archive.json",
-      "contract": "profiles",
-      "valid": false,
-      "error": "exactly retained",
-      "shape": false
-    },
-    {
-      "path": "profiles/invalid-shared-symbol-disagreement.json",
-      "contract": "profiles",
-      "valid": false,
-      "error": "shared evidence agrees",
-      "shape": false
-    },
-    {
-      "path": "profiles/invalid-unrelated-symbol-path.json",
-      "contract": "profiles",
-      "valid": false,
-      "error": "content-addressed",
-      "shape": false
-    },
-    {
-      "path": "profiles/invalid-cli-capture-lists-its-recordings.json",
-      "contract": "profiles",
-      "valid": false,
-      "error": "listed by its repetition index",
-      "shape": false
-    },
-    {
-      "path": "profiles/invalid-cli-capture-without-its-index.json",
-      "contract": "profiles",
-      "valid": false,
-      "error": "without omission indexes its repetitions",
-      "shape": false
-    },
-    {
-      "path": "repetitions/valid-host-observed-cli-capture.json",
-      "contract": "repetitions",
-      "valid": true
-    },
-    {
-      "path": "repetitions/invalid-repetitions-out-of-order.json",
-      "contract": "repetitions",
-      "valid": false,
-      "error": "every repetition once, in order",
-      "shape": false
-    },
-    {
-      "path": "repetitions/invalid-recording-outside-its-capture.json",
-      "contract": "repetitions",
-      "valid": false,
-      "error": "the repetition's own recording in its capture's directory",
-      "shape": false
-    },
-    {
-      "path": "repetitions/invalid-observed-repetition-without-its-observer.json",
-      "contract": "repetitions",
-      "valid": false,
-      "error": "its observer record exactly when host-observed",
-      "shape": false
-    },
-    {
-      "path": "repetitions/invalid-incomplete-repetition-before-the-last.json",
-      "contract": "repetitions",
-      "valid": false,
-      "error": "only the last repetition, the one a failure ended, is incomplete",
-      "shape": false
-    },
-    {
-      "path": "repetitions/invalid-empty-index.json",
-      "contract": "repetitions",
-      "valid": false,
-      "error": "must hold 1..10000 items",
-      "shape": true
-    },
-    {
-      "path": "repetitions/valid-samply-driver-wall.json",
-      "contract": "repetitions",
-      "valid": true
-    },
-    {
-      "path": "repetitions/invalid-perf-bounded-by-the-driver-wall.json",
-      "contract": "repetitions",
-      "valid": false,
-      "error": "exactly samply's repetitions are bounded by the driver's wall",
-      "shape": false
     },
     {
       "path": "readiness/invalid-author-tallies.json",
@@ -1683,6 +2036,58 @@
     {
       "path": "release-handoff/valid-pin-rerun-links-the-first-result.json",
       "contract": "release-handoff",
+      "valid": true
+    },
+    {
+      "path": "repetitions/invalid-empty-index.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "must hold 1..10000 items",
+      "shape": true
+    },
+    {
+      "path": "repetitions/invalid-incomplete-repetition-before-the-last.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "only the last repetition, the one a failure ended, is incomplete",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-observed-repetition-without-its-observer.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "its observer record exactly when host-observed",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-perf-bounded-by-the-driver-wall.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "exactly samply's repetitions are bounded by the driver's wall",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-recording-outside-its-capture.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "the repetition's own recording in its capture's directory",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-repetitions-out-of-order.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "every repetition once, in order",
+      "shape": false
+    },
+    {
+      "path": "repetitions/valid-host-observed-cli-capture.json",
+      "contract": "repetitions",
+      "valid": true
+    },
+    {
+      "path": "repetitions/valid-samply-driver-wall.json",
+      "contract": "repetitions",
       "valid": true
     },
     {
@@ -1804,7 +2209,7 @@
       "path": "run/invalid-version.json",
       "contract": "run",
       "valid": false,
-      "error": "expected af.perf-run/7",
+      "error": "expected af.perf-run/8",
       "shape": true
     },
     {
@@ -1882,6 +2287,114 @@
     {
       "path": "sample/valid-oracle-failure.json",
       "contract": "sample",
+      "valid": true
+    },
+    {
+      "path": "scenario-adapter/invalid-version.json",
+      "contract": "scenario-adapter",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-adapter/valid.json",
+      "contract": "scenario-adapter",
+      "valid": true
+    },
+    {
+      "path": "scenario-completion/invalid-version.json",
+      "contract": "scenario-completion",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-completion/valid.json",
+      "contract": "scenario-completion",
+      "valid": true
+    },
+    {
+      "path": "scenario-experiment/invalid-version.json",
+      "contract": "scenario-experiment",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-experiment/valid.json",
+      "contract": "scenario-experiment",
+      "valid": true
+    },
+    {
+      "path": "scenario-intent/invalid-version.json",
+      "contract": "scenario-intent",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-intent/valid.json",
+      "contract": "scenario-intent",
+      "valid": true
+    },
+    {
+      "path": "scenario-launcher/invalid-version.json",
+      "contract": "scenario-launcher",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-launcher/valid.json",
+      "contract": "scenario-launcher",
+      "valid": true
+    },
+    {
+      "path": "scenario-receipt/invalid-version.json",
+      "contract": "scenario-receipt",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-receipt/valid.json",
+      "contract": "scenario-receipt",
+      "valid": true
+    },
+    {
+      "path": "scenario-service/invalid-version.json",
+      "contract": "scenario-service",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-service/valid.json",
+      "contract": "scenario-service",
+      "valid": true
+    },
+    {
+      "path": "scenario-status/invalid-version.json",
+      "contract": "scenario-status",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-status/valid.json",
+      "contract": "scenario-status",
+      "valid": true
+    },
+    {
+      "path": "scenario-verification/invalid-version.json",
+      "contract": "scenario-verification",
+      "valid": false,
+      "error": "schema: expected",
+      "shape": true
+    },
+    {
+      "path": "scenario-verification/valid.json",
+      "contract": "scenario-verification",
       "valid": true
     },
     {
@@ -2025,11 +2538,25 @@
       "valid": true
     },
     {
+      "path": "suite/invalid-build-override-cap.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "build_minutes",
+      "shape": true
+    },
+    {
       "path": "suite/invalid-float.toml",
       "contract": "suite",
       "valid": false,
       "error": "TOML floats are not allowed",
       "shape": true
+    },
+    {
+      "path": "suite/invalid-ordinary-build-override.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "only e2e_long_running may override",
+      "shape": false
     },
     {
       "path": "suite/invalid-uncalibrated-tolerance.toml",
@@ -2051,6 +2578,13 @@
       "valid": false,
       "error": "unknown policy",
       "shape": false
+    },
+    {
+      "path": "suite/invalid-version-5.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "expected 'af.perf-suite/6'",
+      "shape": true
     },
     {
       "path": "supervisor-request/invalid-caps.json",
@@ -2469,6 +3003,13 @@
       "shape": true
     },
     {
+      "path": "telemetry-owner/invalid-missing-filesystem-fence.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "filesystem_pending",
+      "shape": true
+    },
+    {
       "path": "telemetry-owner/invalid-phase.json",
       "contract": "telemetry-owner",
       "valid": false,
@@ -2483,7 +3024,26 @@
       "shape": false
     },
     {
+      "path": "telemetry-owner/invalid-removed-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "retired ownership",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/invalid-version.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "expected af.perf-telemetry-owner/2",
+      "shape": true
+    },
+    {
       "path": "telemetry-owner/valid-active.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-ready-filesystem-pending.json",
       "contract": "telemetry-owner",
       "valid": true
     },
@@ -2499,6 +3059,11 @@
     },
     {
       "path": "telemetry-owner/valid-removed-before-launch.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-stopped-filesystem-pending.json",
       "contract": "telemetry-owner",
       "valid": true
     },
@@ -2562,11 +3127,53 @@
       "shape": false
     },
     {
+      "path": "telemetry-result/invalid-missing-measurement-refusal.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "measurement_refusal",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-open-measurement-refusal.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "unknown",
+      "shape": true
+    },
+    {
       "path": "telemetry-result/invalid-position.json",
       "contract": "telemetry-result",
       "valid": false,
       "error": "baseline first in even rounds",
       "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-index-over-bound.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-leading-zero-index.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-on-success.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "measurement refusal evidence belongs only",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-path-punctuation.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
     },
     {
       "path": "telemetry-result/invalid-same-host-claimed-otherwise.json",
@@ -2590,7 +3197,29 @@
       "shape": true
     },
     {
+      "path": "telemetry-result/invalid-version.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "expected af.perf-telemetry-result/3",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/valid-failed-refused-measurements.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
       "path": "telemetry-result/valid-one-round.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-result/valid-partial-refused-measurement.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-result/valid-refused-load1.json",
       "contract": "telemetry-result",
       "valid": true
     },
@@ -2666,6 +3295,25 @@
       "valid": true
     },
     {
+      "path": "tui-open/invalid-extra-field.json",
+      "contract": "tui-open",
+      "valid": false,
+      "error": "unknown field extra",
+      "shape": true
+    },
+    {
+      "path": "tui-open/invalid-splash-order.json",
+      "contract": "tui-open",
+      "valid": false,
+      "error": "splash arrived after",
+      "shape": false
+    },
+    {
+      "path": "tui-open/valid-frame.json",
+      "contract": "tui-open",
+      "valid": true
+    },
+    {
       "path": "verdict/invalid-classification.json",
       "contract": "verdict",
       "valid": false,
@@ -2704,640 +3352,13 @@
       "path": "verdict/invalid-version.json",
       "contract": "verdict",
       "valid": false,
-      "error": "expected af.perf-verdict/2",
+      "error": "expected af.perf-verdict/3",
       "shape": true
     },
     {
       "path": "verdict/valid-synthetic-regression.json",
       "contract": "verdict",
       "valid": true
-    },
-    {
-      "path": "telemetry-owner/valid-ready-filesystem-pending.json",
-      "contract": "telemetry-owner",
-      "valid": true
-    },
-    {
-      "path": "telemetry-owner/valid-stopped-filesystem-pending.json",
-      "contract": "telemetry-owner",
-      "valid": true
-    },
-    {
-      "path": "telemetry-owner/invalid-missing-filesystem-fence.json",
-      "contract": "telemetry-owner",
-      "valid": false,
-      "error": "filesystem_pending",
-      "shape": true
-    },
-    {
-      "path": "telemetry-owner/invalid-version.json",
-      "contract": "telemetry-owner",
-      "valid": false,
-      "error": "expected af.perf-telemetry-owner/2",
-      "shape": true
-    },
-    {
-      "path": "telemetry-owner/invalid-removed-filesystem-pending.json",
-      "contract": "telemetry-owner",
-      "valid": false,
-      "error": "retired ownership",
-      "shape": false
-    },
-    {
-      "path": "executor/valid-synthetic.json",
-      "contract": "executor",
-      "valid": true
-    },
-    {
-      "path": "executor/valid-comparison-windows.json",
-      "contract": "executor",
-      "valid": true
-    },
-    {
-      "path": "executor/invalid-windows-sampling-past-run.json",
-      "contract": "executor",
-      "valid": false,
-      "error": "sampling window fits inside its run total",
-      "shape": false
-    },
-    {
-      "path": "executor/invalid-windows-past-hard-maximum.json",
-      "contract": "executor",
-      "valid": false,
-      "error": "run_total_minutes",
-      "shape": true
-    },
-    {
-      "path": "executor/invalid-version.json",
-      "contract": "executor",
-      "valid": false,
-      "error": "expected af.perf-executor/4",
-      "shape": true
-    },
-    {
-      "path": "executor-request/valid-synthetic.json",
-      "contract": "executor-request",
-      "valid": true
-    },
-    {
-      "path": "executor-request/invalid-version.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "unknown field partition",
-      "shape": true
-    },
-    {
-      "path": "executor-request/invalid-v2-partition.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "unknown field parent, partition",
-      "shape": true
-    },
-    {
-      "path": "executor-request/invalid-v3-missing-partition.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "missing field parent",
-      "shape": true
-    },
-    {
-      "path": "executor-request/valid-nightly-v3.json",
-      "contract": "executor-request",
-      "valid": true
-    },
-    {
-      "path": "executor-request/invalid-nightly-partition.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "neither a comparison partition nor a parent-selected profile",
-      "shape": false
-    },
-    {
-      "path": "executor-state/valid-synthetic.json",
-      "contract": "executor-state",
-      "valid": true
-    },
-    {
-      "path": "executor-state/invalid-version.json",
-      "contract": "executor-state",
-      "valid": false,
-      "error": "expected af.perf-executor-state/2",
-      "shape": true
-    },
-    {
-      "path": "executor-result/valid-synthetic.json",
-      "contract": "executor-result",
-      "valid": true
-    },
-    {
-      "path": "executor-result/invalid-version.json",
-      "contract": "executor-result",
-      "valid": false,
-      "error": "expected af.perf-executor-result/3",
-      "shape": true
-    },
-    {
-      "path": "local-cohort/valid-synthetic.json",
-      "contract": "local-cohort-declaration",
-      "valid": true
-    },
-    {
-      "path": "local-cohort/invalid-version.json",
-      "contract": "local-cohort-declaration",
-      "valid": false,
-      "error": "expected af.perf-local-cohort/1",
-      "shape": true
-    },
-    {
-      "path": "local-readiness/valid-synthetic.json",
-      "contract": "local-readiness-assessment",
-      "valid": true
-    },
-    {
-      "path": "local-readiness/invalid-version.json",
-      "contract": "local-readiness-assessment",
-      "valid": false,
-      "error": "expected af.perf-local-readiness/1",
-      "shape": true
-    },
-    {
-      "path": "executor-journal/valid-synthetic.json",
-      "contract": "executor-journal",
-      "valid": true
-    },
-    {
-      "path": "executor-journal/invalid-version.json",
-      "contract": "executor-journal",
-      "valid": false,
-      "error": "expected af.perf-executor-journal/1",
-      "shape": true
-    },
-    {
-      "path": "machine-lock-anchor/valid-synthetic.json",
-      "contract": "machine-lock-anchor",
-      "valid": true
-    },
-    {
-      "path": "machine-lock-anchor/invalid-version.json",
-      "contract": "machine-lock-anchor",
-      "valid": false,
-      "error": "expected af.perf-machine-lock-anchor/1",
-      "shape": true
-    },
-    {
-      "path": "executor/valid-shipping.json",
-      "contract": "executor",
-      "valid": true
-    },
-    {
-      "path": "executor/invalid-missing-shipping-tools.json",
-      "contract": "executor",
-      "valid": false,
-      "shape": false,
-      "error": "requires zigbuild_bin"
-    },
-    {
-      "path": "executor/invalid-relative-tools.json",
-      "contract": "executor",
-      "valid": false,
-      "shape": true,
-      "error": "does not match"
-    },
-    {
-      "path": "executor-state/valid-expired.json",
-      "contract": "executor-state",
-      "valid": true
-    },
-    {
-      "path": "executor-result/valid-expired.json",
-      "contract": "executor-result",
-      "valid": true
-    },
-    {
-      "path": "executor-request/valid-manual.json",
-      "contract": "executor-request",
-      "valid": true
-    },
-    {
-      "path": "executor-request/valid-nightly.json",
-      "contract": "executor-request",
-      "valid": true
-    },
-    {
-      "path": "executor-request/valid-nightly-explicit-base.json",
-      "contract": "executor-request",
-      "valid": true
-    },
-    {
-      "path": "executor-request/invalid-nightly-key.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "keyed by its tag",
-      "shape": false
-    },
-    {
-      "path": "executor-request/invalid-nightly-profile.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "keyed by its tag",
-      "shape": false
-    },
-    {
-      "path": "executor-request/invalid-nightly-baseline.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "names the frozen baseline",
-      "shape": false
-    },
-    {
-      "path": "executor-request/invalid-nightly-prerelease-baseline.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "does not match",
-      "shape": true
-    },
-    {
-      "path": "executor-request/invalid-nightly-date.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "names no calendar date",
-      "shape": false
-    },
-    {
-      "path": "executor-request/invalid-manual-tag.json",
-      "contract": "executor-request",
-      "valid": false,
-      "error": "unknown field tag",
-      "shape": true
-    },
-    {
-      "path": "executor-result/valid-core-binaries.json",
-      "contract": "executor-result",
-      "valid": true
-    },
-    {
-      "path": "executor-result/valid-no-binaries.json",
-      "contract": "executor-result",
-      "valid": true
-    },
-    {
-      "path": "executor-result/invalid-missing-binaries.json",
-      "contract": "executor-result",
-      "valid": false,
-      "error": "missing field binaries",
-      "shape": true
-    },
-    {
-      "path": "executor-result/invalid-hosted-binaries.json",
-      "contract": "executor-result",
-      "valid": false,
-      "error": "only a completed local original",
-      "shape": false
-    },
-    {
-      "path": "telemetry-result/invalid-version.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "expected af.perf-telemetry-result/3",
-      "shape": true
-    },
-    {
-      "path": "telemetry-result/valid-partial-refused-measurement.json",
-      "contract": "telemetry-result",
-      "valid": true
-    },
-    {
-      "path": "telemetry-result/valid-failed-refused-measurements.json",
-      "contract": "telemetry-result",
-      "valid": true
-    },
-    {
-      "path": "telemetry-result/invalid-refusal-on-success.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "measurement refusal evidence belongs only",
-      "shape": false
-    },
-    {
-      "path": "telemetry-result/invalid-missing-measurement-refusal.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "measurement_refusal",
-      "shape": true
-    },
-    {
-      "path": "telemetry-result/invalid-open-measurement-refusal.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "unknown",
-      "shape": true
-    },
-    {
-      "path": "telemetry-result/valid-refused-load1.json",
-      "contract": "telemetry-result",
-      "valid": true
-    },
-    {
-      "path": "telemetry-result/invalid-refusal-leading-zero-index.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "does not match",
-      "shape": true
-    },
-    {
-      "path": "telemetry-result/invalid-refusal-index-over-bound.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "does not match",
-      "shape": true
-    },
-    {
-      "path": "telemetry-result/invalid-refusal-path-punctuation.json",
-      "contract": "telemetry-result",
-      "valid": false,
-      "error": "does not match",
-      "shape": true
-    },
-    {
-      "path": "tui-open/valid-frame.json",
-      "contract": "tui-open",
-      "valid": true
-    },
-    {
-      "path": "tui-open/invalid-splash-order.json",
-      "contract": "tui-open",
-      "valid": false,
-      "error": "splash arrived after",
-      "shape": false
-    },
-    {
-      "path": "tui-open/invalid-extra-field.json",
-      "contract": "tui-open",
-      "valid": false,
-      "error": "unknown field extra",
-      "shape": true
-    },
-    {
-      "path": "executor-preflight/valid-ready.json",
-      "contract": "executor-preflight",
-      "valid": true
-    },
-    {
-      "path": "executor-preflight/valid-refused.json",
-      "contract": "executor-preflight",
-      "valid": true
-    },
-    {
-      "path": "executor-preflight/invalid-infeasible-ready.json",
-      "contract": "executor-preflight",
-      "valid": false,
-      "error": "a ready preflight carries its request and no refusal",
-      "shape": false
-    },
-    {
-      "path": "comparison-overview/valid-incomplete.json",
-      "contract": "comparison-overview",
-      "valid": true
-    },
-    {
-      "path": "comparison-overview/invalid-claimed-complete.json",
-      "contract": "comparison-overview",
-      "valid": false,
-      "error": "a comparison is complete only when",
-      "shape": false
-    },
-    {
-      "path": "host-observer/valid-attached.json",
-      "contract": "host-observer",
-      "valid": true
-    },
-    {
-      "path": "host-observer/invalid-attached-without-target.json",
-      "contract": "host-observer",
-      "valid": false,
-      "error": "an attachment names its frozen target",
-      "shape": false
-    },
-    {
-      "path": "comparison/valid-release.json",
-      "contract": "comparison",
-      "valid": true
-    },
-    {
-      "path": "comparison/invalid-uncovered-shard.json",
-      "contract": "comparison",
-      "valid": false,
-      "error": "cover every shard of its plan exactly once",
-      "shape": false
-    },
-    {
-      "path": "comparison-aggregate/valid-incomplete.json",
-      "contract": "comparison-aggregate",
-      "valid": true
-    },
-    {
-      "path": "comparison-aggregate/invalid-missing-partition-passes.json",
-      "contract": "comparison-aggregate",
-      "valid": false,
-      "error": "a missing partition never passes",
-      "shape": false
-    },
-    {
-      "path": "comparison-report/valid-running.json",
-      "contract": "comparison-report",
-      "valid": true
-    },
-    {
-      "path": "comparison-report/invalid-claimed-complete.json",
-      "contract": "comparison-report",
-      "valid": false,
-      "error": "a comparison is complete only when",
-      "shape": false
-    },
-    {
-      "path": "comparison-export/valid-bundle.json",
-      "contract": "comparison-export",
-      "valid": true
-    },
-    {
-      "path": "comparison-export/invalid-version.json",
-      "contract": "comparison-export",
-      "valid": false,
-      "error": "expected af.perf-comparison-export/1",
-      "shape": true
-    },
-    {
-      "path": "comparison-preflight/valid-refused.json",
-      "contract": "comparison-preflight",
-      "valid": true
-    },
-    {
-      "path": "comparison-preflight/valid-ready.json",
-      "contract": "comparison-preflight",
-      "valid": true
-    },
-    {
-      "path": "comparison-preflight/invalid-refused-with-declaration.json",
-      "contract": "comparison-preflight",
-      "valid": false,
-      "error": "a refusal carries its reason",
-      "shape": false
-    },
-    {
-      "path": "partition-execution/valid-later-window.json",
-      "contract": "partition-execution",
-      "valid": true
-    },
-    {
-      "path": "partition-execution/invalid-widened-window.json",
-      "contract": "partition-execution",
-      "valid": false,
-      "error": "never widened",
-      "shape": false
-    },
-    {
-      "path": "scenario-experiment/valid.json",
-      "contract": "scenario-experiment",
-      "valid": true
-    },
-    {
-      "path": "scenario-experiment/invalid-version.json",
-      "contract": "scenario-experiment",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-adapter/valid.json",
-      "contract": "scenario-adapter",
-      "valid": true
-    },
-    {
-      "path": "scenario-adapter/invalid-version.json",
-      "contract": "scenario-adapter",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-intent/valid.json",
-      "contract": "scenario-intent",
-      "valid": true
-    },
-    {
-      "path": "scenario-intent/invalid-version.json",
-      "contract": "scenario-intent",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-receipt/valid.json",
-      "contract": "scenario-receipt",
-      "valid": true
-    },
-    {
-      "path": "scenario-receipt/invalid-version.json",
-      "contract": "scenario-receipt",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-verification/valid.json",
-      "contract": "scenario-verification",
-      "valid": true
-    },
-    {
-      "path": "scenario-verification/invalid-version.json",
-      "contract": "scenario-verification",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-status/valid.json",
-      "contract": "scenario-status",
-      "valid": true
-    },
-    {
-      "path": "scenario-status/invalid-version.json",
-      "contract": "scenario-status",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "evidence-index/valid.json",
-      "contract": "evidence-index",
-      "valid": true
-    },
-    {
-      "path": "evidence-index/invalid-version.json",
-      "contract": "evidence-index",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-service/valid.json",
-      "contract": "scenario-service",
-      "valid": true
-    },
-    {
-      "path": "scenario-service/invalid-version.json",
-      "contract": "scenario-service",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-launcher/valid.json",
-      "contract": "scenario-launcher",
-      "valid": true
-    },
-    {
-      "path": "scenario-launcher/invalid-version.json",
-      "contract": "scenario-launcher",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "evidence-export/valid.json",
-      "contract": "evidence-export",
-      "valid": true
-    },
-    {
-      "path": "evidence-export/invalid-version.json",
-      "contract": "evidence-export",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "evidence-packet/valid.json",
-      "contract": "evidence-packet",
-      "valid": true
-    },
-    {
-      "path": "evidence-packet/invalid-version.json",
-      "contract": "evidence-packet",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
-    },
-    {
-      "path": "scenario-completion/valid.json",
-      "contract": "scenario-completion",
-      "valid": true
-    },
-    {
-      "path": "scenario-completion/invalid-version.json",
-      "contract": "scenario-completion",
-      "valid": false,
-      "error": "schema: expected",
-      "shape": true
     }
   ]
 }

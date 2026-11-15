@@ -216,7 +216,7 @@ def register(c):
         Field("baseline", built), Field("candidate", built)))))
     # A separately named current contract, not a migration of the hosted v4 declaration.
     replacements = {
-        "schema": Const("af.perf-local-cohort/1"),
+        "schema": Const("af.perf-local-cohort/2"),
         "schedule": Obj(Field("start_date", c.DATE), Field("minimum_days", Int(7, c.DAYS_MAX)),
                         Field("runners", Const("persistent_vm")), Field("order", Const(c.COHORT_ORDER))),
         "dispatch": Obj(Field("journal_id", ID), Field("machine_id", ID),
@@ -230,7 +230,7 @@ def register(c):
     member = Obj(*(Field(f.name, Nullable(provenance) if f.name == "provenance" else f.node,
                          f.required) for f in c.READINESS_MEMBER.fields))
     readiness_replacements = {
-        "schema": Const("af.perf-local-readiness/1"), "members": Arr(member, 1, 256),
+        "schema": Const("af.perf-local-readiness/2"), "members": Arr(member, 1, 256),
         "history": Obj(Field("journal_id", ID), Field("journal_digest", DIGEST),
                        Field("requests", Int(0, 4096))),
         "refused_evidence": Arr(Str(max_len=4096), 0, 256),

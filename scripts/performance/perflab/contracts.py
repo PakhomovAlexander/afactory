@@ -34,9 +34,9 @@ EXIT_OBSERVATIONS = ("unreaped", "reaped_by_polling", "unobserved", "none")
 LIFECYCLE_STATUSES = ("clean", "no_observed_descendants", "unexpected_descendants",
                       "cleanup_uncertain")
 
-# af.perf-run/4 -----------------------------------------------------------------------------
+# af.perf-run/8 -----------------------------------------------------------------------------
 
-RUN_SCHEMA = "af.perf-run/7"
+RUN_SCHEMA = "af.perf-run/8"
 
 TRIGGER = Tagged("kind", {
     "pr": tagged_variant("kind", "pr", Field("number", Nullable(Int(1, 2 ** 31))),
@@ -65,33 +65,58 @@ CASE_BUDGET = Obj(
 PLAN_SEED = Obj(Field("seed_id", ID), Field("case_id", ID), Field("contract_id", ID),
                 Field("parameters", Map(ID_PATTERN, PARAM_VALUE, 1, 4)))
 
-PLAN_CASE = Obj(
-    Field("instance_id", ID), Field("case_id", ID), Field("family", ID),
-    Field("kind", Str(enum=("process", "library"))),
-    Field("requires_linux_containment", Bool()),
-    Field("parameters", Map(ID_PATTERN, PARAM_VALUE, 0, 4)),
-    Field("criticality", Str(enum=("critical", "advisory"))),
-    Field("timing", TIMING), Field("cache", CACHE), Field("oracle", ORACLE),
-    Field("execution", EXECUTION),
-    Field("af_environment", Map(r"^AF_[A-Z0-9_]{1,62}$", Str(max_len=256), 0, 16)),
-    Field("primary_metric", METRIC_REF),
-    Field("optional_metrics", Arr(METRIC_REF, 0, 16)),
-    Field("tolerance", Obj(Field("policy_id", ID), Field("relative", DECIMAL),
-                           Field("absolute", DECIMAL),
-                           Field("calibration", Str(enum=("initial", "calibrated"))))),
-    Field("pairs", Int(limits.PAIRS_MIN, limits.PAIRS_MAX)),
-    Field("warmup_pairs", Int(0, limits.WARMUP_PAIRS_MAX)),
-    Field("rank", Int(1, limits.PAIRS_MAX)),
-    Field("alpha", RATIONAL),
-    Field("tail_probability", RATIONAL),
-    Field("exploratory", Bool()),
-    Field("shard", Int(0, limits.SHARDS_MAX - 1)),
-    Field("warmup_orders", Arr(ORDER, 0, limits.WARMUP_PAIRS_MAX)),
-    Field("measured_orders", Arr(ORDER, limits.PAIRS_MIN, limits.PAIRS_MAX)),
-    Field("sample_timeout_ms", Int(1, limits.SAMPLE_TIMEOUT_SECONDS_MAX * 1000)),
-    Field("budgets", Arr(CASE_BUDGET, 0, 8)),
-    Field("seed", Nullable(PLAN_SEED)),
-)
+EXECUTION_CLASSES = ("standard", "long_running")
+
+
+def minimum_pairs(execution_class):
+    return limits.LONG_PAIRS_MIN if execution_class == "long_running" else limits.PAIRS_MIN
+
+
+def case_variants(make_case):
+    """Freeze the class on each case: a mixed plan never lowers a standard case's minimum."""
+    return Tagged("execution_class", {kind: make_case(kind) for kind in EXECUTION_CLASSES})
+
+
+def _check_case_algorithm(cases, algorithm, where):
+    expected = (stats.LONG_ALGORITHM if any(case["execution_class"] == "long_running"
+                                          for case in cases) else stats.ALGORITHM)
+    require(algorithm == expected, where + ": must match the frozen case execution classes")
+
+
+def _plan_case(execution_class):
+    minimum = minimum_pairs(execution_class)
+    return Obj(
+        Field("execution_class", Const(execution_class)),
+        Field("instance_id", ID), Field("case_id", ID), Field("family", ID),
+        Field("kind", Str(enum=("process", "library"))),
+        Field("requires_linux_containment", Bool()),
+        Field("parameters", Map(ID_PATTERN, PARAM_VALUE, 0, 4)),
+        Field("criticality", Str(enum=("critical", "advisory"))),
+        Field("timing", TIMING), Field("cache", CACHE), Field("oracle", ORACLE),
+        Field("execution", EXECUTION),
+        Field("af_environment", Map(r"^AF_[A-Z0-9_]{1,62}$", Str(max_len=256), 0, 16)),
+        Field("primary_metric", METRIC_REF),
+        Field("optional_metrics", Arr(METRIC_REF, 0, 16)),
+        Field("tolerance", Obj(Field("policy_id", ID), Field("relative", DECIMAL),
+                               Field("absolute", DECIMAL),
+                               Field("calibration", Str(enum=("initial", "calibrated"))))),
+        Field("pairs", Int(minimum, limits.PAIRS_MAX)),
+        Field("warmup_pairs", Int(0, limits.WARMUP_PAIRS_MAX)),
+        Field("rank", Int(1, limits.PAIRS_MAX)),
+        Field("alpha", RATIONAL),
+        Field("tail_probability", RATIONAL),
+        Field("exploratory", Bool()),
+        Field("shard", Int(0, limits.SHARDS_MAX - 1)),
+        Field("warmup_orders", Arr(ORDER, 0, limits.WARMUP_PAIRS_MAX)),
+        Field("measured_orders", Arr(ORDER, minimum, limits.PAIRS_MAX)),
+        Field("sample_timeout_ms", Int(1, limits.SAMPLE_TIMEOUT_SECONDS_MAX * 1000)),
+        Field("budgets", Arr(CASE_BUDGET, 0, 8)),
+        Field("seed", Nullable(PLAN_SEED)),
+    )
+
+
+PLAN_CASE = case_variants(_plan_case)
+
 
 RUN_LIMITS = Obj(
     Field("sample_log_bytes", Int(1, limits.SAMPLE_LOG_BYTES_MAX)),
@@ -191,7 +216,7 @@ RUN = Obj(
                          Field("environment", ENVIRONMENT), Field("recipe_id", ID),
                          Field("recipe_digest", DIGEST), Field("recipe", RECIPE),
                          Field("build", PLAN_BUILD), Field("default", Bool()))),
-    Field("verdict_policy", Obj(Field("algorithm", Const(stats.ALGORITHM)),
+    Field("verdict_policy", Obj(Field("algorithm", Str(enum=stats.ALGORITHMS)),
                                 Field("family_alpha", RATIONAL),
                                 Field("advisory_alpha", RATIONAL),
                                 Field("family_size", Int(0, limits.INSTANCES_MAX)),
@@ -293,6 +318,7 @@ def validate_run(plan, where="run.json"):
     require(ids == sorted(set(ids)), where + ".cases: instance IDs are unique and sorted")
     critical = [case for case in cases if case["criticality"] == "critical"]
     policy = plan["verdict_policy"]
+    _check_case_algorithm(cases, policy["algorithm"], where + ".verdict_policy.algorithm")
     family_alpha = parse_rational(policy["family_alpha"], where + ".verdict_policy")
     advisory_alpha = parse_rational(policy["advisory_alpha"], where + ".verdict_policy")
     require(0 < family_alpha < 1 and 0 < advisory_alpha < 1,
@@ -315,6 +341,9 @@ def validate_run(plan, where="run.json"):
 
     for index, case in enumerate(cases):
         at = "%s.cases[%d]" % (where, index)
+        if plan["tier"] != "e2e_long_running":
+            require(case["pairs"] >= limits.PAIRS_MIN,
+                    at + ".pairs: standard tiers require at least 12 pairs")
         alpha = case_alpha if case["criticality"] == "critical" else advisory_alpha
         require(case["exploratory"] == (case["criticality"] == "advisory"),
                 at + ".exploratory: exactly the advisory instances are exploratory")
@@ -384,6 +413,11 @@ def validate_run(plan, where="run.json"):
 
     scope = plan["scope"]
     mode = plan["authority"]["mode"]
+    if any(case["execution_class"] == "long_running" for case in cases):
+        require(plan["tier"] == "e2e_long_running" and mode != "active"
+                and scope != "full"
+                and (plan["trigger"]["kind"] == "manual" or scope == "calibration"),
+                where + ": long-running execution is manual/proposed/calibration only")
     require((mode == "active") == (plan["authority"]["activation"] is not None),
             where + ".authority: exactly an active authority names its activation")
     if plan["authority"]["activation"] is not None:
@@ -1044,9 +1078,9 @@ def validate_manifest(doc, where="manifest.json"):
     return doc
 
 
-# af.perf-verdict/2 -------------------------------------------------------------------------
+# af.perf-verdict/3 -------------------------------------------------------------------------
 
-VERDICT_SCHEMA = "af.perf-verdict/2"
+VERDICT_SCHEMA = "af.perf-verdict/3"
 # What a complete readiness member records per case. A case on a shard that did not complete
 # belongs to a member that is not complete, so readiness never records `shard_not_complete`.
 READINESS_CLASSIFICATIONS = (stats.REGRESSION, stats.IMPROVEMENT, stats.WITHIN_TOLERANCE,
@@ -1061,37 +1095,13 @@ SUMMARY = Nullable(Obj(Field("median", RATIONAL), Field("p95", RATIONAL),
 REASON = Obj(Field("code", ID), Field("shard", Nullable(Int(0, limits.SHARDS_MAX - 1))),
              Field("instance_id", Nullable(ID)), Field("detail", TEXT))
 
-VERDICT = Obj(
-    Field("schema", Const(VERDICT_SCHEMA)), Field("run_id", ID), Field("plan_digest", DIGEST),
-    Field("scope", Str(enum=SCOPES)),
-    Field("provenance", Str(enum=("measured", "synthetic", "mixed", "none"))),
-    Field("inputs", Obj(Field("run_bundle", Nullable(DIGEST)),
-                        Field("builds_sha256", Nullable(DIGEST)),
-                        Field("shard_bundles", Arr(Obj(
-                            Field("shard", Int(0, limits.SHARDS_MAX - 1)),
-                            Field("bundle", Nullable(DIGEST))), 1, limits.SHARDS_MAX)))),
-    # Each planned shard's terminal record as its shard.json states it (null when no shard.json
-    # of this run and shard was readable) and how many planned slots one accepted record matched.
-    Field("shards", Arr(Obj(
-        Field("shard", Int(0, limits.SHARDS_MAX - 1)),
-        Field("status", Nullable(Str(enum=SHARD_STATUSES))),
-        Field("failure", Nullable(TERMINAL_FAILURE)),
-        Field("expected_records", COUNT), Field("matched_records", COUNT)),
-        1, limits.SHARDS_MAX)),
-    Field("algorithm", Const(stats.ALGORITHM)),
-    Field("family_alpha", RATIONAL), Field("family_size", Int(0, limits.INSTANCES_MAX)),
-    Field("case_alpha", RATIONAL),
-    Field("health", Arr(Obj(
-        Field("shard", Int(0, limits.SHARDS_MAX - 1)),
-        Field("status", Str(enum=("healthy", "unstable"))),
-        Field("flags", Arr(ID, 0, 8)),
-        Field("start_median", Nullable(RATIONAL)), Field("end_median", Nullable(RATIONAL)),
-        Field("shift", Nullable(RATIONAL)), Field("start_mad_ratio", Nullable(RATIONAL)),
-        Field("end_mad_ratio", Nullable(RATIONAL))), 1, limits.SHARDS_MAX)),
-    Field("cases", Arr(Obj(
+
+def _verdict_case(execution_class):
+    return Obj(
+        Field("execution_class", Const(execution_class)),
         Field("instance_id", ID), Field("criticality", Str(enum=("critical", "advisory"))),
         Field("exploratory", Bool()), Field("shard", Int(0, limits.SHARDS_MAX - 1)),
-        Field("pairs", Int(limits.PAIRS_MIN, limits.PAIRS_MAX)),
+        Field("pairs", Int(minimum_pairs(execution_class), limits.PAIRS_MAX)),
         Field("rank", Int(1, limits.PAIRS_MAX)), Field("alpha", RATIONAL),
         Field("metric", METRIC_REF),
         Field("tolerance", Obj(Field("relative", DECIMAL), Field("absolute", DECIMAL))),
@@ -1117,7 +1127,40 @@ VERDICT = Obj(
             Field("result", Str(enum=("met", "missed", "not_evaluated", "pending_calibration",
                                       "not_applicable"))),
             Field("observed_max", Nullable(RATIONAL))), 0, 8)),
-    ), 1, limits.INSTANCES_MAX)),
+    )
+
+
+VERDICT_CASE = case_variants(_verdict_case)
+
+
+VERDICT = Obj(
+    Field("schema", Const(VERDICT_SCHEMA)), Field("run_id", ID), Field("plan_digest", DIGEST),
+    Field("scope", Str(enum=SCOPES)),
+    Field("provenance", Str(enum=("measured", "synthetic", "mixed", "none"))),
+    Field("inputs", Obj(Field("run_bundle", Nullable(DIGEST)),
+                        Field("builds_sha256", Nullable(DIGEST)),
+                        Field("shard_bundles", Arr(Obj(
+                            Field("shard", Int(0, limits.SHARDS_MAX - 1)),
+                            Field("bundle", Nullable(DIGEST))), 1, limits.SHARDS_MAX)))),
+    # Each planned shard's terminal record as its shard.json states it (null when no shard.json
+    # of this run and shard was readable) and how many planned slots one accepted record matched.
+    Field("shards", Arr(Obj(
+        Field("shard", Int(0, limits.SHARDS_MAX - 1)),
+        Field("status", Nullable(Str(enum=SHARD_STATUSES))),
+        Field("failure", Nullable(TERMINAL_FAILURE)),
+        Field("expected_records", COUNT), Field("matched_records", COUNT)),
+        1, limits.SHARDS_MAX)),
+    Field("algorithm", Str(enum=stats.ALGORITHMS)),
+    Field("family_alpha", RATIONAL), Field("family_size", Int(0, limits.INSTANCES_MAX)),
+    Field("case_alpha", RATIONAL),
+    Field("health", Arr(Obj(
+        Field("shard", Int(0, limits.SHARDS_MAX - 1)),
+        Field("status", Str(enum=("healthy", "unstable"))),
+        Field("flags", Arr(ID, 0, 8)),
+        Field("start_median", Nullable(RATIONAL)), Field("end_median", Nullable(RATIONAL)),
+        Field("shift", Nullable(RATIONAL)), Field("start_mad_ratio", Nullable(RATIONAL)),
+        Field("end_mad_ratio", Nullable(RATIONAL))), 1, limits.SHARDS_MAX)),
+    Field("cases", Arr(VERDICT_CASE, 1, limits.INSTANCES_MAX)),
     Field("aggregate", Obj(
         Field("result", Str(enum=("pass", "fail", "incomplete"))),
         Field("exit_code", Int(0, 4)),
@@ -1132,6 +1175,7 @@ EXIT_CODES = {"pass": 0, "fail": 3, "incomplete": 4}
 
 def validate_verdict(doc, where="verdict.json"):
     VERDICT.validate(doc, where)
+    _check_case_algorithm(doc["cases"], doc["algorithm"], where + ".algorithm")
     aggregate = doc["aggregate"]
     require(aggregate["exit_code"] == EXIT_CODES[aggregate["result"]],
             where + ".aggregate.exit_code: pass is 0, fail 3, incomplete 4")
@@ -1165,6 +1209,7 @@ def validate_verdict(doc, where="verdict.json"):
         at = "%s.cases[%d]" % (where, index)
         require(case["exploratory"] == (case["criticality"] == "advisory"),
                 at + ".exploratory: exactly advisory instances are exploratory")
+        require(case["pairs"] % 2 == 0, at + ".pairs: measured pairs come in AB/BA blocks")
         interval = case["interval"]
         if interval is not None:
             require(parse_rational(interval["lower"], at) <= parse_rational(interval["upper"], at),
@@ -1199,9 +1244,9 @@ validate_diagnostics = diag_contracts.validate_diagnostics
 # of which repository and branch, under which run name, after which of that workflow's run
 # numbers. The Actions run that executes a member is execution provenance, recorded beside the
 # cohort in readiness and never written back into it, so the cohort's bytes and digest stay what
-# was declared (af.perf-cohort/4).
+# was declared (af.perf-cohort/5).
 
-COHORT_SCHEMA = "af.perf-cohort/4"
+COHORT_SCHEMA = "af.perf-cohort/5"
 # The run name the dispatching workflow gives a member's run before any job starts; a member's
 # original is the first such run of the declared workflow, whatever its artifacts (ADR-0182).
 DISPATCH_RUN_NAME = "af-perf calibration {cohort_digest} {member_id}"
@@ -1214,7 +1259,16 @@ RUN_NUMBER = Int(0, 2 ** 31 - 1)
 INJECTION_PERCENTS = (2, 5, 10)
 COHORT_COUNTS = {"aa": 20, "power": 10}
 INJECTION_MEMBERS = 10
+LONG_COHORT_COUNTS = {"aa": 4, "power": 4}
+LONG_INJECTION_MEMBERS = 2
 POWER_DETECTIONS_REQUIRED = 9
+LONG_POWER_DETECTIONS_REQUIRED = 3
+
+
+def cohort_counts(doc):
+    if doc.get("execution_class") == "long_running":
+        return LONG_COHORT_COUNTS, LONG_INJECTION_MEMBERS, LONG_POWER_DETECTIONS_REQUIRED
+    return COHORT_COUNTS, INJECTION_MEMBERS, POWER_DETECTIONS_REQUIRED
 PREPARATION_MEMBERS_MAX = 16
 # A measured injection is valid when its median lies within 75% and 125% of its target, both
 # limits included.
@@ -1233,6 +1287,17 @@ TARGET_FORMULAS = {
                   "10 power trials each a valid regression in every critical case"),
 }
 
+LONG_READINESS_FORMULA = ("all 4 A/A within tolerance in every critical case, and at least 3 of the "
+                          "4 power trials each a valid regression in every critical case")
+
+
+def cohort_formulas(doc):
+    formulas = dict(TARGET_FORMULAS)
+    if doc.get("execution_class") == "long_running":
+        formulas["readiness"] = LONG_READINESS_FORMULA
+    return formulas
+
+
 COHORT_MEMBER = Obj(
     Field("member_id", ID),
     Field("kind", Str(enum=MEMBER_KINDS)),
@@ -1244,11 +1309,12 @@ COHORT_MEMBER = Obj(
 
 COHORT = Obj(
     Field("schema", Const(COHORT_SCHEMA)), Field("cohort_id", ID),
+    Field("execution_class", Str(enum=("standard", "long_running")), required=False),
     Field("authority_sha", GIT_SHA), Field("policy_digest", DIGEST),
     Field("tier", Str(enum=TIERS)), Field("environment_id", ID), Field("recipe_id", ID),
     Field("cases", Arr(Obj(Field("instance_id", ID),
                            Field("criticality", Str(enum=("critical", "advisory"))),
-                           Field("pairs", Int(limits.PAIRS_MIN, limits.PAIRS_MAX))),
+                           Field("pairs", Int(1, limits.PAIRS_MAX))),
                        1, limits.INSTANCES_MAX)),
     Field("family_size", Int(1, limits.INSTANCES_MAX)),
     Field("health", RUN_HEALTH),
@@ -1272,17 +1338,20 @@ COHORT = Obj(
                           # declaring, 0 before its first run: every dispatch of this cohort is
                           # numbered after it, and every run numbered after it must be listed.
                           Field("after_run_number", RUN_NUMBER))),
-    Field("target_formulas", Obj(*[Field(name, Const(value))
+    Field("target_formulas", Obj(*[Field(name, Str(enum=(value, LONG_READINESS_FORMULA)) if name == "readiness"
+                                       else Const(value))
                                    for name, value in sorted(TARGET_FORMULAS.items())])),
     Field("members", Arr(COHORT_MEMBER, 1, 256)),
 )
 
 
 def validate_cohort(doc, where="cohort.json"):
-    if isinstance(doc, dict) and doc.get("schema") == "af.perf-local-cohort/1":
+    if isinstance(doc, dict) and doc.get("schema") == "af.perf-local-cohort/2":
         LOCAL_COHORT.validate(doc, where)
     else:
         COHORT.validate(doc, where)
+    require(doc["target_formulas"] == cohort_formulas(doc),
+            where + ": target formulas must match the declared execution class")
     import datetime
     try:
         datetime.date(*(int(part) for part in doc["schedule"]["start_date"].split("-")))
@@ -1290,6 +1359,9 @@ def validate_cohort(doc, where="cohort.json"):
         raise ContractError(where + ".schedule.start_date: not a calendar date")
     ids = [case["instance_id"] for case in doc["cases"]]
     require(ids == sorted(set(ids)), where + ".cases: sorted unique instances")
+    require((doc.get("execution_class", "standard") == "long_running")
+            == (doc["tier"] == "e2e_long_running"),
+            where + ": long-running cohort class belongs only to its dedicated tier")
     critical = [case for case in doc["cases"] if case["criticality"] == "critical"]
     require(doc["family_size"] == len(critical),
             where + ".family_size: K counts the critical instances")
@@ -1310,19 +1382,22 @@ def validate_cohort(doc, where="cohort.json"):
         require(injected == (member["injection_percent"] is not None),
                 at + ".injection_percent: exactly injection members declare a percent")
         if injected:
-            require(member["injection_percent"] in INJECTION_PERCENTS,
+            require(member["injection_percent"] in ((5, 10) if doc.get("execution_class") == "long_running"
+                                                        else INJECTION_PERCENTS),
                     at + ".injection_percent: one of 2, 5 or 10")
         require(member["source_sha"] == doc["authority_sha"],
                 at + ".source_sha: both sides of every member run the proposed authority")
         key = member_level(member) if member["kind"] != "aa" else "aa"
         counts[key] = counts.get(key, 0) + 1
-    for kind, count in COHORT_COUNTS.items():
+    counts_policy, injection_members, _ = cohort_counts(doc)
+    for kind, count in counts_policy.items():
         require(counts.get(kind, 0) == count,
                 where + ".members: exactly %d %s members are declared" % (count, kind))
-    for percent in INJECTION_PERCENTS:
-        require(counts.get("injection_%d" % percent, 0) == INJECTION_MEMBERS,
+    expected_percents = (5, 10) if doc.get("execution_class") == "long_running" else INJECTION_PERCENTS
+    for percent in expected_percents:
+        require(counts.get("injection_%d" % percent, 0) == injection_members,
                 where + ".members: exactly %d injection members at %d%%"
-                % (INJECTION_MEMBERS, percent))
+                % (injection_members, percent))
     require(1 <= counts.get("preparation", 0) <= PREPARATION_MEMBERS_MAX,
             where + ".members: declare 1..%d preparation runs" % PREPARATION_MEMBERS_MAX)
     days = dict((kind, [member["day"] for member in members if member["kind"] == kind])
@@ -1471,7 +1546,7 @@ def calibration_group(calibration, instance_id, cpu_group):
     return None
 
 
-READINESS_SCHEMA = "af.perf-readiness/6"
+READINESS_SCHEMA = "af.perf-readiness/7"
 MEMBER_STATUSES = ("complete", "missing", "interrupted", "failed", "unhealthy", "invalid")
 # Why a member has no evidence: never dispatched, or dispatched and its original attempt's run
 # bundle absent, expired or unreadable. Each is still the member's original, never replaced.
@@ -1540,6 +1615,9 @@ REFUSED_EVIDENCE = Obj(
 READINESS_CLAIM = ("9 of 10 power trials is a readiness decision for the demonstrated targets, "
                    "not proof of 90% population detection power; group tallies are descriptive "
                    "and a mixed-host trial appears in each observed critical-case group")
+LONG_READINESS_CLAIM = ("3 of 4 power trials is a readiness decision for the demonstrated targets, "
+                        "not a population power estimate")
+
 READINESS = Obj(
     Field("schema", Const(READINESS_SCHEMA)), Field("cohort_id", ID),
     Field("cohort_digest", DIGEST), Field("calibration_digest", DIGEST),
@@ -1569,7 +1647,7 @@ READINESS = Obj(
                                         Field("unavailable", Arr(ID, 0, limits.INSTANCES_MAX))),
                         1, 16)),
     Field("ready", Bool()),
-    Field("claim", Const(READINESS_CLAIM)),
+    Field("claim", Str(enum=(READINESS_CLAIM, LONG_READINESS_CLAIM))),
 )
 
 
@@ -1673,9 +1751,10 @@ def compute_readiness(cohort, calibration, members):
             if complete and all(case.get("injection_valid") is True for case in cases):
                 entry["valid_injections"] += 1
     groups = group_readiness(cohort, calibration)
-    ready = (tallies["aa_within_tolerance"] == tallies["aa_members"] == COHORT_COUNTS["aa"]
-             and tallies["power_members"] == COHORT_COUNTS["power"]
-             and tallies["power_qualifying"] >= POWER_DETECTIONS_REQUIRED)
+    counts_policy, _, detections_required = cohort_counts(cohort)
+    ready = (tallies["aa_within_tolerance"] == tallies["aa_members"] == counts_policy["aa"]
+             and tallies["power_members"] == counts_policy["power"]
+             and tallies["power_qualifying"] >= detections_required)
     return tallies, groups, qualifies, ready
 
 
@@ -1694,6 +1773,9 @@ def validate_readiness_injection(member, at):
 
 def validate_readiness_totals(doc, where, cohort, calibration):
     """Shared sealed-target, denominator and whole-trial admission."""
+    require(doc["claim"] == (LONG_READINESS_CLAIM if cohort.get("execution_class") == "long_running"
+                             else READINESS_CLAIM),
+            where + ": readiness claim must match the declared execution class")
     declared = {member["member_id"]: member for member in cohort["members"]}
     validate_calibration(calibration, cohort=cohort)
     require(doc["calibration_digest"] == canonical_digest(calibration),
@@ -2441,9 +2523,9 @@ def validate_adapters(doc, where="adapters.toml"):
     return doc
 
 
-# af.perf-cli/7 -----------------------------------------------------------------------------
+# af.perf-cli/8 -----------------------------------------------------------------------------
 
-CLI_SCHEMA = "af.perf-cli/7"
+CLI_SCHEMA = "af.perf-cli/8"
 TUI_OPEN_SCHEMA = "af.perf-tui-open/1"
 TUI_OPEN = Obj(Field("schema", Const(TUI_OPEN_SCHEMA)),
                Field("browser_ms", DECIMAL),
@@ -2458,11 +2540,13 @@ def validate_tui_open(doc, where="tui-open"):
             where + ": splash arrived after the browser frame")
     return doc
 CLI_SETUPS = ("waiter_state", "none", "task_repository", "task_started", "seed_copy", "registry_empty",
-              "registry_stores_20x10000")
+              "registry_stores_20x10000", "dev_flow_cold", "dev_flow_primed")
 CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version", "fixtures", "python")
 # The reviewed PTY driver's command (ADR-0263): the absolute interpreter `{python}` names, never
 # one the supervisor would look up on PATH, runs the driver isolated around the side's AF.
 TUI_DRIVER_ARGV = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
+DEV_FLOW_DRIVER_PREFIX = ["{python}", "-I",
+                          "{fixtures}/default-light-smoke/run_and_validate.py", "--af"]
 AF_TASK_ID = Str(pattern=r"^[a-z][a-z0-9-]{0,63}$", max_len=64)
 JSON_PATH = Str(pattern=r"^(?:[a-z0-9_]+|\*)(?:\.(?:[a-z0-9_]+|\*))*$", max_len=256)
 # A path the supervisor's streaming JSON observation selects (ADR-0172): one to eight segments,
@@ -2591,11 +2675,16 @@ def validate_cli(doc, where="cli.toml"):
             require(len(runnable) == 3, at + ": a command declares argv, cwd and rules, or "
                     "is pending with its reason")
             driver = command["case_id"] == "tui_open"
-            require(command["argv"] == TUI_DRIVER_ARGV if driver else
-                    command["argv"][0] == "{af}",
-                    at + ".argv: runs the side's AF binary or the declared PTY driver")
-            require(driver or not any("{python}" in text
-                                      for text in command["argv"] + [command["cwd"]]),
+            dev_flow = command["case_id"] == "dev_default_light_smoke"
+            if driver:
+                expected_argv = command["argv"] == TUI_DRIVER_ARGV
+            elif dev_flow:
+                expected_argv = command["argv"][:4] == DEV_FLOW_DRIVER_PREFIX
+            else:
+                expected_argv = command["argv"][0] == "{af}"
+            require(expected_argv, at + ".argv: runs the side's AF binary or the declared PTY driver")
+            require(driver or dev_flow or not any("{python}" in text
+                                                  for text in command["argv"] + [command["cwd"]]),
                     at + ".argv: only the PTY driver's command names {python}")
             for text in command["argv"] + [command["cwd"]]:
                 for name in re.findall(r"\{([^}]*)\}", text):
@@ -2638,9 +2727,9 @@ def validate_cli(doc, where="cli.toml"):
     return doc
 
 
-# af.perf-supervisor-request/4 --------------------------------------------------------------
+# af.perf-supervisor-request/5 --------------------------------------------------------------
 
-SUPERVISOR_REQUEST_SCHEMA = "af.perf-supervisor-request/4"
+SUPERVISOR_REQUEST_SCHEMA = "af.perf-supervisor-request/5"
 ABSOLUTE = Str(pattern=r"^/", min_len=1, max_len=4096)
 COMMAND_ARGV = Arr(Str(max_len=4096), 1, 64)
 COMMAND_ENVIRONMENT = Map(r"^[A-Z_][A-Z0-9_]{0,63}$", Str(max_len=4096), 0, 64)
@@ -2656,6 +2745,18 @@ SETUP = Obj(
 JSON_SELECTOR = Obj(Field("path", JSON_STREAM_PATH),
                     Field("kind", Str(enum=("integer", "string"))),
                     Field("equals", Arr(Str(min_len=1, max_len=256), 0, 4)))
+EVIDENCE_PATH = Str(pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$", min_len=1, max_len=512)
+EVIDENCE_FILE_BYTES_MAX = 1024 * 1024
+EVIDENCE_TOTAL_BYTES_MAX = 16 * EVIDENCE_FILE_BYTES_MAX
+
+
+def check_evidence_paths(paths, where):
+    require(paths == sorted(set(paths))
+            and all(part not in (".", "..") and re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+                    for path in paths for part in path.split("/")),
+            where + ": sorted unique relative file paths without dot components")
+
+
 SUPERVISOR_REQUEST = Obj(
     Field("schema", Const(SUPERVISOR_REQUEST_SCHEMA)),
     Field("argv", COMMAND_ARGV),
@@ -2674,6 +2775,7 @@ SUPERVISOR_REQUEST = Obj(
     # Declared fields the supervisor observes over the child's whole stdout as one JSON
     # document, past its cap too (ADR-0172).
     Field("stdout_json", Arr(JSON_SELECTOR, 0, 8)),
+    Field("evidence_paths", Arr(EVIDENCE_PATH, 0, 64)),
 )
 
 
@@ -2691,6 +2793,10 @@ def validate_supervisor_request(doc, where="perf-supervisor-request"):
             where + ".log_cap_bytes: covers stdout and stderr together")
     require(doc["scratch"] is None or doc["containment"] == "pid_namespace",
             where + ".scratch: only pid_namespace containment owns a scratch")
+    check_evidence_paths(doc["evidence_paths"], where + ".evidence_paths")
+    require(not doc["evidence_paths"] or (doc["scratch"] is not None
+                                         and doc["containment"] == "pid_namespace"),
+            where + ".evidence_paths: requires PID namespace containment with owned scratch")
     require(all(len(pattern.encode("utf-8")) <= 128 for pattern in doc["stdout_patterns"]),
             where + ".stdout_patterns: each pattern is at most 128 bytes")
     for index, selector in enumerate(doc["stdout_json"]):
@@ -2703,9 +2809,9 @@ def validate_supervisor_request(doc, where="perf-supervisor-request"):
     return doc
 
 
-# af.perf-supervisor-result/5 ---------------------------------------------------------------
+# af.perf-supervisor-result/6 ---------------------------------------------------------------
 
-SUPERVISOR_RESULT_SCHEMA = "af.perf-supervisor-result/5"
+SUPERVISOR_RESULT_SCHEMA = "af.perf-supervisor-result/6"
 # The result's own termination adds `setup_failed`: a declared setup did not end as required, so
 # no measured child was launched; the lifecycle is then the setup's.
 RESULT_TERMINATIONS = TERMINATIONS + ("setup_failed",)
@@ -2770,6 +2876,12 @@ SUPERVISOR_RESULT = Obj(
     Field("setup", Nullable(SETUP_RESULT)),
     Field("scratch", Nullable(Obj(Field("status", Str(enum=("cleared", "retained", "refused"))),
                                   Field("detail", Str(max_len=4096))))),
+    Field("evidence", Nullable(Obj(
+        Field("status", Str(enum=("complete", "refused"))),
+        Field("detail", Str(min_len=1, max_len=4096)),
+        Field("files", Arr(Obj(Field("path", EVIDENCE_PATH),
+                               Field("bytes", Int(0, EVIDENCE_FILE_BYTES_MAX))), 0, 64)),
+    ))),
     Field("rusage", Nullable(Obj(Field("scope", Const("reaped_child_and_its_waited_descendants")),
                                  Field("user_cpu_ns", NANOS), Field("system_cpu_ns", NANOS),
                                  Field("maxrss_bytes", COUNT), Field("minor_faults", COUNT),
@@ -2830,6 +2942,21 @@ def setup_accepted(setup):
 
 def validate_supervisor_result(doc, where="perf-supervisor-result"):
     SUPERVISOR_RESULT.validate(doc, where)
+    evidence = doc["evidence"]
+    if evidence is not None:
+        files = evidence["files"]
+        check_evidence_paths([item["path"] for item in files], where + ".evidence.files")
+        require(sum(item["bytes"] for item in files) <= EVIDENCE_TOTAL_BYTES_MAX,
+                where + ".evidence: at most 16 MiB in total")
+        require((evidence["status"] == "complete") == bool(files),
+                where + ".evidence: complete transfers files; refused transfers none")
+        if evidence["status"] == "complete":
+            require(doc["supervisor"]["containment"] == "pid_namespace"
+                    and doc["supervisor"]["namespace_init"]
+                    and doc["lifecycle"]["observation"] == "pid_namespace_scan"
+                    and doc["lifecycle"]["status"] in ("clean", "unexpected_descendants")
+                    and doc["lifecycle"]["remaining_after_cleanup"] == 0,
+                    where + ".evidence: read only inside a verified-empty PID namespace")
     kind = doc["termination"]["kind"]
     setup = doc["setup"]
     if setup is not None:
@@ -3043,12 +3170,12 @@ def validate_capabilities(doc, where="capabilities"):
     return doc
 
 
-# af.perf-report/3 ---------------------------------------------------------------------------
+# af.perf-report/4 ---------------------------------------------------------------------------
 # Version 2 (ADR-0177) links validated diagnostic child runs and states each reproduction's
 # limitations; version 3 (ADR-0214) adds each case's telemetry captures from the linked children
 # that selected a telemetry level. Earlier versions are refused.
 
-REPORT_SCHEMA = "af.perf-report/3"
+REPORT_SCHEMA = "af.perf-report/4"
 TRIGGER_KINDS = ("pr", "main_push", "nightly", "release", "manual")
 # Why a run does not satisfy the required check: only a passing, measured, full-scope run of an
 # activated policy can.
@@ -3131,6 +3258,25 @@ REPORT_SHARD = Obj(
         Field("sample_image", Nullable(SHORT_TEXT)), Field("seeds", Arr(SEED, 0, 16)),
         Field("observations", Obj(Field("start", LOAD), Field("end", LOAD))),
         Field("started_unix_ms", Int(0, 2 ** 53)), Field("ended_unix_ms", Int(0, 2 ** 53))))))
+
+
+def _report_case(execution_class):
+    return Obj(
+        Field("execution_class", Const(execution_class)),
+        Field("instance_id", ID), Field("case_id", ID),
+        Field("failures", Obj(Field("baseline", COUNT), Field("candidate", COUNT))),
+        Field("denominator", Obj(Field("planned_records", COUNT),
+                                 Field("missing_records", COUNT),
+                                 Field("measured_pairs", Int(minimum_pairs(execution_class),
+                                                             limits.PAIRS_MAX)),
+                                 Field("warmup_pairs", Int(0, limits.WARMUP_PAIRS_MAX)))),
+        Field("profile", DIAGNOSTIC_STATE), Field("trace", DIAGNOSTIC_STATE),
+        Field("telemetry", DIAGNOSTIC_STATE))
+
+
+REPORT_CASE = case_variants(_report_case)
+
+
 REPORT = Obj(
     Field("schema", Const(REPORT_SCHEMA)), Field("run_id", ID), Field("plan_digest", DIGEST),
     # What kind of comparison the intervals are: each pair on one host (never a history trend).
@@ -3142,16 +3288,7 @@ REPORT = Obj(
     Field("sensitivity", Obj(Field("state", Str(enum=("not_calibrated",
                                                       "calibrated_admission"))),
                              Field("detail", TEXT))),
-    Field("cases", Arr(Obj(
-        Field("instance_id", ID), Field("case_id", ID),
-        Field("failures", Obj(Field("baseline", COUNT), Field("candidate", COUNT))),
-        Field("denominator", Obj(Field("planned_records", COUNT),
-                                 Field("missing_records", COUNT),
-                                 Field("measured_pairs", Int(limits.PAIRS_MIN, limits.PAIRS_MAX)),
-                                 Field("warmup_pairs", Int(0, limits.WARMUP_PAIRS_MAX)))),
-        Field("profile", DIAGNOSTIC_STATE), Field("trace", DIAGNOSTIC_STATE),
-        Field("telemetry", DIAGNOSTIC_STATE)),
-                       1, limits.INSTANCES_MAX)),
+    Field("cases", Arr(REPORT_CASE, 1, limits.INSTANCES_MAX)),
     Field("diagnostics", Arr(REPORT_CHILD, 0, 16)),
     Field("sequences", Arr(Obj(Field("shard", Int(0, limits.SHARDS_MAX - 1)),
                                Field("points", Arr(REPORT_POINT, 0, REPORT_POINTS_MAX))),
@@ -3193,10 +3330,11 @@ def validate_report(doc, where="report.json"):
             == [entry["instance_id"] for entry in verdict["cases"]],
             where + ".cases: one entry per verdict case, in its order")
     for item, entry in zip(doc["cases"], verdict["cases"]):
-        require(item["denominator"]["missing_records"] == entry["missing_records"]
+        require(item["execution_class"] == entry["execution_class"]
+                and item["denominator"]["missing_records"] == entry["missing_records"]
                 and item["denominator"]["measured_pairs"] == entry["pairs"]
                 and sum(item["failures"].values()) == len(entry["failures"]),
-                where + ".cases: the verdict's denominator and failures")
+                where + ".cases: the verdict's execution class, denominator and failures")
     shards = [entry["shard"] for entry in verdict["shards"]]
     require([item["shard"] for item in doc["sequences"]] == shards
             and [item["shard"] for item in doc["shards"]] == shards,
@@ -4905,6 +5043,7 @@ CONTRACTS = {
                            validate_supervisor_request,
                            "The perf-supervisor's closed request: exact argv, environment, "
                            "cwd, stdin, deadline, output caps and containment of one sample; "
+                           "declared scratch-relative evidence paths for an untimed handoff; "
                            "canonical JSON of at most 64 KiB (ADR-0166)."),
     "supervisor-result": (SUPERVISOR_RESULT_SCHEMA, SUPERVISOR_RESULT,
                           validate_supervisor_result,
@@ -4914,7 +5053,8 @@ CONTRACTS = {
                           "counts and in-order number sequences over the whole stdout, the "
                           "lifecycle it could establish with counts that support its status, "
                           "scratch, rusage and cgroup observations, each present or unavailable "
-                          "with a reason (ADR-0167)."),
+                          "with a reason, and bounded evidence file lengths framing the exact "
+                          "bytes captured before scratch cleanup (ADR-0167)."),
     "capabilities": (CAPABILITIES_SCHEMA, CAPABILITIES, validate_capabilities,
                      "What this host can execute: actual tool identities, trusted local and "
                      "Linux container capability, the bounded-scratch backend with the "

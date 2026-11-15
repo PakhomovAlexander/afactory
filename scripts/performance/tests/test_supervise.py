@@ -50,9 +50,9 @@ class Framing(TempDir):
         return json.dumps(result).encode("utf-8") + b"\n" + payload
 
     def test_a_reply_is_one_result_line_and_exactly_its_declared_bytes(self):
-        result, out, err = supervise.read_reply(self.reply(self.result, b"hello\n"),
+        result, out, err, files = supervise.read_reply(self.reply(self.result, b"hello\n"),
                                                 self.request)
-        self.assertEqual((out, err), (b"hello\n", b""))
+        self.assertEqual((out, err, files), (b"hello\n", b"", None))
         self.assertEqual(result["lifecycle"]["status"], "unexpected_descendants")
         for payload in (b"hello", b"hello\n!"):
             with self.subTest(payload=payload):

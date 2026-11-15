@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-supervisor-result/5",
+  "schema": "af.perf-supervisor-result/6",
   "supervisor": {
     "platform": "macos",
     "arch": "aarch64",
@@ -56,5 +56,6 @@
     "before": {},
     "after": {},
     "unavailable": "cgroup v2 and /proc observations exist only on Linux"
-  }
+  },
+  "evidence": null
 }
