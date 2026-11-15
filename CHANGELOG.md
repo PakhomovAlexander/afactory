@@ -19,6 +19,379 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.15.1-rc.4] - 2026-11-15
+
+### Authority compatibility
+
+Breaking persisted Ant/Scenario shapes: Scenario Store 10, Scenario definitions/bundles/pins/runs/list 6, Ant definitions/pins/tick 7, Ant state/list 8 and inspection 3. Task templates and template pins are generation 2 and seal captured local Worker authority; restart never reopens original local package paths. Finish or discard prior-release runs and state before upgrading; no migration or replay of retired shapes. Review committed authority and refresh its lock with the published release; pin adoption is a separate reviewed PR.
+
+### Changes
+
+- Release of reviewed source `6200c29afadde676480d8b8c90d74b4e7fca0052`; collected change notes follow.
+
+- Honor `executor preflight --output PATH` for ready and refused receipts, preserving readiness
+  exit codes and stdout output when the option is omitted. Output write errors refuse the command.
+
+- Preserve current Task catalog bytes during signed release pin refreshes, so comments and
+  formatting no longer block the pin PR. Actual package pin changes still require separate
+  review; pin-only publication and signed digest reconciliation remain enforced (#803).
+
+- Resolve the Gate history test fixture from the runtime workspace root so reused native Gate
+  test binaries read the current sandbox's fixture.
+
+- Reduce repeated Task wait work with bounded, byte-verified artifact reuse, streaming canonical
+  identity checks, indexed Gate history and unchanged Task observations. Artifact corruption and
+  lease changes remain checked; status and timeout semantics are unchanged. Extend the full CLI
+  benchmark across artifact, event and historical Task sizes, reporting total CPU, wall and RSS.
+  See the [decision](../docs/adr/2026-11-10-reuse-validated-artifacts-for-task-observation.md).
+
+- Pi now retains a bounded, sanitized terminal SDK diagnostic, including assistant errors after a
+  completed tool call. A failed Attempt with finalized native usage and non-aborted SDK settlement
+  retains complete accounting and its exact AF charge, without a misleading incomplete-billing or
+  malformed-reply failure. Successful final replies still require successful settlement. The host
+  protocol is now `af.pi-host/7`; version 6 and earlier fail closed.
+- Pi classifies original terminal errors before withholding private diagnostic text, preserving
+  quota, authentication and network failures. Bounded structured error `type` and `code` fields
+  preserve rate-limit and unavailable-model classifications even with neutral messages; these
+  fields stay out of diagnostic text. Diagnostics also withhold configured header values named
+  `type` and secrets from captured credential files. Real-host regressions cover selected OAuth
+  credentials and linked credential files as terminal errors, checking operator output, retained
+  artifacts and failure categories alongside the structured-error cases.
+
+- Pi withholds configured Bearer and Basic credentials when terminal errors echo their private
+  components without the authorization scheme. Unsupported or compound authorization values and
+  unrepresentable Basic credentials withhold all diagnostic text. Complete native charge and
+  failure categories remain available when the diagnostic is withheld.
+
+- Pi withholds short credential-source URL query secrets when provider errors echo only their
+  decoded values, including repeated parameters; unrepresentable secrets withhold all diagnostics.
+- Failed native Attempts retain a versioned, context-bound `af/NativeFailureEvidence@1` artifact.
+  Task reports use the final validated category independently of diagnostic text and complete
+  accounting: a rate-limit error mentioning `model_unavailable` reports `provider_capacity` while
+  preserving its safe diagnostic and exact charge.
+
+- Create integration-test homes and Cargo's test temp directory with private permissions even
+  when a Scenario fixture starts with a permissive umask, keeping Provider gate checks reliable.
+
+- In the Task inspector, `h` now follows Escape: back out of an artifact or detail/activity view,
+  then return to the focused home sidebar with the same Task selected. Left-arrow still navigates
+  to a parent or collapses a step.
+
+- Improve Task inspector navigation with latest-Attempt selection, page keys, BackTab and artifact
+  opening from the Artifacts and History views.
+
+- Open a Task in a two-pane inspector with navigation through its recorded steps and Attempts.
+  The inspector explains when live output is unavailable; see
+  [the decision](../docs/adr/2026-11-10-inspect-task-attempts.md).
+
+- The Task inspector shows live Codex command, file-change and tool activity as bounded metadata,
+  with Worker identity, activity age and explicit missing, stale or truncated observations. Enter
+  follows an Attempt's activity, scrolling pauses with a new-notification count, and `G` resumes
+  at the bottom. Focus, page movement and artifact navigation remain available at 80x24; raw
+  Provider content retains its existing credential gate. Other runners explicitly report activity
+  unavailable. See the [activity decision](../docs/adr/2026-11-10-publish-safe-task-activity.md).
+
+- The TUI starts with visible, focused left navigation at every supported terminal size,
+  including 80x24. Explicitly hiding the sidebar survives resize. Tasks open with their state
+  navigation focused; Enter/l expand steps and Attempts, and Tab/h/Esc return from activity.
+  Scrolling help preserves the previous focus, and background Store regrouping preserves a
+  sidebar selection browsing elsewhere.
+
+- Validate the complete Task wait status observation before timeout and settled returns,
+  including newly built views and final Gate-history reads. Reconstruct changed observations
+  before choosing an exit code, retaining the oldest display stream prefixes across reads.
+  Deterministic source-built CLI regressions complete Tasks during initial/refreshed view
+  construction and actual final history reads with an expired timeout, and cover settled
+  returns. The 250 ms polling interval and historical performance claims remain unchanged.
+  [Decision](../docs/adr/2026-11-11-bracket-native-task-display-observations.md).
+
+Task wait now checks indexed Gate-history discovery across final document construction and
+artifact verification, detecting new winning checks on other Tasks even when they previously
+had no matching history or could not win. A bounded connection-local SQLite observation also
+detects collection and row changes without adding history scans to unchanged polling. Exact
+artifact checks, native Task semantics and public formats are preserved. See the proposed
+[observation decision](../docs/adr/2026-11-11-bracket-native-task-display-observations.md).
+
+Restore the original 10,000-event/9,997-renewal CLI and projection fixtures alongside all six
+waiter fixtures, using bounded clock-eligibility coordination before one protected renewal write.
+Restore the persistence diagnostic's 100 renewals and four-event prefix; `persistence_fs_v3`
+explicitly measures clock coordination and is not timing-comparable with v1. Separate the original
+waiter writer from the renewal seed, regenerate the golden evidence and protected harness inventory,
+and preserve production lease rules, budgets and exact output oracles. See the
+[decision](../docs/adr/2026-11-11-preserve-renewal-performance-workloads.md).
+
+Stage seven issue-oriented operator Pipeline selections with exact personal model roles, native
+accepted diagnosis/design composition, measured performance acceptance and shared read-only
+verification. Add a catalog launcher, migration inventory, cumulative pilot reconciliation and
+native planning fixtures. Installation is a reviewed authority change after verification; no
+historical Task, remote reference or credential is changed. See
+[the decision](../docs/adr/2026-11-11-issue-oriented-operator-pipelines.md).
+
+Repair installed-catalog integration with an exact 13-Worker role/model/effort/personal-account
+audit, current staged triage rubrics and pins, and generic digest/schema tests independent of
+retired installed directories, preserving generic Pi, verification and performance contracts as
+explicit fixtures. Document the versioned local plan/validation/confirmation recipe;
+activation remains a separate root operation. No live quality or performance savings are claimed.
+
+- Supply the required `standard` fact in the known-fix, research-fix and verification Task
+  examples. Native planning tests now read all five shipped Task examples, retain missing-fact
+  and accepted-research refusals, and preserve Pipeline roles, gates and budgets.
+
+- Keep the private issue-workflow test catalog writable when its sealed source fixture is
+  read-only, without changing the source fixture's bytes or permissions.
+
+- Fix Pi setup and status refusing a machine-local SDK or Node installation beneath the invocation
+  directory when it is outside any Git repository. Repository-owned installations remain refused
+  before execution. Repository discovery uses an admitted system Git, never an executable from
+  PATH, and runs once per setup or probe operation.
+
+- Restore three-field native Task planning with the staged `bugfix/default-codex` default,
+  preserving its four personal-account roles, limits and mandatory local gates. Isolate generic
+  remote twin planning fixtures from retired installed catalog choices.
+
+- Bind issue workflow verification to the original goal and structured acceptance, and reconcile
+  pilot costs only from checked native source, continuation and research stage provenance.
+
+- Bind diagnosis and design to the exact implementation issue goal and structured acceptance
+  through native Requirements. Composition and reconciliation refuse missing or substituted
+  issue contracts, while report acceptance remains separate from implementation acceptance.
+
+- Bind issue workflow roles to their exact declared Workers and pin approved local code and report
+  policies across installation, template composition, native plan inspection and reconciliation.
+  Correct the default known-fix inspection recipe and add authority substitution regressions.
+
+- Bind issue workflow inspection plans and graphs to checked native artifacts and Task revisions;
+  refuse installed or captured settings drift, including retired default selectors.
+- Correct active Task help and operator examples, and show performance research before baseline,
+  internal code Review and measurement acceptance before final whole-change verification.
+
+- Correct the installed Pipelines’ required and optional research-report input documentation.
+- Resolve the operator-selection help fixture from `AF_WORKSPACE_ROOT` before the compile-time
+  workspace so cached gate binaries can use the current source tree.
+
+- Bind pilot issue URLs to original native structured requirements and refuse PR links to another
+  repository. Reconciliation output version 2 explicitly marks declared PR associations unverified
+  and records that no remote lookup occurred; local unlinked Tasks remain available.
+
+- Reject issue workflow plans and reconciliation with altered captured catalogs or Review
+  acceptance policy, including a weakened severity gate. Preserve native report-only authority.
+
+- Create af-owned runtime roots and missing warm-cache parents privately under group-write
+  umasks. Make Provider and triage permission fixtures explicit and prove clean-host doctor
+  discovery ignores host Provider launchers, preserving all directory safety refusals
+  ([decision](../docs/adr/2026-11-11-create-private-runtime-directories-and-explicit-permission-fixtures.md)).
+
+- Refresh staged operator authority to nine public routes with Kimi light bugfix as default,
+  Kimi light implementation, design-only Astra/Terra/Kimi/Sol acceptance and small-bottleneck Kimi
+  performance research. Use distinct Terra6.1 high bugs and correctness Workers with their
+  existing prompts, and Astra medium evaluation. Preserve source-writer independence and local gates. New launcher
+  planning refuses superseded or unavailable model catalogs; historical inspection remains possible.
+  See [the decision](docs/adr/2026-11-12-refresh-issue-workflow-model-families.md).
+
+- Bound native Ant history under the unchanged 16 MiB journal limit. Retain recent/latest and open
+  work, expose compact provenance and exact accounting, expire eligible old output-index rows, and
+  reserve native Run capacity before dispatch so admission pressure cannot consume settlement space.
+  Completed bodies that cannot fit are explicitly unavailable with settled effect/charge authority
+  retained. Store/state/inspection/list generations are 8/7/2/7 and refuse previous shapes without
+  migration; Scenario definitions and Ant pins are unchanged. Preserve raw Markdown, daily/interval
+  scheduling and the scheduler stop-race fix. See the
+  [decision](../docs/adr/2026-11-11-bound-native-ant-retention-and-settlement-capacity.md).
+
+- Fix Ant rolling admission after native charge overruns: retained and retired charges now saturate
+  the entire budget comparison, recording `skipped_budget` and advancing the durable cursor.
+  Preserve exact cumulative accounting, unknown reservations and conservative expiry. See the
+  [decision](../docs/adr/2026-11-11-saturate-complete-ant-rolling-admission.md).
+
+- Keep computed Scenario Run accounting exact in u128 when multiple native Task charges exceed
+  u64 in aggregate. Reconciliation, validation and retention preserve every charge; rolling Ant
+  admission records `skipped_budget` and advances its cursor. See the
+  [clarification](../docs/adr/2026-11-12-keep-within-run-accounting-wide.md).
+
+- Preserve exact recovered Scenario charges through goal roadmap reconciliation and replay,
+  including totals above u64. Keep unrelated unknown reservations and refuse later over-budget
+  admission. Roadmap/list v3 expose decimal actual totals; Scenario Store v9 refuses older state.
+  See the [decision](../docs/adr/2026-11-12-preserve-exact-roadmap-overruns.md).
+
+- Add explicit fixed-rate Ant intervals down to one second and foreground scheduler run/stop/status,
+  preserving daily timezone schedules, bounded missed ticks and one active Run per Ant.
+- Add generic named Markdown result documents, author-defined tables and prose, read-only watch,
+  freshness metadata and atomic file output. Ant contracts use generation 6 and Scenario Stores 7;
+  previous generations are refused without migration. See
+  [the decision](docs/adr/2026-11-11-native-intervals-and-recorded-result-markdown.md).
+- Remove caller-only `owner-impl` packages and provider bindings from shipped authority;
+  retain the Task's separately captured execution authority and unchanged catalog audits.
+
+- Serialize foreground scheduler lease acquisition and row initialization with stop requests, so
+  first startup and restart cannot erase an acknowledged stop. Preserve later explicit restart.
+- Add explicit `--raw-markdown --observed-output PORT --stale-after-ms N` result presentation for
+  already-authored named text, using a separate recorded observation time without JSON wrapping.
+  Keep structured rendering, freshness, terminal-control protection and read-only watch behavior.
+  See [the proposed decision](docs/adr/2026-11-11-serialize-scheduler-start-and-select-recorded-markdown.md).
+- Sustained Store retention remains unresolved; the unchanged 16 MiB journal can still exhaust.
+  These repairs alone do not establish #796/#797 requirements acceptance.
+
+- Synchronize current triage examples and exact catalog audits with the approved Kimi light
+  default, design roles and Terra reviews, preserving independent negative mutation checks.
+
+- Keep generic help independent of operator catalogs and budgets, with captured plan inspection
+  guidance. Admit report evaluation dependencies by typed contracts and exact graph producers,
+  allowing consuming projects to choose their own required verifier names and counts.
+
+- Require report verifier results to retain every declared prior evaluation, checking both
+  the Worker retention contract and the exact dependency artifact IDs at output admission.
+
+- Refuse missing or malformed original issue contracts before direct operator design planning.
+- Correct the default Pipeline label to advertise Terra high for both bugs and correctness.
+
+- Fix design-only issue Workflow reconciliation to treat an omitted native unknown-usage count
+  as zero.
+
+- Capture exactly pinned local Worker packages relative to the original Scenario `--bindings`
+  file. Fresh Tasks restore sealed native authority after local paths are moved or deleted;
+  durable template references retain the closure through Task collection. Committed Pipelines,
+  default constraints, canonical Provider admission and exact Scenario approval remain native.
+  Version 1 Task templates and pin envelopes are refused: re-pin and confirm the new identity.
+  See the [decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Wrap immutable Scenario template help prose so every `af help scenarios` line fits 100 columns.
+
+- Correct the production Scenario planning test to require canonical bindings with no local packages.
+
+- Require the exact durable native template pin before fresh Scenario Task planning, preventing
+  substitution of another committed authority even with a machine policy grant. Version every
+  enclosing Scenario and Ant contract and refuse earlier shapes; machine policy stays version 5.
+  See the [decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Create Scenario template pins atomically under concurrent pinning and validate the exact durable
+  record before acknowledging an existing pin. Cover sealed local Worker contract and model
+  independence refusals after deleting the original packages. See the
+  [decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Keep Scenario template capture and pin publication under a process-owned CAS reservation,
+  validating captured Worker packages before publication so concurrent Task collection cannot
+  remove their closure, including reused objects. Reject corrupt pin sequences without changing
+  history. See the [sealed authority decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Keep SQLite available for unrelated Task heartbeats during Scenario template capture while
+  protecting new and reused authority objects from collection through durable publication.
+  Refuse pin timestamps and optional metadata that the native writer never emits. See the
+  [template authority decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Keep unrelated Task heartbeats running during final Scenario template artifact verification.
+  Verify template bytes before the SQLite transaction and publish reservation-protected references
+  without filesystem reads under its writer lock; ordinary append retains its reference checks.
+  See the [template authority decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Validate Scenario template pins with at most two indexed history entries and bounded event
+  bytes, preserving canonical pin checks without replaying corrupt streams under the Store writer
+  lock. Unrelated Task heartbeats remain available during pinning. See the
+  [Scenario authority decision](../docs/adr/2026-11-13-seal-local-worker-authority-in-scenario-templates.md).
+
+- Add `./dev release` planning, RC execution, status and resume with exact fetched-source
+  identity, isolated preparation, durable receipts and normal protected PR/check/merge semantics.
+  `make release` and the shell entry point share this implementation. Replace the RC Python
+  allowlist with an exact schema/fixture declaration generated during preparation; retain
+  signed publication and separate human-reviewed pin adoption. Publication retries reconcile
+  matching drafts/assets and signed provenance instead of clobbering releases.
+- Drive default RC and resume invocations through pending checks, merge and signed publication
+  with bounded polling and a six-hour timeout. Preserve recoverable waiting state on interruption
+  or timeout; fail promptly on release workflow failures while keeping pin adoption independent.
+- Refresh the exact release capability declaration for the captured current-main schemas and
+  fixtures; retain contract drift refusal and executable contract/harness preflight checks.
+- Bind exact release PR CI independently of formally required statuses, retain optional class
+  exemptions, and refuse cuts without server-enforced strict base freshness. Require separate
+  administrator setup; never change protections. Retain original signed bundles across publication
+  retries, report missing pin credentials independently, and validate version-independent fixtures
+  plus the real telemetry contract regression in the release gate.
+- Bind release PR acceptance to the digest-verified exact-attempt validation plan, approved
+  base/candidate merge tree, source catalog and authorized profile; wait through opened-fast versus
+  labeled-full races. Require the complete Linux/macOS class and conditional job roster with exact
+  skip semantics and paginated collection completeness. Support bare and ref-qualified canonical
+  workflow paths with immutable workflow identity in CI and signed-bundle restoration.
+- Recheck the complete exact-source CI run collection before accepting release checks, waiting
+  when newer evidence appears. Wait through cancellation before a plan is retained; reject
+  cancelled or failed validation once its plan establishes the authorized profile.
+
+- Fix release CLI test fixtures copied from sealed read-only source: keep disposable schema
+  files and owned directories writable and avoid copying required feature files twice. Cover
+  contract edit, create and delete operations and release planning against read-only source
+  files and directories without changing source bytes or permissions.
+
+- Repair gate and timing-report fixtures to select Makefile build/test targets independently
+  of release comments, retaining runner conditionals and all existing gate assertions.
+
+- Require two matching bounded release-list traversals and refuse ambiguous missing pagination
+  metadata instead of trusting empty probes, preserving reserved identities and signed recovery.
+
+- Retain advertised last-page evidence throughout release inventory traversal; refuse missing
+  next links that could hide later releases, contradictory ends and malformed pagination.
+
+- Release retries require the original signed bundle once any release record exists, even an
+  empty draft, and refuse every conflicting asset byte, including a different valid signature.
+  Bounded complete release and secret-name lookup prevents page-boundary identity reuse and
+  false signing or pin-readiness failures, including releases whose Git refs were deleted.
+
+- Release preflight requires the current Ant/Scenario contracts and captured local Worker
+  authority. Refresh the exact schema/fixture declaration for the integrated source; retired
+  or foreign contracts still refuse before release preparation.
+
+- Release preflight validates required schemas' declared contract identities, refusing foreign or
+  malformed contracts even when the expected identity remains elsewhere in reviewed schema bytes.
+
+- Install minisign in the shared Linux/macOS validation base job before release checks, keeping
+  the real signed release recovery regression mandatory on hosted runners.
+
+- Release initialization automatically seeds safe same-repository local Git objects through an
+  isolated bundle, while requiring authoritative remote main/tag acquisition. Stderr reports cache
+  and fetch progress, and read-only status distinguishes active initialization from a missing run.
+
+- Fix developer release planning to request repository metadata without a trailing slash,
+  preserving nested API paths and query strings.
+
+- Publish release CLI fixture database updates atomically so interruption polling reads complete
+  JSON, with isolated controlled writer coverage that creates no Git repository or child process.
+
+- Make the standalone pin-only guard reuse the preparation helper's semantic and byte validator.
+  Unknown `[af]` fields in either lock are refused, including additions, changes and removals;
+  valid version/digest updates still preserve every non-pin table and byte.
+
+- Check the prospective release pin from exact fetched source before planning and costly validation.
+  Explicit `--new` can archive conclusively failed local prepublication runs with complete,
+  collision-safe bounded receipts; uncertain or publication-attempted runs still refuse recovery.
+- Prepare published-release pin PRs from complete signed target digests, including archive-only
+  releases, verifying provenance when declared and preserving Task authority and all other lock
+  bytes without installing or activating a release.
+- Refuse archival recovery for completed validation receipts with missing, reordered or foreign
+  commands, sharing the writer's exact gate target transformation. Recognize already-pinned signed
+  releases despite valid pin formatting, while retaining exact bytes for published branch reuse.
+- Preserve indented and quoted Worker/Pipeline tables byte for byte during signed pin refresh.
+  Validate full TOML, exact signed pin and unchanged non-pin content before atomic replacement;
+  pin-only and published-branch guards also refuse indented non-pin tampering.
+
+- RC creation now runs only release metadata checks locally for both fast and full profiles.
+  Broad validation remains mandatory in exact-source Linux/macOS hosted CI and the protected
+  publication workflow. Ordered local receipts, recovery checks, signatures and separate pin
+  adoption remain required; profile selection controls hosted coverage without rewriting local
+  commands. Cargo-nextest and Node/npx are no longer RC prerequisites. No measured speedup is claimed.
+- Preserve the shared run-owned gate target renderer for captured policies that declare a gate.
+  Explicit prepublication recovery archives their completed receipts unchanged, while refusing
+  foreign targets, incomplete commands and later publication intent. New RC policies stay metadata-only.
+
+- Reconcile Task wait validation reuse, indexed Gate history and full CLI benchmarks with the
+  current crate and module layout. Preserve byte-level integrity checks, lease handoffs and total
+  CPU, wall and RSS coverage. Isolate doctor regression tests from ambient Provider CLIs and
+  check the precise setup hint both without Provider binaries and with a logged-out Codex CLI.
+- Recheck compiled telemetry benchmark binaries by their bytes after copying, so a same-size
+  mutation with unchanged metadata cannot pass binary admission.
+
+- Reconcile waiter validation reuse, streaming canonicalization, indexed Gate history and all six
+  full CLI waiter workloads with rc.3 native Task Review and current fixture contracts. Recheck
+  Task and observed-stream watermarks after every display-artifact read so a concurrent completion
+  refreshes status before timeout handling. Port evidence corruption/deletion regressions to native
+  Review, retain isolated doctor hints and telemetry byte admission, and regenerate fixture evidence.
+  [Decision](../docs/adr/2026-11-11-bracket-native-task-display-observations.md). Historical GNU CPU
+  reductions are pre-reconciliation diagnostics; no rc.3 speedup is claimed.
+
 ## [0.15.1-rc.3] - 2026-11-11
 
 ### Authority compatibility
