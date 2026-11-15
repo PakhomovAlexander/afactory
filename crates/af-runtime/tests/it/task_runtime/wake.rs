@@ -2679,3 +2679,174 @@ fn wake_native_preflight_rechecks_expiry_closure_and_revocation_before_admission
         assert_eq!(f.store.wake_uncertainty().unwrap(), json!([]));
     }
 }
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_sealed_continuation_authenticates_every_field_and_progress_without_cas_retention() {
+    use af_runtime::wake::journal::reconcile;
+    let mut f = Fixture::new(SUCCESS);
+    let host = CapturedTaskHost::capture_with_models(
+        &f.cas,
+        &f.compiler,
+        &f.task,
+        &f.plan,
+        f.graph.clone(),
+        &EmptyTaskEnvironment,
+        &DocumentDomain,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "wake-seal-writer", 60000)
+        .unwrap();
+    let registration = register(&f, 'a', 32);
+    let other = register(&f, 'b', 32);
+    let id = &registration.subscription.subscription_id;
+    f.store
+        .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+        .unwrap();
+    f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+    f.store.begin_task_execution(&f.cas, &lease).unwrap();
+    f.store
+        .wait_task(&f.cas, &lease, TaskWaitingReasonV1::NeedsInput)
+        .unwrap();
+    assert!(reconcile(&f.store, &f.cas, id, stamp(&f)).unwrap());
+    assert!(
+        reconcile(
+            &f.store,
+            &f.cas,
+            &other.subscription.subscription_id,
+            stamp(&f)
+        )
+        .unwrap()
+    );
+    let db = rusqlite::Connection::open(f._directory.path().join("events.sqlite")).unwrap();
+    let snapshot = || {
+        db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence FROM wake_subscriptions_v1 WHERE id=?1", [id],
+        |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+    };
+    let original = snapshot();
+    let checkpoint: serde_json::Value = serde_json::from_str(&original.0).unwrap();
+    let seal: serde_json::Value = serde_json::from_str(&original.1).unwrap();
+    assert!(checkpoint["prior_semantic"].is_array());
+    assert!(checkpoint["observations"].as_u64().unwrap() > 0);
+    assert!(schema_registry::validator("task-wake-checkpoint-seal-v1.json").is_valid(&seal));
+    let retained = f.store.inspect_wake(id).unwrap().envelopes;
+    for (pointer, value) in [
+        ("/prior_semantic", serde_json::Value::Null),
+        ("/prior_semantic/0", serde_json::json!(99)),
+        ("/prior_semantic/1", serde_json::json!(digest('f'))),
+        (
+            "/prior_semantic/2",
+            serde_json::json!({"phase":"finished","outcome":"verified","cause":null,"waiting_reason":null}),
+        ),
+        ("/observations", serde_json::json!(0)),
+        ("/observations", serde_json::json!(2)),
+        ("/clock_observed", serde_json::json!(false)),
+        (
+            "/observed_unix_ms",
+            serde_json::json!(checkpoint["observed_unix_ms"].as_u64().unwrap() + 1),
+        ),
+        ("/run_facts_digest", serde_json::json!(digest('f'))),
+        ("/configuration_digest", serde_json::json!(digest('f'))),
+        ("/prefix_digest", serde_json::json!(digest('f'))),
+    ] {
+        let mut changed = checkpoint.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert_ne!(
+            changed, checkpoint,
+            "{pointer} must exercise an actual change"
+        );
+        let text = serde_json::to_string(&changed).unwrap();
+        // Both a retained valid seal and a well-shaped recomputed unkeyed checksum refuse.
+        for tag in [
+            seal.clone(),
+            serde_json::json!({"schema":"af/task-wake-checkpoint-seal@1", "tag":af_store::content_id(&changed).unwrap()}),
+        ] {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+                rusqlite::params![id, text, serde_json::to_string(&tag).unwrap()],
+            )
+            .unwrap();
+            let before = snapshot();
+            assert!(
+                reconcile(&f.store, &f.cas, id, stamp(&f)).is_err(),
+                "{pointer}"
+            );
+            assert_eq!(snapshot(), before);
+            assert_eq!(
+                db.query_row(
+                    "SELECT COUNT(*) FROM wake_outbox_v1 WHERE subscription_id=?1",
+                    [id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                retained.len() as i64
+            );
+        }
+    }
+    // A valid proof from another exact-looking subscription cannot authenticate this one.
+    let foreign: String = db
+        .query_row(
+            "SELECT checkpoint_digest FROM wake_subscriptions_v1 WHERE id=?1",
+            [&other.subscription.subscription_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+        rusqlite::params![id, original.0, foreign],
+    )
+    .unwrap();
+    assert!(reconcile(&f.store, &f.cas, id, stamp(&f)).is_err());
+    for column in ["through_sequence", "source_sequence"] {
+        db.execute("UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3,through_sequence=?4,source_sequence=?5 WHERE id=?1", rusqlite::params![id,original.0,original.1,original.2,original.3]).unwrap();
+        db.execute(
+            &format!("UPDATE wake_subscriptions_v1 SET {column}={column}+1 WHERE id=?1"),
+            [id],
+        )
+        .unwrap();
+        assert!(reconcile(&f.store, &f.cas, id, stamp(&f)).is_err());
+    }
+    db.execute("UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3,through_sequence=?4,source_sequence=?5 WHERE id=?1", rusqlite::params![id,original.0,original.1,original.2,original.3]).unwrap();
+    f.store.resume_task(&f.cas, &lease, &authority).unwrap();
+    finish(
+        &f.cas,
+        &mut f.store,
+        &f.revision_id,
+        &f.task,
+        &lease,
+        &authority,
+    );
+    f.store.release_task_lease(&f.cas, &lease).unwrap();
+    assert!(reconcile(&f.store, &f.cas, id, stamp(&f)).unwrap());
+    assert!(
+        reconcile(
+            &f.store,
+            &f.cas,
+            &other.subscription.subscription_id,
+            stamp(&f)
+        )
+        .unwrap()
+    );
+    f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
+    let envelopes = f.store.inspect_wake(id).unwrap().envelopes;
+    assert!(
+        envelopes
+            .iter()
+            .any(|e| e.observation.kind == WakeKindV1::Completed)
+    );
+    f.store
+        .apply_task_collection_of(&f.cas, &BTreeSet::from([f.task.task_id.clone()]))
+        .unwrap();
+    let after = f.store.inspect_wake(id).unwrap();
+    assert!(!after.source_available);
+    assert_eq!(after.envelopes, envelopes);
+    assert_eq!(
+        std::fs::metadata(f._directory.path().join("wake-checkpoint-key-v1"))
+            .unwrap()
+            .len(),
+        32
+    );
+}

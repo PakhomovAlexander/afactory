@@ -24,6 +24,23 @@ function canonical(file: string): fs.Stats {
   if (info.isSymbolicLink()) fail();
   return info;
 }
+// Every component of the exact invoked pathname must resist replacement by other UIDs.
+// A trusted sticky directory protects its trusted-owned immediate child (including /tmp).
+function executable(file: string): void {
+  const uid = process.getuid?.();
+  const binary = canonical(file);
+  if (!binary.isFile() || (binary.uid !== 0 && binary.uid !== uid) ||
+      (binary.mode & 0o022) !== 0 || (binary.mode & 0o111) === 0 || binary.size > 268435456) fail();
+  for (let parent = path.dirname(file);; parent = path.dirname(parent)) {
+    const info = canonical(parent);
+    if (!info.isDirectory() || (info.uid !== 0 && info.uid !== uid) ||
+        ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0)) fail();
+    if (parent === path.dirname(parent)) break;
+  }
+}
+function sameConfiguration(a: Configuration, b: Configuration): boolean {
+  return (Object.keys(a) as (keyof Configuration)[]).every(key => a[key] === b[key]);
+}
 export function configuration(file: string): Configuration {
   const parent = canonical(path.dirname(file));
   const info = canonical(file);
@@ -45,6 +62,7 @@ export function configuration(file: string): Configuration {
     if (typeof value[key] !== 'string') fail();
     canonical(value[key] as string);
   }
+  executable(value.af as string);
   const binary = canonical(value.af as string);
   if (!binary.isFile() || (binary.uid !== 0 && binary.uid !== process.getuid?.()) ||
       (binary.mode & 0o022) !== 0 || binary.size > 268435456 ||
@@ -108,7 +126,7 @@ export default function (pi: ExtensionAPI): void {
               ctx.sessionManager.getSessionId() !== session) { stopAttachment(); return; }
           if (polling || !ctx.isIdle()) return;
           polling = true;
-          try { configuration(file); } catch { polling = false; stopAttachment(); return; }
+          try { if (!sameConfiguration(config, configuration(file))) fail(); } catch { polling = false; stopAttachment(); return; }
           // Exact argv; no shell, no ambient session ID or callback. The CLI authenticates
           // its Linux parent and protected grant, then commits durable uncertainty.
           execFile(config.af, ['task', 'wake', '--repo', config.repo, '--state', config.state,
@@ -119,7 +137,7 @@ export default function (pi: ExtensionAPI): void {
             if (attachment !== generation) return;
             polling = false;
             try {
-              if (error) fail();
+              if (error || !sameConfiguration(config, configuration(file))) fail();
               const packet = validatePacket(JSON.parse(stdout), session);
               if (packet.message !== null) { deliver(pi, ctx, packet); stopAttachment(); }
             } catch { if (attachment !== generation) return; stopAttachment(); native.ui.notify('AF wake blocked or uncertain; inspect `af task wake inspect`. No native resend.', 'error'); }

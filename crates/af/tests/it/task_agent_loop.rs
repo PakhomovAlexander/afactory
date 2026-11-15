@@ -1207,6 +1207,126 @@ fn wake_cli_pi_poll_cancellation_rebuild_revalidates_replacement_at_commit() {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_genuine_future_semantics_with_unchanged_run_facts() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        let f = cancellation_wake_fixture();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let runner = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "run", "gc-older", "--execute", "--state"])
+            .arg(&f.state)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut runner = task_interrupt::ChildGuard(Some(runner));
+        await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+        let mut store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let before = store.inspect_wake(&id).unwrap();
+        let mut checkpoint: Value =
+            serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
+        std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
+        expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
+        let facts = [af_runtime::wake::RecordedRunFacts {
+            process: serde_json::from_slice(
+                &std::fs::read(f.state.join("runs/gc-older-1.json")).unwrap(),
+            )
+            .unwrap(),
+            cancellation: None,
+        }];
+        let cas = Cas::open(f.state.join("cas")).unwrap();
+        let actual = af_runtime::wake::project_with_run_facts(
+            &store,
+            &cas,
+            &before.registration.subscription,
+            None,
+            checked_wake_clock(&f.state),
+            &facts,
+        )
+        .unwrap();
+        let completed = serde_json::to_value(actual.checkpoint).unwrap();
+        assert_eq!(
+            checkpoint["run_facts_digest"],
+            completed["run_facts_digest"]
+        );
+        assert_ne!(checkpoint["prior_semantic"], completed["prior_semantic"]);
+        // Genuine later episode/revision/state suppresses completion in the old fast path.
+        checkpoint["prior_semantic"] = completed["prior_semantic"].clone();
+        let paused = point.map(|point| f.pause_poll(&grant, point));
+        let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+        db.execute(
+            "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+            rusqlite::params![
+                id,
+                serde_json::to_string(&checkpoint).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"schema":"af/task-wake-checkpoint-seal@1",
+                    "tag":af_store::content_id(&checkpoint).unwrap()})
+                )
+                .unwrap()
+            ],
+        )
+        .unwrap();
+        let snapshot = || {
+            db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence FROM wake_subscriptions_v1 WHERE id=?1", [&id],
+            |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+        };
+        let forged = snapshot();
+        if point == Some("wake-final-state-captured-1") {
+            let lease = store
+                .take_task_lease(&cas, "gc-older", "seal-contention", 60_000)
+                .unwrap();
+            store.release_task_lease(&cas, &lease).unwrap();
+        }
+        let output = if let Some((mut poll, barrier)) = paused {
+            std::fs::write(barrier.join("proceed"), []).unwrap();
+            poll.0.take().unwrap().wait_with_output().unwrap()
+        } else {
+            f.pull_command(&grant, "original").output().unwrap()
+        };
+        assert!(!output.status.success(), "{}", out(&output));
+        assert_eq!(snapshot(), forged);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM wake_outbox_v1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert_eq!(store.wake_uncertainty().unwrap(), serde_json::json!([]));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_complete_retained_continuation_tampering() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        for fault in [
+            "semantic_state",
+            "semantic_episode",
+            "semantic_revision",
+            "observations_increased",
+            "clock_observed",
+            "observed_time",
+            "facts_digest",
+        ] {
+            retained_cancellation_checkpoint(Some(fault), point);
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn wake_cli_pi_poll_refuses_retained_history_lease_id() {
     for point in [
         None,
@@ -1290,6 +1410,36 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, point: Option<&str>) {
     let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
     let mut checkpoint: Value = serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
     match fault {
+        Some("semantic_none") => checkpoint["prior_semantic"] = Value::Null,
+        Some("semantic_episode") => {
+            if checkpoint["prior_semantic"].is_null() {
+                checkpoint["prior_semantic"] = serde_json::json!([2, format!("sha256:{}", "f".repeat(64)),
+                    {"phase":"finished", "outcome":"verified", "cause":null, "waiting_reason":null}]);
+            } else {
+                checkpoint["prior_semantic"][0] = 99.into();
+            }
+        }
+        Some("semantic_revision") => {
+            checkpoint["prior_semantic"] = serde_json::json!([1, format!("sha256:{}", "f".repeat(64)),
+                {"phase":"finished", "outcome":"verified", "cause":null, "waiting_reason":null}]);
+        }
+        Some("semantic_state") => {
+            checkpoint["prior_semantic"] = serde_json::json!([1, format!("sha256:{}", "a".repeat(64)),
+                {"phase":"finished", "outcome":"verified", "cause":null, "waiting_reason":null}]);
+        }
+        Some("observations_increased") => {
+            checkpoint["observations"] = (checkpoint["observations"].as_u64().unwrap() + 1).into()
+        }
+        Some("clock_observed") => {
+            checkpoint["clock_observed"] = (!checkpoint["clock_observed"].as_bool().unwrap()).into()
+        }
+        Some("observed_time") => {
+            checkpoint["observed_unix_ms"] =
+                (checkpoint["observed_unix_ms"].as_u64().unwrap() + 1).into()
+        }
+        Some("facts_digest") => {
+            checkpoint["run_facts_digest"] = format!("sha256:{}", "f".repeat(64)).into()
+        }
         Some("lease_id") => checkpoint["lease_boundary"]["event_id"] = "f".repeat(26).into(),
         Some("lease_role") => {
             use af_contracts::{EventType, task::event::TaskChangeV1};
@@ -1358,17 +1508,37 @@ fn retained_cancellation_checkpoint(fault: Option<&str>, point: Option<&str>) {
     // CAS alone would force deferral and miss an unchecked normal commit replacement.
     let text = if matches!(
         fault,
-        Some("scope" | "boundary" | "lease_id" | "lease_role" | "lease_stale" | "prefix")
+        Some(
+            "scope"
+                | "boundary"
+                | "lease_id"
+                | "lease_role"
+                | "lease_stale"
+                | "prefix"
+                | "semantic_none"
+                | "semantic_episode"
+                | "semantic_revision"
+                | "semantic_state"
+                | "observations_increased"
+                | "clock_observed"
+                | "observed_time"
+                | "facts_digest"
+        )
     ) {
         serde_json::to_string(&checkpoint).unwrap()
     } else {
         before.checkpoint.as_ref().unwrap().clone()
     };
-    db.execute(
-        "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
-        rusqlite::params![id, text, af_store::content_id(&checkpoint).unwrap()],
-    )
-    .unwrap();
+    if fault.is_some() {
+        // A well-shaped seal containing the old recomputable checksum is not provenance.
+        let seal = serde_json::json!({"schema":"af/task-wake-checkpoint-seal@1",
+            "tag":af_store::content_id(&checkpoint).unwrap()});
+        db.execute(
+            "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+            rusqlite::params![id, text, serde_json::to_string(&seal).unwrap()],
+        )
+        .unwrap();
+    }
     let snapshot = || {
         db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence,valid FROM wake_subscriptions_v1 WHERE id=?1", [&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).unwrap()
     };
@@ -5066,6 +5236,7 @@ struct WakeFairFixture {
     repo: PathBuf,
     state: PathBuf,
     calls: PathBuf,
+    installation_dir: PathBuf,
     grants: Vec<PathBuf>,
     _listeners: Vec<std::os::unix::net::UnixListener>,
 }
@@ -5085,7 +5256,11 @@ impl WakeFairFixture {
         std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
         let owner = owner.canonicalize().unwrap();
         let calls = owner.join("calls");
-        let binary = owner.join("host-recording-standin");
+        let installation_dir = owner.join("installation");
+        std::fs::create_dir(&installation_dir).unwrap();
+        std::fs::set_permissions(&installation_dir, std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let binary = installation_dir.join("host-recording-standin");
         std::fs::write(
             &binary,
             format!(
@@ -5100,6 +5275,7 @@ impl WakeFairFixture {
             repo,
             state,
             calls,
+            installation_dir,
             grants: vec![],
             _listeners: vec![],
         };
@@ -5514,7 +5690,7 @@ fn wake_cli_native_preflight_backoff_and_exhaustion_prevent_endpoint_contact() {
 #[test]
 #[cfg(target_os = "linux")]
 fn wake_cli_competing_native_preflight_reserves_before_endpoint_and_fences_restart() {
-    for disposition in ["native", "revoked", "closed"] {
+    for disposition in ["native", "revoked", "closed", "ancestry"] {
         let f = WakeFairFixture::new("codex");
         f.finish("gc-older");
         f.fill_inbox();
@@ -5545,7 +5721,11 @@ fn wake_cli_competing_native_preflight_reserves_before_endpoint_and_fences_resta
             std::io::ErrorKind::WouldBlock,
             "competing driver has no preflight authority while reservation is live"
         );
-        if disposition == "revoked" {
+        if disposition == "ancestry" {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f.installation_dir, std::fs::Permissions::from_mode(0o777))
+                .unwrap();
+        } else if disposition == "revoked" {
             expect(
                 &f.wake(&["revoke", "--route", f.grants[0].to_str().unwrap()]),
                 0,

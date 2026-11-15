@@ -113,6 +113,44 @@ fn grant(path: &Path) -> Result<WakeGrantV1, String> {
     private(path, false)?;
     decode_bounded(&af_store::local_fs::read_bounded(path, MAX_WAKE_BYTES as u64).map_err(err)?)
 }
+#[derive(Debug, PartialEq, Eq)]
+struct InstallationDirectory {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    owner: u32,
+    mode: u32,
+}
+fn controlled_directory(owner: u32, mode: u32) -> bool {
+    (owner == 0 || owner == nix::unistd::geteuid().as_raw())
+        && (mode & 0o022 == 0 || mode & 0o1000 != 0)
+}
+fn installation_ancestry(path: &Path) -> Result<Vec<InstallationDirectory>, String> {
+    let mut identities = Vec::new();
+    for directory in path
+        .parent()
+        .ok_or("Missing installation parent")?
+        .ancestors()
+    {
+        let info = std::fs::symlink_metadata(directory).map_err(err)?;
+        if !info.is_dir()
+            || directory.canonicalize().map_err(err)? != directory
+            || !controlled_directory(info.uid(), info.mode())
+        {
+            return Err("Wake installation has replaceable or foreign directory ancestry".into());
+        }
+        // Sticky protection applies to the trusted-owned child, independently checked at
+        // every level, including the final file. Foreign directory owners may remove children.
+        identities.push(InstallationDirectory {
+            path: directory.to_owned(),
+            device: info.dev(),
+            inode: info.ino(),
+            owner: info.uid(),
+            mode: info.mode(),
+        });
+    }
+    Ok(identities)
+}
 fn digest_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let meta = std::fs::symlink_metadata(path).map_err(err)?;
@@ -124,7 +162,25 @@ fn digest_file(path: &Path) -> Result<String, String> {
     {
         return Err("Wake installation must be canonical, bounded and owner-controlled".into());
     }
+    let ancestry = installation_ancestry(path)?;
     let bytes = af_store::local_fs::read_bounded(path, 256 * 1024 * 1024).map_err(err)?;
+    let current = std::fs::symlink_metadata(path).map_err(err)?;
+    if (
+        meta.dev(),
+        meta.ino(),
+        meta.uid(),
+        meta.mode(),
+        meta.nlink(),
+    ) != (
+        current.dev(),
+        current.ino(),
+        current.uid(),
+        current.mode(),
+        current.nlink(),
+    ) || installation_ancestry(path)? != ancestry
+    {
+        return Err("Wake installation pathname changed during validation".into());
+    }
     Ok(format!(
         "sha256:{}",
         af_contracts::hex::encode(&Sha256::digest(&bytes))
@@ -136,7 +192,12 @@ fn installation(route: &WakeRouteV1) -> Result<(), String> {
     }
     route.validate()?;
     let i = &route.installation;
-    if digest_file(Path::new(&i.executable))? != i.executable_digest
+    if std::fs::symlink_metadata(&i.executable)
+        .map_err(err)?
+        .mode()
+        & 0o111
+        == 0
+        || digest_file(Path::new(&i.executable))? != i.executable_digest
         || hash(serde_json::to_value(i).map_err(err)?)? != route.installation_id
     {
         return Err("Wake installation changed".into());
@@ -447,6 +508,7 @@ fn codex(store: &EventStore, route: &WakeRouteV1, remaining: Duration) -> Result
             let credentials = rustix::net::sockopt::socket_peercred(&socket).map_err(err)?;
             check_native_wake_peer(credentials.uid.as_raw())?;
         }
+        installation(route)?;
         Ok(true)
     };
     match preflight() {
@@ -1030,6 +1092,45 @@ mod tests {
             pinned,
             ["task", "run", "example", "--state", "/owner/exact-store"].map(OsString::from)
         );
+    }
+
+    #[test]
+    fn wake_executable_ancestry_owner_and_sticky_rules_are_closed() {
+        let owner = nix::unistd::geteuid().as_raw();
+        let foreign = if owner == 424242 { 424243 } else { 424242 };
+        for trusted in [0, owner] {
+            for mode in [0o700, 0o755, 0o1777, 0o1770] {
+                assert!(controlled_directory(trusted, mode));
+            }
+            for mode in [0o777, 0o775, 0o770, 0o702] {
+                assert!(!controlled_directory(trusted, mode));
+            }
+        }
+        for mode in [0o700, 0o755, 0o1777] {
+            assert!(!controlled_directory(foreign, mode));
+        }
+    }
+
+    #[test]
+    fn wake_executable_digest_refuses_replaceable_ancestry() {
+        let root = tempfile::tempdir().unwrap();
+        let outer = root.path().join("outer");
+        let inner = outer.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        let binary = inner.join("native");
+        std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for unsafe_directory in [&inner, &outer] {
+            std::fs::set_permissions(unsafe_directory, std::fs::Permissions::from_mode(0o777))
+                .unwrap();
+            assert!(
+                digest_file(&binary).is_err(),
+                "{}",
+                unsafe_directory.display()
+            );
+            std::fs::set_permissions(unsafe_directory, std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
     }
 
     #[test]

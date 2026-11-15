@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub mod delivery;
+mod seal;
 mod traversal;
 pub use traversal::WakeTraversalStage;
 
@@ -185,6 +186,7 @@ fn capacity(conn: &Connection) -> Result<(), StoreError> {
         conn.query_row("SELECT COUNT(*) FROM wake_route_traversal_v1", [], |r| {
             u64_column(r, 0)
         })?;
+    // One 32-byte provenance key and one bounded 32-byte crash staging file per Store.
     if route_positions > MAX_SUBSCRIPTIONS
         || bindings > MAX_ENVELOPES
         || subscriptions > MAX_SUBSCRIPTIONS
@@ -192,7 +194,7 @@ fn capacity(conn: &Connection) -> Result<(), StoreError> {
         || routes > MAX_SUBSCRIPTIONS
         || deliveries > MAX_ENVELOPES
         || fences > MAX_ENVELOPES
-        || bytes + extra > MAX_CONTROL_BYTES
+        || bytes + extra + 64 > MAX_CONTROL_BYTES
     {
         return Err(refusal(
             "Wake control capacity exhausted; nothing committed",
@@ -254,9 +256,11 @@ impl EventStore {
             if owner != binding || !af_contracts::is_digest(&identity) {
                 return Err(refusal("Foreign wake Store incarnation"));
             }
+            self.checkpoint_key(false)?;
             lock.commit()?;
             return Ok(identity);
         }
+        self.checkpoint_key(true)?;
         let mut random = [0u8; 32];
         std::fs::File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
@@ -435,7 +439,7 @@ impl EventStore {
             )?;
         match (checkpoint.as_deref(), digest.as_deref()) {
             (None, None) => {}
-            (Some(text), Some(digest)) if checkpoint_digest(text)? == digest => {}
+            (Some(text), Some(digest)) => self.verify_checkpoint_seal(id, text, digest)?,
             _ => return Err(refusal("Wake checkpoint digest mismatch")),
         }
         if valid != 1 {
@@ -495,9 +499,7 @@ impl EventStore {
         let Some((registration, valid, digest)) = value else {
             return Ok(false);
         };
-        if checkpoint_digest(checkpoint)? != digest {
-            return Err(refusal("Wake checkpoint digest mismatch"));
-        }
+        self.verify_checkpoint_seal_for_registration(&registration, checkpoint, &digest)?;
         if valid != 1 {
             return Err(refusal("Wake checkpoint source was mutated"));
         }
@@ -812,8 +814,9 @@ impl EventStore {
         if retained > registration.subscription.max_observations {
             return Err(refusal("Wake subscription observation allowance exhausted"));
         }
+        let seal = self.seal_checkpoint(id, checkpoint, through, source.next_sequence - 1)?;
         lock.execute("UPDATE wake_subscriptions_v1 SET checkpoint=?2,through_sequence=?3,source_sequence=?4,checkpoint_digest=?5 WHERE id=?1",
-            params![id,checkpoint,sql_number(through)?,sql_number(source.next_sequence-1)?,checkpoint_digest(checkpoint)?])?;
+            params![id,checkpoint,sql_number(through)?,sql_number(source.next_sequence-1)?,seal])?;
         capacity(&lock)?;
         if !self.task_observation_unchanged(cas, source)? {
             return Err(StoreError::WakeReconcileChanged);

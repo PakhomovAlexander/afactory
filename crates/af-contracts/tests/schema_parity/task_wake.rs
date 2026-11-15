@@ -19,6 +19,7 @@ fn rust(name: &str, value: Value) -> Result<(), String> {
     match name {
         "observation" => read!(WakeObservationV1),
         "checkpoint" => read!(WakeCheckpointV1),
+        "checkpoint-seal" => read!(WakeCheckpointSealV1),
         "subscription" => read!(WakeSubscriptionV1),
         "envelope" => read!(WakeEnvelopeV1),
         "receipt" => read!(WakeReceiptV1),
@@ -123,6 +124,10 @@ fn closed_wake_contracts_match_schemas_and_refuse_authority_fields() {
     for (name, value) in [
         ("observation", obs),
         ("checkpoint", checkpoint),
+        (
+            "checkpoint-seal",
+            json!({"schema":"af/task-wake-checkpoint-seal@1","tag":digest('5')}),
+        ),
         ("subscription", sub),
         ("envelope", envelope),
         ("receipt", receipt),

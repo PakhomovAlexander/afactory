@@ -136,10 +136,10 @@ repairs #952 without changing the closed `WakeCheckpointV1` shape.
 | `lease_boundary` | Exact sequence/event pair of the latest Opened, LeaseTaken, LeaseRenewed or LeaseReleased at or before `through`; a real event of another role or an earlier valid lease refuses |
 | `prefix_digest` | Exact rolling hash of original RunEvent bytes from opening through `through`, seeded by the registered Task identity; shared canonical hash helpers with projection, using unchanged 4096-row/16 MiB pages |
 | `schema`, `configuration_digest` | Closed current shape and exact registered configuration; subscription, Store incarnation, opening, registration prefix, source/CAS and retained control provenance remain independently checked |
-| `run_facts_digest` | Valid digest selects restore only for identical authenticated facts; changed facts select replay after source integrity validation |
-| `prior_semantic` | Closed bounded lifecycle identity/state; prior-facts-derived semantics are discarded on changed facts and rebuilt from opening, never used to authorize continuation on that path |
-| `observations` | Shape and subscription allowance checked; opening replay rebuilds prior-facts-derived counts, while actual retained distinct envelopes still enforce the cumulative allowance |
-| `observed_unix_ms`, `clock_observed` | Valid bounded time/boolean shape; existing live/explicit-clock monotonicity, source-time, expiry and restore provenance checks remain. Opening replay rebuilds clock-dependent semantics |
+| `run_facts_digest` | Exact sealed prior facts binding selects restore only for identical authenticated current facts; changed facts select replay after independent retained provenance and source integrity validation |
+| `prior_semantic` | Exact sealed None or lifecycle identity/state; authenticate before changed facts may rebuild prior semantics from opening |
+| `observations` | Exact sealed count, shape and subscription allowance checked before opening replay; actual retained distinct envelopes also enforce the cumulative allowance |
+| `observed_unix_ms`, `clock_observed` | Exact sealed time and boolean, including when false; live/explicit-clock monotonicity, source-time and expiry remain independent requirements before rebuilding clock-dependent semantics |
 | Initial inspection, replacement, deferral | Same actual retained object and metadata validated under Store writer serialization before restore/replay or bounded empty response; refusal changes no retained progress or delivery effects |
 
 The authenticated public cancellation fixture covers lease event-ID mismatch, an exact real event
@@ -156,3 +156,32 @@ wake packet from their checksum-consistent corrupt checkpoint after genuine canc
 repair, the focused retained-history/rebuild selection passed all six tests, including each of the
 four faults at inspection, replacement and serialized deferral. The unit prefix/suffix fixture and
 extended long-history fixture separately cover source-boundary and multi-page fingerprint checks.
+
+## Complete retained continuation provenance
+
+The proposed continuation seal authenticates the actual serialized object with a Store-private
+key outside SQLite. Recomputing the old checksum cannot produce its authentication tag. The
+closed seal has schema `af/task-wake-checkpoint-seal@1`; the payload checkpoint shape remains @1.
+There is no unsealed-state reader or migration. Key loss or tampering refuses rather than rebuilding.
+
+| Field/authority | Independent provenance |
+| --- | --- |
+| `schema`, configuration, Task/Store/opening and registration | Exact registration and Store incarnation in the seal; existing checked source/CAS and opening validation |
+| `through`, `lease_boundary`, `prefix_digest` | Exact sealed bytes plus canonical bounded history replay, latest lease-role checks and shared rolling fingerprint |
+| `prior_semantic`, including None, episode, revision and state | Exact trusted-projector continuation authenticated by the Store key; current row/checksum cannot mint it |
+| `observations`, including cumulative allowance | Sealed count plus existing finite subscription and retained distinct outbox allowance checks |
+| `clock_observed`, `observed_unix_ms` | Sealed original clock evidence, independently retained across facts changes; live sample monotonicity/range/expiry checks still apply |
+| `run_facts_digest` | Sealed exact facts binding from the original projector invocation; fresh facts remain separately validated before rebuild |
+| Stored through/source progress | Both columns authenticated alongside exact checkpoint and registration; existing checked-prefix/current-source fences remain |
+| Scope at inspection, replacement and contention deferral | Each serialized boundary verifies its actual retained row, never only the caller's earlier copy |
+
+Only the trusted kernel publishing a checked page creates a seal. The bounded private key and
+fixed crash staging name are counted Store entries outside CAS collection. No historical facts
+archive or notification CAS root is added. Same-UID malicious owners and destructive Store removal
+remain outside recovery guarantees. Host receipt, native intent, turn and report evidence stay
+separate; a valid continuation confers no new native or Task authority.
+
+Delayed Pi launches and success callbacks require freshly validated configuration identical to
+all captured fields. Executable ancestry must remain canonical and controlled by root/current
+owner, with sticky protection required for any group/other writable component. This is Linux local
+candidate implementation evidence, not live certification of a host or service installation.

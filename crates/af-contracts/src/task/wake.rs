@@ -382,3 +382,20 @@ impl WakeCheckpointV1 {
         )
     }
 }
+
+/// Store-private authentication of the exact checkpoint and its registered progress scope.
+/// The key is outside SQLite; this record is never caller execution authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeCheckpointSealV1 {
+    pub schema: String,
+    pub tag: String,
+}
+impl WakeCheckpointSealV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.schema == "af/task-wake-checkpoint-seal@1" && is_digest(&self.tag),
+            "Invalid wake checkpoint seal",
+        )
+    }
+}
