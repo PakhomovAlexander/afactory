@@ -1934,7 +1934,7 @@ fn invalid_current_evidence(point: &str) {
         }
         let snapshot = || {
             db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence FROM wake_subscriptions_v1 WHERE id=?1", [&id],
-                |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+                |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?))).unwrap()
         };
         let before = snapshot();
         std::fs::write(barrier.join("proceed"), []).unwrap();
