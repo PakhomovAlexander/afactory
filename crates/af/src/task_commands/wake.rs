@@ -579,18 +579,28 @@ fn reconcile_registered(
         now(),
         &facts,
         || {
+            #[cfg(debug_assertions)]
+            runs::observation_barrier("wake-recorder-check")
+                .map_err(af_store::StoreError::Conflict)?;
             let current = recorder_snapshot(state, &r.subscription.task.task_id)
                 .map_err(af_store::StoreError::Conflict)?;
+            let current_facts = recorder_facts(&current, &r.subscription.task.task_id)
+                .map_err(af_store::StoreError::Conflict)?;
+            af_runtime::wake::validate_current_run_facts(
+                store,
+                cas,
+                &r.subscription,
+                &current_facts,
+            )?;
             if current != snapshot {
-                return Err(af_store::StoreError::Conflict(
-                    "Wake recorder changed at commit".into(),
-                ));
+                return Err(af_store::StoreError::WakeReconcileChanged);
             }
             Ok(())
         },
         |point| {
             #[cfg(debug_assertions)]
             runs::observation_barrier(match point {
+                af_runtime::wake::ReconcilePoint::FinalStateCaptured => "wake-final-state-captured",
                 af_runtime::wake::ReconcilePoint::SourceObserved => "wake-source-observed",
                 af_runtime::wake::ReconcilePoint::BeforeCommit => "wake-before-commit",
             })
@@ -942,6 +952,36 @@ mod tests {
         let snapshot = recorder_snapshot(root.path(), "build").unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(recorder_facts(&snapshot, "build").is_err());
+    }
+
+    #[test]
+    fn wake_prelease_process_is_validated_without_inventing_lifecycle_authority() {
+        use af_contracts::task::agent_loop::*;
+        let mut process = TaskRunProcessV1 {
+            schema: TASK_RUN_PROCESS_V1.into(),
+            task_id: "build".into(),
+            run: 1,
+            pid: 123,
+            host: "fixture".into(),
+            writer: "not-yet-leased".into(),
+            started_unix_ms: 1,
+            detached: false,
+            log: None,
+        };
+        let path = PathBuf::from("build-1.json");
+        let snapshot =
+            |p: &TaskRunProcessV1| BTreeMap::from([(path.clone(), serde_json::to_vec(p).unwrap())]);
+        process.validate().unwrap();
+        assert!(
+            recorder_facts(&snapshot(&process), "build")
+                .unwrap()
+                .is_empty()
+        );
+        process.task_id = "another-task".into();
+        assert!(recorder_facts(&snapshot(&process), "build").is_err());
+        process.task_id = "build".into();
+        process.run = 2;
+        assert!(recorder_facts(&snapshot(&process), "build").is_err());
     }
 
     #[test]

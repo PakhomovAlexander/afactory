@@ -570,9 +570,13 @@ struct WakePiFixture {
 #[cfg(target_os = "linux")]
 impl WakePiFixture {
     fn new() -> Self {
+        Self::configured(|_| {})
+    }
+    fn configured(configure: impl FnOnce(&Path)) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = task_gc::fixture(root.path());
+        configure(&repo);
         expect(
             &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
             0,
@@ -649,6 +653,54 @@ impl WakePiFixture {
             .arg(crate::common::af_binary()).arg(&self.state).arg(grant).arg(session);
         host
     }
+    fn register(&self, grant: &Path) -> String {
+        document(&self.grant(&self.state, grant).output().unwrap(), 0, None);
+        let registration = document(
+            &self
+                .wake(
+                    &self.state,
+                    &["register", "gc-older", "--route", grant.to_str().unwrap()],
+                )
+                .output()
+                .unwrap(),
+            0,
+            None,
+        );
+        registration["subscription"]["subscription_id"]
+            .as_str()
+            .unwrap()
+            .into()
+    }
+    fn pause_poll(&self, grant: &Path, point: &str) -> (task_interrupt::ChildGuard, PathBuf) {
+        let barriers = self.owner.join("barriers");
+        let barrier = barriers.join(point);
+        std::fs::create_dir_all(&barrier).unwrap();
+        let child = self
+            .pull_command(grant, "original")
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = task_interrupt::ChildGuard(Some(child));
+        await_observation_read(&mut child, &barrier.join("ready"));
+        (child, barrier)
+    }
+    fn no_wake_effects(&self, id: &str) {
+        let store = EventStore::open(self.state.join("events.sqlite")).unwrap();
+        let retained = store.inspect_wake(id).unwrap();
+        assert!(retained.checkpoint.is_none());
+        assert!(retained.envelopes.is_empty());
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
     fn finish(&self) {
         expect(
             &af(
@@ -663,8 +715,402 @@ impl WakePiFixture {
 
 #[test]
 #[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_public_run_recorder_contention() {
+    for point in [
+        "wake-final-state-captured-1",
+        "wake-source-observed-1",
+        "wake-before-commit-1",
+    ] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let (mut child, barrier) = f.pause_poll(&grant, point);
+        // Public writer: first selected process recorder and authoritative checked completion.
+        f.finish();
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        let output = child.0.take().unwrap().wait_with_output().unwrap();
+        assert_empty_pi_poll(&output);
+        f.no_wake_effects(&id);
+        assert!(
+            f.pull(&grant)["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("AF Task wake metadata. Task: gc-older;")
+        );
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert_eq!(store.wake_deliveries().unwrap().len(), 1);
+        assert_eq!(
+            store.inspect_wake(&id).unwrap().envelopes[0]
+                .observation
+                .kind,
+            af_contracts::task::wake::WakeKindV1::Completed
+        );
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn assert_empty_pi_poll(output: &Output) {
+    assert_eq!(
+        document(output, 0, Some("task-wake-pi-next-v1.json")),
+        serde_json::json!({
+            "schema":"af/task-wake-pi-next@1", "session":"original", "message":null,
+            "delivery_id":null, "admission":"unknown_if_packet_returned", "turn_started":null,
+            "reported":null
+        })
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_both_atomic_recorder_checks_before_run_lease() {
+    for point in ["wake-recorder-check-1", "wake-recorder-check-2"] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let (mut poll, barrier) = f.pause_poll(&grant, point);
+        let run_barriers = f.owner.join("run-barriers");
+        let run_barrier = run_barriers.join("run-recorded-1");
+        std::fs::create_dir_all(&run_barrier).unwrap();
+        let runner = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "run", "gc-older", "--execute", "--state"])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &run_barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut runner = task_interrupt::ChildGuard(Some(runner));
+        await_observation_read(&mut runner, &run_barrier.join("ready"));
+        // begin() has written the real process recorder but cannot yet take its lease.
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        assert_empty_pi_poll(&poll.0.take().unwrap().wait_with_output().unwrap());
+        f.no_wake_effects(&id);
+        std::fs::write(run_barrier.join("proceed"), []).unwrap();
+        expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
+        assert!(
+            f.pull(&grant)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Task: gc-older;")
+        );
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_public_cancellation_recorder_contention() {
+    public_cancellation_contention(None);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_public_cancellation_cannot_mask_corruption() {
+    for fault in ["checkpoint", "corrupt", "nonprivate", "foreign", "revoked"] {
+        public_cancellation_contention(Some(fault));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn public_cancellation_contention(fault: Option<&str>) {
+    let f = WakePiFixture::configured(|repo| {
+        let worker = repo.join(".af/task-packages/fixture/implementer/worker.py");
+        let original = std::fs::read_to_string(&worker).unwrap();
+        let ready = repo.parent().unwrap().join("worker-ready");
+        let resume = repo.parent().unwrap().join("worker-resume");
+        let hold = format!(
+            "import os,time\nif not os.path.exists({resume:?}):\n    open({ready:?},'w').close()\n    while not os.path.exists({resume:?}): time.sleep(0.01)\n",
+            resume = resume.to_str().unwrap(),
+            ready = ready.to_str().unwrap()
+        );
+        std::fs::write(
+            worker,
+            original.replace(
+                "request=json.load(sys.stdin)\n",
+                &format!("request=json.load(sys.stdin)\n{hold}"),
+            ),
+        )
+        .unwrap();
+        task_interrupt::commit_fixture(repo);
+    });
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    let runner = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["task", "run", "gc-older", "--execute", "--state"])
+        .arg(&f.state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut runner = task_interrupt::ChildGuard(Some(runner));
+    await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
+    let (mut poll, barrier) = f.pause_poll(&grant, "wake-before-commit-1");
+    expect(&af(&f.repo, &f.state, &["task", "cancel", "gc-older"]), 0);
+    let stopped = runner.0.take().unwrap().wait_with_output().unwrap();
+    assert!(!stopped.status.success());
+    let cancellation = f.state.join("runs/gc-older-1.cancel.json");
+    assert!(cancellation.is_file());
+    match fault {
+        Some("checkpoint") => {
+            rusqlite::Connection::open(f.state.join("events.sqlite"))
+                .unwrap()
+                .execute(
+                    "UPDATE wake_subscriptions_v1 SET checkpoint='{}' WHERE id=?1",
+                    [&id],
+                )
+                .unwrap();
+        }
+        Some("corrupt") => std::fs::write(&cancellation, b"corrupt").unwrap(),
+        Some("nonprivate") => {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cancellation, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        Some("foreign") => {
+            let mut c: Value =
+                serde_json::from_slice(&std::fs::read(&cancellation).unwrap()).unwrap();
+            c["pid"] = (c["pid"].as_u64().unwrap() + 1).into();
+            std::fs::write(&cancellation, serde_json::to_vec(&c).unwrap()).unwrap();
+        }
+        Some("revoked") => {
+            document(
+                &f.wake(&f.state, &["revoke", "--route", grant.to_str().unwrap()])
+                    .output()
+                    .unwrap(),
+                0,
+                None,
+            );
+        }
+        None => {}
+        _ => unreachable!(),
+    }
+    std::fs::write(barrier.join("proceed"), []).unwrap();
+    let output = poll.0.take().unwrap().wait_with_output().unwrap();
+    if let Some(fault) = fault {
+        assert!(
+            !output.status.success(),
+            "cancellation/{fault}: {}",
+            out(&output)
+        );
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        return;
+    }
+    assert_empty_pi_poll(&output);
+    f.no_wake_effects(&id);
+    std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
+    f.finish();
+    assert!(
+        f.pull(&grant)["message"]
+            .as_str()
+            .unwrap()
+            .contains("Task: gc-older;")
+    );
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    assert!(
+        store
+            .inspect_wake(&id)
+            .unwrap()
+            .envelopes
+            .iter()
+            .any(|e| e.observation.kind == af_contracts::task::wake::WakeKindV1::Completed)
+    );
+    assert_eq!(
+        f.pull(&grant)["message"],
+        Value::Null,
+        "native intent still fences resend"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_inner_contention_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-final-state-captured-1");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_outer_contention_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-source-observed-1");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_commit_contention_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-before-commit-1");
+}
+
+#[cfg(target_os = "linux")]
+fn invalid_current_evidence(point: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    for fault in [
+        "history",
+        "checkpoint",
+        "revoked",
+        "corrupt",
+        "foreign",
+        "nonprivate",
+        "missing_process",
+        "bad_lease",
+        "expired",
+        "closed",
+        "identity",
+        "task_column",
+        "checkpoint_columns",
+    ] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let (mut poll, barrier) = f.pause_poll(&grant, point);
+        f.finish(); // genuine valid recorder activity alongside every invalidating change
+        let process = f.state.join("runs/gc-older-1.json");
+        let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+        match fault {
+            "task_column" => {
+                db.execute(
+                    "UPDATE wake_subscriptions_v1 SET task_id='other-task' WHERE id=?1",
+                    [&id],
+                )
+                .unwrap();
+            }
+            "checkpoint_columns" => {
+                db.execute("UPDATE wake_subscriptions_v1 SET through_sequence=0,source_sequence=0 WHERE id=?1", [&id]).unwrap();
+            }
+            "history" => {
+                db.execute("UPDATE events SET payload=json_set(payload,'$.corrupt',true) WHERE run_id=?1 AND sequence=0", [af_store::store::task::task_run_id("gc-older").unwrap()]).unwrap();
+            }
+            "checkpoint" => {
+                db.execute(
+                    "UPDATE wake_subscriptions_v1 SET checkpoint='{}' WHERE id=?1",
+                    [&id],
+                )
+                .unwrap();
+            }
+            "revoked" => {
+                document(
+                    &f.wake(&f.state, &["revoke", "--route", grant.to_str().unwrap()])
+                        .output()
+                        .unwrap(),
+                    0,
+                    None,
+                );
+            }
+            "corrupt" => std::fs::write(&process, b"corrupt").unwrap(),
+            "foreign" => {
+                let mut p: Value =
+                    serde_json::from_slice(&std::fs::read(&process).unwrap()).unwrap();
+                p["task_id"] = "gc-older-foreign".into();
+                std::fs::write(&process, serde_json::to_vec(&p).unwrap()).unwrap();
+            }
+            "nonprivate" => {
+                std::fs::set_permissions(&process, std::fs::Permissions::from_mode(0o644)).unwrap()
+            }
+            "missing_process" | "bad_lease" => {
+                let p: af_contracts::task::agent_loop::TaskRunProcessV1 =
+                    serde_json::from_slice(&std::fs::read(&process).unwrap()).unwrap();
+                let request = af_contracts::task::agent_loop::TaskCancelRequestV1 {
+                    schema: af_contracts::task::agent_loop::TASK_CANCEL_REQUEST_V1.into(),
+                    task_id: p.task_id,
+                    run: if fault == "missing_process" { 2 } else { 1 },
+                    epoch: 999,
+                    writer: p.writer,
+                    pid: p.pid,
+                    host: p.host.clone(),
+                    requester: af_contracts::task::agent_loop::TaskCancelRequesterV1 {
+                        user: "fixture".into(),
+                        host: p.host,
+                        pid: std::process::id(),
+                    },
+                    requested_unix_ms: p.started_unix_ms,
+                };
+                request.validate().unwrap();
+                let path = f
+                    .state
+                    .join(format!("runs/gc-older-{}.cancel.json", request.run));
+                std::fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            "closed" => {
+                db.execute(
+                    "INSERT INTO wake_closed_v1 VALUES(?1,'expired_unextracted',1)",
+                    [&id],
+                )
+                .unwrap();
+            }
+            "expired" | "identity" => {
+                let raw: String = db
+                    .query_row(
+                        "SELECT registration FROM wake_subscriptions_v1 WHERE id=?1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let mut r: af_store::store::wake::WakeRegistration =
+                    serde_json::from_str(&raw).unwrap();
+                if fault == "expired" {
+                    r.subscription.expires_unix_ms = r.subscription.registered_unix_ms + 1;
+                } else {
+                    r.subscription.task.opening_event_id = "1".repeat(26);
+                }
+                r.subscription.configuration_digest =
+                    af_store::store::wake::configuration_digest(&r.subscription).unwrap();
+                r.validate().unwrap();
+                db.execute(
+                    "UPDATE wake_subscriptions_v1 SET registration=?2 WHERE id=?1",
+                    rusqlite::params![id, serde_json::to_string(&r).unwrap()],
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        let output = poll.0.take().unwrap().wait_with_output().unwrap();
+        assert!(
+            !output.status.success(),
+            "{point}/{fault}: {}",
+            out(&output)
+        );
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert!(
+            store.wake_deliveries().unwrap().is_empty(),
+            "{point}/{fault}"
+        );
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM wake_outbox_v1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn wake_cli_pi_poll_defers_checked_observation_and_checkpoint_contention() {
-    for point in ["wake-source-observed-1", "wake-before-commit-1"] {
+    for point in [
+        "wake-final-state-captured-1",
+        "wake-source-observed-1",
+        "wake-before-commit-1",
+    ] {
         let f = WakePiFixture::new();
         let grant = f.owner.join("grant.json");
         document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
@@ -698,7 +1144,7 @@ fn wake_cli_pi_poll_defers_checked_observation_and_checkpoint_contention() {
             .unwrap();
         let mut child = task_interrupt::ChildGuard(Some(child));
         await_observation_read(&mut child, &barrier.join("ready"));
-        let checkpoint = if point == "wake-source-observed-1" {
+        let checkpoint = if point != "wake-before-commit-1" {
             // A genuine checked heartbeat changes the observation after projection.
             writer.renew_task_lease(&cas, &lease, 600_000).unwrap();
             None
@@ -758,7 +1204,11 @@ fn wake_cli_pi_poll_defers_checked_observation_and_checkpoint_contention() {
 #[cfg(target_os = "linux")]
 fn wake_cli_pi_poll_does_not_defer_corruption_or_revoked_authority() {
     for corrupt in [false, true] {
-        for point in ["wake-source-observed-1", "wake-before-commit-1"] {
+        for point in [
+            "wake-final-state-captured-1",
+            "wake-source-observed-1",
+            "wake-before-commit-1",
+        ] {
             let f = WakePiFixture::new();
             let grant = f.owner.join("grant.json");
             document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);

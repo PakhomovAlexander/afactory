@@ -247,6 +247,8 @@ pub(crate) fn begin(state: &Path, task_id: &str, writer: &str) -> Result<TaskRun
     record.validate()?;
     for _ in 0..64 {
         if write_new(state, &format!("{task_id}-{}.json", record.run), &record)? {
+            #[cfg(debug_assertions)]
+            observation_barrier("run-recorded")?;
             // A debug build's fixture holds a detached run back before it takes the Task, as a
             // loaded machine can, so its parent's admission window passes first.
             if let Some(delay) = test_duration("AF_TEST_DETACHED_START_DELAY_MS")

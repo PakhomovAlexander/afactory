@@ -40,3 +40,31 @@ bounded registration set for that route, checks its exact authority and retained
 commits the next visit before work. Rows count toward existing capacity and expire with the route;
 maintenance removes revoked or compacted hints without changing receipts or uncertainty. See the
 [route isolation decision](../adr/2026-11-14-isolate-pi-wake-route-traversal.md).
+
+## Pre-native currentness repair report
+
+The proposed [complete currentness decision](../adr/2026-11-15-revalidate-all-pre-native-wake-contention.md)
+repairs #937 and #938 without changing stored or public shapes. Only `WakeReconcileChanged`
+identifies a known logical race. The journal catches it across the entire page operation,
+including checkpoint restore, then takes a fresh Store writer transaction. It checks current
+source/CAS, exact subscription/opening identity, expiry/closure, retained checkpoint integrity
+and current bounded private recorders before returning `WakeReconcileDeferred`. Generic conflicts,
+corruption, persistence errors and native uncertainty never enter that branch. Pi reauthenticates
+its route and installation before returning the existing empty response.
+
+| Boundary | Handling | Deterministic evidence |
+| --- | --- | --- |
+| Inner projection after final-state capture | Typed change reaches the journal before any stale page can commit | `wake_cli_pi_poll_defers_checked_observation_and_checkpoint_contention` renews a real checked lease at the inner barrier; `wake_cli_pi_poll_defers_public_run_recorder_contention` commits public completion there |
+| Outer source/database observation | Same validated decision, including verification of current artifacts | The same tests retain the original after-projection heartbeat and completion interleavings |
+| Checkpoint restore and page cursor CAS | Typed replay changes propagate through the journal; invalid shape, provenance or retained digest remains terminal | Competing authenticated poll commits a checkpoint while the paused page expects none; existing checkpoint provenance and long-history/restart fixtures remain |
+| First and final transactional recorder checks | Re-read exact Task snapshot, validate every process and joined cancellation/checked lease, then signal change; rollback the whole candidate page | `wake_cli_pi_poll_defers_both_atomic_recorder_checks_before_run_lease` uses public `runs::begin` before its lease, testing both checks |
+| Public cancellation during page reconciliation | Validate current cancellation/process/checked writer and epoch before deferral | `wake_cli_pi_poll_defers_public_cancellation_recorder_contention` cancels a real running Worker, then resumes to checked completion on the same route; `wake_cli_pi_poll_public_cancellation_cannot_mask_corruption` adds corrupt/foreign/nonprivate cancellation, checkpoint damage and route revocation |
+| Concurrent valid recorder activity plus invalid evidence | Refuse before transport/native intent; no stale checkpoint or outbox admission | `wake_cli_pi_poll_inner_contention_cannot_mask_invalid_current_evidence` and its outer/commit counterparts combine a public completed run with damaged history/checkpoint (including missing checkpoint with retained progress), mismatched Task columns, corrupt/foreign/nonprivate recorder, missing process, invalid lease, closure/expiry, changed identity or revoked route at all three projection/commit seams |
+| Native admission and callback lifecycle | Existing uncertainty and finite attachment fences remain authoritative | Preserved native no-resend and recording Pi extension tests; no new native call or retry policy |
+
+The #937 public regression was first run against the unchanged implementation and failed with
+`Wake recorder changed at commit`. The positive cases require the exact successful empty Pi
+response, no early checkpoint/envelopes/transport/native fence, continued same-route polling and
+later authoritative completion. Cancellation may retain an earlier historical stopped observation;
+its metadata asks the host to inspect current evidence rather than assert a stale final state.
+No foreground drain, reconnect, extra host authority or larger poll allowance is needed.

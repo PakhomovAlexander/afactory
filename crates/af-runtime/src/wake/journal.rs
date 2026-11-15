@@ -55,67 +55,83 @@ pub fn reconcile_with_run_facts_observed(
         ));
     }
     let subscription = &retained.registration.subscription;
-    let cursor = if let Some(text) = &retained.checkpoint {
-        let prior: WakeCheckpointV1 = serde_json::from_str(text)?;
-        // Changed authenticated cancellation facts require checked replay. Each rebuilt
-        // page persists a bounded continuation rather than trusting stale semantics.
-        if prior.run_facts_digest == facts_digest(facts)? {
-            Some(restore_checkpoint_with_run_facts(
-                store,
-                cas,
-                subscription,
-                text.as_bytes(),
-                facts,
-            )?)
+    let result = (|| {
+        let cursor = if let Some(text) = &retained.checkpoint {
+            let prior: WakeCheckpointV1 = serde_json::from_str(text)?;
+            // Changed authenticated cancellation facts require checked replay. Each rebuilt
+            // page persists a bounded continuation rather than trusting stale semantics.
+            if prior.run_facts_digest == facts_digest(facts)? {
+                Some(restore_checkpoint_with_run_facts(
+                    store,
+                    cas,
+                    subscription,
+                    text.as_bytes(),
+                    facts,
+                )?)
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
-    let page = project_page(
-        store,
-        cas,
-        subscription,
-        cursor.as_ref(),
-        observed_unix_ms,
-        facts,
-        None,
-        &observe,
-    )?;
-    let envelopes = page
-        .observations
-        .into_iter()
-        .map(|o| {
-            let candidate = envelope(subscription, o).map_err(error)?;
-            if let Some(old) = retained
-                .envelopes
-                .iter()
-                .find(|e| e.delivery_id == candidate.delivery_id)
-            {
-                let mut a = old.observation.clone();
-                a.observed_unix_ms = candidate.observation.observed_unix_ms;
-                a.checked_prefix = candidate.observation.checked_prefix.clone();
-                if a != candidate.observation {
-                    return Err(error("Retained wake semantics changed"));
+        };
+        let page = project_page(
+            store,
+            cas,
+            subscription,
+            cursor.as_ref(),
+            observed_unix_ms,
+            facts,
+            None,
+            &observe,
+        )?;
+        let envelopes = page
+            .observations
+            .into_iter()
+            .map(|o| {
+                let candidate = envelope(subscription, o).map_err(error)?;
+                if let Some(old) = retained
+                    .envelopes
+                    .iter()
+                    .find(|e| e.delivery_id == candidate.delivery_id)
+                {
+                    let mut a = old.observation.clone();
+                    a.observed_unix_ms = candidate.observation.observed_unix_ms;
+                    a.checked_prefix = candidate.observation.checked_prefix.clone();
+                    if a != candidate.observation {
+                        return Err(error("Retained wake semantics changed"));
+                    }
+                    Ok(old.clone())
+                } else {
+                    Ok(candidate)
                 }
-                Ok(old.clone())
-            } else {
-                Ok(candidate)
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let checkpoint = serde_json::to_string(&page.checkpoint)?;
-    observe(ReconcilePoint::BeforeCommit)?;
-    store.commit_wake_batch_with(
-        cas,
-        subscription_id,
-        retained.checkpoint.as_deref(),
-        &checkpoint,
-        page.through.sequence,
-        &page.source,
-        &envelopes,
-        recorder_unchanged,
-    )?;
-    Ok(page.caught_up)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let checkpoint = serde_json::to_string(&page.checkpoint)?;
+        observe(ReconcilePoint::BeforeCommit)?;
+        store.commit_wake_batch_with(
+            cas,
+            subscription_id,
+            retained.checkpoint.as_deref(),
+            &checkpoint,
+            page.through.sequence,
+            &page.source,
+            &envelopes,
+            &recorder_unchanged,
+        )?;
+        Ok(page.caught_up)
+    })();
+    match result {
+        Err(StoreError::WakeReconcileChanged) => {
+            // The raw logical-change signal can originate during restore, inner/outer
+            // observation, recorder revalidation or page CAS. None bypasses this decision.
+            store.validate_wake_reconcile_with(cas, subscription, || {
+                match recorder_unchanged() {
+                    Ok(()) | Err(StoreError::WakeReconcileChanged) => Ok(()),
+                    Err(error) => Err(error),
+                }
+            })?;
+            Err(StoreError::WakeReconcileDeferred)
+        }
+        other => other,
+    }
 }

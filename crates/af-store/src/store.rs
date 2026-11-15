@@ -65,6 +65,9 @@ pub enum StoreError {
     },
     /// Two events claimed the same sequence, or an event id repeated.
     Conflict(String),
+    /// A precise pre-native logical observation changed. This is NOT permission to retry:
+    /// the journal must validate current source, authority, checkpoint and recorders first.
+    WakeReconcileChanged,
     /// A checked wake page lost a pre-native observation/checkpoint race. No delivery
     /// effect was attempted; a bounded caller may defer to its next scheduled poll.
     WakeReconcileDeferred,
@@ -93,6 +96,12 @@ impl std::fmt::Display for StoreError {
                 "event references an artifact that is not durable: {digest}"
             ),
             StoreError::Conflict(what) => write!(f, "event store conflict: {what}"),
+            StoreError::WakeReconcileChanged => {
+                write!(
+                    f,
+                    "wake observation changed; current evidence requires validation"
+                )
+            }
             StoreError::WakeReconcileDeferred => {
                 write!(
                     f,

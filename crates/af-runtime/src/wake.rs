@@ -16,6 +16,7 @@ pub mod journal;
 /// Observation seams for deterministic reconciliation interleavings; no delivery authority.
 #[derive(Clone, Copy)]
 pub enum ReconcilePoint {
+    FinalStateCaptured,
     SourceObserved,
     BeforeCommit,
 }
@@ -117,6 +118,101 @@ pub fn restore_checkpoint_with_run_facts(
         }
         cursor = Some(page.checkpoint);
     }
+}
+
+/// Validate current cancellation/process associations against checked source history. A
+/// process-only recorder is structurally checked by its owner reader: `runs::begin` publishes
+/// it before taking a lease, and it supplies no lifecycle authority until cancellation joins it.
+pub fn validate_current_run_facts(
+    store: &EventStore,
+    cas: &Cas,
+    subscription: &WakeSubscriptionV1,
+    facts: &[RecordedRunFacts],
+) -> Result<(), StoreError> {
+    let state = store
+        .task_projection(cas, &subscription.task.task_id)?
+        .ok_or_else(|| error("Wake Task disappeared"))?;
+    validate_run_facts(store, &subscription.task, state.next_sequence - 1, facts)
+}
+
+fn validate_run_facts(
+    store: &EventStore,
+    task: &WakeTaskV1,
+    last: u64,
+    facts: &[RecordedRunFacts],
+) -> Result<(), StoreError> {
+    facts_digest(facts)?;
+    // Run facts join canonical history, independent of the extraction page.
+    let mut checked_writers = std::collections::BTreeSet::new();
+    let mut checked_epochs = std::collections::BTreeSet::new();
+    if !facts.is_empty() {
+        let mut from = 0;
+        while from <= last {
+            let events = store.replay_window(&task.task_run_id, from, 4096)?;
+            if events.is_empty() {
+                return Err(error("Recorded wake fact history gap"));
+            }
+            let mut bytes = 0usize;
+            for event in &events {
+                bytes += serde_json::to_vec(event)?.len();
+                if bytes > 16 * 1024 * 1024 {
+                    return Err(error("Recorded wake fact page exceeds byte limit"));
+                }
+                if let Ok(t) = stored::read_task_transition(event)
+                    && matches!(
+                        t.change,
+                        TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. }
+                    )
+                {
+                    for fact in facts {
+                        if t.writer == fact.process.writer {
+                            checked_writers.insert(t.writer.clone());
+                        }
+                        if fact
+                            .cancellation
+                            .as_ref()
+                            .is_some_and(|c| c.writer == t.writer && c.epoch == t.epoch)
+                        {
+                            checked_epochs.insert((t.writer.clone(), t.epoch));
+                        }
+                    }
+                }
+            }
+            from = events
+                .last()
+                .ok_or_else(|| error("Missing fact page"))?
+                .sequence
+                + 1;
+        }
+    }
+    let mut run_ids = std::collections::BTreeSet::new();
+    for fact in facts {
+        fact.process.validate().map_err(error)?;
+        if fact.process.task_id != task.task_id || !run_ids.insert(fact.process.run) {
+            return Err(error("Recorded wake run identity mismatch or duplicate"));
+        }
+        let writer_exists = checked_writers.contains(&fact.process.writer);
+        if !writer_exists {
+            return Err(error("Recorded wake writer absent from checked history"));
+        }
+        if let Some(cancel) = &fact.cancellation {
+            cancel.validate().map_err(error)?;
+            let process = &fact.process;
+            if cancel.task_id != process.task_id
+                || cancel.run != process.run
+                || cancel.pid != process.pid
+                || cancel.host != process.host
+                || cancel.writer != process.writer
+                || cancel.requested_unix_ms < process.started_unix_ms
+                || !checked_epochs.contains(&(cancel.writer.clone(), cancel.epoch))
+            {
+                return Err(error(
+                    "Recorded wake cancellation does not bind its checked run/lease",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn bytes_to_str(bytes: &[u8]) -> Result<&str, StoreError> {
@@ -253,6 +349,7 @@ fn project_page(
                 observed_unix_ms,
                 facts,
                 stop_at,
+                observe,
             )
         })
     });
@@ -268,17 +365,7 @@ fn project_page(
         Ok(())
     })? || !store.database_observation_unchanged(&database)?
     {
-        // Mutation, collection, invalid checkpoint and corrupt current history remain
-        // terminal. Only a valid, still-bound source observation can be deferred.
-        let retained = store.inspect_wake(&subscription.subscription_id)?;
-        if !retained.source_available
-            || retained.expired
-            || retained.closure.is_some()
-            || retained.registration.subscription != *subscription
-        {
-            return Err(error("Wake source identity changed"));
-        }
-        return Err(StoreError::WakeReconcileDeferred);
+        return Err(StoreError::WakeReconcileChanged);
     }
     Ok(result)
 }
@@ -286,6 +373,7 @@ fn project_page(
 /// Replay all eligible boundaries in a bounded checked history, including downtime. The supplied
 /// Store incarnation is opaque configuration evidence, not allocated or activated here. This API
 /// accepts no process-liveness guesses or caller-classified lifecycle summaries.
+#[allow(clippy::too_many_arguments)]
 fn project_inner(
     store: &EventStore,
     cas: &Cas,
@@ -294,6 +382,7 @@ fn project_inner(
     observed_unix_ms: u64,
     facts: &[RecordedRunFacts],
     stop_at: Option<(u64, bool)>,
+    observe: &dyn Fn(ReconcilePoint) -> Result<(), StoreError>,
 ) -> Result<WakeProjection, StoreError> {
     subscription.validate().map_err(error)?;
     if subscription.configuration_digest != configuration_digest(subscription).map_err(error)? {
@@ -319,6 +408,7 @@ fn project_inner(
     let final_state = store
         .task_projection(cas, &task.task_id)?
         .ok_or_else(|| error("Unknown wake Task"))?;
+    observe(ReconcilePoint::FinalStateCaptured)?;
     let last = final_state.next_sequence - 1;
     let scan_last = stop_at.map_or(last, |(sequence, _)| sequence).min(last);
     let run_facts_digest = facts_digest(facts)?;
@@ -370,76 +460,7 @@ fn project_inner(
     } else {
         store.replay_window(&task.task_run_id, from, rows)?
     };
-    // Run facts join canonical history, independent of the extraction page.
-    let mut checked_writers = std::collections::BTreeSet::new();
-    let mut checked_epochs = std::collections::BTreeSet::new();
-    if !facts.is_empty() {
-        let mut from = 0;
-        while from <= last {
-            let events = store.replay_window(&task.task_run_id, from, 4096)?;
-            if events.is_empty() {
-                return Err(error("Recorded wake fact history gap"));
-            }
-            let mut bytes = 0usize;
-            for event in &events {
-                bytes += serde_json::to_vec(event)?.len();
-                if bytes > 16 * 1024 * 1024 {
-                    return Err(error("Recorded wake fact page exceeds byte limit"));
-                }
-                if let Ok(t) = stored::read_task_transition(event)
-                    && matches!(
-                        t.change,
-                        TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. }
-                    )
-                {
-                    for fact in facts {
-                        if t.writer == fact.process.writer {
-                            checked_writers.insert(t.writer.clone());
-                        }
-                        if fact
-                            .cancellation
-                            .as_ref()
-                            .is_some_and(|c| c.writer == t.writer && c.epoch == t.epoch)
-                        {
-                            checked_epochs.insert((t.writer.clone(), t.epoch));
-                        }
-                    }
-                }
-            }
-            from = events
-                .last()
-                .ok_or_else(|| error("Missing fact page"))?
-                .sequence
-                + 1;
-        }
-    }
-    let mut run_ids = std::collections::BTreeSet::new();
-    for fact in facts {
-        fact.process.validate().map_err(error)?;
-        if fact.process.task_id != task.task_id || !run_ids.insert(fact.process.run) {
-            return Err(error("Recorded wake run identity mismatch or duplicate"));
-        }
-        let writer_exists = checked_writers.contains(&fact.process.writer);
-        if !writer_exists {
-            return Err(error("Recorded wake writer absent from checked history"));
-        }
-        if let Some(cancel) = &fact.cancellation {
-            cancel.validate().map_err(error)?;
-            let process = &fact.process;
-            if cancel.task_id != process.task_id
-                || cancel.run != process.run
-                || cancel.pid != process.pid
-                || cancel.host != process.host
-                || cancel.writer != process.writer
-                || cancel.requested_unix_ms < process.started_unix_ms
-                || !checked_epochs.contains(&(cancel.writer.clone(), cancel.epoch))
-            {
-                return Err(error(
-                    "Recorded wake cancellation does not bind its checked run/lease",
-                ));
-            }
-        }
-    }
+    validate_run_facts(store, task, last, facts)?;
     let mut observations = Vec::new();
     let mut previous = cursor
         .map(|c| {
@@ -541,7 +562,7 @@ fn project_inner(
         return Err(error("Wake observation allowance exhausted"));
     }
     if !store.task_observation_unchanged(cas, &final_state)? {
-        return Err(error("Wake source changed; revalidate before committing"));
+        return Err(StoreError::WakeReconcileChanged);
     }
     let checkpoint = WakeCheckpoint {
         schema: "af/task-wake-checkpoint@1".into(),

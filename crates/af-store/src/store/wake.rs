@@ -484,6 +484,87 @@ impl EventStore {
         Ok(true)
     }
 
+    /// Validate a possible pre-native deferral under writer serialization. This records no
+    /// progress or receipt. A logical-change signal alone never makes invalid state retryable.
+    pub fn validate_wake_reconcile_with(
+        &self,
+        cas: &Cas,
+        subscription: &WakeSubscriptionV1,
+        validate_recorders: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let lock = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let retained = self.inspect_wake(&subscription.subscription_id)?;
+        if !retained.source_available
+            || retained.expired
+            || retained.closure.is_some()
+            || retained.registration.subscription != *subscription
+        {
+            return Err(refusal("Wake source identity, closure or expiry changed"));
+        }
+        let (task_id, source_sequence): (String, Option<i64>) = self.conn.query_row(
+            "SELECT task_id,source_sequence FROM wake_subscriptions_v1 WHERE id=?1",
+            [&subscription.subscription_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if task_id != subscription.task.task_id {
+            return Err(refusal("Wake subscription Task column changed"));
+        }
+        let task = &subscription.task;
+        if task::task_run_id(&task.task_id)? != task.task_run_id
+            || self
+                .replay_window(&task.task_run_id, 0, 1)?
+                .first()
+                .is_none_or(|e| e.event_id != task.opening_event_id)
+        {
+            return Err(refusal("Wake opening identity changed"));
+        }
+        let current = self
+            .task_projection(cas, &task.task_id)?
+            .ok_or_else(|| refusal("Wake Task disappeared"))?;
+        let registered = &retained.registration.registered_prefix;
+        if self
+            .replay_window(&task.task_run_id, registered.sequence, 1)?
+            .first()
+            .is_none_or(|e| e.event_id != registered.event_id)
+        {
+            return Err(refusal("Wake registration prefix changed"));
+        }
+        if let Some(text) = retained.checkpoint {
+            let checkpoint: WakeCheckpointV1 = serde_json::from_str(&text)?;
+            checkpoint.validate().map_err(|e| refusal(&e))?;
+            if checkpoint.configuration_digest != subscription.configuration_digest
+                || checkpoint.through.sequence >= current.next_sequence
+                || checkpoint.observations > subscription.max_observations
+                || retained.extracted_through != Some(checkpoint.through.sequence)
+                || source_sequence.is_none_or(|sequence| {
+                    sequence < 0
+                        || (sequence as u64) < checkpoint.through.sequence
+                        || sequence as u64 >= current.next_sequence
+                })
+                || self
+                    .replay_window(&task.task_run_id, checkpoint.through.sequence, 1)?
+                    .first()
+                    .is_none_or(|e| e.event_id != checkpoint.through.event_id)
+                || !self.wake_checkpoint_is_retained(&text)?
+            {
+                return Err(refusal("Invalid current wake checkpoint"));
+            }
+        } else if retained.extracted_through.is_some() || source_sequence.is_some() {
+            return Err(refusal("Wake progress without a retained checkpoint"));
+        }
+        validate_recorders()?;
+        if !self.task_observation_unchanged(cas, &current)? {
+            return Err(refusal(
+                "Wake validation source changed under serialization",
+            ));
+        }
+        lock.commit()?;
+        Ok(())
+    }
+
     /// Immutable envelopes and cursor update are one transaction, fenced on the previous
     /// cursor and the current checked Task source. Failure leaves neither effect committed.
     #[allow(clippy::too_many_arguments)]
@@ -542,7 +623,6 @@ impl EventStore {
             [id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        recorder_unchanged()?;
         if valid != 1 || task_id != source.task_id {
             return Err(refusal("Wake source identity changed"));
         }
@@ -570,13 +650,14 @@ impl EventStore {
         {
             return Err(refusal("Wake checkpoint scope/boundary mismatch"));
         }
-        if old.as_deref() != expected_checkpoint || !self.task_observation_unchanged(cas, source)? {
-            // Checkpoint integrity, source mutation and corrupt current history must not
-            // be hidden by contention. No outbox or native effect has committed here.
-            self.inspect_wake(id)?;
-            self.task_projection(cas, &task_id)?
-                .ok_or_else(|| refusal("Wake Task disappeared"))?;
-            return Err(StoreError::WakeReconcileDeferred);
+        // Validate all current authority before a recorder/CAS conflict can be deferred.
+        self.inspect_wake(id)?;
+        self.task_projection(cas, &task_id)?
+            .ok_or_else(|| refusal("Wake Task disappeared"))?;
+        let source_unchanged = self.task_observation_unchanged(cas, source)?;
+        recorder_unchanged()?;
+        if old.as_deref() != expected_checkpoint || !source_unchanged {
+            return Err(StoreError::WakeReconcileChanged);
         }
         for envelope in envelopes {
             if envelope.observation.task != registration.subscription.task
@@ -631,7 +712,7 @@ impl EventStore {
             params![id,checkpoint,sql_number(through)?,sql_number(source.next_sequence-1)?,checkpoint_digest(checkpoint)?])?;
         capacity(&lock)?;
         if !self.task_observation_unchanged(cas, source)? {
-            return Err(refusal("Wake source changed at commit"));
+            return Err(StoreError::WakeReconcileChanged);
         }
         recorder_unchanged()?;
         lock.commit()?;
