@@ -6,7 +6,7 @@ release of exact fetched main, regardless of dirty files in the invoking checkou
 
 ## Setup and authorization
 
-Install Git, Python 3, the pinned Rust toolchain with nextest, Node/npx and minisign. Authenticate
+Install Git, Python 3, the pinned Rust toolchain (Cargo and rustc), and minisign. Authenticate
 `gh` as an approved repository writer. GitHub access needs normal Contents and Pull requests write,
 plus read access to repository secret **names** for observable configuration preflight. No secret
 values are read. Configure `MINISIGN_SECRET_KEY` and the scoped `RELEASE_PIN_TOKEN` on the protected
@@ -19,9 +19,21 @@ the CLI has no admin or ruleset bypass mode.
 Use an owned mode-0700 state directory outside any source checkout. The default is
 `$XDG_STATE_HOME/afactory-release/OWNER--REPO` (falling back to `~/.local/state`). Share that directory
 between concurrent callers on one machine. A run retains its reservation and never automatically
-selects another version when resumed. Use `rc --new` for a subsequent release after the existing release is ready, or a distinct
-state directory. `--new` archives the terminal receipt (up to sixteen retained) and reclaims the
-completed candidate/assets; retain unfinished runs until reconciliation completes. There is no background daemon.
+selects another version when resumed. Use `rc --new` after the existing release is ready, or to
+replace a conclusively failed local prepublication run on corrected fetched source. `plan --new`
+creates a nonpublishing plan; a new explicit `rc` supplies its own authorization. Recovery refuses
+active/waiting runs, branch intent or later receipts, publication evidence and ambiguous state.
+A completed local validation receipt must contain every captured policy command in order,
+with exact argv and successful output digests; empty, partial or inconsistent receipts refuse cleanup.
+The shared command renderer retains the run-owned `AF_GATE_TARGET_DIR=<candidate>/target`
+wrapper for a captured policy that declares `scripts/verify.sh`. Recovery compares that exact
+rendered argv without changing the captured receipt or policy. The ordinary new-RC policy
+contains only the metadata commands described below.
+The complete original receipt is durably archived under its version and exact byte digest before
+registered owned candidate cleanup or new planning. Same-version failures cannot overwrite
+archives; interrupted archival can resume explicitly. At sixteen archives a distinct receipt is
+refused: preserve the evidence and choose another state directory. No history is silently pruned.
+There is no background daemon.
 
 ```sh
 ./dev release plan --repo PakhomovAlexander/afactory --format json
@@ -30,6 +42,43 @@ completed candidate/assets; retain unfinished runs until reconciliation complete
 ./dev release status --repo PakhomovAlexander/afactory --watch
 ./dev release resume --repo PakhomovAlexander/afactory
 ```
+
+The normal single command is `./dev release rc --repo OWNER/REPO`. Fresh or incomplete
+initialization automatically tries the invoking checkout as a local object cache when its actual
+origin is the selected GitHub repository (canonical HTTPS or `git@github.com:` spelling). Dirty
+files and local tags contribute no release authority. An isolated temporary bundle transfers only
+objects reachable from cache HEAD into `refs/cache/caller-head`; no caller configuration, hooks,
+source refs or alternate-object dependency is copied. Linked worktrees are supported. Foreign,
+unavailable, unowned, writable-by-others, symlinked or unsupported caches are skipped. Caller Git
+configuration is read only as data, without includes; caller hooks and upload-pack commands never run.
+
+Stderr announces cache acquisition and authoritative main/tag fetch start and completion. The
+matching remote fetch must succeed, regardless of cache availability; only its main and tags select
+source and Git version inventory. Initial acquisition can retry that read-only fetch once, within
+the invocation deadline. No publication effect gains a retry from this optimization. Existing plans
+retain their authority and are never reseeded. No measured timing improvement is claimed.
+
+Before saving a new plan or preparing a candidate, the exact fetched source's
+`af-pin.py --check-next VERSION` checks the prospective history (planned release followed by source
+history). The normal current-or-previous non-yanked release rule and complete target digests apply.
+An old/missing pin fails with `pin_prerequisite` before expensive validation or new-run authorization
+is retained. Prepare and merge a separate reviewed published-release pin PR, then explicitly
+replan; the check never adopts a pin. Already-pinned manual and `--pr` preparation verifies
+the signed version and complete digest mapping while preserving valid comments and whitespace.
+Signed refresh recognizes indented and quoted TOML table headers, skips table-like text in values,
+and validates the complete result, exact signed pin, non-pin values and non-pin bytes before atomic
+replacement. Unsafe or unsupported lock syntax refuses before writing. The pin-only guard uses
+the same semantic and byte validator, refusing unsupported `[af]` fields in both the base and
+updated lock. Reusing a published pin branch still requires the exact freshly generated
+pin bytes. Dirty caller lock and checker files supply no evidence.
+
+Before a plan exists, status/watch observes the existing repository lease without creating state:
+`initializing` means a controller is acquiring source or checking prerequisites; `missing_run` means
+there is no retained run and no active initialization. Neither invents a source or plan identity.
+An interrupted acquisition cleans temporary bundle data; a later initialization removes scratch
+left by a killed process under the same lease. If initialization stops before saving a plan, retry
+`plan` or `rc`; there is no authorization or plan for `resume` yet. Initialization, including `plan`,
+uses the same bounded invocation deadline.
 
 `rc` is explicit bounded authorization to prepare/push one release branch, create its normal PR,
 wait for required checks, normally squash-merge that exact head and observe the existing protected
@@ -53,7 +102,7 @@ independent of publication readiness.
 `plan` and `status` publish nothing. Read-only watch refreshes retained local receipts and never
 drives work.
 JSON includes the immutable plan and receipts; Markdown shows stages, elapsed seconds, next actions
-and URLs. `--source SHA` optionally asserts the exact fetched main. `--profile full` selects full validation (fast is the default).
+and URLs. `--source SHA` optionally asserts the exact fetched main. `--profile full` selects full hosted CI validation (fast is the default).
 `--version X.Y.Z-rc.N` asserts
 an exact unused RC on the current base; neither selector retargets an existing run.
 
@@ -82,9 +131,21 @@ capabilities. New compatible RCs need no Python list edit. Changed or unknown ca
 reviewing the declaration and actual schemas/fixtures together; never copy a digest to suppress an
 incompatibility. Source and prepared harness checks are executable receipts, including fast releases.
 
+Both profiles run only cheap release metadata checks locally: prospective AF-pin/version checks,
+source and prepared release-contract and harness-digest checks, plus metadata-only
+`cargo update --workspace --offline --quiet` during preparation. The prepared validation receipt
+contains exactly `python3 -I scripts/release-contract.py` followed by
+`python3 -I scripts/performance/cli.py harness-digest --check`. Profile selection never rewrites
+these commands. Normal RC creation runs no local `verify.sh`, `make check`, Rust compilation or
+tests, or Python regression suite. Cargo-nextest and Node/npx are not RC prerequisites.
+Broad validation runs in mandatory exact-source Linux/macOS hosted CI and the protected release
+workflow; `--profile fast/full` selects that captured hosted coverage. Required checks, strict main
+protection, archive smoke, signatures and separate pin adoption remain mandatory. The repository's
+native local development fast gate is unchanged. This boundary makes no measured speedup claim.
+
 Preparation updates the workspace manifest, workspace lock, collected changelog fragments, exact
 contract declaration and derived harness pins together. Only declared metadata paths can change.
-The isolated candidate has checkout-local `target/`; dirty caller files are not copied. Validation
+The candidate stays isolated; dirty caller files are not copied. Validation
 reuse requires the same candidate, commands, Python/platform and Rust/Cargo identity. Platform gates,
 archive onboard/plan smoke and signature verification remain owned by `release.yml`.
 
@@ -128,10 +189,10 @@ failure, not success. The publication job joins all platform check/build jobs. I
 without erasing a ready-to-test RC. JSON reports `published` separately from `pin`; no local install,
 pin merge or silent adoption occurs. Review the normal pin-only PR independently.
 
-The JSON receipt is bounded to 256 KiB. Each run retains one mirror, one candidate with build
-products and one downloaded release asset set. Once the release and pin have been independently
-reviewed, archive the receipt and remove the completed owned run directory to reclaim its build
-products. Do not remove a directory while a controller holds its lease.
+The JSON receipt is bounded to 256 KiB. Each run retains one mirror, one metadata candidate
+and one downloaded release asset set. Once the release and pin have been independently
+reviewed, archive the receipt and remove the completed owned run directory to reclaim its retained
+data. Do not remove a directory while a controller holds its lease.
 
 ## Hermetic development checks
 

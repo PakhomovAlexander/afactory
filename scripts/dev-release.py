@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -110,10 +111,11 @@ def remaining():
     return min(14400, seconds)
 
 
-def run(argv, cwd=None, accepted=(0,)):
+def run(argv, cwd=None, accepted=(0,), git_env=None):
     try:
         result = subprocess.run([str(x) for x in argv], cwd=cwd, capture_output=True, text=True,
-                                env={**os.environ, 'GIT_TERMINAL_PROMPT': '0',
+                                env={**{k: v for k, v in os.environ.items() if not k.startswith('GIT_')},
+                                     **(git_env or {}), 'GIT_TERMINAL_PROMPT': '0',
                                      'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'},
                                 timeout=remaining())
     except subprocess.TimeoutExpired:
@@ -152,6 +154,105 @@ def save(path, state):
         os.close(fd)
 
 
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def validation_commands(policy, tree):
+    """The exact local argv sequence, shared by receipt production and recovery."""
+    commands = policy.get('validation')
+    if (not isinstance(commands, list) or not commands
+            or any(not isinstance(command, list) or not command
+                   or not all(isinstance(arg, str) and arg for arg in command)
+                   for command in commands)):
+        raise Refusal('validation_policy: expected nonempty ordered commands')
+    return [(['env', 'AF_GATE_TARGET_DIR=' + str(tree / 'target'), *command]
+             if command[0] == 'scripts/verify.sh' else command.copy())
+            for command in commands]
+
+
+def safe_prepublication_failure(state, tree):
+    """Only positively recognized local receipts authorize explicit archival recovery."""
+    plan = state['plan']
+    if (any(not isinstance(plan[key], str) for key in PLAN_FIELDS if key != 'policy')
+            or not re.fullmatch('[0-9a-f]{40}', plan['source'])
+            or not re.fullmatch('[0-9a-f]{64}', plan['executor'])
+            or plan['branch'] != 'release/v' + plan['version']
+            or plan['profile'] not in ('fast', 'full')):
+        return False
+    if (state['status'] != 'failed' or not isinstance(state.get('failure'), str)
+            or not state['failure'] or state['stage'] not in STAGES[:3]
+            or any(key in state for key in ('merged', 'published'))
+            or set(state['receipts']) != set(STAGES[:STAGES.index(state['stage']) + 1])
+            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*', plan['version'])):
+        return False
+    shapes = {
+        ('preflight', 'planned'): {'status', 'at', 'source', 'checks', 'features', 'planned_paths'},
+        ('preparation', 'intent'): {'status', 'at', 'source'},
+        ('preparation', 'complete'): {'status', 'at', 'paths'},
+        ('validation', 'intent'): {'status', 'at', 'key'},
+        ('validation', 'complete'): {'status', 'at', 'key', 'commands'},
+    }
+    for stage, receipt in state['receipts'].items():
+        if (not isinstance(receipt['status'], str)
+                or set(receipt) != shapes.get((stage, receipt['status']))
+                or type(receipt['at']) is not int):
+            return False
+        if 'source' in receipt and receipt['source'] != plan['source']:
+            return False
+        if 'key' in receipt and (not isinstance(receipt['key'], str)
+                                 or not re.fullmatch('[0-9a-f]{64}', receipt['key'])):
+            return False
+    receipts = state['receipts']
+    prepared = receipts.get('preparation', {}).get('status') == 'complete'
+    fields = {'candidate', 'candidate_tree'} & set(state)
+    if (bool(fields) != prepared or (fields and fields != {'candidate', 'candidate_tree'})
+            or (prepared and any(not isinstance(state[key], str) or not re.fullmatch('[0-9a-f]{40}', state[key])
+                                 for key in fields))
+            or (state['stage'] == 'validation' and not prepared)):
+        return False
+    preflight = receipts['preflight']
+    if (preflight['checks'] != ['release-contract', 'harness-digest']
+            or not isinstance(preflight['features'], dict)
+            or any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value)
+                   for value in preflight['features'].values())
+            or preflight['planned_paths'] != list(ALLOWED) + ['changelog.d/*', 'fixtures/performance/kernel-measure/*']):
+        return False
+    if prepared:
+        paths = receipts['preparation']['paths']
+        if (not isinstance(paths, list) or any(not isinstance(path, str)
+                or (path not in ALLOWED and not path.startswith(('changelog.d/', 'fixtures/performance/kernel-measure/')))
+                for path in paths)):
+            return False
+    validation = receipts.get('validation', {})
+    if validation.get('status') == 'complete':
+        commands = validation['commands']
+        try:
+            expected = validation_commands(plan['policy'], tree)
+        except Refusal:
+            return False
+        if not isinstance(commands, list) or len(commands) != len(expected):
+            return False
+        for command, argv in zip(commands, expected):
+            if (not isinstance(command, dict) or set(command) != {'argv', 'exit', 'stdout_sha256'}
+                    or type(command['exit']) is not int or command['exit'] != 0
+                    or command['argv'] != argv
+                    or not isinstance(command['argv'], list)
+                    or not all(isinstance(arg, str) for arg in command['argv'])
+                    or not isinstance(command['stdout_sha256'], str)
+                    or not re.fullmatch('[0-9a-f]{64}', command['stdout_sha256'])):
+                return False
+    if ('pin' in state and (not isinstance(state['pin'], dict)
+            or set(state['pin']) != {'state', 'url'} or state['pin']['url'] is not None
+            or state['pin']['state'] not in ('PENDING', 'CREDENTIAL_MISSING'))):
+        return False
+    return True
+
+
 def load(path):
     if path.is_symlink() or path.stat().st_size > 256 * 1024:
         raise Refusal('foreign_state: symlink or oversized state')
@@ -177,6 +278,109 @@ def lease(directory):
         yield
 
 
+def cache_path(path, directory=False):
+    """Admit an owned ordinary path, refusing symlinks in every component."""
+    remaining()
+    path = Path(os.path.abspath(path))
+    for component in (*reversed(path.parents), path):
+        metadata = component.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError('symlink')
+    metadata = path.stat()
+    if (metadata.st_uid != os.getuid() or metadata.st_mode & 0o022
+            or not (stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode))):
+        raise ValueError('unsupported ownership or file type')
+    return path
+
+
+def cache_text(path, limit=256 * 1024):
+    path = cache_path(path)
+    with path.open('rb') as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('oversized cache metadata')
+    return data.decode('utf-8')
+
+
+def cache_bundle(checkout, repository, temporary):
+    """Read cache metadata as data; execute Git only against our empty isolated repository."""
+    checkout = cache_path(checkout, directory=True)
+    marker = checkout / '.git'
+    if marker.is_dir():
+        gitdir = cache_path(marker, directory=True)
+    else:
+        text = cache_text(marker).strip()
+        if not text.startswith('gitdir: '):
+            raise ValueError('unsupported gitdir')
+        gitdir = cache_path(checkout / text[8:], directory=True)
+    common = gitdir
+    if (gitdir / 'commondir').exists():
+        common = cache_path(gitdir / cache_text(gitdir / 'commondir').strip(), directory=True)
+    config = cache_path(common / 'config')
+    if config.stat().st_size > 256 * 1024:
+        raise ValueError('oversized cache configuration')
+    isolated = temporary / 'reader.git'
+    run(['git', '-c', 'init.templateDir=', 'init', '--bare', isolated])
+    def git(*args, **kwargs):
+        return run(['git', '--git-dir', isolated, '-c', 'core.hooksPath=/dev/null', *args], **kwargs)
+    origins = git('config', '--file', config, '--no-includes', '--get-all', 'remote.origin.url')
+    allowed = {'https://github.com/' + repository + '.git', 'https://github.com/' + repository,
+               'git@github.com:' + repository + '.git', 'git@github.com:' + repository}
+    if origins not in allowed:
+        raise ValueError('foreign origin')
+    # No extensions, partial clones, replace refs, grafts or alternate object providers.
+    configuration = git('config', '--file', config, '--no-includes', '--name-only', '--list').lower()
+    if any(key.startswith(('extensions.', 'include.', 'includeif.')) for key in configuration.splitlines()):
+        raise ValueError('unsupported repository')
+    objects = cache_path(common / 'objects', directory=True)
+    for base, dirs, files in os.walk(objects, followlinks=False):
+        remaining()
+        for name in dirs:
+            cache_path(Path(base) / name, directory=True)
+        for name in files:
+            cache_path(Path(base) / name)
+    if (objects / 'info/alternates').exists() or (objects / 'info/http-alternates').exists():
+        raise ValueError('alternates')
+    head = cache_text(gitdir / 'HEAD').strip()
+    if head.startswith('ref: '):
+        ref = head[5:]
+        if not re.fullmatch(r'refs/heads/[A-Za-z0-9_./-]+', ref) or '..' in ref:
+            raise ValueError('unsupported HEAD')
+        loose = common / ref
+        if loose.exists():
+            head = cache_text(loose).strip()
+        else:
+            rows = cache_text(common / 'packed-refs', 16 * 1024 * 1024).splitlines()
+            head = next((row.split()[0] for row in rows if row.endswith(' ' + ref)), '')
+    if not re.fullmatch('[0-9a-f]{40}', head):
+        raise ValueError('unsupported object identity')
+    # This environment is used only by the reader; no caller config, refs or hooks are loaded.
+    environment = {'GIT_OBJECT_DIRECTORY': str(objects), 'GIT_NO_REPLACE_OBJECTS': '1'}
+    git('update-ref', 'refs/cache/caller-head', head, git_env=environment)
+    bundle = temporary / 'objects.bundle'
+    git('bundle', 'create', bundle, 'refs/cache/caller-head', git_env=environment)
+    return bundle
+
+
+def initial_status(directory):
+    """Observe the existing lease without creating a lock or another state ledger."""
+    lock = directory / 'lock'
+    if lock.is_symlink():
+        raise Refusal('foreign_state: lock symlink refused')
+    try:
+        with os.fdopen(os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)) as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise Refusal('foreign_state: require owned regular lock')
+            try:
+                fcntl.flock(stream, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {'status': 'initializing', 'next': 'acquiring source and checking prerequisites; no plan yet'}
+    except FileNotFoundError:
+        pass
+    return {'status': 'missing_run', 'next': 'plan or cut first; no active initialization'}
+
+
 class Controller:
     def __init__(self, args, directory):
         self.args = args
@@ -194,7 +398,8 @@ class Controller:
         return run(['gh', *args, '--repo', self.args.repo])
 
     def api(self, endpoint):
-        return json.loads(run(['gh', 'api', 'repos/' + self.args.repo + '/' + endpoint]))
+        path = 'repos/' + self.args.repo + ('/' + endpoint if endpoint else '')
+        return json.loads(run(['gh', 'api', path]))
 
     def releases(self):
         try:
@@ -203,10 +408,44 @@ class Controller:
         except ValueError as error:
             raise Refusal(str(error)) from error
 
-    def fetch(self):
-        self.git('fetch', '--quiet', '--no-tags', 'origin', '+refs/heads/main:refs/heads/main',
-                 '+refs/tags/*:refs/tags/*')
+    def fetch(self, acquisition=False):
+        print('release: authoritative main/tag fetch started', file=sys.stderr, flush=True)
+        for attempt in range(2 if acquisition else 1):
+            try:
+                self.git('fetch', '--quiet', '--atomic', '--prune', '--no-tags', 'origin',
+                         '+refs/heads/main:refs/heads/main', '+refs/tags/*:refs/tags/*')
+                break
+            except Refusal:
+                if not acquisition or attempt == 1:
+                    raise Refusal('source_acquisition_failed: authoritative fetch required; check GitHub access '
+                                  'and retry initialization; cached objects grant no source authority') from None
+                remaining()
+                print('release: authoritative fetch retry 2/2 (read-only acquisition)',
+                      file=sys.stderr, flush=True)
+        print('release: authoritative main/tag fetch complete', file=sys.stderr, flush=True)
         return self.git('rev-parse', 'refs/heads/main')
+
+    def seed_cache(self):
+        print('release: optional local object cache acquisition started', file=sys.stderr, flush=True)
+        # A killed acquisition may leave only our scratch directory. The lease owns cleanup.
+        scratch = self.directory / 'cache-acquisition'
+        if scratch.is_symlink():
+            raise Refusal('foreign_state: cache scratch symlink refused')
+        if scratch.exists():
+            shutil.rmtree(scratch)
+        scratch.mkdir(mode=0o700)
+        try:
+            try:
+                bundle = cache_bundle(ROOT, self.args.repo, scratch)
+                self.git('-c', 'fetch.fsckObjects=true', 'fetch', '--quiet', '--no-tags', bundle,
+                         '+refs/cache/caller-head:refs/cache/caller-head')
+            except (OSError, ValueError, Refusal):
+                print('release: local object cache skipped (unavailable or unsupported); remote fetch required',
+                      file=sys.stderr, flush=True)
+            else:
+                print('release: local object cache acquired; remote fetch required', file=sys.stderr, flush=True)
+        finally:
+            shutil.rmtree(scratch)
 
     def blob(self, source, path):
         return self.git('show', source + ':' + path)
@@ -479,13 +718,23 @@ class Controller:
                      ('id', 'name', 'digest')}, 'jobs': [{k: j[k] for k in
                      ('id', 'name', 'status', 'conclusion', 'head_sha', 'run_id')} for j in jobs]}, *checks]
 
-    def source_checks(self, source):
+    def source_checks(self, source, version):
         # Disposable read-only source validation, after lineage/path admission and before
         # metadata preparation. A dirty invocation checkout contributes no bytes.
         with tempfile.TemporaryDirectory(prefix='preflight-', dir=self.directory) as temporary:
             tree = Path(temporary) / 'source'
             self.git('worktree', 'add', '--detach', tree, source)
             try:
+                try:
+                    for name in ('scripts/af-pin.py', '.af/af.lock', 'CHANGELOG.md',
+                                 '.github/workflows/release.yml'):
+                        cache_path(tree / name)
+                    run(['python3', '-I', 'scripts/af-pin.py', '--check-next', version], tree)
+                except (Refusal, OSError, ValueError):
+                    raise Refusal(f'pin_prerequisite: prospective release {version} requires the current or previous '
+                                  'non-yanked release pin and every target digest; prepare and merge a '
+                                  'separate reviewed published-release pin PR using scripts/pin-release.sh '
+                                  'VERSION before replanning; no pin was adopted') from None
                 for command in (
                     ['python3', '-I', 'scripts/release-contract.py'],
                     ['python3', '-I', 'scripts/performance/cli.py', 'harness-digest', '--check'],
@@ -495,30 +744,59 @@ class Controller:
                 self.git('worktree', 'remove', '--force', tree)
 
     def new_run(self):
-        if not self.path.exists():
+        if not self.path.exists() and not self.path.is_symlink():
             return
+        cache_path(self.path)
         previous = load(self.path)
-        if not previous.get('published') or previous['status'] != 'ready':
-            raise Refusal('unfinished_run: reconcile the existing cut before --new')
         if previous['plan']['repo'] != self.args.repo or previous['plan']['remote'] != self.args.remote:
             raise Refusal('foreign_state: repository differs')
+        version = previous['plan']['version']
+        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?', version):
+            raise Refusal('foreign_state: invalid archived version')
+        ready = previous.get('published') is True and previous['status'] == 'ready'
+        if not ready and not safe_prepublication_failure(previous, self.tree):
+            raise Refusal('unfinished_run: --new requires ready publication or conclusive failed local work')
+        # Admit every cleanup path before making the archive or removing anything.
+        if self.tree.exists() or self.tree.is_symlink():
+            cache_path(self.tree, directory=True)
+            registered = self.git('worktree', 'list', '--porcelain').splitlines()
+            if ('worktree ' + str(self.tree) not in registered
+                    or Path(run(['git', 'rev-parse', '--git-common-dir'], self.tree)).resolve() != self.mirror.resolve()):
+                raise Refusal('foreign_state: refuse candidate cleanup')
+        assets = self.directory / 'assets'
+        if assets.exists() or assets.is_symlink():
+            cache_path(assets, directory=True)
+            if not ready:
+                raise Refusal('foreign_state: prepublication run has unexpected assets')
         history = self.directory / 'history'
         history.mkdir(exist_ok=True, mode=0o700)
-        save(history / (previous['plan']['version'] + '.json'), previous)
-        # Keep at most sixteen bounded terminal receipts. No unfinished receipt is pruned.
-        receipts = sorted(history.glob('*.json'), key=lambda path: path.stat().st_mtime)
-        for path in receipts[:-16]:
-            path.unlink()
+        cache_path(history, directory=True)
+        data = self.path.read_bytes()
+        archive = history / (version + '-' + hashlib.sha256(data).hexdigest() + '.json')
+        entries = []
+        for entry in history.iterdir():
+            if len(entries) == 16:
+                raise Refusal('history_budget: more than sixteen archive entries; preserve evidence')
+            cache_path(entry)
+            load(entry)
+            entries.append(entry)
+        if archive.exists() or archive.is_symlink():
+            cache_path(archive)
+            if archive.read_bytes() != data:
+                raise Refusal('archive_collision: original evidence retained; no cleanup')
+        else:
+            if len(entries) >= 16:
+                raise Refusal('history_budget: sixteen archives retained; choose another state directory')
+            # No replacement; retain the original exact receipt, including its authorization.
+            os.link(self.path, archive, follow_symlinks=False)
+        sync_directory(history)
+        sync_directory(self.directory)
         if self.tree.exists():
-            if self.tree.is_symlink() or Path(run(['git', 'rev-parse', '--git-common-dir'], self.tree)).resolve() != self.mirror.resolve():
-                raise Refusal('foreign_state: refuse candidate cleanup')
             self.git('worktree', 'remove', '--force', self.tree)
-        assets = self.directory / 'assets'
-        if assets.is_symlink():
-            raise Refusal('foreign_state: refuse asset cleanup')
         if assets.exists():
             shutil.rmtree(assets)
         self.path.unlink()
+        sync_directory(self.directory)
 
     def plan(self, authorized):
         if self.path.exists():
@@ -536,27 +814,26 @@ class Controller:
                 self.state['authorization'] = AUTHORIZATION
                 save(self.path, self.state)
             return
-        for tool in ('git', 'gh', 'cargo', 'python3', 'minisign', 'npx'):
+        for tool in ('git', 'gh', 'cargo', 'rustc', 'python3', 'minisign'):
             if not shutil.which(tool):
                 raise Refusal('required_tool: install ' + tool)
         required_rust = 'rustc ' + re.search(r'channel = "([^"]+)"', (ROOT / 'rust-toolchain.toml').read_text())[1]
         if not run(['rustc', '--version']).startswith(required_rust):
             raise Refusal('rust_toolchain: activate pinned ' + required_rust)
-        run(['cargo', 'nextest', '--version'])
         if self.mirror.is_symlink():
             raise Refusal('foreign_state: mirror symlink refused')
         if not self.mirror.exists():
-            run(['git', 'init', '--bare', self.mirror])
+            run(['git', '-c', 'init.templateDir=', 'init', '--bare', self.mirror])
             self.git('remote', 'add', 'origin', self.args.remote)
         elif self.git('remote', 'get-url', 'origin') != self.args.remote:
             raise Refusal('foreign_state: mirror origin differs')
         if self.git('config', '--get-all', 'remote.origin.url') != self.args.remote:
             raise Refusal('foreign_state: mirror remote differs')
-        source = self.fetch()
+        self.seed_cache()
+        source = self.fetch(acquisition=True)
         if self.args.source and self.args.source != source:
             raise Refusal('authority_source_mismatch: --source must equal fetched main')
         policy = self.preflight(source)
-        self.source_checks(source)
         manifest = self.blob(source, 'Cargo.toml')
         current = re.search(r'^version = "([^"]+)"', manifest, re.M)[1]
         base = current.split('-')[0]
@@ -572,13 +849,13 @@ class Controller:
             raise Refusal('version_conflict: RC must use the current reviewed version base')
         if int(version.rsplit('.', 1)[1]) <= max(numbers, default=0):
             raise Refusal('version_conflict: version already used or older than source')
+        self.source_checks(source, version)
         branch = 'release/v' + version
         if self.git('ls-remote', 'origin', 'refs/heads/' + branch):
             raise Refusal('branch_collision: no durable matching reservation')
         if json.loads(self.gh('pr', 'list', '--head', branch, '--state', 'all', '--json', 'number')):
             raise Refusal('pr_collision: no durable matching reservation')
         profile = self.args.profile or 'fast'
-        policy['validation'][-1][-1] = profile
         self.state = {'schema': SCHEMA, 'plan': {
             'repo': self.args.repo, 'remote': self.args.remote, 'source': source,
             'version': version, 'branch': branch, 'policy': policy,
@@ -635,15 +912,13 @@ class Controller:
         # commit-tree has no hooks and uses pinned timestamps; crashes reproduce one ID.
         tree_id = run(['git', 'write-tree'], self.tree)
         timestamp = self.git('show', '-s', '--format=%cI', p['source'])
-        environment = {**os.environ, 'GIT_AUTHOR_NAME': 'Afactory Release',
+        environment = {'GIT_AUTHOR_NAME': 'Afactory Release',
                        'GIT_AUTHOR_EMAIL': 'release@afactory.invalid',
                        'GIT_COMMITTER_NAME': 'Afactory Release',
                        'GIT_COMMITTER_EMAIL': 'release@afactory.invalid',
                        'GIT_AUTHOR_DATE': timestamp, 'GIT_COMMITTER_DATE': timestamp}
-        result = subprocess.run(['git', 'commit-tree', tree_id, '-p', p['source'],
-                                 '-m', 'release: v' + p['version']], cwd=self.tree,
-                                env=environment, capture_output=True, text=True, check=True)
-        candidate = result.stdout.strip()
+        candidate = run(['git', 'commit-tree', tree_id, '-p', p['source'],
+                         '-m', 'release: v' + p['version']], self.tree, git_env=environment)
         self.git('update-ref', 'refs/af-release/candidate', candidate)
         run(['git', 'reset', '--hard', candidate], self.tree)
         self.state['candidate'] = candidate
@@ -664,10 +939,7 @@ class Controller:
             return
         self.receipt('validation', 'intent', key=key)
         commands = []
-        for command in p['policy']['validation']:
-            # Gate-owned reports/builds stay in this run's checkout-local target.
-            if command[0] == 'scripts/verify.sh':
-                command = ['env', 'AF_GATE_TARGET_DIR=' + str(self.tree / 'target'), *command]
+        for command in validation_commands(p['policy'], self.tree):
             output = run(command, self.tree)
             commands.append({'argv': command, 'exit': 0, 'stdout_sha256': hashlib.sha256(output.encode()).hexdigest()})
         if run(['git', 'status', '--porcelain'], self.tree):
@@ -881,6 +1153,10 @@ class Controller:
 
 
 def display(state, style):
+    if 'plan' not in state:
+        print(json.dumps(state, sort_keys=True) if style == 'json' else
+              'Release: ' + state['status'] + '; ' + state['next'])
+        return
     if style == 'json':
         print(json.dumps(state, sort_keys=True))
         return
@@ -902,11 +1178,11 @@ def main():
     parser.add_argument('--repo', required=True, help='explicit GitHub OWNER/REPO')
     parser.add_argument('--remote', help='credential-free Git URL; defaults to GitHub HTTPS')
     parser.add_argument('--state', type=Path, help='owned private directory outside source')
-    parser.add_argument('--profile', choices=('fast', 'full'), help='validation profile (default fast)')
+    parser.add_argument('--profile', choices=('fast', 'full'), help='hosted CI validation profile (default fast)')
     parser.add_argument('--source', help='optional required exact fetched main SHA')
     parser.add_argument('--version', help='optional exact reserved RC version')
     parser.add_argument('--format', choices=('json', 'markdown'), default='markdown')
-    parser.add_argument('--new', action='store_true', help='start the next run after a ready release; archive terminal receipt')
+    parser.add_argument('--new', action='store_true', help='archive ready or conclusively failed prepublication run and plan separately')
     parser.add_argument('--timeout', type=int, default=21600,
                         help='driver time limit in seconds, including commands (default 21600)')
     parser.add_argument('--poll-interval', type=int, default=30,
@@ -937,12 +1213,12 @@ def main():
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, interrupt)
     global DRIVER_DEADLINE
-    if args.command in ('rc', 'resume'):
+    if args.command in ('plan', 'rc', 'resume'):
         DRIVER_DEADLINE = time.monotonic() + args.timeout
     try:
         if args.command == 'status':
             while True:
-                display(load(controller.path), args.format)
+                display(load(controller.path) if controller.path.exists() else initial_status(directory), args.format)
                 if not args.watch:
                     return 0
                 time.sleep(2)
@@ -961,7 +1237,8 @@ def main():
                 controller.stopped(reason)
                 if controller.state:
                     display(controller.state, args.format)
-                print('release: ' + reason + '; resume retains exact authorization', file=sys.stderr)
+                print('release: ' + reason + ('; resume retains exact authorization' if controller.state else
+                      '; initialization incomplete; retry plan or rc (no plan or authorization retained)'), file=sys.stderr)
                 return 124 if isinstance(error, DriverTimeout) else 130
         return 0
     except KeyboardInterrupt:

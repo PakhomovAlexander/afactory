@@ -5,6 +5,7 @@
                                                 CHANGELOG.md (or the one before it, while that
                                                 release is in flight), or lacks the digest of a
                                                 released target (run by `make check`)
+    scripts/af-pin.py --check-next VERSION      check the prospective release before planning
     scripts/af-pin.py --only-pin-moved REV VER  fail unless .af/af.lock differs from REV only in
                                                 its [af] tables and now pins VER, with every
                                                 target's digest (run by scripts/pin-release.sh)
@@ -26,36 +27,91 @@ from pathlib import Path
 LOCK = Path(".af/af.lock")
 CHANGELOG = Path("CHANGELOG.md")
 WORKFLOW = Path(".github/workflows/release.yml")
-PIN_TABLES = {"af", "af.digests"}
-FIX = "fix: scripts/pin-release.sh VERSION (pins a published release with `af onboard --refresh-lock`)"
+# Use the same vendored grammar for value skipping and full-document validation.
+# No host TOML package (or installed af binary) participates in pin authority.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent / "performance"))
+from perflab._vendor import tomli
+from perflab._vendor.tomli import _parser as grammar
+
+PIN_TABLES = {("af",), ("af", "digests")}
+FIX = "fix: prepare a separate reviewed published-release pin PR with scripts/pin-release.sh VERSION; merge it after CI before planning the next release"
 
 
-def tables(text):
-    """The lock's lines by table header ("" before the first), so tables compare by content."""
-    found = {}
-    name = ""
-    for line in text.splitlines():
-        header = re.fullmatch(r"\[\[?([^\[\]]+)\]\]?\s*", line)
-        if header:
-            name = header.group(1).strip()
-        found.setdefault(name, []).append(line)
-    return found
+def table_spans(text):
+    """Validated table spans in original text offsets, including header indentation.
+
+    Skip entire TOML values, never interpreting header-like text inside strings or
+    arrays. The vendored parser normalizes CRLF; map only statement line starts back
+    to the original text so the caller can retain every non-pin byte.
+    """
+    tomli.loads(text)
+    src = text.replace("\r\n", "\n")
+    line_offsets = {}
+    original = normalized = 0
+    for line in text.split("\n"):
+        line_offsets[normalized] = original
+        original += len(line) + 1
+        normalized += len(line.removesuffix("\r")) + 1
+    headers = [((), 0)]
+    pos = 0
+    while pos < len(src):
+        line_start = pos
+        pos = grammar.skip_chars(src, pos, grammar.TOML_WS)
+        if pos == len(src):
+            break
+        char = src[pos]
+        if char == "\n":
+            pos += 1
+            continue
+        if char == "[":
+            array = src.startswith("[[", pos)
+            pos = grammar.skip_chars(src, pos + (2 if array else 1), grammar.TOML_WS)
+            pos, name = grammar.parse_key(src, pos)
+            if array and name in PIN_TABLES:
+                raise ValueError("array pin table refused")
+            headers.append((name, line_offsets[line_start]))
+            pos += 2 if array else 1
+        elif char in grammar.KEY_INITIAL_CHARS:
+            pos, _, _ = grammar.parse_key_value_pair(src, pos, float, nest_lvl=0)
+        pos = grammar.skip_chars(src, pos, grammar.TOML_WS)
+        pos = grammar.skip_comment(src, pos)
+        if pos < len(src) and src[pos] != "\n":
+            raise ValueError("unsafe TOML statement boundary")
+        pos += 1
+    return [(name, start, headers[index + 1][1] if index + 1 < len(headers) else len(text))
+            for index, (name, start) in enumerate(headers)]
+
+
+def non_pin_content(text):
+    """Keep section order, exact non-pin text, and markers for the two editable spans."""
+    return [(name, "" if name in PIN_TABLES else text[start:end])
+            for name, start, end in table_spans(text)]
+
+
+def validate_pin_edit(before, after, version, digests):
+    """Shared semantic and byte invariants for preparation and the standalone guard."""
+    old = tomli.loads(before)
+    new = tomli.loads(after)
+    if new.get("af") != {"version": version, "digests": digests}:
+        raise ValueError("prepared pin differs from signed release")
+    if ({key: value for key, value in old.items() if key != "af"}
+            != {key: value for key, value in new.items() if key != "af"}
+            or non_pin_content(before) != non_pin_content(after)):
+        raise ValueError("prepared lock changed non-pin content")
+    # Unknown af fields cannot be silently discarded even within a pin table.
+    if set(old.get("af", {})) != {"version", "digests"}:
+        raise ValueError("unsupported af pin shape")
 
 
 def pin(text):
-    """The pinned af version and its digest per target."""
-    by_table = tables(text)
-    version = None
-    for line in by_table.get("af", []):
-        match = re.fullmatch(r'version\s*=\s*"([^"]+)"\s*', line)
-        if match:
-            version = match.group(1)
-    digests = {}
-    for line in by_table.get("af.digests", []):
-        match = re.fullmatch(r'"?([A-Za-z0-9_.-]+)"?\s*=\s*"sha256:([0-9a-f]{64})"\s*', line)
-        if match:
-            digests[match.group(1)] = match.group(2)
-    return version, digests
+    """The pinned af version and its digest per target, using actual TOML values."""
+    af = tomli.loads(text).get("af", {})
+    digests = af.get("digests", {})
+    return af.get("version"), {
+        target: value.removeprefix("sha256:") for target, value in digests.items()
+        if isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+    }
 
 
 def releases():
@@ -77,9 +133,9 @@ def missing_digests(digests):
     return []
 
 
-def check():
+def check(next_version=None):
     version, digests = pin(LOCK.read_text())
-    recent = releases()[:2]
+    recent = (([next_version] if next_version else []) + releases())[:2]
     if not recent:
         print(f"{CHANGELOG} has no release section", file=sys.stderr)
         return 1
@@ -100,17 +156,17 @@ def check():
 
 def only_pin_moved(rev, version):
     before = subprocess.run(
-        ["git", "show", f"{rev}:{LOCK}"], capture_output=True, text=True, check=True
-    ).stdout
-    after = LOCK.read_text()
-
-    def rest(text):
-        return {name: lines for name, lines in tables(text).items() if name not in PIN_TABLES}
+        ["git", "show", f"{rev}:{LOCK}"], capture_output=True, check=True
+    ).stdout.decode("utf-8")
+    after = LOCK.read_bytes().decode("utf-8")
 
     problems = []
-    if rest(before) != rest(after):
-        problems.append(f"the refresh changed {LOCK} beyond its [af] tables; review that in a pull request")
     pinned, digests = pin(after)
+    try:
+        validate_pin_edit(before, after, version,
+                          {target: 'sha256:' + digest for target, digest in digests.items()})
+    except ValueError:
+        problems.append(f"the refresh changed {LOCK} beyond its [af] tables or has an invalid pin; review that in a pull request")
     if pinned != version:
         problems.append(f"{LOCK} pins af {pinned} after the refresh, not {version}")
     problems += missing_digests(digests)
@@ -122,6 +178,8 @@ def only_pin_moved(rev, version):
 def main(argv):
     if argv == ["--check"]:
         return check()
+    if len(argv) == 2 and argv[0] == "--check-next" and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?", argv[1]):
+        return check(argv[1])
     if len(argv) == 3 and argv[0] == "--only-pin-moved":
         return only_pin_moved(argv[1], argv[2])
     print(__doc__, file=sys.stderr)
@@ -129,4 +187,8 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        print("af-pin: invalid or unsafe TOML lock; " + FIX, file=sys.stderr)
+        sys.exit(1)

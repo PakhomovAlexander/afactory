@@ -84,11 +84,6 @@
       "scripts/performance/cli.py",
       "harness-digest",
       "--check"
-    ],
-    [
-      "scripts/verify.sh",
-      "--profile",
-      "fast"
     ]
   ],
   "pr_validation": {
