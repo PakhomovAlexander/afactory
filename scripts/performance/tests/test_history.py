@@ -113,6 +113,11 @@ class Grouping(TempDir):
                   self.make_run("measured_evidence", provenance="measured"),
                   self.make_run("fixture_changed", fixtures="other fixtures")]
         doc = history.write(inputs, self.path("history"))
+        self.assertEqual(doc["schema"], "af.perf-history/2")
+        self.assertEqual(contracts.read_file(self.path("history/history.json"), "history"), doc)
+        with self.assertRaisesRegex(ContractError, "expected.*af.perf-history/2"):
+            contracts.read_json(json.dumps(dict(doc, schema="af.perf-history/1")).encode(),
+                                "history")
         groups = self.groups(doc, "synthetic_fast")
         self.assertEqual(len(groups), 4)
         by_runs = dict((tuple(sorted(point["run_id"] for point in group["points"])), group)

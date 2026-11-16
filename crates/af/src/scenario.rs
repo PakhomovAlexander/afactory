@@ -99,7 +99,7 @@ pub(crate) enum ScenarioCommand {
         after_long_help = "Examples:\n  # needs: an exact accepted Task receipt in a versioned request\n  af scenario candidate-source --file request.json --repo /project \\\n    --task-state /private/tasks --into /private/captures/candidate --json"
     )]
     CandidateSource {
-        /// af/git-candidate-source-request@1 JSON containing the exact accepted Task receipt
+        /// af/git-candidate-source-request@2 JSON containing the exact accepted Task receipt
         #[arg(long)]
         file: PathBuf,
         /// Repository whose Git history anchors the Task source
@@ -198,6 +198,9 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
         /// Drive the recorded Run immediately until it settles or waits
         #[arg(long)]
         execute: bool,
+        /// Retained idle polling cadence; validated against the complete publication tree
+        #[arg(long, default_value_t = af_scenario::driver::DEFAULT_POLL_MS)]
+        poll_ms: u64,
         #[command(flatten)]
         inspect: Inspect,
     },
@@ -216,6 +219,21 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
     /// Resume the pinned Run, reconciling any uncertain effects before retrying
     Resume {
         /// Local Run label in the selected Scenario Store
+        run_id: String,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Drive a recorded Run continuously under its retained startup schedule
+    Drive {
+        run_id: String,
+        /// Reserve and perform at most one due resume, then return
+        #[arg(long)]
+        once: bool,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
+    /// Inspect the retained cadence, consumed checkpoints, reservations and blocker
+    DriverStatus {
         run_id: String,
         #[command(flatten)]
         inspect: Inspect,
@@ -726,6 +744,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             confirm_pin,
             require_startup_scope,
             execute,
+            poll_ms,
             inspect,
         } => {
             let pin = pin(&definition)?;
@@ -737,6 +756,7 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
                 !require_startup_scope || pin.policy.implementation_startup.is_some(),
                 "Implementation startup scope is required but absent",
             )?;
+            af_scenario::driver::validate_schedule(&pin, poll_ms)?;
             let limits = pin.bundle.definitions[&pin.bundle.root].limits.clone();
             let run = Run::new(
                 &AfHost,
@@ -749,9 +769,20 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             )?;
             let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), true)?;
             runtime::reconcile_pending(&store, run.created_unix_ms)?;
-            let run = store.update(|world| world.admit_run(run))?;
+            let run = store.update(|world| {
+                let run = world.admit_run(run)?;
+                world.drivers.insert(
+                    run_id.clone(),
+                    af_scenario::driver::Driver::new(&run, poll_ms)?,
+                );
+                Ok(run)
+            })?;
             let run = if execute {
-                runtime::resume(&store, &run_id, inspect.now)?
+                if run.pin.policy.implementation_startup.is_some() {
+                    af_scenario::driver::once(&store, &run_id)?
+                } else {
+                    runtime::resume(&store, &run_id, inspect.now)?
+                }
             } else {
                 run
             };
@@ -773,7 +804,51 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
         }
         ScenarioCommand::Resume { run_id, inspect } => {
             let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
-            print(&runtime::resume(&store, &run_id, inspect.now)?, &inspect)
+            let scoped = store
+                .read()?
+                .runs
+                .get(&run_id)
+                .ok_or("Scenario Run not found")?
+                .pin
+                .policy
+                .implementation_startup
+                .is_some();
+            let run = if scoped {
+                af_scenario::driver::once(&store, &run_id)?
+            } else {
+                runtime::resume(&store, &run_id, inspect.now)?
+            };
+            print(&run, &inspect)
+        }
+        ScenarioCommand::Drive {
+            run_id,
+            once,
+            inspect,
+        } => {
+            require(
+                inspect.now.is_none(),
+                "Scenario driver uses live time; --now is not supported",
+            )?;
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            let run = if once {
+                af_scenario::driver::once(&store, &run_id)?
+            } else {
+                af_scenario::driver::drive_until(&store, &run_id, || {
+                    crate::interrupt::received().is_some()
+                })?
+            };
+            print(&run, &inspect)
+        }
+        ScenarioCommand::DriverStatus { run_id, inspect } => {
+            let store = Store::open(Arc::new(AfHost), inspect.state.as_deref(), false)?;
+            print(
+                store
+                    .read()?
+                    .drivers
+                    .get(&run_id)
+                    .ok_or("Scenario driver not found")?,
+                &inspect,
+            )
         }
         ScenarioCommand::Cancel {
             run_id,

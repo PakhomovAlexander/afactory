@@ -174,7 +174,7 @@ performed by the adapter. Changed head or content remains unknown and cannot com
 ## Recovery, bounds and evidence
 
 Before any possible POST the adapter fsyncs `dispatched` in its private journal. A nonblocking
-exclusive lock serializes all invocations against one retained lock inode. The `af/github-adapter-state@6` journal binds
+exclusive lock serializes all invocations against one retained lock inode. The `af/github-adapter-state@7` journal binds
 intent ID, opaque kernel input digest, entire exact request, config identity, phase and remote
 object ID/number; checksums detect corruption. Every invocation validates the journal and exact
 input match. A different intent cannot publish the same subject/revision while another one is
@@ -222,7 +222,7 @@ using developer credentials or real external mutations. Schemas live under `sche
 `python3 -I scripts/scenario-github-schemas.py` checks their parity with the adapter contract.
 
 The current adapter reads `af/scenario-adapter-request@6` and writes its embedded requests in
-`af/github-adapter-state@6`; earlier request/journal generations fail closed. Config and operation
+`af/github-adapter-state@7`; earlier request/journal generations fail closed. Config and operation
 payloads retain generation 1. Finish old Runs under their original release/installation before
 upgrading; there is no journal migration or automatic replay through a replacement installation.
 The [performance loop integration decision](adr/2026-11-03-native-performance-scenario-loops.md)

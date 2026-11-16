@@ -163,6 +163,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
     let mut registry = jsonschema::Registry::new();
     for file in [
         "scenario-v8.json",
+        "scenario-driver-v1.json",
         "implementation-startup-scope-v2.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
@@ -309,7 +310,7 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         inputs: BTreeMap::new(),
     };
     let response = Response {
-        schema: "af/scenario-adapter-response@1".into(),
+        schema: "af/scenario-adapter-response@2".into(),
         intent_id: request.intent_id.clone(),
         input_digest: request.input_digest.clone(),
         outcome: Outcome::Absent,
@@ -317,7 +318,10 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
         observation: None,
     };
     valid("scenario-adapter-request-v6.json", &request);
-    valid("scenario-adapter-response-v1.json", &response);
+    valid("scenario-adapter-response-v2.json", &response);
+    let mut retired = json!(response);
+    retired["schema"] = json!("af/scenario-adapter-response@1");
+    assert!(!schema("scenario-adapter-response-v2.json").is_valid(&retired));
     valid(
         "scenario-owned-file-v1.json",
         &OwnedDocument {
@@ -1231,7 +1235,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v13.json", &world);
+    valid("scenario-store-v14.json", &world);
 }
 
 #[test]

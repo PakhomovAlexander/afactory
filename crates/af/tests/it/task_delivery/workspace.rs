@@ -36,13 +36,13 @@ fn ordinary_accepted_candidate_export_preserves_bytes_and_refuses_forged_provena
     std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
     let request_path = parent.join("request.json");
     let into = parent.join("candidate");
-    let request = json!({"schema":"af/git-candidate-source-request@1",
+    let request = json!({"schema":"af/git-candidate-source-request@2",
         "receipt":{"task_id":task_id,"plan_id":task.plan_id,"revision_id":task.revision_id,
             "result_id":result_id,"charged_tokens":outcome["chargeable_tokens"].as_str().unwrap().parse::<u64>().unwrap(),"result":outcome["result"]},
         "source_commit":source_commit,"candidate_snapshot_id":outcome["result"]["outputs"]["snapshot"]["snapshot_id"],
         "predecessor_snapshot_id":null});
     crate::schemas::valid(
-        &crate::schemas::validator("git-candidate-source-request-v1.json"),
+        &crate::schemas::validator("git-candidate-source-request-v2.json"),
         &request,
     );
     let export = || {
@@ -78,7 +78,7 @@ fn ordinary_accepted_candidate_export_preserves_bytes_and_refuses_forged_provena
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let receipt: Value = serde_json::from_str(&stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("git-candidate-source-v1.json"),
+        &crate::schemas::validator("git-candidate-source-v2.json"),
         &receipt,
     );
     assert_eq!(

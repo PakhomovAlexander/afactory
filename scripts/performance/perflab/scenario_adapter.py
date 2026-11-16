@@ -105,7 +105,7 @@ class Adapter:
                 "unsupported Scenario adapter version or destination")
         for key in ("intent_id", "input_digest"):
             contracts.DIGEST.validate(request[key], key)
-        response = dict(schema="af/scenario-adapter-response@1", intent_id=request["intent_id"],
+        response = dict(schema="af/scenario-adapter-response@2", intent_id=request["intent_id"],
                         input_digest=request["input_digest"], outcome="pending",
                         evidence="submission requires reconciliation", observation=None)
         method, inputs = request["method"], request["inputs"]
@@ -389,7 +389,7 @@ class Adapter:
                                 verdict = evaluated[receipt["request_id"]].verdict
                                 require(verdict["aggregate"]["result"] == result["measurement_status"],
                                         "native verdict differs from result status")
-                            completion = dict(schema="af.perf-scenario-completion/1", request=native,
+                            completion = dict(schema="af.perf-scenario-completion/2", request=native,
                                 experiment=intent["experiment"], result_sha256=state["result_sha256"],
                                 source_request_digest=intent["source_request_digest"],
                                 baseline_snapshot_id=source["baseline_snapshot_id"],
@@ -397,7 +397,7 @@ class Adapter:
                                 verdict=verdict, telemetry_is_diagnostic=True)
                             require(len(document_bytes(completion)) <= 24576,
                                     "verified native report exceeds bounded Scenario evidence; narrow the declared workload")
-                            certificate = dict(schema="af.perf-scenario-verification/1",
+                            certificate = dict(schema="af.perf-scenario-verification/2",
                                 receipt_digest=canonical_digest(receipt), result_sha256=state["result_sha256"],
                                 verified_unix_ms=int(time.time() * 1000), measurement_status=result["measurement_status"],
                                 completion=completion)

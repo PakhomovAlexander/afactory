@@ -300,6 +300,9 @@ class SourceCaptureFence(ExecutorFixture):
 class ScenarioLab(ExecutorFixture):
     def setUp(self):
         super().setUp()
+        # This one-shard orchestration fixture retains the 45-minute build allowance and
+        # 60-minute total: 45 + 10 + the 30-second finish reserve fits without relaxing either.
+        self.c["core"]["windows"] = dict(shard_sampling_minutes=10, run_total_minutes=60)
         os.mkdir(self.c["root"], 0o700)
         self.spool = os.path.join(self.c["root"], "scenario-spool")
         self.evidence = os.path.join(self.c["root"], "scenario-evidence")

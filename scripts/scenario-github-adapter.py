@@ -36,7 +36,7 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@6"
+STATE_SCHEMA = "af/github-adapter-state@7"
 PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1", "publish_implementation_pr_v1")
 PAYLOAD_SCHEMAS = {
     "publish_implementation_pr_v1": "af/github-publish-pr@1",
@@ -375,8 +375,11 @@ class Journal:
         need(isinstance(records, dict) and len(records) <= MAX_RECORDS, "journal record bound exceeded")
         subjects = set()
         for key, record in records.items():
-            fields(record, ("request", "request_digest", "phase", "object", "evidence", "metadata_dispatched"))
+            fields(record, ("request", "request_digest", "phase", "object", "evidence", "metadata_dispatched", "publication_checkpoint"))
             need(type(record["metadata_dispatched"]) is bool, "invalid metadata dispatch receipt")
+            need(record["publication_checkpoint"] in (None, "native_proof_ready", "publication_prepared"), "invalid publication checkpoint")
+            need(record["publication_checkpoint"] is None or record["request"]["operation"] == "publish_implementation_pr_v1",
+                 "checkpoint outside scoped publication")
             request = record["request"]
             fields(request, ("schema", "intent_id", "input_digest", "operation", "destination", "inputs"))
             texts, _ = validate_request({**request, "method": "reconcile"}, self.config)
@@ -424,7 +427,7 @@ class Journal:
                  "object already reserved by another intent; inspect its original receipt")
         need(len(records) < MAX_RECORDS, "journal receipt budget exhausted; do not discard uncertain intents")
         record = {"request": wanted, "request_digest": digest(canonical(wanted)),
-                  "phase": "prepared", "object": None, "evidence": None, "metadata_dispatched": False}
+                  "phase": "prepared", "object": None, "evidence": None, "metadata_dispatched": False, "publication_checkpoint": None}
         records[key] = record
         unsettled = sum(r["phase"] in ("prepared", "dispatched") for r in records.values())
         need(len(state_bytes(self.state)) + unsettled * 1024 <= STATE_LIMIT,
@@ -857,7 +860,7 @@ class Adapter:
 
     def handle(self, request):
         texts, _ = validate_request(request, self.config)
-        response = {"schema": "af/scenario-adapter-response@1", "intent_id": request["intent_id"],
+        response = {"schema": "af/scenario-adapter-response@2", "intent_id": request["intent_id"],
                     "input_digest": request["input_digest"], "outcome": "pending",
                     "evidence": "Reconcile the retained intent", "observation": None}
         try:
@@ -911,7 +914,7 @@ def schema_documents():
     def document(name, value):
         if name == "github-performance-pr":
             value = dict(title="Performance pull request v1", **value)
-        version = 6 if name == "github-adapter-state" else 1
+        version = 7 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -944,7 +947,7 @@ def schema_documents():
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
                        "$ref": "urn:af:schema:scenario:8#/$defs/Datum"}}})
-    record = obj({"request": request, "request_digest": text(DIGEST),
+    record = obj({"publication_checkpoint": {"enum": [None, "native_proof_ready", "publication_prepared"]}, "request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]}, "metadata_dispatched": {"type":"boolean"},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},
                   "evidence": {"anyOf": [{"type": "null"}, text(maximum=1000)]}})

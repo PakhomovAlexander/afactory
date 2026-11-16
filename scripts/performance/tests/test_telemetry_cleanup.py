@@ -15,8 +15,10 @@ import shlex
 import shutil
 import signal
 import string
+import subprocess
 import sys
 import time
+import unittest
 from unittest import mock
 
 from perflab import builds, budget, capability, contracts, host_lock, host_prep, telemetry_exec, telemetry_lab
@@ -69,7 +71,7 @@ class WorkflowCleanup(ContainedBase):
         self.assertEqual(self.invoke("ci-scratch", cleanup=False), 0)
         self.executor.scratch_root = self.mount
         self.scratch = self.mount
-        os.makedirs(self.executor.directory)
+        os.makedirs(self.executor.directory, 0o700)
         self.run_dir = os.path.join(self.executor.directory, "one")
         os.mkdir(self.run_dir, 0o700)
 
@@ -119,7 +121,10 @@ class WorkflowCleanup(ContainedBase):
         return self.executor.run(execution(self, command, cwd=self.run_dir, label=label))
 
     def test_stopped_execution_cleans_even_without_a_result_boolean(self):
-        self.assertEqual(os.stat(self.run_dir).st_mode & 0o777, 0o700)
+        # execution() uses this directory as the measurement account's HOME.
+        info = os.stat(self.run_dir)
+        self.assertEqual(info.st_uid, os.geteuid())
+        self.assertEqual(info.st_mode & 0o777, 0o700)
         with self.owner() as owner:
             result = self.run_execution(owner)
             self.assertEqual(result.cleanup, "confirmed")
@@ -955,3 +960,23 @@ class WorkflowCleanup(ContainedBase):
             self.assertFalse(owner.doc["filesystem_pending"])
         self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
 
+
+
+class PrivateHomeFixture(unittest.TestCase):
+    def test_workflow_home_and_interrupted_recreation_under_umask_022(self):
+        # Set the mask only in a child: the suite's process and Docker mode stay intact.
+        code = """
+import os, sys, unittest
+os.umask(0o022)
+sys.path.insert(0, sys.argv[1])
+names = [
+    'tests.test_telemetry_cleanup.WorkflowCleanup.test_stopped_execution_cleans_even_without_a_result_boolean',
+    'tests.test_telemetry_cleanup.WorkflowCleanup.test_persisted_work_fence_survives_interrupted_cleanup_boundaries',
+]
+result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromNames(names))
+raise SystemExit(not result.wasSuccessful())
+"""
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code,
+                                 os.path.join(ROOT, "scripts/performance")],
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

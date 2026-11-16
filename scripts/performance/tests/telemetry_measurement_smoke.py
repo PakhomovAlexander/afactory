@@ -42,6 +42,8 @@ def execution_directories(selected):
 def main():
     assert shutil.which("docker"), "Docker unavailable: live measurement smoke was not run"
     assert os.getuid() != 0, "smoke requires a real non-root runner-owned checkout"
+    subprocess.run(["cargo", "build", "--locked", "--example", "perf-supervisor"],
+                   cwd=ROOT, check=True)
     image = builds.BuildImage("docker", IMAGE)
     root = Path(tempfile.mkdtemp(prefix="af-telemetry-measurement-smoke-"))
     sentinel = root / "operator-sentinel"
@@ -164,6 +166,8 @@ else:
     raise AssertionError('filesystem did not enforce aggregate allocation')
 '''.replace("UNLINK", repr(unlinked)))
                 assert result.code == 0 and result.stdout == b"aggregate ENOSPC\n", result.stderr
+            from tests import contained_flow_probe
+            contained_flow_probe.run(ROOT / "target/debug/examples/perf-supervisor", owner)
             from tests import telemetry_diagnostic_smoke
             telemetry_diagnostic_smoke.run(root, mount, image, environment, cpus, ROOT, docker, owner)
             with tempfile.TemporaryDirectory(dir=root) as context:

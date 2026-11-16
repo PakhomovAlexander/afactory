@@ -1579,3 +1579,141 @@ fn a_native_check_source_mutation_fails_sealing_on_the_real_check_path() {
     let outcome = run("local_mutated");
     assert_ne!(outcome.review.conclusion, ReviewConclusionV1::Pass);
 }
+
+#[test]
+fn development_flow_fixture_compiles_current_native_packages_and_independent_workers() {
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let root = workspace.join("fixtures/performance/cli/default-light-smoke/repo");
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let code: CodeTaskPolicy =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/code-policy.toml")).unwrap())
+            .unwrap();
+    let code_id = cas.put_json(&serde_json::to_value(&code).unwrap()).unwrap();
+    let policy = ReviewTaskPolicy {
+        schema: REVIEW_TASK_POLICY_SCHEMA.into(),
+        check_policy_id: code_id.clone(),
+        reviewers: BTreeMap::from([("correctness".into(), DemandRequirement::Required)]),
+        gate: Severity::Major,
+        clean_rounds: 1,
+        max_rounds: 2,
+        allow_targeted_repairs: false,
+    };
+    let policy_id = cas
+        .put_json(&serde_json::to_value(&policy).unwrap())
+        .unwrap();
+    let mut signatures = code_signatures(&code_id, &code).unwrap();
+    signatures.extend(review_signatures(&policy_id, &policy).unwrap());
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    let independence: IndependencePolicyV1 = catalog["independence"].clone().try_into().unwrap();
+    let mut compiler = TaskPlanCompiler::new(
+        policy_id.clone(),
+        policy_id.clone(),
+        signatures,
+        BTreeMap::from([
+            ("verified".into(), "verification".into()),
+            ("goal".into(), "evaluation".into()),
+        ]),
+        independence,
+    )
+    .unwrap();
+    fn files(root: &Path, prefix: &Path, result: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in std::fs::read_dir(prefix).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files(root, &path, result);
+            } else {
+                result.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .replace('\\', "/"),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut project = BTreeMap::new();
+    files(&root, &root.join(".af/task-packages"), &mut project);
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    for (name, pin) in catalog["packages"].as_table().unwrap() {
+        let pin: TaskPackagePin = pin.clone().try_into().unwrap();
+        compiler
+            .capture_package(&cas, name, &pin, &project)
+            .unwrap();
+    }
+    compiler.validate_dependency_closure().unwrap();
+    for (worker, model) in [
+        ("implementer", "gpt-6.1-sol"),
+        ("correctness", "gpt-6.1-terra"),
+        ("evaluator", "gpt-6.1-terra"),
+    ] {
+        compiler
+            .bind_worker(
+                &format!("default-light/{worker}"),
+                AdmittedWorkerSettings {
+                    execution: WorkerExecutionV3::Model {
+                        provider: "codex-main".into(),
+                        provider_kind: "codex".into(),
+                        principal_id: Some(policy_id.clone()),
+                        model: model.into(),
+                        pi: None,
+                        effort: "high".into(),
+                    },
+                    invocation_policy_id: policy_id.clone(),
+                },
+            )
+            .unwrap();
+    }
+    let task_file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("tasks/smoke-0.json")).unwrap()).unwrap();
+    let mut limits = task_file["limits"].clone();
+    limits.as_object_mut().unwrap().remove("wall_ms");
+    limits["deadline_unix_ms"] = json!(1800000000000_u64);
+    let identity = cas.put_json(&json!({"fixture":"source"})).unwrap();
+    let mut task: TaskRevisionV1 = serde_json::from_value(json!({
+        "task_id":"smoke-0", "revision":1, "kind":"implement", "goal":task_file["goal"],
+        "inputs":{"requirements":{"artifact_ids":[identity],"artifact_type":"af/Requirements@1","cardinality":"one"},"source":{"artifact_ids":[identity],"artifact_type":SOURCE_TREE_V1,"cardinality":"one","snapshot_id":identity}},
+        "required_outputs":{"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":REVIEWED_IMPLEMENTATION_V1,"cardinality":"one"},"evaluation":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}},
+        "acceptance":{"verified":{"evidence_type":REVIEWED_IMPLEMENTATION_V1,"verifier_policy":policy_id},"goal":{"evidence_type":VERIFICATION_RESULT_V1,"verifier_policy":code_id}},
+        "provenance":{"adapter_id":identity,"input_artifact_ids":[]},
+        "authority":{"policy_id":policy_id,"allowed_effects":["execute-checks","read-source","write-source"],"data_destinations":["codex-main"]},
+        "limits":limits, "strategy":"small", "pipeline":task_file["pipeline"],"facts":task_file["facts"]
+    })).unwrap();
+    task.inputs = compiler
+        .normalize_root_inputs(&cas, "default-light/implementation", &task)
+        .unwrap();
+    let id = cas
+        .put_artifact(
+            TASK_REVISION_V1,
+            producer(),
+            vec![],
+            None,
+            serde_json::to_value(&task).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let (_, graph) = compiler
+        .compile(&cas, &id, "default-light/implementation")
+        .unwrap();
+    assert_eq!(graph.schema, "af.compiled-task/6");
+    let pipeline = &compiler.pipelines()["default-light/implementation"];
+    assert!(pipeline.contract.inputs["findings"].optional);
+    assert_eq!(
+        pipeline.slots["correctness"].independent_from,
+        BTreeSet::from(["implementer".into()])
+    );
+    assert_eq!(
+        pipeline.slots["evaluator"].independent_from,
+        BTreeSet::from(["implementer".into()])
+    );
+    assert_eq!(task.limits.max_attempts, 7);
+    assert_eq!(task.limits.verification.attempts, 5);
+}

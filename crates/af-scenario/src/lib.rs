@@ -6,6 +6,7 @@
 pub mod adapter;
 pub mod checks;
 pub mod contract;
+pub mod driver;
 pub mod host;
 pub mod implementation;
 pub mod performance;

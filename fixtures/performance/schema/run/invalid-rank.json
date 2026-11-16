@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-run/7",
+  "schema": "af.perf-run/8",
   "run_id": "schema_fixture_run",
   "parent_run_id": null,
   "scope": "bootstrap",
@@ -214,7 +214,8 @@
       ],
       "sample_timeout_ms": 30000,
       "budgets": [],
-      "seed": null
+      "seed": null,
+      "execution_class": "standard"
     },
     {
       "instance_id": "synthetic_fast",
@@ -285,7 +286,8 @@
       ],
       "sample_timeout_ms": 30000,
       "budgets": [],
-      "seed": null
+      "seed": null,
+      "execution_class": "standard"
     },
     {
       "instance_id": "synthetic_process__size_1",
@@ -372,11 +374,12 @@
           "applicable": false
         }
       ],
-      "seed": null
+      "seed": null,
+      "execution_class": "standard"
     }
   ],
   "cohort": null,
   "diagnostic": null,
   "required_check_eligible": false,
-  "plan_digest": "sha256:e80ded2daac1039ead69b7c9bc0f253685530b48e079127140de40b7bf2e5d80"
+  "plan_digest": "sha256:5f0c6db1d7d259109f595d5b2d7f8b870caac01eb8da345ad318f53a1a7ecb10"
 }

@@ -1,6 +1,6 @@
 {
   "schema": "af.dev-release-policy/3",
-  "compatibility": "Breaking closed Scenario/Ant and publication shapes: Scenario definitions/bundles 8, policy 7, pins/runs/list 9, Store 13; Ant definition 9, pin/tick 10, state/list 11, inspection 6; adapter request 6, workspace config 3/state 4 and GitHub journal 6. Implementation startup scope 2 admits the explicit native scoped publication capability. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption.",
+  "compatibility": "Breaking closed Scenario/Ant and publication shapes: Scenario definitions/bundles 8, policy 7, pins/runs/list 9, Store 14 with retained driver 1; Ant definition 9, pin/tick 10, state/list 11, inspection 6; adapter request 6/response 2, workspace config 3/state 4 and GitHub journal 7, native Git candidate request/export 2. Implementation startup scope 2 admits the explicit native scoped publication capability. Generic signed and performance authority stay separate. Finish or discard prior-release state; no migration or replay of retired shapes. Review and commit authority and refresh its lock before adoption. Current performance executor 5, history 2, equivalence 2 and schedule 3 remain required and retired formats remain refused.",
   "required_features": {
     "crates/af-scenario/src/retention.rs": [
       "settlement",
@@ -10,11 +10,11 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@13",
+      "af/scenario-store@14",
       "run_capacity"
     ],
-    "schemas/scenario-store-v13.json": [
-      "af/scenario-store@13"
+    "schemas/scenario-store-v14.json": [
+      "af/scenario-store@14"
     ],
     "schemas/scenario-v8.json": [
       "af/scenario@8"
@@ -66,6 +66,18 @@
       "restore_compiler(&cas, &authority, &settings)?",
       "recorded_bindings != template.bindings"
     ],
+    "schemas/performance-executor-v5.json": [
+      "af.perf-executor/5"
+    ],
+    "schemas/performance-history-v2.json": [
+      "af.perf-history/2"
+    ],
+    "schemas/performance-equivalence-v2.json": [
+      "af.perf-equivalence/2"
+    ],
+    "schemas/performance-schedule-v3.json": [
+      "af.perf-schedule/3"
+    ],
     "schemas/scenario-policy-v7.json": [
       "af/scenario-policy@7",
       "implementation_startup"
@@ -86,6 +98,26 @@
     "scripts/scenario-git-workspace.py": [
       "publish_implementation_pr_v1",
       "implementation_live"
+    ],
+    "crates/af-scenario/src/driver.rs": [
+      "af/scenario-driver@1",
+      "DEFAULT_POLL_MS",
+      "MAX_RESUMES"
+    ],
+    "schemas/scenario-driver-v1.json": [
+      "af/scenario-driver@1"
+    ],
+    "schemas/scenario-adapter-response-v2.json": [
+      "af/scenario-adapter-response@2"
+    ],
+    "schemas/github-adapter-state-v7.json": [
+      "af/github-adapter-state@7"
+    ],
+    "schemas/git-candidate-source-request-v2.json": [
+      "af/git-candidate-source-request@2"
+    ],
+    "schemas/git-candidate-source-v2.json": [
+      "af/git-candidate-source@2"
     ]
   },
   "targets": [

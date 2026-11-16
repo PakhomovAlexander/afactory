@@ -426,7 +426,7 @@ class WorkspaceAdapter:
         observed = decode(bounded_command([lab["executable"]], c["state_dir"], env, canonical(lab_request),
             18, c["state_dir"], 65536), 65536)
         fields(observed, ("schema", "intent_id", "input_digest", "outcome", "evidence", "observation"))
-        need(observed["schema"] == "af/scenario-adapter-response@1" and observed["intent_id"] == request["intent_id"]
+        need(observed["schema"] == "af/scenario-adapter-response@2" and observed["intent_id"] == request["intent_id"]
              and observed["input_digest"] == request["input_digest"] and observed["outcome"] == "done"
              and observed["observation"] == observation, "measurement differs from retained native lab evidence")
         completion = decode(observation["evidence"].encode())
@@ -486,7 +486,7 @@ class WorkspaceAdapter:
     def native_source(self, t, owner, previous=None):
         c = self.config
         path = Path(c["state_dir"]) / (owner.split(":")[1] + ".request.json")
-        request = dict(schema="af/git-candidate-source-request@1", receipt=t,
+        request = dict(schema="af/git-candidate-source-request@2", receipt=t,
                        source_commit=previous["commit"] if previous else c["source_commit"], candidate_snapshot_id=t["result"]["outputs"]["snapshot"]["snapshot_id"],
                        predecessor_snapshot_id=previous["snapshot_id"] if previous else None)
         if path.exists():
@@ -501,7 +501,7 @@ class WorkspaceAdapter:
                  "XDG_DATA_HOME": str(home), "XDG_STATE_HOME": str(home), "XDG_CACHE_HOME": str(home), "TMPDIR": c["state_dir"]},
             None, 18, c["state_dir"], LIMIT)
         source = decode(raw, LIMIT)
-        need(source["schema"] == "af/git-candidate-source@1"
+        need(source["schema"] == "af/git-candidate-source@2"
              and source["request_digest"] == digest(canonical(request))
              and source["source_commit"] == request["source_commit"]
              and (source["predecessor_snapshot"] == previous["snapshot_id"] if previous else source["source_content_digest"] == c["source_content_digest"] and source["predecessor_snapshot"] is None)
@@ -891,7 +891,22 @@ class WorkspaceAdapter:
                     outcome, evidence, obs = self.common.observe(r, texts)
                 else:
                     rec = self.common.journal.record(r)
-                    outcome, evidence = (self.common.execute(rec) if r["method"] == "execute" else self.common.reconcile(rec))
+                    if r["operation"] == IMPLEMENTATION_OP and rec["publication_checkpoint"] != "publication_prepared":
+                        # Each closed checkpoint is backed by exact native proof and this
+                        # retained intent. Replayed pending/uncertain states earn no progress.
+                        if rec["publication_checkpoint"] is None:
+                            outcome = "native_proof_ready"
+                            evidence = "Exact native implementation and independent verification proof checked"
+                        else:
+                            prepared = self.common.prepared(rec)
+                            self.preparation(prepared)
+                            self.lineage(prepared)
+                            outcome = "publication_prepared"
+                            evidence = "Exact owned publication preparation and lineage checked"
+                        rec["publication_checkpoint"] = outcome
+                        self.common.journal.save()
+                    else:
+                        outcome, evidence = (self.common.execute(rec) if r["method"] == "execute" else self.common.reconcile(rec))
                     obs = None
             else:
                 p = workspace_validate_request(r, self.config)
@@ -919,7 +934,7 @@ class WorkspaceAdapter:
                 else:
                     outcome, evidence = self.cleanup(rec, p)
                 obs = None
-            response = dict(schema="af/scenario-adapter-response@1", intent_id=r["intent_id"],
+            response = dict(schema="af/scenario-adapter-response@2", intent_id=r["intent_id"],
                             input_digest=r["input_digest"], outcome=outcome, evidence=evidence, observation=obs)
             need(len(canonical(response)) <= 65536, "workspace response bound exceeded")
             return response
@@ -1125,10 +1140,10 @@ def workspace_schema_documents():
     doc("git-workspace-content", dict(title=text(maximum=200), body=text(maximum=48000)))
     doc("performance-pr-content", dict(title=text(maximum=200)))
     doc("git-candidate-source-request", dict(receipt={"$ref": "urn:af:schema:scenario:8#/$defs/TaskReceipt"},
-        source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])))
-    doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig,
+        source_commit=sha, candidate_snapshot_id=dig, predecessor_snapshot_id=dict(anyOf=[dict(type="null"), dig])), version=2)
+    doc("git-candidate-source", dict(request_digest=dig, repository_id=text(maximum=4096), source_snapshot=dig, task_source_snapshot=dig,
         candidate_snapshot=dig, predecessor_snapshot=dict(anyOf=[dict(type="null"), dig]), source_content_digest=dig, source_commit=sha, candidate_tree=sha,
-        transport_commit=sha, repository=path))
+        transport_commit=sha, repository=path), version=2)
     check = obj(dict(kind={"const": "check"}, name=text(maximum=200), app_id=positive))
     status = obj(dict(kind={"const": "status"}, context=text(maximum=200), creator_id=positive))
     required_checks = array(dict(oneOf=[check, status]))

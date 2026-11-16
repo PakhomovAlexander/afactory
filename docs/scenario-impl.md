@@ -103,7 +103,8 @@ uses the admitted startup capability for first and same-PR publication without a
 separate actual `merged` Wait and cleanup; closed-unmerged PRs cannot complete. Finite total Task,
 token, elapsed-time and dispatch bounds derive from the complete generated tree. Scoped Runs also
 check the shared implementation reservation count on every new Task reservation, across restart.
-Repeated pending observations consume dispatch allowance under the unchanged generic Wait contract.
+Generic pending observations consume dispatch allowance. Scoped idle Wait polls use the retained
+driver cadence without a new dispatch reservation.
 
 Remote review comments and base/conflict bytes remain unavailable as automatic repair inputs.
 Human review and
@@ -151,8 +152,8 @@ The public schema is `schemas/implementation-startup-scope-v2.json`. Pass
 `af scenario start --require-startup-scope` to refuse an accidentally absent scope before
 Run creation or Task dispatch. A policy that carries scope always enforces it.
 
-Startup and every active resume validate every declared template, including conditional repair
-branches, against captured native authority before dispatching work. Preflight also creates or
+Startup and each new foreground driver process validate every declared template, including
+conditional repair branches, against captured native authority before dispatching work. Preflight also creates or
 reuses deterministic, never-executed
 `startup-<template digest>` native plans against the captured source, proving native contracts,
 resource feasibility and check configuration without inference. Future predecessor content is
@@ -163,13 +164,14 @@ replacements are refused by native compilation. Provider probes are token-free;
 normal Task admission and acceptance still apply. The installed workspace adapter must support
 startup preflight and pass pinned configuration/tool, local/remote base and GitHub identity checks.
 Unavailable credentials or prerequisites refuse admission without including credential bytes.
-Scoped creation, elapsed budgets and expiry use live Host time; `--now` cannot extend authorization. Each dispatch is rechecked after
+Scoped creation, elapsed budgets and expiry use live Host time; `--now` cannot extend authorization.
+Each dispatch is rechecked after
 native planning and its supervised timeout is bounded by the remaining scope lifetime. The
 watcher requests cancellation on expiry. Cancel the Run to stop dispatch.
 
 The scope is retained inside the Run's confirmed immutable pin. Replay validates its recipe and
-scope identity without probing credentials, so expired evidence remains inspectable. Resume
-performs live preflight again. No historical Store or plan is rewritten on upgrade.
+scope identity without probing credentials, so expired evidence remains inspectable. Standalone resume
+performs live preflight again; one foreground process reuses that startup admission. No historical Store or plan is rewritten on upgrade.
 
 Stage A tests exercise conditional-template refusal, exact recipe/source/budget/model pools,
 missing machine preflight support, live creation/elapsed budgets, expiry before and during Task planning, cancellation, retired
@@ -177,14 +179,15 @@ versions, native zero-dispatch refusal, and admitted personal native plans reuse
 Attempts and no inference. Workspace preflight uses a fake read-only GitHub transport. They do not establish
 live GitHub permissions, VM reboot survival or continuous service operation. Stage B adds the
 terminal evidence and repair paths above. Stage C1 below adds scoped publication; continuous
-driving and combined lifecycle proof remain required for issue 834. Existing Task wake support
+driving is described below; full original-issue integration remains separate. Existing Task wake support
 does not implement a Scenario driver.
 See [the startup ADR](adr/2026-11-16-admit-implementation-startup-scope.md).
 
 See the [Stage B decision](adr/2026-11-16-route-terminal-native-outcomes-to-bounded-repairs.md).
 The command fixtures use zero-token Workers and prove exact zero native charges, retained Task
 identities and no redispatch on terminal resume. They do not establish nonzero paid-provider
-charges or production whole-change verification/publication composition. Continuous service driving and Stage D whole lifecycle proof remain explicitly pending.
+charges or production whole-change verification/publication composition. The retained driver
+regressions below use separate admitted-provider fixtures for those paths.
 
 A separate coordinator fixture settles four Tasks at 17 tokens each and restarts at the shared
 repair boundary. It proves 68-token accounting and that verification/report reservations do not
@@ -223,6 +226,58 @@ uncertain until the exact retained journal reconciles them.
 The native scoped fixture uses admitted Codex bindings with deterministic Provider IO, production
 proof/workspace/publication code, real disposable Git refs and controlled GitHub IO. It exercises
 first publication, a CI repair to the same PR, lost publication responses and retained recovery.
-It supplies no live publication or VM-reboot evidence. Continuous service/default cadence,
-interrupted-Worker lifecycle and the combined whole-lifecycle integration proof are the next
-stage, not completed here. See the [C1 decision](adr/2026-11-16-publish-implementation-under-native-startup-scope.md).
+It supplies no live publication or VM-reboot evidence. The retained driver tests below add default
+cadence and CLI process restart evidence; mid-Worker termination and original-issue integration
+remain separate. See the [C1 decision](adr/2026-11-16-publish-implementation-under-native-startup-scope.md).
+
+## Retained foreground driver
+
+Every newly admitted Run retains a driver schedule. Start with the normal confirmed pin;
+`--poll-ms` selects the immutable idle cadence (default `30000`). The complete effective tree
+must allow two polls strictly inside each scoped publication deadline, including conditional
+repair branches. An incompatible cadence is refused before `start --execute` can dispatch a
+Task. The generated scoped recipe gives publication an immutable `120000` ms deadline.
+
+```sh
+af scenario start implementation --file impl.json --authority policy.json \
+  --inputs inputs.json --confirm-pin SHA256 --require-startup-scope
+af scenario drive implementation --state /absolute/private/scenario-store --json
+af scenario driver-status implementation --state /absolute/private/scenario-store --json
+```
+
+The second command is the foreground service. A supervisor restarts the same command, Store and
+Run ID after disconnect or process loss; no service is installed automatically. Cancellation is
+`af scenario cancel implementation --reason 'owner stop' --state STORE`. The service observes
+that retained cancellation by its next due wake. Human merge remains external.
+
+The two typed publication checkpoints are native proof checked and owned preparation checked.
+Each binds the exact retained intent and inputs. The pinned adapter journals it before returning;
+the runtime retains the frontier, and a single Store transaction acknowledges it while consuming
+the next resume reservation. Genuine progress can therefore run immediately. Replayed progress,
+unchanged pending CI, idle waits, missing responses and uncertainty cannot earn credits. Scoped
+standalone `resume` and `drive --once` obey the same schedule; `--now` cannot backdate it.
+
+There are at most 512 consumed resume reservations, including immediate progress, idle polls and
+calls lost to a crash. Killing the CLI does not refund a reservation or reset any Run/step/scope
+clock. A Run left running still waits for its actual due reservation when no new checkpoint is
+available. The driver retains terminal blockers for exhausted allowance and elapsed/expiry or
+other runtime boundaries. Corrupt journal bytes fail closed and remain available for diagnosis;
+no replacement evidence is manufactured. This is an actionable terminal CLI error, not a typed
+blocker persisted into unreadable authority: stop the supervisor's retries, retain the Store for
+diagnosis, and finish or discard it using the release that wrote it. Do not edit the journal or
+start another paid Run to repair missing authority. Ordinary native code failures keep the existing fresh,
+bounded repair routing. Repeated scoped Wait polls no longer consume dispatch allowance.
+
+The complete startup pool is probed once per foreground service process. Native per-Task admission
+and final push/POST/PATCH fresh guards remain live after blocking observations. No signing key,
+new publication authority or merge capability is introduced. See the
+[driver decision](adr/2026-11-16-drive-scoped-implementation-with-retained-progress.md).
+
+The focused native driver tests use the generated scoped recipe, admitted `codex-personal`
+bindings with controlled Provider IO, real native Task/Attempt receipts, independent whole-goal
+verification, disposable local Git and controlled GitHub API IO. Separate Runs preserve the
+original repair bounds and publication deadlines when exercising code failures or interruption.
+They compare Scenario charges to distinct native settled Attempt receipts, including provider
+probe charges and zero-token checks. They do not establish paid live-provider behavior, external
+GitHub publication, physical VM reboot or mid-Worker termination. The original issue's final
+integration and independent base verification remain separate operator steps.

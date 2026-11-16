@@ -979,11 +979,11 @@ class ReleaseToolsIgnoreNightlies(TempDir):
         patterns = [item.strip().strip('"') for item in tags.split(",")]
         self.assertTrue(patterns and all(p.startswith("v[0-9]") for p in patterns), patterns)
         repo = Repo(self.path("repo"))
-        source = repo.commit("base", {"Cargo.toml": manifest("0.13.0")})
+        source = repo.commit("reviewed source", {"Cargo.toml": manifest("0.13.0")})
         declaration = json.loads(read(os.path.join(ROOT, "scripts/release-contract.json")))
         declaration.update(version="0.14.0", source=source)
         head = repo.commit("release", {"Cargo.toml": manifest("0.14.0"),
-            "scripts/release-contract.json": json.dumps(declaration)})
+                                     "scripts/release-contract.json": json.dumps(declaration)})
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GITHUB_SHA": head,
                "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "nightly-2026.10.29",
                "GITHUB_OUTPUT": self.path("output"), "HOME": self.tmp,

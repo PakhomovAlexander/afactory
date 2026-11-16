@@ -138,7 +138,9 @@ class ReleaseContract(unittest.TestCase):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
         # Independent expectations: do not infer the current generation from either the
         # declaration or the schemas being checked. Both can drift together.
-        expected = {'scenario-store': 13, 'scenario': 8, 'scenario-bundle': 8,
+        expected = {'scenario-store': 14, 'scenario-driver': 1,
+                    'scenario-adapter-response': 2, 'github-adapter-state': 7,
+                    'git-candidate-source-request': 2, 'git-candidate-source': 2, 'scenario': 8, 'scenario-bundle': 8,
                     'scenario-pin': 9, 'scenario-run': 9, 'scenario-list': 9,
                     'ant': 9, 'ant-pin': 10, 'ant-tick': 10, 'ant-state': 11,
                     'ant-inspection': 6, 'ant-list': 11,
@@ -169,6 +171,42 @@ class ReleaseContract(unittest.TestCase):
         template = json.loads((self.root / 'schemas/scenario-task-template-v2.json').read_text())
         self.assertIn('authority_id', template['required'])
         self.assertIn('bindings', template['required'])
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+
+    def test_combined_wake_and_long_flow_contracts_are_bound_by_one_declaration(self):
+        # Neither merge parent's capability pin covers the combined schema closure.
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        expected = {
+            'task-wake-route-v1.json': 'af/task-wake-route@1',
+            'task-wake-status-v1.json': 'af/task-wake-status@1',
+            'scenario-v8.json': 'af/scenario@8',
+            'scenario-store-v14.json': 'af/scenario-store@14',
+            'scenario-driver-v1.json': 'af/scenario-driver@1',
+            'implementation-startup-scope-v2.json': 'af/implementation-startup-scope@2',
+            'performance-executor-v5.json': 'af.perf-executor/5',
+            'performance-history-v2.json': 'af.perf-history/2',
+            'performance-equivalence-v2.json': 'af.perf-equivalence/2',
+            'performance-schedule-v3.json': 'af.perf-schedule/3',
+            'performance-run-v8.json': 'af.perf-run/8',
+            'performance-supervisor-request-v5.json': 'af.perf-supervisor-request/5',
+            'performance-supervisor-result-v6.json': 'af.perf-supervisor-result/6',
+        }
+        self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
+        for name, identity in expected.items():
+            path = self.root / 'schemas' / name
+            original = path.read_bytes()
+            document = json.loads(original)
+            with self.subTest(schema=name):
+                self.assertEqual(document['properties']['schema']['const'], identity)
+                self.assertFalse(document['additionalProperties'])
+                if name in ('performance-executor-v5.json', 'performance-history-v2.json',
+                            'performance-equivalence-v2.json', 'performance-schedule-v3.json'):
+                    self.assertIn(identity, policy['required_features']['schemas/' + name])
+                # Even a semantically harmless byte change must invalidate the pin.
+                path.write_bytes(original + b'\n')
+                with self.assertRaisesRegex(ValueError, 'stale|capabilities differ'):
+                    PREFLIGHT.check(self.root)
+            path.write_bytes(original)
         self.assertEqual(PREFLIGHT.check(self.root), '0.15.1-rc.3')
 
     def test_preparation_refuses_changed_capabilities(self):

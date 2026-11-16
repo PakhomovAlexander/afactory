@@ -164,12 +164,12 @@ impl ProofRequest {
             serde_json::from_str(&self.evidence.evidence).map_err(|e| e.to_string())?;
         let v = &completion["verdict"];
         require(
-            completion["schema"] == "af.perf-scenario-completion/1"
+            completion["schema"] == "af.perf-scenario-completion/2"
                 && completion["experiment"]["work"] == "core"
                 && completion["request"]["work"] == "core"
                 && completion["request"]["backend"] == "local"
                 && completion["candidate_snapshot_id"] == self.evidence.revision
-                && v["schema"] == "af.perf-verdict/2"
+                && v["schema"] == "af.perf-verdict/3"
                 && v["algorithm"] == "paired_median_tolerance_v2"
                 && v["provenance"] == "measured"
                 && v["aggregate"]["result"] == "pass"
@@ -184,7 +184,8 @@ impl ProofRequest {
         require(
             !cases.is_empty()
                 && cases.iter().all(|c| {
-                    c["outcome"] == "pass"
+                    c["execution_class"] == "standard"
+                        && c["outcome"] == "pass"
                         && matches!(
                             c["statistical_classification"].as_str(),
                             Some("improvement" | "within_tolerance" | "non_regression")
@@ -264,6 +265,11 @@ mod tests {
             "source",
             "scope",
             "old-version",
+            "old-verdict-version",
+            "old-completion-version",
+            "long-class",
+            "missing-class",
+            "long-algorithm",
         ] {
             let mut wrong = request.clone();
             let mut c: serde_json::Value = serde_json::from_str(&wrong.evidence.evidence).unwrap();
@@ -276,6 +282,18 @@ mod tests {
                 "source" => c["candidate_snapshot_id"] = json!(digest(b"foreign")),
                 "scope" => c["verdict"]["scope"] = json!("diagnostic"),
                 "old-version" => c["schema"] = json!("af.perf-scenario-completion/0"),
+                "old-verdict-version" => c["verdict"]["schema"] = json!("af.perf-verdict/2"),
+                "old-completion-version" => c["schema"] = json!("af.perf-scenario-completion/1"),
+                "long-class" => c["verdict"]["cases"][0]["execution_class"] = json!("long_running"),
+                "missing-class" => {
+                    c["verdict"]["cases"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("execution_class");
+                }
+                "long-algorithm" => {
+                    c["verdict"]["algorithm"] = json!("paired_median_tolerance_long_running_v1")
+                }
                 other => {
                     for case in c["verdict"]["cases"].as_array_mut().unwrap() {
                         if other == "no-improvement" {

@@ -92,10 +92,25 @@ class Service:
             connection.close()
 
 
+def fixture_directory():
+    # /tmp can be a checkout ancestor in a concurrent sandbox. Canonical /var/tmp
+    # stays short on Linux and macOS (where it resolves to /private/var/tmp).
+    temp = tempfile.TemporaryDirectory(prefix="mw-", dir=str(Path("/var/tmp").resolve()))
+    try:
+        root = Path(temp.name).resolve()
+        W.outside_checkout(root)
+        W.private(root, directory=True)
+        if len(os.fsencode(root / "gh.sock")) >= 104:
+            raise AssertionError("watch fixture exceeds macOS Unix socket address bound")
+    except BaseException:
+        temp.cleanup()
+        raise
+    return temp
+
+
 class WatchTests(unittest.TestCase):
     def setUp(self):
-        # A short /tmp socket path also fits macOS's Unix-domain address limit.
-        self.temp = tempfile.TemporaryDirectory(prefix="merge-watch-", dir="/tmp")
+        self.temp = fixture_directory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.home = self.root / "home"
@@ -154,6 +169,31 @@ class WatchTests(unittest.TestCase):
         self.executable.write_bytes(b"import time\ntime.sleep = lambda _: None\n" + SOURCE.read_bytes())
         self.children = []
         self.addCleanup(self.stop_children)
+
+    def test_fixture_ignores_checkout_temp_root_and_tmp_git_anchor(self):
+        # Only test-owned markers; never create or modify a host /tmp/.git.
+        ambient = self.root / "ambient"
+        ambient.mkdir()
+        (ambient / ".git").mkdir()
+        with self.assertRaisesRegex(W.Refused, "outside every checkout"):
+            W.outside_checkout(ambient / "state")
+        exists = Path.exists
+
+        def with_tmp_anchor(path):
+            return str(path) == "/tmp/.git" or exists(path)
+
+        with patch.object(tempfile, "tempdir", str(ambient)), patch.object(Path, "exists", with_tmp_anchor):
+            with self.assertRaisesRegex(W.Refused, "outside every checkout"):
+                W.outside_checkout(Path("/tmp/fixture/state"))
+            with fixture_directory() as name:
+                root = Path(name).resolve()
+                self.assertEqual(root.parent, Path("/var/tmp").resolve())
+                self.assertEqual(str(root), name)
+                W.outside_checkout(root / "state")
+                W.private(root, directory=True)
+                self.assertLess(len(os.fsencode(root / "gh.sock")), 104)
+                with socket.socket(socket.AF_UNIX) as sock:
+                    sock.bind(str(root / "gh.sock"))
 
     def git(self, *args, repo=None):
         result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo or self.repo), *args],

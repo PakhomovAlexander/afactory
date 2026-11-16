@@ -878,7 +878,7 @@ p4 (ADR-0172) admits every file a measured side wrote through held, non-followin
 within declared bounds and the run's deadline, and replaces the history's prefix observation by
 the supervisor's streamed observation of declared JSON fields (`af.perf-supervisor-request/4`,
 `af.perf-supervisor-result/5`, `af.perf-cli/6`). It adds `cli.py report`, `cli.py history` and
-`cli.py archive` with its collector and runbook (`af.perf-report/1`, `af.perf-history/1`,
+`cli.py archive` with its collector and runbook (`af.perf-report/1`, `af.perf-history/2`,
 `af.perf-archive/1`, `af.perf-archive-event/1`, `af.perf-archive-collection/1`,
 `af.perf-archive-status/1`, `af.perf-transport/1`); continuous collection remains an
 operational obligation until it is provisioned and observed. Its closeout (ADR-0173) bounds
@@ -929,7 +929,7 @@ p6b's release handoff (ADR-0180) adds `.github/workflows/performance-release.yml
 read-only handoff verifies the workflow's identity, the published tag and SHA, and a successful
 `sign and publish` in any attempt. It writes the immutable claim `af.perf-release-claim/1` of the
 run, tag and SHA before any sample, and measures only the first valid claim through the
-token-free `performance.yml` (`af.perf-schedule/2`). Duplicates link the retained result or are
+token-free `performance.yml` (`af.perf-schedule/3`). Duplicates link the retained result or are
 incomplete, and only `remeasure_of` measures again; every decision is
 `af.perf-release-handoff/1`. A hosted staging demonstration remains operational evidence.
 p6b's calibration (ADR-0181) adds `cli.py cohort-declare`, `calibration-prepare` and `readiness`.
@@ -967,7 +967,7 @@ complete retained listings, binding each original's producer (`af.perf-readiness
 plans carry their calibrated CPU/image groups, and a host outside them cannot satisfy the
 required check (`af.perf-run/6`). A bridge's diff covers the build closure, and it measures as
 active only with a verified golden check of both product sources and a post-merge A/A
-(`af.perf-activation/3`, `af.perf-equivalence/1`, `af.perf-activation-verification/2`). Costs read
+(`af.perf-activation/3`, `af.perf-equivalence/2`, `af.perf-activation-verification/2`). Costs read
 the observed cache and keep failed attempts, and shipping is bound to one reviewed suite with
 every planned sample accounted for (`af.perf-cost/2`, `af.perf-shipping/2`). The hosted cohort,
 its proposed activation, a real bridge, the cost and shipping runs, the staging handoff and

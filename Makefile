@@ -194,3 +194,8 @@ check-classes: base-check fmt lint
 .PHONY: test-labels
 test-labels:
 	python3 scripts/test-labels.py $(if $(filter 1,$(APPLY)),--apply,)
+
+# Fixture-only namespace probe; the production sample container keeps all capabilities dropped.
+perf-dev-flow-probe:
+	cargo build --locked --example perf-supervisor
+	python3 -I scripts/performance/tests/contained_flow_probe.py --supervisor target/debug/examples/perf-supervisor

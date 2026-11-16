@@ -93,7 +93,7 @@ def passing_verdict(verdict):
 
 
 def report_of(verdict, plan):
-    """A valid af.perf-report/3 of `verdict` on the partial-scope fixture's template."""
+    """A valid af.perf-report/4 of `verdict` on the partial-scope fixture's template."""
     doc = fixture("report/valid-partial-scope.json")
     template = doc["cases"][0]
     doc["run_id"], doc["plan_digest"], doc["verdict"] = (verdict["run_id"],

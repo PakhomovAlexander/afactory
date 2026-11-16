@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-supervisor-result/5",
+  "schema": "af.perf-supervisor-result/6",
   "supervisor": {
     "platform": "linux",
     "arch": "aarch64",
@@ -70,5 +70,6 @@
       }
     },
     "unavailable": null
-  }
+  },
+  "evidence": null
 }

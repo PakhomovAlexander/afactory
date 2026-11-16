@@ -212,7 +212,7 @@ class LifecycleTests(unittest.TestCase):
         ssh.write_text("Host github.com\n  BatchMode yes\n")
         ssh.chmod(0o600)
         af = self.root / "fake-af"
-        native = dict(schema="af/git-candidate-source@1", repository_id="fixture", source_snapshot=S,
+        native = dict(schema="af/git-candidate-source@2", repository_id="fixture", source_snapshot=S, task_source_snapshot=S,
                       candidate_snapshot=R, predecessor_snapshot=None, source_content_digest=D, source_commit=source_commit,
                       candidate_tree=tree, transport_commit=transport)
         af.write_text(fixture_launcher('''import hashlib, json, pathlib, sys, subprocess, os
@@ -238,7 +238,7 @@ assert args[:2] == ["scenario", "candidate-source"]
 values=dict(zip(args[2:-1:2],args[3:-1:2]))
 assert args[-1] == "--json"
 request=json.loads(pathlib.Path(values["--file"]).read_text())
-assert request["schema"] == "af/git-candidate-source-request@1"
+assert request["schema"] == "af/git-candidate-source-request@2"
 source=''' + repr(native) + '''
 source["request_digest"]="sha256:"+hashlib.sha256(json.dumps(request,sort_keys=True,separators=(",", ":"),ensure_ascii=False).encode()).hexdigest()
 # Reuse the fixture repository's already pinned af-candidate ref; no real af is spawned.
@@ -719,7 +719,7 @@ print(json.dumps(source))
         transport = self.git("rev-parse", "HEAD")
         self.git("checkout", "-q", self.config["source_commit"])
         def native(adapter, task, owner, previous=None):
-            return dict(schema="af/git-candidate-source@1", source_snapshot=S, predecessor_snapshot=None,
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=S, predecessor_snapshot=None,
                         source_commit=self.config["source_commit"], candidate_tree=tree, transport_commit=transport,
                         repository=str(self.repo), candidate_snapshot=R)
         with patch.object(LocalAdapter, "native_source", native):
@@ -817,7 +817,7 @@ print(json.dumps(source))
         transport = self.git("rev-parse", "HEAD")
         self.git("checkout", "-q", self.config["source_commit"])
         def native(adapter, task, owner, previous=None):
-            return dict(schema="af/git-candidate-source@1", source_snapshot=S, predecessor_snapshot=None,
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=S, predecessor_snapshot=None,
                         source_commit=self.config["source_commit"], candidate_tree=tree, transport_commit=transport,
                         repository=str(self.repo), candidate_snapshot=R)
         with patch.object(LocalAdapter, "native_source", native):
@@ -918,7 +918,7 @@ print(json.dumps(source))
         transport = self.git("rev-parse", "HEAD")
         self.git("checkout", "-q", self.config["source_commit"])
         def native(adapter, task, owner, previous=None):
-            return dict(schema="af/git-candidate-source@1", source_snapshot=S, predecessor_snapshot=None,
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=S, predecessor_snapshot=None,
                         source_commit=self.config["source_commit"], candidate_tree=tree, transport_commit=transport,
                         repository=str(self.repo), candidate_snapshot=R)
         with patch.object(LocalAdapter, "native_source", native):
@@ -980,7 +980,7 @@ print(json.dumps(source))
         # verifies the parent and raw candidate tree, then prepares an exact signed commit.
         def native(adapter, task, owner, parent):
             self.assertEqual(parent, previous)
-            return dict(schema="af/git-candidate-source@1", source_snapshot=A.digest(("rerooted-" + task["task_id"]).encode()), predecessor_snapshot=parent["snapshot_id"],
+            return dict(schema="af/git-candidate-source@2", task_source_snapshot=S, source_snapshot=A.digest(("rerooted-" + task["task_id"]).encode()), predecessor_snapshot=parent["snapshot_id"],
                         source_commit=parent["commit"], candidate_tree=parent["tree"],
                         transport_commit=parent["commit"], repository=str(self.repo),
                         candidate_snapshot=task["result"]["outputs"]["snapshot"]["snapshot_id"])
@@ -1199,7 +1199,7 @@ def performance_integration(native=None):
             binary.write_text(source)
             c["af_digest"] = A.file_digest(binary)
             lab = test.root / "lab"
-            lab.write_text(fixture_launcher("import json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@1',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n"))
+            lab.write_text(fixture_launcher("import json,sys\nr=json.load(sys.stdin)\nprint(json.dumps(dict(schema='af/scenario-adapter-response@2',intent_id=r['intent_id'],input_digest=r['input_digest'],outcome='done',evidence='native fixture',observation=" + repr(observation) + ")))\n"))
             lab.chmod(0o700)
             c["performance"] = dict(executable=str(lab), digest=A.file_digest(lab), destination="native:claw")
         if native is None:
