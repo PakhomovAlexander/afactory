@@ -202,7 +202,7 @@ impl Run {
             outputs: None,
         };
         Ok(Self {
-            schema: "af/scenario-run@7".into(),
+            schema: "af/scenario-run@8".into(),
             id,
             execution_id: execution_id()?,
             pin,
@@ -246,7 +246,7 @@ impl Run {
     }
     pub fn validate(&self, host: &dyn crate::Host) -> Result<()> {
         require(
-            self.schema == "af/scenario-run@7" && af_contracts::is_digest(&self.execution_id),
+            self.schema == "af/scenario-run@8" && af_contracts::is_digest(&self.execution_id),
             "Unsupported Run version",
         )?;
         name(&self.id)?;
@@ -585,8 +585,10 @@ impl Run {
             Kind::FreshTask { .. } | Kind::Task { .. } => {
                 let target = super::template::targets(self, p, step)
                     .ok_or("Completed fresh Task lacks its recorded native plan")?;
-                let Some(Datum::Task(receipt)) = p.outputs.get("result") else {
-                    return Err("Task completion has no typed receipt".into());
+                let receipt = match p.outputs.get("result") {
+                    Some(Datum::Task(receipt)) => receipt,
+                    Some(Datum::TaskOutcome(outcome)) => &outcome.receipt,
+                    _ => return Err("Task completion has no typed receipt".into()),
                 };
                 require(
                     receipt.task_id == target.task_id
@@ -1030,6 +1032,32 @@ impl Run {
     }
     fn reserve_charge(&mut self, path: &str, key: String, maximum: u64) -> Result<()> {
         if !self.task_charges.contains_key(&key) {
+            if let Some(scope) = &self.pin.policy.implementation_startup {
+                let repair_step = |full: &str| -> bool {
+                    full.rsplit_once('/')
+                        .and_then(|(frame, id)| {
+                            self.frames.get(frame).and_then(|f| {
+                                self.pin.bundle.definitions[&f.scenario]
+                                    .steps
+                                    .iter()
+                                    .find(|s| s.id == id)
+                            })
+                        })
+                        .is_some_and(|s| {
+                            matches!(&s.operation, Kind::FreshTask { template, .. } if template.document["kind"] == "implement")
+                        })
+                };
+                if repair_step(path) {
+                    require(
+                        self.task_charges
+                            .values()
+                            .filter(|c| repair_step(&c.step))
+                            .count()
+                            <= scope.max_repairs as usize,
+                        "Shared implementation repair allowance exhausted",
+                    )?;
+                }
+            }
             require(
                 self.tokens()?
                     .checked_add(u128::from(maximum))

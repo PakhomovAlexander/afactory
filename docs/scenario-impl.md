@@ -1,9 +1,8 @@
 # Implementation through human merge
 
 A Pipeline describes one Task's execution and typed acceptance. The reusable `impl` Scenario
-orchestrates accepted Tasks, owned candidate preparation, signed PR publication, completed CI,
-actual human merge and owned cleanup. Models run only inside Tasks. There is no verification-only
-Task, automatic merge or scheduler installation.
+orchestrates native Task outcomes, bounded repairs, owned candidate preparation, signed PR publication, completed CI,
+actual human merge and owned cleanup. Models run only inside Tasks. An independently pinned verification Task can precede preparation. There is no automatic merge or scheduler installation.
 
 `scripts/scenario-impl.py` is an offline authoring recipe. It creates packages in a consuming
 repository, using the existing native package manifests and `af catalog digest`; it installs
@@ -81,18 +80,30 @@ at the exact destination. Its exclusive owned writer restriction and all signed 
 lease, recovery and owned-resource checks remain binding. The
 [executable-review guide](task-execution/executable-review.md) explains evidence limits.
 
-`--repairs` permits zero, one or two fresh implementation Tasks. Only exact completed failing CI
-(`checks_completed` with `checks_state = repairable`) selects a repair. Its typed inputs carry
-the accepted predecessor Task, completed observation and preparation Action; native admission
-adds CI evidence to requirements. Each repair repeats reviewers and evaluator, prepares with the
-previous owned receipt, and requires a fresh exact signed Decision before updating the same PR.
-Lazy selection avoids consuming skipped receipts. Pending, missing or unknown CI never starts
-repair. After the finite repairs, successful checks still precede a separate actual `merged`
-Wait and cleanup. Closed-unmerged PRs cannot complete. The Run has finite token, elapsed-time and
-dispatch limits; repeated pending observations consume dispatch allowance and can exhaust it.
+`--repairs` permits zero, one or two fresh implementation repairs in total. Ordinary native
+check failures and reviewer/evaluator changes requested can select a repair from exact terminal
+`task_outcome` evidence. Native continuation binds the reviewed candidate and its findings; typed
+requirements preserve the terminal result, check receipt and accounting. Missing continuation,
+unknown usage, exhaustion, cancellation and Provider/preflight failures do not authorize repair.
+Accepted `task` receipts remain distinct; unsuccessful outcomes cannot prepare or publish.
 
-The current generic evidence contract admits CI outcomes only. Review comments/change requests
-and remote base/conflict bytes are unavailable as automatic repair inputs. Human review and
+Pass `--verification-pin verifier-template-pin.json` to include an independent whole-change
+verification Task before every preparation. Pin its explicit original base, read-only native
+Pipeline and independent Worker bindings. It consumes total Task resources but no repair slot.
+A verifier rejection and a later failed repair gate each consume one edge of the same remaining
+repair allowance. The recipe never resets it in a nested branch. Every branch's actual template
+and effective Provider pool must pass startup admission before any paid work.
+
+Completed failing CI still selects a fresh repair with the accepted predecessor, exact observation
+and preparation receipt. Pending, missing or unknown CI never selects repair. Every publication
+requires a fresh exact signed Decision before updating the same PR. Successful checks precede a
+separate actual `merged` Wait and cleanup; closed-unmerged PRs cannot complete. Finite total Task,
+token, elapsed-time and dispatch bounds derive from the complete generated tree. Scoped Runs also
+check the shared implementation reservation count on every new Task reservation, across restart.
+Repeated pending observations consume dispatch allowance under the unchanged generic Wait contract.
+
+Remote review comments and base/conflict bytes remain unavailable as automatic repair inputs.
+Human review and
 merge remain external actions; CI readiness proves neither. Handle conflicts through a separately
 captured source and explicit operator action. Task Stores are retained; cleanup removes only the
 workspace capability's explicitly owned resources after its independent actual-merge readback.
@@ -100,13 +111,13 @@ workspace capability's explicitly owned resources after its independent actual-m
 Run the focused native tests without live services or models:
 
 ```sh
-cargo test --locked -p af --test it generated_impl
-cargo test --locked -p af --test it production_workspace_scenario_repairs_same_pr_and_cleans_only_after_merge
+cargo nextest run --workspace --locked --profile ci \
+  -E 'binary_id(af::it) & test(/scenario::generated_impl/)'
 ```
 
 The focused generated recipe tests use private homes, command Workers and an inert workspace
-outcome service. They cover package pins/planning, another configured team without execution,
-native continuation with actual findings delivery, and zero/one/two CI repairs with fresh
+outcome service. They distinguish package pins/planning and another configured team without execution from executed
+native continuation with actual findings delivery, two consecutive gate failures, two review rejections, review rejection followed by repair gate failure, terminal failed gates, and zero/one/two CI repairs with fresh
 signatures, lazy skipped receipts, same-PR identity, separate merge waiting and cleanup. This
 outcome fixture models the lifecycle; it does not prove production adapter composition.
 
@@ -161,7 +172,12 @@ Stage A tests exercise conditional-template refusal, exact recipe/source/budget/
 missing machine preflight support, live creation/elapsed budgets, expiry before and during Task planning, cancellation, retired
 versions, native zero-dispatch refusal, and admitted personal native plans reused with zero
 Attempts and no inference. Workspace preflight uses a fake read-only GitHub transport. They do not establish
-live GitHub permissions, VM reboot survival, continuous service operation, automatic failed-Task
-repair or scoped publication. Publication still waits for exact signed decisions. Stages B–D
-remain required for issue 834; existing Task wake support does not implement a Scenario driver.
+live GitHub permissions, VM reboot survival, continuous service operation, scoped publication. Publication still waits for exact signed decisions. Stage B adds the
+terminal evidence and repair paths above; Stages C and D remain required for issue 834; existing Task wake support does not implement a Scenario driver.
 See [the startup ADR](adr/2026-11-16-admit-implementation-startup-scope.md).
+
+See the [Stage B decision](adr/2026-11-16-route-terminal-native-outcomes-to-bounded-repairs.md).
+The command fixtures use zero-token Workers and prove exact zero native charges, retained Task
+identities and no redispatch on terminal resume. They do not establish nonzero paid-provider
+charges or complete whole-change verification/publication composition. Stage C scoped publication
+and continuous service driving and Stage D whole lifecycle proof remain explicitly pending.

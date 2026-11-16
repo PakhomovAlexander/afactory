@@ -178,6 +178,34 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
             let _ = watcher.join();
             result
         });
+        let result = result.and_then(|settlement| match settlement {
+            Settlement::TaskTerminal(outcome) => {
+                let outcome = *outcome;
+                outcome.validate()?;
+                let unknown_usage = outcome.unknown_usage;
+                if dispatch.definition.outputs.get("result") == Some(&Port::TaskOutcome) {
+                    Ok(Settlement::TaskDone {
+                        outputs: BTreeMap::from([("result".into(), Datum::TaskOutcome(outcome))]),
+                        unknown_usage,
+                    })
+                } else if outcome.accepted() {
+                    Ok(Settlement::TaskDone {
+                        outputs: BTreeMap::from([("result".into(), Datum::Task(outcome.receipt))]),
+                        unknown_usage,
+                    })
+                } else {
+                    Ok(Settlement::TaskFailed {
+                        diagnostic: format!(
+                            "Native Task ended: {:?} ({:?})",
+                            outcome.outcome, outcome.cause
+                        ),
+                        charged_tokens: outcome.receipt.charged_tokens,
+                        unknown_usage,
+                    })
+                }
+            }
+            other => Ok(other),
+        });
         let settled_at = execution_time()?;
         let stop = store.update(|world| {
             let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
@@ -211,6 +239,7 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     unknown_usage,
                 }) => outputs.values().find_map(|v| match v {
                     Datum::Task(t) => Some((t.charged_tokens, *unknown_usage)),
+                    Datum::TaskOutcome(t) => Some((t.receipt.charged_tokens, *unknown_usage)),
                     _ => None,
                 }),
                 _ => None,
@@ -228,6 +257,9 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                     actual > charge.maximum || run.tokens()? > u128::from(run.token_allowance());
             }
             match result {
+                Ok(Settlement::TaskTerminal(_)) => {
+                    unreachable!("terminal outcomes normalized above")
+                }
                 Ok(Settlement::Done(ref outputs))
                 | Ok(Settlement::TaskDone { ref outputs, .. }) => {
                     for datum in outputs.values() {

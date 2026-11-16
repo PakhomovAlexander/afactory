@@ -197,8 +197,8 @@ impl Scope {
         }
         let tasks = count(bundle, &bundle.root, 0)?;
         require(
-            tasks > 0 && tasks <= self.max_repairs + 1,
-            "Startup recipe exceeds repair count",
+            tasks > 0 && tasks <= self.limits.max_dispatches,
+            "Startup recipe exceeds total Task dispatch bound",
         )?;
         require(
             templates == self.templates.keys().cloned().collect() && grants == self.grants,
@@ -341,7 +341,7 @@ mod tests {
             "implementation-startup-ready-v1.json",
             &serde_json::json!({"schema":"af/implementation-startup-ready@1", "scope_id":hash(pin.policy.implementation_startup.as_ref().unwrap()).unwrap()}),
         );
-        valid("scenario-pin-v7.json", &pin);
+        valid("scenario-pin-v8.json", &pin);
         let host = TestHost {
             startup_reject: Some(repair.clone()),
             ..Default::default()
@@ -369,7 +369,7 @@ mod tests {
             None,
         )
         .unwrap();
-        valid("scenario-run-v7.json", &run);
+        valid("scenario-run-v8.json", &run);
         assert_eq!(
             run.pin.policy.implementation_startup,
             pin.policy.implementation_startup
@@ -500,7 +500,7 @@ mod tests {
             match case {
                 0 => scope.recipe_id = digest(b"other"),
                 1 => scope.templates.clear(),
-                2 => scope.max_repairs = 0,
+                2 => scope.limits.max_dispatches = 1,
                 3 => scope.source_commit = "b".repeat(40),
                 4 => scope
                     .grants

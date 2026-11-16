@@ -1224,7 +1224,7 @@ class ReleaseCLI(unittest.TestCase):
         self.cli('plan')
 
     def test_malformed_required_schema_identity_is_refused(self):
-        name = 'schemas/scenario-v6.json'
+        name = 'schemas/scenario-v7.json'
         path = self.source / name
         for content in ('null', '{}', '{"properties": []}',
                         '{"properties": {"schema": {}}}', '{invalid json'):

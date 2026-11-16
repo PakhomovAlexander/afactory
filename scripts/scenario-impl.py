@@ -60,7 +60,7 @@ def step(name, operation, inputs, port, timeout=604800000):
                 max_attempts=1, timeout_ms=timeout, on_timeout="fail")
 
 
-def bundle(pin, destination, title, body, owner="owner", adapter="workspace", repairs=2):
+def bundle(pin, destination, title, body, owner="owner", adapter="workspace", repairs=2, verification_pin=None):
     if type(repairs) is not int or not 0 <= repairs <= 2:
         raise ValueError("impl permits zero, one or two bounded implementation repairs")
     if pin["schema"] != "af/scenario-template-pin@2" or re.fullmatch(r"sha256:[0-9a-f]{64}", pin["template_id"]) is None:
@@ -84,41 +84,71 @@ def bundle(pin, destination, title, body, owner="owner", adapter="workspace", re
         return dict(source="select", condition=condition, when_true=passed, when_false=failed)
     publication_body = literal(canonical(dict(schema="af/git-workspace-content@1", title=title, body=body)).decode())
     steps = []
-    task_value = prepared_value = outcome_value = publication_value = None
-    for iteration in range(repairs + 1):
-        suffix = "" if iteration == 0 else "-repair-" + str(iteration)
+    templates = {pin["template_id"]}
+    if verification_pin is not None:
+        if verification_pin["schema"] != "af/scenario-template-pin@2" or verification_pin["template"]["document"]["kind"] != "verification":
+            raise ValueError("independent verification requires an exact native verification template pin")
+        templates.add(verification_pin["template_id"])
+    def boolean(value):
+        return dict(source="literal", value=dict(type="boolean", value=value))
+    def both(left, right):
+        return choose(left, right, boolean(False)) if left is not None else right
+    def equals(left, text):
+        return dict(source="equals", left=left, right=literal(text))
+    def add(item, condition):
+        item["when"] = condition
+        steps.append(item)
+    def attempt(suffix, remaining, condition=None, native=None, ci=None, previous=None):
         impl, prep, decision, pub, observed = [name + suffix for name in ("implement", "prepare", "publication-owner", "publish", "outcome")]
-        condition = dict(source="equals", left=projection(outcome_value, "checks_state"), right=literal("repairable")) if iteration else None
-        bindings = {"source": {"port": "snapshot", "artifact_type": "af/SourceTree@1"}} if iteration else {}
-        task_inputs = dict(source=task_value, scenario_evidence=outcome_value, publication=prepared_value) if iteration else {}
-        task = step(impl, dict(kind="fresh_task", template=template, bindings=bindings), task_inputs, "task", doc["limits"]["wall_ms"])
-        prepare_inputs = dict(subject=project(impl, "task_result_id"), revision=project(impl, "task_output_snapshot", port="snapshot"),
-                              body=publication_body, candidate=step_ref(impl))
-        if iteration:
-            prepare_inputs.update(previous=prepared_value)
-        prepare = step(prep, action("prepare_candidate_v1"), prepare_inputs, "action")
+        bindings = {"source": {"port": "snapshot", "artifact_type": "af/SourceTree@1"}} if ci is not None else {}
+        task_inputs = dict(source=ci[0], scenario_evidence=ci[1], publication=previous) if ci is not None else {}
+        if native is not None:
+            task_inputs["repair"] = native
+        add(step(impl, dict(kind="fresh_task", template=template, bindings=bindings), task_inputs,
+                 "task_outcome", doc["limits"]["wall_ms"]), condition)
+        outcome = step_ref(impl)
+        accepted = projection(outcome, "accepted_task")
+        success = both(condition, projection(outcome, "task_accepted"))
+        repair_outcome = outcome
+        if verification_pin is not None:
+            verifier = "verify" + suffix
+            add(step(verifier, dict(kind="fresh_task", template=verification_pin["template"],
+                bindings={"source": {"port": "snapshot", "artifact_type": "af/SourceTree@1"}}),
+                dict(source=accepted), "task_outcome", verification_pin["template"]["document"]["limits"]["wall_ms"]), success)
+            repair_outcome = choose(projection(outcome, "task_accepted"), step_ref(verifier), outcome)
+            success = both(success, project(verifier, "task_accepted"))
+        prepare_inputs = dict(subject=projection(accepted, "task_result_id"),
+            revision=projection(accepted, "task_output_snapshot", port="snapshot"), body=publication_body, candidate=accepted)
+        if previous is not None:
+            prepare_inputs["previous"] = previous
+        add(step(prep, action("prepare_candidate_v1"), prepare_inputs, "action"), success)
         obj = dict(subject=project(prep, "workspace_subject"), revision=project(prep, "workspace_revision"))
-        owner_step = step(decision, dict(kind="decision", owner=owner), obj, "decision")
-        publish = step(pub, action("publish_pr", True), dict(**obj, body=project(prep, "workspace_publication"), decision=step_ref(decision)), "action")
-        outcome = step(observed, wait("checks_completed"), obj, "observation")
-        for item in (task, prepare, owner_step, publish, outcome):
-            item["when"] = condition
-            steps.append(item)
-        task_value = choose(condition, step_ref(impl), task_value) if iteration else step_ref(impl)
-        prepared_value = choose(condition, step_ref(prep), prepared_value) if iteration else step_ref(prep)
-        publication_value = choose(condition, step_ref(pub), publication_value) if iteration else step_ref(pub)
-        outcome_value = choose(condition, step_ref(observed), outcome_value) if iteration else step_ref(observed)
+        add(step(decision, dict(kind="decision", owner=owner), obj, "decision"), success)
+        add(step(pub, action("publish_pr", True), dict(**obj, body=project(prep, "workspace_publication"), decision=step_ref(decision)), "action"), success)
+        add(step(observed, wait("checks_completed"), obj, "observation"), success)
+        values = (accepted, step_ref(prep), step_ref(pub), step_ref(observed))
+        if remaining:
+            retry = both(condition, projection(repair_outcome, "task_repairable"))
+            fixed = attempt(suffix + "-native", remaining - 1, retry, native=repair_outcome, previous=previous)
+            values = tuple(choose(retry, new, old) for new, old in zip(fixed, values))
+            retry_ci = both(success, equals(project(observed, "checks_state"), "repairable"))
+            fixed_ci = attempt(suffix + "-repair", remaining - 1, retry_ci,
+                               ci=(accepted, step_ref(observed)), previous=step_ref(prep))
+            values = tuple(choose(retry_ci, new, old) for new, old in zip(fixed_ci, values))
+        return values
+    task_value, prepared_value, publication_value, outcome_value = attempt("", repairs)
     obj = dict(subject=projection(prepared_value, "workspace_subject"), revision=projection(prepared_value, "workspace_revision"))
     steps += [step("ready", wait("checks_passed"), obj, "observation"),
               step("merged", wait("merged"), obj, "observation"),
               step("cleanup", action("cleanup_workspace_v1", condition="merged"), dict(**obj, body=projection(prepared_value, "workspace_receipt"),
                   prepared=prepared_value, evidence=step_ref("merged")), "action")]
-    root = dict(schema="af/scenario@6", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
+    root = dict(schema="af/scenario@7", inputs={}, outputs={"implementation": "task", "publication": "action", "merged": "observation", "cleanup": "action"},
         steps=steps, result={"implementation": task_value, "publication": publication_value, "merged": step_ref("merged"), "cleanup": step_ref("cleanup")},
         completion=[project("merged", "observation_satisfied")],
-        authority=dict(task_plans=[], task_templates=[pin["template_id"]], grants=grants, decision_owners=[owner]),
-        limits=dict(max_tokens=template["max_tokens"] * (repairs + 1), max_wall_ms=doc["limits"]["wall_ms"] * (repairs + 1) + 604800000, max_dispatches=64 + 5 * repairs), admission=None)
-    return dict(schema="af/scenario-bundle@6", root="impl", definitions={"impl": root})
+        authority=dict(task_plans=[], task_templates=sorted(templates), grants=grants, decision_owners=[owner]),
+        limits=dict(max_tokens=sum(item["operation"]["template"]["max_tokens"] for item in steps if item["operation"]["kind"] == "fresh_task"),
+                    max_wall_ms=sum(item["timeout_ms"] for item in steps), max_dispatches=len(steps) * 8), admission=None)
+    return dict(schema="af/scenario-bundle@7", root="impl", definitions={"impl": root})
 
 
 def toml_value(value):
@@ -386,6 +416,7 @@ def main():
     pkg.add_argument("--check", action="append", required=True)
     build = subs.add_parser("bundle", help="create impl bundle from a real native template pin")
     build.add_argument("--pin", required=True)
+    build.add_argument("--verification-pin", help="exact independent whole-change native verification template pin")
     build.add_argument("--destination", required=True)
     build.add_argument("--title", required=True)
     build.add_argument("--body-file", required=True)
@@ -396,7 +427,7 @@ def main():
     if args.command == "packages":
         packages(args.output, args.af.resolve(strict=True), args.check, read(args.team), args.namespace)
     else:
-        value = bundle(read(args.pin), args.destination, args.title, Path(args.body_file).read_text(), args.owner, repairs=args.repairs)
+        value = bundle(read(args.pin), args.destination, args.title, Path(args.body_file).read_text(), args.owner, repairs=args.repairs, verification_pin=read(args.verification_pin) if args.verification_pin else None)
         with Path(args.output).open("x") as output:
             json.dump(value, output, indent=2)
             output.write("\n")

@@ -10,44 +10,44 @@
       "roadmap"
     ],
     "crates/af-scenario/src/store.rs": [
-      "af/scenario-store@11",
+      "af/scenario-store@12",
       "run_capacity"
     ],
-    "schemas/scenario-store-v11.json": [
-      "af/scenario-store@11"
+    "schemas/scenario-store-v12.json": [
+      "af/scenario-store@12"
     ],
-    "schemas/scenario-v6.json": [
-      "af/scenario@6"
+    "schemas/scenario-v7.json": [
+      "af/scenario@7"
     ],
-    "schemas/scenario-bundle-v6.json": [
-      "af/scenario-bundle@6"
+    "schemas/scenario-bundle-v7.json": [
+      "af/scenario-bundle@7"
     ],
-    "schemas/scenario-pin-v7.json": [
-      "af/scenario-pin@7"
+    "schemas/scenario-pin-v8.json": [
+      "af/scenario-pin@8"
     ],
-    "schemas/scenario-run-v7.json": [
-      "af/scenario-run@7"
+    "schemas/scenario-run-v8.json": [
+      "af/scenario-run@8"
     ],
-    "schemas/scenario-list-v7.json": [
-      "af/scenario-list@7"
+    "schemas/scenario-list-v8.json": [
+      "af/scenario-list@8"
     ],
-    "schemas/ant-v7.json": [
-      "af/ant@7"
+    "schemas/ant-v8.json": [
+      "af/ant@8"
     ],
-    "schemas/ant-pin-v8.json": [
-      "af/ant-pin@8"
+    "schemas/ant-pin-v9.json": [
+      "af/ant-pin@9"
     ],
-    "schemas/ant-tick-v8.json": [
-      "af/ant-tick@8"
+    "schemas/ant-tick-v9.json": [
+      "af/ant-tick@9"
     ],
-    "schemas/ant-state-v9.json": [
-      "af/ant-state@9"
+    "schemas/ant-state-v10.json": [
+      "af/ant-state@10"
     ],
-    "schemas/ant-inspection-v4.json": [
-      "af/ant-inspection@4"
+    "schemas/ant-inspection-v5.json": [
+      "af/ant-inspection@5"
     ],
-    "schemas/ant-list-v9.json": [
-      "af/ant-list@9"
+    "schemas/ant-list-v10.json": [
+      "af/ant-list@10"
     ],
     "schemas/scenario-task-template-v2.json": [
       "af/scenario-task-template@2",

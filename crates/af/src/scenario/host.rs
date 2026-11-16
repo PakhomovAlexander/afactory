@@ -57,6 +57,13 @@ impl Host for AfHost {
         )
     }
 
+    fn check_repair(
+        &self,
+        template: &Template,
+        outcome: &af_scenario::task_outcome::TaskOutcome,
+    ) -> Result<()> {
+        crate::task_commands::scenario_template::check_repair(template, outcome)
+    }
     fn run_task(
         &self,
         target: &TaskTarget,
@@ -112,11 +119,11 @@ impl Host for AfHost {
             let _ = capture;
         }
         let task = checked(target)?;
-        let (result, _) = task.view()?;
+        let (result, view) = task.view()?;
         let Some(result) = result else {
             return Ok(Settlement::Waiting(format!(
-                "Task {} has no accepted result yet",
-                target.task_id
+                "Task {} has no terminal result: {:?}, {:?}, {:?}",
+                target.task_id, view.state.phase, view.state.outcome, view.state.cause
             )));
         };
         let charged_tokens = task.task.execution.as_ref().map_or(Ok(0), |e| {
@@ -127,18 +134,6 @@ impl Host for AfHost {
                 .iter()
                 .any(|a| a.unknown_usage.is_some())
         });
-        if result.acceptance != af_contracts::task::TaskAcceptanceV1::Satisfied
-            || result.execution != af_contracts::task::TaskExecutionV1::Completed
-        {
-            return Ok(Settlement::TaskFailed {
-                diagnostic: format!(
-                    "Task {} did not satisfy acceptance: {:?}",
-                    target.task_id, result.acceptance
-                ),
-                charged_tokens,
-                unknown_usage,
-            });
-        }
         let af_contracts::task::TaskPhaseV1::Finished { result_id } = &task.task.phase else {
             return Err("Task result lacks durable completion".into());
         };
@@ -150,10 +145,13 @@ impl Host for AfHost {
             charged_tokens,
             result,
         };
-        Ok(Settlement::TaskDone {
-            outputs: BTreeMap::from([("result".into(), Datum::Task(receipt))]),
-            unknown_usage,
-        })
+        Ok(Settlement::TaskTerminal(Box::new(
+            crate::task_commands::scenario_template::terminal_outcome(
+                &task,
+                receipt,
+                unknown_usage,
+            )?,
+        )))
     }
 
     fn active_task_run(&self, target: &TaskTarget) -> Option<u64> {

@@ -36,7 +36,7 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@4"
+STATE_SCHEMA = "af/github-adapter-state@5"
 PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1")
 PAYLOAD_SCHEMAS = {
     "publish_performance_pr_v1": "af/github-performance-pr@1",
@@ -241,7 +241,7 @@ def validate_payload(operation, value, config):
 
 def validate_request(request, config):
     fields(request, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(request["schema"] == "af/scenario-adapter-request@4", "unsupported request version")
+    need(request["schema"] == "af/scenario-adapter-request@5", "unsupported request version")
     for key in ("intent_id", "input_digest"):
         string(request[key], DIGEST)
     op = request["operation"]
@@ -452,7 +452,7 @@ class GitHub:
         self.calls = 0
         self.more = False
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, *, before_send=None):
         need((method in ("GET", "POST") and path.startswith("/repos/")) or
              (method == "GET" and path.startswith("/users/")) or
              (method == "GET" and path == "/user") or
@@ -465,7 +465,21 @@ class GitHub:
         conn = http.client.HTTPSConnection("api.github.com", timeout=min(5, remaining),
                                            context=self.context)
         try:
-            conn.request(method, path, body=canonical(body) if body is not None else None, headers={
+            # Complete blocking setup before checking mutation authority. Never reconnect
+            # implicitly after that check, even if the guard loses the socket.
+            encoded = canonical(body) if body is not None else None
+            conn.auto_open = 0
+            conn.connect()
+            need(conn.sock is not None, "API connection unavailable before send")
+            need(self.deadline > time.monotonic(), "bounded API connection exhausted")
+            if method == "POST":
+                need(callable(before_send), "API mutation requires a final authorization guard")
+                before_send()
+            remaining = self.deadline - time.monotonic()
+            need(remaining > 0, "bounded API authorization exhausted")
+            need(conn.sock is not None, "API connection lost before send")
+            conn.sock.settimeout(min(5, remaining))
+            conn.request(method, path, body=encoded, headers={
                 "Authorization": "Bearer " + self.token,
                 "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/json", "User-Agent": "af-scenario-github-v1",
@@ -542,6 +556,14 @@ class Adapter:
         repo = self.service.request("GET", self.repo)
         need(isinstance(repo, dict) and repo.get("id") == self.config["repository_id"]
              and repo.get("full_name") == self.config["repository"], "repository identity changed")
+
+    def before_mutation(self, record):
+        req = record["request"]
+        validate_request({**req, "method": "execute"}, self.config)
+        decision = req["inputs"].get("decision")
+        if decision is not None:
+            need(decision["value"]["request"]["expires_unix_ms"] > time.time_ns() // 1_000_000,
+                 "publication decision expired before send; reconcile the same intent")
 
     def locked_head(self, payload, revision):
         path = self.repo + "/branches/" + quote(payload["head"], safe="")
@@ -766,7 +788,7 @@ class Adapter:
         # HTTP errors, including 401/403/422, remain uncertain once dispatch is possible.
         record["phase"] = "dispatched"
         self.journal.save()
-        remote = self.service.request("POST", path, body)
+        remote = self.service.request("POST", path, body, before_send=lambda: self.before_mutation(record))
         if op == "notify":
             need(isinstance(remote, dict) and not remote.get("errors"),
                  "review mutation returned errors; outcome uncertain")
@@ -879,7 +901,7 @@ def schema_documents():
     def document(name, value):
         if name == "github-performance-pr":
             value = dict(title="Performance pull request v1", **value)
-        version = 4 if name == "github-adapter-state" else 1
+        version = 5 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -907,11 +929,11 @@ def schema_documents():
         else:
             props.update(title=text(maximum=200), body=text(maximum=48000))
         document(schema.split("/")[1].split("@")[0], obj(props))
-    request = obj({"schema": {"const": "af/scenario-adapter-request@4"},
+    request = obj({"schema": {"const": "af/scenario-adapter-request@5"},
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:6#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:7#/$defs/Datum"}}})
     record = obj({"request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},

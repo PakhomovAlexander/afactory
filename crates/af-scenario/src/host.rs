@@ -61,6 +61,9 @@ pub trait Host: Send + Sync {
         performance: bool,
         predecessors: &BTreeMap<String, (TaskReceipt, String)>,
     ) -> Result<TaskTarget>;
+    fn check_repair(&self, _: &Template, _: &crate::task_outcome::TaskOutcome) -> Result<()> {
+        Err("Host does not support checked native repair".into())
+    }
     fn run_task(
         &self,
         target: &TaskTarget,

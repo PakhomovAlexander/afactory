@@ -33,3 +33,5 @@ use {
     contract::*, schedule::*, state::*, std::collections::BTreeMap, std::path::PathBuf,
     store::Store,
 };
+
+pub mod task_outcome;

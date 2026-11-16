@@ -52,6 +52,26 @@ print(json.dumps(reply))
 '''
     if role == 'evaluator':
         program = program.replace("scope=runpy", "assert request['inputs']['testing'][0]['payload']['status']=='passed'\nscope=runpy")
+    if role == 'implementer' and mode.startswith('native-'):
+        program = r"""
+import json, sys
+from pathlib import Path
+request = json.load(sys.stdin)
+marker = Path('repair-stage')
+stage = int(marker.read_text()) + 1 if marker.exists() else 0
+if stage:
+    evidence = request['inputs']['requirements'][0]['payload']['specification']['scenario_native_outcome']
+    findings = request['inputs']['findings'][0]['payload']
+    assert findings['continues']['result_id'] == evidence['receipt']['result_id']
+    assert findings['continues']['snapshot_id'] == evidence['repair']['snapshot_id']
+    Path('seen-findings.json').write_text(json.dumps(findings, sort_keys=True))
+marker.write_text(str(stage))
+failed_gate = MODE == 'native-gates' and stage < 2 or MODE == 'native-mixed' and stage == 1 or MODE == 'native-terminal'
+Path('pagination.py').write_text('def paginate(items, offset=0, limit=2):\n    return ' + ('[]' if failed_gate else 'items[offset:offset+limit]') + '\n')
+if stage >= 2:
+    Path('NOTES.md').write_text('paginate(items, offset, limit) returns one page.\n')
+print(json.dumps({'schema':'af.worker-reply/1','outputs':{'report':[{'summary':'Native stage ' + str(stage)}]}}))
+""".replace('MODE', repr(mode))
     compile(program, role, 'exec')
     runner = dict(kind='command', command=dict(program='/usr/bin/python3', args=[
         dict(value='-B', provenance='literal'), dict(value='-c', provenance='literal'),

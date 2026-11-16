@@ -13,7 +13,7 @@
       "const": "af/implementation-startup-ready@1"
     },
     "scope_id": {
-      "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+      "$ref": "urn:af:schema:scenario:7#/$defs/digest"
     }
   }
 }

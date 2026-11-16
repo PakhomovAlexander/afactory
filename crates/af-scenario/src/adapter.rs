@@ -76,6 +76,7 @@ impl Response {
 #[derive(Debug, Clone)]
 pub enum Settlement {
     Done(BTreeMap<String, Datum>),
+    TaskTerminal(Box<super::task_outcome::TaskOutcome>),
     TaskDone {
         outputs: BTreeMap<String, Datum>,
         unknown_usage: bool,
@@ -156,7 +157,7 @@ pub(crate) fn dispatch(
         ),
         Kind::Wait { grant, condition } => {
             let request = Request {
-                schema: "af/scenario-adapter-request@4".into(),
+                schema: "af/scenario-adapter-request@5".into(),
                 method: Method::Observe,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),
@@ -220,7 +221,7 @@ pub(crate) fn dispatch(
                     .get(&scope.evidence_adapter)
                     .ok_or("Missing pinned native evidence adapter")?;
                 let observation_request = Request {
-                    schema: "af/scenario-adapter-request@4".into(),
+                    schema: "af/scenario-adapter-request@5".into(),
                     method: Method::Observe,
                     intent_id: dispatch.intent.id.clone(),
                     input_digest: dispatch.intent.input_digest.clone(),
@@ -251,7 +252,7 @@ pub(crate) fn dispatch(
                 )?;
             }
             let mut request = Request {
-                schema: "af/scenario-adapter-request@4".into(),
+                schema: "af/scenario-adapter-request@5".into(),
                 method: Method::Reconcile,
                 intent_id: dispatch.intent.id.clone(),
                 input_digest: dispatch.intent.input_digest.clone(),

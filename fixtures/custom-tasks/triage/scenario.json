@@ -1,9 +1,9 @@
 {
-  "schema": "af/scenario-bundle@6",
+  "schema": "af/scenario-bundle@7",
   "root": "triage",
   "definitions": {
     "triage": {
-      "schema": "af/scenario@6",
+      "schema": "af/scenario@7",
       "admission": null,
       "inputs": {},
       "outputs": {

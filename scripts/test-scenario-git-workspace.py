@@ -75,7 +75,10 @@ class Service:
         self.green = True
         self.source = None
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, *, before_send=None):
+        if method == "POST":
+            assert callable(before_send)
+            before_send()
         if method == "GET" and path == "/user":
             return dict(id=7, login="owner")
         if method == "GET" and path == "/repos/octo/project":
@@ -279,7 +282,7 @@ print(json.dumps(source))
         return dict(type="text", value=value)
 
     def request(self, op, key, inputs, method="execute"):
-        return dict(schema="af/scenario-adapter-request@4", operation=op, intent_id="sha256:" + key * 64,
+        return dict(schema="af/scenario-adapter-request@5", operation=op, intent_id="sha256:" + key * 64,
                     input_digest=D, destination="github:octo/project", method=method, inputs=inputs)
 
     def adapter(self):
@@ -826,8 +829,8 @@ print(json.dumps(source))
     def test_exclusive_writer_violation_during_post_never_settles_or_reposts(self):
         p = self.prepare()
         original = self.service.request
-        def changed(method, path, body=None):
-            response = original(method, path, body)
+        def changed(method, path, body=None, *, before_send=None):
+            response = original(method, path, body, before_send=before_send)
             if method == "POST":
                 self.service.refs[p["branch"]] = "f" * 40
                 self.service.prs[0]["head"]["sha"] = "f" * 40
@@ -1312,9 +1315,14 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         class HTTP:
-            def request(self, method, path, body=None):
+            def request(self, method, path, body=None, *, before_send=None):
                 connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                 try:
+                    connection.auto_open = 0
+                    connection.connect()
+                    if method == "POST":
+                        assert callable(before_send)
+                        before_send()
                     connection.request(method, path, body=None if body is None else A.canonical(body), headers={"Content-Type": "application/json"})
                     response = connection.getresponse()
                     assert response.status in (200, 201)
@@ -1400,10 +1408,10 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
                         candidate=ref("candidate"),verification=ref("verification"),report=ref("report"),measurement=ref("measurement")),
                     outputs=dict(result="action"),when=None,max_attempts=1,timeout_ms=30000,on_timeout="fail"))
                 limits = dict(max_tokens=32000000,max_wall_ms=691200000,max_dispatches=16)
-                definition = dict(schema="af/scenario@6",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
+                definition = dict(schema="af/scenario@7",inputs={},outputs=dict(publication="action"),admission=None,steps=stages,
                     result=dict(publication=ref("publish")),completion=[dict(source="literal",value=dict(type="boolean",value=True))],
                     authority=dict(task_plans=sorted({t["plan_id"] for t in (candidate,verification,report)}),task_templates=[],grants=[grant,observed],decision_owners=[]),limits=limits)
-                bundle = dict(schema="af/scenario-bundle@6",root="publish",definitions=dict(publish=definition))
+                bundle = dict(schema="af/scenario-bundle@7",root="publish",definitions=dict(publish=definition))
                 policy = dict(schema="af/scenario-policy@6",adapters=dict(publication=dict(executable=str(controlled),digest=A.file_digest(controlled),
                     operations=[A.PERFORMANCE_OP],destinations=[req["destination"]],max_wall_ms=30000,max_output_bytes=65536),lab=native["lab"]),
                     task_plans=definition["authority"]["task_plans"],task_templates=[],decision_keys={},file_roots=[],performance_publications=dict(publication=scope))

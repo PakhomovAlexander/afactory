@@ -100,8 +100,17 @@ class GitHubFixtureConnection:
     def __init__(self, host, timeout, context):
         assert host == "api.github.com" and 0 < timeout <= 5
         assert context.check_hostname
+        self.sock = None
+
+    def connect(self):
+        assert self.sock is None
+        self.sock = self
+
+    def settimeout(self, timeout):
+        assert 0 < timeout <= 5
 
     def request(self, method, path, body, headers):
+        assert self.sock is not None and self.auto_open == 0
         assert headers["Authorization"] == "Bearer github_pat_TEST_CREDENTIAL_ONLY"
         self.method, self.path = method, path
         self.body = json.loads(body) if body is not None else None
@@ -125,7 +134,7 @@ class GitHubFixtureConnection:
         return GitHubFixtureResponse(code, data, state)
 
     def close(self):
-        pass
+        self.sock = None
 
 
 http.client.HTTPSConnection = GitHubFixtureConnection
