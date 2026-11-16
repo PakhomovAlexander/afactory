@@ -3902,8 +3902,8 @@
   },
   {
    "path": "scripts/performance/tests/contained_flow_probe.py",
-   "sha256": "sha256:20982d6f9baa58ba81eaedcca1010561e8443022793c59b3c33270a97121b844",
-   "size": 8285
+   "sha256": "sha256:f5aa72fcaafd62beaaf86e490b5e396c3cfdad4a24aaf19efd5f3fb7f8276929",
+   "size": 8300
   },
   {
    "path": "scripts/performance/tests/dev_flow_fixture.py",
@@ -4017,8 +4017,8 @@
   },
   {
    "path": "scripts/performance/tests/test_dev_flow.py",
-   "sha256": "sha256:2aef3133564aadb9cc7641c85c92bc845779886c75dcbf55ece20bd7588f220d",
-   "size": 20683
+   "sha256": "sha256:7933919ca66ad452e08a90ae344a2a93e274fad5ce2a326238f77045d10a8384",
+   "size": 24219
   },
   {
    "path": "scripts/performance/tests/test_diagnostics.py",
@@ -4281,7 +4281,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:00e7972b110472f98df403af0f93cf097837a8150b96435d1a9ab14a660c826d",
+ "harness_digest": "sha256:781db9c2d332ad00ed939a38eb1ca5066261c53dde92972765f611e7c63efcda",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
