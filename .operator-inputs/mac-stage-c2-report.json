@@ -1,0 +1,19 @@
+{
+  "artifact_id": "sha256:1dce5ac5f7f1d76326c3222d7a2a8774379be9530620eee6c4fef0548bf0ac20",
+  "content_id": "sha256:d847e3960a679fda340f41663baaab3569b410dec3678ba46a31c3ccc5581602",
+  "input_artifacts": [
+    "sha256:0172bbafa4f8dbfaedcb087e91e11344c009dee092a4908f11233473e9f5b9f5",
+    "sha256:2d24ba0225086c1bcb4e5e34fe3c446850d09699d1ad0312378151b7b3d50878"
+  ],
+  "payload": {
+    "summary": "Implemented the C2 candidate: native foreground Scenario driving at default 30000 ms cadence, two closed publication checkpoints, atomic checkpoint/resume consumption, retained scheduling across restart, bounded resume allowance, schedule validation before execution, and terminal driver blockers. Scoped idle Wait polls no longer consume dispatch allowance. Existing Task, repair, deadline and publication guards remain strict.\n\nFixed native pre-publication repair export using checked continuation/source-binding provenance, distinguishing the original baseline from the Task\u2019s immediate source. Updated Store 14, driver 1, adapter response 2, GitHub journal 7, and candidate-source request/export 2 with readers, writers, schemas, parity and retirement checks. Added the dated ADR, documentation and change note; regenerated and checked canonical harness pins.\n\nIntegrated the supplied unverified CI1013 patch semantically: buffered readiness validation, locked fixture database transactions, observed CI-plan synchronization and bounded timeout diagnostics. Preserved C1 protocol changes and removed .operator-inputs. Required finding #1029 fixed: the fixture uses native pinned canonical paths and retains command-Worker refusal with zero dispatch.\n\nAdded native regressions for default service operation, gate failure and review rejection through two fresh repairs, rejected independent verification followed by repair, first/same-PR publication, delayed CI, uncertain POST/PATCH responses, killed-driver restart, credential refusal and exact native budget-overrun accounting. Separate Runs preserve repair limits and immutable deadlines. Accounting compares Scenario totals with distinct native settled Attempt receipts, including probes and zero-token checks.\n\nValidation passed: pinned Rust 1.88 cargo fmt and workspace/all-target clippy; 154 focused nextest tests; workspace adapter 88 tests; GitHub adapter 28; performance Scenario 49; release contract 12; selected release fixtures/lifecycles 8; TUI class 27 run with 4 platform skips; schema/harness checks; Markdown lint on all seven changed Markdown files.\n\nRemaining C2 acceptance gap: a wholly unreadable/corrupt Scenario Store still fails closed with its journal error rather than persisting a new typed blocker; unreadable authority is never rewritten. Physical VM reboot and mid-Worker termination remain untested. No paid pilot, external publication, measured improvement, full original-issue acceptance or e3-base verification is claimed. Final integration and independent verification remain operator steps.\n\nlast test run at 2026-11-16 21:06:54 UTC: binary_id(af-scenario) | (binary_id(af::it) & (test(/^scenario::/) | test(/^task_public_schemas::/))) | (binary_id(af::bin/af) & (test(/^shipped_schemas::/) | test(/^topics::/))); edits after it: none; Summary [470.249s] 154 tests run: 154 passed (6 slow), 1816 skipped"
+  },
+  "producer": {
+    "attempt_id": "06d3ea530e82bbfe8c6b2c1b7d",
+    "kind": "attempt",
+    "node_id": "root.nodes.implement",
+    "run_id": "task:sha256:9919e719d2d3a7cb6822eb370bd3211d5a36567ba1ebac6360ad770bfb2d3ad9"
+  },
+  "subject_snapshot_id": "sha256:fe21651e26d122223a2ea9d24614f5a5cf9ef42c7405e4af8ea3b988fcfd6eac",
+  "type": "af/ImplementationReport@1"
+}

@@ -1,0 +1,73 @@
+{
+  "schema": "af.task-file/1",
+  "kind": "implement",
+  "pipeline": {
+    "name": "impl/default-codex",
+    "fallback": "refuse"
+  },
+  "strategy": "reviewed",
+  "facts": {
+    "standard": true
+  },
+  "limits": {
+    "tokens": 16000000,
+    "max_attempts": 64,
+    "wall_ms": 172800000,
+    "verification": {
+      "tokens": 8000000,
+      "attempts": 40,
+      "wall_ms": 86400000
+    }
+  },
+  "verification": "review",
+  "task_id": "mac-834-continuous-driver-20261116",
+  "goal": "Complete Stage C2 of issue834: implement the actual bounded continuous Scenario driver and full native lifecycle regression using the existing admitted startup Scope, native repair routing, and scoped publication proof. Source is exact native C1 candidate83ec8d9e committed b186ef20 plus explicit unverified native CI patch/report context in .operator-inputs, operator context commit a87577a4. C1 capability is substantive but unaccepted: hostgate stopped solely at stale canonical performance harness. Preserve all seven original issue criteria below for final integration; do not report this staged acceptance as full original issue acceptance.\n\nRead current Scenario driver, scheduler, persisted Run/action receipts, scoped publication adapter and generated impl recipe. Implement durable typed progress for the actual default documented drive/service cadence (30000ms). Publication currently has an immutable 120000ms step bound; multiple genuine preparation checkpoints must be able to advance without forcing every progress resume to wait a poll interval. Grant immediate progress only from a closed finite per-intent frontier bound to exact input/intent identity and trusted native receipts. Repeated unchanged pending, uncertainty, idle waiting, arbitrary caller sequence, or replayed frontier cannot earn another credit. Persist progress acknowledgement and consumed resume reservation atomically so restart cannot reuse a consumed credit. Retain genuine idle cadence and all original max-resume/Task/dispatch/repair/time budgets. Idle polls do not consume Task dispatch allowance. No busy loop and no deadline reset, budget increase, caller-backdated clock, or hidden retry.\n\nValidate the complete effective driver schedule and publication-step compatibility before paid work at every actual start path (including start --execute). Default documented service must succeed; custom incompatible cadence/deadline must fail with actionable reason before a Task dispatch. A typed bounded blocker, not a repeated CLI error or active forever state, records expiry, exhausted allowance, scope/corruption/credentials boundaries. Ordinary native code failure follows existing bounded repair rather than requiring owner interaction.\n\nAdd meaningful isolated regressions through the ACTUAL native driver/default service lifecycle, generated scoped recipe, native accepted Tasks and independent whole-goal verifier, real local Git and controlled HTTP/provider fixtures. Exercise initial gate failure and review findings, multiple repairs, rejected verifier then accepted repair, accepted first/same-PR publication without later signature, delayed CI, uncertain remote response, process interruption and restart, exact one final PR/no duplicate pushes or Task dispatch, expiry/cancel/out-of-scope/merge refusal, and exact cumulative native Task usage/accounting. Synthetic coordinator-only counters do not establish native Task ledger accuracy. Use controlled admitted-provider fixtures with actual native receipts; preserve arbitrary command-Worker refusal, no fabricated accepted proof, no fake guard. Paid live-provider pilot and external GitHub publication are not required.\n\nFor interrupt barriers use independent Runs where combining all crashes would itself consume immutable deadlines; retain one uninterrupted default30s full lifecycle. A killed driver may leave Run status running and a durable not-yet-due reservation: test must wait actual due resume/settlement or terminal outcome, not return just because status differs from waiting. No sleeps/backdating/reset replacing actual persisted scheduling. Report CLI process/service restart proof separately from untested physical VM reboot or mid-Worker termination.\n\nKeep final push/POST/PATCH fresh guards after all blocking observations and retain exact native immutable proof bindings. No renewed repeated full startup-probe validation at every local preparation step. Generic signed/performance flows and external human merge boundary remain unchanged. Version changed persisted/wire shapes coherently across writers/readers/shipped schemas/parity/current positives and genuinely retired negatives; preserve historical captured docs evidence byte-for-byte. Add dated ADR per repository guide, no index/sequence rewrite. Any combined performance-harness source changes require canonical digest --write and --check, no handwritten pins. Preserve CI998/1007 and readiness1013 fixes when integrated.\n\nDeliver executable product and focused real native evidence, not planning/docs only. Required native host gate/reviews remain unchanged. No supplemental timeout investigation jobs or broad unrelated work. Final full original-goal integration and separate e3-base verification remain operator steps after this stage.\n\nIntegrate .operator-inputs/ci1013-native-integration.patch semantically into current C1 source; it is exact native CI candidate9efbb527 (Task mac-1013-release-wait-repair-20261116, materialized70745d74), diff from d35. Preserve newer C1 protocol/schema changes where test-dev-release contexts overlap. Patch includes safe buffered-readiness helper and deterministic positive/negative tests, plus locked fixture DB read/modify/write transactions, observed CI-plan-read synchronization and truthful timeout diagnostics. Original timeout's exactcause was unproven; deterministic lost-update race is established. Do not replace new C1 source with older candidate. Reports/provenance supplied explicitly; remove .operator-inputs completely before sealing to avoid productcontext leakage. Harness metadata omitted intentionally: run canonical harness-digest --write then --check AFTER all integrated code edits. Current C1 gate failed only stale fixtures/performance/kernel-measure/code-policy-measures.toml and inventory.json, stderr1bd1f392 retained.\n\nAlso fix exact required-gate finding#1029: CI candidate functional1924/1924PASS and E2E1498/1499PASS, one rootfailure alsoisolated: scenario::scoped_startup_native_preflight_refuses_command_template_before_zero_task_dispatch. crates/af/tests/it/scenario.rs helper56 expectedexit0 but got af/error@2 Startup template source differs before intended commandWorker refusal. Scope.validate compares template.state/repo/repository_id/authority_commit/source_content_digest. Fixture builds Scope from f.repo/task_state while templatepin may normalize paths; Mac /var vs/private/var alias is a source-grounded HYPOTHESIS, not measuredcause. Inspect exact values and fix genuine owned fixture canonicalization/contract mismatch or proven productcause; preserve strict sourceidentity and arbitrarycommandWorker refusal, zero dispatch and no authority weakening. CurrentC1 author focusedtests145PASS does not negate gateenvironment failure. Run exact test using actual gate-like aliased temp root as appropriate inside authorizednative implementation, no broad supplemental timeout jobs. No new provideradmissionexception.\n\nThis is complete bounded next-stage implementation, not a fresh broad diagnosis. Deliver actual defaultdriver + wholelifecycle plus above concrete integration/check fixes; do not stop after only harness or fixtures. Final originalGoal/requirements/e3verification remain required afterward.",
+  "requirements": {
+    "issue_url": "https://github.com/PakhomovAlexander/afactory/issues/834",
+    "stage": "C2: durable continuous default driver and combined native lifecycle",
+    "acceptance": [
+      "Actual default30s drive/service finishes scoped publication within unchanged immutable deadlines using finite typed retained progress, not tight manual resumes.",
+      "Repeated/no-progress/idle states retain bounded cadence; progress credits and resume reservations survive restart without duplicate dispatch or effects.",
+      "Complete effective schedule is validated before any paid Task at all start paths; incompatible custom schedules and exhausted/corrupt/scope/credential boundaries have durable truthful blockers.",
+      "Actual native lifecycle regression proves bounded repairs, independent verification before first/samePR publication, delayed CI, uncertain effects, process restart, exactly one PR and exact cumulative native Task accounting.",
+      "Fresh scoped authority and original limits remain strict; all changed formats and canonical harness pins are coherent; tested/untested durability claims are explicit."
+    ],
+    "constraints": [
+      "Use the activated public Pipelines and codex-personal; local gates only.",
+      "No direct model or arbitrary shell dispatch from Scenario definitions; models remain inside native Tasks.",
+      "Preserve existing generic exact-decision capability where still useful; introduce an explicit scoped capability rather than silently widening all publication.",
+      "No merge permission; no runtime signing-key retention or synthesized human signatures.",
+      "Do not couple this fix to unrelated #815 or #805 support candidates, which are not merged/shipped. Assess composition dependencies honestly."
+    ],
+    "original_issue_integration_context": {
+      "issue_url": "https://github.com/PakhomovAlexander/afactory/issues/834",
+      "title": "Durable impl Scenario under validated startup authority",
+      "acceptance": [
+        "An explicit owner-controlled startup scope binds the exact issue/Task template pool, allowed Pipeline/provider bindings, repository and destination identities, permitted operations and branch namespace, budgets, repair limits and expiry; startup validates the complete effective scope before paid Task execution or publication.",
+        "Ordinary gate failure and changes_requested results route typed native findings/check evidence into bounded fresh repair Tasks without treating unaccepted results as accepted publication candidates. Acceptance and whole-change independent verification remain required before publication.",
+        "Within the pinned startup scope, first and same-PR repair publication proceed without a later human signature or a retained signing key. Out-of-scope actions remain refused; human merge remains an external boundary.",
+        "A bounded continuous driver resumes waiting and interrupted Runs using retained native identity, exact accounting and reconciled effects. It survives CLI disconnect/restart under a documented service lifecycle, never duplicates Task dispatch, push or PR creation, and does not spend dispatch allowance merely by counting idle polling ticks.",
+        "Actionable human-only blockers are distinguished from retryable/transient waits and repairable code failures. Budget, repair-limit, expiry, corruption, credentials and scope boundaries remain truthful and bounded; no automatic widening, fake success or missing-evidence acceptance.",
+        "Isolated native regressions cover initial gate failure, review findings, multiple repairs, accepted publication, delayed checks, uncertain publication response, process interruption/restart, forbidden scope/merge, budget exhaustion, and exactly one final PR with exact cumulative Task accounting.",
+        "Add a dated ADR that explicitly supersedes only the affected generic publication/Wait/repair clauses, update writers/readers/schemas/parity coherently for changed persisted shapes, and document tested versus untested durability claims. Existing historical Stores/plans are never rewritten."
+      ],
+      "constraints": [
+        "Use the activated public Pipelines and codex-personal; local gates only.",
+        "No direct model or arbitrary shell dispatch from Scenario definitions; models remain inside native Tasks.",
+        "Preserve existing generic exact-decision capability where still useful; introduce an explicit scoped capability rather than silently widening all publication.",
+        "No merge permission; no runtime signing-key retention or synthesized human signatures.",
+        "Do not couple this fix to unrelated #815 or #805 support candidates, which are not merged/shipped. Assess composition dependencies honestly."
+      ],
+      "evidence": [
+        "Claw v0.15.1-rc.3 native impl runs 763/785/768 became failed at root/implement after ordinary changes_requested/gate_failed Task outcomes.",
+        "Claw impl803 accepted Task waited root/publication-owner despite owner conversational approval; operator signing and resume produced PR833. This approval had not been represented as typed native startup standing authority.",
+        "Existing host.rs converts unaccepted Task results to Settlement::TaskFailed; Task datum contract requires accepted result.",
+        "Existing docs/scenario-impl.md admits CI repairs only and fresh exact signed publication for each; ADR0274 Wait observes once per drive.",
+        "Earlier uncertain publication reconciled to PR807 without duplication; repeated resume preserved Task identity/accounting. VM reboot and mid-Worker-kill recovery were not tested."
+      ]
+    }
+  },
+  "base": {
+    "commit": "b186ef204bc1341b5bc8b6d25987052d0c30da41"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "status": "explicit unverified sealed candidate handoff; C2 native gate not accepted",
+  "task": "mac-834-continuous-driver-20261116",
+  "snapshot": "6cfde59647bc58ae7ad87a38b35320efb84822413dfb8d21e658f9407115c6eb",
+  "materialized_commit": "b68896d533894f6d0e1cfdf58378611078f90ca6",
+  "patch_base": "895cdf01730ccbd37fd1aeaede3b6d02a7316ab2",
+  "integration_main": "3ddf026579b1fd2acaf2716cdac2a5fae1a4d93f",
+  "patch_sha256": "54deb7614c827214489739e5d2840daac2c58185ac1a823f9ac8023dde057210",
+  "instructions": "AF author must apply full source patch semantically, resolve conflicts preserving main996 and all C2 requirements, regenerate canonical release/harness, remove .operator-inputs before seal; no manual product edits performed."
+}
