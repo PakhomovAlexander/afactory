@@ -6,3 +6,7 @@
   measurement algorithms or publication authority. No performance improvement is claimed.
 - Admit exact project-owned native and performance schema identities in release-controller
   preflight; malformed and foreign declarations still fail before candidate or remote effects.
+- Make cleanup test HOME directories explicitly owner-private, including interrupted
+  recreation, with a child-process umask 022 regression. Keep watcher test state and sockets
+  in short canonical private `/var/tmp` fixtures, independently of ambient temporary-directory
+  checkout markers; retain production account, checkout and audit Store guards.

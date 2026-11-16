@@ -38,8 +38,8 @@ class Events(test_planning.History):
 
     def schedule(self, event, settings=None):
         doc, plans = ci.schedule(self.git, event, settings or self.settings())
-        # Every document the scheduler writes passes its own reader.
         self.assertEqual(doc["schema"], "af.perf-schedule/3")
+        # Every document the scheduler writes passes its own reader.
         self.assertEqual(contracts.read_json(contracts.write_bytes(doc, "schedule"),
                                              "schedule"), doc)
         with self.assertRaisesRegex(ContractError, "expected.*af.perf-schedule/3"):

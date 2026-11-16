@@ -165,11 +165,11 @@ class ReleaseContract(unittest.TestCase):
         expected = {
             'task-wake-route-v1.json': 'af/task-wake-route@1',
             'task-wake-status-v1.json': 'af/task-wake-status@1',
-            'performance-run-v8.json': 'af.perf-run/8',
             'performance-executor-v5.json': 'af.perf-executor/5',
             'performance-history-v2.json': 'af.perf-history/2',
             'performance-equivalence-v2.json': 'af.perf-equivalence/2',
             'performance-schedule-v3.json': 'af.perf-schedule/3',
+            'performance-run-v8.json': 'af.perf-run/8',
             'performance-supervisor-request-v5.json': 'af.perf-supervisor-request/5',
             'performance-supervisor-result-v6.json': 'af.perf-supervisor-result/6',
         }
