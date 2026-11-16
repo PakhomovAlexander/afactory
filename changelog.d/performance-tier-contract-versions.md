@@ -4,3 +4,5 @@
   [ADR-0145](../docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
   Synchronize schemas, fixtures and release/harness declarations without changing tier rules,
   measurement algorithms or publication authority. No performance improvement is claimed.
+- Admit exact project-owned native and performance schema identities in release-controller
+  preflight; malformed and foreign declarations still fail before candidate or remote effects.
