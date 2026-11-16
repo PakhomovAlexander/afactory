@@ -225,6 +225,7 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
     },
     /// Drive a recorded Run continuously under its retained startup schedule
     Drive {
+        /// Local Run label in the selected Scenario Store
         run_id: String,
         /// Reserve and perform at most one due resume, then return
         #[arg(long)]
@@ -234,6 +235,7 @@ af scenario experiment-source --file source.json --repo /project \\\n    --task-
     },
     /// Inspect the retained cadence, consumed checkpoints, reservations and blocker
     DriverStatus {
+        /// Local Run label in the selected Scenario Store
         run_id: String,
         #[command(flatten)]
         inspect: Inspect,
