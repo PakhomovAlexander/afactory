@@ -21,6 +21,7 @@ fn workspace() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
+#[cfg(target_os = "linux")]
 fn wake_wait_for_child_record(state: &Path) {
     let until = Instant::now() + Duration::from_secs(60);
     while !state.join("runs/gc-older-1.json").exists() {

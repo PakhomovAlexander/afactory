@@ -71,7 +71,7 @@ class WorkflowCleanup(ContainedBase):
         self.scratch = self.mount
         os.makedirs(self.executor.directory)
         self.run_dir = os.path.join(self.executor.directory, "one")
-        os.mkdir(self.run_dir)
+        os.mkdir(self.run_dir, 0o700)
 
     def argv(self, command, cleanup=None):
         for step in self.steps:
@@ -119,6 +119,7 @@ class WorkflowCleanup(ContainedBase):
         return self.executor.run(execution(self, command, cwd=self.run_dir, label=label))
 
     def test_stopped_execution_cleans_even_without_a_result_boolean(self):
+        self.assertEqual(os.stat(self.run_dir).st_mode & 0o777, 0o700)
         with self.owner() as owner:
             result = self.run_execution(owner)
             self.assertEqual(result.cleanup, "confirmed")
@@ -597,7 +598,7 @@ class WorkflowCleanup(ContainedBase):
                          "delete", "settle_read", "settle_write"):
             with self.subTest(boundary=boundary):
                 if not os.path.isdir(self.run_dir):
-                    os.mkdir(self.run_dir)
+                    os.mkdir(self.run_dir, 0o700)
                 Path(self.run_dir, "candidate-data").write_bytes(b"retained")
                 with self.owner() as owner:
                     # Each subcase's explicit test-owned recovery restores the initial state.
