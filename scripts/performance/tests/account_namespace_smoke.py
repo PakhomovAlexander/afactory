@@ -35,7 +35,7 @@ def foreign_ancestor(parent, mode):
         info = original(path, *args, **kwargs)
         if path == parent:
             values = list(info)
-            values[4] = 0
+            values[4] = 0 if os.geteuid() != 0 else 65534
             values[0] = (values[0] & ~0o7777) | mode
             return os.stat_result(values)
         return info
@@ -66,6 +66,15 @@ def child(case, af, parent_mode):
     assert stat.S_IMODE(case.parent.stat().st_mode) == parent_mode
     assert case.parent.stat().st_uid == os.geteuid()
     assert Path.cwd() == case / 'cwd'
+    if case.parent.name == 'split-tmp':
+        assert Path('/tmp').stat().st_dev != case.stat().st_dev
+    if parent_mode == 0o711:
+        try:
+            os.listdir(case.parent / 'search-only-original')
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError('non-root child could list the original search-only parent')
     for path, expected in json.loads((case / 'identities.json').read_text()):
         assert identity(Path(path)) == expected, path
     for path, expected in json.loads((case / 'volumes.json').read_text()):
@@ -119,7 +128,7 @@ def child(case, af, parent_mode):
     print('non-root namespace: inventory, native Provider refusal and ready Task:', case.name)
 
 
-def parsed_measurements(root, af, resolver):
+def parsed_measurements(root, af, resolver, work_root):
     """Public supported syntax plus actual scripts/executor, outside any private NSS mount.
 
     The AF alias and corpus are outside cwd/HOME/PATH/source/other declared branches.
@@ -129,7 +138,7 @@ def parsed_measurements(root, af, resolver):
     with tempfile.TemporaryDirectory(prefix='af-declared-inputs-', dir='/tmp') as inputs, \
             tempfile.TemporaryDirectory(prefix='af-declared-corpus-', dir='/tmp') as corpus_root, \
             tempfile.TemporaryDirectory(prefix='af-declared-outputs-', dir='/tmp') as outputs, \
-            tempfile.TemporaryDirectory(prefix='namespace-work-', dir=ROOT / 'target') as work:
+            tempfile.TemporaryDirectory(prefix='namespace-work-', dir=work_root) as work:
         inputs, outputs, work = Path(inputs), Path(outputs), Path(work)
         binary = inputs / 'tools/af'
         binary.parent.mkdir()
@@ -194,8 +203,78 @@ def parsed_measurements(root, af, resolver):
         print('parsed namespace inputs: all scripts, both AF forms and actual local executor', flush=True)
 
 
-def exercise(root, af, resolver, family):
-    assert os.geteuid() != 0, 'required regression must exercise a non-root AF'
+@contextmanager
+def fixture_namespace(root, family, home, command, env, cwd, af, resolver):
+    """One owned launch, including path-family and genuine split-volume fixtures.
+
+    Only mount destinations/fixture selectors change. Bind sources remain the actual
+    files and private containers prepared by the production launcher, in its order.
+    """
+    from contextlib import ExitStack
+    parent = {'home': '/home', 'var': '/var/tmp', 'usr-local': '/usr/local',
+              'split-tmp': '/home'}.get(family)
+    alias = Path(parent) / 'af-account-fixture' if parent else root
+
+    def mapped(value):
+        value = str(value)
+        return str(alias) + value[len(str(root)):] if (
+            value == str(root) or value.startswith(str(root) + '/')) else value
+
+    with ExitStack() as resources:
+        split = None
+        if family == 'split-tmp':
+            split = Path(resources.enter_context(tempfile.TemporaryDirectory(
+                prefix='af-split-tmp-', dir='/dev/shm')))
+            split.chmod(0o1777)
+            assert split.stat().st_dev != home.stat().st_dev
+            # The composed /tmp is this real filesystem, with its actual capacity.
+            records = json.loads((home.parent / 'volumes.json').read_text())
+            records[0][1] = volume(split)
+            (home.parent / 'volumes.json').write_text(json.dumps(records))
+        argv = resources.enter_context(account_isolation.namespace_argv(
+            home, command, env=env, cwd=cwd,
+            inputs=(Path(__file__).resolve(), home.parent, af, resolver),
+            directories=(() if parent is None else (parent,))))
+        boundary = argv.index('--')
+        mounts = [(argv[i], argv[i + 1], argv[i + 2]) for i in range(boundary)
+                  if argv[i] in ('--bind', '--dev-bind', '--ro-bind', '--symlink')]
+        extra = ['--disable-userns', '--chdir', mapped(cwd)]
+        if split is not None:
+            extra += ['--bind', str(split), '/tmp']
+            # Keep held runtime/source/private HOME branches below /tmp visible on
+            # their original devices after the overlay, in the launcher's order.
+            for flag, source, target in mounts:
+                if target.startswith('/tmp/'):
+                    extra += [flag, source, target]
+        if alias != root:
+            for flag, source, target in mounts:
+                if mapped(target) != target:
+                    extra += [flag, source, mapped(target)]
+            # Expected identity paths must exercise the aliases as well.
+            for name in ('identities.json', 'volumes.json'):
+                path = home.parent / name
+                records = json.loads(path.read_text())
+                path.write_text(json.dumps([(mapped(p), facts) for p, facts in records]))
+        if stat.S_IMODE(home.parent.parent.stat().st_mode) == 0o711:
+            # Also prove real search-only access as the final non-root UID when the
+            # preparing caller is root and can bypass directory read permissions.
+            extra += ['--bind', str(home.parent.parent),
+                      mapped(home.parent.parent / 'search-only-original')]
+        # The source and binary stay held and read-only, even below the /tmp overlay.
+        extra += ['--ro-bind', str(ROOT), str(ROOT), '--ro-bind', af, af]
+        uid, gid = (os.geteuid() or 1000), (os.getegid() or 1000)
+        argv[argv.index('--uid') + 1] = str(uid)
+        argv[argv.index('--gid') + 1] = str(gid)
+        passwd = next(Path(source) for flag, source, target in mounts if target == '/etc/passwd')
+        passwd.write_text('af-measurement:x:%d:%d:AF measurement:%s:/bin/false\n' % (
+            uid, gid, mapped(home)))
+        marker = argv.index('PERFLAB_ACCOUNT_FILE') + 1
+        argv[marker] = mapped(argv[marker])
+        argv[boundary:] = [*extra, '--', *map(mapped, command)]
+        yield argv, {name: mapped(value) for name, value in env.items()}
+
+
+def exercise(root, af, resolver, family, work_root):
     for name, mode, populated in (('ordinary', 0o755, False),
                                  ('search-only', 0o711, False),
                                  ('populated', 0o755, True)):
@@ -203,8 +282,6 @@ def exercise(root, af, resolver, family):
         parent = case.parent
         # Rust seeds this actual account authority with valid CAS/SQLite state.
         assert (case / 'os-account/.local/state/af/task/local').is_dir()
-        if family == 'split-tmp':
-            assert Path('/tmp').stat().st_dev != case.stat().st_dev
         for directory in ('home', 'config', 'state', 'data', 'cache', 'tmp', 'cwd', 'bin'):
             (case / directory).mkdir(mode=0o700)
         (case / 'source').write_text('original source bytes\n')
@@ -234,30 +311,30 @@ def exercise(root, af, resolver, family):
         command = [sys.executable, '-I', '-B', str(Path(__file__).resolve()), '--child',
                    str(case), str(case / 'bin/af-link'), str(mode)]
         with foreign_ancestor(parent, mode):
-            if mode == 0o711:
+            if mode == 0o711 and os.geteuid() != 0:
                 try:
                     os.listdir(parent)
                 except PermissionError:
                     pass
                 else:
                     raise AssertionError('search-only fixture permitted sibling listing')
-            # env/cwd, executable symlinks and runtime fixture roots are separate
-            # declared inputs. No unrelated entry may become a mount argument.
-            with account_isolation.namespace_argv(
-                    case / 'os-account', command, env=env, cwd=case / 'cwd',
-                    inputs=(Path(__file__).resolve(), case, af, resolver)) as argv:
+            # Prepare against real caller-owned paths, then compose the fixture alias
+            # into this SAME namespace. The final AF runs as non-root with real NSS;
+            # no Python orchestrator first enters a user namespace of its own.
+            with fixture_namespace(root, family, case / 'os-account', command,
+                                   env, case / 'cwd', af, resolver) as (argv, child_env):
                 assert sum(len(os.fsencode(arg)) + 1 for arg in argv) < 65536
                 assert not any('unrelated-' in arg for arg in argv)
-                result = subprocess.run(argv, env=env, cwd=case / 'cwd',
+                result = subprocess.run(argv, env=child_env, cwd=case / 'cwd',
                                         capture_output=True, text=True)
                 assert result.returncode == 0, (family, name, result.stdout, result.stderr)
             print(result.stdout, end='', flush=True)
     if family == 'tmp':
-        parsed_measurements(root, af, resolver)
+        parsed_measurements(root, af, resolver, work_root)
 
 
 if __name__ == '__main__':
     if sys.argv[1] == '--child':
         child(Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
     else:
-        exercise(Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4])
+        exercise(Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], Path(sys.argv[5]))

@@ -1446,59 +1446,28 @@ for name in ('telemetry-overhead.py', 'telemetry-invocation-cost.py', 'telemetry
                 .unwrap();
         }
     }
-    // Map the invoking owner to a non-root UID even when CI itself starts as root.
-    // Other host owners remain unmapped; never promote overflow ownership to root.
+    // Writable measurement work belongs to Cargo's runtime volume, independently of
+    // the sealed source and of a potentially small /tmp filesystem.
+    let work_home = crate::common::private_home_env()
+        .into_iter()
+        .find(|(name, _)| *name == "HOME")
+        .unwrap()
+        .1;
+    let work = tempfile::Builder::new()
+        .prefix("namespace-work-")
+        .tempdir_in(work_home)
+        .unwrap();
+    // The helper prepares each launch outside its one user namespace. It composes
+    // aliases/split filesystems there and maps even a root caller to non-root AF.
     for family in ["tmp", "home", "var", "usr-local", "split-tmp"] {
-        let mut command = Command::new("bwrap");
-        command.args([
-            "--unshare-user",
-            "--uid",
-            "1000",
-            "--gid",
-            "1000",
-            "--bind",
-            "/",
-            "/",
-            "--dev-bind",
-            "/dev",
-            "/dev",
-        ]);
-        if family == "split-tmp" {
-            // A distinct original temporary filesystem, even on single-volume CI.
-            // Bind the held source/executable below only after installing this overlay.
-            command.args(["--perms", "1777", "--tmpfs", "/tmp"]);
-        }
-        let root = if family == "tmp" {
-            machine.root.clone()
-        } else {
-            // Overlay only a private fixture parent. Higher runtime ancestry remains
-            // genuinely foreign/unmapped, without writing/chmodding host directories.
-            let parent = match family {
-                "home" | "split-tmp" => "/home",
-                "var" => "/var/tmp",
-                "usr-local" => "/usr/local",
-                _ => unreachable!(),
-            };
-            let alias = PathBuf::from(parent).join("af-account-fixture");
-            command
-                .args(["--perms", "1777", "--tmpfs", parent, "--bind"])
-                .arg(&machine.root)
-                .arg(&alias)
-                .arg("--bind")
-                .arg(workspace())
-                .arg(workspace())
-                .arg("--bind")
-                .arg(crate::common::af_binary())
-                .arg(crate::common::af_binary());
-            alias
-        };
-        let native = command
-            .args(["--", "python3", "-I", "-B"])
+        let native = Command::new("python3")
+            .args(["-I", "-B"])
             .arg(workspace().join("scripts/performance/tests/account_namespace_smoke.py"))
-            .arg(&root)
+            .arg(&machine.root)
             .arg(crate::common::af_binary())
-            .arg(root.join("account-resolver.so"))
+            .arg(&resolver)
             .arg(family)
+            .arg(work.path())
             .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
             .output()
             .unwrap();

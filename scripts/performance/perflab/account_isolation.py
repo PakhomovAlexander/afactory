@@ -243,6 +243,18 @@ def main():
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command:
         parser.error('a command is required')
+    if sys.platform == "linux" and in_private_account_namespace():
+        # As with run_script and TrustedLocal, retain the already authenticated
+        # private OS account. Release smoke may request a fresh process HOME inside
+        # that account; it needs no second user namespace (or replacement NSS).
+        Path(args.home).mkdir(mode=0o700, exist_ok=True)
+        private_home(args.home)
+        for path in (*args.input, *args.directory):
+            Path(path).stat()
+        for path in args.output:
+            with Path(path).open('ab'):
+                pass
+        return subprocess.call(command)
     with namespace_argv(args.home, command, inputs=args.input,
                         directories=args.directory, outputs=args.output) as argv:
         return subprocess.call(argv)

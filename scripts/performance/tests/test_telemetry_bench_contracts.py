@@ -316,37 +316,67 @@ pathlib.Path(a.report).write_text(pathlib.Path(a.input).read_text())
         if sys.platform != 'linux':
             self.skipTest('Linux user/mount namespace contract')
         from tests.support import ROOT
-        # The outer fixture supplies a genuinely distinct original /tmp filesystem,
-        # irrespective of the host layout. HOME stays on the checkout's real device.
+        from perflab import account_isolation
         import tempfile
-        target = pathlib.Path(ROOT) / 'target'
-        target.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=target) as directory:
-            home = pathlib.Path(directory) / 'home'
-            home.mkdir(mode=0o700)
-            program = '''
-import json, os, pathlib, subprocess, sys
-sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / 'scripts/performance'))
-from perflab import account_isolation
-home = pathlib.Path(sys.argv[2])
-def volume(p):
-    v = os.statvfs(p)
-    return [os.stat(p).st_dev, v.f_blocks, v.f_frsize]
-before = volume('/tmp')
-assert before[0] != volume(home)[0]
-code = "import os,json; v=os.statvfs('/tmp'); print(json.dumps([os.stat('/tmp').st_dev,v.f_blocks,v.f_frsize]))"
-with account_isolation.namespace_argv(home, [sys.executable, '-I', '-c', code]) as argv:
-    backings = [pathlib.Path(argv[i+1]) for i, v in enumerate(argv) if v == '--bind' and 'af-namespace-' in argv[i+1]]
-    r = subprocess.run(argv, capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout) == before, (r.stdout, before)
-assert all(not p.exists() for p in backings), backings
-'''
-            result = subprocess.run([
-                'bwrap', '--unshare-user', '--uid', str(os.geteuid()), '--gid', str(os.getegid()),
-                '--bind', '/', '/', '--tmpfs', '/tmp', '--', sys.executable, '-I', '-B', '-c',
-                program, ROOT, str(home)], capture_output=True, text=True)
+        # An existing distinct writable filesystem needs no outer user namespace.
+        # Neither source nor Cargo's build directory is writable fixture state.
+        with tempfile.TemporaryDirectory(prefix='af-split-home-', dir='/dev/shm') as directory, \
+                tempfile.TemporaryDirectory(prefix='af-split-runtime-',
+                                            dir=os.environ.get('CARGO_TARGET_DIR')) as runtime:
+            home = pathlib.Path(directory)
+            def volume(path):
+                info = os.statvfs(path)
+                return [pathlib.Path(path).stat().st_dev, info.f_blocks, info.f_frsize]
+            before = volume('/tmp')
+            self.assertNotEqual(before[0], volume(home)[0])
+            held = home.stat()
+            source = pathlib.Path(ROOT) / 'scripts/performance/perflab/account_isolation.py'
+            source_bytes = source.read_bytes()
+            program = """
+import json, os, pathlib, sys
+home, source = map(pathlib.Path, sys.argv[1:])
+v = os.statvfs('/tmp')
+print(json.dumps([[os.stat('/tmp').st_dev, v.f_blocks, v.f_frsize],
+                  [home.stat().st_dev, home.stat().st_ino], source.read_text()]))
+"""
+            with account_isolation.namespace_argv(
+                    home, [sys.executable, '-I', '-B', '-c', program, str(home), str(source)],
+                    inputs=(ROOT,), directories=(runtime,)) as argv:
+                backings = [pathlib.Path(argv[i + 1]) for i, word in enumerate(argv)
+                            if word == '--bind' and 'af-namespace-' in argv[i + 1]]
+                # The final child cannot enter another user namespace. This exercises
+                # the same one-level composition supported by normal Ubuntu runners.
+                boundary = argv.index('--')
+                argv[boundary:boundary] = ['--disable-userns', '--ro-bind', ROOT, ROOT]
+                result = subprocess.run(argv, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout),
+                                 [before, [held.st_dev, held.st_ino], source_bytes.decode()])
+            self.assertTrue(backings)
+            self.assertTrue(all(not path.exists() for path in backings), backings)
+
+    def test_cli_retains_authenticated_account_without_nested_user_namespace(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from tests.support import ROOT
+        from perflab import account_isolation
+        home = pathlib.Path(self.path('home'))
+        home.mkdir(mode=0o700)
+        process_home = pathlib.Path(self.path('process-home'))
+        process_home.mkdir(mode=0o700)
+        launcher = str(pathlib.Path(ROOT) / 'scripts/performance/perflab/account_isolation.py')
+        program = "import pwd,os,sys; assert pwd.getpwuid(os.geteuid()).pw_dir == sys.argv[1]"
+        command = [sys.executable, '-I', '-B', launcher, str(process_home), '--',
+                   sys.executable, '-I', '-c', program, str(home)]
+        with account_isolation.namespace_argv(home, command, inputs=(ROOT, process_home)) as argv:
+            argv.insert(argv.index('--'), '--disable-userns')
+            result = subprocess.run(argv, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            # A marker alone cannot authorize the same shortcut outside the namespace.
+            marker = argv[argv.index('PERFLAB_ACCOUNT_FILE') + 1]
+            result = subprocess.run(command, env=dict(os.environ, PERFLAB_ACCOUNT_FILE=marker),
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
 
     def test_unavailable_same_volume_backing_refuses_and_removes_preparation(self):
         if sys.platform != 'linux':
