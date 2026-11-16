@@ -312,11 +312,74 @@ pathlib.Path(a.report).write_text(pathlib.Path(a.input).read_text())
                     result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_aliases_retain_whole_root_under_direct_and_retained_ancestor_mounts(self):
+        if sys.platform != 'linux':
+            self.skipTest('Linux user/mount namespace contract')
+        from contextlib import contextmanager, nullcontext
+        from unittest import mock
+        from tests.account_namespace_smoke import fixture_namespace, foreign_ancestor, identity, volume
+        from tests.support import ROOT
+        from perflab import account_isolation
+        original = account_isolation.namespace_argv
+        program = """
+import json, os, pathlib, pwd, sys
+sys.path.insert(0, sys.argv[1])
+from tests.account_namespace_smoke import identity, volume
+from perflab import account_isolation
+root, case = map(pathlib.Path, sys.argv[2:])
+assert account_isolation.in_private_account_namespace()
+assert pathlib.Path.cwd() == case / 'cwd'
+assert pwd.getpwuid(os.geteuid()).pw_dir == str(case / 'os-account')
+assert root.stat().st_uid == os.geteuid()
+for path, expected in json.loads((case / 'identities.json').read_text()):
+    assert identity(pathlib.Path(path)) == expected, path
+for path, expected in json.loads((case / 'volumes.json').read_text()):
+    assert volume(path) == expected, path
+assert (root / 'account-resolver.so').read_text() == 'held library'
+"""
+        for direct in (False, True):
+            for family in ('home', 'var', 'usr-local', 'split-tmp'):
+                with self.subTest(direct=direct, family=family):
+                    parent = pathlib.Path(self.path('%s-%s' % (direct, family)))
+                    root = parent / 'fixture'
+                    case = root / family / 'ordinary'
+                    home = case / 'os-account'
+                    home.mkdir(parents=True, mode=0o700)
+                    (case / 'cwd').mkdir()
+                    resolver = root / 'account-resolver.so'
+                    resolver.write_text('held library')
+                    (case / 'identities.json').write_text(json.dumps(
+                        [(str(p), identity(p)) for p in (resolver, pathlib.Path(sys.executable))]))
+                    (case / 'volumes.json').write_text(json.dumps(
+                        [(str(p), volume(p)) for p in (pathlib.Path('/tmp'), home)]))
+                    observed = []
+                    @contextmanager
+                    def recording(*args, **kwargs):
+                        with original(*args, **kwargs) as argv:
+                            observed.extend(argv[i + 2] for i, word in enumerate(argv)
+                                            if word in ('--bind', '--dev-bind', '--ro-bind'))
+                            yield argv
+                    # Real production extraction emits root only when its parent is
+                    # reconstructed. Both shapes must seed every alias identically.
+                    ancestry = foreign_ancestor(parent, 0o755) if direct else nullcontext()
+                    env = dict(os.environ, HOME=str(home))
+                    command = [sys.executable, '-I', '-B', '-c', program,
+                               str(pathlib.Path(ROOT) / 'scripts/performance'), str(root), str(case)]
+                    with ancestry, mock.patch.object(account_isolation, 'namespace_argv', recording):
+                        with fixture_namespace(root, family, home, command, env,
+                                               case / 'cwd', str(pathlib.Path(sys.executable).resolve()),
+                                               str(resolver)) as (argv, env):
+                            self.assertEqual(str(root) in observed, direct)
+                            result = subprocess.run(argv, cwd=case / 'cwd', env=env,
+                                                    capture_output=True, text=True)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_actual_child_retains_separate_tmp_volume_and_cleans_backings(self):
         if sys.platform != 'linux':
             self.skipTest('Linux user/mount namespace contract')
         from tests.support import ROOT
         from perflab import account_isolation
+        from unittest import mock
         import tempfile
         # An existing distinct writable filesystem needs no outer user namespace.
         # Neither source nor Cargo's build directory is writable fixture state.
@@ -332,16 +395,36 @@ pathlib.Path(a.report).write_text(pathlib.Path(a.input).read_text())
             held = home.stat()
             source = pathlib.Path(ROOT) / 'scripts/performance/perflab/account_isolation.py'
             source_bytes = source.read_bytes()
+            # Model an owned runtime /dev parent using an actual private directory.
+            # Normal non-root callers cannot allocate backings on devtmpfs. Only this
+            # parent topology is supplied to the launcher; the mount below realizes
+            # it in the child, retaining the real shared-memory HOME underneath it.
+            # /tmp is never overlaid: choosing HOME's filesystem for it must fail.
+            dev = pathlib.Path(runtime) / 'dev'
+            dev.mkdir()
+            original_stat = pathlib.Path.stat
+            def fixture_stat(path, *args, **kwargs):
+                return original_stat(dev if path == pathlib.Path('/dev') else path,
+                                     *args, **kwargs)
             program = """
 import json, os, pathlib, sys
 home, source = map(pathlib.Path, sys.argv[1:])
 v = os.statvfs('/tmp')
 print(json.dumps([[os.stat('/tmp').st_dev, v.f_blocks, v.f_frsize],
-                  [home.stat().st_dev, home.stat().st_ino], source.read_text()]))
+                  [home.stat().st_dev, home.stat().st_ino], source.read_text(),
+                  [os.stat('/dev').st_dev, os.stat('/dev').st_ino, os.stat('/dev').st_uid]]))
 """
-            with account_isolation.namespace_argv(
+            with mock.patch.object(pathlib.Path, 'stat', fixture_stat), \
+                    account_isolation.namespace_argv(
                     home, [sys.executable, '-I', '-B', '-c', program, str(home), str(source)],
-                    inputs=(ROOT,), directories=(runtime,)) as argv:
+                    cwd=runtime, inputs=(ROOT,), directories=(runtime,)) as argv:
+                # Replace only the modeled parent, before all prepared descendants.
+                # Reattach the genuine /dev/shm even when an owned ancestor meant the
+                # launcher needed no individual mount for that runtime branch.
+                index = argv.index('--dev-bind')
+                self.assertEqual(argv[index + 1:index + 3], ['/dev', '/dev'])
+                argv[index:index + 3] = ['--bind', str(dev), '/dev',
+                                         '--bind', '/dev/shm', '/dev/shm']
                 backings = [pathlib.Path(argv[i + 1]) for i, word in enumerate(argv)
                             if word == '--bind' and 'af-namespace-' in argv[i + 1]]
                 # The final child cannot enter another user namespace. This exercises
@@ -351,7 +434,8 @@ print(json.dumps([[os.stat('/tmp').st_dev, v.f_blocks, v.f_frsize],
                 result = subprocess.run(argv, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout),
-                                 [before, [held.st_dev, held.st_ino], source_bytes.decode()])
+                                 [before, [held.st_dev, held.st_ino], source_bytes.decode(),
+                                  [dev.stat().st_dev, dev.stat().st_ino, os.geteuid()]])
             self.assertTrue(backings)
             self.assertTrue(all(not path.exists() for path in backings), backings)
 

@@ -247,8 +247,12 @@ def fixture_namespace(root, family, home, command, env, cwd, af, resolver):
                 if target.startswith('/tmp/'):
                     extra += [flag, source, target]
         if alias != root:
+            # A retained caller-owned ancestor may contain root without emitting a
+            # root mount. Seed the whole private fixture, then replay only prepared
+            # descendants: never bind that broad ancestor over the alias's parents.
+            extra += ['--bind', str(root), str(alias)]
             for flag, source, target in mounts:
-                if mapped(target) != target:
+                if target.startswith(str(root) + '/'):
                     extra += [flag, source, mapped(target)]
             # Expected identity paths must exercise the aliases as well.
             for name in ('identities.json', 'volumes.json'):
