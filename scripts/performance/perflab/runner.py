@@ -41,6 +41,7 @@ the comparator reports them missing and the run incomplete. A signal a shard con
 controller owned it cancels that controller too (`Cancelled`), after the terminal record.
 """
 from fractions import Fraction
+import json
 import os
 import platform
 import shutil
@@ -48,7 +49,7 @@ import signal
 import tempfile
 import time
 
-from . import budget, builds, bundle, capability, cli_cases, contracts, git_refs, host, host_lock
+from . import budget, builds, bundle, capability, cli_cases, contracts, dev_flow, git_refs, host, host_lock
 from . import limits
 from . import oracle, planning, schedule, seeds, supervise
 from .values import ContractError, canonical_bytes, document_bytes, format_decimal, require
@@ -1241,7 +1242,9 @@ class Shard(object):
                 cli_cases.stdout_bytes(log_cap), log_cap, containment=containment,
                 scratch=None if self.mode == TRUSTED_LOCAL else supervise.SCRATCH,
                 grace_ms=GRACE_MS, setup=setup, patterns=cli_cases.patterns(entry),
-                selectors=cli_cases.selectors(entry))
+                selectors=cli_cases.selectors(entry),
+                evidence_paths=(dev_flow.transfer_paths() if self.mode == LINUX_CONTAINER
+                                and case.get("family") == "af_dev_e2e" else ()))
             binaries = {"af": af_path}
             if probe_path is not None:
                 binaries["perf-probe"] = probe_path
@@ -1280,6 +1283,20 @@ class Shard(object):
                 try:
                     reported = cli_cases.tui_report(supervised.stdout)
                 except ContractError as error:
+                    passed, why = False, str(error)
+            if passed and case.get("family") == "af_dev_e2e":
+                try:
+                    if self.mode == LINUX_CONTAINER:
+                        transfer = result["evidence"]
+                        require(transfer is not None and transfer["status"] == "complete",
+                                "development-flow evidence transfer unconfirmed: "
+                                + (transfer["detail"] if transfer else "no capture reported"))
+                        dev_flow.validate_transferred(
+                            supervised.evidence, treatment=case["parameters"]["initial_cache"])
+                    else:
+                        dev_flow.validate(dev_flow.read_document(scratch + "/flow.json"),
+                                          treatment=case["parameters"]["initial_cache"])
+                except (ContractError, ValueError, OSError, json.JSONDecodeError) as error:
                     passed, why = False, str(error)
             record["oracle"].update(status="passed" if passed else "failed",
                                     observed_digest=observed, detail=why[:1024])

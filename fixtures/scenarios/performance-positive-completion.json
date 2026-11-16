@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-scenario-completion/1",
+  "schema": "af.perf-scenario-completion/2",
   "request": {
     "backend": "local",
     "cohort_digest": null,
@@ -87,7 +87,8 @@
         "tolerance": {
           "absolute": "1",
           "relative": "0.05"
-        }
+        },
+        "execution_class": "standard"
       },
       {
         "alpha": "1/40",
@@ -129,7 +130,8 @@
         "tolerance": {
           "absolute": "1",
           "relative": "0.05"
-        }
+        },
+        "execution_class": "standard"
       },
       {
         "alpha": "1/40",
@@ -180,7 +182,8 @@
         "tolerance": {
           "absolute": "1",
           "relative": "0.05"
-        }
+        },
+        "execution_class": "standard"
       }
     ],
     "family_alpha": "1/20",
@@ -224,7 +227,7 @@
     "plan_digest": "sha256:55df419fb7ae773534fc0c42f586762aa99cf93f363dfee285bf181cd75c864e",
     "provenance": "measured",
     "run_id": "local_synthetic",
-    "schema": "af.perf-verdict/2",
+    "schema": "af.perf-verdict/3",
     "scope": "bootstrap",
     "shards": [
       {

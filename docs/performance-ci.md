@@ -117,7 +117,7 @@ concurrency group per pull request, so every label change replaces the running r
    or `refs/tags/` ref resolves as given. A release handoff's call passes only its confirmed
    claim; the control is then the handoff's default-branch SHA, and the claim names what is
    measured. The
-   schedule (`af.perf-schedule/2`) and the frozen plans are uploaded as
+   schedule (`af.perf-schedule/3`) and the frozen plans are uploaded as
    `perf-plan-<actions run>-<attempt>`. The job summary lists every comparison and why any is
    unavailable.
 3. **build** (one per planned run). Pulls the frozen build image, refuses any credential in
@@ -451,7 +451,7 @@ byte-identical. The build closure counts too: every `Cargo.lock` and `Cargo.toml
 `build.rs`, the toolchain pin and any `.cargo` configuration, wherever added, must be unchanged.
 
 A bridge measures as active only with verified execution evidence
-(`af.perf-equivalence/1`, committed beside the manifest and named by path and SHA-256):
+(`af.perf-equivalence/2`, committed beside the manifest and named by path and SHA-256):
 
 1. **Golden check on both product sources.** Dispatch `performance.yml` with `scope`
    `bootstrap`, `base` the calibrated authority, `head` the bridged authority and `authority`

@@ -3,7 +3,7 @@
 A narrowly scoped API bridge keeps the calibrated cohort only with owner-reviewed equivalence:
 unchanged workload, timing, oracle and policy (the protected diff `activation.protected_diff`
 checks), actual golden checks on both product sources, then a post-merge A/A. The last two are
-executions, and this module computes their evidence (`af.perf-equivalence/1`) from two retained
+executions, and this module computes their evidence (`af.perf-equivalence/2`) from two retained
 runs that the bridged authority measured, never from an authored flag or a matching path list:
 
 - **Golden check** (`golden`). Baseline the calibrated product source (the cohort's authority),
@@ -173,7 +173,7 @@ def check_reasons(ctx, role, check):
 
 
 def record(ctx, golden, post_merge_aa):
-    """The af.perf-equivalence/1 document of the two checks under `ctx`."""
+    """The af.perf-equivalence/2 document of the two checks under `ctx`."""
     doc = dict(ctx, schema=contracts.EQUIVALENCE_SCHEMA, golden=golden,
                post_merge_aa=post_merge_aa,
                verified=golden["verified"] and post_merge_aa["verified"],

@@ -319,7 +319,7 @@ FAKE_SUPERVISOR = r'''
 import json, os, subprocess, sys, time
 # HELD_CHILD
 request = json.loads(sys.stdin.buffer.read())
-assert request["schema"] == "af.perf-supervisor-request/4"
+assert request["schema"] == "af.perf-supervisor-request/5"
 # Test hooks: every invocation is counted beside this file, and `overrides.json` there may
 # replace one invocation's outcome by its index, as the real supervisor could report it.
 here = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -435,7 +435,7 @@ elif isinstance(action, str) and action.startswith("tamper:"):
     with open(target, "ab") as stream:
         stream.write(b"# changed by a sample\n")
 result = {
-    "schema": "af.perf-supervisor-result/5",
+    "schema": "af.perf-supervisor-result/6",
     "supervisor": {"platform": "fake", "arch": "fake", "namespace_init": False,
                    "containment": request["containment"]},
     "termination": termination,
@@ -446,7 +446,7 @@ result = {
     "stderr": {"retained": len(kept_err), "total": len(err),
                "truncated": len(err) - len(kept_err)},
     "stdout_pattern_counts": [out.count(pattern) for pattern in patterns],
-    "stdout_json": (observe_json(request["stdout_json"], out) if request["stdout_json"]
+    "evidence": None, "stdout_json": (observe_json(request["stdout_json"], out) if request["stdout_json"]
                     else None),
     "lifecycle": lifecycle,
     "setup": setup_record,
