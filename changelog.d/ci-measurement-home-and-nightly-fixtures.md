@@ -6,3 +6,5 @@
   changes, preserving the release harness check and all protected inputs.
 - Explicitly model Linux in the release launcher's account-mount contract fixture and cover
   Darwin's unchanged command path without Linux account files or mount preparation.
+- Canonicalize the private wake recorder fixture on macOS and test Linux seal durability
+  separately from non-Linux refusal without allocating wake identity or provenance keys.
