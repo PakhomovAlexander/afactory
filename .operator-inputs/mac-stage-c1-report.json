@@ -1,0 +1,19 @@
+{
+  "artifact_id": "sha256:ed723771c8fdfa4a913684abd4ccde0b17a96fbee0642bb28e447700b11d377f",
+  "content_id": "sha256:64d27faf00b149e6b4589dbbdfae3ddfc27bdccd95415bd360ca1ed836d4c064",
+  "input_artifacts": [
+    "sha256:2c0e6ba954abf0b8d30d0693b9b9fa2fb77bbfedf88722fcef5020a06b7a00b7",
+    "sha256:3a62f8d03d3038a9bf1f3d65014e3fe722c90cd8f315ad8e3a8f9410b83ae63a"
+  ],
+  "payload": {
+    "summary": "Implemented Stage C1 with explicit publish_implementation_pr_v1 authority, used by the default generated impl recipe and production adapters without a later signature or retained signing key. Generic signed and performance publication remain separate.\n\nNative proof validates exact accepted implementation and independent verification receipts, plans, results, candidate artifacts, complete review/evaluator evidence, matching original goal/requirements, pinned baseline and same-Run source lineage. Publication rechecks live scope, cancellation/fence/expiry, actor, destination and source/base at mutation boundaries. Retained journals reconcile first and same-PR publication, including lost POST/PATCH responses. PR reports include prior Run Tasks once each.\n\nVersioned affected contracts and schemas, updated release expectations, added the dated ADR and change note, corrected help wrapping, and preserved Unicode in frozen Python launchers.\n\nAdded native Codex-fixture regressions for signature-free publication/repair, accepted narrow-verifier refusal, stale/foreign/unaccepted receipts, captured-Run expiry/cancellation/fencing, final actor/destination/source/base refusals and duplicate-free recovery. No command-Worker admission exception was added.\n\nPassed: pinned Rust 1.88 cargo fmt and workspace Clippy with warnings denied; schema parity; Markdown lint (10 files); release-contract (12), development-release (90), GitHub adapter (28), workspace (88), performance Scenario (49), merge-watch (21), and issue-workflow (26) script tests. Final filtered nextest repeat passed all 145 tests. No live publication, merge or measured improvement is claimed. Continuous service/default cadence and combined whole-lifecycle proof remain explicitly deferred.\n\nlast test run at 2026-11-16T18:00:21Z: binary_id(af-scenario) | (binary_id(af::it) & (test(/^scenario::/) | test(/^help_hygiene::no_help_line_is_wider_than_100_columns/) | test(/^cli_surface::help_json_prints_the_generated_command_catalog/))) | (binary_id(af::bin/af) & (test(/^shipped_schemas::/) | test(/^command_catalog::/))); edits after it: none\nSummary [321.228s] 145 tests run: 145 passed (2 slow), 1814 skipped"
+  },
+  "producer": {
+    "attempt_id": "5155cc09b00f3b0f1297fd393b",
+    "kind": "attempt",
+    "node_id": "root.nodes.implement",
+    "run_id": "task:sha256:2c21f1d8ec2e850ba8182d7ddeb1401fc43bdfed2ff993748aa677b8eb7544fc"
+  },
+  "subject_snapshot_id": "sha256:353e5b6cee53ff300e51f353719943a069115437001f89e889df47a4d4711b91",
+  "type": "af/ImplementationReport@1"
+}
