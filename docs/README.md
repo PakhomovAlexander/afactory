@@ -25,6 +25,7 @@ any af command ([design](design/tui.md)).
 - [Run a Task](tasks.md), then use the [agent loop](agents.md) to plan, inspect findings,
   verify and deliver it.
 - [Connect a Provider](providers.md) before work that spends tokens.
+- [Opt-in original-session Task wakes](task-wake.md): setup, finite driving and uncertainty.
 - [Use a Workspace](project.md) to keep Task state with its checkout.
 - [Run a report Task](task-execution/report.md) or a
   [Remote Check](task-execution/remote-checks.md).

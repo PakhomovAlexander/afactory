@@ -77,6 +77,7 @@ pub(crate) fn run(command: cli::ReviewCommand) -> Result<i32, String> {
             retry_gate,
             inspect,
         } => T::Run {
+            wake_route: None,
             task_id,
             from: None,
             round: None,
@@ -99,6 +100,7 @@ pub(crate) fn run(command: cli::ReviewCommand) -> Result<i32, String> {
             execute,
             inspect,
         } => T::Run {
+            wake_route: None,
             task_id,
             from: Some(from),
             round,

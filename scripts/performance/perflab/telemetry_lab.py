@@ -241,7 +241,7 @@ def corpus_argv(settings, seed, script, out="{corpus}", python="python3"):
 def private_environment(home):
     """A script's environment: a fixed PATH, the C locale, UTC and a private HOME and TMPDIR,
     nothing of the caller's; the scripts give every af command homes of its own."""
-    return {"PATH": PATH, "LC_ALL": "C", "LANG": "C", "TZ": "UTC", "HOME": home,
+    return {"PATH": PATH, "LC_ALL": "C", "LANG": "C", "TZ": "UTC", "HOME": home, "AF_TEST_WAKE_ACCOUNT_HOME": home,
             "TMPDIR": home, "NO_COLOR": "1", "PYTHONDONTWRITEBYTECODE": "1"}
 
 

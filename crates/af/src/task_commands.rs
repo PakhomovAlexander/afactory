@@ -74,6 +74,7 @@ mod structured;
 mod task_file_home;
 mod task_file_shape;
 pub(super) mod task_report;
+pub(crate) mod wake;
 
 #[derive(Clone)]
 pub(crate) struct ReviewSelectors {

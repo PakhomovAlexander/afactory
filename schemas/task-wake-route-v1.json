@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-route:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "route_id",
+    "installation_id",
+    "capability_digest",
+    "task",
+    "host",
+    "session",
+    "mode",
+    "expires_unix_ms",
+    "installation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-route@1"
+    },
+    "route_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "installation_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "capability_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "task": {
+      "$ref": "urn:af:schema:task-wake-observation:1#/$defs/task"
+    },
+    "host": {
+      "enum": [
+        "pi",
+        "codex"
+      ]
+    },
+    "session": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$(?![\\s\\S])"
+    },
+    "mode": {
+      "const": "follow_up"
+    },
+    "expires_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "installation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executable",
+        "executable_digest",
+        "extension",
+        "extension_digest",
+        "socket",
+        "socket_device",
+        "socket_inode"
+      ],
+      "properties": {
+        "executable": {
+          "type": "string",
+          "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+          "maxLength": 4096
+        },
+        "executable_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "minLength": 71,
+          "maxLength": 71
+        },
+        "extension": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "minLength": 71,
+              "maxLength": 71
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "socket": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "socket_device": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "socket_inode": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "host": {
+            "const": "pi"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "installation": {
+            "properties": {
+              "extension": {
+                "type": "string",
+                "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+                "maxLength": 4096
+              },
+              "extension_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "minLength": 71,
+                "maxLength": 71
+              },
+              "socket": {
+                "type": "null"
+              },
+              "socket_device": {
+                "type": "null"
+              },
+              "socket_inode": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "host": {
+            "const": "codex"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "installation": {
+            "properties": {
+              "extension": {
+                "type": "null"
+              },
+              "extension_digest": {
+                "type": "null"
+              },
+              "socket": {
+                "type": "string",
+                "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$(?![\\s\\S])",
+                "maxLength": 4096
+              },
+              "socket_device": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "socket_inode": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

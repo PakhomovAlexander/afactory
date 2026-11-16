@@ -43,6 +43,7 @@ Prints a Markdown table, or with `--json` the `af/telemetry-overhead@3` document
 (`schemas/telemetry-overhead-v3.json`); `--report PATH` writes the document as well.
 """
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -62,6 +63,11 @@ import time
 SCHEMA = 'af/telemetry-overhead@3'
 REPOSITORY = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPOSITORY / 'fixtures' / 'telemetry-bench'
+sys.dont_write_bytecode = True
+_ACCOUNT_SPEC = importlib.util.spec_from_file_location(
+    'measurement_account', REPOSITORY / 'scripts/performance/perflab/account_isolation.py')
+account = importlib.util.module_from_spec(_ACCOUNT_SPEC)
+_ACCOUNT_SPEC.loader.exec_module(account)
 LEVELS = ('off', 'spans')
 DEFAULT_PAIRS = 20
 DEFAULT_SEED = 20261021
@@ -267,7 +273,7 @@ def private_env(run, level):
         'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
         'AF_TELEMETRY__LEVEL': level,
     })
-    return env
+    return account.fixture_environment(env)
 
 
 def keep_checks(af, repo, count):
@@ -659,6 +665,16 @@ def main(argv=None):
     parser.add_argument('--judge', metavar='DOCUMENT',
                         help='recompute the figures and the verdict of a recorded document')
     args = parser.parse_args(argv)
+    if not args.judge:
+        if args.work:
+            Path(args.work).mkdir(parents=True, exist_ok=True)
+        isolated = account.run_script(
+            str(Path(__file__).resolve()), sys.argv[1:] if argv is None else argv,
+            inputs=(args.af, REPOSITORY / 'scripts', FIXTURES_DIR),
+            directories=(args.work,) if args.work else (),
+            outputs=(args.report,) if args.report else ())
+        if isolated is not None:
+            return isolated
     if args.pairs < 1:
         parser.error('--pairs must be at least 1')
     # A terminated measurement still removes its temporary work directory.

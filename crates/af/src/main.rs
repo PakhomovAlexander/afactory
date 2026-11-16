@@ -744,6 +744,9 @@ fn main() {
 fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
     let command = project::resolve_task_workspace(command)?;
     match command {
+        cli::TaskCommand::Wake { command, inspect } => {
+            task_commands::wake::execute(command, &inspect)
+        }
         cli::TaskCommand::Start {
             file,
             execute,
@@ -869,9 +872,10 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Run {
             task_id,
             detach: true,
+            wake_route,
             inspect,
             ..
-        } => task_commands::runs::detach(&task_id, &inspect),
+        } => task_commands::runs::detach(&task_id, &inspect, wake_route.as_deref()),
         // `--from` conflicts with `--detach` at parse time (cli.rs), so the detach arm never
         // sees a `--from`; the continue arm precedes the foreground arm, which matches `..`.
         cli::TaskCommand::Run {

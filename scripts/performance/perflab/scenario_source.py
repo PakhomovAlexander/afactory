@@ -80,7 +80,7 @@ def _capture(config, path, expected_digest, into):
     with ExitStack() as resources:
         try:
             home = resources.enter_context(tempfile.TemporaryDirectory(dir=path))
-            env = {"PATH": os.defpath, "HOME": home, "XDG_CONFIG_HOME": home,
+            env = {"PATH": os.defpath, "HOME": home, "AF_TEST_WAKE_ACCOUNT_HOME": home, "XDG_CONFIG_HOME": home,
                    "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home}
             output = resources.enter_context(tempfile.TemporaryFile(dir=path))
             error = resources.enter_context(tempfile.TemporaryFile(dir=path))

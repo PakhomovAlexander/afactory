@@ -21,6 +21,3253 @@ fn workspace() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
+fn wake_wait_for_child_record(state: &Path) {
+    let until = Instant::now() + Duration::from_secs(60);
+    while !state.join("runs/gc-older-1.json").exists() {
+        assert!(
+            Instant::now() < until,
+            "detached child did not persist its ordinary run record"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_registration_launch_crashes_immediate_finish_and_codex_queue_are_durable() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let owner = root.path().join("owner");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = owner.canonicalize().unwrap();
+    let binary = owner.join("codex-fixture");
+    let calls = owner.join("native-argv");
+    std::fs::write(
+        &binary,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = owner.join("daemon.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // Match Codex's deployed pathname socket: directory protection, not socket mode,
+    // excludes other users. Exercise grant, pre-detach registration and real peer preflight.
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let grant = owner.join("grant.json");
+    let wake = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(["task", "wake", "--state"])
+            .arg(&state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let route = document(
+        &wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "codex",
+            "--session",
+            "existing-thread",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--socket",
+            socket.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ]),
+        0,
+        None,
+    );
+    assert!(route.get("capability").is_none());
+    let denied = af(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--detach",
+            "--wake-route",
+            "/absent-owner-grant",
+        ],
+    );
+    assert!(!denied.status.success());
+    assert!(
+        !state.join("runs").exists(),
+        "registration refusal launches no run"
+    );
+    let barrier = root.path().join("barriers");
+    let before = barrier.join("wake-before-launch-1");
+    std::fs::create_dir_all(&before).unwrap();
+    let spawn = || {
+        crate::common::af()
+            .current_dir(&repo)
+            .args([
+                "task",
+                "run",
+                "gc-older",
+                "--execute",
+                "--detach",
+                "--json",
+                "--state",
+            ])
+            .arg(&state)
+            .arg("--wake-route")
+            .arg(&grant)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barrier)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let wait_ready = |point: &Path| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !point.join("ready").exists() {
+            assert!(
+                Instant::now() < until,
+                "wake launch barrier did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let mut parent = spawn();
+    wait_ready(&before);
+    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(inspected["subscriptions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        inspected["subscriptions"][0]["registration"]["launch_intent"],
+        true
+    );
+    assert!(!state.join("runs").exists());
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    let before_events = EventStore::open_read_only(state.join("events.sqlite"))
+        .unwrap()
+        .replay(&af_store::store::task::task_run_id("gc-older").unwrap())
+        .unwrap();
+    document(&wake(&["drain"]), 0, None);
+    assert!(
+        !state.join("runs").exists(),
+        "driver must not respawn committed launch intent"
+    );
+    assert!(!calls.exists());
+    assert_eq!(
+        before_events,
+        EventStore::open_read_only(state.join("events.sqlite"))
+            .unwrap()
+            .replay(&af_store::store::task::task_run_id("gc-older").unwrap())
+            .unwrap()
+    );
+    std::fs::remove_dir_all(&before).unwrap();
+    let after = barrier.join("wake-after-launch-1");
+    std::fs::create_dir_all(&after).unwrap();
+    let mut parent = spawn();
+    wait_ready(&after);
+    wake_wait_for_child_record(&state);
+    // Child finishes while the detach parent cannot return. No parent callback extracts it.
+    document(
+        &af(
+            &repo,
+            &state,
+            &["task", "wait", "gc-older", "--timeout", "60", "--json"],
+        ),
+        0,
+        Some("task-status-v2.json"),
+    );
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    document(&wake(&["drain"]), 0, None);
+    let sent = std::fs::read_to_string(&calls).unwrap();
+    let argv: Vec<_> = sent.lines().collect();
+    assert_eq!(
+        &argv[..4],
+        ["queue", "--thread", "existing-thread", "--message"]
+    );
+    assert!(argv[4].starts_with("AF Task wake metadata. Task: gc-older;"));
+    assert!(!argv[4].contains("Implement offset/limit"));
+    assert_eq!(argv[5], "--remote");
+    assert_eq!(argv[6], format!("unix://{}", socket.display()));
+    let inspected = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(
+        inspected["uncertain_session_fences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let unknown = inspected["deliveries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["state"] == "admission_unknown")
+        .unwrap();
+    assert_eq!(unknown["receipts"].as_array().unwrap().len(), 3);
+    std::fs::remove_file(&calls).unwrap();
+    document(&wake(&["drain"]), 0, None);
+    assert!(
+        !calls.exists(),
+        "lost native response never causes another queue call"
+    );
+    expect(&wake(&["revoke", "--route", grant.to_str().unwrap()]), 0);
+    let denied = af(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--detach",
+            "--wake-route",
+            grant.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !denied.status.success(),
+        "revoked grant refuses detached dispatch"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_original_session_peer_and_endpoint_substitution_refuse_without_native_calls() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let owner = root.path().join("owner");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = owner.canonicalize().unwrap();
+    let binary = owner.join("native-fixture");
+    let sentinel = owner.join("called");
+    std::fs::write(
+        &binary,
+        format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let installed = owner.join("extension.ts");
+    std::fs::write(&installed, "// reviewed stand-in; no native host").unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let wake = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(["task", "wake", "--state"])
+            .arg(&state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let grant = owner.join("pi.json");
+    document(
+        &wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "pi",
+            "--session",
+            "original",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--extension",
+            installed.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ]),
+        0,
+        None,
+    );
+    assert!(
+        !wake(&[
+            "pi-next",
+            "--route",
+            grant.to_str().unwrap(),
+            "--session",
+            "other"
+        ])
+        .status
+        .success()
+    );
+    let wrong_peer = wake(&[
+        "pi-next",
+        "--route",
+        grant.to_str().unwrap(),
+        "--session",
+        "original",
+    ]);
+    assert!(!wrong_peer.status.success());
+    assert!(err(&wrong_peer).contains("peer"));
+    assert!(!sentinel.exists());
+    let endpoint = owner.join("endpoint");
+    std::fs::create_dir(&endpoint).unwrap();
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = endpoint.join("native.sock");
+    // An inert socket inode is sufficient for owner-selected endpoint metadata. This
+    // negative fixture performs no IPC: substitution must refuse before any connection.
+    nix::sys::stat::mknod(
+        &socket,
+        nix::sys::stat::SFlag::S_IFSOCK,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        0,
+    )
+    .unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let grant = owner.join("codex.json");
+    let codex_grant = || {
+        wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "codex",
+            "--session",
+            "thread",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--socket",
+            socket.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ])
+    };
+    // A permissive socket is safe only behind the admitted private directory. Refuse
+    // both readable and writable group/other parents before creating grant authority.
+    for mode in [0o755, 0o770, 0o777] {
+        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(mode)).unwrap();
+        let denied = codex_grant();
+        assert!(!denied.status.success());
+        assert!(err(&denied).contains("owner-private"));
+        assert!(!grant.exists());
+    }
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o700)).unwrap();
+    document(&codex_grant(), 0, None);
+    document(
+        &wake(&["register", "gc-older", "--route", grant.to_str().unwrap()]),
+        0,
+        None,
+    );
+    // Revalidate the parent on route use, not just initial grant installation.
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let denied = wake(&["register", "gc-older", "--route", grant.to_str().unwrap()]);
+    assert!(!denied.status.success());
+    assert!(err(&denied).contains("owner-private"));
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Retain the original socket inode at a different path so the replacement cannot reuse it.
+    let original = endpoint.join("original.sock");
+    std::fs::rename(&socket, &original).unwrap();
+    std::os::unix::fs::symlink(&original, &socket).unwrap();
+    assert!(
+        !wake(&["register", "gc-older", "--route", grant.to_str().unwrap()])
+            .status
+            .success(),
+        "a symlink to the pinned inode is not an admitted canonical endpoint"
+    );
+    std::fs::remove_file(&socket).unwrap();
+    nix::sys::stat::mknod(
+        &socket,
+        nix::sys::stat::SFlag::S_IFSOCK,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        0,
+    )
+    .unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(
+        !wake(&["register", "gc-older", "--route", grant.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert!(!state.join("runs").exists());
+    assert!(!sentinel.exists());
+    let capabilities = document(
+        &wake(&["capabilities"]),
+        0,
+        Some("task-wake-capabilities-v1.json"),
+    );
+    assert_eq!(capabilities["claude"], "unavailable_live_tests_deferred");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_detached_pi_receiver_authenticates_parent_and_replays_without_resend() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let owner = root.path().join("owner");
+    std::fs::create_dir(&owner).unwrap();
+    std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = owner.canonicalize().unwrap();
+    // A recording host process, never a real Pi host. Copy its small interpreter so the
+    // kernel's parent executable identity has explicit owner installation provenance.
+    let binary = owner.join("interactive-host-standin");
+    std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &binary).unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let installed = owner.join("extension.ts");
+    std::fs::write(&installed, "// recording host fixture; no native calls").unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let grant = owner.join("grant.json");
+    let wake = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&repo)
+            .args(["task", "wake", "--state"])
+            .arg(&state)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    document(
+        &wake(&[
+            "grant",
+            "gc-older",
+            "--host",
+            "pi",
+            "--session",
+            "original",
+            "--executable",
+            binary.to_str().unwrap(),
+            "--extension",
+            installed.to_str().unwrap(),
+            "--grant-file",
+            grant.to_str().unwrap(),
+        ]),
+        0,
+        None,
+    );
+    let barrier = root.path().join("barriers");
+    let before = barrier.join("wake-before-launch-1");
+    std::fs::create_dir_all(&before).unwrap();
+    let spawn = || {
+        crate::common::af()
+            .current_dir(&repo)
+            .args([
+                "task",
+                "run",
+                "gc-older",
+                "--execute",
+                "--detach",
+                "--state",
+            ])
+            .arg(&state)
+            .arg("--wake-route")
+            .arg(&grant)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barrier)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let ready = |point: &Path| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !point.join("ready").exists() {
+            assert!(
+                Instant::now() < until,
+                "wake launch barrier did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let mut parent = spawn();
+    ready(&before);
+    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(
+        status["subscriptions"][0]["registration"]["launch_intent"],
+        true
+    );
+    assert!(
+        !state.join("runs").exists(),
+        "registration must precede launch"
+    );
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    document(&wake(&["drain"]), 0, None);
+    assert!(
+        !state.join("runs").exists(),
+        "driver cannot respawn launch intent"
+    );
+    std::fs::remove_dir_all(&before).unwrap();
+    let after = barrier.join("wake-after-launch-1");
+    std::fs::create_dir_all(&after).unwrap();
+    let mut parent = spawn();
+    ready(&after);
+    wake_wait_for_child_record(&state);
+    document(
+        &af(
+            &repo,
+            &state,
+            &["task", "wait", "gc-older", "--timeout", "60", "--json"],
+        ),
+        0,
+        Some("task-status-v2.json"),
+    );
+    // The authoritative completion precedes detach returning; lose that parent's response.
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    // No foreground drain after completion: the authenticated hook must catch up itself.
+    let pull = || {
+        let environment = crate::common::af();
+        let mut shell = Command::new(&binary);
+        for (name, value) in environment.get_envs() {
+            if let Some(value) = value {
+                shell.env(name, value);
+            }
+        }
+        // The trailing exit keeps the shell as the authenticated parent, rather than
+        // letting it optimize its final command into exec.
+        shell.current_dir(&repo).arg("-c").arg("\"$1\" task wake --state \"$2\" pi-next --route \"$3\" --session original; result=$?; exit $result")
+            .arg("recording-pi-host").arg(crate::common::af_binary()).arg(&state).arg(&grant).output().unwrap()
+    };
+    let packet = document(&pull(), 0, Some("task-wake-pi-next-v1.json"));
+    assert!(
+        packet["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("AF Task wake metadata. Task: gc-older;")
+    );
+    assert_eq!(packet["session"], "original");
+    assert_eq!(packet["turn_started"], Value::Null);
+    assert_eq!(packet["reported"], Value::Null);
+    // Discard the first return, reopen another authenticated host process: no native retry.
+    let replay = document(&pull(), 0, Some("task-wake-pi-next-v1.json"));
+    assert_eq!(replay["message"], Value::Null);
+    let status = document(&wake(&["inspect"]), 0, Some("task-wake-status-v1.json"));
+    assert_eq!(status["deliveries"][0]["state"], "admission_unknown");
+    assert_eq!(
+        status["deliveries"][0]["receipts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct WakePiFixture {
+    _root: tempfile::TempDir,
+    repo: PathBuf,
+    state: PathBuf,
+    machine: PathBuf,
+    owner: PathBuf,
+    binary: PathBuf,
+    extension: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl WakePiFixture {
+    fn new() -> Self {
+        Self::configured(|_| {})
+    }
+    fn configured(configure: impl FnOnce(&Path)) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = task_gc::fixture(root.path());
+        configure(&repo);
+        expect(
+            &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+            0,
+        );
+        let owner = root.path().join("owner");
+        std::fs::create_dir(&owner).unwrap();
+        std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = owner.canonicalize().unwrap();
+        let binary = owner.join("interactive-pi-standin");
+        std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &binary).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let extension = owner.join("extension.ts");
+        std::fs::write(&extension, "// recording fixture, no host calls").unwrap();
+        std::fs::set_permissions(&extension, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let account = root.path().join("machine");
+        std::fs::create_dir(&account).unwrap();
+        std::fs::set_permissions(&account, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self {
+            machine: account.join(".local/state"),
+            _root: root,
+            repo,
+            state,
+            owner,
+            binary,
+            extension,
+        }
+    }
+    fn wake(&self, state: &Path, args: &[&str]) -> Command {
+        let mut command = crate::common::af();
+        command
+            .current_dir(&self.repo)
+            .env("XDG_STATE_HOME", &self.machine)
+            .env(
+                "AF_TEST_WAKE_ACCOUNT_HOME",
+                self.machine.parent().unwrap().parent().unwrap(),
+            )
+            .args(["task", "wake", "--state"])
+            .arg(state)
+            .args(args);
+        command
+    }
+    fn authority(&self) -> PathBuf {
+        let identity =
+            af_store::content_id(&serde_json::json!({"domain":"af/wake-machine-session-store/1"}))
+                .unwrap();
+        self.machine
+            .join("af/task/local")
+            .join(identity.strip_prefix("sha256:").unwrap())
+    }
+    fn grant(&self, state: &Path, file: &Path) -> Command {
+        self.grant_session(state, file, "original")
+    }
+    fn grant_session(&self, state: &Path, file: &Path, session: &str) -> Command {
+        self.wake(
+            state,
+            &[
+                "grant",
+                "gc-older",
+                "--host",
+                "pi",
+                "--session",
+                session,
+                "--executable",
+                self.binary.to_str().unwrap(),
+                "--extension",
+                self.extension.to_str().unwrap(),
+                "--grant-file",
+                file.to_str().unwrap(),
+            ],
+        )
+    }
+    fn pull(&self, grant: &Path) -> Value {
+        self.pull_session(grant, "original")
+    }
+    fn pull_session(&self, grant: &Path, session: &str) -> Value {
+        let output = self.pull_command(grant, session).output().unwrap();
+        document(&output, 0, Some("task-wake-pi-next-v1.json"))
+    }
+    fn pull_command(&self, grant: &Path, session: &str) -> Command {
+        let mut host = Command::new(&self.binary);
+        for (name, value) in crate::common::af().get_envs() {
+            if let Some(value) = value {
+                host.env(name, value);
+            }
+        }
+        // Keep the actual pinned interpreter as the child's authenticated parent.
+        host.current_dir(&self.repo).env("XDG_STATE_HOME", &self.machine)
+            .env("AF_TEST_WAKE_ACCOUNT_HOME", self.machine.parent().unwrap().parent().unwrap())
+            .args(["-c", "\"$1\" task wake --state \"$2\" pi-next --route \"$3\" --session \"$4\"; result=$?; exit $result", "recording-pi"])
+            .arg(crate::common::af_binary()).arg(&self.state).arg(grant).arg(session);
+        host
+    }
+    fn register(&self, grant: &Path) -> String {
+        document(&self.grant(&self.state, grant).output().unwrap(), 0, None);
+        let registration = document(
+            &self
+                .wake(
+                    &self.state,
+                    &["register", "gc-older", "--route", grant.to_str().unwrap()],
+                )
+                .output()
+                .unwrap(),
+            0,
+            None,
+        );
+        registration["subscription"]["subscription_id"]
+            .as_str()
+            .unwrap()
+            .into()
+    }
+    fn pause_poll(&self, grant: &Path, point: &str) -> (task_interrupt::ChildGuard, PathBuf) {
+        let barriers = self.owner.join("barriers");
+        let barrier = barriers.join(point);
+        std::fs::create_dir_all(&barrier).unwrap();
+        let child = self
+            .pull_command(grant, "original")
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = task_interrupt::ChildGuard(Some(child));
+        await_observation_read(&mut child, &barrier.join("ready"));
+        (child, barrier)
+    }
+    fn no_wake_effects(&self, id: &str) {
+        let store = EventStore::open(self.state.join("events.sqlite")).unwrap();
+        let retained = store.inspect_wake(id).unwrap();
+        assert!(retained.checkpoint.is_none());
+        assert!(retained.envelopes.is_empty());
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    fn finish(&self) {
+        expect(
+            &af(
+                &self.repo,
+                &self.state,
+                &["task", "run", "gc-older", "--execute"],
+            ),
+            0,
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_clock_capture_precedes_checked_append() {
+    clock_capture_contention(false, "wake-clock-captured-1", None);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_clock_capture_precedes_new_checkpoint() {
+    clock_capture_contention(true, "wake-clock-captured-1", None);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_clock_races_refuse_invalid_clocks_and_future_checked_evidence() {
+    for checkpoint in [false, true] {
+        for invalid in ["future", "rollback", "zero"] {
+            clock_capture_contention(checkpoint, "wake-clock-captured-1", Some(invalid));
+        }
+    }
+    // A valid append inside/after projection must not conceal its impossible policy time
+    // when raw currentness goes through the fresh serialized validation branch.
+    for point in [
+        "wake-final-state-captured-1",
+        "wake-source-observed-1",
+        "wake-before-commit-1",
+    ] {
+        clock_capture_contention(false, point, Some("future"));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_serialized_clock_is_monotonic_across_all_samples() {
+    // History is older than every sampled clock, including the rollback below initial.
+    // A future-evidence refusal cannot accidentally satisfy these assertions.
+    for final_offset in [1i64, -1, 2, 3] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let initial = checked_wake_clock(&f.state) + 1000;
+        let roots = f.owner.join("barriers");
+        let captured = roots.join("wake-clock-captured-1");
+        let source = roots.join("wake-final-state-captured-1");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(roots.join("clock-ms"), initial.to_string()).unwrap();
+        let (mut poll, _) = f.pause_poll(&grant, "wake-clock-captured-1");
+        std::fs::write(roots.join("clock-ms"), (initial + 2).to_string()).unwrap();
+        std::fs::write(captured.join("proceed"), []).unwrap();
+        await_observation_read(&mut poll, &source.join("ready"));
+        expect(
+            &crate::common::af()
+                .current_dir(&f.repo)
+                .args(["task", "run", "gc-older", "--execute", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_CLOCK_FIXED_MS", (initial - 10).to_string())
+                .output()
+                .unwrap(),
+            0,
+        );
+        let final_clock = initial.checked_add_signed(final_offset).unwrap();
+        assert!(checked_wake_clock(&f.state) < final_clock);
+        std::fs::write(roots.join("clock-ms"), final_clock.to_string()).unwrap();
+        std::fs::write(source.join("proceed"), []).unwrap();
+        let output = poll.0.take().unwrap().wait_with_output().unwrap();
+        if final_offset < 2 {
+            assert!(
+                !output.status.success(),
+                "rollback {final_offset}: {}",
+                out(&output)
+            );
+        } else {
+            assert_empty_pi_poll(&output);
+        }
+        f.no_wake_effects(&id);
+        if final_offset >= 2 {
+            let packet = f
+                .pull_command(&grant, "original")
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &roots)
+                .output()
+                .unwrap();
+            assert!(document(&packet, 0, Some("task-wake-pi-next-v1.json"))["message"].is_string());
+            assert_empty_pi_poll(
+                &f.pull_command(&grant, "original")
+                    .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &roots)
+                    .output()
+                    .unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_clock_capture_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-clock-captured-1");
+}
+
+#[cfg(target_os = "linux")]
+fn checked_wake_clock(state: &Path) -> u64 {
+    use af_store::store::task as stored;
+    EventStore::open(state.join("events.sqlite"))
+        .unwrap()
+        .replay(&stored::task_run_id("gc-older").unwrap())
+        .unwrap()
+        .iter()
+        .map(|event| {
+            if stored::is_execution_started(event) {
+                stored::read_execution_started(event).unwrap().now_unix_ms
+            } else if stored::is_provider_event(event) {
+                stored::read_provider_event(event).unwrap().now_unix_ms
+            } else if stored::gate_retry::is_gate_retried(event) {
+                stored::gate_retry::read_gate_retried(event)
+                    .unwrap()
+                    .now_unix_ms
+            } else {
+                stored::read_task_transition(event).unwrap().now_unix_ms
+            }
+        })
+        .max()
+        .unwrap()
+        + 1
+}
+
+#[cfg(target_os = "linux")]
+fn clock_capture_contention(checkpoint: bool, point: &str, invalid: Option<&str>) {
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 1000;
+    let barriers = f.owner.join("barriers");
+    std::fs::create_dir_all(&barriers).unwrap();
+    std::fs::write(barriers.join("clock-ms"), clock.to_string()).unwrap();
+    let (mut poll, barrier) = f.pause_poll(&grant, point);
+    let expected = if checkpoint {
+        let second = f.owner.join("second-clock");
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(second.join("clock-ms"), (clock + 1).to_string()).unwrap();
+        assert_empty_pi_poll(
+            &f.pull_command(&grant, "original")
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &second)
+                .output()
+                .unwrap(),
+        );
+        Some(
+            EventStore::open(f.state.join("events.sqlite"))
+                .unwrap()
+                .inspect_wake(&id)
+                .unwrap()
+                .checkpoint
+                .unwrap(),
+        )
+    } else {
+        expect(
+            &crate::common::af()
+                .current_dir(&f.repo)
+                .args(["task", "run", "gc-older", "--execute", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_CLOCK_FIXED_MS", (clock + 1).to_string())
+                .output()
+                .unwrap(),
+            0,
+        );
+        None
+    };
+    let coherent_clock = match invalid {
+        Some("future") => clock,
+        Some("rollback") => clock - 1,
+        Some("zero") => 0,
+        None => (clock + 2).max(checked_wake_clock(&f.state)),
+        _ => unreachable!(),
+    };
+    std::fs::write(barriers.join("clock-ms"), coherent_clock.to_string()).unwrap();
+    std::fs::write(barrier.join("proceed"), []).unwrap();
+    let output = poll.0.take().unwrap().wait_with_output().unwrap();
+    if invalid.is_some() {
+        assert!(
+            !output.status.success(),
+            "{point}/{invalid:?}: {}",
+            out(&output)
+        );
+    } else {
+        assert_empty_pi_poll(&output);
+    }
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    assert_eq!(store.inspect_wake(&id).unwrap().checkpoint, expected);
+    assert!(store.inspect_wake(&id).unwrap().envelopes.is_empty());
+    assert!(store.wake_deliveries().unwrap().is_empty());
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    if invalid.is_some() {
+        return;
+    }
+    if checkpoint {
+        expect(
+            &crate::common::af()
+                .current_dir(&f.repo)
+                .args(["task", "run", "gc-older", "--execute", "--state"])
+                .arg(&f.state)
+                .env("AF_TEST_CLOCK_FIXED_MS", (clock + 2).to_string())
+                .output()
+                .unwrap(),
+            0,
+        );
+        std::fs::write(
+            barriers.join("clock-ms"),
+            (clock + 3).max(checked_wake_clock(&f.state)).to_string(),
+        )
+        .unwrap();
+    }
+    let packet = f
+        .pull_command(&grant, "original")
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .output()
+        .unwrap();
+    assert!(
+        document(&packet, 0, Some("task-wake-pi-next-v1.json"))["message"]
+            .as_str()
+            .unwrap()
+            .contains("Task: gc-older;")
+    );
+    assert_empty_pi_poll(
+        &f.pull_command(&grant, "original")
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .output()
+            .unwrap(),
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_reads_single_link_during_public_process_publication() {
+    use std::os::unix::fs::MetadataExt;
+    for check in [
+        None,
+        Some("wake-recorder-check-1"),
+        Some("wake-recorder-check-2"),
+    ] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let mut poll = check.map(|point| f.pause_poll(&grant, point));
+        let barriers = f.owner.join("publication");
+        let barrier = barriers.join("run-published-1");
+        std::fs::create_dir_all(&barrier).unwrap();
+        let runner = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "run", "gc-older", "--execute", "--state"])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut runner = task_interrupt::ChildGuard(Some(runner));
+        await_observation_read(&mut runner, &barrier.join("ready"));
+        if let Some((child, check_barrier)) = &mut poll {
+            std::fs::write(check_barrier.join("proceed"), []).unwrap();
+            assert_empty_pi_poll(&child.0.take().unwrap().wait_with_output().unwrap());
+            f.no_wake_effects(&id);
+        } else {
+            assert_empty_pi_poll(&f.pull_command(&grant, "original").output().unwrap());
+        }
+        assert_eq!(
+            std::fs::metadata(f.state.join("runs/gc-older-1.json"))
+                .unwrap()
+                .nlink(),
+            1
+        );
+        assert!(
+            EventStore::open(f.state.join("events.sqlite"))
+                .unwrap()
+                .inspect_wake(&id)
+                .unwrap()
+                .envelopes
+                .is_empty()
+        );
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
+        assert!(
+            f.pull(&grant)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Task: gc-older;")
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_foreign_hard_link_during_public_process_publication() {
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    let barriers = f.owner.join("publication");
+    let barrier = barriers.join("run-published-1");
+    std::fs::create_dir_all(&barrier).unwrap();
+    let runner = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["task", "run", "gc-older", "--execute", "--state"])
+        .arg(&f.state)
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut runner = task_interrupt::ChildGuard(Some(runner));
+    await_observation_read(&mut runner, &barrier.join("ready"));
+    let foreign = f.owner.join("foreign-link");
+    std::fs::hard_link(f.state.join("runs/gc-older-1.json"), &foreign).unwrap();
+    let output = f.pull_command(&grant, "original").output().unwrap();
+    assert!(!output.status.success(), "{}", out(&output));
+    f.no_wake_effects(&id);
+    std::fs::remove_file(foreign).unwrap();
+    std::fs::write(barrier.join("proceed"), []).unwrap();
+    expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
+    assert!(
+        f.pull(&grant)["message"]
+            .as_str()
+            .unwrap()
+            .contains("Task: gc-older;")
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_public_run_recorder_contention() {
+    for point in [
+        "wake-final-state-captured-1",
+        "wake-source-observed-1",
+        "wake-before-commit-1",
+    ] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let (mut child, barrier) = f.pause_poll(&grant, point);
+        // Public writer: first selected process recorder and authoritative checked completion.
+        f.finish();
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        let output = child.0.take().unwrap().wait_with_output().unwrap();
+        assert_empty_pi_poll(&output);
+        f.no_wake_effects(&id);
+        assert!(
+            f.pull(&grant)["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("AF Task wake metadata. Task: gc-older;")
+        );
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert_eq!(store.wake_deliveries().unwrap().len(), 1);
+        assert_eq!(
+            store.inspect_wake(&id).unwrap().envelopes[0]
+                .observation
+                .kind,
+            af_contracts::task::wake::WakeKindV1::Completed
+        );
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn assert_empty_pi_poll(output: &Output) {
+    assert_eq!(
+        document(output, 0, Some("task-wake-pi-next-v1.json")),
+        serde_json::json!({
+            "schema":"af/task-wake-pi-next@1", "session":"original", "message":null,
+            "delivery_id":null, "admission":"unknown_if_packet_returned", "turn_started":null,
+            "reported":null
+        })
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_both_atomic_recorder_checks_before_run_lease() {
+    for point in ["wake-recorder-check-1", "wake-recorder-check-2"] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let (mut poll, barrier) = f.pause_poll(&grant, point);
+        let run_barriers = f.owner.join("run-barriers");
+        let run_barrier = run_barriers.join("run-recorded-1");
+        std::fs::create_dir_all(&run_barrier).unwrap();
+        let runner = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "run", "gc-older", "--execute", "--state"])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &run_barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut runner = task_interrupt::ChildGuard(Some(runner));
+        await_observation_read(&mut runner, &run_barrier.join("ready"));
+        // begin() has written the real process recorder but cannot yet take its lease.
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        assert_empty_pi_poll(&poll.0.take().unwrap().wait_with_output().unwrap());
+        f.no_wake_effects(&id);
+        std::fs::write(run_barrier.join("proceed"), []).unwrap();
+        expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
+        assert!(
+            f.pull(&grant)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Task: gc-older;")
+        );
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_public_cancellation_recorder_contention() {
+    public_cancellation_contention(None);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_public_cancellation_cannot_mask_corruption() {
+    for fault in ["checkpoint", "corrupt", "nonprivate", "foreign", "revoked"] {
+        public_cancellation_contention(Some(fault));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn public_cancellation_contention(fault: Option<&str>) {
+    public_cancellation_contention_at_publication(fault, false);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_reads_single_link_during_public_cancellation_publication() {
+    public_cancellation_contention_at_publication(None, true);
+}
+
+#[cfg(target_os = "linux")]
+fn cancellation_wake_fixture() -> WakePiFixture {
+    WakePiFixture::configured(|repo| {
+        let worker = repo.join(".af/task-packages/fixture/implementer/worker.py");
+        let original = std::fs::read_to_string(&worker).unwrap();
+        let ready = repo.parent().unwrap().join("worker-ready");
+        let resume = repo.parent().unwrap().join("worker-resume");
+        let hold = format!(
+            "import os,time\nif not os.path.exists({resume:?}):\n    open({ready:?},'w').close()\n    while not os.path.exists({resume:?}): time.sleep(0.01)\n",
+            resume = resume.to_str().unwrap(),
+            ready = ready.to_str().unwrap()
+        );
+        std::fs::write(
+            worker,
+            original.replace(
+                "request=json.load(sys.stdin)\n",
+                &format!("request=json.load(sys.stdin)\n{hold}"),
+            ),
+        )
+        .unwrap();
+        task_interrupt::commit_fixture(repo);
+    })
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_validates_retained_checkpoint_before_cancellation_rebuild() {
+    for fault in [
+        None,
+        Some("scope"),
+        Some("boundary"),
+        Some("progress"),
+        Some("source"),
+        Some("provenance"),
+    ] {
+        retained_cancellation_checkpoint(fault, None);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_cancellation_rebuild_revalidates_replacement_at_commit() {
+    for fault in ["scope", "boundary", "progress", "source", "provenance"] {
+        retained_cancellation_checkpoint(Some(fault), Some("wake-before-commit-1"));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_genuine_future_semantics_with_unchanged_run_facts() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        let f = cancellation_wake_fixture();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let runner = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "run", "gc-older", "--execute", "--state"])
+            .arg(&f.state)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut runner = task_interrupt::ChildGuard(Some(runner));
+        await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+        let mut store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let before = store.inspect_wake(&id).unwrap();
+        let mut checkpoint: Value =
+            serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
+        std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
+        expect(&runner.0.take().unwrap().wait_with_output().unwrap(), 0);
+        let process: af_contracts::task::agent_loop::TaskRunProcessV1 =
+            serde_json::from_slice(&std::fs::read(f.state.join("runs/gc-older-1.json")).unwrap())
+                .unwrap();
+        process.validate().unwrap();
+        assert_eq!(process.task_id, "gc-older");
+        assert!(!f.state.join("runs/gc-older-1.cancel.json").exists());
+        let cas = Cas::open(f.state.join("cas")).unwrap();
+        let actual = af_runtime::wake::project_with_run_facts(
+            &store,
+            &cas,
+            &before.registration.subscription,
+            None,
+            checked_wake_clock(&f.state),
+            // CLI recorder_facts emits only joined cancellations. Process-only records
+            // are validated separately and supply no lifecycle facts.
+            &[],
+        )
+        .unwrap();
+        assert!(actual.caught_up);
+        assert!(actual.observations.iter().any(|observation| {
+            observation.kind == af_contracts::task::wake::WakeKindV1::Completed
+                && observation.result_id.is_some()
+        }));
+        let completed = serde_json::to_value(actual.checkpoint).unwrap();
+        assert_eq!(
+            checkpoint["run_facts_digest"],
+            completed["run_facts_digest"]
+        );
+        assert_ne!(checkpoint["prior_semantic"], completed["prior_semantic"]);
+        // Genuine later episode/revision/state suppresses completion in the old fast path.
+        checkpoint["prior_semantic"] = completed["prior_semantic"].clone();
+        let paused = point.map(|point| f.pause_poll(&grant, point));
+        let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+        db.execute(
+            "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+            rusqlite::params![
+                id,
+                serde_json::to_string(&checkpoint).unwrap(),
+                serde_json::to_string(
+                    &serde_json::json!({"schema":"af/task-wake-checkpoint-seal@1",
+                    "tag":af_store::content_id(&checkpoint).unwrap()})
+                )
+                .unwrap()
+            ],
+        )
+        .unwrap();
+        let snapshot = || {
+            db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence FROM wake_subscriptions_v1 WHERE id=?1", [&id],
+            |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+        };
+        let forged = snapshot();
+        if point == Some("wake-final-state-captured-1") {
+            let lease = store
+                .take_task_lease(&cas, "gc-older", "seal-contention", 60_000)
+                .unwrap();
+            store.release_task_lease(&cas, &lease).unwrap();
+        }
+        let output = if let Some((mut poll, barrier)) = paused {
+            std::fs::write(barrier.join("proceed"), []).unwrap();
+            poll.0.take().unwrap().wait_with_output().unwrap()
+        } else {
+            f.pull_command(&grant, "original").output().unwrap()
+        };
+        assert!(!output.status.success(), "{}", out(&output));
+        assert_eq!(snapshot(), forged);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM wake_outbox_v1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert_eq!(store.wake_uncertainty().unwrap(), serde_json::json!([]));
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_complete_retained_continuation_tampering() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        for fault in [
+            "semantic_state",
+            "semantic_episode",
+            "semantic_revision",
+            "observations_increased",
+            "clock_observed",
+            "observed_time",
+            "facts_digest",
+        ] {
+            retained_cancellation_checkpoint(Some(fault), point);
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_lease_id() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("lease_id"), point);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_lease_role() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("lease_role"), point);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_lease_stale() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("lease_stale"), point);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_refuses_retained_history_prefix() {
+    for point in [
+        None,
+        Some("wake-before-commit-1"),
+        Some("wake-final-state-captured-1"),
+    ] {
+        retained_cancellation_checkpoint(Some("prefix"), point);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn retained_cancellation_checkpoint(fault: Option<&str>, point: Option<&str>) {
+    let f = cancellation_wake_fixture();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    let runner = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["task", "run", "gc-older", "--execute", "--state"])
+        .arg(&f.state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut runner = task_interrupt::ChildGuard(Some(runner));
+    await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
+    // Persist the actual checked continuation BEFORE cancellation changes run facts.
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    let mut store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let before = store.inspect_wake(&id).unwrap();
+    assert!(before.checkpoint.is_some());
+    assert!(before.envelopes.is_empty());
+    expect(&af(&f.repo, &f.state, &["task", "cancel", "gc-older"]), 0);
+    assert!(
+        !runner
+            .0
+            .take()
+            .unwrap()
+            .wait_with_output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(f.state.join("runs/gc-older-1.cancel.json").is_file());
+    let paused = point.map(|point| f.pause_poll(&grant, point));
+    let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+    let mut checkpoint: Value = serde_json::from_str(before.checkpoint.as_ref().unwrap()).unwrap();
+    match fault {
+        Some("semantic_none") => checkpoint["prior_semantic"] = Value::Null,
+        Some("semantic_episode") => {
+            if checkpoint["prior_semantic"].is_null() {
+                checkpoint["prior_semantic"] = serde_json::json!([2, format!("sha256:{}", "f".repeat(64)),
+                    {"phase":"finished", "outcome":"verified", "cause":null, "waiting_reason":null}]);
+            } else {
+                checkpoint["prior_semantic"][0] = 99.into();
+            }
+        }
+        Some("semantic_revision") => {
+            checkpoint["prior_semantic"] = serde_json::json!([1, format!("sha256:{}", "f".repeat(64)),
+                {"phase":"finished", "outcome":"verified", "cause":null, "waiting_reason":null}]);
+        }
+        Some("semantic_state") => {
+            checkpoint["prior_semantic"] = serde_json::json!([1, format!("sha256:{}", "a".repeat(64)),
+                {"phase":"finished", "outcome":"verified", "cause":null, "waiting_reason":null}]);
+        }
+        Some("observations_increased") => {
+            checkpoint["observations"] = (checkpoint["observations"].as_u64().unwrap() + 1).into()
+        }
+        Some("clock_observed") => {
+            checkpoint["clock_observed"] = (!checkpoint["clock_observed"].as_bool().unwrap()).into()
+        }
+        Some("observed_time") => {
+            checkpoint["observed_unix_ms"] =
+                (checkpoint["observed_unix_ms"].as_u64().unwrap() + 1).into()
+        }
+        Some("facts_digest") => {
+            checkpoint["run_facts_digest"] = format!("sha256:{}", "f".repeat(64)).into()
+        }
+        Some("lease_id") => checkpoint["lease_boundary"]["event_id"] = "f".repeat(26).into(),
+        Some("lease_role") => {
+            use af_contracts::{EventType, task::event::TaskChangeV1};
+            let events = store
+                .replay_window(
+                    &before.registration.subscription.task.task_run_id,
+                    0,
+                    checkpoint["through"]["sequence"].as_u64().unwrap() + 1,
+                )
+                .unwrap();
+            let event = events
+                .iter()
+                .find(|event| {
+                    event.event_type == EventType::TaskTransitionV6
+                        && !matches!(
+                            af_store::store::task::read_task_transition(event)
+                                .unwrap()
+                                .change,
+                            TaskChangeV1::Opened { .. }
+                                | TaskChangeV1::LeaseTaken { .. }
+                                | TaskChangeV1::LeaseRenewed { .. }
+                                | TaskChangeV1::LeaseReleased {}
+                        )
+                })
+                .unwrap();
+            checkpoint["lease_boundary"] = serde_json::json!({
+                "sequence":event.sequence, "event_id":event.event_id
+            });
+        }
+        Some("lease_stale") => {
+            assert!(checkpoint["lease_boundary"]["sequence"].as_u64().unwrap() > 0);
+            checkpoint["lease_boundary"] = serde_json::json!({
+                "sequence":0, "event_id":before.registration.subscription.task.opening_event_id
+            });
+        }
+        Some("prefix") => checkpoint["prefix_digest"] = format!("sha256:{}", "f".repeat(64)).into(),
+        Some("scope") => {
+            checkpoint["configuration_digest"] = format!("sha256:{}", "f".repeat(64)).into()
+        }
+        Some("boundary") => checkpoint["through"]["event_id"] = "f".repeat(26).into(),
+        Some("progress") => {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET through_sequence=0 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        Some("source") => {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET source_sequence=0 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        Some("provenance") => {
+            db.execute(
+                "UPDATE wake_subscriptions_v1 SET valid=0 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        None => {}
+        _ => unreachable!(),
+    }
+    // Column-only corruption must retain the exact checkpoint bytes: otherwise the cursor
+    // CAS alone would force deferral and miss an unchecked normal commit replacement.
+    let text = if matches!(
+        fault,
+        Some(
+            "scope"
+                | "boundary"
+                | "lease_id"
+                | "lease_role"
+                | "lease_stale"
+                | "prefix"
+                | "semantic_none"
+                | "semantic_episode"
+                | "semantic_revision"
+                | "semantic_state"
+                | "observations_increased"
+                | "clock_observed"
+                | "observed_time"
+                | "facts_digest"
+        )
+    ) {
+        serde_json::to_string(&checkpoint).unwrap()
+    } else {
+        before.checkpoint.as_ref().unwrap().clone()
+    };
+    if fault.is_some() {
+        // A well-shaped seal containing the old recomputable checksum is not provenance.
+        let seal = serde_json::json!({"schema":"af/task-wake-checkpoint-seal@1",
+            "tag":af_store::content_id(&checkpoint).unwrap()});
+        db.execute(
+            "UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3 WHERE id=?1",
+            rusqlite::params![id, text, serde_json::to_string(&seal).unwrap()],
+        )
+        .unwrap();
+    }
+    let snapshot = || {
+        db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence,valid FROM wake_subscriptions_v1 WHERE id=?1", [&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).unwrap()
+    };
+    let retained = snapshot();
+    if point == Some("wake-final-state-captured-1") {
+        // A genuine checked writer invalidates the captured source and reaches the narrow
+        // serialized deferral validator before the page can attempt a replacement.
+        let cas = Cas::open(f.state.join("cas")).unwrap();
+        let lease = store
+            .take_task_lease(&cas, "gc-older", "retained-history-fixture", 60_000)
+            .unwrap();
+        store.release_task_lease(&cas, &lease).unwrap();
+    }
+    let output = if let Some((mut poll, barrier)) = paused {
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        poll.0.take().unwrap().wait_with_output().unwrap()
+    } else {
+        f.pull_command(&grant, "original").output().unwrap()
+    };
+    if let Some(fault) = fault {
+        assert!(
+            !output.status.success(),
+            "retained {fault}: {}",
+            out(&output)
+        );
+        assert_eq!(snapshot(), retained);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM wake_outbox_v1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    } else {
+        document(&output, 0, Some("task-wake-pi-next-v1.json"));
+        std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
+        f.finish();
+        f.pull(&grant);
+        let after = store.inspect_wake(&id).unwrap();
+        let rebuilt: Value = serde_json::from_str(after.checkpoint.as_ref().unwrap()).unwrap();
+        assert_ne!(rebuilt["run_facts_digest"], checkpoint["run_facts_digest"]);
+        assert!(
+            after
+                .envelopes
+                .iter()
+                .any(|e| e.observation.kind == af_contracts::task::wake::WakeKindV1::Completed)
+        );
+        assert!(
+            after
+                .envelopes
+                .windows(2)
+                .all(|pair| pair[0].observation.causal.sequence
+                    <= pair[1].observation.causal.sequence)
+        );
+        assert_eq!(
+            f.pull(&grant)["message"],
+            Value::Null,
+            "native uncertainty fences resend"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn public_cancellation_contention_at_publication(fault: Option<&str>, publication: bool) {
+    let f = cancellation_wake_fixture();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    let runner = crate::common::af()
+        .current_dir(&f.repo)
+        .args(["task", "run", "gc-older", "--execute", "--state"])
+        .arg(&f.state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut runner = task_interrupt::ChildGuard(Some(runner));
+    await_observation_read(&mut runner, &f.repo.parent().unwrap().join("worker-ready"));
+    let (mut poll, barrier) = f.pause_poll(&grant, "wake-before-commit-1");
+    let mut admitted_at_publication = false;
+    if publication {
+        use std::os::unix::fs::MetadataExt;
+        let roots = f.owner.join("cancel-publication");
+        let published = roots.join("cancel-published-1");
+        std::fs::create_dir_all(&published).unwrap();
+        let cancel = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "cancel", "gc-older", "--state"])
+            .arg(&f.state)
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &roots)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut cancel = task_interrupt::ChildGuard(Some(cancel));
+        await_observation_read(&mut cancel, &published.join("ready"));
+        let output = f.pull_command(&grant, "original").output().unwrap();
+        let packet = document(&output, 0, Some("task-wake-pi-next-v1.json"));
+        admitted_at_publication = packet["message"].is_string();
+        assert_eq!(
+            std::fs::metadata(f.state.join("runs/gc-older-1.cancel.json"))
+                .unwrap()
+                .nlink(),
+            1
+        );
+        std::fs::write(published.join("proceed"), []).unwrap();
+        expect(&cancel.0.take().unwrap().wait_with_output().unwrap(), 0);
+    } else {
+        expect(&af(&f.repo, &f.state, &["task", "cancel", "gc-older"]), 0);
+    }
+    let stopped = runner.0.take().unwrap().wait_with_output().unwrap();
+    assert!(!stopped.status.success());
+    let cancellation = f.state.join("runs/gc-older-1.cancel.json");
+    assert!(cancellation.is_file());
+    match fault {
+        Some("checkpoint") => {
+            rusqlite::Connection::open(f.state.join("events.sqlite"))
+                .unwrap()
+                .execute(
+                    "UPDATE wake_subscriptions_v1 SET checkpoint='{}' WHERE id=?1",
+                    [&id],
+                )
+                .unwrap();
+        }
+        Some("corrupt") => std::fs::write(&cancellation, b"corrupt").unwrap(),
+        Some("nonprivate") => {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cancellation, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        Some("foreign") => {
+            let mut c: Value =
+                serde_json::from_slice(&std::fs::read(&cancellation).unwrap()).unwrap();
+            c["pid"] = (c["pid"].as_u64().unwrap() + 1).into();
+            std::fs::write(&cancellation, serde_json::to_vec(&c).unwrap()).unwrap();
+        }
+        Some("revoked") => {
+            document(
+                &f.wake(&f.state, &["revoke", "--route", grant.to_str().unwrap()])
+                    .output()
+                    .unwrap(),
+                0,
+                None,
+            );
+        }
+        None => {}
+        _ => unreachable!(),
+    }
+    std::fs::write(barrier.join("proceed"), []).unwrap();
+    let output = poll.0.take().unwrap().wait_with_output().unwrap();
+    if let Some(fault) = fault {
+        assert!(
+            !output.status.success(),
+            "cancellation/{fault}: {}",
+            out(&output)
+        );
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        return;
+    }
+    assert_empty_pi_poll(&output);
+    if !publication {
+        f.no_wake_effects(&id);
+    }
+    std::fs::write(f.repo.parent().unwrap().join("worker-resume"), []).unwrap();
+    f.finish();
+    let packet = f.pull(&grant);
+    if admitted_at_publication {
+        assert_eq!(
+            packet["message"],
+            Value::Null,
+            "publication-time native intent fences resend"
+        );
+    } else {
+        assert!(
+            packet["message"]
+                .as_str()
+                .unwrap()
+                .contains("Task: gc-older;")
+        );
+    }
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    assert!(
+        store
+            .inspect_wake(&id)
+            .unwrap()
+            .envelopes
+            .iter()
+            .any(|e| e.observation.kind == af_contracts::task::wake::WakeKindV1::Completed)
+    );
+    assert_eq!(
+        f.pull(&grant)["message"],
+        Value::Null,
+        "native intent still fences resend"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_inner_contention_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-final-state-captured-1");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_outer_contention_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-source-observed-1");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_commit_contention_cannot_mask_invalid_current_evidence() {
+    invalid_current_evidence("wake-before-commit-1");
+}
+
+#[cfg(target_os = "linux")]
+fn invalid_current_evidence(point: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    for fault in [
+        "history",
+        "checkpoint",
+        "checkpoint_scope",
+        "checkpoint_clock",
+        "revoked",
+        "corrupt",
+        "foreign",
+        "nonprivate",
+        "missing_process",
+        "bad_lease",
+        "expired",
+        "closed",
+        "identity",
+        "task_column",
+        "checkpoint_columns",
+    ] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        let id = f.register(&grant);
+        let (mut poll, barrier) = f.pause_poll(&grant, point);
+        f.finish(); // genuine valid recorder activity alongside every invalidating change
+        let process = f.state.join("runs/gc-older-1.json");
+        let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+        match fault {
+            "task_column" => {
+                db.execute(
+                    "UPDATE wake_subscriptions_v1 SET task_id='other-task' WHERE id=?1",
+                    [&id],
+                )
+                .unwrap();
+            }
+            "checkpoint_columns" => {
+                db.execute("UPDATE wake_subscriptions_v1 SET through_sequence=0,source_sequence=0 WHERE id=?1", [&id]).unwrap();
+            }
+            "history" => {
+                db.execute("UPDATE events SET payload=json_set(payload,'$.corrupt',true) WHERE run_id=?1 AND sequence=0", [af_store::store::task::task_run_id("gc-older").unwrap()]).unwrap();
+            }
+            "checkpoint_scope" | "checkpoint_clock" => {
+                let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+                let cas = Cas::open(f.state.join("cas")).unwrap();
+                let registration = store.inspect_wake(&id).unwrap().registration;
+                let projection = af_runtime::wake::project(
+                    &store,
+                    &cas,
+                    &registration.subscription,
+                    None,
+                    checked_wake_clock(&f.state),
+                )
+                .unwrap();
+                let mut checkpoint = serde_json::to_value(&projection.checkpoint).unwrap();
+                if fault == "checkpoint_scope" {
+                    checkpoint["configuration_digest"] =
+                        format!("sha256:{}", "f".repeat(64)).into();
+                } else {
+                    checkpoint["observed_unix_ms"] =
+                        (registration.subscription.expires_unix_ms - 1).into();
+                }
+                // A recomputed checksum is not authenticated provenance. Keep the
+                // closed seal shape and require refusal at inspection and polling.
+                let seal = serde_json::to_string(&serde_json::json!({
+                    "schema": "af/task-wake-checkpoint-seal@1",
+                    "tag": af_store::content_id(&checkpoint).unwrap()
+                }))
+                .unwrap();
+                let through = checkpoint["through"]["sequence"].as_u64().unwrap();
+                db.execute("UPDATE wake_subscriptions_v1 SET checkpoint=?2,checkpoint_digest=?3,through_sequence=?4,source_sequence=?4 WHERE id=?1",
+                    rusqlite::params![id, serde_json::to_string(&checkpoint).unwrap(), seal, i64::try_from(through).unwrap()]).unwrap();
+                assert!(store.inspect_wake(&id).is_err(), "{point}/{fault}");
+            }
+            "checkpoint" => {
+                db.execute(
+                    "UPDATE wake_subscriptions_v1 SET checkpoint='{}' WHERE id=?1",
+                    [&id],
+                )
+                .unwrap();
+            }
+            "revoked" => {
+                document(
+                    &f.wake(&f.state, &["revoke", "--route", grant.to_str().unwrap()])
+                        .output()
+                        .unwrap(),
+                    0,
+                    None,
+                );
+            }
+            "corrupt" => std::fs::write(&process, b"corrupt").unwrap(),
+            "foreign" => {
+                let mut p: Value =
+                    serde_json::from_slice(&std::fs::read(&process).unwrap()).unwrap();
+                p["task_id"] = "gc-older-foreign".into();
+                std::fs::write(&process, serde_json::to_vec(&p).unwrap()).unwrap();
+            }
+            "nonprivate" => {
+                std::fs::set_permissions(&process, std::fs::Permissions::from_mode(0o644)).unwrap()
+            }
+            "missing_process" | "bad_lease" => {
+                let p: af_contracts::task::agent_loop::TaskRunProcessV1 =
+                    serde_json::from_slice(&std::fs::read(&process).unwrap()).unwrap();
+                let request = af_contracts::task::agent_loop::TaskCancelRequestV1 {
+                    schema: af_contracts::task::agent_loop::TASK_CANCEL_REQUEST_V1.into(),
+                    task_id: p.task_id,
+                    run: if fault == "missing_process" { 2 } else { 1 },
+                    epoch: 999,
+                    writer: p.writer,
+                    pid: p.pid,
+                    host: p.host.clone(),
+                    requester: af_contracts::task::agent_loop::TaskCancelRequesterV1 {
+                        user: "fixture".into(),
+                        host: p.host,
+                        pid: std::process::id(),
+                    },
+                    requested_unix_ms: p.started_unix_ms,
+                };
+                request.validate().unwrap();
+                let path = f
+                    .state
+                    .join(format!("runs/gc-older-{}.cancel.json", request.run));
+                std::fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            "closed" => {
+                db.execute(
+                    "INSERT INTO wake_closed_v1 VALUES(?1,'expired_unextracted',1)",
+                    [&id],
+                )
+                .unwrap();
+            }
+            "expired" | "identity" => {
+                let raw: String = db
+                    .query_row(
+                        "SELECT registration FROM wake_subscriptions_v1 WHERE id=?1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let mut r: af_store::store::wake::WakeRegistration =
+                    serde_json::from_str(&raw).unwrap();
+                if fault == "expired" {
+                    r.subscription.expires_unix_ms = r.subscription.registered_unix_ms + 1;
+                } else {
+                    r.subscription.task.opening_event_id = "1".repeat(26);
+                }
+                r.subscription.configuration_digest =
+                    af_store::store::wake::configuration_digest(&r.subscription).unwrap();
+                r.validate().unwrap();
+                db.execute(
+                    "UPDATE wake_subscriptions_v1 SET registration=?2 WHERE id=?1",
+                    rusqlite::params![id, serde_json::to_string(&r).unwrap()],
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let snapshot = || {
+            db.query_row("SELECT checkpoint,checkpoint_digest,through_sequence,source_sequence FROM wake_subscriptions_v1 WHERE id=?1", [&id],
+                |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?))).unwrap()
+        };
+        let before = snapshot();
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        let output = poll.0.take().unwrap().wait_with_output().unwrap();
+        assert!(
+            !output.status.success(),
+            "{point}/{fault}: {}",
+            out(&output)
+        );
+        assert_eq!(snapshot(), before, "{point}/{fault}");
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert!(
+            store.wake_deliveries().unwrap().is_empty(),
+            "{point}/{fault}"
+        );
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM wake_outbox_v1", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_defers_checked_observation_and_checkpoint_contention() {
+    for point in [
+        "wake-final-state-captured-1",
+        "wake-source-observed-1",
+        "wake-before-commit-1",
+    ] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("grant.json");
+        document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+        let registration = document(
+            &f.wake(
+                &f.state,
+                &["register", "gc-older", "--route", grant.to_str().unwrap()],
+            )
+            .output()
+            .unwrap(),
+            0,
+            None,
+        );
+        let id = registration["subscription"]["subscription_id"]
+            .as_str()
+            .unwrap();
+        let cas = Cas::open(f.state.join("cas")).unwrap();
+        let mut writer = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let lease = writer
+            .take_task_lease(&cas, "gc-older", "heartbeat-fixture", 600_000)
+            .unwrap();
+        let barriers = f.owner.join("barriers");
+        let barrier = barriers.join(point);
+        std::fs::create_dir_all(&barrier).unwrap();
+        let child = f
+            .pull_command(&grant, "original")
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = task_interrupt::ChildGuard(Some(child));
+        await_observation_read(&mut child, &barrier.join("ready"));
+        let checkpoint = if point != "wake-before-commit-1" {
+            // A genuine checked heartbeat changes the observation after projection.
+            writer.renew_task_lease(&cas, &lease, 600_000).unwrap();
+            None
+        } else {
+            // No history change: a second authenticated public poll commits the first
+            // checkpoint while this page still expects None. This isolates cursor CAS.
+            assert_eq!(f.pull(&grant)["message"], Value::Null);
+            Some(writer.inspect_wake(id).unwrap().checkpoint.unwrap())
+        };
+        std::fs::write(barrier.join("proceed"), []).unwrap();
+        let output = child.0.take().unwrap().wait_with_output().unwrap();
+        let packet = document(&output, 0, Some("task-wake-pi-next-v1.json"));
+        assert_eq!(packet["message"], Value::Null);
+        assert_eq!(packet["delivery_id"], Value::Null);
+        assert_eq!(
+            writer.inspect_wake(id).unwrap().checkpoint,
+            checkpoint,
+            "deferred work commits no stale checkpoint or envelopes"
+        );
+        assert!(writer.inspect_wake(id).unwrap().envelopes.is_empty());
+        assert!(
+            writer.wake_deliveries().unwrap().is_empty(),
+            "no transport/native attempt"
+        );
+        assert!(
+            writer
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        writer.release_task_lease(&cas, &lease).unwrap();
+        assert_eq!(
+            f.pull(&grant)["message"],
+            Value::Null,
+            "attachment can keep polling"
+        );
+        f.finish();
+        let packet = f.pull(&grant);
+        assert!(
+            packet["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("AF Task wake metadata. Task: gc-older;")
+        );
+        assert_eq!(writer.wake_deliveries().unwrap().len(), 1);
+        assert_eq!(
+            f.pull(&grant)["message"],
+            Value::Null,
+            "real native intent still fences resend"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_does_not_defer_corruption_or_revoked_authority() {
+    for corrupt in [false, true] {
+        for point in [
+            "wake-final-state-captured-1",
+            "wake-source-observed-1",
+            "wake-before-commit-1",
+        ] {
+            let f = WakePiFixture::new();
+            let grant = f.owner.join("grant.json");
+            document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+            document(
+                &f.wake(
+                    &f.state,
+                    &["register", "gc-older", "--route", grant.to_str().unwrap()],
+                )
+                .output()
+                .unwrap(),
+                0,
+                None,
+            );
+            let barriers = f.owner.join("barriers");
+            let barrier = barriers.join(point);
+            std::fs::create_dir_all(&barrier).unwrap();
+            let child = f
+                .pull_command(&grant, "original")
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut child = task_interrupt::ChildGuard(Some(child));
+            await_observation_read(&mut child, &barrier.join("ready"));
+            if corrupt {
+                let connection = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+                connection.execute("UPDATE events SET payload=json_set(payload,'$.corrupt',true) WHERE run_id=?1 AND sequence=0",
+                    [af_store::store::task::task_run_id("gc-older").unwrap()]).unwrap();
+            } else {
+                document(
+                    &f.wake(&f.state, &["revoke", "--route", grant.to_str().unwrap()])
+                        .output()
+                        .unwrap(),
+                    0,
+                    None,
+                );
+            }
+            std::fs::write(barrier.join("proceed"), []).unwrap();
+            let output = child.0.take().unwrap().wait_with_output().unwrap();
+            assert!(
+                !output.status.success(),
+                "invalid authority/corruption is terminal: {}",
+                out(&output)
+            );
+            let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+            assert!(store.wake_deliveries().unwrap().is_empty());
+            assert!(
+                store
+                    .wake_uncertainty()
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_ignores_prefix_related_task_recorders_but_refuses_selected_corruption() {
+    use af_contracts::task::agent_loop::*;
+    use std::os::unix::fs::PermissionsExt;
+    let f = WakePiFixture::new();
+    // Use actual public Task writers, not invented recorder filenames alone.
+    for id in ["gc-older-fix", "gc-older-fix-2"] {
+        let mut file: Value =
+            serde_json::from_slice(&std::fs::read(f.repo.join("gc-older.json")).unwrap()).unwrap();
+        file["task_id"] = id.into();
+        let name = format!("{id}.json");
+        std::fs::write(f.repo.join(&name), serde_json::to_vec(&file).unwrap()).unwrap();
+        expect(
+            &af(&f.repo, &f.state, &["task", "plan", "--file", &name]),
+            0,
+        );
+        expect(&af(&f.repo, &f.state, &["task", "run", id, "--execute"]), 0);
+        let process: TaskRunProcessV1 = serde_json::from_slice(
+            &std::fs::read(f.state.join(format!("runs/{id}-1.json"))).unwrap(),
+        )
+        .unwrap();
+        let cancel = TaskCancelRequestV1 {
+            schema: TASK_CANCEL_REQUEST_V1.into(),
+            task_id: id.into(),
+            run: process.run,
+            epoch: EventStore::open(f.state.join("events.sqlite"))
+                .unwrap()
+                .task_projection(&Cas::open(f.state.join("cas")).unwrap(), id)
+                .unwrap()
+                .unwrap()
+                .lease_epoch(),
+            writer: process.writer,
+            pid: process.pid,
+            host: process.host.clone(),
+            requester: TaskCancelRequesterV1 {
+                user: "fixture".into(),
+                host: process.host,
+                pid: std::process::id(),
+            },
+            requested_unix_ms: process.started_unix_ms,
+        };
+        cancel.validate().unwrap();
+        let path = f.state.join(format!("runs/{id}-1.cancel.json"));
+        std::fs::write(&path, serde_json::to_vec(&cancel).unwrap()).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let grant = f.owner.join("grant.json");
+    document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+    document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        None,
+    );
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    f.finish();
+    let process = std::fs::read(f.state.join("runs/gc-older-1.json")).unwrap();
+    let mut foreign: Value = serde_json::from_slice(&process).unwrap();
+    foreign["task_id"] = "gc-older-fix".into();
+    // A selected malformed run number, corrupt process/cancellation, foreign contents,
+    // and nonprivate matching recorder all remain terminal; none create native intent.
+    for (name, bytes, mode) in [
+        ("gc-older-01.json", process.clone(), 0o600),
+        ("gc-older-1.json", b"corrupt".to_vec(), 0o600),
+        ("gc-older-1.cancel.json", b"corrupt".to_vec(), 0o600),
+        (
+            "gc-older-1.json",
+            serde_json::to_vec(&foreign).unwrap(),
+            0o600,
+        ),
+        ("gc-older-1.json", process.clone(), 0o644),
+    ] {
+        let path = f.state.join("runs").join(name);
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let refused = f.pull_command(&grant, "original").output().unwrap();
+        assert!(
+            !refused.status.success(),
+            "matching recorder must refuse: {name}"
+        );
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        assert!(store.wake_deliveries().unwrap().is_empty());
+        assert!(
+            store
+                .wake_uncertainty()
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(f.state.join("runs/gc-older-1.json"), &process).unwrap();
+        std::fs::set_permissions(
+            f.state.join("runs/gc-older-1.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    assert!(
+        f.pull(&grant)["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("AF Task wake metadata. Task: gc-older;")
+    );
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_poll_selects_first_registration_committed_during_poll() {
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+    let barriers = f.owner.join("selection-barriers");
+    let point = barriers.join("wake-pi-selection-1");
+    std::fs::create_dir_all(&point).unwrap();
+    let child = f
+        .pull_command(&grant, "original")
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = task_interrupt::ChildGuard(Some(child));
+    await_observation_read(&mut child, &point.join("ready"));
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    assert!(store.wake_registrations().unwrap().is_empty());
+    // A real public writer commits the first registration after the authenticated poll
+    // starts, immediately before its serialized route selection. No timing decides order.
+    let registration = document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        Some("task-wake-registration-v1.json"),
+    );
+    assert_eq!(store.wake_registrations().unwrap().len(), 1);
+    std::fs::write(point.join("proceed"), []).unwrap();
+    let output = child.0.take().unwrap().wait_with_output().unwrap();
+    // The extension keeps polling only on successful, well-formed responses. A planned
+    // Task has no completion yet; the newly reserved registration is nevertheless usable.
+    let packet = document(&output, 0, Some("task-wake-pi-next-v1.json"));
+    assert_eq!(packet["message"], Value::Null);
+    assert_eq!(packet["session"], "original");
+    assert!(
+        store
+            .inspect_wake(
+                registration["subscription"]["subscription_id"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap()
+            .extracted_through
+            .is_some(),
+        "the poll must reconcile the registration selected by its transaction"
+    );
+    // Fresh authenticated host processes continue polling without a reconnect repair or
+    // a foreground drain. Completion must be extracted and returned exactly once.
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    f.finish();
+    let packet = f.pull(&grant);
+    assert!(
+        packet["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("AF Task wake metadata. Task: gc-older;")
+    );
+    let delivery = store.wake_deliveries().unwrap().remove(0);
+    assert_eq!(packet["delivery_id"], delivery.envelope.delivery_id);
+    assert_eq!(
+        delivery.envelope.observation.kind,
+        af_contracts::task::wake::WakeKindV1::Completed
+    );
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_cannot_reset_through_shell_roots() {
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("original.json");
+    f.register(&grant);
+    f.finish();
+    assert!(f.pull(&grant)["message"].is_string());
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let before = serde_json::to_value(store.wake_deliveries().unwrap()).unwrap();
+    let uncertainty = store.wake_uncertainty().unwrap();
+    assert_eq!(uncertainty.as_array().unwrap().len(), 1);
+    assert_eq!(before[0]["state"], "admission_unknown");
+    let second = f._root.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    let (repo, state) = task_gc::fixture(&second);
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    for index in 0..3 {
+        let alternate = f.owner.join(format!("shell-{index}"));
+        std::fs::create_dir(&alternate).unwrap();
+        let mut command = f.grant(&state, &f.owner.join(format!("second-{index}.json")));
+        command.env("HOME", &alternate);
+        if index == 0 {
+            command.env("XDG_STATE_HOME", alternate.join("state"));
+        } else {
+            command.env_remove("XDG_STATE_HOME");
+        }
+        let refused = command.output().unwrap();
+        assert!(
+            !refused.status.success(),
+            "alternate shell must retain original-session fence: {}",
+            out(&refused)
+        );
+        assert!(
+            err(&refused).contains("already belongs to another wake Store"),
+            "{}",
+            err(&refused)
+        );
+        assert!(
+            EventStore::open_read_only(state.join("events.sqlite"))
+                .unwrap()
+                .wake_deliveries()
+                .unwrap()
+                .is_empty()
+        );
+        // The same Store remains usable across exactly the same shell changes and restart.
+        let output = f
+            .pull_command(&grant, "original")
+            .env("HOME", &alternate)
+            .env("XDG_STATE_HOME", alternate.join("other-state"))
+            .output()
+            .unwrap();
+        assert_empty_pi_poll(&output);
+        assert_eq!(
+            serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.wake_uncertainty().unwrap(), uncertainty);
+    }
+    // Ordinary default Store selection (no --state), with a different HOME and XDG root,
+    // must consult exactly the same account authority as explicit Store selection.
+    let mut default = crate::common::af();
+    default
+        .current_dir(&f.repo)
+        .env(
+            "AF_TEST_WAKE_ACCOUNT_HOME",
+            f.machine.parent().unwrap().parent().unwrap(),
+        )
+        .env("HOME", &second)
+        .env("XDG_STATE_HOME", second.join("default-state"));
+    let build = |args: &[&str]| {
+        let mut command = crate::common::af();
+        for (name, value) in default.get_envs() {
+            if let Some(value) = value {
+                command.env(name, value);
+            }
+        }
+        command.current_dir(&f.repo).args(args).output().unwrap()
+    };
+    expect(&build(&["task", "plan", "--file", "gc-older.json"]), 0);
+    let refused = build(&[
+        "task",
+        "wake",
+        "grant",
+        "gc-older",
+        "--host",
+        "pi",
+        "--session",
+        "original",
+        "--executable",
+        f.binary.to_str().unwrap(),
+        "--extension",
+        f.extension.to_str().unwrap(),
+        "--grant-file",
+        f.owner.join("default.json").to_str().unwrap(),
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("already belongs to another wake Store"),
+        "{}",
+        err(&refused)
+    );
+    assert_eq!(
+        serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(store.wake_uncertainty().unwrap(), uncertainty);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_concurrent_first_grants_converge_across_roots() {
+    let f = WakePiFixture::new();
+    let second = f._root.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    let (repo, state) = task_gc::fixture(&second);
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let mut children = Vec::new();
+    let mut points = Vec::new();
+    for (index, state) in [&f.state, &state].into_iter().enumerate() {
+        let barriers = f.owner.join(format!("grant-barriers-{index}"));
+        let point = barriers.join("wake-machine-binding-1");
+        std::fs::create_dir_all(&point).unwrap();
+        let child = f
+            .grant(state, &f.owner.join(format!("first-{index}.json")))
+            .env("XDG_STATE_HOME", f.owner.join(format!("shell-{index}")))
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut child = task_interrupt::ChildGuard(Some(child));
+        await_observation_read(&mut child, &point.join("ready"));
+        children.push(child);
+        points.push(point);
+    }
+    // Both grants reach the boundary before either can initialize/bind machine authority.
+    for point in points {
+        std::fs::write(point.join("proceed"), []).unwrap();
+    }
+    let outputs: Vec<_> = children
+        .iter_mut()
+        .map(|child| child.0.take().unwrap().wait_with_output().unwrap())
+        .collect();
+    assert_eq!(
+        outputs.iter().filter(|o| o.status.success()).count(),
+        1,
+        "{outputs:?}"
+    );
+    let winner = usize::from(!outputs[0].status.success());
+    let states = [&f.state, &state];
+    document(
+        &f.grant(states[winner], &f.owner.join("same-store-restart.json"))
+            .output()
+            .unwrap(),
+        0,
+        None,
+    );
+    let refused = f
+        .grant(
+            states[1 - winner],
+            &f.owner.join("other-store-restart.json"),
+        )
+        .env_remove("XDG_STATE_HOME")
+        .env("HOME", &f.owner)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("already belongs to another wake Store"),
+        "{}",
+        err(&refused)
+    );
+    let authority = EventStore::open_read_only(f.authority().join("events.sqlite")).unwrap();
+    let key = af_store::content_id(
+        &serde_json::json!({"domain":"af/wake-session/1", "host":"pi", "session":"original"}),
+    )
+    .unwrap();
+    authority
+        .check_wake_session_store(
+            &key,
+            &EventStore::open_read_only(states[winner].join("events.sqlite"))
+                .unwrap()
+                .wake_incarnation()
+                .unwrap(),
+        )
+        .unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_authority_damage_refuses_without_reset() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    let id = f.register(&grant);
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let before = serde_json::to_value(store.inspect_wake(&id).unwrap()).unwrap();
+    let database = f.authority().join("events.sqlite");
+    let retained = f.owner.join("retained-authority.sqlite");
+    std::fs::rename(&database, &retained).unwrap();
+    let refused = f.pull_command(&grant, "original").output().unwrap();
+    assert!(
+        !refused.status.success(),
+        "missing authority must not be recreated on use"
+    );
+    assert!(!database.exists());
+    let refused = f
+        .grant(&f.state, &f.owner.join("missing-authority.json"))
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "grant must not recreate missing authority either"
+    );
+    assert!(!database.exists());
+    std::os::unix::fs::symlink(&retained, &database).unwrap();
+    assert!(
+        !f.pull_command(&grant, "original")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::remove_file(&database).unwrap();
+    std::fs::write(&database, "malformed authority").unwrap();
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        !f.pull_command(&grant, "original")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::remove_file(&database).unwrap();
+    std::fs::rename(&retained, &database).unwrap();
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        !f.pull_command(&grant, "original")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.inspect_wake(&id).unwrap()).unwrap(),
+        before
+    );
+    assert!(store.wake_deliveries().unwrap().is_empty());
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    f.finish();
+    assert!(f.pull(&grant)["message"].is_string());
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_codex_socket_rejects_replaceable_higher_ancestry() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = WakePiFixture::new();
+    let outer = f.owner.join("outer");
+    let inner = outer.join("private");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = inner.join("daemon.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let binary = f.owner.join("recording-queue");
+    let called = f.owner.join("native-called");
+    std::fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            called.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let grant = f.owner.join("codex.json");
+    let grant_command = || {
+        f.wake(
+            &f.state,
+            &[
+                "grant",
+                "gc-older",
+                "--host",
+                "codex",
+                "--session",
+                "thread",
+                "--executable",
+                binary.to_str().unwrap(),
+                "--socket",
+                socket.to_str().unwrap(),
+                "--grant-file",
+                grant.to_str().unwrap(),
+            ],
+        )
+    };
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let refused = grant_command().output().unwrap();
+    assert!(
+        !refused.status.success(),
+        "higher writable ancestry must refuse before route admission"
+    );
+    assert!(!grant.exists());
+    // Sticky trusted parents protect the owner-owned private child. Socket mode 0777
+    // remains supported; executable mode policy is deliberately separate.
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    document(&grant_command().output().unwrap(), 0, None);
+    document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        None,
+    );
+    f.finish();
+    let barriers = f.owner.join("native-barriers");
+    let point = barriers.join("wake-native-preflight-1");
+    std::fs::create_dir_all(&point).unwrap();
+    let child = f
+        .wake(&f.state, &["drain", "--max-batches", "1"])
+        .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = task_interrupt::ChildGuard(Some(child));
+    await_observation_read(&mut child, &point.join("ready"));
+    // Permission change after grant/transport but before native preflight must refuse
+    // before committing native intent or launching the reconnecting queue executable.
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::write(point.join("proceed"), []).unwrap();
+    let output = child.0.take().unwrap().wait_with_output().unwrap();
+    assert!(
+        err(&output).contains("replaceable or foreign directory ancestry"),
+        "{}",
+        err(&output)
+    );
+    assert!(!called.exists());
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store.wake_deliveries().unwrap().iter().all(|d| d.state
+            != af_contracts::task::wake::delivery::WakeDeliveryStateV1::AdmissionUnknown)
+    );
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Socket identity still matters even after the ancestor becomes safe again.
+    std::fs::rename(&inner, outer.join("retained-original")).unwrap();
+    std::fs::create_dir(&inner).unwrap();
+    std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let refused = f
+        .wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(!called.exists());
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_machine_session_publication_syncs_existing_ancestry_before_binding() {
+    let f = WakePiFixture::new();
+    let identity =
+        af_store::content_id(&serde_json::json!({"domain":"af/wake-machine-session-store/1"}))
+            .unwrap();
+    let registry = f
+        .machine
+        .join("af/task/local")
+        .join(identity.strip_prefix("sha256:").unwrap());
+    let objects = registry.join("cas/objects");
+    let chain: Vec<_> = objects.ancestors().map(Path::to_path_buf).collect();
+    let record = f.owner.join("syncs");
+    let key = af_store::content_id(
+        &serde_json::json!({"domain":"af/wake-session/1","host":"pi","session":"original"}),
+    )
+    .unwrap();
+    // Fail every link in turn. All later attempts encounter preexisting directories left
+    // by the earlier failure, so syncing only newly created ancestors cannot pass.
+    for (index, directory) in chain.iter().enumerate() {
+        std::fs::write(&record, "").unwrap();
+        let grant = f.owner.join(format!("failed-{index}.json"));
+        let refused = f
+            .grant(&f.state, &grant)
+            .env("AF_TEST_WAKE_FAIL_DIRECTORY_SYNC", directory)
+            .env("AF_TEST_WAKE_DIRECTORY_SYNCS", &record)
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "a failed sync must refuse the grant"
+        );
+        assert!(
+            err(&refused).contains("syncing machine wake directory"),
+            "{}",
+            err(&refused)
+        );
+        let synced: Vec<_> = std::fs::read_to_string(&record)
+            .unwrap()
+            .lines()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(synced, chain[..index]);
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let capability: af_contracts::task::wake::delivery::WakeGrantV1 =
+            serde_json::from_slice(&std::fs::read(&grant).unwrap()).unwrap();
+        assert!(
+            store.wake_route(&capability.route_id, 1).is_err(),
+            "no usable route before publication"
+        );
+        let machine = EventStore::open_read_only(registry.join("events.sqlite")).unwrap();
+        assert!(
+            machine
+                .check_wake_session_store(&key, &store.wake_incarnation().unwrap())
+                .is_err(),
+            "no acknowledged binding before publication"
+        );
+    }
+    // Model losing the still-unpublished directory entry. There was no acknowledged
+    // binding or usable route to lose. Recovery must publish the newly recreated chain.
+    std::fs::remove_dir_all(f.machine.join("af")).unwrap();
+    let grant = f.owner.join("usable.json");
+    std::fs::write(&record, "").unwrap();
+    document(
+        &f.grant(&f.state, &grant)
+            .env("AF_TEST_WAKE_DIRECTORY_SYNCS", &record)
+            .output()
+            .unwrap(),
+        0,
+        None,
+    );
+    let synced: Vec<_> = std::fs::read_to_string(&record)
+        .unwrap()
+        .lines()
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(
+        synced, chain,
+        "acknowledgement publishes every directory entry through root"
+    );
+    let refused = f
+        .wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .env(
+            "AF_TEST_WAKE_FAIL_DIRECTORY_SYNC",
+            registry.parent().unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "preexisting routes also require publication"
+    );
+    assert!(err(&refused).contains("syncing machine wake directory"));
+    assert!(
+        EventStore::open(f.state.join("events.sqlite"))
+            .unwrap()
+            .wake_registrations()
+            .unwrap()
+            .is_empty()
+    );
+    document(
+        &f.wake(
+            &f.state,
+            &["register", "gc-older", "--route", grant.to_str().unwrap()],
+        )
+        .output()
+        .unwrap(),
+        0,
+        None,
+    );
+    f.finish();
+    assert!(f.pull(&grant)["message"].is_string());
+    assert_eq!(
+        f.pull(&grant)["message"],
+        Value::Null,
+        "restart preserves native uncertainty"
+    );
+    // Another real Task Store cannot bind this original session after reopening both
+    // databases. No host call, fabricated receipt or simulated power loss is involved.
+    let second_root = f._root.path().join("second");
+    std::fs::create_dir(&second_root).unwrap();
+    let (repo, state) = task_gc::fixture(&second_root);
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+        0,
+    );
+    let refused = f
+        .grant(&state, &f.owner.join("second.json"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("already belongs to another wake Store"),
+        "{}",
+        err(&refused)
+    );
+    let machine = EventStore::open_read_only(registry.join("events.sqlite")).unwrap();
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    machine
+        .check_wake_session_store(&key, &store.wake_incarnation().unwrap())
+        .unwrap();
+    assert_eq!(
+        store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(f.pull(&grant)["message"], Value::Null);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_next_rotates_registrations_and_recovers_earlier_unclaimed_backoff() {
+    use af_contracts::task::wake::{WAKE_SUBSCRIPTION_V1, WakeBoundaryV1, WakeSubscriptionV1};
+    use af_store::store::wake::{CatchUp, WakeRegistration, configuration_digest};
+    let f = WakePiFixture::new();
+    let grant = f.owner.join("grant.json");
+    let granted = document(&f.grant(&f.state, &grant).output().unwrap(), 0, None);
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let route = store
+        .wake_route(granted["route_id"].as_str().unwrap(), clock)
+        .unwrap();
+    // Use the public registration writer for deterministic reverse IDs, without depending
+    // on random CLI nonces or mutating a registration's checked identity in SQLite.
+    let mut keys = [
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+    ];
+    keys.sort_by_cached_key(|key| {
+        af_store::content_id(&serde_json::json!({
+            "domain":"af/wake-subscription/1", "store":route.task.store_incarnation, "key":key,
+        }))
+        .unwrap()
+    });
+    let register = |key: &str| {
+        let mut subscription = WakeSubscriptionV1 {
+            schema: WAKE_SUBSCRIPTION_V1.into(),
+            subscription_id: key.into(),
+            registration_key: key.into(),
+            configuration_digest: key.into(),
+            task: route.task.clone(),
+            recipient_ref: route.route_id.clone(),
+            registered_unix_ms: clock,
+            expires_unix_ms: route.expires_unix_ms,
+            max_observations: 128,
+        };
+        subscription.configuration_digest = configuration_digest(&subscription).unwrap();
+        let projection = store.task_projection(&cas, "gc-older").unwrap().unwrap();
+        let prefix = store
+            .replay_window(
+                &subscription.task.task_run_id,
+                projection.next_sequence - 1,
+                1,
+            )
+            .unwrap()
+            .remove(0);
+        let r = WakeRegistration {
+            schema: "af/task-wake-registration@1".into(),
+            subscription,
+            policy: CatchUp::FromOpening,
+            registered_prefix: WakeBoundaryV1 {
+                sequence: prefix.sequence,
+                event_id: prefix.event_id,
+            },
+            launch_intent: false,
+        };
+        store.register_wake(&cas, &r).unwrap()
+    };
+    let a = register(&keys[1]);
+    f.finish();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert!(
+        af_runtime::wake::journal::reconcile(&store, &cas, &a.subscription.subscription_id, clock)
+            .unwrap()
+    );
+    let earlier = store
+        .inspect_wake(&a.subscription.subscription_id)
+        .unwrap()
+        .envelopes
+        .remove(0);
+    let claim = store.claim_wake(&earlier, clock).unwrap().unwrap();
+    store.backoff_wake(&claim, clock).unwrap();
+    // Freeze this persisted deadline until explicitly made due, so CLI startup speed
+    // never decides whether backoff is still active. Preserve attempts and all evidence.
+    let mut record = store.wake_deliveries().unwrap().remove(0);
+    record.next_attempt_unix_ms = earlier.expires_unix_ms;
+    let save_deadline = |record: &af_contracts::task::wake::delivery::WakeDeliveryV1| {
+        rusqlite::Connection::open(f.state.join("events.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(record).unwrap(),
+                    record.envelope.delivery_id
+                ],
+            )
+            .unwrap();
+    };
+    save_deadline(&record);
+    let b = register(&keys[0]);
+    assert!(b.subscription.subscription_id < a.subscription.subscription_id);
+    // Poll only the public attached path in fresh authenticated processes. B may be
+    // accepted, but the earlier committed A packet must prevent native overtaking.
+    for _ in 0..2 {
+        assert_eq!(f.pull(&grant)["message"], Value::Null);
+    }
+    assert!(
+        store
+            .wake_deliveries()
+            .unwrap()
+            .iter()
+            .any(
+                |r| r.envelope.subscription_id == b.subscription.subscription_id
+                    && r.state
+                        == af_contracts::task::wake::delivery::WakeDeliveryStateV1::InboxAccepted
+            )
+    );
+    assert!(
+        store
+            .wake_uncertainty()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .wake_deliveries()
+            .unwrap()
+            .iter()
+            .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+            .unwrap()
+            .attempts,
+        1
+    );
+    record.next_attempt_unix_ms = 0;
+    save_deadline(&record);
+    drop(store);
+    drop(cas);
+    // At most one existing source/transport visit per poll: a complete fair cycle
+    // reaches A despite B's smaller ID. No foreground drain is used anywhere.
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        let packet = f.pull(&grant);
+        if packet["delivery_id"].is_string() {
+            delivered.push(packet["delivery_id"].clone());
+        }
+    }
+    assert_eq!(delivered, vec![Value::String(earlier.delivery_id.clone())]);
+    let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let retained = store.wake_deliveries().unwrap();
+    let earlier_record = retained
+        .iter()
+        .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+        .unwrap();
+    assert_eq!(earlier_record.attempts, 2);
+    assert_eq!(earlier_record.receipts.len(), 3);
+    assert_eq!(
+        store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        f.pull(&grant)["message"],
+        Value::Null,
+        "uncertain native intent cannot be resent or overtaken"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_pi_traversal_isolates_routes_and_foreground_drain_across_restart() {
+    use af_contracts::task::wake::delivery::WakeDeliveryStateV1;
+    use af_contracts::task::wake::{WAKE_SUBSCRIPTION_V1, WakeBoundaryV1, WakeSubscriptionV1};
+    use af_store::store::wake::{CatchUp, WakeRegistration, configuration_digest};
+    let f = WakePiFixture::new();
+    let grants = [
+        f.owner.join("route-one.json"),
+        f.owner.join("route-two.json"),
+    ];
+    let sessions = ["original-one", "original-two"];
+    let mut store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let routes: Vec<_> = grants
+        .iter()
+        .zip(sessions)
+        .map(|(grant, session)| {
+            let granted = document(
+                &f.grant_session(&f.state, grant, session).output().unwrap(),
+                0,
+                None,
+            );
+            store
+                .wake_route(granted["route_id"].as_str().unwrap(), clock)
+                .unwrap()
+        })
+        .collect();
+    assert_ne!(routes[0].route_id, routes[1].route_id);
+    // Pick registration keys by their actual public-writer-derived IDs: A < B < C.
+    // Route one owns A,B, route two owns C; B commits its packet first.
+    let mut keys: Vec<_> = (0..3)
+        .map(|n| af_store::content_id(&serde_json::json!({"key":n})).unwrap())
+        .collect();
+    keys.sort_by_cached_key(|key| {
+        af_store::content_id(&serde_json::json!({
+            "domain":"af/wake-subscription/1", "store":routes[0].task.store_incarnation,"key":key,
+        }))
+        .unwrap()
+    });
+    let register = |route: &af_contracts::task::wake::delivery::WakeRouteV1, key: &str| {
+        let mut subscription = WakeSubscriptionV1 {
+            schema: WAKE_SUBSCRIPTION_V1.into(),
+            subscription_id: key.into(),
+            registration_key: key.into(),
+            configuration_digest: key.into(),
+            task: route.task.clone(),
+            recipient_ref: route.route_id.clone(),
+            registered_unix_ms: clock,
+            expires_unix_ms: route.expires_unix_ms,
+            max_observations: 128,
+        };
+        subscription.configuration_digest = configuration_digest(&subscription).unwrap();
+        let projection = store.task_projection(&cas, "gc-older").unwrap().unwrap();
+        let prefix = store
+            .replay_window(
+                &subscription.task.task_run_id,
+                projection.next_sequence - 1,
+                1,
+            )
+            .unwrap()
+            .remove(0);
+        store
+            .register_wake(
+                &cas,
+                &WakeRegistration {
+                    schema: "af/task-wake-registration@1".into(),
+                    subscription,
+                    policy: CatchUp::FromOpening,
+                    registered_prefix: WakeBoundaryV1 {
+                        sequence: prefix.sequence,
+                        event_id: prefix.event_id,
+                    },
+                    launch_intent: false,
+                },
+            )
+            .unwrap()
+    };
+    let b = register(&routes[0], &keys[1]);
+    f.finish();
+    let observed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert!(
+        af_runtime::wake::journal::reconcile(
+            &store,
+            &cas,
+            &b.subscription.subscription_id,
+            observed
+        )
+        .unwrap()
+    );
+    let earlier = store
+        .inspect_wake(&b.subscription.subscription_id)
+        .unwrap()
+        .envelopes
+        .remove(0);
+    let claim = store.claim_wake(&earlier, observed).unwrap().unwrap();
+    store.backoff_wake(&claim, observed).unwrap();
+    let mut record = store.wake_deliveries().unwrap().remove(0);
+    // Freeze only the persisted due time, avoiding a wall-clock race during process startup.
+    let save_deadline = |record: &af_contracts::task::wake::delivery::WakeDeliveryV1| {
+        rusqlite::Connection::open(f.state.join("events.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(record).unwrap(),
+                    record.envelope.delivery_id
+                ],
+            )
+            .unwrap();
+    };
+    record.next_attempt_unix_ms = earlier.expires_unix_ms;
+    save_deadline(&record);
+    let a = register(&routes[0], &keys[0]);
+    let c = register(&routes[1], &keys[2]);
+    assert!(a.subscription.subscription_id < b.subscription.subscription_id);
+    assert!(b.subscription.subscription_id < c.subscription.subscription_id);
+    drop(store);
+    // Every poll is a fresh, authenticated CLI process. Alternating scopes used to select
+    // A,C,A,C forever, leaving B's earlier unclaimed packet stranded behind backoff.
+    let mut other_packets = Vec::new();
+    for _ in 0..2 {
+        assert_eq!(
+            f.pull_session(&grants[0], sessions[0])["message"],
+            Value::Null
+        );
+        let packet = f.pull_session(&grants[1], sessions[1]);
+        assert_eq!(packet["session"], sessions[1]);
+        if packet["delivery_id"].is_string() {
+            other_packets.push(packet["delivery_id"].clone());
+        }
+    }
+    assert_eq!(
+        other_packets.len(),
+        1,
+        "the other original session progresses independently"
+    );
+    store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let retained = store.wake_deliveries().unwrap();
+    assert!(retained.iter().any(
+        |r| r.envelope.subscription_id == a.subscription.subscription_id
+            && r.state == WakeDeliveryStateV1::InboxAccepted
+    ));
+    assert_eq!(
+        retained
+            .iter()
+            .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+            .unwrap()
+            .attempts,
+        1
+    );
+    // A competing foreground visit starts at A, but cannot reset either route's position.
+    document(
+        &f.wake(&f.state, &["drain", "--max-batches", "1"])
+            .output()
+            .unwrap(),
+        0,
+        None,
+    );
+    let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+    let selected: String = db
+        .query_row(
+            "SELECT subscription_id FROM wake_route_traversal_v1 WHERE route_id=?1",
+            [&routes[0].route_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected, b.subscription.subscription_id);
+    drop(db);
+    // Leave the other scope as the last visitor before B becomes due. With the old
+    // shared cursor this restores after=C and the A,C starvation, even after a drain.
+    assert_eq!(
+        f.pull_session(&grants[1], sessions[1])["message"],
+        Value::Null
+    );
+    record.next_attempt_unix_ms = 0;
+    save_deadline(&record);
+    drop(store);
+    // Restart and alternate again, with no further drain: a complete two-visit route-local
+    // cycle must transport B and admit exactly its earlier packet before A.
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        let packet = f.pull_session(&grants[0], sessions[0]);
+        assert_eq!(packet["session"], sessions[0]);
+        if packet["delivery_id"].is_string() {
+            delivered.push(packet["delivery_id"].clone());
+        }
+        assert_eq!(
+            f.pull_session(&grants[1], sessions[1])["message"],
+            Value::Null
+        );
+    }
+    assert_eq!(delivered, vec![Value::String(earlier.delivery_id.clone())]);
+    store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+    let retained = store.wake_deliveries().unwrap();
+    let earlier_record = retained
+        .iter()
+        .find(|r| r.envelope.delivery_id == earlier.delivery_id)
+        .unwrap();
+    assert_eq!(earlier_record.attempts, 2);
+    assert_eq!(earlier_record.receipts.len(), 3);
+    assert_eq!(earlier_record.state, WakeDeliveryStateV1::AdmissionUnknown);
+    assert_eq!(
+        store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+        2
+    );
+    for (grant, session) in grants.iter().zip(sessions) {
+        assert_eq!(
+            f.pull_session(grant, session)["message"],
+            Value::Null,
+            "neither session may resend or overtake its retained uncertain intent"
+        );
+    }
+}
+
 fn af(repo: &Path, state: &Path, args: &[&str]) -> Output {
     crate::common::af()
         .current_dir(repo)
@@ -2411,4 +5658,764 @@ fn a_detached_run_not_admitted_in_time_is_not_claimed_to_run() {
     // The run goes on: once it starts it takes the Task and finishes it.
     let waited = af(&repo, &state, &["task", "wait", task, "--timeout", "600"]);
     assert_eq!(waited.status.code(), Some(0), "{}", err(&waited));
+}
+
+#[cfg(target_os = "linux")]
+struct WakeFairFixture {
+    _root: tempfile::TempDir,
+    repo: PathBuf,
+    state: PathBuf,
+    calls: PathBuf,
+    installation_dir: PathBuf,
+    grants: Vec<PathBuf>,
+    _listeners: Vec<std::os::unix::net::UnixListener>,
+}
+#[cfg(target_os = "linux")]
+impl WakeFairFixture {
+    fn new(host: &str) -> Self {
+        Self::with_endpoint(host, |path| {
+            std::os::unix::net::UnixListener::bind(path).unwrap()
+        })
+    }
+    fn with_endpoint(host: &str, bind: impl Fn(&Path) -> std::os::unix::net::UnixListener) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = task_gc::fixture(root.path());
+        let owner = root.path().join("wake-owner");
+        std::fs::create_dir(&owner).unwrap();
+        std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = owner.canonicalize().unwrap();
+        let calls = owner.join("calls");
+        let installation_dir = owner.join("installation");
+        std::fs::create_dir(&installation_dir).unwrap();
+        std::fs::set_permissions(&installation_dir, std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let binary = installation_dir.join("host-recording-standin");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut f = Self {
+            _root: root,
+            repo,
+            state,
+            calls,
+            installation_dir,
+            grants: vec![],
+            _listeners: vec![],
+        };
+        for task in ["gc-older", "gc-newer"] {
+            expect(
+                &af(
+                    &f.repo,
+                    &f.state,
+                    &["task", "plan", "--file", &format!("{task}.json")],
+                ),
+                0,
+            );
+            let grant = owner.join(format!("{task}.grant"));
+            let session = format!(
+                "{task}-{}",
+                f._root
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .trim_start_matches('.')
+            );
+            let mut args = vec![
+                "grant",
+                task,
+                "--host",
+                host,
+                "--session",
+                &session,
+                "--executable",
+                binary.to_str().unwrap(),
+                "--grant-file",
+                grant.to_str().unwrap(),
+            ];
+            let endpoint;
+            if host == "codex" {
+                endpoint = owner.join(format!("{task}.sock"));
+                f._listeners.push(bind(&endpoint));
+                std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o777))
+                    .unwrap();
+                args.extend(["--socket", endpoint.to_str().unwrap()]);
+            } else {
+                assert_eq!(host, "pi");
+                endpoint = owner.join(format!("{task}.ts"));
+                std::fs::write(
+                    &endpoint,
+                    std::fs::read(workspace().join("scripts/task-wake-extension.ts")).unwrap(),
+                )
+                .unwrap();
+                std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600))
+                    .unwrap();
+                args.extend(["--extension", endpoint.to_str().unwrap()]);
+            }
+            document(&f.wake(&args), 0, None);
+            document(
+                &f.wake(&["register", task, "--route", grant.to_str().unwrap()]),
+                0,
+                None,
+            );
+            f.grants.push(grant);
+        }
+        f
+    }
+    fn wake(&self, args: &[&str]) -> Output {
+        crate::common::af()
+            .current_dir(&self.repo)
+            .args(["task", "wake", "--state"])
+            .arg(&self.state)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn status(&self) -> Value {
+        document(
+            &self.wake(&["inspect"]),
+            0,
+            Some("task-wake-status-v1.json"),
+        )
+    }
+    fn drain_one(&self) {
+        let result = document(&self.wake(&["drain", "--max-batches", "1"]), 0, None);
+        assert_eq!(result["pages"], 1);
+        assert_eq!(result["native_batches"], 1);
+        assert!(result["deliveries"].as_u64().unwrap() <= 1);
+    }
+    fn finish(&self, task: &str) {
+        expect(
+            &af(&self.repo, &self.state, &["task", "run", task, "--execute"]),
+            0,
+        );
+    }
+    fn registration_for_route(&self, id: &str) -> Value {
+        self.status()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["registration"]["subscription"]["recipient_ref"] == id)
+            .unwrap()
+            .clone()
+    }
+    fn fill_inbox(&self) {
+        // Public journal/receiver paths isolate native traversal from extraction scheduling.
+        let store = EventStore::open(self.state.join("events.sqlite")).unwrap();
+        let cas = Cas::open_existing(self.state.join("cas")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        for r in store.wake_registrations().unwrap() {
+            assert!(
+                af_runtime::wake::journal::reconcile(
+                    &store,
+                    &cas,
+                    &r.subscription.subscription_id,
+                    now
+                )
+                .unwrap()
+            );
+            for envelope in store
+                .inspect_wake(&r.subscription.subscription_id)
+                .unwrap()
+                .envelopes
+            {
+                let claim = store.claim_wake(&envelope, now).unwrap().unwrap();
+                store.accept_wake(&claim, now).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_one_batch_extraction_passes_caught_up_subscription_across_processes() {
+    let f = WakeFairFixture::new("pi");
+    let status = f.status();
+    let subscriptions = status["subscriptions"].as_array().unwrap();
+    let first = subscriptions[0]["registration"]["subscription"]["subscription_id"]
+        .as_str()
+        .unwrap();
+    let later = subscriptions[1]["registration"]["subscription"]["task"]["task_id"]
+        .as_str()
+        .unwrap();
+    f.drain_one();
+    let status = f.status();
+    let first_journal = status["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["registration"]["subscription"]["subscription_id"] == first)
+        .unwrap();
+    assert!(first_journal["extracted_through"].is_u64());
+    assert!(first_journal["envelopes"].as_array().unwrap().is_empty());
+    f.finish(later);
+    // Every invocation is a fresh CLI process; the first subscription remains caught up.
+    f.drain_one();
+    let status = f.status();
+    let journal = status["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["registration"]["subscription"]["task"]["task_id"] == later)
+        .unwrap();
+    assert_eq!(journal["envelopes"].as_array().unwrap().len(), 1);
+    assert_eq!(journal["envelopes"][0]["observation"]["kind"], "completed");
+    let retained = journal["envelopes"].clone();
+    f.drain_one();
+    f.drain_one();
+    let status = f.status();
+    assert_eq!(
+        status["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["registration"]["subscription"]["task"]["task_id"] == later)
+            .unwrap()["envelopes"],
+        retained
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_one_batch_native_passes_empty_route_and_keeps_uncertainty_fence() {
+    let f = WakeFairFixture::new("codex");
+    let mut routes = f.status()["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| {
+            j["registration"]["subscription"]["recipient_ref"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    routes.sort();
+    let later = f.registration_for_route(&routes[1]);
+    f.finish(
+        later["registration"]["subscription"]["task"]["task_id"]
+            .as_str()
+            .unwrap(),
+    );
+    f.fill_inbox();
+    f.drain_one();
+    assert!(!f.calls.exists(), "first native route has an empty inbox");
+    f.drain_one();
+    let calls = std::fs::read_to_string(&f.calls).unwrap();
+    assert_eq!(calls.lines().filter(|s| *s == "queue").count(), 1);
+    f.drain_one();
+    f.drain_one();
+    assert_eq!(
+        std::fs::read_to_string(&f.calls).unwrap(),
+        calls,
+        "uncertain admission is never resent"
+    );
+    assert_eq!(
+        f.status()["uncertain_session_fences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_one_batch_native_removal_and_replacement_remain_bounded() {
+    for removal in ["revoked", "removed", "substituted"] {
+        let f = WakeFairFixture::new("codex");
+        let mut routes = f.status()["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| {
+                j["registration"]["subscription"]["recipient_ref"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        routes.sort();
+        let first = f.registration_for_route(&routes[0]);
+        let later = f.registration_for_route(&routes[1]);
+        f.finish(
+            later["registration"]["subscription"]["task"]["task_id"]
+                .as_str()
+                .unwrap(),
+        );
+        f.fill_inbox();
+        let first_task = first["registration"]["subscription"]["task"]["task_id"]
+            .as_str()
+            .unwrap();
+        if removal == "revoked" {
+            let grant = f
+                .grants
+                .iter()
+                .find(|p| p.file_name().unwrap() == format!("{first_task}.grant").as_str())
+                .unwrap();
+            expect(&f.wake(&["revoke", "--route", grant.to_str().unwrap()]), 0);
+        } else {
+            // Deterministic persisted removal/substitution fault; do not sleep or relax grant validation.
+            let sql = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+            if removal == "removed" {
+                sql.execute("DELETE FROM wake_routes_v1 WHERE id=?1", [&routes[0]])
+                    .unwrap();
+            } else {
+                let text: String = sql
+                    .query_row(
+                        "SELECT route FROM wake_routes_v1 WHERE id=?1",
+                        [&routes[0]],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let mut route: af_contracts::task::wake::delivery::WakeRouteV1 =
+                    serde_json::from_str(&text).unwrap();
+                route.session = "replacement-session".into();
+                sql.execute(
+                    "UPDATE wake_routes_v1 SET route=?1 WHERE id=?2",
+                    rusqlite::params![serde_json::to_string(&route).unwrap(), &routes[0]],
+                )
+                .unwrap();
+                assert!(
+                    EventStore::open(f.state.join("events.sqlite"))
+                        .unwrap()
+                        .wake_route(&routes[0], 2)
+                        .is_err()
+                );
+            }
+        }
+        f.drain_one();
+        assert!(
+            !f.calls.exists(),
+            "unavailable first route cannot send: {removal}"
+        );
+        f.drain_one();
+        let calls = std::fs::read_to_string(&f.calls).unwrap();
+        assert_eq!(
+            calls.lines().filter(|s| *s == "queue").count(),
+            1,
+            "later route progresses: {removal}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wake_non_listening_endpoint(path: &Path) -> std::os::unix::net::UnixListener {
+    let socket = rustix::net::socket(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::STREAM,
+        None,
+    )
+    .unwrap();
+    rustix::net::bind(&socket, &rustix::net::SocketAddrUnix::new(path).unwrap()).unwrap();
+    // Retain the same fd, path and inode when enabling the recording listener later.
+    socket.into()
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_native_preflight_backoff_and_exhaustion_prevent_endpoint_contact() {
+    use af_contracts::task::wake::delivery::{
+        WakeDeliveryReasonV1, WakeDeliveryStateV1, WakeDeliveryV1,
+    };
+    for exhaust in [false, true] {
+        let f = WakeFairFixture::with_endpoint("codex", wake_non_listening_endpoint);
+        f.finish("gc-older");
+        f.fill_inbox();
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let mut expected_attempts = 2;
+        loop {
+            document(&f.wake(&["drain"]), 0, None);
+            let mut record = store.wake_deliveries().unwrap().pop().unwrap();
+            assert_eq!(record.attempts, expected_attempts);
+            assert_eq!(
+                record.receipts.len(),
+                1,
+                "failed connect is pre-admission only"
+            );
+            assert!(record.next_attempt_unix_ms > record.receipts[0].observed_unix_ms);
+            if !exhaust || expected_attempts == 8 {
+                assert_eq!(
+                    record.state,
+                    if exhaust {
+                        WakeDeliveryStateV1::Blocked
+                    } else {
+                        WakeDeliveryStateV1::InboxAccepted
+                    }
+                );
+                assert_eq!(
+                    record.reason,
+                    Some(if exhaust {
+                        WakeDeliveryReasonV1::NativePreflightExhausted
+                    } else {
+                        WakeDeliveryReasonV1::NativePreflightUnavailable
+                    })
+                );
+                if !exhaust {
+                    // Pin a not-due deadline to this subscription's existing finite expiry
+                    // so CLI startup speed cannot decide the endpoint assertion. The Store
+                    // regressions exercise exact generated deadlines with an explicit clock.
+                    record.next_attempt_unix_ms = record.envelope.expires_unix_ms;
+                    let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+                    db.execute(
+                        "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                        rusqlite::params![
+                            serde_json::to_string(&record).unwrap(),
+                            record.envelope.delivery_id
+                        ],
+                    )
+                    .unwrap();
+                }
+                break;
+            }
+            // Deterministic clock seam: advance just the persisted due deadline, preserving
+            // attempts, packet, receipts and fences. No sleep or retry resets the allowance.
+            let mut due: WakeDeliveryV1 = record;
+            due.next_attempt_unix_ms = 0;
+            let db = rusqlite::Connection::open(f.state.join("events.sqlite")).unwrap();
+            db.execute(
+                "UPDATE wake_delivery_v1 SET record=?1 WHERE id=?2",
+                rusqlite::params![
+                    serde_json::to_string(&due).unwrap(),
+                    due.envelope.delivery_id
+                ],
+            )
+            .unwrap();
+            expected_attempts += 1;
+        }
+        // Make the endpoint available without replacing its pinned inode. Any forbidden
+        // preflight connection will now be observable in this kernel listener's backlog.
+        let listener = &f._listeners[0];
+        rustix::net::listen(listener, 16).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let before = serde_json::to_value(store.wake_deliveries().unwrap()).unwrap();
+        for _ in 0..3 {
+            document(&f.wake(&["drain"]), 0, None);
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "backoff/exhaustion must be checked before endpoint contact, even after restart"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.wake_uncertainty().unwrap(), serde_json::json!([]));
+        assert!(!f.calls.exists(), "no native submission occurred");
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_competing_native_preflight_reserves_before_endpoint_and_fences_restart() {
+    for disposition in ["native", "revoked", "closed", "ancestry"] {
+        let f = WakeFairFixture::new("codex");
+        f.finish("gc-older");
+        f.fill_inbox();
+        let barriers = f._root.path().join("preflight-barriers");
+        let point = barriers.join("wake-native-preflight-1");
+        std::fs::create_dir_all(&point).unwrap();
+        let driver = crate::common::af()
+            .current_dir(&f.repo)
+            .args(["task", "wake", "--state"])
+            .arg(&f.state)
+            .args(["drain"])
+            .env("AF_TEST_WAIT_OBSERVATION_BARRIER", &barriers)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut driver = task_interrupt::ChildGuard(Some(driver));
+        await_observation_read(&mut driver, &point.join("ready"));
+        let listener = &f._listeners[0];
+        listener.set_nonblocking(true).unwrap();
+        let store = EventStore::open(f.state.join("events.sqlite")).unwrap();
+        let reserved = store.wake_deliveries().unwrap().pop().unwrap();
+        assert_eq!(reserved.attempts, 2);
+        assert!(reserved.claim_until_unix_ms > 0);
+        document(&f.wake(&["drain"]), 0, None);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "competing driver has no preflight authority while reservation is live"
+        );
+        if disposition == "ancestry" {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f.installation_dir, std::fs::Permissions::from_mode(0o777))
+                .unwrap();
+        } else if disposition == "revoked" {
+            expect(
+                &f.wake(&["revoke", "--route", f.grants[0].to_str().unwrap()]),
+                0,
+            );
+        } else if disposition == "closed" {
+            store
+                .maintain_wakes(reserved.envelope.expires_unix_ms)
+                .unwrap();
+        }
+        std::fs::write(point.join("proceed"), []).unwrap();
+        expect(&driver.0.take().unwrap().wait_with_output().unwrap(), 0);
+        if disposition != "native" {
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "revocation/closure during preparation must prevent endpoint contact"
+            );
+            assert!(!f.calls.exists());
+            assert_eq!(store.wake_uncertainty().unwrap(), serde_json::json!([]));
+            continue;
+        }
+        let _authenticated_connection = listener.accept().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&f.calls)
+                .unwrap()
+                .lines()
+                .filter(|s| *s == "queue")
+                .count(),
+            1
+        );
+        for _ in 0..2 {
+            document(&f.wake(&["drain"]), 0, None);
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "uncertain original-session admission fences endpoint contact as well as native submission"
+            );
+        }
+        assert_eq!(
+            store.wake_uncertainty().unwrap().as_array().unwrap().len(),
+            1
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_optional_account_capability_preserves_ordinary_tasks_and_lookup_errors() {
+    let f = WakePiFixture::new();
+    let resolver = crate::common::account_resolver(&f.owner);
+    for (mode, home) in [("absent", "/unused"), ("home", "/"), ("home", "relative")] {
+        let run = |args: &[&str]| {
+            crate::common::af()
+                .current_dir(&f.repo)
+                .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+                .env("LD_PRELOAD", &resolver)
+                .env("WAKE_FIXTURE_ACCOUNT_MODE", mode)
+                .env("WAKE_FIXTURE_ACCOUNT_HOME", home)
+                .args(args)
+                .arg("--state")
+                .arg(&f.state)
+                .output()
+                .unwrap()
+        };
+        // A genuine ordinary plan and token-free run, using private HOME/XDG and Store.
+        expect(&run(&["task", "plan", "--file", "gc-older.json"]), 0);
+        expect(&run(&["task", "run", "gc-older", "--execute"]), 0);
+        let storage = crate::common::af()
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .env("LD_PRELOAD", &resolver)
+            .env("WAKE_FIXTURE_ACCOUNT_MODE", mode)
+            .env("WAKE_FIXTURE_ACCOUNT_HOME", home)
+            .args(["storage", "--json"])
+            .output()
+            .unwrap();
+        expect(&storage, 0);
+        let refused = f
+            .grant(&f.state, &f.owner.join("unavailable.json"))
+            .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+            .env("LD_PRELOAD", &resolver)
+            .env("WAKE_FIXTURE_ACCOUNT_MODE", mode)
+            .env("WAKE_FIXTURE_ACCOUNT_HOME", home)
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "{}", out(&refused));
+        assert!(
+            err(&refused).contains("Wake unavailable"),
+            "{}",
+            err(&refused)
+        );
+        assert!(!f.owner.join("unavailable.json").exists());
+    }
+    let error = crate::common::af()
+        .env_remove("AF_TEST_WAKE_ACCOUNT_HOME")
+        .env("LD_PRELOAD", resolver)
+        .env("WAKE_FIXTURE_ACCOUNT_MODE", "io_error")
+        .args(["storage", "--json"])
+        .output()
+        .unwrap();
+    assert!(!error.status.success());
+    assert!(
+        err(&error).contains("Reading wake OS account"),
+        "{}",
+        err(&error)
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_purge_retains_cross_root_uncertainty_and_reserved_first_grant_ancestry() {
+    for concurrent in [false, true] {
+        let f = WakePiFixture::new();
+        let grant = f.owner.join("original.json");
+        let custom_state = f.owner.join("custom-state");
+        let mut paused = None;
+        let mut point = None;
+        if concurrent {
+            let barriers = f.owner.join("first-grant-barrier");
+            let p = barriers.join("wake-machine-binding-1");
+            std::fs::create_dir_all(&p).unwrap();
+            let child = f
+                .grant(&f.state, &grant)
+                .env("XDG_STATE_HOME", &custom_state)
+                .env("AF_TEST_WAIT_OBSERVATION_BARRIER", barriers)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut child = task_interrupt::ChildGuard(Some(child));
+            await_observation_read(&mut child, &p.join("ready"));
+            paused = Some(child);
+            point = Some(p);
+        } else {
+            expect(
+                &f.grant(&f.state, &grant)
+                    .env("XDG_STATE_HOME", &custom_state)
+                    .output()
+                    .unwrap(),
+                0,
+            );
+            expect(
+                &f.wake(
+                    &f.state,
+                    &["register", "gc-older", "--route", grant.to_str().unwrap()],
+                )
+                .env("XDG_STATE_HOME", &custom_state)
+                .output()
+                .unwrap(),
+                0,
+            );
+            f.finish();
+            let packet = f
+                .pull_command(&grant, "original")
+                .env("XDG_STATE_HOME", &custom_state)
+                .output()
+                .unwrap();
+            assert!(document(&packet, 0, None)["message"].is_string());
+        }
+        let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let before = serde_json::to_value(store.wake_deliveries().unwrap()).unwrap();
+        let uncertainty = store.wake_uncertainty().unwrap();
+        let sandbox = crate::common::Sandbox::new();
+        let real = sandbox.adopt_real_binary();
+        std::fs::create_dir_all(f.machine.join("af/disposable")).unwrap();
+        let output = sandbox
+            .command(&real)
+            .args(["self", "uninstall", "--purge"])
+            .env(
+                "AF_TEST_WAKE_ACCOUNT_HOME",
+                f.machine.parent().unwrap().parent().unwrap(),
+            )
+            .env("XDG_STATE_HOME", &f.machine)
+            // Alias and overlap: cache purge must preserve the same reserved ancestry.
+            .env("XDG_CACHE_HOME", &f.machine)
+            .output()
+            .unwrap();
+        if concurrent {
+            expect(&output, 0);
+            assert!(!f.machine.join("af/disposable").exists());
+            assert!(
+                !real.exists(),
+                "ordinary uninstall still removes installed versions"
+            );
+        } else {
+            assert!(!output.status.success());
+            assert!(err(&output).contains("purge refused"), "{}", err(&output));
+            assert!(real.exists(), "refusal precedes all destruction");
+            assert!(f.machine.join("af/disposable").exists());
+        }
+        if let Some(mut child) = paused {
+            std::fs::write(point.unwrap().join("proceed"), []).unwrap();
+            let output = child.0.take().unwrap().wait_with_output().unwrap();
+            expect(&output, 0);
+        }
+        let second = f._root.path().join("second");
+        std::fs::create_dir(&second).unwrap();
+        let (repo, state) = task_gc::fixture(&second);
+        expect(
+            &af(&repo, &state, &["task", "plan", "--file", "gc-older.json"]),
+            0,
+        );
+        let refused = f
+            .grant(&state, &f.owner.join("other-store.json"))
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            err(&refused).contains("already belongs to another wake Store"),
+            "{}",
+            err(&refused)
+        );
+        assert_eq!(
+            serde_json::to_value(store.wake_deliveries().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.wake_uncertainty().unwrap(), uncertainty);
+        if !concurrent {
+            assert_eq!(before[0]["state"], "admission_unknown");
+            assert_empty_pi_poll(&f.pull_command(&grant, "original").output().unwrap());
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn wake_cli_purge_refuses_partial_authority_and_aliased_roots_before_destruction() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    for kind in ["directory", "file", "link"] {
+        let f = WakePiFixture::new();
+        let authority = f.authority();
+        af_store::local_fs::create_private_dir_all(authority.parent().unwrap()).unwrap();
+        match kind {
+            "directory" => std::fs::create_dir(&authority).unwrap(),
+            "file" => std::fs::write(&authority, b"incomplete authority").unwrap(),
+            "link" => symlink(f.owner.join("missing-authority"), &authority).unwrap(),
+            _ => unreachable!(),
+        }
+        let before = std::fs::symlink_metadata(&authority).unwrap();
+        let sandbox = crate::common::Sandbox::new();
+        let real = sandbox.adopt_real_binary();
+        let alias = f.owner.join("state-alias");
+        symlink(&f.machine, &alias).unwrap();
+        let output = sandbox
+            .command(&real)
+            .args(["self", "uninstall", "--purge"])
+            .env(
+                "AF_TEST_WAKE_ACCOUNT_HOME",
+                f.machine.parent().unwrap().parent().unwrap(),
+            )
+            .env("XDG_CACHE_HOME", &alias)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(err(&output).contains("purge refused"), "{}", err(&output));
+        assert!(real.exists(), "no executable removed on refusal");
+        let after = std::fs::symlink_metadata(&authority).unwrap();
+        assert_eq!(
+            (before.dev(), before.ino(), before.mode(), before.len()),
+            (after.dev(), after.ino(), after.mode(), after.len())
+        );
+        assert!(!authority.join("events.sqlite").exists());
+    }
 }
