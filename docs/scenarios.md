@@ -16,18 +16,18 @@ Definitions use TOML for authoring and JSON for their versioned wire documents, 
 schemas from `af schema show`. Definitions have explicit `inputs`, `outputs`, ordered `steps`,
 `result` bindings, boolean `completion` conditions, `authority`, and `limits`.
 
-The port types are `text`, `boolean`, `integer`, `task`, `task_outcome`, `action`, `decision`, `observation`, and
-`owned_file`. A value is `{"type":"text","value":"example"}`. Bindings have `source` set to
-`literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`). Forward
-references and type mismatches fail admission. A `project` binding selects a typed receipt field:
-`task_conclusion`, `task_result_id`, `task_output_id` or `task_output_snapshot` (the latter two
-name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`. Its `value` is
+The port types are `text`, `boolean`, `integer`, `task`, `task_outcome`, `action`, `decision`,
+`observation`, and `owned_file`. A value is `{"type":"text","value":"example"}`. Bindings have
+`source` set to `literal` (with `value`), `input` (with `port`), or `step` (with `step` and `port`).
+Forward references and type mismatches fail admission. A `project` binding selects a typed receipt
+field: `task_conclusion`, `task_result_id`, `task_output_id` or `task_output_snapshot` (the latter
+two name a `port`), `action_intent`, `observation_satisfied`, or `decision_approved`. Its `value` is
 another binding and its `projection` is an object with `kind`. An `equals` binding compares scalar
 `left` and `right` bindings of the same type and returns a boolean. This allows a Task's evidenced
-`no_worthwhile_optimization` conclusion to skip implementation and still complete successfully.
-A `select` binding has boolean `condition` and equal-type `when_true`/`when_false` bindings;
-it resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches
-are refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
+`no_worthwhile_optimization` conclusion to skip implementation and still complete successfully. A
+`select` binding has boolean `condition` and equal-type `when_true`/`when_false` bindings; it
+resolves only the chosen arm, so optional skipped outputs remain unread. Decision branches are
+refused to keep signed approval consumers static. Root inputs and literals are scalar data; they
 cannot manufacture receipts. Child inputs may carry receipts produced by preceding steps.
 
 A native Task step may explicitly declare its result as `task_outcome` instead of `task`.
