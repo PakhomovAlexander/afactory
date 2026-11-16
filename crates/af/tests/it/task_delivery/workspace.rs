@@ -197,7 +197,7 @@ fn privately_installed_workspace_adapter_prepares_native_accepted_candidate_with
     let receipt = json!({"task_id":task.task_id,"plan_id":task.plan_id,"revision_id":task.revision_id,"result_id":result_id,
         "charged_tokens":0,"result":outcome["result"]});
     let text = |value: Value| json!({"type":"text","value":value});
-    let request = json!({"schema":"af/scenario-adapter-request@4","method":"execute","intent_id":format!("sha256:{}","a".repeat(64)),
+    let request = json!({"schema":"af/scenario-adapter-request@5","method":"execute","intent_id":format!("sha256:{}","a".repeat(64)),
         "input_digest":format!("sha256:{}","b".repeat(64)),"operation":"prepare_candidate_v1","destination":"github:octo/documentation",
         "inputs":{"subject":text(json!(result_id)),"revision":text(outcome["result"]["outputs"]["snapshot"]["snapshot_id"].clone()),
             "body":text(json!("{\"schema\":\"af/git-workspace-content@1\",\"title\":\"Accepted pagination\",\"body\":\"Exact candidate\"}")),

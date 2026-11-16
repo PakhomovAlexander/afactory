@@ -33,7 +33,7 @@ fn native_interval_boundaries_replay_overlap_misfire_and_clock_recovery() {
                 .is_empty()
         );
         ant.validate(&TestHost::default(), &runs).unwrap();
-        valid("ant-state-v8.json", &ant);
+        valid("ant-state-v9.json", &ant);
         let text = serde_json::to_string(&ant).unwrap();
         ant = serde_json::from_str(&text).unwrap();
         if seconds > 900 {
@@ -68,7 +68,7 @@ fn native_interval_boundaries_replay_overlap_misfire_and_clock_recovery() {
         assert_eq!(ant.occurrences[2].through_index, 1_000_000);
         assert_eq!(ant.occurrences[2].outcome, OccurrenceOutcome::SkippedMissed);
         ant.validate(&TestHost::default(), &runs).unwrap();
-        valid("ant-state-v8.json", &ant);
+        valid("ant-state-v9.json", &ant);
         assert!(
             ant.tick(&TestHost::default(), later + 1, &mut runs)
                 .unwrap()

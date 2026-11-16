@@ -56,7 +56,7 @@ def main():
             own = Path(selected.directory)
             own.mkdir(exist_ok=True)
             work, capture = own / "run", own / "capture"
-            work.mkdir()
+            work.mkdir(mode=0o700)
             capture.mkdir()
             env = {"PATH": "/usr/bin:/bin", "HOME": str(work), "TMPDIR": str(work),
                    "PYTHONDONTWRITEBYTECODE": "1"}

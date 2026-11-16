@@ -64,7 +64,7 @@ class Failed(Exception):
 # Configuration and secrets ------------------------------------------------------------------
 
 def load_config(path):
-    """The af.nightly-config/1 TOML at `path`, validated; its `[publish]` table is required."""
+    """The af.nightly-config/2 TOML at `path`, validated; its `[publish]` table is required."""
     try:
         with open(path, "rb") as stream:
             data = stream.read(toml_file.MAX_TOML_BYTES + 1)
@@ -506,7 +506,7 @@ def parse(argv):
     commands.required = True
     command = commands.add_parser("publish", help="publish the night's pre-release, send its "
                                   "digest and prune old nightlies")
-    command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
+    command.add_argument("--config", required=True, help="the af.nightly-config/2 TOML with "
                          "its [publish] table")
     nightly_chain.add_night_options(command)
     directory = command.add_mutually_exclusive_group()

@@ -232,7 +232,7 @@ class Night(TempDir):
                "builds_root": self.builds, "build_image": "sha256:" + "1" * 64,
                "qemu_aarch64": self.path("qemu"), "sign_key": self.path("nightly.key"),
                "public_key": self.path("nightly.pub"), "required_checks": ["check / lint"]}
-        lines = ['schema = "af.nightly-config/1"']
+        lines = ['schema = "af.nightly-config/2"']
         lines += ["%s = %s" % item for item in ((k, json.dumps(v)) for k, v in top.items())]
         lines.append("[publish]")
         lines += ["%s = %s" % (k, json.dumps(v)) for k, v in values.items()]

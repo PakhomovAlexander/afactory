@@ -36,7 +36,7 @@ LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?"
 REPO = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}"
 PUB = r"github-pr:sha256:[0-9a-f]{64}"
 CONFIG_SCHEMA = "af/github-adapter-config@1"
-STATE_SCHEMA = "af/github-adapter-state@4"
+STATE_SCHEMA = "af/github-adapter-state@5"
 PR_OPERATIONS = ("publish_pr", "publish_performance_pr_v1")
 PAYLOAD_SCHEMAS = {
     "publish_performance_pr_v1": "af/github-performance-pr@1",
@@ -241,7 +241,7 @@ def validate_payload(operation, value, config):
 
 def validate_request(request, config):
     fields(request, ("schema", "method", "intent_id", "input_digest", "operation", "destination", "inputs"))
-    need(request["schema"] == "af/scenario-adapter-request@4", "unsupported request version")
+    need(request["schema"] == "af/scenario-adapter-request@5", "unsupported request version")
     for key in ("intent_id", "input_digest"):
         string(request[key], DIGEST)
     op = request["operation"]
@@ -879,7 +879,7 @@ def schema_documents():
     def document(name, value):
         if name == "github-performance-pr":
             value = dict(title="Performance pull request v1", **value)
-        version = 4 if name == "github-adapter-state" else 1
+        version = 5 if name == "github-adapter-state" else 1
         documents[name + "-v%d.json" % version] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "urn:af:schema:" + name + ":%d" % version,
@@ -907,11 +907,11 @@ def schema_documents():
         else:
             props.update(title=text(maximum=200), body=text(maximum=48000))
         document(schema.split("/")[1].split("@")[0], obj(props))
-    request = obj({"schema": {"const": "af/scenario-adapter-request@4"},
+    request = obj({"schema": {"const": "af/scenario-adapter-request@5"},
                    "intent_id": text(DIGEST), "input_digest": text(DIGEST),
                    "operation": {"enum": list(PAYLOAD_SCHEMAS)}, "destination": text(),
                    "inputs": {"type": "object", "additionalProperties": {
-                       "$ref": "urn:af:schema:scenario:6#/$defs/Datum"}}})
+                       "$ref": "urn:af:schema:scenario:7#/$defs/Datum"}}})
     record = obj({"request": request, "request_digest": text(DIGEST),
                   "phase": {"enum": ["prepared", "dispatched", "done", "failed"]},
                   "object": {"anyOf": [{"type": "null"}, obj({"id": positive, "number": positive})]},

@@ -929,7 +929,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
     let history = &mut bundle["definitions"]["performance"]["steps"][0];
     history["inputs"]["subject"]["value"]["value"] = packet["index_digest"].clone();
     history["inputs"]["revision"]["value"]["value"] = packet["compatibility"].clone();
-    valid("scenario-bundle-v6.json", &bundle);
+    valid("scenario-bundle-v7.json", &bundle);
     write(&p.f.bundle, &bundle);
     let pin = p.cli(
         &p.f.state,
@@ -1076,7 +1076,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v6.json", &done);
+    valid("scenario-run-v7.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]
@@ -1410,7 +1410,7 @@ def observe(records):
     a.config['evidence_index'] = research_evidence.retain(evidence, current, 'evidence-index')
     a.config['evidence_index_digest'] = canonical_digest(current)
     text = lambda v: dict(type='text', value=v)
-    return a.request(dict(schema='af/scenario-adapter-request@4', method='observe',
+    return a.request(dict(schema='af/scenario-adapter-request@5', method='observe',
         operation='observe', destination='native:claw', intent_id=digest, input_digest=digest,
         inputs=dict(subject=text(canonical_digest(current)), revision=text(records[0]['compatibility']),
                     condition=text('bounded_evidence'))))

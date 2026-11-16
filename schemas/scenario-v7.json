@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:scenario:6",
-  "title": "scenario v6",
+  "$id": "urn:af:schema:scenario:7",
+  "title": "scenario v7",
   "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
   "type": "object",
   "additionalProperties": false,
@@ -18,25 +18,25 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/scenario@6"
+      "const": "af/scenario@7"
     },
     "inputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        "$ref": "urn:af:schema:scenario:7#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+        "$ref": "urn:af:schema:scenario:7#/$defs/Port"
       },
       "maxProperties": 32
     },
     "outputs": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        "$ref": "urn:af:schema:scenario:7#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+        "$ref": "urn:af:schema:scenario:7#/$defs/Port"
       },
       "minProperties": 1,
       "maxProperties": 32
@@ -44,7 +44,7 @@
     "steps": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/Step"
+        "$ref": "urn:af:schema:scenario:7#/$defs/Step"
       },
       "minItems": 1,
       "maxItems": 128
@@ -52,30 +52,30 @@
     "result": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/name"
+        "$ref": "urn:af:schema:scenario:7#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+        "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
       }
     },
     "completion": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+        "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
       },
       "minItems": 1,
       "maxItems": 32
     },
     "authority": {
-      "$ref": "urn:af:schema:scenario:6#/$defs/Authority"
+      "$ref": "urn:af:schema:scenario:7#/$defs/Authority"
     },
     "limits": {
-      "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+      "$ref": "urn:af:schema:scenario:7#/$defs/Limits"
     },
     "admission": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Admission"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Admission"
         },
         {
           "type": "null"
@@ -113,7 +113,8 @@
         "action",
         "decision",
         "observation",
-        "owned_file"
+        "owned_file",
+        "nightly_tag"
       ]
     },
     "TaskReceipt": {
@@ -129,16 +130,16 @@
       ],
       "properties": {
         "task_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "plan_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "revision_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "result_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "charged_tokens": {
           "type": "integer",
@@ -161,7 +162,11 @@
         "experiment_submit_v1",
         "prepare_candidate_v1",
         "cleanup_workspace_v1",
-        "publish_performance_pr_v1"
+        "publish_performance_pr_v1",
+        "nightly_build_v1",
+        "nightly_compare_v1",
+        "nightly_report_v1",
+        "publish_nightly_v1"
       ]
     },
     "ActionReceipt": {
@@ -177,22 +182,22 @@
       ],
       "properties": {
         "intent_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "operation": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Operation"
         },
         "destination": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "subject": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "evidence": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         }
       }
     },
@@ -208,19 +213,19 @@
       ],
       "properties": {
         "subject": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "condition": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "satisfied": {
           "type": "boolean"
         },
         "evidence": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         }
       }
     },
@@ -237,16 +242,16 @@
       ],
       "properties": {
         "root": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "file": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "owner": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "device": {
           "type": "integer",
@@ -274,7 +279,7 @@
               "const": "text"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             }
           }
         },
@@ -324,7 +329,7 @@
               "const": "task"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/TaskReceipt"
+              "$ref": "urn:af:schema:scenario:7#/$defs/TaskReceipt"
             }
           }
         },
@@ -340,7 +345,7 @@
               "const": "action"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/ActionReceipt"
+              "$ref": "urn:af:schema:scenario:7#/$defs/ActionReceipt"
             }
           }
         },
@@ -356,7 +361,7 @@
               "const": "decision"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/DecisionReceipt"
+              "$ref": "urn:af:schema:scenario:7#/$defs/DecisionReceipt"
             }
           }
         },
@@ -372,7 +377,7 @@
               "const": "observation"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Observation"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Observation"
             }
           }
         },
@@ -388,7 +393,26 @@
               "const": "owned_file"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/OwnedFile"
+              "$ref": "urn:af:schema:scenario:7#/$defs/OwnedFile"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "nightly_tag"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$",
+              "minLength": 18,
+              "maxLength": 18
             }
           }
         }
@@ -432,7 +456,7 @@
               "const": "task_output_id"
             },
             "port": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         },
@@ -448,7 +472,7 @@
               "const": "task_output_snapshot"
             },
             "port": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         },
@@ -547,6 +571,18 @@
               "const": "checks_state"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "nightly_tag_text"
+            }
+          }
         }
       ]
     },
@@ -564,7 +600,7 @@
               "const": "literal"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Datum"
             }
           }
         },
@@ -580,7 +616,7 @@
               "const": "input"
             },
             "port": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         },
@@ -597,10 +633,10 @@
               "const": "step"
             },
             "step": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             },
             "port": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         },
@@ -617,10 +653,10 @@
               "const": "project"
             },
             "value": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             },
             "projection": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Projection"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Projection"
             }
           }
         },
@@ -637,10 +673,10 @@
               "const": "equals"
             },
             "left": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             },
             "right": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             }
           }
         },
@@ -658,13 +694,13 @@
               "const": "select"
             },
             "condition": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             },
             "when_true": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             },
             "when_false": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             }
           }
         }
@@ -706,13 +742,13 @@
       ],
       "properties": {
         "adapter": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "operation": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Operation"
         },
         "destination": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         }
       }
     },
@@ -729,7 +765,7 @@
         "task_plans": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+            "$ref": "urn:af:schema:scenario:7#/$defs/digest"
           },
           "uniqueItems": true,
           "maxItems": 256
@@ -737,14 +773,14 @@
         "grants": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Grant"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Grant"
           },
           "uniqueItems": true
         },
         "decision_owners": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "uniqueItems": true
         },
@@ -753,7 +789,7 @@
           "uniqueItems": true,
           "maxItems": 256,
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+            "$ref": "urn:af:schema:scenario:7#/$defs/digest"
           }
         }
       }
@@ -771,19 +807,19 @@
       ],
       "properties": {
         "repo": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "state": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "task_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "plan_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "revision_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "max_tokens": {
           "type": "integer",
@@ -806,7 +842,7 @@
               "const": "task"
             },
             "target": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/TaskTarget"
+              "$ref": "urn:af:schema:scenario:7#/$defs/TaskTarget"
             }
           }
         },
@@ -822,7 +858,7 @@
               "const": "scenario"
             },
             "scenario": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         },
@@ -840,7 +876,7 @@
               "const": "action"
             },
             "grant": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Grant"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Grant"
             },
             "requires_decision": {
               "type": "boolean"
@@ -848,7 +884,7 @@
             "required_condition": {
               "anyOf": [
                 {
-                  "$ref": "urn:af:schema:scenario:6#/$defs/text"
+                  "$ref": "urn:af:schema:scenario:7#/$defs/text"
                 },
                 {
                   "type": "null"
@@ -869,7 +905,7 @@
               "const": "decision"
             },
             "owner": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         },
@@ -886,10 +922,10 @@
               "const": "wait"
             },
             "grant": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Grant"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Grant"
             },
             "condition": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             }
           }
         },
@@ -901,13 +937,13 @@
               "const": "fresh_task"
             },
             "template": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Template"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Template"
             },
             "bindings": {
               "type": "object",
               "maxProperties": 32,
               "additionalProperties": {
-                "$ref": "urn:af:schema:scenario:6#/$defs/Predecessor"
+                "$ref": "urn:af:schema:scenario:7#/$defs/Predecessor"
               }
             }
           },
@@ -934,30 +970,30 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
           }
         },
         "outputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Port"
           }
         },
         "when": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
             },
             {
               "type": "null"
@@ -981,7 +1017,7 @@
           ]
         },
         "operation": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Kind"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Kind"
         }
       }
     },
@@ -1001,25 +1037,25 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario@6"
+          "const": "af/scenario@7"
         },
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Port"
           },
           "maxProperties": 32
         },
         "outputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Port"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Port"
           },
           "minProperties": 1,
           "maxProperties": 32
@@ -1027,7 +1063,7 @@
         "steps": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Step"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Step"
           },
           "minItems": 1,
           "maxItems": 128
@@ -1035,30 +1071,30 @@
         "result": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
           }
         },
         "completion": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Binding"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Binding"
           },
           "minItems": 1,
           "maxItems": 32
         },
         "authority": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Authority"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Authority"
         },
         "limits": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Limits"
         },
         "admission": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Admission"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Admission"
             },
             {
               "type": "null"
@@ -1077,18 +1113,18 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-bundle@6"
+          "const": "af/scenario-bundle@7"
         },
         "root": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "definitions": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Scenario"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Scenario"
           },
           "minProperties": 1,
           "maxProperties": 64
@@ -1108,15 +1144,15 @@
       ],
       "properties": {
         "executable": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "operations": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Operation"
           },
           "minItems": 1,
           "uniqueItems": true
@@ -1124,7 +1160,7 @@
         "destinations": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            "$ref": "urn:af:schema:scenario:7#/$defs/text"
           },
           "minItems": 1,
           "uniqueItems": true
@@ -1154,22 +1190,22 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-policy@5"
+          "const": "af/scenario-policy@6"
         },
         "adapters": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Adapter"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Adapter"
           },
           "maxProperties": 32
         },
         "task_plans": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+            "$ref": "urn:af:schema:scenario:7#/$defs/digest"
           },
           "uniqueItems": true,
           "maxItems": 256
@@ -1177,17 +1213,17 @@
         "decision_keys": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            "$ref": "urn:af:schema:scenario:7#/$defs/text"
           },
           "maxProperties": 32
         },
         "file_roots": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/path"
+            "$ref": "urn:af:schema:scenario:7#/$defs/path"
           },
           "uniqueItems": true,
           "maxItems": 32
@@ -1197,18 +1233,28 @@
           "uniqueItems": true,
           "maxItems": 256,
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+            "$ref": "urn:af:schema:scenario:7#/$defs/digest"
           }
         },
         "performance_publications": {
           "type": "object",
           "maxProperties": 32,
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/PerformancePublicationScope"
+            "$ref": "urn:af:schema:scenario:7#/$defs/PerformancePublicationScope"
           }
+        },
+        "nightly_releases": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:7#/$defs/NightlyReleaseScope"
+          },
+          "maxProperties": 32
         }
       }
     },
@@ -1224,24 +1270,24 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-pin@6"
+          "const": "af/scenario-pin@7"
         },
         "bundle": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Bundle"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Bundle"
         },
         "policy": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Policy"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Policy"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "definitions": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+            "$ref": "urn:af:schema:scenario:7#/$defs/digest"
           }
         }
       }
@@ -1266,25 +1312,25 @@
           "const": "af/scenario-decision@1"
         },
         "run_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "execution_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "pin_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "step": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "subject": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "owner": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "approve": {
           "type": "boolean"
@@ -1309,10 +1355,10 @@
           "const": "af/scenario-signed-decision@1"
         },
         "request": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/DecisionRequest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/DecisionRequest"
         },
         "signature": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text",
+          "$ref": "urn:af:schema:scenario:7#/$defs/text",
           "maxLength": 4096
         }
       }
@@ -1342,10 +1388,10 @@
               "const": "decision"
             },
             "step": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             "request": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/DecisionRequest"
+              "$ref": "urn:af:schema:scenario:7#/$defs/DecisionRequest"
             }
           }
         },
@@ -1363,7 +1409,7 @@
               "const": "condition"
             },
             "step": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             "deadline_unix_ms": {
               "type": "integer",
@@ -1371,7 +1417,7 @@
               "maximum": 9007199254740991
             },
             "evidence": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             }
           }
         },
@@ -1389,13 +1435,13 @@
               "const": "reconcile"
             },
             "step": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             "intent_id": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+              "$ref": "urn:af:schema:scenario:7#/$defs/digest"
             },
             "diagnostic": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             }
           }
         },
@@ -1412,10 +1458,10 @@
               "const": "task"
             },
             "step": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             "task_id": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             }
           }
         }
@@ -1432,10 +1478,10 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "input_digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "phase": {
           "enum": [
@@ -1448,7 +1494,7 @@
         "evidence": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            "$ref": "urn:af:schema:scenario:7#/$defs/text"
           }
         }
       }
@@ -1470,7 +1516,7 @@
       ],
       "properties": {
         "step": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "started_unix_ms": {
           "type": "integer",
@@ -1483,12 +1529,12 @@
           "maximum": 9007199254740991
         },
         "status": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Status"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Status"
         },
         "skipped": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             {
               "type": "null"
@@ -1498,23 +1544,23 @@
         "intents": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Intent"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Intent"
           },
           "maxItems": 8
         },
         "outputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Datum"
           }
         },
         "child": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             {
               "type": "null"
@@ -1524,7 +1570,7 @@
         "decision": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/DecisionReceipt"
+              "$ref": "urn:af:schema:scenario:7#/$defs/DecisionReceipt"
             },
             {
               "type": "null"
@@ -1534,7 +1580,7 @@
         "diagnostic": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             {
               "type": "null"
@@ -1556,15 +1602,15 @@
       ],
       "properties": {
         "scenario": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Datum"
           }
         },
         "started_unix_ms": {
@@ -1575,7 +1621,7 @@
         "steps": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Progress"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Progress"
           },
           "maxItems": 128
         },
@@ -1589,10 +1635,10 @@
             {
               "type": "object",
               "propertyNames": {
-                "$ref": "urn:af:schema:scenario:6#/$defs/name"
+                "$ref": "urn:af:schema:scenario:7#/$defs/name"
               },
               "additionalProperties": {
-                "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+                "$ref": "urn:af:schema:scenario:7#/$defs/Datum"
               }
             },
             {
@@ -1630,7 +1676,7 @@
           ]
         },
         "step": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "unknown_usage": {
           "type": "boolean"
@@ -1666,7 +1712,7 @@
           ]
         },
         "evidence": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         }
       }
     },
@@ -1685,12 +1731,12 @@
           "maximum": 9007199254740991
         },
         "reason": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "child_requests": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/ChildCancellation"
+            "$ref": "urn:af:schema:scenario:7#/$defs/ChildCancellation"
           }
         }
       }
@@ -1719,19 +1765,19 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-run@6"
+          "const": "af/scenario-run@7"
         },
         "id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "execution_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "pin": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Pin"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Pin"
         },
         "limits": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Limits"
         },
         "created_unix_ms": {
           "type": "integer",
@@ -1744,12 +1790,12 @@
           "maximum": 9007199254740991
         },
         "status": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Status"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Status"
         },
         "waiting": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Waiting"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Waiting"
             },
             {
               "type": "null"
@@ -1759,13 +1805,13 @@
         "frames": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Frame"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Frame"
           }
         },
         "task_charges": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/TaskCharge"
+            "$ref": "urn:af:schema:scenario:7#/$defs/TaskCharge"
           }
         },
         "dispatches": {
@@ -1776,7 +1822,7 @@
         "failure": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             {
               "type": "null"
@@ -1786,7 +1832,7 @@
         "cancellation": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Cancellation"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Cancellation"
             },
             {
               "type": "null"
@@ -1796,7 +1842,7 @@
         "ant": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             },
             {
               "type": "null"
@@ -1806,7 +1852,7 @@
         "goal_claim": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Claim"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Claim"
             },
             {
               "type": "null"
@@ -1816,7 +1862,7 @@
         "fresh_tasks": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/TaskTarget"
+            "$ref": "urn:af:schema:scenario:7#/$defs/TaskTarget"
           }
         }
       }
@@ -1832,7 +1878,7 @@
       ],
       "properties": {
         "name": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "initial_offset": {
           "type": "integer",
@@ -1882,7 +1928,7 @@
       ],
       "properties": {
         "timezone": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "hour": {
           "type": "integer",
@@ -1925,7 +1971,7 @@
           "maximum": 86399999
         },
         "per_run": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Limits"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Limits"
         },
         "rolling_tokens": {
           "type": "integer",
@@ -1954,34 +2000,46 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant@7"
+          "const": "af/ant@8"
         },
         "id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "scenario": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Bundle"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Bundle"
         },
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Datum"
           }
         },
         "schedule": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Schedule"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Schedule"
         },
         "owner": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "notification": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "execution": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Execution"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Execution"
+        },
+        "occurrence_inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
+          },
+          "additionalProperties": {
+            "enum": [
+              "scheduled_nightly_tag"
+            ]
+          },
+          "maxProperties": 32
         }
       }
     },
@@ -1997,19 +2055,19 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-pin@7"
+          "const": "af/ant-pin@8"
         },
         "definition": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Ant"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Ant"
         },
         "scenario": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Pin"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Pin"
         },
         "zone": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Zone"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Zone"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         }
       }
     },
@@ -2035,7 +2093,7 @@
               "const": "started"
             },
             "run_id": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             },
             "reserved_tokens": {
               "type": "integer",
@@ -2124,7 +2182,7 @@
               "const": "skipped_roadmap"
             },
             "reason": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             }
           },
           "required": [
@@ -2159,7 +2217,7 @@
       ],
       "properties": {
         "id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "local_day": {
           "type": "integer"
@@ -2170,7 +2228,7 @@
           "maximum": 9007199254740991
         },
         "outcome": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/OccurrenceOutcome"
+          "$ref": "urn:af:schema:scenario:7#/$defs/OccurrenceOutcome"
         },
         "through_index": {
           "type": "integer",
@@ -2198,13 +2256,13 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-state@8"
+          "const": "af/ant-state@9"
         },
         "pin": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
+          "$ref": "urn:af:schema:scenario:7#/$defs/AntPin"
         },
         "state": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Enabled"
         },
         "changes": {
           "type": "array",
@@ -2217,7 +2275,7 @@
                 "maximum": 9007199254740991
               },
               {
-                "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+                "$ref": "urn:af:schema:scenario:7#/$defs/Enabled"
               }
             ],
             "items": false,
@@ -2237,11 +2295,11 @@
         "occurrences": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Occurrence"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Occurrence"
           }
         },
         "retention": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Retention"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Retention"
         }
       }
     },
@@ -2259,7 +2317,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-adapter-request@4"
+          "const": "af/scenario-adapter-request@5"
         },
         "method": {
           "enum": [
@@ -2269,24 +2327,24 @@
           ]
         },
         "intent_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "input_digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "operation": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Operation"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Operation"
         },
         "destination": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "inputs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Datum"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Datum"
           }
         }
       }
@@ -2307,10 +2365,10 @@
           "const": "af/scenario-adapter-response@1"
         },
         "intent_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "input_digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "outcome": {
           "enum": [
@@ -2321,12 +2379,12 @@
           ]
         },
         "evidence": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "observation": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/Observation"
+              "$ref": "urn:af:schema:scenario:7#/$defs/Observation"
             },
             {
               "type": "null"
@@ -2348,10 +2406,10 @@
           "const": "af/scenario-owned-file@1"
         },
         "owner": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "content": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         }
       }
     },
@@ -2364,15 +2422,15 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-list@6"
+          "const": "af/scenario-list@7"
         },
         "runs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Run"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Run"
           }
         }
       }
@@ -2386,15 +2444,15 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-list@8"
+          "const": "af/ant-list@9"
         },
         "ants": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/AntState"
+            "$ref": "urn:af:schema:scenario:7#/$defs/AntState"
           }
         }
       }
@@ -2412,7 +2470,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-tick@7"
+          "const": "af/ant-tick@8"
         },
         "now_unix_ms": {
           "type": "integer",
@@ -2422,31 +2480,31 @@
         "started": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           }
         },
         "busy": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           }
         },
         "refused": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/text"
+            "$ref": "urn:af:schema:scenario:7#/$defs/text"
           }
         },
         "runs": {
           "type": "object",
           "propertyNames": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/name"
+            "$ref": "urn:af:schema:scenario:7#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Run"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Run"
           }
         }
       }
@@ -2459,23 +2517,23 @@
           "const": "af/scenario-task-template@2"
         },
         "repo": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "state": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "authority_commit": {
           "type": "string",
           "pattern": "^[0-9a-fA-F]{40}$"
         },
         "repository_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "source_content_digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "authority_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "document": {
           "type": "object"
@@ -2514,10 +2572,10 @@
       "additionalProperties": false,
       "properties": {
         "port": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "artifact_type": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         }
       },
       "required": [
@@ -2530,13 +2588,13 @@
       "additionalProperties": false,
       "properties": {
         "roadmap": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "identity": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         }
       },
       "required": [
@@ -2550,16 +2608,16 @@
       "additionalProperties": false,
       "properties": {
         "run_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "execution_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "revision": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "goal_id": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "started_unix_ms": {
           "type": "integer",
@@ -2599,31 +2657,31 @@
       "additionalProperties": false,
       "properties": {
         "repository": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "repo": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "task_state": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/path"
+          "$ref": "urn:af:schema:scenario:7#/$defs/path"
         },
         "base": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "branch_prefix": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "source_commit": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "source_content_digest": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "evidence_adapter": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/name"
+          "$ref": "urn:af:schema:scenario:7#/$defs/name"
         },
         "evidence_destination": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/text"
+          "$ref": "urn:af:schema:scenario:7#/$defs/text"
         },
         "repository_id": {
           "type": "integer",
@@ -2661,7 +2719,7 @@
               "const": "daily"
             },
             "timezone": {
-              "$ref": "urn:af:schema:scenario:6#/$defs/text"
+              "$ref": "urn:af:schema:scenario:7#/$defs/text"
             },
             "hour": {
               "type": "integer",
@@ -2726,13 +2784,13 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-inspection@3"
+          "const": "af/ant-inspection@4"
         },
         "pin": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
+          "$ref": "urn:af:schema:scenario:7#/$defs/AntPin"
         },
         "state": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Enabled"
         },
         "changes": {
           "type": "array",
@@ -2745,7 +2803,7 @@
                 "maximum": 9007199254740991
               },
               {
-                "$ref": "urn:af:schema:scenario:6#/$defs/Enabled"
+                "$ref": "urn:af:schema:scenario:7#/$defs/Enabled"
               }
             ],
             "items": false,
@@ -2765,7 +2823,7 @@
         "occurrences": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/Occurrence"
+            "$ref": "urn:af:schema:scenario:7#/$defs/Occurrence"
           }
         },
         "scheduler": {
@@ -2840,7 +2898,7 @@
         "active_run": {
           "anyOf": [
             {
-              "$ref": "urn:af:schema:scenario:6#/$defs/name"
+              "$ref": "urn:af:schema:scenario:7#/$defs/name"
             },
             {
               "type": "null"
@@ -2865,7 +2923,7 @@
           ]
         },
         "retention": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/Retention"
+          "$ref": "urn:af:schema:scenario:7#/$defs/Retention"
         }
       }
     },
@@ -2968,19 +3026,36 @@
           ]
         },
         "provenance": {
-          "$ref": "urn:af:schema:scenario:6#/$defs/digest"
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         },
         "rolling_charges": {
           "type": "array",
           "maxItems": 64,
           "items": {
-            "$ref": "urn:af:schema:scenario:6#/$defs/ChargeBucket"
+            "$ref": "urn:af:schema:scenario:7#/$defs/ChargeBucket"
           }
         },
         "mode_changes": {
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        }
+      }
+    },
+    "NightlyReleaseScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "configuration_digest"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "configuration_digest": {
+          "$ref": "urn:af:schema:scenario:7#/$defs/digest"
         }
       }
     }
