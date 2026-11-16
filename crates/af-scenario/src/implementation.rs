@@ -622,9 +622,11 @@ mod tests {
         let mut old = pin.clone();
         old.policy.schema = "af/scenario-policy@5".into();
         assert!(old.validate(&TestHost::default()).is_err());
-        old = pin.clone();
-        old.schema = "af/scenario-pin@6".into();
-        assert!(old.validate(&TestHost::default()).is_err());
+        for retired in ["af/scenario-pin@6", "af/scenario-pin@7"] {
+            old = pin.clone();
+            old.schema = retired.into();
+            assert!(old.validate(&TestHost::default()).is_err());
+        }
         let mut changed = pin;
         changed.bundle.definitions.get_mut("main").unwrap().steps[1].when = None;
         assert!(changed.validate(&TestHost::default()).is_err());
@@ -651,11 +653,15 @@ mod tests {
         host.startup_time.store(START + DAY, Ordering::Relaxed);
         assert!(store.read().is_ok());
         let mut old = store.read().unwrap();
-        old.schema = "af/scenario-store@10".into();
-        assert!(old.validate(host.as_ref()).is_err());
+        for retired in ["af/scenario-store@10", "af/scenario-store@11"] {
+            old.schema = retired.into();
+            assert!(old.validate(host.as_ref()).is_err());
+        }
         let mut old_run = old.runs["expired"].clone();
-        old_run.schema = "af/scenario-run@6".into();
-        assert!(old_run.validate(host.as_ref()).is_err());
+        for retired in ["af/scenario-run@6", "af/scenario-run@7"] {
+            old_run.schema = retired.into();
+            assert!(old_run.validate(host.as_ref()).is_err());
+        }
         assert!(
             crate::runtime::resume(&store, "expired", Some(START))
                 .unwrap_err()

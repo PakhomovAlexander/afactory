@@ -875,6 +875,13 @@ class WorkspaceGitHub(Adapter):
         super().__init__(config, config_digest, service)
         self.workspace = workspace
 
+    def before_mutation(self, record):
+        # Identity observations may block. Complete them before checking the live
+        # signed deadline, including when HTTP has already established its connection.
+        # The transport checks its own remaining deadline again after this guard.
+        self.actor()
+        super().before_mutation(record)
+
     def prepared(self, record):
         payload, revision = self.payload(record), datum(record["request"]["inputs"], "revision")
         matches = [r["prepared"] for r in self.workspace.journal.state["records"].values()
@@ -910,7 +917,7 @@ class WorkspaceGitHub(Adapter):
                 return self.marker(previous)
         return super().marker(record)
 
-    def push(self, p):
+    def push(self, p, record):
         w = self.workspace
         w.owned(w.preparation(p), p)
         remote = w.remote_ref(p)
@@ -924,9 +931,11 @@ class WorkspaceGitHub(Adapter):
                 need(parent is None and remote is None, "performance publication only creates new scoped branches")
                 # A push of a pre-existing ref could fast-forward it. Receive-pack's exact
                 # absence lease is mandatory; it cannot update an existing branch.
+                self.before_mutation(record)
                 w.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":",
                       url, p["commit"] + ":refs/heads/" + p["branch"])
             else:
+                self.before_mutation(record)
                 w.git("push", "--porcelain", "--force-with-lease=refs/heads/" + p["branch"] + ":" + (parent or ""),
                       url, p["commit"] + ":refs/heads/" + p["branch"])
         self.locked_head(performance_payload(p) if w.preparation(p)["request"]["operation"] == PERFORMANCE_OP else publication_payload(p), p["commit"])
@@ -942,7 +951,7 @@ class WorkspaceGitHub(Adapter):
         previous = self.prior(p)
         if previous is None:
             if record["phase"] == "prepared":
-                self.push(p)
+                self.push(p, record)
             return super().execute(record)
         # Repair changes only the exact owned head of the same open PR; no second POST.
         if record["phase"] == "done":
@@ -956,7 +965,7 @@ class WorkspaceGitHub(Adapter):
             self.validate_remote(record, remote)
         record.update(phase="dispatched", object=previous["object"])
         self.journal.save()  # Authority is durable before push, including lost-push recovery.
-        self.push(p)
+        self.push(p, record)
         self.read_object(record)
         return self.finish(record, previous["object"])
 

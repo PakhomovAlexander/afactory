@@ -174,8 +174,9 @@ Only an empty private uncertain slot may be bypassed, up to the fixed slot bound
 symlinks and exhaustion refuse. An interrupted checkout is preserved rather than reset. Local
 idempotent operations recover during ordinary reconciliation; there is no new protocol method.
 
-The Scenario vocabulary is generation 4, embedding wrappers/Ants are generation 4, the Scenario
-Store is generation 5, adapter requests and the GitHub journal are generation 3. Added operation
+The current Scenario/bundle vocabulary is generation 7, pins/Runs/lists and Ant definitions are
+generation 8, Ant pins/ticks are generation 9, and Ant states/lists are generation 10. The Scenario
+Store is generation 12, adapter requests and the GitHub journal are generation 5. Added operation
 and projection discriminators change typed persisted shapes; old generations fail closed without
 migration. Task delivery, reviewer evidence, cache authority and GitHub operation payloads retain
 their existing shapes. Finish old Runs with their original release before upgrading.
@@ -185,6 +186,20 @@ including both reservation crash matrices, signed input checks, same-PR continua
 POSTs and merge-gated cleanup. The native `task_delivery::workspace` integration test executes an
 ordinary accepted command-backed Task and checks object bytes and forged-receipt refusals. No
 live GitHub account, model, remote gate or scheduler is used or claimed by these tests.
+
+Owned pushes recheck the authenticated actor and numeric destination after local ownership,
+remote-ref and parent observations, then recheck exact signed authority and its live expiry
+immediately before invoking Git. HTTP POST repeats identity and signed-expiry checks after
+connection establishment; transport retains its existing deadline and refuses automatic reconnect.
+A refusal after a dispatched checkpoint remains uncertain and requires reconciliation. These
+checks do not grant scoped implementation publication or implement a continuous driver.
+See the [final publication guard decision](adr/2026-11-16-recheck-owned-publication-after-identity-observations.md).
+
+The native `production_workspace_rechecks_actor_and_signed_expiry_before_push_and_post` regression
+uses real accepted command-backed Tasks, native signed Decisions and a local bare remote. Its
+transport changes actor observations or advances the fixture wall clock at the final observation.
+It verifies no push at the push boundary, no POST at either boundary, and no Task redispatch on
+resume. It does not test startup standing publication, cancellation, live GitHub, or physical reboot.
 
 The native `ordinary_scenario_routes_completed_checks_into_one_fresh_repair_and_signed_same_pr`
 regression composes ordinary accepted command-backed Tasks, completed outcomes, conditional

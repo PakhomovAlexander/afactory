@@ -136,10 +136,13 @@ class ReleaseContract(unittest.TestCase):
 
     def test_current_scenario_contracts_are_declared_and_drift_is_refused(self):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
-        expected = {'scenario-store': 11, 'scenario': 6, 'scenario-bundle': 6,
-                    'scenario-pin': 7, 'scenario-run': 7, 'scenario-list': 7,
-                    'ant': 7, 'ant-pin': 8, 'ant-tick': 8, 'ant-state': 9,
-                    'ant-inspection': 4, 'ant-list': 9,
+        # Independent expectations: do not infer the current generation from either the
+        # declaration or the schemas being checked. Both can drift together.
+        expected = {'scenario-store': 12, 'scenario': 7, 'scenario-bundle': 7,
+                    'scenario-pin': 8, 'scenario-run': 8, 'scenario-list': 8,
+                    'ant': 8, 'ant-pin': 9, 'ant-tick': 9, 'ant-state': 10,
+                    'ant-inspection': 5, 'ant-list': 10,
+                    'scenario-policy': 6, 'implementation-startup-scope': 1,
                     'scenario-task-template': 2, 'scenario-template-pin': 2}
         for name, version in expected.items():
             relative = 'schemas/%s-v%s.json' % (name, version)
@@ -149,11 +152,20 @@ class ReleaseContract(unittest.TestCase):
                 original = path.read_bytes()
                 document = json.loads(original)
                 self.assertEqual(document['properties']['schema']['const'], 'af/%s@%s' % (name, version))
-                document['properties']['schema']['const'] = 'af/foreign@1'
-                path.write_text(json.dumps(document))
+                for invalid in ('af/foreign@1', 'af/%s@%s' % (name, version - 1)):
+                    document['properties']['schema']['const'] = invalid
+                    path.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(ValueError, 'capabilities differ'):
+                        PREFLIGHT.check(self.root)
+                    path.write_bytes(original)
+                retired = self.root / ('schemas/%s-v%s.json' % (name, version - 1))
+                self.assertFalse(retired.exists(), 'retired schema must not remain published')
+                # Adding the old filename also changes release capabilities, even if its
+                # bytes were copied from the current schema instead of using an old writer.
+                retired.write_bytes(original)
                 with self.assertRaisesRegex(ValueError, 'capabilities differ'):
                     PREFLIGHT.check(self.root)
-                path.write_bytes(original)
+                retired.unlink()
         template = json.loads((self.root / 'schemas/scenario-task-template-v2.json').read_text())
         self.assertIn('authority_id', template['required'])
         self.assertIn('bindings', template['required'])
