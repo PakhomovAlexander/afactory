@@ -165,6 +165,116 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(merged["observation"]["satisfied"], merged)
         self.assertEqual(self.service()["effects"], ["publish_pr:1", "notify:1", "followup:2"])
 
+    def test_decision_expiry_during_connection_sends_no_post_and_never_retries(self):
+        req = request()
+        expiry = req["inputs"]["decision"]["value"]["request"]["expires_unix_ms"]
+        original = MOCK.GitHubFixtureConnection
+        clock = [expiry - 1]
+        events = []
+
+        class Connection(original):
+            def connect(self):
+                super().connect()
+                events.append("connect")
+                # The mutation is the fifth connection, after actor/repository and
+                # exact locked-head observations. Expire during its TLS setup.
+                if len(events) == 5:
+                    clock[0] = expiry
+
+            def request(self, method, path, body, headers):
+                if method == "POST":
+                    raise AssertionError("expired authority reached HTTP write")
+                return super().request(method, path, body, headers)
+
+        with patch.object(A.http.client, "HTTPSConnection", Connection), \
+                patch.object(A.time, "time_ns", side_effect=lambda: clock[0] * 1_000_000):
+            result = self.call(req, "execute")
+        self.assertEqual(len(events), 5)
+        self.assertEqual(result["outcome"], "pending", result)
+        self.assertIn("expired before send", result["evidence"])
+        self.assertEqual(self.service()["effects"], [])
+        state = json.loads((self.root / "receipts/state.json").read_text())
+        self.assertEqual(state["records"][req["intent_id"]]["phase"], "dispatched")
+        # A fresh invocation reconciles conservatively even though this test knows
+        # the refusal happened before send. An empty remote listing grants no retry.
+        self.assertEqual(self.call(req, "execute")["outcome"], "pending")
+        self.assertEqual(self.call(req)["outcome"], "pending")
+        self.assertEqual(self.service()["effects"], [])
+
+    def test_transport_guard_is_after_connect_and_remaining_budget_is_rebound(self):
+        original = MOCK.GitHubFixtureConnection
+        events, connections = [], []
+        clock = [100.0]
+
+        class Connection(original):
+            def connect(self):
+                self.assert_disabled = self.auto_open == 0
+                events.append("connect")
+                super().connect()
+                clock[0] += 1
+                connections.append(self)
+
+            def settimeout(self, timeout):
+                events.append(("timeout", timeout))
+                super().settimeout(timeout)
+
+            def request(self, method, path, body, headers):
+                events.append("send")
+                return super().request(method, path, body, headers)
+
+            def close(self):
+                events.append("close")
+                super().close()
+
+        def guard():
+            self.assertIsNotNone(connections[0].sock)
+            self.assertTrue(connections[0].assert_disabled)
+            events.append("guard")
+            clock[0] += 1
+
+        # Each test invocation gets its own finite API clock.
+        with patch.object(A.http.client, "HTTPSConnection", Connection), \
+                patch.object(A.time, "monotonic", side_effect=lambda: clock[0]):
+            api = A.GitHub(self.config)
+            api.deadline = 103
+            api.request("POST", "/repos/octo/project/pulls", payload(), before_send=guard)
+        self.assertEqual(events, ["connect", "guard", ("timeout", 1), "send", "close"])
+
+    def test_transport_refuses_exhaustion_disconnection_and_missing_mutation_guard(self):
+        original = MOCK.GitHubFixtureConnection
+        for fault in ("connect-expiry", "guard-expiry", "guard-disconnect", "connect-disconnect", "no-guard"):
+            with self.subTest(fault=fault):
+                clock, connections, sent = [100.0], [], []
+
+                class Connection(original):
+                    def connect(self):
+                        super().connect()
+                        connections.append(self)
+                        if fault == "connect-expiry":
+                            clock[0] = 102
+                        if fault == "connect-disconnect":
+                            self.sock = None
+
+                    def request(self, method, path, body, headers):
+                        sent.append(method)
+                        raise AssertionError("refused transport sent an HTTP request")
+
+                def guard():
+                    if fault == "guard-expiry":
+                        clock[0] = 102
+                    if fault == "guard-disconnect":
+                        connections[0].sock = None
+
+                with patch.object(A.http.client, "HTTPSConnection", Connection), \
+                        patch.object(A.time, "monotonic", side_effect=lambda: clock[0]):
+                    api = A.GitHub(self.config)
+                    api.deadline = 102
+                    with self.assertRaises(A.Refused):
+                        api.request("POST", "/repos/octo/project/pulls", payload(),
+                                    before_send=None if fault == "no-guard" else guard)
+                self.assertEqual(sent, [])
+                self.assertEqual(len(connections), 1)
+                self.assertIsNone(connections[0].sock)
     def test_restart_after_remote_effect_before_response_reconciles_without_duplicate(self):
         for operation in ("publish_pr", "followup"):
             with self.subTest(operation=operation):

@@ -75,7 +75,10 @@ class Service:
         self.green = True
         self.source = None
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, *, before_send=None):
+        if method == "POST":
+            assert callable(before_send)
+            before_send()
         if method == "GET" and path == "/user":
             return dict(id=7, login="owner")
         if method == "GET" and path == "/repos/octo/project":
@@ -805,8 +808,8 @@ print(json.dumps(source))
     def test_exclusive_writer_violation_during_post_never_settles_or_reposts(self):
         p = self.prepare()
         original = self.service.request
-        def changed(method, path, body=None):
-            response = original(method, path, body)
+        def changed(method, path, body=None, *, before_send=None):
+            response = original(method, path, body, before_send=before_send)
             if method == "POST":
                 self.service.refs[p["branch"]] = "f" * 40
                 self.service.prs[0]["head"]["sha"] = "f" * 40
@@ -1291,9 +1294,14 @@ os.execve(''' + repr(git) + ''',[''' + repr(git) + ''']+args,os.environ)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         class HTTP:
-            def request(self, method, path, body=None):
+            def request(self, method, path, body=None, *, before_send=None):
                 connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                 try:
+                    connection.auto_open = 0
+                    connection.connect()
+                    if method == "POST":
+                        assert callable(before_send)
+                        before_send()
                     connection.request(method, path, body=None if body is None else A.canonical(body), headers={"Content-Type": "application/json"})
                     response = connection.getresponse()
                     assert response.status in (200, 201)

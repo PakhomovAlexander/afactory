@@ -452,7 +452,7 @@ class GitHub:
         self.calls = 0
         self.more = False
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, *, before_send=None):
         need((method in ("GET", "POST") and path.startswith("/repos/")) or
              (method == "GET" and path.startswith("/users/")) or
              (method == "GET" and path == "/user") or
@@ -465,7 +465,22 @@ class GitHub:
         conn = http.client.HTTPSConnection("api.github.com", timeout=min(5, remaining),
                                            context=self.context)
         try:
-            conn.request(method, path, body=canonical(body) if body is not None else None, headers={
+            # Serialize before the final guard, and explicitly complete DNS/TCP/TLS first.
+            # HTTPConnection.request otherwise connects lazily, after authorization was
+            # checked. Disallow its implicit reopen if the guard loses the connection.
+            encoded = canonical(body) if body is not None else None
+            conn.auto_open = 0
+            conn.connect()
+            need(conn.sock is not None, "API connection unavailable before send")
+            need(self.deadline > time.monotonic(), "bounded API connection exhausted")
+            if method == "POST":
+                need(callable(before_send), "API mutation requires a final authorization guard")
+                before_send()
+            remaining = self.deadline - time.monotonic()
+            need(remaining > 0, "bounded API authorization exhausted")
+            need(conn.sock is not None, "API connection lost before send")
+            conn.sock.settimeout(min(5, remaining))
+            conn.request(method, path, body=encoded, headers={
                 "Authorization": "Bearer " + self.token,
                 "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/json", "User-Agent": "af-scenario-github-v1",
@@ -542,6 +557,17 @@ class Adapter:
         repo = self.service.request("GET", self.repo)
         need(isinstance(repo, dict) and repo.get("id") == self.config["repository_id"]
              and repo.get("full_name") == self.config["repository"], "repository identity changed")
+
+    def before_mutation(self, record):
+        # The kernel authenticated this exact receipt before invoking the adapter.
+        # Revalidate its object binding and real expiry after all blocking observations
+        # and connection setup. This grants no authority absent from the request.
+        req = record["request"]
+        validate_request({**req, "method": "execute"}, self.config)
+        decision = req["inputs"].get("decision")
+        if decision is not None:
+            need(decision["value"]["request"]["expires_unix_ms"] > time.time_ns() // 1_000_000,
+                 "publication decision expired before send; reconcile the same intent")
 
     def locked_head(self, payload, revision):
         path = self.repo + "/branches/" + quote(payload["head"], safe="")
@@ -766,7 +792,7 @@ class Adapter:
         # HTTP errors, including 401/403/422, remain uncertain once dispatch is possible.
         record["phase"] = "dispatched"
         self.journal.save()
-        remote = self.service.request("POST", path, body)
+        remote = self.service.request("POST", path, body, before_send=lambda: self.before_mutation(record))
         if op == "notify":
             need(isinstance(remote, dict) and not remote.get("errors"),
                  "review mutation returned errors; outcome uncertain")
