@@ -62,6 +62,9 @@ def effect(key,action):
  crash(key,'before'); action(); d.setdefault('effects',[]).append(key); save(); crash(key,'after')
 def out(value): print(json.dumps(value)); sys.exit(0)
 if name=='git':
+ if ('ls-remote' in a and a[-1].startswith('refs/heads/release/v')
+     and d.get('fail_branch_lookup_after_validation') and d.get('gate_runs')):
+  print('fixture branch lookup failed after validation',file=sys.stderr);sys.exit(56)
  if 'fetch' in a and 'origin' in a: time.sleep(float(os.environ.get('FAKE_GIT_FETCH_DELAY','0')))
  key = 'push' if 'push' in a else ('prepare' if 'commit-tree' in a else '')
  if key: crash(key,'before')
@@ -73,11 +76,11 @@ if name=='git':
  sys.exit(p.returncode)
 if name=='cargo':
  if a==['--version']: print('cargo test');sys.exit(0)
- if a==['nextest','--version']: print('cargo-nextest test');sys.exit(0)
+ if a!=['update','--workspace','--offline','--quiet']: sys.exit(98)
  effect('metadata',lambda:None);sys.exit(0)
 if name=='rustc': print('rustc 1.88.0 test');sys.exit(0)
 if name=='minisign': sys.exit(1 if d.get('bad_signature') else 0)
-if name=='npx': sys.exit(0)
+if name in ('npx','make'): sys.exit(98)
 if name!='gh': sys.exit(99)
 Path(str(f)+'.controller-'+str(os.getppid())).touch()
 if os.environ.get('FAKE_DELAY'): time.sleep(float(os.environ['FAKE_DELAY']))
@@ -195,7 +198,7 @@ if a[:2]==['run','download']:
 if a[:2]==['pr','list']:
  head=a[a.index('--head')+1]
  if head.startswith('release/pin-'): out(d.get('pins',[]))
- if d.get('pause_after_validation') and d.get('gate_runs'):
+ if d.get('pause_after_validation') and d.get('metadata_check_runs'):
   d['paused']=True;save();time.sleep(30)
  out([d['pr']] if d.get('pr') and d.get('pr_branch') == head else [])
 if a[:2]==['pr','create']:
@@ -248,7 +251,7 @@ print('unsupported fake request '+str(a),file=sys.stderr);sys.exit(98)
 
 def write_fixture_executables(directory):
     directory.mkdir()
-    for name in ('git', 'gh', 'cargo', 'rustc', 'minisign', 'npx'):
+    for name in ('git', 'gh', 'cargo', 'rustc', 'minisign', 'npx', 'make'):
         path = directory / name
         path.write_text(FAKE)
         path.chmod(0o755)
@@ -376,7 +379,8 @@ class FixtureDatabase(unittest.TestCase):
                     else:
                         path = self.gate if writer == 'gate' else self.bin / writer.split('-')[0]
                         args = ['api', 'repos/o/r'] if writer == 'gh' else (
-                            ['push'] if writer == 'git-push' else [])
+                            ['push'] if writer == 'git-push' else (
+                                ['update', '--workspace', '--offline', '--quiet'] if writer == 'cargo' else []))
 
                         def child_stub(command, **kwargs):
                             # Intercept only the two explicit fixture delegation
@@ -462,8 +466,15 @@ class ReleaseCLI(unittest.TestCase):
             target + ' = "sha256:' + 'a' * 64 + '"\n' for target in policy['targets']))
         (self.source / 'Cargo.lock').write_text('# fixture lock\n')
         harness = self.source / 'scripts/performance/cli.py'
-        harness.write_text('import pathlib,sys\np=pathlib.Path("fixtures/performance/kernel-measure/pin")\n'
-                           'if "--write" in sys.argv:\n p.parent.mkdir(parents=True,exist_ok=True);p.write_text("pin")\n')
+        harness.write_text(FIXTURE_DB_HELPER +
+                           'import json,os,pathlib,sys\np=pathlib.Path("fixtures/performance/kernel-measure/pin")\n'
+                           'if "--write" in sys.argv:\n p.parent.mkdir(parents=True,exist_ok=True);p.write_text("pin")\n'
+                           'elif sys.argv[1:] == ["harness-digest","--check"]:\n'
+                           ' if p.exists():\n'
+                           '  f=os.environ["FAKE_DB"];d=json.loads(pathlib.Path(f).read_text())\n'
+                           '  d["metadata_check_runs"]=d.get("metadata_check_runs",0)+1;publish_fixture_db(f,d)\n'
+                           '  sys.exit(9 if d.get("metadata_check_fail") else 0)\n'
+                           'else: sys.exit(98)\n')
         write_fixture_gate(self.source / 'scripts/verify.sh')
         self.git('init', '-q', '-b', 'main', self.source)
         self.commit('initial')
@@ -557,7 +568,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertEqual(ready['pin']['state'], 'PENDING')
         self.assertEqual(self.data()['effects'].count('pr'), 1)
         self.assertEqual(self.data()['effects'].count('merge'), 1)
-        self.assertEqual(self.data()['gate_runs'], 1)
+        self.assertEqual(self.data()['metadata_check_runs'], 1)
 
     def test_one_full_invocation_waits_for_labeled_plan_after_opened_fast(self):
         self.data(ci_plan_labels=[])
@@ -607,7 +618,7 @@ class ReleaseCLI(unittest.TestCase):
         out, err = process.communicate(timeout=20)
         self.assertEqual(process.returncode, 0, err)
         self.assertEqual(json.loads(out)['identity'], identity)
-        self.assertEqual(self.data()['gate_runs'], 1)
+        self.assertEqual(self.data()['metadata_check_runs'], 1)
         self.assertEqual(self.data()['effects'].count('merge'), 1)
 
     def test_interrupt_between_stages_keeps_successful_validation_receipt(self):
@@ -629,15 +640,15 @@ class ReleaseCLI(unittest.TestCase):
         self.publish_assets(self.await_stage(process, 'publication'))
         _, err = process.communicate(timeout=20)
         self.assertEqual(process.returncode, 0, err)
-        self.assertEqual(self.data()['gate_runs'], 1)
+        self.assertEqual(self.data()['metadata_check_runs'], 1)
 
     def test_default_driver_stops_for_validation_and_release_workflow_failures(self):
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         result = self.cli('rc', '--timeout', '30', drive=True, ok=False)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.state_value()['stage'], 'validation')
         self.assertNotIn('push', self.data().get('effects', []))
-        self.data(gate_fail=False, checks='fail')
+        self.data(metadata_check_fail=False, checks='fail')
         result = self.cli('resume', '--timeout', '30', drive=True, ok=False)
         self.assertIn('checks_rejected', result.stderr)
         self.data(checks='pass', jobs=[{'name': 'build linux', 'conclusion': 'failure'},
@@ -864,7 +875,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertIn('separate reviewed published-release pin PR', result.stderr)
         self.assertFalse((self.state / 'run.json').exists())
         self.assertFalse((self.state / 'candidate').exists())
-        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertEqual(self.data().get('metadata_check_runs', 0), 0)
         self.assertFalse(self.data().get('effects'))
 
     def test_prerequisite_diagnostics_are_bounded_and_redacted(self):
@@ -877,7 +888,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertNotIn('secret-fixture', result.stderr)
         self.assertLess(len(result.stderr), 2048)
         self.assertFalse((self.state / 'run.json').exists())
-        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertEqual(self.data().get('metadata_check_runs', 0), 0)
         self.assertFalse(self.data().get('effects'))
 
     def test_source_pin_symlink_cannot_borrow_caller_evidence(self):
@@ -902,7 +913,7 @@ class ReleaseCLI(unittest.TestCase):
         self.git('-C', self.source, 'push', str(self.remote), 'main')
         self.cli('plan')
         self.assertIsNone(self.state_value()['authorization'])
-        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertEqual(self.data().get('metadata_check_runs', 0), 0)
         self.state = self.base / 'missing-digest-state'
         path.write_text(path.read_text().replace('aarch64-apple-darwin =', 'unknown ='))
         self.commit('missing required digest')
@@ -912,7 +923,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertFalse(self.data().get('effects'))
 
     def test_failed_local_new_retains_exact_evidence_and_separate_authority(self):
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         self.cli('rc', ok=False)
         original = (self.state / 'run.json').read_bytes()
         source = self.state_value()['plan']['source']
@@ -930,18 +941,51 @@ class ReleaseCLI(unittest.TestCase):
         self.assertFalse((self.state / 'candidate').exists())
         self.assertNotIn('push', self.data().get('effects', []))
 
-    def completed_local_failure(self):
+    def completed_local_failure(self, gate=False):
         # A real completed validation followed by refusal before branch intent.
+        if gate:
+            path = self.source / 'scripts/release-policy.json'
+            policy = json.loads(path.read_text())
+            policy['validation'].append(['scripts/verify.sh', '--profile', 'fast'])
+            path.write_text(json.dumps(policy))
+            self.commit('declare test-local gate policy')
+            self.git('-C', self.source, 'push', str(self.remote), 'main')
+            self.data(fail_branch_lookup_after_validation=True)
         self.cli('plan')
-        self.git('--git-dir', self.remote, 'update-ref',
-                 'refs/heads/release/v0.15.1-rc.4', self.initial)
+        if not gate:
+            self.git('--git-dir', self.remote, 'update-ref',
+                     'refs/heads/release/v0.15.1-rc.4', self.initial)
         result = self.cli('rc', ok=False)
-        self.assertIn('branch_collision', result.stderr)
+        self.assertIn('(exit 56)' if gate else 'branch_collision', result.stderr)
         state = self.state_value()
         self.assertEqual(state['stage'], 'validation')
         self.assertEqual(state['receipts']['validation']['status'], 'complete')
         self.assertTrue(state['receipts']['validation']['commands'])
         return state
+
+    def test_captured_gate_validation_failure_archives_exact_receipt(self):
+        previous = self.completed_local_failure(gate=True)
+        commands = previous['receipts']['validation']['commands']
+        self.assertEqual(commands[-1]['argv'], [
+            'env', 'AF_GATE_TARGET_DIR=' + str(self.state.resolve() / 'candidate' / 'target'),
+            'scripts/verify.sh', '--profile', 'fast'])
+        self.assertEqual(self.data()['gate_runs'], 1)
+        self.assertNotIn('branch', previous['receipts'])
+        original = (self.state / 'run.json').read_bytes()
+        # New fetched authority uses the ordinary metadata-only policy. The old
+        # captured source, policy, controller and authorization stay in the archive.
+        shutil.copyfile(ROOT / 'scripts/release-policy.json', self.source / 'scripts/release-policy.json')
+        self.commit('restore ordinary metadata-only policy')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.data(fail_branch_lookup_after_validation=False, checks='pending')
+        self.cli('rc', '--new')
+        self.assertEqual([p.read_bytes() for p in (self.state / 'history').iterdir()], [original])
+        current = self.state_value()
+        self.assertNotEqual(current['plan']['source'], previous['plan']['source'])
+        self.assertNotEqual(current['identity'], previous['identity'])
+        self.assertEqual(current['stage'], 'checks')
+        self.assertEqual(current['status'], 'waiting')
+        self.assertEqual(self.data()['gate_runs'], 1)
 
     def test_complete_local_validation_failure_can_be_archived(self):
         self.completed_local_failure()
@@ -954,7 +998,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertNotIn('push', self.data().get('effects', []))
 
     def test_impossible_completed_validation_refuses_without_cleanup(self):
-        baseline = self.completed_local_failure()
+        baseline = self.completed_local_failure(gate=True)
         commands = baseline['receipts']['validation']['commands']
         cases = [[], commands[:-1], commands + commands[:1], list(reversed(commands)),
                  None, {}, [None], [{'argv': []}]]
@@ -964,8 +1008,13 @@ class ReleaseCLI(unittest.TestCase):
             changed[0][field] = value
             cases.append(changed)
         changed = copy.deepcopy(commands)
-        gate = next(c for c in changed if c['argv'][0] == 'env')
-        gate['argv'][1] = 'AF_GATE_TARGET_DIR=/foreign/target'
+        changed[-1]['argv'][-1] = 'full'
+        cases.append(changed)
+        changed = copy.deepcopy(commands)
+        changed[-1]['argv'][1] = 'AF_GATE_TARGET_DIR=/foreign/target'
+        cases.append(changed)
+        changed = copy.deepcopy(commands)
+        changed[-1]['stdout_sha256'] = {'sha256': 'a' * 64}
         cases.append(changed)
         for invalid in cases:
             with self.subTest(commands=invalid):
@@ -981,8 +1030,20 @@ class ReleaseCLI(unittest.TestCase):
                 self.assertFalse((self.state / 'history').exists())
                 self.assertTrue((self.state / 'candidate').exists())
 
+        for stage in ('branch', 'publication'):
+            with self.subTest(later_intent=stage):
+                state = copy.deepcopy(baseline)
+                state['receipts'][stage] = {'status': 'intent', 'at': 1}
+                path.write_text(json.dumps(state))
+                before = path.read_bytes()
+                self.cli('rc', '--new', ok=False)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(self.data().get('effects', []), effects)
+                self.assertFalse((self.state / 'history').exists())
+                self.assertTrue((self.state / 'candidate').exists())
+
     def test_new_refuses_active_ambiguous_or_later_state_unchanged(self):
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         self.cli('rc', ok=False)
         path = self.state / 'run.json'
         baseline = self.state_value()
@@ -1009,7 +1070,7 @@ class ReleaseCLI(unittest.TestCase):
                 self.assertTrue((self.state / 'candidate').exists())
 
     def test_new_refuses_foreign_receipt_before_reading(self):
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         self.cli('rc', ok=False)
         path = self.state / 'run.json'
         before = path.read_bytes()
@@ -1031,7 +1092,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertNotIn('push', self.data().get('effects', []))
 
     def test_archive_collision_and_foreign_cleanup_fail_closed(self):
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         self.cli('rc', ok=False)
         before = (self.state / 'run.json').read_bytes()
         history = self.state / 'history'
@@ -1053,7 +1114,7 @@ class ReleaseCLI(unittest.TestCase):
         self.assertFalse(history.exists())
 
     def test_interrupted_archive_idempotent_and_history_bounded(self):
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         self.cli('rc', ok=False)
         before = (self.state / 'run.json').read_bytes()
         history = self.state / 'history'
@@ -1252,11 +1313,43 @@ class ReleaseCLI(unittest.TestCase):
             self.assertEqual(self.data().get('effects', []), [])
             self.data(**{flag: False})
 
+    def assert_cheap_local_commands_reach_ci_wait(self, profile):
+        self.data(checks='pending')
+        self.cli('rc', '--profile', profile)
+        state = self.state_value()
+        expected = [
+            ['python3', '-I', 'scripts/release-contract.py'],
+            ['python3', '-I', 'scripts/performance/cli.py', 'harness-digest', '--check'],
+        ]
+        self.assertEqual(state['plan']['profile'], profile)
+        self.assertEqual(state['plan']['policy']['validation'], expected)
+        receipt = state['receipts']['validation']
+        self.assertEqual(receipt['status'], 'complete')
+        self.assertEqual([command['argv'] for command in receipt['commands']], expected)
+        self.assertTrue(all(command['exit'] == 0 for command in receipt['commands']))
+        self.assertEqual(self.data()['metadata_check_runs'], 1)
+        self.assertEqual(self.data().get('gate_runs', 0), 0)
+        self.assertEqual(self.data()['effects'].count('metadata'), 1)
+        self.assertEqual(self.data()['effects'].count('pr'), 1)
+        self.assertEqual(state['stage'], 'checks')
+        self.assertEqual(state['receipts']['checks']['status'], 'waiting')
+        self.assertNotIn('merge', self.data()['effects'])
+        self.assertNotIn('download', self.data()['effects'])
+        # A reconciliation reuses the successful exact command receipt.
+        self.cli('resume')
+        self.assertEqual(self.data()['metadata_check_runs'], 1)
+
+    def test_fast_rc_runs_only_cheap_local_commands_before_ci_wait(self):
+        self.assert_cheap_local_commands_reach_ci_wait('fast')
+
+    def test_full_rc_runs_only_cheap_local_commands_before_ci_wait(self):
+        self.assert_cheap_local_commands_reach_ci_wait('full')
+
     def test_full_profile_retains_full_workflow_and_policy(self):
         self.cli('rc', '--profile', 'full')
         state = self.state_value()
         self.assertEqual(state['plan']['profile'], 'full')
-        self.assertEqual(state['plan']['policy']['validation'][-1][-1], 'full')
+        self.assertEqual(state['plan']['policy']['validation'][-1][-1], '--check')
         self.assertEqual(state['receipts']['checks']['status'], 'complete')
         self.assertEqual(state['receipts']['validation']['status'], 'complete')
 
@@ -1452,14 +1545,14 @@ class ReleaseCLI(unittest.TestCase):
             self.assertNotIn('metadata', self.data().get('effects', []))
             self.data(**{field: False})
 
-    def test_local_gate_failure_and_version_collision_prevent_publication(self):
+    def test_local_metadata_check_failure_and_version_collision_prevent_publication(self):
         self.git('--git-dir', self.remote, 'update-ref', 'refs/tags/v0.15.1-rc.4', self.initial)
         self.assertIn('version_conflict', self.cli('rc', '--version', '0.15.1-rc.4', ok=False).stderr)
-        self.data(gate_fail=True)
+        self.data(metadata_check_fail=True)
         self.cli('rc', ok=False)
         self.assertNotIn('push', self.data().get('effects', []))
         self.assertEqual(self.state_value()['stage'], 'validation')
-        self.data(gate_fail=False)
+        self.data(metadata_check_fail=False)
         self.cli('resume')
 
     def test_main_movement_and_rejected_checks(self):
