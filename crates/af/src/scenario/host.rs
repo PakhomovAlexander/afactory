@@ -11,6 +11,52 @@ use std::time::Duration;
 
 pub(crate) struct AfHost;
 impl Host for AfHost {
+    fn preflight_implementation_template(
+        &self,
+        template: &Template,
+        expected: &BTreeMap<String, af_scenario::implementation::ModelBinding>,
+    ) -> Result<()> {
+        crate::task_commands::scenario_template::preflight_implementation(template, expected)
+    }
+    fn preflight_implementation_adapter(
+        &self,
+        adapter: &Adapter,
+        scope: &af_scenario::implementation::Scope,
+    ) -> Result<()> {
+        require(
+            digest(&af_scenario::store::read(&adapter.executable, MAX_BYTES)?) == adapter.digest,
+            "Startup adapter executable changed",
+        )?;
+        let scope_id = hash(scope)?;
+        let bytes = serde_json::to_vec(&serde_json::json!({"schema":"af/implementation-startup-preflight@1", "scope_id":scope_id, "scope":scope})).map_err(|e| e.to_string())?;
+        let mut command = std::process::Command::new(&adapter.executable);
+        command.current_dir(
+            adapter
+                .executable
+                .parent()
+                .ok_or("Startup adapter location missing")?,
+        );
+        let result = af_process::run_supervised_captured_bounded(
+            &mut command,
+            Some(bytes),
+            Duration::from_millis(adapter.max_wall_ms),
+            af_process::ExitPolicy::KillDescendants,
+            None,
+            adapter.max_output_bytes as usize,
+        );
+        require(
+            result.status.as_ref().is_ok_and(|status| status.success()),
+            "Startup adapter prerequisite or credentials refused",
+        )?;
+        let response: serde_json::Value = serde_json::from_slice(&result.stdout)
+            .map_err(|_| "Invalid startup adapter receipt")?;
+        require(
+            response
+                == serde_json::json!({"schema":"af/implementation-startup-ready@1", "scope_id":scope_id}),
+            "Startup adapter scope differs",
+        )
+    }
+
     fn run_task(
         &self,
         target: &TaskTarget,

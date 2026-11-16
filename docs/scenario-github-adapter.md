@@ -64,7 +64,7 @@ secret material. Editing config, scope, paths or application code refuses existi
 Finish/cancel old Runs under their original installation before approving a different installation.
 Do not discard uncertain receipts or reuse an old intent with a new installation.
 
-The existing `af/scenario-policy@5` adapter entry is authored by the operator, for example:
+The existing `af/scenario-policy@6` adapter entry is authored by the operator, for example:
 
 ```toml
 [adapters.github]

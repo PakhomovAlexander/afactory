@@ -20,11 +20,12 @@ fn lit(value: Datum) -> Binding {
 pub fn simple() -> (Bundle, Policy) {
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     let policy = Policy {
-        schema: "af/scenario-policy@5".into(),
+        schema: "af/scenario-policy@6".into(),
         adapters: BTreeMap::new(),
         task_plans: Default::default(),
         task_templates: Default::default(),
         performance_publications: Default::default(),
+        implementation_startup: None,
         decision_keys: BTreeMap::from([("owner".into(), key.pk.to_box().unwrap().into_string())]),
         file_roots: Default::default(),
     };
@@ -162,6 +163,7 @@ pub fn schema(name: &str) -> jsonschema::Validator {
     let mut registry = jsonschema::Registry::new();
     for file in [
         "scenario-v6.json",
+        "implementation-startup-scope-v1.json",
         "task-contracts-v4.json",
         "scenario-roadmap-proposal-v2.json",
         "scenario-roadmap-v3.json",
@@ -249,26 +251,26 @@ fn contracts_roundtrip_schemas_and_old_versions_fail_closed() {
             serde_json::to_value(&bundle.definitions["main"]).unwrap(),
         ),
         ("scenario-bundle-v6.json", json!(bundle)),
-        ("scenario-policy-v5.json", json!(policy)),
-        ("scenario-pin-v6.json", json!(pin)),
-        ("scenario-run-v6.json", json!(run)),
+        ("scenario-policy-v6.json", json!(policy)),
+        ("scenario-pin-v7.json", json!(pin)),
+        ("scenario-run-v7.json", json!(run)),
         ("ant-v7.json", json!(ant.pin.definition)),
-        ("ant-pin-v7.json", json!(ant.pin)),
-        ("ant-state-v8.json", json!(ant)),
+        ("ant-pin-v8.json", json!(ant.pin)),
+        ("ant-state-v9.json", json!(ant)),
         (
-            "scenario-list-v6.json",
-            json!({"schema":"af/scenario-list@6","runs":{"run":run}}),
+            "scenario-list-v7.json",
+            json!({"schema":"af/scenario-list@7","runs":{"run":run}}),
         ),
         (
-            "ant-list-v8.json",
-            json!({"schema":"af/ant-list@8","ants":{"daily":{
-                "schema":"af/ant-inspection@3", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
+            "ant-list-v9.json",
+            json!({"schema":"af/ant-list@9","ants":{"daily":{
+                "schema":"af/ant-inspection@4", "pin":ant.pin,"state":ant.state,"changes":ant.changes,"next_day":ant.next_day,"last_tick_unix_ms":ant.last_tick_unix_ms,"occurrences":ant.occurrences,"retention":ant.retention,
                 "scheduler":{"schema":"af/ant-scheduler@1","running":false,"started_unix_ms":null,"heartbeat_unix_ms":null,"stop_requested":false,"error":null},"next_due_unix_ms":START,"next_due_error":null,"active_run":null,"last_lateness_ms":null
             }}}),
         ),
         (
-            "ant-tick-v7.json",
-            json!({"schema":"af/ant-tick@7","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
+            "ant-tick-v8.json",
+            json!({"schema":"af/ant-tick@8","now_unix_ms":START,"started":[],"busy":[],"refused":{},"runs":{}}),
         ),
     ] {
         valid(file, &value);
@@ -1229,7 +1231,7 @@ fn simultaneous_scheduler_transactions_admit_one_occurrence_and_locks_exclude_tw
     let id = world.runs.keys().next().unwrap();
     let _held = store.lock_run(id).unwrap();
     assert!(store.lock_run(id).is_err());
-    valid("scenario-store-v10.json", &world);
+    valid("scenario-store-v11.json", &world);
 }
 
 #[test]
@@ -1851,12 +1853,34 @@ fn typed_selection_is_lazy_across_skips_and_keeps_decision_ownership_static() {
 pub(super) struct TestHost {
     pub planned_tasks: Option<std::sync::Mutex<Vec<TaskTarget>>>,
     pub reject_templates: std::sync::atomic::AtomicBool,
+    pub startup_time: std::sync::atomic::AtomicU64,
+    pub startup_templates: std::sync::Mutex<Vec<String>>,
+    pub startup_reject: Option<String>,
+    pub expire_startup_on_plan: bool,
+    pub native_dispatches: std::sync::atomic::AtomicUsize,
     pub charge: Option<(u64, bool)>,
     pub task_settlement: Option<super::adapter::Settlement>,
     pub task_settlements: BTreeMap<String, Result<super::adapter::Settlement>>,
     pub task_charges: BTreeMap<String, (u64, bool)>,
 }
 impl crate::Host for TestHost {
+    fn authorization_time(&self) -> Result<u64> {
+        let value = self.startup_time.load(std::sync::atomic::Ordering::Relaxed);
+        Ok(if value == 0 { START } else { value })
+    }
+    fn preflight_implementation_template(
+        &self,
+        template: &template::Template,
+        _: &BTreeMap<String, implementation::ModelBinding>,
+    ) -> Result<()> {
+        let id = template.id()?;
+        self.startup_templates.lock().unwrap().push(id.clone());
+        require(
+            self.startup_reject.as_ref() != Some(&id),
+            "native startup refused",
+        )
+    }
+
     fn validate_template(&self, _: &Value, _: Option<&Value>, _: u64) -> Result<()> {
         require(
             !self
@@ -1904,6 +1928,10 @@ impl crate::Host for TestHost {
             max_tokens: template.max_tokens,
         };
         tasks.lock().unwrap().push(target.clone());
+        if self.expire_startup_on_plan {
+            self.startup_time
+                .store(START + DAY, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(target)
     }
     fn run_task(
@@ -1912,6 +1940,8 @@ impl crate::Host for TestHost {
         _: u64,
         _: &std::sync::atomic::AtomicBool,
     ) -> Result<adapter::Settlement> {
+        self.native_dispatches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(tasks) = &self.planned_tasks {
             if tasks.lock().unwrap().len() == 1 {
                 let receipt: TaskReceipt = serde_json::from_value(serde_json::json!({

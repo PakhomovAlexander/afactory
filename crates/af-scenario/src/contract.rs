@@ -44,7 +44,7 @@ pub fn text(s: &str) -> Result<()> {
     )
 }
 
-fn unique<'de, D, T>(deserializer: D) -> std::result::Result<BTreeSet<T>, D::Error>
+pub(crate) fn unique<'de, D, T>(deserializer: D) -> std::result::Result<BTreeSet<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Ord,
@@ -1007,11 +1007,13 @@ pub struct Policy {
     pub performance_publications: BTreeMap<String, super::performance::Scope>,
     #[serde(deserialize_with = "unique")]
     pub file_roots: BTreeSet<PathBuf>,
+    #[serde(default)]
+    pub implementation_startup: Option<super::implementation::Scope>,
 }
 impl Policy {
     pub fn validate(&self) -> Result<()> {
         require(
-            self.schema == "af/scenario-policy@5"
+            self.schema == "af/scenario-policy@6"
                 && self.adapters.len() <= 32
                 && self.decision_keys.len() <= 32
                 && self.task_templates.len() <= 256
@@ -1023,6 +1025,9 @@ impl Policy {
                 && self.file_roots.len() <= 32,
             "Invalid machine Scenario policy",
         )?;
+        if let Some(scope) = &self.implementation_startup {
+            scope.validate()?;
+        }
         for (id, a) in &self.adapters {
             name(id)?;
             require(
@@ -1096,6 +1101,9 @@ impl Policy {
     }
     pub fn admits(&self, bundle: &Bundle) -> Result<()> {
         self.validate()?;
+        if let Some(scope) = &self.implementation_startup {
+            scope.admits(bundle)?;
+        }
         for def in bundle.definitions.values() {
             require(
                 def.authority.task_templates.is_subset(&self.task_templates),
@@ -1165,7 +1173,7 @@ impl Pin {
             .collect::<Result<_>>()?;
         let revision = hash(&(&bundle, &policy))?;
         Ok(Self {
-            schema: "af/scenario-pin@6".into(),
+            schema: "af/scenario-pin@7".into(),
             bundle,
             policy,
             revision,

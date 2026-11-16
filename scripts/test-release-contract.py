@@ -136,10 +136,10 @@ class ReleaseContract(unittest.TestCase):
 
     def test_current_scenario_contracts_are_declared_and_drift_is_refused(self):
         policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
-        expected = {'scenario-store': 10, 'scenario': 6, 'scenario-bundle': 6,
-                    'scenario-pin': 6, 'scenario-run': 6, 'scenario-list': 6,
-                    'ant': 7, 'ant-pin': 7, 'ant-tick': 7, 'ant-state': 8,
-                    'ant-inspection': 3, 'ant-list': 8,
+        expected = {'scenario-store': 11, 'scenario': 6, 'scenario-bundle': 6,
+                    'scenario-pin': 7, 'scenario-run': 7, 'scenario-list': 7,
+                    'ant': 7, 'ant-pin': 8, 'ant-tick': 8, 'ant-state': 9,
+                    'ant-inspection': 4, 'ant-list': 9,
                     'scenario-task-template': 2, 'scenario-template-pin': 2}
         for name, version in expected.items():
             relative = 'schemas/%s-v%s.json' % (name, version)

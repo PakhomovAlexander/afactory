@@ -17,21 +17,34 @@ pub fn now() -> Result<u64> {
     .map_err(|e| e.to_string())
 }
 pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
-    reconcile_native_charges(store, id, clock.map_or_else(now, Ok)?)?;
     let existing = store
         .read()?
         .runs
         .get(id)
         .cloned()
         .ok_or("Scenario Run not found")?;
+    let scoped = existing.pin.policy.implementation_startup.is_some();
+    let execution_time = || {
+        if scoped {
+            store.host.authorization_time()
+        } else {
+            clock.map_or_else(now, Ok)
+        }
+    };
+    reconcile_native_charges(store, id, execution_time()?)?;
     if let Some(cancellation) = existing.cancellation {
         // Cancellation handoff has its own lock: the original driver may still hold the Run
         // while a process that recorded cancellation died before contacting its active Task.
-        return cancel(store, id, cancellation.reason, clock.map_or_else(now, Ok)?);
+        return cancel(store, id, cancellation.reason, execution_time()?);
     }
     let _lock = store.lock_run(id)?;
     loop {
-        let at = clock.map_or_else(now, Ok)?;
+        let retained = store.read()?;
+        let current = retained.runs.get(id).ok_or("Scenario Run not found")?;
+        if current.status.active() {
+            super::implementation::preflight(store.host.as_ref(), &current.pin)?;
+        }
+        let at = execution_time()?;
         let prepared = store.update(|world| crate::retention::prepare_run(world, id, at))?;
         let run = store
             .read()?
@@ -104,9 +117,17 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
                         .ok_or("Missing cancellation")?
                         .reason
                         .clone(),
-                    clock.map_or_else(now, Ok)?,
+                    execution_time()?,
                 );
             }
+        }
+        if let Some(scope) = &run.pin.policy.implementation_startup {
+            let remaining = scope
+                .expires_unix_ms
+                .checked_sub(store.host.authorization_time()?)
+                .filter(|n| *n > 0)
+                .ok_or("Implementation startup scope expired")?;
+            dispatch.timeout_ms = dispatch.timeout_ms.min(remaining);
         }
         let cancellation = std::sync::atomic::AtomicBool::new(false);
         let task_dispatch = matches!(
@@ -117,23 +138,29 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
         let result = std::thread::scope(|scope| {
             let (finished, wait) = std::sync::mpsc::channel();
             let cancellation_ref = &cancellation;
+            let startup = run.pin.policy.implementation_startup.as_ref();
             let watcher = scope.spawn(move || {
                 loop {
                     match wait.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            if store.read().map_or(true, |world| {
-                                world.runs.get(id).is_none_or(|r| {
-                                    r.status == Status::Cancelled
-                                        && (!task_dispatch
-                                            || r.cancellation
-                                                .as_ref()
-                                                .and_then(|c| c.child_requests.get(&full_step))
-                                                .is_some_and(|s| {
-                                                    s.state != CancellationState::Requested
-                                                }))
+                            let expired = startup.is_some_and(|authority| {
+                                authority.live(store.host.as_ref()).is_err()
+                            });
+                            if expired
+                                || store.read().map_or(true, |world| {
+                                    world.runs.get(id).is_none_or(|r| {
+                                        r.status == Status::Cancelled
+                                            && (!task_dispatch
+                                                || r.cancellation
+                                                    .as_ref()
+                                                    .and_then(|c| c.child_requests.get(&full_step))
+                                                    .is_some_and(|s| {
+                                                        s.state != CancellationState::Requested
+                                                    }))
+                                    })
                                 })
-                            }) {
+                            {
                                 cancellation_ref.store(true, std::sync::atomic::Ordering::Release);
                                 break;
                             }
@@ -151,7 +178,7 @@ pub fn resume(store: &Store, id: &str, clock: Option<u64>) -> Result<Run> {
             let _ = watcher.join();
             result
         });
-        let settled_at = clock.map_or_else(now, Ok)?;
+        let settled_at = execution_time()?;
         let stop = store.update(|world| {
             let run = world.runs.get_mut(id).ok_or("Scenario Run disappeared")?;
             require(

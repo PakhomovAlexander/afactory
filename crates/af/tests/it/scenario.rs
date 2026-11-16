@@ -117,7 +117,7 @@ impl Fixture {
         let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         write(
             &policy,
-            &json!({"schema":"af/scenario-policy@5","adapters":{},"task_plans":[],"task_templates":[],"file_roots":[owned],"decision_keys":{"owner":key.pk.to_box().unwrap().into_string()}}),
+            &json!({"schema":"af/scenario-policy@6","adapters":{},"task_plans":[],"task_templates":[],"file_roots":[owned],"decision_keys":{"owner":key.pk.to_box().unwrap().into_string()}}),
         );
         std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
         write(&inputs, &json!({}));
@@ -165,7 +165,7 @@ impl Fixture {
                 self.policy.to_str().unwrap(),
             ],
         );
-        valid("scenario-pin-v6.json", &pinned);
+        valid("scenario-pin-v7.json", &pinned);
         cli(
             &self.repo,
             &self.state,
@@ -356,7 +356,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
     )
     .unwrap();
     let waiting = f.start("issue-fix");
-    valid("scenario-run-v6.json", &waiting);
+    valid("scenario-run-v7.json", &waiting);
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waiting"]["kind"], "decision");
     assert_eq!(
@@ -399,7 +399,7 @@ fn actual_task_child_decisions_actions_waits_and_restart_recovery_keep_final_evi
         &json!({"revision":"head-1","checks_passed":true,"merged":true}),
     );
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "issue-fix"]);
-    valid("scenario-run-v6.json", &done);
+    valid("scenario-run-v7.json", &done);
     assert_eq!(done["status"], "succeeded");
     assert_eq!(
         done["frames"]["root"]["outputs"]["implementation"]["type"],
@@ -449,7 +449,7 @@ fn cancellation_preserves_receipts_and_never_dispatches_later_effects() {
     );
     assert!(!f.owned.join("note").exists());
     assert_eq!(cancelled["cancellation"]["reason"], "operator cancelled");
-    valid("scenario-run-v6.json", &cancelled);
+    valid("scenario-run-v7.json", &cancelled);
 }
 
 #[test]
@@ -685,7 +685,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
         1
     );
     for tick in ticks {
-        valid("ant-tick-v7.json", &tick);
+        valid("ant-tick-v8.json", &tick);
     }
     let shown = cli(&f.repo, &f.state, &["ant", "show", "daily"]);
     assert_eq!(shown["occurrences"].as_array().unwrap().len(), 1);
@@ -718,7 +718,7 @@ fn ant_cli_ticks_once_concurrently_and_pause_retains_a_waiting_run() {
     let expired = cli(&f.repo, &f.state, &["scenario", "show", run_id]);
     assert_eq!(expired["status"], "failed");
     assert!(expired["failure"].as_str().unwrap().contains("deadline"));
-    valid("ant-inspection-v3.json", &paused);
+    valid("ant-inspection-v4.json", &paused);
 }
 
 #[test]
@@ -903,7 +903,7 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
             f.policy.to_str().unwrap(),
         ],
     );
-    valid("scenario-pin-v6.json", &pin);
+    valid("scenario-pin-v7.json", &pin);
     let json_wire = f._root.path().join("wire.json");
     write(&json_wire, &pin["bundle"]);
     let replay = cli(
@@ -1211,7 +1211,7 @@ fn github_read_only_source_sequence(f: Fixture) {
     let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
     assert_eq!(done["status"], "succeeded", "{done:#}");
     assert_eq!(done["pin"], pin);
-    valid("scenario-run-v6.json", &done);
+    valid("scenario-run-v7.json", &done);
     let journal: Value = serde_json::from_slice(
         &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
     )
@@ -1591,7 +1591,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     write(&f.bundle, &bundle);
     let done = f.start("fresh-chain");
     assert_eq!(done["status"], "succeeded", "{done}");
-    valid("scenario-run-v6.json", &done);
+    valid("scenario-run-v7.json", &done);
     let roadmap = cli(
         &f.repo,
         &f.state,
@@ -2427,7 +2427,7 @@ fn interval_scheduler_executes_real_one_second_occurrences_and_generic_results()
                 f.policy.to_str().unwrap(),
             ],
         );
-        valid("ant-pin-v7.json", &pin);
+        valid("ant-pin-v8.json", &pin);
         cli(
             &f.repo,
             &f.state,
@@ -2457,7 +2457,7 @@ fn interval_scheduler_executes_real_one_second_occurrences_and_generic_results()
     );
     for label in ["weather", "library"] {
         let shown = cli(&f.repo, &f.state, &["ant", "show", label]);
-        valid("ant-inspection-v3.json", &shown);
+        valid("ant-inspection-v4.json", &shown);
         let occurrences = shown["occurrences"].as_array().unwrap();
         let started: Vec<_> = occurrences
             .iter()
@@ -3954,4 +3954,153 @@ fn template_repin_refuses_conflicting_corrupt_and_duplicate_durable_records() {
     assert!(!lost.load(std::sync::atomic::Ordering::Acquire));
     assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
     assert_eq!(cli(&f.repo, &f.state, &args), pinned);
+}
+
+#[test]
+fn scoped_startup_native_preflight_refuses_command_template_before_zero_task_dispatch() {
+    let f = Fixture::bare();
+    std::fs::remove_dir(&f.repo).unwrap();
+    let task_root = f._root.path().join("startup-task-fixture");
+    std::fs::create_dir(&task_root).unwrap();
+    let (repo, task_state) = crate::task_cli::fixture_named(&task_root, "pagination");
+    std::fs::rename(repo, &f.repo).unwrap();
+    let commit = std::process::Command::new("git")
+        .current_dir(&f.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let commit = String::from_utf8(commit.stdout).unwrap();
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(f.repo.join("ticket.json")).unwrap()).unwrap();
+    document["verification"] = json!("evaluation");
+    let file = f.machine.join("startup-template.json");
+    write(&file, &document);
+    let pinned = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "template-pin",
+            "--file",
+            file.to_str().unwrap(),
+            "--repo",
+            f.repo.to_str().unwrap(),
+            "--task-state",
+            task_state.to_str().unwrap(),
+            "--authority-commit",
+            commit.trim(),
+        ],
+    );
+    let mut bundle: Value = serde_json::from_slice(&std::fs::read(&f.bundle).unwrap()).unwrap();
+    let root = &mut bundle["definitions"]["main"];
+    root["steps"] = json!([step(
+        "implement",
+        json!({"kind":"fresh_task", "template":pinned["template"], "bindings":{}}),
+        json!({}),
+        "task"
+    )]);
+    root["authority"]["grants"] = json!([]);
+    root["authority"]["task_templates"] = json!([pinned["template_id"]]);
+    let typed: af_scenario::contract::Bundle = serde_json::from_value(bundle).unwrap();
+    write(&f.bundle, &serde_json::to_value(&typed).unwrap());
+    let template = &pinned["template"];
+    let scope = json!({"schema":"af/implementation-startup-scope@1", "owner":"owner", "recipe_id":af_scenario::contract::hash(&typed).unwrap(),
+        "repo":f.repo, "task_state":task_state, "repository_id":template["repository_id"], "source_commit":commit.trim(), "source_content_digest":template["source_content_digest"],
+        "repository":"owner/project", "destination_repository_id":1,"actor_id":2,"actor_login":"owner", "branch_prefix":"implementation/", "base":"main", "grants":[],
+        "templates":{pinned["template_id"].as_str().unwrap():{"fixture/worker":{"provider":"codex-personal","provider_kind":"codex","model":"gpt-6.1-sol","effort":"medium"}}},
+        "limits":typed.definitions["main"].limits,"max_repairs":0,"expires_unix_ms":8_000_000_000_000_u64});
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
+    policy["task_templates"] = json!([pinned["template_id"]]);
+    write(&f.policy, &policy);
+    let absent_pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+        ],
+    );
+    let absent = output(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "start",
+            "scope-absent",
+            "--require-startup-scope",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+            "--inputs",
+            f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            absent_pin["revision"].as_str().unwrap(),
+            "--execute",
+        ],
+    );
+    assert!(!absent.status.success());
+    assert!(String::from_utf8_lossy(&absent.stderr).contains("scope is required but absent"));
+    policy["implementation_startup"] = scope;
+    write(&f.policy, &policy);
+    let before = cli(
+        &f.repo,
+        &task_state,
+        &["task", "list", "--repo", f.repo.to_str().unwrap()],
+    );
+    let pin = cli(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+        ],
+    );
+    let refused = output(
+        &f.repo,
+        &f.state,
+        &[
+            "scenario",
+            "start",
+            "startup-refused",
+            "--file",
+            f.bundle.to_str().unwrap(),
+            "--authority",
+            f.policy.to_str().unwrap(),
+            "--inputs",
+            f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            pin["revision"].as_str().unwrap(),
+            "--execute",
+        ],
+    );
+    assert!(!refused.status.success());
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        diagnostic.contains("Startup refuses command Workers"),
+        "{diagnostic}"
+    );
+    let after = cli(
+        &f.repo,
+        &task_state,
+        &["task", "list", "--repo", f.repo.to_str().unwrap()],
+    );
+    assert_eq!(
+        before, after,
+        "refusal must create or dispatch zero native Tasks"
+    );
+    assert!(!f.state.join("runs/scenario.sqlite").exists());
 }

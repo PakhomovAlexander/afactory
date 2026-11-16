@@ -124,3 +124,44 @@ See [generic capability coverage](scenario-git-workspace.md#recovery-and-bounds)
 transport/recovery, dirty/foreign cleanup refusals and the ordinary native repair regression,
 including `python3 -I scripts/test-scenario-git-workspace.py`. None of these tests claims live
 publication.
+
+## Scoped startup admission (Stage A)
+
+An owner-only machine policy may set `implementation_startup` to an
+`af/implementation-startup-scope@1` object. Review its complete recipe digest (`hash(bundle)`),
+exact template IDs and effective Worker model pool, native repository/source,
+GitHub repository numeric ID and actor ID/login, branch prefix/base, exact grants, finite Run
+limits, repair count and expiry before confirming the ordinary Scenario pin. Changing any of
+these fields changes that pin. This capability is separate from performance standing authority.
+The public schema is `schemas/implementation-startup-scope-v1.json`. Pass
+`af scenario start --require-startup-scope` to refuse an accidentally absent scope before
+Run creation or Task dispatch. A policy that carries scope always enforces it.
+
+Startup and every active resume validate every declared template, including conditional repair
+branches, against captured native authority before dispatching work. Preflight also creates or
+reuses deterministic, never-executed
+`startup-<template digest>` native plans against the captured source, proving native contracts,
+resource feasibility and check configuration without inference. Future predecessor content is
+still validated by native input resolution when the actual Task is planned. Command Workers
+and remote gates are refused. Local replacement Workers and child slot mappings resolve to the
+effective pool; unused
+replacements are refused by native compilation. Provider probes are token-free;
+normal Task admission and acceptance still apply. The installed workspace adapter must support
+startup preflight and pass pinned configuration/tool, local/remote base and GitHub identity checks.
+Unavailable credentials or prerequisites refuse admission without including credential bytes.
+Scoped creation, elapsed budgets and expiry use live Host time; `--now` cannot extend authorization. Each dispatch is rechecked after
+native planning and its supervised timeout is bounded by the remaining scope lifetime. The
+watcher requests cancellation on expiry. Cancel the Run to stop dispatch.
+
+The scope is retained inside the Run's confirmed immutable pin. Replay validates its recipe and
+scope identity without probing credentials, so expired evidence remains inspectable. Resume
+performs live preflight again. No historical Store or plan is rewritten on upgrade.
+
+Stage A tests exercise conditional-template refusal, exact recipe/source/budget/model pools,
+missing machine preflight support, live creation/elapsed budgets, expiry before and during Task planning, cancellation, retired
+versions, native zero-dispatch refusal, and admitted personal native plans reused with zero
+Attempts and no inference. Workspace preflight uses a fake read-only GitHub transport. They do not establish
+live GitHub permissions, VM reboot survival, continuous service operation, automatic failed-Task
+repair or scoped publication. Publication still waits for exact signed decisions. Stages B–D
+remain required for issue 834; existing Task wake support does not implement a Scenario driver.
+See [the startup ADR](adr/2026-11-16-admit-implementation-startup-scope.md).

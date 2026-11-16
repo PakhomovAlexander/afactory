@@ -793,6 +793,30 @@ class WorkspaceAdapter:
     def publication(self, subject_value, revision):
         return self.common.publication(subject_value, revision)
 
+    def startup_preflight(self, r):
+        fields(r, ("schema", "scope_id", "scope"))
+        need(r["schema"] == "af/implementation-startup-preflight@1", "unsupported startup preflight")
+        scope, c = r["scope"], self.config
+        need(r["scope_id"] == digest(canonical(scope)) and scope["schema"] == "af/implementation-startup-scope@1",
+             "startup scope identity differs")
+        for key in ("repo", "repository", "source_commit", "source_content_digest", "base"):
+            need(scope[key] == c[key], "startup adapter scope differs")
+        need(scope["task_state"] == c["task_store"], "startup Task Store differs")
+        need(scope["branch_prefix"] == c["branch_prefix"] + "/", "startup branch namespace differs")
+        need(scope["destination_repository_id"] == c["repository_id"]
+             and scope["actor_id"] == c["actor"]["id"] and scope["actor_login"] == c["actor"]["login"],
+             "startup repository or actor differs")
+        need({g["operation"] for g in scope["grants"]} <= set(c["operations"]), "startup operation unavailable")
+        need(self.git("rev-parse", "refs/heads/" + c["base"]).decode() == c["source_commit"],
+             "startup local source changed")
+        # All remote observations are read-only. No push or publication probe is inferred.
+        with self.journal.locked():
+            self.configure_github()
+            self.common.actor()
+            remote = self.git("ls-remote", "ssh://git@github.com/" + c["repository"] + ".git", "refs/heads/" + c["base"]).decode()
+            need(remote.split() == [c["source_commit"], "refs/heads/" + c["base"]], "startup remote base changed")
+        return dict(schema="af/implementation-startup-ready@1", scope_id=r["scope_id"])
+
     def handle(self, r):
         self.performance_checked = {}  # Native acceptance/evidence reopens on every call, including replay.
         need(r.get("operation") in self.config["operations"], "operation outside installed machine scope")
@@ -956,7 +980,9 @@ def workspace_main():
         # Initial preparation is offline. A continuation must read back its prior
         # publication before admitting the next local commit, so it needs transport too.
         offline = r.get("operation") == "prepare_candidate_v1" and "previous" not in r.get("inputs", {})
-        response = WorkspaceAdapter(c, CONFIG_DIGEST, None if offline else GitHub(c)).handle(r)
+        adapter = WorkspaceAdapter(c, CONFIG_DIGEST, None if offline else GitHub(c))
+        response = (adapter.startup_preflight(r) if r.get("schema") == "af/implementation-startup-preflight@1"
+                    else adapter.handle(r))
         sys.stdout.buffer.write(canonical(response) + b"\n")
         sys.stdout.buffer.flush()
     finally:

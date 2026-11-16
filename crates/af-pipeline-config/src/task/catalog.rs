@@ -897,6 +897,87 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
+    /// Token-free effective Worker pool, including every conditional child. The ordinary
+    /// native planner subsequently proves contracts and resources before startup admission.
+    pub fn startup_workers(&self, root: &str) -> Result<BTreeSet<String>, String> {
+        fn visit(
+            compiler: &TaskPlanCompiler,
+            name: &str,
+            scope: &str,
+            mapping: &BTreeMap<String, String>,
+            workers: &mut BTreeMap<String, String>,
+            depth: usize,
+        ) -> Result<(), String> {
+            if depth >= 4 {
+                return Err("Startup Pipeline expansion depth exceeded".into());
+            }
+            let pipeline = compiler
+                .pipelines
+                .get(name)
+                .ok_or("Startup Pipeline missing from captured authority")?;
+            pipeline.validate()?;
+            let mut slots = BTreeMap::new();
+            for (local, slot) in &pipeline.slots {
+                let physical = mapping
+                    .get(local)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{scope}.slots.{local}"));
+                let worker = workers.entry(physical.clone()).or_insert_with(|| {
+                    compiler
+                        .slot_workers
+                        .get(&physical)
+                        .unwrap_or(&slot.worker)
+                        .clone()
+                });
+                if worker != &slot.worker && !slot.allow_local_replacement {
+                    return Err("Startup slot forbids Worker replacement".into());
+                }
+                slots.insert(local.clone(), physical);
+            }
+            for node in &pipeline.nodes {
+                match &node.operator {
+                    TaskOperatorV1::Call { pipeline, bindings } => {
+                        let mapped = bindings
+                            .iter()
+                            .map(|(child, parent)| {
+                                Ok((
+                                    child.clone(),
+                                    slots
+                                        .get(parent)
+                                        .ok_or("Startup parent slot missing")?
+                                        .clone(),
+                                ))
+                            })
+                            .collect::<Result<BTreeMap<_, _>, String>>()?;
+                        visit(
+                            compiler,
+                            pipeline,
+                            &format!("{scope}.nodes.{}", node.id),
+                            &mapped,
+                            workers,
+                            depth + 1,
+                        )?;
+                    }
+                    TaskOperatorV1::Check { remote_checks, .. } if !remote_checks.is_empty() => {
+                        return Err("Implementation startup requires local gates only".into());
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        let mut workers = BTreeMap::new();
+        visit(self, root, "root", &BTreeMap::new(), &mut workers, 0)?;
+        if self
+            .slot_workers
+            .keys()
+            .any(|slot| !workers.contains_key(slot))
+        {
+            return Err("Startup replacement names an absent physical slot".into());
+        }
+        Ok(workers.into_values().collect())
+    }
+
     pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinition> {
         &self.pipelines
     }

@@ -65,7 +65,7 @@ def main():
     root["admission"] = read(args.admission)
     if set(root["admission"]) != {"roadmap", "identity", "revision"}:
         raise ValueError("admission must be the exact native roadmap identity and revision")
-    policy = dict(schema="af/scenario-policy@5", adapters={"lab":dict(executable=launcher["executable"],
+    policy = dict(schema="af/scenario-policy@6", adapters={"lab":dict(executable=launcher["executable"],
         digest=launcher["digest"], operations=["experiment_submit_v1", "observe"], destinations=["native:claw"],
         max_wall_ms=30000, max_output_bytes=65536)}, task_plans=[], task_templates=sorted(set(digests)),
         decision_keys={}, file_roots=[])

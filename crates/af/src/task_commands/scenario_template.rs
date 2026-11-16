@@ -102,6 +102,89 @@ fn capture(template: &Template) -> Result<(String, String, TaskKindProfile), Str
     let profile = selected_profile(&compiler, &settings, &file.kind, file.verification)?;
     Ok((source.repository_id, source.content_digest, profile))
 }
+/// Restore actual sealed native authority before any Task dispatch. No model admission Attempt, inference or publication occurs here; native
+/// planning and account prerequisite probes are token-free.
+pub(crate) fn preflight_implementation(
+    template: &Template,
+    expected: &BTreeMap<String, af_scenario::implementation::ModelBinding>,
+) -> Result<(), String> {
+    template.validate(&crate::scenario::host::AfHost)?;
+    let (repository, content, _) = capture(template)?;
+    if repository != template.repository_id || content != template.source_content_digest {
+        return Err("Startup template source differs from native capture".into());
+    }
+    let cas = Cas::open(template.state.join("cas")).map_err(|e| e.to_string())?;
+    let settings: RunAuthority = serde_json::from_value(
+        cas.get_json(&template.authority_id)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let compiler = restore_compiler(&cas, &template.authority_id, &settings)?;
+    let file: TaskFile =
+        serde_json::from_value(template.document.clone()).map_err(|e| e.to_string())?;
+    let root = &file
+        .pipeline
+        .ok_or("Startup template needs a public Pipeline")?
+        .name;
+    let workers = compiler.startup_workers(root)?;
+    let mut actual = BTreeMap::new();
+    for name in workers {
+        let worker = compiler.worker(&name).ok_or("Startup Worker missing")?;
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            return Err("Startup refuses command Workers".into());
+        };
+        let provider = settings
+            .providers
+            .get(&name)
+            .ok_or("Startup Worker lacks Provider binding")?;
+        crate::model_check::static_rules(&crate::model_check::Binding {
+            owner: name.clone(),
+            label: &name,
+            provider: Some(provider),
+            kind: provider_kind,
+            model,
+            effort,
+        })?;
+        actual.insert(
+            name,
+            af_scenario::implementation::ModelBinding {
+                provider: provider.clone(),
+                provider_kind: provider_kind.clone(),
+                model: model.clone(),
+                effort: effort.clone(),
+            },
+        );
+    }
+    if &actual != expected {
+        return Err("Startup effective Pipeline/provider/model pool differs".into());
+    }
+    for binding in actual.values() {
+        if binding.provider != "codex-personal" || binding.provider_kind != "codex" {
+            return Err("Startup requires codex-personal".into());
+        }
+    }
+    // Probe only after the entire closure has passed static and owner-scope checks.
+    let identity = crate::providers::task::TaskProviderIdentity::probe("codex-personal", "codex")?;
+    for binding in actual.values() {
+        identity.execution(&binding.model, &binding.effort)?;
+    }
+    // Exercise the ordinary native planner as well as the static closure. This is an
+    // unpaid, never-executed Task with a deterministic identity, not a fabricated plan or
+    // receipt. It proves contracts, resource feasibility, local check configuration and
+    // required native constructors using the template's actual captured source. Future
+    // predecessor content remains checked at dispatch by the ordinary native resolver.
+    let mut document = template.document.clone();
+    document["task_id"] =
+        format!("startup-{}", template.id()?.trim_start_matches("sha256:")).into();
+    plan(template, document, false, &BTreeMap::new())?;
+    Ok(())
+}
+
 fn validate_pin(store: &EventStore, cas: &Cas, template: &Template) -> Result<(), String> {
     let run = format!(
         "scenario-template-{}",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:ant-inspection:3",
+  "$id": "urn:af:schema:ant-inspection:4",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/ant-inspection@3"
+      "const": "af/ant-inspection@4"
     },
     "pin": {
       "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
@@ -162,5 +162,5 @@
       "$ref": "urn:af:schema:scenario:6#/$defs/Retention"
     }
   },
-  "title": "ant-inspection v3"
+  "title": "ant-inspection v4"
 }

@@ -14,6 +14,25 @@ use std::sync::atomic::AtomicBool;
 /// Template document validation is called during admission *and* journal replay. The domain
 /// owns Scenario structure; the application owns its native Task-file grammar and diagnostics.
 pub trait Host: Send + Sync {
+    /// Trusted live authorization clock; inspection clocks cannot supply this value.
+    fn authorization_time(&self) -> Result<u64> {
+        crate::runtime::now()
+    }
+    fn preflight_implementation_template(
+        &self,
+        _: &Template,
+        _: &BTreeMap<String, crate::implementation::ModelBinding>,
+    ) -> Result<()> {
+        Err("Host does not support implementation startup admission".into())
+    }
+    fn preflight_implementation_adapter(
+        &self,
+        _: &crate::contract::Adapter,
+        _: &crate::implementation::Scope,
+    ) -> Result<()> {
+        Err("Host does not support implementation adapter preflight".into())
+    }
+
     fn validate_template(
         &self,
         document: &serde_json::Value,

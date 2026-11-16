@@ -249,7 +249,7 @@ fn action_only_scenario_start_resume_and_ant_tick_install_and_sweep_the_storage_
             "authority":{"task_plans":[],"task_templates":[],"grants":[grant],"decision_owners":[]},"limits":limits
         }}
     });
-    let policy = json!({"schema":"af/scenario-policy@5","adapters":{},"task_plans":[],"task_templates":[],
+    let policy = json!({"schema":"af/scenario-policy@6","adapters":{},"task_plans":[],"task_templates":[],
         "decision_keys":{},"file_roots":[owned]});
     let write = |path: &Path, value: &Value| {
         std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();

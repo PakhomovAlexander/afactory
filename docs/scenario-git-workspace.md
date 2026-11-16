@@ -32,7 +32,7 @@ checking. Git hooks, global/system config, filters, executable local config and 
 cannot add authority. The installer creates no token, remote ref, service object or schedule.
 
 Review the complete installed executable digest printed by installation and use it in the
-ordinary `af/scenario-policy@5` adapter entry. Allow only the operations/destination needed by
+ordinary `af/scenario-policy@6` adapter entry. Allow only the operations/destination needed by
 the consuming Scenario, with the existing 30-second wall and 65536-byte output ceilings. The
 executable contains both this capability and all production GitHub code; runtime imports cannot
 load application code from a checkout. Config/tool/SSH pin changes refuse further dispatch.

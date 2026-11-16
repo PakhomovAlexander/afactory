@@ -669,10 +669,10 @@ fn native_scenario_projects_the_exact_custom_output_without_an_extra_worker() {
     let policy = f.root.path().join("policy.json");
     write(
         &policy,
-        &json!({"schema":"af/scenario-policy@5","adapters":{},"task_plans":[planned["plan_id"]],"task_templates":[],"decision_keys":{},"file_roots":[]}),
+        &json!({"schema":"af/scenario-policy@6","adapters":{},"task_plans":[planned["plan_id"]],"task_templates":[],"decision_keys":{},"file_roots":[]}),
     );
     crate::schemas::valid(
-        &crate::schemas::validator("scenario-policy-v5.json"),
+        &crate::schemas::validator("scenario-policy-v6.json"),
         &serde_json::from_slice(&std::fs::read(&policy).unwrap()).unwrap(),
     );
     std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();

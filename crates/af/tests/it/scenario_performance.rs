@@ -1076,7 +1076,7 @@ fn shipped_performance_loop_delivers_research_and_publishes_verified_improvement
         }
     }
     assert_eq!(done["status"], "succeeded", "{done:#}");
-    valid("scenario-run-v6.json", &done);
+    valid("scenario-run-v7.json", &done);
     let steps = done["frames"]["root"]["steps"].as_array().unwrap();
     let research = &steps[1]["outputs"]["result"]["value"];
     let id = research["result"]["outputs"]["report"]["artifact_ids"][0]
@@ -1711,5 +1711,135 @@ fn performance_publication_proof_and_installed_adapter(
         "{}\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn implementation_startup_admits_personal_native_pool_without_inference_and_reuses_unpaid_plans() {
+    let p = Performance::new();
+    let marker = p.home.join("unexpected-startup-inference");
+    let trap = format!(
+        r#"#!/usr/bin/python3 -B
+import json,sys,pathlib
+if sys.argv[1:]==['--version']:
+ print('codex-cli 0.121.0'); sys.exit(0)
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  r=json.loads(line)
+  if r.get('id')==1: print(json.dumps({{'id':1,'result':{{}}}}),flush=True)
+  if r.get('id')==2: print(json.dumps({{'id':2,'result':{{'account':{{'type':'chatgpt','email':'scenario@example.invalid'}}}}}}),flush=True)
+ sys.exit(0)
+pathlib.Path({marker:?}).write_text('unexpected inference')
+sys.exit(99)
+"#,
+        marker = marker.display().to_string()
+    );
+    for name in ["codex", "claude"] {
+        let executable = p.f.machine.join("bin").join(name);
+        std::fs::write(&executable, crate::provider_cli::with_help(name, &trap)).unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let original = p.bundle();
+    let template = original["definitions"]["performance"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["operation"]["template"]["document"]["kind"] == "implement")
+        .unwrap()["operation"]["template"]
+        .clone();
+    let template: af_scenario::template::Template = serde_json::from_value(template).unwrap();
+    let template_id = template.id().unwrap();
+    let limits =
+        json!({"max_tokens":template.max_tokens,"max_wall_ms":604800000,"max_dispatches":64});
+    let bundle: af_scenario::contract::Bundle = serde_json::from_value(json!({"schema":"af/scenario-bundle@6","root":"startup","definitions":{"startup":{
+        "schema":"af/scenario@6","inputs":{},"outputs":{"ok":"boolean"},"steps":[step("implement",json!({"kind":"fresh_task","template":template,"bindings":{}}),json!({}),"task")],
+        "result":{"ok":literal("boolean",json!(true))},"completion":[literal("boolean",json!(true))],
+        "authority":{"task_plans":[],"task_templates":[template_id],"grants":[],"decision_owners":[]},"limits":limits,"admission":null}}})).unwrap();
+    let models: std::collections::BTreeMap<_, _> = [
+        ("implementer", "gpt-6.1-sol", "medium"), ("bugs", "gpt-6.1-terra", "high"),
+        ("correctness", "gpt-6.1-terra", "high"), ("evaluator", "gpt-6.1-terra", "medium")
+    ].into_iter().map(|(role, model, effort)| (format!("owner-default/{role}"), json!({"provider":"codex-personal","provider_kind":"codex","model":model,"effort":effort}))).collect();
+    let scope = json!({"schema":"af/implementation-startup-scope@1", "owner":"owner", "recipe_id":af_scenario::contract::hash(&bundle).unwrap(),
+        "repo":p.f.repo, "task_state":p.task_state, "repository_id":template.repository_id, "source_commit":template.authority_commit,"source_content_digest":template.source_content_digest,
+        "repository":"owner/project","destination_repository_id":1,"actor_id":2,"actor_login":"owner","branch_prefix":"implementation/","base":"main","grants":[],
+        "templates":{template_id.clone():models},"limits":limits,"max_repairs":0,"expires_unix_ms":8_000_000_000_000_u64});
+    let mut policy: Value = serde_json::from_slice(&std::fs::read(&p.f.policy).unwrap()).unwrap();
+    policy["implementation_startup"] = scope.clone();
+    write(&p.f.policy, &policy);
+    write(&p.f.bundle, &serde_json::to_value(&bundle).unwrap());
+    let pin = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+        ],
+    );
+    for id in ["startup-first", "startup-second"] {
+        let run = p.cli(
+            &p.f.state,
+            &[
+                "scenario",
+                "start",
+                id,
+                "--require-startup-scope",
+                "--file",
+                p.f.bundle.to_str().unwrap(),
+                "--authority",
+                p.f.policy.to_str().unwrap(),
+                "--inputs",
+                p.f.inputs.to_str().unwrap(),
+                "--confirm-pin",
+                pin["revision"].as_str().unwrap(),
+            ],
+        );
+        assert_eq!(run["pin"]["policy"]["implementation_startup"], scope);
+        assert_eq!(run["dispatches"], 0);
+        assert_eq!(run["fresh_tasks"], json!({}));
+    }
+    policy["implementation_startup"]["templates"][&template_id]["owner-default/implementer"]["effort"] =
+        json!("high");
+    write(&p.f.policy, &policy);
+    let changed_pin = p.cli(
+        &p.f.state,
+        &[
+            "scenario",
+            "validate",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+        ],
+    );
+    assert_ne!(changed_pin["revision"], pin["revision"]);
+    let refused = p.output(
+        &p.f.state,
+        &[
+            "scenario",
+            "start",
+            "wrong-effective-pool",
+            "--require-startup-scope",
+            "--file",
+            p.f.bundle.to_str().unwrap(),
+            "--authority",
+            p.f.policy.to_str().unwrap(),
+            "--inputs",
+            p.f.inputs.to_str().unwrap(),
+            "--confirm-pin",
+            changed_pin["revision"].as_str().unwrap(),
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("pool differs"));
+    let startup_id = format!("startup-{}", template_id.trim_start_matches("sha256:"));
+    let planned = p.cli(&p.task_state, &["task", "show", &startup_id]);
+    assert_eq!(planned["attempts"], 0);
+    assert_eq!(planned["chargeable_tokens"], "0");
+    assert!(
+        !marker.exists(),
+        "startup admission must never invoke inference"
     );
 }

@@ -1154,7 +1154,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-policy@5"
+          "const": "af/scenario-policy@6"
         },
         "adapters": {
           "type": "object",
@@ -1209,6 +1209,16 @@
           "additionalProperties": {
             "$ref": "urn:af:schema:scenario:6#/$defs/PerformancePublicationScope"
           }
+        },
+        "implementation_startup": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "urn:af:schema:implementation-startup-scope:1"
+            }
+          ]
         }
       }
     },
@@ -1224,7 +1234,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-pin@6"
+          "const": "af/scenario-pin@7"
         },
         "bundle": {
           "$ref": "urn:af:schema:scenario:6#/$defs/Bundle"
@@ -1719,7 +1729,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-run@6"
+          "const": "af/scenario-run@7"
         },
         "id": {
           "$ref": "urn:af:schema:scenario:6#/$defs/name"
@@ -1997,7 +2007,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-pin@7"
+          "const": "af/ant-pin@8"
         },
         "definition": {
           "$ref": "urn:af:schema:scenario:6#/$defs/Ant"
@@ -2198,7 +2208,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-state@8"
+          "const": "af/ant-state@9"
         },
         "pin": {
           "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
@@ -2364,7 +2374,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/scenario-list@6"
+          "const": "af/scenario-list@7"
         },
         "runs": {
           "type": "object",
@@ -2386,7 +2396,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-list@8"
+          "const": "af/ant-list@9"
         },
         "ants": {
           "type": "object",
@@ -2412,7 +2422,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-tick@7"
+          "const": "af/ant-tick@8"
         },
         "now_unix_ms": {
           "type": "integer",
@@ -2726,7 +2736,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af/ant-inspection@3"
+          "const": "af/ant-inspection@4"
         },
         "pin": {
           "$ref": "urn:af:schema:scenario:6#/$defs/AntPin"
